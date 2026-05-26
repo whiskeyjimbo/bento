@@ -77,10 +77,7 @@ func NewCache(opts ...CacheOption) *Cache {
 	for _, opt := range opts {
 		opt(co)
 	}
-	cap := 0
-	if co.capacity > 0 {
-		cap = co.capacity
-	}
+	cap := max(co.capacity, 0)
 	return &Cache{m: make(map[string]Decision, cap)}
 }
 

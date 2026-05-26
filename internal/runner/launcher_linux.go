@@ -10,21 +10,39 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/launcherbin"
 )
 
+// ExtractOption configures launcher extraction.
+type ExtractOption func(*extractOpts)
+
+type extractOpts struct {
+	dir string
+}
+
+// WithExtractDir sets the target directory where the launcher binary is extracted.
+// If empty, uses the default system temp directory.
+func WithExtractDir(dir string) ExtractOption {
+	return func(o *extractOpts) { o.dir = dir }
+}
+
 // ExtractLauncher writes the embedded launcher binary to a temp file
 // (chmod 0755) and returns its path. Caller removes when done.
 // Exported so the warm-pool Sandbox can extract once and reuse.
-func ExtractLauncher() (string, error) {
-	return extractLauncher()
+func ExtractLauncher(opts ...ExtractOption) (string, error) {
+	return extractLauncher(opts...)
 }
 
 // extractLauncher writes the embedded launcher binary to a temp file
 // (chmod 0755) and returns its path. Caller removes when done.
-func extractLauncher() (string, error) {
+func extractLauncher(opts ...ExtractOption) (string, error) {
+	cfg := &extractOpts{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	blob := embeddedLauncherForArch()
 	if len(blob) == 0 {
 		return "", fmt.Errorf("no embedded launcher for %s/%s — run 'make launcher'", runtime.GOOS, runtime.GOARCH)
 	}
-	f, err := os.CreateTemp("", "bento-launcher-*")
+	f, err := os.CreateTemp(cfg.dir, "bento-launcher-*")
 	if err != nil {
 		return "", err
 	}

@@ -36,12 +36,45 @@ type Sandbox struct {
 	closed       bool
 }
 
+// SandboxOption configures a Sandbox at creation time.
+type SandboxOption func(*sandboxConfig)
+
+type sandboxConfig struct {
+	extractDir string
+	logger     Logger
+}
+
+// WithExtractDirectory specifies a custom directory where the launcher binary
+// should be warm-extracted (e.g. for systems with a noexec /tmp).
+func WithExtractDirectory(path string) SandboxOption {
+	return func(c *sandboxConfig) { c.extractDir = path }
+}
+
+// WithSandboxLogger configures the Sandbox to write internal initialization
+// and warm-extraction logs to a designated logger.
+func WithSandboxLogger(l Logger) SandboxOption {
+	return func(c *sandboxConfig) { c.logger = l }
+}
+
 // NewSandbox extracts shared resources once. Call Close when done.
-func NewSandbox() (*Sandbox, error) {
+// Accepts optional SandboxOptions to configure extraction directories and logging.
+func NewSandbox(opts ...SandboxOption) (*Sandbox, error) {
+	cfg := &sandboxConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	s := &Sandbox{}
-	path, err := runner.ExtractLauncher()
+	var runOpts []runner.ExtractOption
+	if cfg.extractDir != "" {
+		runOpts = append(runOpts, runner.WithExtractDir(cfg.extractDir))
+	}
+
+	path, err := runner.ExtractLauncher(runOpts...)
 	if err == nil {
 		s.launcherPath = path
+	} else if cfg.logger != nil {
+		cfg.logger.Printf("[sandbox] warm launcher extraction failed: %v", err)
 	}
 	// Extraction failure isn't fatal — falls back to per-Run extract,
 	// which surfaces its own warning via cfg.warn.

@@ -98,8 +98,8 @@ const (
 // callers can't get LIFO wrong by accident.
 type auxiliary struct {
 	networkMode  spec.NetworkMode // resolved (never Auto)
-	httpProxy    *proxy.HTTPConnect
-	socks        *proxy.SOCKS5
+	httpProxy    proxy.ProxyServer
+	socks        proxy.ProxyServer
 	pchainsCfg   string // temp path; "" if no network or libproxychains missing
 	launcherPath string // temp path; "" if exec is allowed or extract failed
 

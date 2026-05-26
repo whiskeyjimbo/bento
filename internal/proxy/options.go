@@ -6,6 +6,19 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/grants"
 )
 
+// ProxyServer defines the interface for running transparent/filtering proxies.
+type ProxyServer interface {
+	Start()
+	Addr() string
+	Addrs() []string
+	Close() error
+}
+
+// Authorizer validates whether a network destination is permitted.
+type Authorizer interface {
+	Authorize(host string, port int) (bool, string)
+}
+
 // Option configures a proxy's startup behavior.
 type Option func(*options)
 
@@ -17,6 +30,7 @@ type options struct {
 	idleTimeout time.Duration
 	grants      grants.Callback      // optional: prompt on match failure
 	grantCache  grants.DecisionCache // shared between HTTP and SOCKS5
+	authorizer  Authorizer           // custom authorizer (takes precedence)
 }
 
 // defaultBindAddr is the sentinel for "dual-stack default" — the
@@ -76,4 +90,9 @@ func WithGrants(cb grants.Callback, shared grants.DecisionCache) Option {
 		o.grants = cb
 		o.grantCache = shared
 	}
+}
+
+// WithAuthorizer installs a custom destination authorizer.
+func WithAuthorizer(auth Authorizer) Option {
+	return func(o *options) { o.authorizer = auth }
 }

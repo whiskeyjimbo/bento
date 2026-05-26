@@ -6,31 +6,80 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
-// extensionInterpreters is the mapping from file extension to default
-// interpreter name. Kept small + obvious — users with unusual setups
-// override via the --interpreter CLI flag. Resolution happens at
-// runtime via exec.LookPath so distro-specific paths work.
-var extensionInterpreters = map[string]string{
-	".py": "python3",
-	".js": "node",
-	".sh": "bash",
-	".rb": "ruby",
-	".pl": "perl",
+var (
+	extensionInterpretersMu sync.RWMutex
+	extensionInterpreters   = map[string]string{
+		".py": "python3",
+		".js": "node",
+		".sh": "bash",
+		".rb": "ruby",
+		".pl": "perl",
+	}
+)
+
+// RegisterExtensionInterpreter maps a file extension (e.g. ".ts") to a default
+// interpreter name (e.g. "bun") globally. Thread-safe.
+func RegisterExtensionInterpreter(ext, interpreter string) {
+	extensionInterpretersMu.Lock()
+	defer extensionInterpretersMu.Unlock()
+	extensionInterpreters[ext] = interpreter
+}
+
+// ResolveOption configures an interpreter resolution.
+type ResolveOption func(*resolveConfig)
+
+type resolveConfig struct {
+	customExtensions map[string]string
+	disableShebang   bool
+}
+
+// WithCustomExtensions provides temporary/one-off extension-to-interpreter
+// mappings for a single ResolveInterpreter call.
+func WithCustomExtensions(mappings map[string]string) ResolveOption {
+	return func(c *resolveConfig) { c.customExtensions = mappings }
+}
+
+// WithDisableShebang skips checking shebang (#!) lines during resolution.
+func WithDisableShebang() ResolveOption {
+	return func(c *resolveConfig) { c.disableShebang = true }
 }
 
 // ResolveInterpreter picks an interpreter for the given script path.
-// Tries (1) the extension table; (2) the script's shebang line if
-// it has no extension or the extension isn't mapped. Returns an
-// error with remediation hints when neither path succeeds.
-func ResolveInterpreter(scriptPath string) (string, error) {
+// Tries (1) the custom mappings from ResolveOptions; (2) the global extension
+// table; (3) the script's shebang line if it has no extension or the extension
+// isn't mapped. Returns an error with remediation hints when neither path
+// succeeds.
+func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error) {
+	cfg := &resolveConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	ext := strings.ToLower(filepath.Ext(scriptPath))
-	if interp, ok := extensionInterpreters[ext]; ok {
+
+	// 1. Try custom extensions passed via option
+	if cfg.customExtensions != nil {
+		if interp, ok := cfg.customExtensions[ext]; ok {
+			return interp, nil
+		}
+	}
+
+	// 2. Try global thread-safe extension map
+	extensionInterpretersMu.RLock()
+	interp, ok := extensionInterpreters[ext]
+	extensionInterpretersMu.RUnlock()
+	if ok {
 		return interp, nil
 	}
-	if shebang, ok := readShebang(scriptPath); ok {
-		return shebang, nil
+
+	// 3. Try shebang if not disabled
+	if !cfg.disableShebang {
+		if shebang, ok := readShebang(scriptPath); ok {
+			return shebang, nil
+		}
 	}
 	if ext != "" {
 		return "", fmt.Errorf("no interpreter mapped for %q files; use --interpreter or add a shebang line", ext)

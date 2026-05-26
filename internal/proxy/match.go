@@ -109,34 +109,49 @@ func matchHost(rule, host string) bool {
 	return false
 }
 
-// allowOrPrompt checks the static allowlist; on miss, consults the
-// grant callback (cached) if one is configured. Returns the final
-// allow/deny along with a log tag ("ALLOW", "DENY", "GRANTED",
-// "DENIED-BY-USER") for logging.
-func allowOrPrompt(opts *options, perm *spec.NetworkPerm, host string, port int) (bool, string) {
-	if matchPerm(perm, host, port) {
+type defaultAuthorizer struct {
+	perm       *spec.NetworkPerm
+	grants     grants.Callback
+	grantCache grants.DecisionCache
+}
+
+func (a *defaultAuthorizer) Authorize(host string, port int) (bool, string) {
+	if matchPerm(a.perm, host, port) {
 		return true, "ALLOW"
 	}
-	if opts.grants == nil {
+	if a.grants == nil {
 		return false, "DENY"
 	}
 	req := grants.Request{Kind: grants.KindNetwork, Host: host, Port: port}
-	if opts.grantCache != nil {
-		if cached, ok := opts.grantCache.Lookup(req); ok {
+	if a.grantCache != nil {
+		if cached, ok := a.grantCache.Lookup(req); ok {
 			if cached == grants.DecisionAllow {
 				return true, "GRANTED-CACHED"
 			}
 			return false, "DENIED-CACHED"
 		}
 	}
-	decision := opts.grants(req)
-	if opts.grantCache != nil {
-		opts.grantCache.Store(req, decision)
+	decision := a.grants(req)
+	if a.grantCache != nil {
+		a.grantCache.Store(req, decision)
 	}
 	if decision == grants.DecisionAllow {
 		return true, "GRANTED"
 	}
 	return false, "DENIED-BY-USER"
+}
+
+// allowOrPrompt checks the static allowlist; on miss, consults the
+// grant callback (cached) if one is configured. Returns the final
+// allow/deny along with a log tag ("ALLOW", "DENY", "GRANTED",
+// "DENIED-BY-USER") for logging.
+func allowOrPrompt(opts *options, perm *spec.NetworkPerm, host string, port int) (bool, string) {
+	auth := &defaultAuthorizer{
+		perm:       perm,
+		grants:     opts.grants,
+		grantCache: opts.grantCache,
+	}
+	return auth.Authorize(host, port)
 }
 
 // matchPort: "*", literal "443", or range "8000-9000".

@@ -104,7 +104,13 @@ func (s *SOCKS5) handle(c net.Conn) {
 		writeSocksReply(c, 0x02)
 		return
 	}
-	allowed, tag := allowOrPrompt(s.opts, s.perm, host, port)
+	var allowed bool
+	var tag string
+	if s.opts.authorizer != nil {
+		allowed, tag = s.opts.authorizer.Authorize(host, port)
+	} else {
+		allowed, tag = allowOrPrompt(s.opts, s.perm, host, port)
+	}
 	s.logf("%s %s:%d", tag, host, port)
 	if !allowed {
 		writeSocksReply(c, 0x02)

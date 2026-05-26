@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +63,26 @@ func ParseNetworkMode(s string) (NetworkMode, bool) { return spec.ParseNetworkMo
 // Option configures a Run invocation.
 type Option = runner.Option
 
+// ResolveOption configures an interpreter resolution.
+type ResolveOption = spec.ResolveOption
+
+// RegisterExtensionInterpreter maps a file extension (e.g. ".ts") to a default
+// interpreter name (e.g. "bun") globally. Thread-safe.
+func RegisterExtensionInterpreter(ext, interpreter string) {
+	spec.RegisterExtensionInterpreter(ext, interpreter)
+}
+
+// WithCustomExtensions provides temporary/one-off extension-to-interpreter
+// mappings for a single ResolveInterpreter call.
+func WithCustomExtensions(mappings map[string]string) ResolveOption {
+	return spec.WithCustomExtensions(mappings)
+}
+
+// WithDisableShebang skips checking shebang (#!) lines during resolution.
+func WithDisableShebang() ResolveOption {
+	return spec.WithDisableShebang()
+}
+
 // ResolveInterpreter returns the default interpreter for the given
 // script path: the extension table (.py → python3, .js → node, etc.)
 // or the script's shebang line if the extension isn't mapped.
@@ -69,8 +91,8 @@ type Option = runner.Option
 //
 // Library consumers building manifests programmatically use this to
 // match the CLI's zero-config behavior.
-func ResolveInterpreter(scriptPath string) (string, error) {
-	return spec.ResolveInterpreter(scriptPath)
+func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error) {
+	return spec.ResolveInterpreter(scriptPath, opts...)
 }
 
 // PracticalStrictManifest builds the zero-config default manifest for
@@ -87,30 +109,84 @@ func PracticalStrictManifest(scriptPath, interpreter string) (*Manifest, error) 
 	return spec.PracticalStrictManifest(scriptPath, interpreter)
 }
 
+// LoadOption configures manifest parsing.
+type LoadOption func(*loadConfig)
+
+type loadConfig struct {
+	baseDir        string
+	envExpansion   bool
+	skipValidation bool
+}
+
+// WithBaseDir joins relative script, read, and write paths inside the manifest
+// with the specified directory path.
+func WithBaseDir(path string) LoadOption {
+	return func(c *loadConfig) { c.baseDir = path }
+}
+
+// WithEnvExpansion resolves environment variables (e.g. ${VAR}) inside the
+// manifest string before parsing.
+func WithEnvExpansion() LoadOption {
+	return func(c *loadConfig) { c.envExpansion = true }
+}
+
+// WithSkipValidation skips standard manifest validation on load (useful for
+// testing non-standard settings).
+func WithSkipValidation() LoadOption {
+	return func(c *loadConfig) { c.skipValidation = true }
+}
+
 // LoadManifest reads a YAML manifest from r, unmarshals it, and runs
 // [Manifest.Validate] in one call. Library consumers loading
 // manifests from disk, databases, HTTP responses, or in-memory
 // strings should prefer this over rolling their own yaml.Unmarshal +
 // Validate pair so they can't forget the validate step.
 //
-// The script path inside the manifest is NOT made absolute by
-// LoadManifest — that's caller-context-dependent (relative to the
-// YAML file, the cwd, or something else entirely). If you need it
-// absolute, post-process: `m.Script = filepath.Join(yamlDir, m.Script)`.
-func LoadManifest(r io.Reader) (*Manifest, error) {
+// Accepts optional LoadOptions to post-process paths or expand environment
+// variables.
+func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 	if r == nil {
 		return nil, fmt.Errorf("LoadManifest: nil reader")
 	}
+	cfg := &loadConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("LoadManifest: read: %w", err)
 	}
+
+	if cfg.envExpansion {
+		data = []byte(os.ExpandEnv(string(data)))
+	}
+
 	var m Manifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("LoadManifest: yaml: %w", err)
 	}
-	if err := m.Validate(); err != nil {
-		return nil, err // already prefixed with "manifest..."
+
+	if cfg.baseDir != "" {
+		if m.Script != "" && !filepath.IsAbs(m.Script) {
+			m.Script = filepath.Join(cfg.baseDir, m.Script)
+		}
+		for i, p := range m.Read {
+			if !filepath.IsAbs(p) {
+				m.Read[i] = filepath.Join(cfg.baseDir, p)
+			}
+		}
+		for i, p := range m.Write {
+			if !filepath.IsAbs(p) {
+				m.Write[i] = filepath.Join(cfg.baseDir, p)
+			}
+		}
+	}
+
+	if !cfg.skipValidation {
+		if err := m.Validate(); err != nil {
+			return nil, err // already prefixed with "manifest..."
+		}
 	}
 	return &m, nil
 }

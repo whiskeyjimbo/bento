@@ -73,7 +73,13 @@ func (h *HTTPConnect) handle(c net.Conn) {
 		writeStatus(c, "400 Bad Request")
 		return
 	}
-	allowed, tag := allowOrPrompt(h.opts, h.perm, host, port)
+	var allowed bool
+	var tag string
+	if h.opts.authorizer != nil {
+		allowed, tag = h.opts.authorizer.Authorize(host, port)
+	} else {
+		allowed, tag = allowOrPrompt(h.opts, h.perm, host, port)
+	}
 	h.logf("%s %s:%d", tag, host, port)
 	if !allowed {
 		writeStatus(c, "403 Forbidden")
