@@ -11,7 +11,10 @@
 // (auto-allow, deny-with-log, GUI dialog, Slack approval, etc.).
 package grants
 
-import "sync"
+import (
+	"strconv"
+	"sync"
+)
 
 // Request is what the proxy hands the callback when an unrecognized
 // host:port shows up. Network is the only kind today; future kinds
@@ -97,19 +100,5 @@ func (c *Cache) Store(r Request, d Decision) {
 }
 
 func (r Request) key() string {
-	return r.Host + ":" + portString(r.Port)
-}
-
-func portString(p int) string {
-	if p == 0 {
-		return "0"
-	}
-	var b [6]byte
-	i := len(b)
-	for p > 0 {
-		i--
-		b[i] = byte('0' + p%10)
-		p /= 10
-	}
-	return string(b[i:])
+	return r.Host + ":" + strconv.Itoa(r.Port)
 }

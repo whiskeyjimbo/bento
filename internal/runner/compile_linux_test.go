@@ -23,7 +23,7 @@ func TestAppendBaseFlags(t *testing.T) {
 		"--clearenv",
 	}
 	for _, want := range required {
-		if !containsString(args, want) {
+		if !slices.Contains(args, want) {
 			t.Errorf("appendBaseFlags missing %q in %v", want, args)
 		}
 	}
@@ -32,19 +32,19 @@ func TestAppendBaseFlags(t *testing.T) {
 func TestAppendNetworkNamespace(t *testing.T) {
 	t.Run("nil network unshares", func(t *testing.T) {
 		args := appendNetworkNamespace(nil, &spec.Manifest{}, &auxiliary{networkMode: spec.NetworkModeLandlock})
-		if !containsString(args, "--unshare-net") {
+		if !slices.Contains(args, "--unshare-net") {
 			t.Errorf("nil Network should emit --unshare-net, got %v", args)
 		}
 	})
 	t.Run("network set does not unshare in landlock mode", func(t *testing.T) {
 		args := appendNetworkNamespace(nil, &spec.Manifest{Network: &spec.NetworkPerm{}}, &auxiliary{networkMode: spec.NetworkModeLandlock})
-		if containsString(args, "--unshare-net") {
+		if slices.Contains(args, "--unshare-net") {
 			t.Errorf("non-nil Network in landlock should NOT emit --unshare-net, got %v", args)
 		}
 	})
 	t.Run("network set DOES unshare in bridge mode", func(t *testing.T) {
 		args := appendNetworkNamespace(nil, &spec.Manifest{Network: &spec.NetworkPerm{}}, &auxiliary{networkMode: spec.NetworkModeBridge})
-		if !containsString(args, "--unshare-net") {
+		if !slices.Contains(args, "--unshare-net") {
 			t.Errorf("bridge mode should always emit --unshare-net, got %v", args)
 		}
 	})
@@ -56,7 +56,7 @@ func TestAppendUserReadPaths(t *testing.T) {
 	if countOccurrences(args, "--ro-bind-try") != 2 {
 		t.Errorf("expected 2 --ro-bind-try entries, got %d in %v", countOccurrences(args, "--ro-bind-try"), args)
 	}
-	if !containsString(args, "/etc/hostname") {
+	if !slices.Contains(args, "/etc/hostname") {
 		t.Errorf("missing /etc/hostname in %v", args)
 	}
 }
@@ -75,7 +75,7 @@ func TestAppendUserEnv(t *testing.T) {
 	if !containsAdjacent(args, "--setenv", "BENTO_TEST_VAR", "yes") {
 		t.Errorf("expected BENTO_TEST_VAR=yes, got %v", args)
 	}
-	if containsString(args, "BENTO_MISSING_VAR") {
+	if slices.Contains(args, "BENTO_MISSING_VAR") {
 		t.Errorf("BENTO_MISSING_VAR was not set on host; should not appear; got %v", args)
 	}
 }
@@ -144,7 +144,7 @@ func TestCompileBwrapArgsOrdering(t *testing.T) {
 		t.Error("extraEnv X=1 not present")
 	}
 	// Network is nil → unshare-net.
-	if !containsString(args, "--unshare-net") {
+	if !slices.Contains(args, "--unshare-net") {
 		t.Error("nil Network should emit --unshare-net")
 	}
 }
@@ -181,10 +181,6 @@ func TestInterpreterPrefix(t *testing.T) {
 }
 
 // --- helpers ---
-
-func containsString(args []string, want string) bool {
-	return slices.Contains(args, want)
-}
 
 func countOccurrences(args []string, want string) int {
 	n := 0

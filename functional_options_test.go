@@ -139,7 +139,7 @@ func (m *mockAuthorizer) Authorize(host string, port int) (bool, string) {
 
 func TestCustomProxyAuthorizer(t *testing.T) {
 	auth := &mockAuthorizer{allowedHost: "trusted.com"}
-	
+
 	// Create proxy options with a custom authorizer
 	opts, _ := proxy.StartHTTPConnect(&spec.NetworkPerm{}, proxy.WithAuthorizer(auth))
 	// Test if standard allowlist matching can be overridden by a custom Authorizer.
@@ -155,7 +155,7 @@ func TestCustomProxyAuthorizer(t *testing.T) {
 	if allowed || tag != "MOCK-DENY" {
 		t.Errorf("mock authorization should have denied untrusted.com: allowed=%t, tag=%s", allowed, tag)
 	}
-	
+
 	if opts != nil {
 		opts.Close()
 	}

@@ -37,7 +37,7 @@ func TestExpandDangerousPaths(t *testing.T) {
 			"/h/.netrc",
 		}
 		for _, want := range expected {
-			if !contains(paths, want) {
+			if !slices.Contains(paths, want) {
 				t.Errorf("expected %q in expansion, got %v", want, paths)
 			}
 		}
@@ -47,7 +47,7 @@ func TestExpandDangerousPaths(t *testing.T) {
 func TestExpandDangerousWritePaths(t *testing.T) {
 	paths := ExpandDangerousWritePaths("/h")
 	for _, want := range []string{"/h/.bashrc", "/h/.zshrc", "/h/.gitconfig", "/h/.mcp.json"} {
-		if !contains(paths, want) {
+		if !slices.Contains(paths, want) {
 			t.Errorf("expected %q in write list, got %v", want, paths)
 		}
 	}
@@ -58,7 +58,7 @@ func TestExpandDangerousWritePaths(t *testing.T) {
 
 func TestWorkspaceWriteProtectionFor(t *testing.T) {
 	got := WorkspaceWriteProtectionFor("/work/proj")
-	if !contains(got.ReadOnlyDirs, "/work/proj/.git/hooks") {
+	if !slices.Contains(got.ReadOnlyDirs, "/work/proj/.git/hooks") {
 		t.Errorf(".git/hooks should be in ReadOnlyDirs, got %v", got.ReadOnlyDirs)
 	}
 	requiredFiles := []string{
@@ -68,12 +68,8 @@ func TestWorkspaceWriteProtectionFor(t *testing.T) {
 		"/work/proj/.idea/workspace.xml",
 	}
 	for _, want := range requiredFiles {
-		if !contains(got.ShadowFiles, want) {
+		if !slices.Contains(got.ShadowFiles, want) {
 			t.Errorf("expected %q in ShadowFiles, got %v", want, got.ShadowFiles)
 		}
 	}
-}
-
-func contains(haystack []string, needle string) bool {
-	return slices.Contains(haystack, needle)
 }
