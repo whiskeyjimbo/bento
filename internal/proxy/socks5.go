@@ -24,7 +24,7 @@ type SOCKS5 struct {
 // flows. Call Start() to begin serving.
 func NewSOCKS5(perm *spec.NetworkPerm, opts ...Option) (*SOCKS5, error) {
 	s := &SOCKS5{perm: perm}
-	base, err := newTCPProxy("socks5", applyOptions(opts), s.handle)
+	base, err := newTCPProxy("socks5", applyOptionsFor(perm, opts), s.handle)
 	if err != nil {
 		return nil, err
 	}
@@ -104,13 +104,7 @@ func (s *SOCKS5) handle(c net.Conn) {
 		writeSocksReply(c, 0x02)
 		return
 	}
-	var allowed bool
-	var tag string
-	if s.opts.authorizer != nil {
-		allowed, tag = s.opts.authorizer.Authorize(host, port)
-	} else {
-		allowed, tag = allowOrPrompt(s.opts, s.perm, host, port)
-	}
+	allowed, tag := s.opts.authorizer.Authorize(host, port)
 	s.logf("%s %s:%d", tag, host, port)
 	if !allowed {
 		writeSocksReply(c, 0x02)

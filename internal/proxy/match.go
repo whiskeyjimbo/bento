@@ -141,19 +141,6 @@ func (a *defaultAuthorizer) Authorize(host string, port int) (bool, string) {
 	return false, "DENIED-BY-USER"
 }
 
-// allowOrPrompt checks the static allowlist; on miss, consults the
-// grant callback (cached) if one is configured. Returns the final
-// allow/deny along with a log tag ("ALLOW", "DENY", "GRANTED",
-// "DENIED-BY-USER") for logging.
-func allowOrPrompt(opts *options, perm *spec.NetworkPerm, host string, port int) (bool, string) {
-	auth := &defaultAuthorizer{
-		perm:       perm,
-		grants:     opts.grants,
-		grantCache: opts.grantCache,
-	}
-	return auth.Authorize(host, port)
-}
-
 // matchPort: "*", literal "443", or range "8000-9000".
 func matchPort(rule string, port int) bool {
 	if rule == "*" {

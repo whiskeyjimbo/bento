@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/whiskeyjimbo/bento/internal/grants"
+	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
 // ProxyServer defines the interface for running transparent/filtering proxies.
@@ -38,20 +39,37 @@ type options struct {
 // WithBindAddr; tests and special cases use a specific value.
 const defaultBindAddr = "" // intentionally empty; tcpProxy compares against this
 
+// applyOptions builds the options from defaults + caller-supplied
+// Option funcs. After this, opts.authorizer is always non-nil — if
+// the caller didn't supply one, we install a defaultAuthorizer that
+// consults the manifest's allowlist (and the optional grant
+// callback). Handlers can therefore call opts.authorizer.Authorize
+// unconditionally; no per-request branch.
+//
+// applyOptions takes the manifest's NetworkPerm because the default
+// authorizer needs it. Callers that pass WithAuthorizer override
+// the default.
+func applyOptionsFor(perm *spec.NetworkPerm, opts []Option) *options {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	if o.authorizer == nil {
+		o.authorizer = &defaultAuthorizer{
+			perm:       perm,
+			grants:     o.grants,
+			grantCache: o.grantCache,
+		}
+	}
+	return o
+}
+
 func defaultOptions() *options {
 	return &options{
 		bindAddr:    defaultBindAddr,
 		dialTimeout: 10 * time.Second,
 		idleTimeout: 30 * time.Second,
 	}
-}
-
-func applyOptions(opts []Option) *options {
-	o := defaultOptions()
-	for _, opt := range opts {
-		opt(o)
-	}
-	return o
 }
 
 // WithLogger directs the proxy's diagnostic output to l. Pass nil to

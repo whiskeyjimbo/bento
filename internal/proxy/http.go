@@ -23,7 +23,7 @@ type HTTPConnect struct {
 // the accept loop. Call Start() to begin serving.
 func NewHTTPConnect(perm *spec.NetworkPerm, opts ...Option) (*HTTPConnect, error) {
 	h := &HTTPConnect{perm: perm}
-	base, err := newTCPProxy("http-connect", applyOptions(opts), h.handle)
+	base, err := newTCPProxy("http-connect", applyOptionsFor(perm, opts), h.handle)
 	if err != nil {
 		return nil, err
 	}
@@ -73,13 +73,7 @@ func (h *HTTPConnect) handle(c net.Conn) {
 		writeStatus(c, "400 Bad Request")
 		return
 	}
-	var allowed bool
-	var tag string
-	if h.opts.authorizer != nil {
-		allowed, tag = h.opts.authorizer.Authorize(host, port)
-	} else {
-		allowed, tag = allowOrPrompt(h.opts, h.perm, host, port)
-	}
+	allowed, tag := h.opts.authorizer.Authorize(host, port)
 	h.logf("%s %s:%d", tag, host, port)
 	if !allowed {
 		writeStatus(c, "403 Forbidden")
