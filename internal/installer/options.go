@@ -5,10 +5,16 @@ package installer
 // InitOption configures the package installer loop.
 type InitOption func(*initOpts)
 
+type customPM struct {
+	cmd            []string
+	proxychainsPkg string
+}
+
 type initOpts struct {
 	dryRun         bool
 	distroOverride string // useful for testing
 	skipAppArmor   bool
+	customManagers map[string]customPM
 }
 
 // WithDryRun specifies that bento init should only plan and print
@@ -25,4 +31,18 @@ func WithDistroOverride(distro string) InitOption {
 // WithSkipAppArmor skips generating and loading the AppArmor profile.
 func WithSkipAppArmor() InitOption {
 	return func(o *initOpts) { o.skipAppArmor = true }
+}
+
+// WithCustomPackageManager registers or overrides a package manager configuration
+// for a given Linux distribution (distro name).
+func WithCustomPackageManager(distro string, cmd []string, proxychainsPkg string) InitOption {
+	return func(o *initOpts) {
+		if o.customManagers == nil {
+			o.customManagers = make(map[string]customPM)
+		}
+		o.customManagers[distro] = customPM{
+			cmd:            cmd,
+			proxychainsPkg: proxychainsPkg,
+		}
+	}
 }

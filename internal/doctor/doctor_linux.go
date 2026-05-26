@@ -14,7 +14,7 @@ import (
 
 // platformRegistry returns the built-in Linux checks tagged with their
 // categories. Run() filters and executes them.
-func platformRegistry() []registeredCheck {
+func platformRegistry(c *config) []registeredCheck {
 	checks := []registeredCheck{
 		{checkBwrap, CategoryCore},
 		{checkUnprivilegedUserns, CategoryCore},
@@ -25,7 +25,11 @@ func platformRegistry() []registeredCheck {
 		{checkSystemdRun, CategoryLimits},
 		{checkDangerousPaths, CategoryCore},
 	}
-	for _, interp := range []string{"python3", "bash", "node"} {
+	runtimes := c.interpreters
+	if len(runtimes) == 0 {
+		runtimes = []string{"python3", "bash", "node"}
+	}
+	for _, interp := range runtimes {
 		name := interp // capture
 		checks = append(checks, registeredCheck{
 			run:      func() CheckResult { return checkInterpreter(name) },

@@ -323,6 +323,12 @@ func WithDistroOverride(distro string) InitOption { return installer.WithDistroO
 // WithSkipAppArmor skips generating and loading the AppArmor profile.
 func WithSkipAppArmor() InitOption { return installer.WithSkipAppArmor() }
 
+// WithCustomPackageManager registers or overrides a package manager configuration
+// for a given Linux distribution (distro name).
+func WithCustomPackageManager(distro string, cmd []string, proxychainsPkg string) InitOption {
+	return installer.WithCustomPackageManager(distro, cmd, proxychainsPkg)
+}
+
 // Init turns a failing host setup into a passing one: installs
 // missing packages (bubblewrap, socat, proxychains4) and applies the
 // AppArmor profile for bwrap when needed. Detects the distro from
@@ -346,3 +352,9 @@ func WithFailFast() CheckOption { return doctor.WithFailFast() }
 
 // WithCheck appends a caller-supplied check to the built-in doctor set.
 func WithCheck(c CustomCheck) CheckOption { return doctor.WithCheck(c) }
+
+// WithInterpreters dynamically configures which target runtimes the doctor
+// checks for. If empty, the default set (python3, bash, node) is verified.
+func WithInterpreters(runtimes ...string) CheckOption {
+	return doctor.WithInterpreters(runtimes...)
+}

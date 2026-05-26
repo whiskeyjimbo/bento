@@ -2,10 +2,14 @@ package bento
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/grants"
+	"github.com/whiskeyjimbo/bento/internal/installer"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
@@ -154,5 +158,77 @@ func TestCustomProxyAuthorizer(t *testing.T) {
 	
 	if opts != nil {
 		opts.Close()
+	}
+}
+
+func TestDoctorInterpretersOption(t *testing.T) {
+	// Verify that WithInterpreters dynamically alters doctor checks
+	res := Checks(WithInterpreters("customruntime"))
+	found := false
+	for _, r := range res {
+		if r.Name == "customruntime" {
+			found = true
+			if r.Status != StatusWarn {
+				t.Errorf("expected warning status for customruntime, got %s", r.Status)
+			}
+		}
+		// python3 should NOT be checked since we overridden the list to only check customruntime
+		if r.Name == "python3" {
+			t.Error("python3 should not have been checked when custom runtime list is provided")
+		}
+	}
+	if !found {
+		t.Error("customruntime checks were not executed")
+	}
+}
+
+func TestInstallerCustomPackageManager(t *testing.T) {
+	// Execute installer.Init with custom package manager settings (Ubuntu as target overrides)
+	var buf bytes.Buffer
+	ctx := context.Background()
+
+	// Direct dry-run with a custom package manager
+	steps, err := installer.Init(ctx, &buf,
+		installer.WithDistroOverride("customdistro"),
+		installer.WithCustomPackageManager("customdistro", []string{"my-pm", "get"}, "myproxychains"),
+		installer.WithDryRun(),
+	)
+	if err != nil {
+		t.Fatalf("Init custom package manager dry-run failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "detected distro: customdistro") {
+		t.Errorf("expected customdistro to be detected in logs, got %q", output)
+	}
+	_ = steps
+}
+
+func TestMockTTYInput(t *testing.T) {
+	// Create mock input and output
+	in := bytes.NewBufferString("y\n")
+	var out bytes.Buffer
+
+	cb, err := grants.TTYCallback(
+		grants.WithTTYInput(in),
+		grants.WithTTYOutput(&out),
+	)
+	if err != nil {
+		t.Fatalf("failed to create TTY callback: %v", err)
+	}
+
+	req := grants.Request{Host: "safe.com", Port: 80}
+	decision := cb(req)
+
+	if decision != grants.DecisionAllow {
+		t.Errorf("expected DecisionAllow from mock 'y' input, got %v", decision)
+	}
+
+	logs := out.String()
+	if !strings.Contains(logs, "script wants to connect to safe.com:80") {
+		t.Errorf("expected logs to contain prompt, got %q", logs)
+	}
+	if !strings.Contains(logs, "allow") {
+		t.Errorf("expected logs to confirm allow, got %q", logs)
 	}
 }

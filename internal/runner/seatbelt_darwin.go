@@ -105,7 +105,7 @@ func darwinInterpreterPrefix(interp string) string {
 // macOS only needs the SOCKS5 proxy today (Seatbelt does its own
 // per-host filtering natively; no HTTP CONNECT or proxychains needed).
 type darwinAuxiliary struct {
-	socks     *proxy.SOCKS5
+	socks     proxy.ProxyServer
 	socksAddr string // socks.Addr() captured at start; "" if no network
 	cleanups  []func()
 }

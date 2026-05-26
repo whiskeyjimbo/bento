@@ -32,7 +32,7 @@ const (
 // custom checks.
 func Run(opts ...Option) []CheckResult {
 	c := applyOptions(opts)
-	registry := append(platformRegistry(), c.extra...)
+	registry := append(platformRegistry(c), c.extra...)
 
 	var results []CheckResult
 	for _, check := range registry {

@@ -73,7 +73,7 @@ func planStepsWithConfig(w io.Writer, cfg *initOpts) ([]step, error) {
 	}
 	fmt.Fprintf(w, "detected distro: %s\n", distro)
 
-	pm, err := packageManagerFor(distro)
+	pm, err := packageManagerFor(distro, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,12 @@ func (p packageManager) installStep(pkg string) step {
 	}
 }
 
-func packageManagerFor(distro string) (packageManager, error) {
+func packageManagerFor(distro string, cfg *initOpts) (packageManager, error) {
+	if cfg != nil && cfg.customManagers != nil {
+		if cpm, ok := cfg.customManagers[distro]; ok {
+			return packageManager(cpm), nil
+		}
+	}
 	switch distro {
 	case "ubuntu", "debian":
 		return packageManager{

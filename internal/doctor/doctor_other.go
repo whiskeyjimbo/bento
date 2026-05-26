@@ -2,4 +2,4 @@
 
 package doctor
 
-func platformRegistry() []registeredCheck { return nil }
+func platformRegistry(_ *config) []registeredCheck { return nil }

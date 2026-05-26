@@ -4,11 +4,15 @@ package doctor
 
 import "os/exec"
 
-func platformRegistry() []registeredCheck {
+func platformRegistry(c *config) []registeredCheck {
 	checks := []registeredCheck{
 		{checkSandboxExec, CategoryCore},
 	}
-	for _, interp := range []string{"python3", "bash", "node"} {
+	runtimes := c.interpreters
+	if len(runtimes) == 0 {
+		runtimes = []string{"python3", "bash", "node"}
+	}
+	for _, interp := range runtimes {
 		name := interp
 		checks = append(checks, registeredCheck{
 			run:      func() CheckResult { return checkInterpreter(name) },

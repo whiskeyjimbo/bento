@@ -15,6 +15,7 @@ type TTYOption func(*ttyOpts)
 type ttyOpts struct {
 	output         io.Writer // defaults to /dev/tty
 	promptTemplate string    // override default prompt text
+	input          io.Reader // custom input source (for mock/tests)
 }
 
 // WithTTYOutput redirects prompt logs/text to w. Defaults to /dev/tty.
@@ -25,6 +26,12 @@ func WithTTYOutput(w io.Writer) TTYOption {
 // WithPromptTemplate overrides the prompt display template.
 func WithPromptTemplate(t string) TTYOption {
 	return func(o *ttyOpts) { o.promptTemplate = t }
+}
+
+// WithTTYInput configures an alternative reader to read user confirmation inputs
+// (instead of opening /dev/tty). Extremely useful for headless automated tests.
+func WithTTYInput(r io.Reader) TTYOption {
+	return func(o *ttyOpts) { o.input = r }
 }
 
 // TTYCallback returns a Callback that prompts the user on /dev/tty.
@@ -45,36 +52,50 @@ func TTYCallback(opts ...TTYOption) (Callback, error) {
 		opt(to)
 	}
 
-	var tty io.ReadWriter
-	if to.output != nil {
-		if rw, ok := to.output.(io.ReadWriter); ok {
-			tty = rw
+	var reader io.Reader
+	var writer io.Writer
+
+	if to.input != nil {
+		reader = to.input
+		if to.output != nil {
+			writer = to.output
 		} else {
-			// fallback if output isn't readable: must still open /dev/tty for reads
+			writer = io.Discard
+		}
+	} else {
+		var tty io.ReadWriter
+		if to.output != nil {
+			if rw, ok := to.output.(io.ReadWriter); ok {
+				tty = rw
+			} else {
+				// fallback if output isn't readable: must still open /dev/tty for reads
+				f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+				if err != nil {
+					return nil, errors.New("interactive prompts require a TTY (open /dev/tty failed); pass an explicit manifest or library callback")
+				}
+				tty = &readWriteStub{Reader: f, Writer: to.output}
+			}
+		} else {
 			f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 			if err != nil {
 				return nil, errors.New("interactive prompts require a TTY (open /dev/tty failed); pass an explicit manifest or library callback")
 			}
-			tty = &readWriteStub{Reader: f, Writer: to.output}
+			tty = f
 		}
-	} else {
-		f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if err != nil {
-			return nil, errors.New("interactive prompts require a TTY (open /dev/tty failed); pass an explicit manifest or library callback")
-		}
-		tty = f
+		reader = tty
+		writer = tty
 	}
 
-	reader := bufio.NewReader(tty)
+	bufReader := bufio.NewReader(reader)
 	return func(r Request) Decision {
-		fmt.Fprintf(tty, "[bento] script wants to connect to %s:%d. allow? [y/N] ", r.Host, r.Port)
-		line, _ := reader.ReadString('\n')
+		fmt.Fprintf(writer, "[bento] script wants to connect to %s:%d. allow? [y/N] ", r.Host, r.Port)
+		line, _ := bufReader.ReadString('\n')
 		line = strings.ToLower(strings.TrimSpace(line))
 		if line == "y" || line == "yes" {
-			fmt.Fprintln(tty, "[bento] → allow (remembered for this run)")
+			fmt.Fprintln(writer, "[bento] → allow (remembered for this run)")
 			return DecisionAllow
 		}
-		fmt.Fprintln(tty, "[bento] → deny (remembered for this run)")
+		fmt.Fprintln(writer, "[bento] → deny (remembered for this run)")
 		return DecisionDeny
 	}, nil
 }

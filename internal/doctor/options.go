@@ -29,9 +29,10 @@ type registeredCheck struct {
 
 // config holds the resolved option set.
 type config struct {
-	skipNetwork bool
-	failFast    bool
-	extra       []registeredCheck
+	skipNetwork  bool
+	failFast     bool
+	extra        []registeredCheck
+	interpreters []string
 }
 
 func applyOptions(opts []Option) *config {
@@ -59,5 +60,13 @@ func WithFailFast() Option {
 func WithCheck(check Check) Option {
 	return func(c *config) {
 		c.extra = append(c.extra, registeredCheck{run: check, category: CategoryCustom})
+	}
+}
+
+// WithInterpreters dynamically configures which target runtimes the doctor
+// checks for. If empty, the default set (python3, bash, node) is verified.
+func WithInterpreters(runtimes ...string) Option {
+	return func(c *config) {
+		c.interpreters = runtimes
 	}
 }
