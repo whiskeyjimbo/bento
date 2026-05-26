@@ -1,0 +1,10 @@
+interpreter: /tmp/goprobe
+script: /tmp/goprobe   # also the executable; launcher passes as argv[1], binary ignores
+
+read:
+  - /tmp/goprobe       # bind the binary into the sandbox
+
+network:
+  rules:
+    - host: example.com
+      port: "443"

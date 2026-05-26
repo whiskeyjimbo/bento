@@ -1,0 +1,17 @@
+interpreter: python3
+script: probe.py
+args: ["/tmp/sandbox-probe"]
+
+read:
+  - /tmp/sandbox-probe/allowed_read.txt
+  - /tmp/sandbox-probe/readonly
+
+write:
+  - /tmp/sandbox-probe/writable
+
+network:
+  rules:
+    - host: .example.com
+      port: "443"
+    - host: example.com
+      port: "443"

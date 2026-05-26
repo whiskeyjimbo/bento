@@ -1,0 +1,52 @@
+//go:build linux
+
+package runner
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+
+	"github.com/whiskeyjimbo/bento/internal/launcherbin"
+)
+
+// ExtractLauncher writes the embedded launcher binary to a temp file
+// (chmod 0755) and returns its path. Caller removes when done.
+// Exported so the warm-pool Sandbox can extract once and reuse.
+func ExtractLauncher() (string, error) {
+	return extractLauncher()
+}
+
+// extractLauncher writes the embedded launcher binary to a temp file
+// (chmod 0755) and returns its path. Caller removes when done.
+func extractLauncher() (string, error) {
+	blob := embeddedLauncherForArch()
+	if len(blob) == 0 {
+		return "", fmt.Errorf("no embedded launcher for %s/%s — run 'make launcher'", runtime.GOOS, runtime.GOARCH)
+	}
+	f, err := os.CreateTemp("", "bento-launcher-*")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(blob); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Chmod(0o755); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	f.Close()
+	return f.Name(), nil
+}
+
+func embeddedLauncherForArch() []byte {
+	switch runtime.GOARCH {
+	case "amd64":
+		return launcherbin.LinuxAMD64
+	default:
+		return nil
+	}
+}

@@ -1,0 +1,537 @@
+# Bento
+
+A polyglot script sandbox for Linux and macOS. Declare a script's
+permissions in a YAML manifest; run it under kernel-enforced
+isolation.
+
+`bento` uses native OS sandboxing primitives (`sandbox-exec` on macOS,
+`bubblewrap` on Linux) plus proxy-based network filtering. It can run
+untrusted Python, Node, bash, Go, or other interpreter-driven scripts
+without containers and without root.
+
+> **Pre-1.0**
+>
+> The public API (`bento.Run`, `bento.Doctor`, options, manifest
+> types) is unlikely to break in incompatible ways before 1.0 but
+> small adjustments are possible. The macOS path compiles cleanly but
+> has not been runtime-verified; structural parity with Linux is the
+> design intent. Contributions welcome.
+
+## Installation
+
+```bash
+# CLI
+git clone https://github.com/whiskeyjimbo/bento
+cd bento
+make build
+sudo install bin/bento /usr/local/bin/
+
+# Library
+go get github.com/whiskeyjimbo/bento
+```
+
+## Basic Usage
+
+```bash
+# Run a script per its manifest
+$ bento run check.yaml
+Running script: ./check.py
+Request to api.example.com:443 -> ALLOWED
+Request to malicious.com:443  -> DENIED by host allowlist
+
+# Check the host has everything bento needs
+$ bento doctor
+[PASS] bwrap binary — bubblewrap 0.9.0
+[PASS] Landlock TCP — ABI=4
+[PASS] mandatory-deny paths — 20 read-protect, 9 write-protect
+all checks passed
+
+# Add a timeout and an extra env var
+$ bento run --timeout=30s --env DEPLOY_ID=abc123 deploy.yaml
+
+# Force the bridge network backend (kernel < 6.7 fallback)
+$ bento run --network-mode=bridge fetch.yaml
+
+# Skip slow network checks in CI doctor runs
+$ bento doctor --skip-network --fail-fast
+```
+
+## Overview
+
+Bento provides a sandbox implementation usable as both a CLI tool and
+a Go library. It's designed with a **secure-by-default** philosophy
+for running untrusted scripts: every read, write, exec, and network
+target must be explicitly allowed, and bento adds always-block
+defaults for credentials and persistence vectors that users would
+forget about.
+
+**Key capabilities:**
+
+- **Filesystem isolation**: deny-by-default reads and writes; bind-mount
+  exactly the paths the script declares
+- **Network isolation**: per-host allowlists enforced via local
+  HTTP CONNECT + SOCKS5 proxies; static-binary bypass blocked at the
+  kernel (Landlock) or via a fully isolated network namespace + socat
+  bridge
+- **Exec control**: seccomp filter blocks `execve` when the manifest
+  forbids subprocess spawning
+- **Resource limits**: `systemd-run` cgroup wrap for memory, CPU, and
+  task ceilings
+- **Mandatory defaults**: SSH keys, cloud creds, shell rc files, and
+  `.git/hooks` are protected regardless of user config
+- **Bypass-resistant**: host validation refuses `inet_aton` shorthand
+  (`127.1` → `127.0.0.1`), null-byte allowlist tricks, and IPv6 zone-ID
+  payloads
+- **Two Linux network modes**: kernel-native Landlock TCP (modern
+  kernels) or a socat unix-socket bridge (any kernel) — `auto`
+  selects per environment
+
+### Example Use Case: running an untrusted automation script
+
+Imagine a script that ingests a webhook payload, parses some data,
+and posts results to a specific API. You don't want it to read
+arbitrary files or talk to arbitrary hosts.
+
+**Without sandboxing:** the script can read your `~/.aws/credentials`,
+write to `~/.bashrc`, and exfiltrate to anywhere. A bug or a
+supply-chain compromise has full account access.
+
+**With bento** (`fetch.yaml`):
+
+```yaml
+interpreter: python3
+script: ./fetch.py
+read:
+  - /tmp/webhook-input.json
+write:
+  - /tmp/results
+network:
+  rules:
+    - host: api.example.com
+      port: "443"
+limits:
+  memory: "128M"
+  cpu: "100%"
+  tasks: 32
+```
+
+```bash
+$ bento run fetch.yaml
+```
+
+The script can read its input file and write its output dir. It can
+HTTPS to one host. It cannot read SSH keys. It cannot spawn
+subprocesses. It dies if it allocates more than 128 MiB. A bug or
+compromise is contained.
+
+## How It Works
+
+Bento uses OS-level primitives that apply to the entire process tree:
+
+- **macOS**: dynamically generated SBPL (Seatbelt) profiles passed to
+  `sandbox-exec`
+- **Linux**: `bubblewrap` for filesystem/PID/mount namespacing, plus
+  one of two network backends (see below) and a small `bento-launcher`
+  shim that installs seccomp + Landlock rules after `execveat`-ing
+  the interpreter
+
+### Two-layer network filtering
+
+| Layer | Catches | Mechanism |
+|---|---|---|
+| **HTTP CONNECT proxy** | curl, requests, `net/http`, urllib — anything that honors `HTTPS_PROXY` | Local proxy filters by Host header |
+| **SOCKS5 proxy via LD_PRELOAD** | SMTP, postgres, redis — dynamically-linked binaries doing raw `connect()` | `proxychains4` intercepts libc `connect()` and routes through SOCKS5 |
+| **Landlock TCP allowlist** OR **netns + socat bridge** | Static Go/Rust binaries doing raw `syscall.Connect` | Either kernel restricts ports (Landlock) or there's no route except through the bridge (netns) |
+
+All layers enforce the same per-host allowlist defined in the manifest.
+
+### Two filesystem isolation primitives
+
+- **Linux**: bwrap bind-mounts grant exactly the declared paths
+  (`--ro-bind` for reads, `--bind` for writes); `/dev/null` is mounted
+  over always-blocked files; `.git/hooks` directories get re-bound
+  read-only inside any writable workspace
+- **macOS**: SBPL `(deny default)` + explicit `(allow file-read*
+  (subpath ...))` and `(allow file-read* file-write* (subpath ...))`
+  rules
+
+### Mandatory deny
+
+Two always-block lists ship in `internal/spec/dangerous.go`:
+
+- **Read protection** — SSH private keys, `.aws/credentials`,
+  `.config/gcloud/*`, `.kube/config`, `.netrc`, `.git-credentials`,
+  `.npmrc`, etc. Prevents credential exfil even when the user grants
+  blanket home-dir read.
+- **Write protection** — shell rc files (`.bashrc`, `.zshrc`,
+  `.profile`), `.gitconfig`, `.mcp.json`. Prevents
+  persistence-via-rc-file even when the user grants home-dir write.
+  Workspace-relative `.git/hooks` and `.git/config` are also shielded
+  inside any user-declared writable workspace.
+
+The user can't bypass these by adding the paths to their `read`/
+`write` lists — the mandatory-deny binds are emitted AFTER user binds
+and take precedence.
+
+### Bypass-resistant host validation
+
+The proxies refuse hosts that aren't already in canonical form before
+matching against the allowlist:
+
+- IP literals must be canonical (`127.0.0.1`, not `127.1` or
+  `2852039166`). This blocks the `connect("2852039166", 443)` →
+  169.254.169.254 (AWS IMDS) bypass.
+- DNS-shaped strings must contain ≥1 letter in the last label (all-
+  numeric labels are reserved by RFC 1123). Catches the same
+  numeric-bypass class.
+- No control characters (`\x00`, `\r`, `\n`) — defeats the
+  `evil.com\x00.allowed.com` null-byte trick that bypasses naive
+  `HasSuffix` matching.
+- No `%` — defeats `::ffff:1.2.3.4%x.allowed.com` IPv6 zone-ID
+  bypasses.
+- Case-insensitive match (`EXAMPLE.com` matches rule `example.com`).
+
+## Architecture
+
+```
+bento/
+├── bento.go                    # public API (aliases + entry funcs)
+├── doc.go                      # package docs
+├── cmd/
+│   ├── bento/                  # CLI entrypoint
+│   └── bento-launcher/         # seccomp + Landlock shim binary (embedded)
+└── internal/
+    ├── spec/                   # manifest types + DangerousFiles
+    ├── runner/                 # bwrap (Linux) + sandbox-exec (macOS)
+    ├── proxy/                  # HTTP CONNECT + SOCKS5 + match logic
+    ├── doctor/                 # environment health checks
+    ├── sysprobe/               # find host binaries (bwrap, socat, ...)
+    └── launcherbin/            # embedded launcher binary (regenerated by `make launcher`)
+```
+
+The `bento-launcher` is built as a separate `linux/amd64` binary and
+embedded via `go:embed`. At runtime the parent process extracts it to
+a temp file, bind-mounts it into the sandbox, and uses it as the
+entrypoint. The launcher installs seccomp + Landlock rules, then
+`execveat`s into the user's interpreter (using `execveat` so its own
+final transition isn't blocked by the filter it just installed).
+
+## Usage
+
+### As a CLI tool
+
+```bash
+# bento run [flags] <manifest.yaml>
+bento run check.yaml
+bento run --timeout=30s check.yaml
+bento run --env API_TOKEN=xyz --env DEPLOY_ID=42 check.yaml
+bento run --network-mode=bridge check.yaml
+
+# bento doctor [flags]
+bento doctor
+bento doctor --skip-network
+bento doctor --fail-fast
+```
+
+`bento run` returns the script's exit code; a non-zero exit code does
+NOT produce an error. Setup failures (interpreter missing, etc.) exit
+with code 1.
+
+### As a library
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/whiskeyjimbo/bento"
+)
+
+func main() {
+    m := &bento.Manifest{
+        Interpreter: "python3",
+        Script:      "./fetch.py",
+        Read:        []string{"/etc/hostname"},
+        Write:       []string{"/tmp/results"},
+        Network: &bento.NetworkPerm{
+            Rules: []bento.NetworkRule{
+                {Host: "api.example.com", Port: "443"},
+                {Host: ".github.com", Port: "443"},
+            },
+        },
+        Limits: &bento.Limits{Memory: "128M", CPU: "100%", Tasks: 32},
+    }
+
+    code, err := bento.Run(context.Background(), m,
+        bento.WithLogger(log.New(os.Stderr, "", log.LstdFlags)),
+        bento.WithTimeout(30*time.Second),
+        bento.WithExtraEnv(map[string]string{"DEPLOY_ID": "abc123"}),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    os.Exit(code)
+}
+```
+
+#### Available exports
+
+```go
+// Types
+type Manifest, NetworkPerm, NetworkRule, Limits
+type Option, CheckOption, CustomCheck, CheckResult, Status, Logger
+type NetworkMode  // NetworkModeAuto, NetworkModeLandlock, NetworkModeBridge
+
+// Entrypoints
+func Run(ctx, *Manifest, ...Option) (int, error)
+func Doctor(io.Writer, ...CheckOption) bool
+func Checks(...CheckOption) []CheckResult
+
+// Run options
+WithLogger(Logger), WithStdin, WithStdout, WithStderr
+WithTimeout(time.Duration), WithExtraEnv(map[string]string)
+WithNetworkMode(NetworkMode)
+
+// Doctor options
+WithSkipNetwork(), WithFailFast(), WithCheck(CustomCheck)
+```
+
+## Configuration
+
+### Manifest format
+
+```yaml
+interpreter: python3        # resolved via $PATH
+script: ./check.py          # relative to manifest, or absolute
+args: ["--verbose"]         # appended after the script path
+
+env:                        # host env vars to pass through (allowlist)
+  - HOME
+  - LANG
+
+read:                       # paths the script can read
+  - /etc/hostname
+  - /tmp/data
+
+write:                      # paths the script can write (implies read)
+  - /tmp/output
+
+network:                    # nil = no network at all
+  rules:
+    - host: api.example.com
+      port: "443"
+    - host: .github.com     # leading dot = suffix match
+      port: "443"
+    - host: "*"             # wildcard host
+      port: "8000-9000"     # or port range
+
+exec: []                    # subprocess allowlist; empty = block all execve
+
+limits:
+  memory: "128M"            # systemd MemoryMax syntax
+  cpu: "100%"               # systemd CPUQuota syntax
+  tasks: 32                 # systemd TasksMax
+```
+
+### Common patterns
+
+**Read-only script (analysis tool, formatter):**
+
+```yaml
+interpreter: python3
+script: ./analyze.py
+read:
+  - .
+# no write, no network, no exec — script must be pure
+```
+
+**Workspace + GitHub:**
+
+```yaml
+interpreter: python3
+script: ./sync.py
+read: ["."]
+write: ["."]
+network:
+  rules:
+    - host: ".github.com"
+      port: "443"
+```
+
+**Webhook fetcher with timeout:**
+
+```yaml
+interpreter: python3
+script: ./fetch.py
+read: ["/tmp/webhook.json"]
+write: ["/tmp/results"]
+network:
+  rules:
+    - host: "api.example.com"
+      port: "443"
+limits:
+  memory: "128M"
+  tasks: 16
+# CLI: bento run --timeout=30s webhook.yaml
+```
+
+### Error handling policy
+
+`bento.Run` distinguishes hard errors from degraded modes:
+
+- **Hard error** (`Run` returns non-nil) — required tool missing
+  (`bwrap` on Linux, `sandbox-exec` on macOS); manifest interpreter
+  not found; script file missing; proxy bind failure; symlink-escape
+  detected on a write path.
+- **Degraded mode** (`Run` proceeds, `[warn]` logged) —
+  `libproxychains.so` missing (LD_PRELOAD layer disabled); Landlock
+  TCP unavailable in `auto` mode (falls back to bridge);
+  `systemd-run` missing (resource limits not enforced); launcher
+  extraction failed (exec block disabled).
+
+Pass `WithLogger` to observe warnings. Treating any warning as fatal
+is the caller's choice; bento doesn't presume a security posture.
+
+## Platform Support
+
+| Platform | Status | Notes |
+|---|---|---|
+| Linux x86_64 | Supported | Both `landlock` and `bridge` network modes |
+| Linux arm64 | Compiles, launcher build excluded | `bento-launcher` is `linux+amd64` only today; exec-block degrades |
+| macOS | Compiles (untested) | sandbox-exec path; no cgroup limits yet |
+| Windows | Not supported | bwrap and sandbox-exec are POSIX-only |
+
+### Platform-specific dependencies
+
+**Linux required:**
+- `bubblewrap` (`apt install bubblewrap`)
+
+**Linux optional (doctor warns if missing):**
+- `socat` (`apt install socat`) — required only for bridge mode
+- `proxychains4` (`apt install proxychains4`) — LD_PRELOAD layer
+- `systemd-run` — resource limits
+
+**Linux kernel/AppArmor:**
+- Kernel ≥ 6.7 enables Landlock TCP path (otherwise bridge mode is
+  used)
+- Ubuntu 24.04+ requires an AppArmor profile for `bwrap` — see
+  `testdata/bwrap.apparmor`; `bento doctor` reports the exact
+  remediation command
+
+**macOS:**
+- ships with everything needed
+
+## Development
+
+```bash
+# Build the launcher (regenerates embed target) + the CLI
+make build
+
+# Just the launcher
+make launcher
+
+# Run unit tests + e2e probes
+make test
+
+# Run e2e probes manually
+./bin/bento run testdata/probe.manifest.yaml      # filesystem + network
+./bin/bento run testdata/exec.manifest.yaml       # seccomp exec block
+./bin/bento run testdata/membomb.manifest.yaml    # cgroup memory limit
+./bin/bento run testdata/goprobe.manifest.yaml    # static-binary network bypass test
+./bin/bento run testdata/dangerous.manifest.yaml  # mandatory-deny
+
+# Test both network modes
+./bin/bento run --network-mode=landlock testdata/probe.manifest.yaml
+./bin/bento run --network-mode=bridge   testdata/probe.manifest.yaml
+```
+
+### Layout
+
+The internal layout is detailed in [Architecture](#architecture)
+above. Public surface: `bento.go` + `doc.go`.
+
+## Implementation Details
+
+### Network mode auto-selection
+
+In `NetworkModeAuto`, bento inspects the kernel's Landlock ABI
+(`landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`)
+and picks `landlock` if it's ≥ 4 (kernel 6.7+), else falls back to
+`bridge`. An explicit `WithNetworkMode(NetworkModeBridge)` overrides.
+
+### Landlock mode
+
+- `bwrap --share-net` (script sees host network namespace)
+- HTTP CONNECT proxy on ephemeral port; SOCKS5 proxy on ephemeral port
+- `BENTO_ALLOW_PORTS=<httpPort>,<socksPort>` passed to launcher
+- Launcher installs Landlock TCP rule allowing `connect()` only to
+  those two ports
+- Effect: static binaries doing `connect("anywhere", 443)` get
+  EACCES from the kernel; they must use one of the proxy ports
+
+### Bridge mode
+
+- `bwrap --unshare-net` (full network namespace isolation; no route to
+  anywhere)
+- Host runs two socats per sandbox:
+  `socat UNIX-LISTEN:/tmp/bento-http.sock TCP:localhost:<httpPort>`
+- Sandbox runs two socats on fixed ports (3128/1080):
+  `socat TCP-LISTEN:3128 UNIX-CONNECT:/tmp/bento-http.sock`
+- HTTP_PROXY in the sandbox points to `127.0.0.1:3128`
+- Effect: static binaries doing `connect("anywhere", 443)` get
+  ENETUNREACH — there is no route except through the bridge
+
+### Seccomp exec filter
+
+The `bento-launcher` shim:
+
+1. Opens the interpreter binary as an fd
+2. Calls `prctl(PR_SET_NO_NEW_PRIVS)`
+3. Installs a seccomp filter: deny `execve(2)` with EPERM, allow
+   `execveat(2)` and everything else
+4. Calls `execveat(fd, "", argv, envp, AT_EMPTY_PATH)` to become the
+   interpreter — uses `execveat`, which the filter permits
+
+After step 4 the interpreter is running with the filter active. Any
+subsequent `subprocess.Popen` from the script returns `PermissionError`
+because the underlying libc call uses `execve`, not `execveat`.
+
+This indirection is necessary because bwrap's own `--seccomp FD`
+mechanism installs the filter before bwrap's own final `execve` into
+the interpreter — which would block bwrap. Doing it post-exec, in a
+shim that itself uses `execveat`, works around that.
+
+### Mandatory deny paths (auto-protected)
+
+**Read-protected** (`spec.DangerousFiles`):
+`~/.ssh/id_{rsa,ed25519,ecdsa,dsa,identity}`, `~/.aws/credentials`,
+`~/.aws/config`, `~/.config/gcloud/credentials.db`,
+`~/.config/gcloud/application_default_credentials.json`,
+`~/.config/gcloud/legacy_credentials`,
+`~/.azure/accessTokens.json`, `~/.azure/azureProfile.json`,
+`~/.kube/config`, `~/.docker/config.json`, `~/.git-credentials`,
+`~/.netrc`, `~/.pypirc`, `~/.npmrc`, `~/.gem/credentials`,
+`~/.password-store`.
+
+**Write-protected** (`spec.DangerousWriteFiles`): `~/.bashrc`,
+`~/.bash_profile`, `~/.zshrc`, `~/.zprofile`, `~/.profile`,
+`~/.gitconfig`, `~/.gitmodules`, `~/.mcp.json`, `~/.ripgreprc`.
+
+**Workspace-relative write protection** (any user-declared write
+path): `.git/hooks/` (re-bound read-only — blocks creation of unborn
+hook files like `post-checkout`), `.git/config`, `.vscode/tasks.json`,
+`.vscode/launch.json`, `.idea/workspace.xml`.
+
+### Symlink-escape rejection
+
+Before any bind-mount setup, every component of every write path is
+`lstat`'d. If any existing component is a symlink, the manifest is
+rejected with a descriptive error. This prevents the attack where a
+malicious workspace replaces `/tmp/out` with a symlink to `~/.ssh`
+between the user's check and our bind.
+
+Non-existent components are allowed — there's no symlink yet to
+replace, and bwrap won't follow what doesn't exist.

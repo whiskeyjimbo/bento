@@ -1,0 +1,10 @@
+interpreter: python3
+script: dangerous.py
+
+# Grant blanket access to the home dir. Mandatory-deny should still
+# protect ~/.netrc (and the rest of DANGEROUS_FILES).
+read:
+  - /home/jrose
+
+env:
+  - HOME

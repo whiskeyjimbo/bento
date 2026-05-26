@@ -1,0 +1,7 @@
+interpreter: python3
+script: membomb.py
+
+limits:
+  memory: "128M"
+  cpu: "100%"
+  tasks: 32

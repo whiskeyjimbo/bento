@@ -1,0 +1,272 @@
+package bento
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/whiskeyjimbo/bento/internal/doctor"
+	"github.com/whiskeyjimbo/bento/internal/grants"
+	"github.com/whiskeyjimbo/bento/internal/installer"
+	"github.com/whiskeyjimbo/bento/internal/runner"
+	"github.com/whiskeyjimbo/bento/internal/spec"
+)
+
+// =============================================================================
+// Shared types
+// =============================================================================
+
+// Logger is the minimum logging interface bento needs. The standard
+// library's *log.Logger satisfies it; slog or zap users can pass a
+// one-method adapter.
+type Logger = spec.Logger
+
+// =============================================================================
+// Running scripts
+// =============================================================================
+
+// Manifest is the per-script permission declaration. Empty / nil fields
+// mean "deny." A nil Network blocks all network; an empty Exec slice
+// blocks all subprocesses.
+type Manifest = spec.Manifest
+
+// NetworkPerm describes allowed outbound traffic.
+type NetworkPerm = spec.NetworkPerm
+
+// NetworkRule is one host:port allowance.
+type NetworkRule = spec.NetworkRule
+
+// Limits is the per-script resource ceiling.
+type Limits = spec.Limits
+
+// NetworkMode selects the Linux network-enforcement strategy. Ignored
+// on macOS (Seatbelt handles per-host filtering natively).
+type NetworkMode = spec.NetworkMode
+
+// Network mode constants.
+const (
+	NetworkModeAuto     = spec.NetworkModeAuto
+	NetworkModeLandlock = spec.NetworkModeLandlock
+	NetworkModeBridge   = spec.NetworkModeBridge
+)
+
+// ParseNetworkMode resolves a CLI-style string (auto, landlock,
+// bridge, or empty) to a NetworkMode. Returns (Auto, false) for
+// unknown values.
+func ParseNetworkMode(s string) (NetworkMode, bool) { return spec.ParseNetworkMode(s) }
+
+// Option configures a Run invocation.
+type Option = runner.Option
+
+// ResolveInterpreter returns the default interpreter for the given
+// script path: the extension table (.py → python3, .js → node, etc.)
+// or the script's shebang line if the extension isn't mapped.
+// Returns an error with remediation hints when neither path
+// succeeds.
+//
+// Library consumers building manifests programmatically use this to
+// match the CLI's zero-config behavior.
+func ResolveInterpreter(scriptPath string) (string, error) {
+	return spec.ResolveInterpreter(scriptPath)
+}
+
+// PracticalStrictManifest builds the zero-config default manifest for
+// a script: read access only to the script's own directory; no write;
+// no network; no subprocess spawning. The same defaults the CLI
+// applies for `bento run script.py` (no YAML manifest).
+//
+// Pair with [ResolveInterpreter] for full zero-config behavior:
+//
+//	interp, err := bento.ResolveInterpreter("script.py")
+//	m, err := bento.PracticalStrictManifest("script.py", interp)
+//	code, err := bento.Run(ctx, m)
+func PracticalStrictManifest(scriptPath, interpreter string) (*Manifest, error) {
+	return spec.PracticalStrictManifest(scriptPath, interpreter)
+}
+
+// LoadManifest reads a YAML manifest from r, unmarshals it, and runs
+// [Manifest.Validate] in one call. Library consumers loading
+// manifests from disk, databases, HTTP responses, or in-memory
+// strings should prefer this over rolling their own yaml.Unmarshal +
+// Validate pair so they can't forget the validate step.
+//
+// The script path inside the manifest is NOT made absolute by
+// LoadManifest — that's caller-context-dependent (relative to the
+// YAML file, the cwd, or something else entirely). If you need it
+// absolute, post-process: `m.Script = filepath.Join(yamlDir, m.Script)`.
+func LoadManifest(r io.Reader) (*Manifest, error) {
+	if r == nil {
+		return nil, fmt.Errorf("LoadManifest: nil reader")
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("LoadManifest: read: %w", err)
+	}
+	var m Manifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("LoadManifest: yaml: %w", err)
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err // already prefixed with "manifest..."
+	}
+	return &m, nil
+}
+
+// Run executes the script described by m under platform-appropriate
+// sandboxing (bubblewrap on Linux, sandbox-exec on macOS). Returns the
+// script's exit code (0 on success) and an error for setup failures.
+// A non-zero script exit code does NOT produce an error.
+//
+// Cancelling ctx sends SIGTERM to the sandboxed process tree.
+func Run(ctx context.Context, m *Manifest, opts ...Option) (int, error) {
+	return runner.Run(ctx, m, opts...)
+}
+
+// WithLogger enables internal logging (proxy events, bwrap argv, etc.)
+// to the given logger. Pass nil to suppress all internal logs.
+func WithLogger(l Logger) Option { return runner.WithLogger(l) }
+
+// WithStdin connects the script's stdin to r. Defaults to os.Stdin.
+func WithStdin(r io.Reader) Option { return runner.WithStdin(r) }
+
+// WithStdout connects the script's stdout to w. Defaults to os.Stdout.
+func WithStdout(w io.Writer) Option { return runner.WithStdout(w) }
+
+// WithStderr connects the script's stderr to w. Defaults to os.Stderr.
+func WithStderr(w io.Writer) Option { return runner.WithStderr(w) }
+
+// WithTimeout caps the script's wall-clock run time. On expiry, the
+// sandboxed process tree is terminated. Special values:
+//
+//   - Omitted: the default (10 minutes) applies. This catches hangs
+//     without bespoke per-call configuration.
+//   - WithTimeout(0): explicit opt-out, no timeout.
+//   - WithTimeout(d) where d > 0: hard cap at d.
+//
+// When systemd-run is available, RuntimeMaxSec= is also set so a
+// crashed bento parent still terminates the sandbox.
+func WithTimeout(d time.Duration) Option { return runner.WithTimeout(d) }
+
+// WithExtraEnv sets env vars on the script in addition to the
+// manifest's Env passthrough list. Useful for caller-supplied secrets
+// or session values that shouldn't be hard-coded into the manifest.
+func WithExtraEnv(env map[string]string) Option { return runner.WithExtraEnv(env) }
+
+// GrantRequest is what bento hands a [GrantCallback] when a script
+// requests a network host:port that isn't in the manifest's allowlist.
+type GrantRequest = grants.Request
+
+// GrantDecision is what a [GrantCallback] returns.
+type GrantDecision = grants.Decision
+
+// Grant decision constants.
+const (
+	GrantDeny  = grants.DecisionDeny
+	GrantAllow = grants.DecisionAllow
+)
+
+// GrantCallback is the interactive permission decider. When set via
+// [WithGrantCallback], it's consulted on allowlist misses. Must be
+// goroutine-safe. Decisions are cached per Run so a script making
+// 100 requests to the same host prompts once. Decisions do NOT
+// persist across Runs.
+type GrantCallback = grants.Callback
+
+// WithGrantCallback installs a permission callback consulted on
+// network allowlist misses. Without this option, unrecognized hosts
+// are hard-denied.
+//
+// Library consumers without a TTY (servers, GUIs, CI) supply their
+// own — auto-allow with logging, auto-deny, GUI dialog, Slack
+// approval, etc. The CLI's `-i` / `--prompt` flag is a thin wrapper
+// that installs a TTY-backed callback.
+func WithGrantCallback(cb GrantCallback) Option { return runner.WithGrantCallback(cb) }
+
+// WithTelemetry connects the script's fd 3 to w. Scripts that want to
+// return structured data write to fd 3 explicitly (e.g.
+// `os.write(3, b'{...}')` in Python; `echo ... >&3` in bash). Nothing
+// is captured by default — fd 3 is closed in the child unless
+// WithTelemetry sets up the pipe. Recommended convention:
+// line-delimited JSON.
+func WithTelemetry(w io.Writer) Option { return runner.WithTelemetry(w) }
+
+// WithNetworkMode selects how the Linux runner enforces network rules.
+// Defaults to NetworkModeAuto (picks Landlock on kernel ≥ 6.7,
+// Bridge otherwise). NetworkModeBridge requires socat installed.
+// Ignored on macOS.
+func WithNetworkMode(m NetworkMode) Option { return runner.WithNetworkMode(m) }
+
+// =============================================================================
+// Doctor / health checks
+// =============================================================================
+
+// CheckResult is a single line in the doctor report.
+type CheckResult = doctor.CheckResult
+
+// Status is the outcome of a doctor check.
+type Status = doctor.Status
+
+// Doctor check statuses.
+const (
+	StatusPass = doctor.StatusPass
+	StatusWarn = doctor.StatusWarn
+	StatusFail = doctor.StatusFail
+)
+
+// CheckOption configures a Doctor / Checks invocation.
+type CheckOption = doctor.Option
+
+// CustomCheck is a caller-supplied health check.
+type CustomCheck = doctor.Check
+
+// Doctor probes the environment for sandbox prerequisites and writes a
+// human-readable report to w. Returns true iff all checks passed.
+func Doctor(w io.Writer, opts ...CheckOption) bool {
+	return doctor.Format(w, doctor.Run(opts...))
+}
+
+// Checks returns the doctor results without formatting them — useful
+// for programmatic inspection (CI, monitoring) instead of CLI output.
+func Checks(opts ...CheckOption) []CheckResult {
+	return doctor.Run(opts...)
+}
+
+// InitOption configures the package installer loop.
+type InitOption = installer.InitOption
+
+// WithDryRun specifies that bento init should only plan and print
+// commands without modifying the system.
+func WithDryRun() InitOption { return installer.WithDryRun() }
+
+// WithDistroOverride overrides the auto-detected Linux distribution.
+func WithDistroOverride(distro string) InitOption { return installer.WithDistroOverride(distro) }
+
+// WithSkipAppArmor skips generating and loading the AppArmor profile.
+func WithSkipAppArmor() InitOption { return installer.WithSkipAppArmor() }
+
+// Init turns a failing host setup into a passing one: installs
+// missing packages (bubblewrap, socat, proxychains4) and applies the
+// AppArmor profile for bwrap when needed. Detects the distro from
+// /etc/os-release and uses the appropriate package manager.
+//
+// Requires sudo for the install + apparmor_parser steps; sudo will
+// prompt as needed.
+//
+// On macOS this is a no-op (everything is already present).
+func Init(ctx context.Context, w io.Writer, opts ...InitOption) (int, error) {
+	return installer.Init(ctx, w, opts...)
+}
+
+// WithSkipNetwork omits network-dependent doctor checks (libproxychains,
+// Landlock TCP support). Useful in CI environments where these aren't
+// relevant.
+func WithSkipNetwork() CheckOption { return doctor.WithSkipNetwork() }
+
+// WithFailFast stops doctor at the first FAIL.
+func WithFailFast() CheckOption { return doctor.WithFailFast() }
+
+// WithCheck appends a caller-supplied check to the built-in doctor set.
+func WithCheck(c CustomCheck) CheckOption { return doctor.WithCheck(c) }
