@@ -221,6 +221,33 @@ func countOccurrences(args []string, want string) int {
 	return n
 }
 
+func TestShadowReachable(t *testing.T) {
+	cases := []struct {
+		name   string
+		path   string
+		reads  []string
+		writes []string
+		want   bool
+	}{
+		{"parent directly bound (read)", "/home/u/.bashrc", []string{"/home/u"}, nil, true},
+		{"parent directly bound (write)", "/home/u/.bashrc", nil, []string{"/home/u"}, true},
+		{"ancestor bound (read)", "/home/u/.bashrc", []string{"/home"}, nil, true},
+		{"sibling bound only — unreachable", "/home/u/.bashrc", []string{"/home/u/jr-journey"}, nil, false},
+		{"unrelated reads — unreachable", "/home/u/.bashrc", []string{"/etc/services", "/tmp"}, nil, false},
+		{"no binds at all", "/home/u/.bashrc", nil, nil, false},
+		{"exact-match write covers child", "/etc/foo/bar", []string{"/etc/foo"}, nil, true},
+		// Prefix-only match (no separator) must not count: /home/u2 is not
+		// inside /home/u even though one is a string prefix of the other.
+		{"string-prefix-only doesn't count", "/home/u/.bashrc", []string{"/home/u2"}, nil, false},
+	}
+	for _, c := range cases {
+		if got := shadowReachable(c.path, c.reads, c.writes); got != c.want {
+			t.Errorf("%s: shadowReachable(%q, reads=%v, writes=%v) = %v, want %v",
+				c.name, c.path, c.reads, c.writes, got, c.want)
+		}
+	}
+}
+
 func containsAdjacent(args []string, seq ...string) bool {
 	if len(seq) == 0 {
 		return true

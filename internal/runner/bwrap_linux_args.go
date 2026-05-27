@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/internal/spec"
@@ -53,9 +54,9 @@ func compileBwrapArgs(c compileCtx) ([]string, []bwrapSection) {
 	mark("manifest writes")
 	args = appendUserWritePaths(args, c.manifest.Write)
 	mark("mandatory deny (read)")
-	args = appendMandatoryDeny(args)
+	args = appendMandatoryDeny(args, c.manifest.Read, c.manifest.Write)
 	mark("mandatory deny (write)")
-	args = appendMandatoryDenyWrite(args)
+	args = appendMandatoryDenyWrite(args, c.manifest.Read, c.manifest.Write)
 	mark("workspace write protection")
 	args = appendWorkspaceWriteProtection(args, c.manifest.Write)
 	mark("script binding")
@@ -220,23 +221,26 @@ func appendScriptBinding(args []string, scriptAbs string) []string {
 
 // appendMandatoryDeny shadows always-block paths with /dev/null binds.
 // Must run AFTER appendUserReadPaths so the bind takes precedence (last bind wins).
-// Skips non-existent paths (bwrap can't create mount points under a ro parent).
-func appendMandatoryDeny(args []string) []string {
+// Skips non-existent paths (bwrap can't create mount points under a ro parent)
+// AND paths whose parent directory is not reachable via any user read/write bind
+// — those paths are already inaccessible inside the sandbox, and attempting to
+// shadow them would fail bwrap with "Can't create file".
+func appendMandatoryDeny(args, reads, writes []string) []string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return args
 	}
-	return appendShadowedPaths(args, spec.ExpandDangerousPaths(home))
+	return appendShadowedPaths(args, spec.ExpandDangerousPaths(home), reads, writes)
 }
 
 // appendMandatoryDenyWrite shadows persistence/RCE targets (shell rc files, etc.)
 // from the DangerousWriteFiles list.
-func appendMandatoryDenyWrite(args []string) []string {
+func appendMandatoryDenyWrite(args, reads, writes []string) []string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return args
 	}
-	return appendShadowedPaths(args, spec.ExpandDangerousWritePaths(home))
+	return appendShadowedPaths(args, spec.ExpandDangerousWritePaths(home), reads, writes)
 }
 
 // appendWorkspaceWriteProtection shadows dangerous subpaths inside each declared
@@ -253,20 +257,58 @@ func appendWorkspaceWriteProtection(args []string, writes []string) []string {
 				args = append(args, "--ro-bind", dir, dir)
 			}
 		}
-		args = appendShadowedPaths(args, protection.ShadowFiles)
+		// Workspace write protection targets sit *inside* a user-declared write
+		// path; that write path is itself a reachable ancestor by definition.
+		args = appendShadowedPaths(args, protection.ShadowFiles, []string{w}, nil)
 	}
 	return args
 }
 
-// appendShadowedPaths emits --ro-bind /dev/null PATH for each existing path.
-func appendShadowedPaths(args []string, paths []string) []string {
+// appendShadowedPaths emits --ro-bind /dev/null PATH for each existing path
+// whose parent directory is reachable via a user read or write bind. Paths
+// whose parent isn't bound are already inaccessible inside the sandbox — the
+// shadow is unnecessary and would fail bwrap with "Can't create file" because
+// bwrap can't create a mount point under an auto-created tmpfs intermediary.
+func appendShadowedPaths(args []string, paths, reads, writes []string) []string {
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if !shadowReachable(p, reads, writes) {
 			continue
 		}
 		args = append(args, "--ro-bind", "/dev/null", p)
 	}
 	return args
+}
+
+// shadowReachable reports whether the file at p could be accessed inside the
+// sandbox given the user's declared read+write binds. p is reachable iff some
+// bound path Q equals filepath.Dir(p) or is a directory ancestor of it.
+//
+// Without this gate, bento attempts to shadow every dangerous path
+// unconditionally — and on hosts where, say, ~/.bashrc is a symlink whose
+// parent dir isn't user-bound (zero-config ELF binary; Nix home-manager users
+// whose rc files live in /nix/store), the shadow bind fails and the run aborts
+// with a misleading "script tried to open paths" hint that has nothing to do
+// with the actual cause.
+func shadowReachable(p string, reads, writes []string) bool {
+	dir := filepath.Dir(p)
+	check := func(bound string) bool {
+		abs, err := filepath.Abs(bound)
+		if err != nil {
+			return false
+		}
+		if abs == dir {
+			return true
+		}
+		// abs is an ancestor of dir iff dir starts with abs + "/".
+		if strings.HasPrefix(dir, abs+string(filepath.Separator)) {
+			return true
+		}
+		return false
+	}
+	return slices.ContainsFunc(reads, check) || slices.ContainsFunc(writes, check)
 }
 
 func appendBaseEnv(args []string) []string {

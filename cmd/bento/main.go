@@ -141,6 +141,7 @@ func cmdProfile(args []string) int {
 	out := fs.String("out", "", "manifest output path (default: <script>.manifest.yaml)")
 	force := fs.Bool("force", false, "overwrite the output file if it already exists")
 	interpreter := fs.String("interpreter", "", "override auto-detected interpreter")
+	pinInterpreter := fs.Bool("pin-interpreter", false, "write the resolved absolute interpreter path into the manifest (not the $PATH name)")
 	verbose := fs.Bool("verbose", false, "show sandbox argv and other diagnostic logging")
 	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
 	allowExec := fs.Bool("allow-exec", false, "permit subprocess execve during profiling (required to profile bash scripts and build tools)")
@@ -200,10 +201,7 @@ func cmdProfile(args []string) int {
 	outPath = filepath.Clean(outPath)
 	if !*force {
 		if _, err := os.Stat(outPath); err == nil {
-			fmt.Fprintf(os.Stderr, "[bento] %s already exists. To proceed, choose one:\n", outPath)
-			fmt.Fprintf(os.Stderr, "[bento]   bento profile --force %s            # overwrite the existing manifest\n", scriptPath)
-			fmt.Fprintf(os.Stderr, "[bento]   bento profile --out=PATH %s         # write somewhere else\n", scriptPath)
-			fmt.Fprintf(os.Stderr, "[bento]   rm %s && bento profile %s           # delete the existing one first\n", outPath, scriptPath)
+			fmt.Fprintf(os.Stderr, "[bento] %s already exists — re-run with --force to overwrite or --out=PATH to write elsewhere.\n", outPath)
 			return 1
 		}
 	}
@@ -271,6 +269,16 @@ func cmdProfile(args []string) int {
 	}
 
 	rewriteManifestForOutput(result.SuggestedManifest, outPath)
+
+	// --pin-interpreter: replace the unresolved $PATH name (e.g. `python3`)
+	// with the absolute path we resolved at profile time. Makes the manifest
+	// reproducible across hosts at the cost of portability — the teammate's
+	// path won't match, and they'll need to update the manifest.
+	if *pinInterpreter && result.SuggestedManifest != nil && result.SuggestedManifest.Interpreter != "" {
+		if resolved, err := exec.LookPath(result.SuggestedManifest.Interpreter); err == nil {
+			result.SuggestedManifest.Interpreter = resolved
+		}
+	}
 
 	// Populate `env:` from explicit --env names the user passed: profile
 	// can't infer intent for *all* referenced env vars (USER may be a
@@ -347,24 +355,67 @@ func cmdProfile(args []string) int {
 	}
 	// Profile captures the LITERAL write path the script touched. When the
 	// basename looks templated (embedded unix timestamp, ISO date, pid-like
-	// digit run) the next run will write a different filename, the rule won't
-	// match, the write will land on tmpfs, and the user sees a silent loss.
-	// Surface this in the manifest itself so the user is nudged to widen the
-	// rule to the containing directory before committing.
+	// digit run) OR contains the value of an env var the script reads, the
+	// next run will write a different filename, the rule won't match, the
+	// write will land on tmpfs, and the user sees a silent loss. Surface this
+	// in the manifest itself so the user is nudged to widen the rule to the
+	// containing directory before committing.
 	if result.SuggestedManifest != nil {
-		var templated []string
-		for _, p := range result.SuggestedManifest.Write {
-			if templatedBasename(filepath.Base(p)) {
-				templated = append(templated, p)
+		// Values that, if found in a write basename, suggest the path was
+		// interpolated from a runtime input. Sourced from --env and from any
+		// host env var the script source references.
+		var inputValues []string
+		for _, v := range env {
+			if len(v) >= 2 {
+				inputValues = append(inputValues, v)
 			}
 		}
-		if len(templated) > 0 {
-			header.WriteString("#\n# Heads-up: the write path(s) below look templated (embedded timestamp/date/PID).\n")
-			header.WriteString("# `bento profile` captured the LITERAL filename from this run; subsequent runs will\n")
-			header.WriteString("# produce a different name, won't match the rule, and the write will silently land\n")
-			header.WriteString("# on the sandbox tmpfs. Widen to the containing directory before committing:\n")
-			for _, p := range templated {
-				fmt.Fprintf(&header, "#   - %s  →  %s\n", p, filepath.Dir(p))
+		for _, name := range referenced {
+			if v, ok := os.LookupEnv(name); ok && len(v) >= 2 {
+				inputValues = append(inputValues, v)
+			}
+		}
+		// Pick up literal defaults from `os.environ.get("X", "London")` /
+		// `os.getenv("X", "London")` patterns. When CITY isn't set on the
+		// host, the script ran with the default value — and that default
+		// is what showed up in the captured write path.
+		if src, err := os.ReadFile(scriptPath); err == nil {
+			for _, v := range pythonEnvDefaultStrings(src) {
+				if len(v) >= 2 {
+					inputValues = append(inputValues, v)
+				}
+			}
+		}
+		seen := make(map[string]bool)
+		type flag struct{ path, reason string }
+		var flagged []flag
+		add := func(p, reason string) {
+			if seen[p] {
+				return
+			}
+			seen[p] = true
+			flagged = append(flagged, flag{p, reason})
+		}
+		for _, p := range result.SuggestedManifest.Write {
+			base := filepath.Base(p)
+			if templatedBasename(base) {
+				add(p, "embedded timestamp/date/PID")
+				continue
+			}
+			for _, v := range inputValues {
+				if strings.Contains(base, v) {
+					add(p, "contains a referenced env var's value (input-templated)")
+					break
+				}
+			}
+		}
+		if len(flagged) > 0 {
+			header.WriteString("#\n# Heads-up: the write path(s) below look templated — `bento profile` captured\n")
+			header.WriteString("# the LITERAL filename from this run; runs with different inputs will produce a\n")
+			header.WriteString("# different name, won't match the rule, and the write will silently land on the\n")
+			header.WriteString("# sandbox tmpfs. Widen to the containing directory before committing:\n")
+			for _, f := range flagged {
+				fmt.Fprintf(&header, "#   - %s  →  %s   (%s)\n", f.path, filepath.Dir(f.path), f.reason)
 			}
 		}
 	}
@@ -968,7 +1019,7 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 	}
 	m.Args = append(m.Args, scriptArgs...)
 	emitZeroConfigPosture(os.Stderr, scriptPath)
-	warnStrippedShellVars(os.Stderr, scriptPath, interp, env)
+	warnStrippedShellVars(os.Stderr, scriptPath, interp, env, true /* includeIdentity */)
 	// Preflight: zero-config has no network, but a script using urllib/http/
 	// requests/etc. will fail deep inside its stdlib's stack trace — by the
 	// time the post-run hint fires, the user has already scrolled past 30
@@ -1132,7 +1183,7 @@ func warnUnsetEnvAllowlist(w io.Writer, allowlist []string, cliEnv map[string]st
 	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
 }
 
-func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[string]string) {
+func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[string]string, includeIdentity bool) {
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return
@@ -1185,17 +1236,20 @@ func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[strin
 	// they don't reference an env var but they share the same surprise — they
 	// return "sandbox" (bento's synthetic /etc/passwd uid), not the host
 	// user's login name. Trigger the identity note the same way.
-	if isShellInterpreter(interp) {
+	if includeIdentity && isShellInterpreter(interp) {
 		for _, tok := range identityShellTokens(src) {
 			sandboxIdentityHits = appendUniqueStr(sandboxIdentityHits, tok)
 		}
 	}
 	// Python equivalents that reach libc / /etc/passwd directly. Same surprise:
 	// these return "sandbox", not the host user.
-	if isPythonInterpreter(interp) {
+	if includeIdentity && isPythonInterpreter(interp) {
 		for _, tok := range identityPythonTokens(src) {
 			sandboxIdentityHits = appendUniqueStr(sandboxIdentityHits, tok)
 		}
+	}
+	if !includeIdentity {
+		sandboxIdentityHits = nil
 	}
 	if len(refs) == 0 && len(sandboxIdentityHits) == 0 {
 		return
@@ -1385,6 +1439,11 @@ func identityPythonTokens(src []byte) []string {
 // Used by `bento profile` to seed a commented `env:` stub in the generated
 // manifest so the user sees, in the file they just generated, exactly which
 // vars need to be allowlisted.
+//
+// Includes defaulted forms (`os.environ.get("X", "y")`, `${X:-y}`) — at
+// profile time the stub is purely informational; the user gets to see every
+// referenced var and decide which to inherit. The runtime warning path uses
+// the stricter referencedShellVars / referencedPythonEnvVars directly.
 func referencedEnvVarsInScript(scriptPath, interp string) []string {
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
@@ -1393,9 +1452,9 @@ func referencedEnvVarsInScript(scriptPath, interp string) []string {
 	var names []string
 	switch {
 	case isShellInterpreter(interp):
-		names = referencedShellVars(src)
+		names = referencedShellVarsAll(src)
 	case isPythonInterpreter(interp):
-		names = referencedPythonEnvVars(src)
+		names = referencedPythonEnvVarsAll(src)
 	default:
 		return nil
 	}
@@ -1559,6 +1618,30 @@ func noteForwardedFlags(scriptArgs []string) string {
 // suppressed inside them so `echo '$FOO'` and `# uses $FOO` would otherwise
 // be false positives. Heredoc bodies aren't tracked separately; quoted
 // heredocs ('EOF') still leak through but the false-positive rate is low.
+// referencedShellVarsAll is like referencedShellVars but does NOT filter out
+// defaulted forms (${X:-y}, ${X-y}, etc.). Used at profile time for the
+// manifest's commented env: stub — we want to surface every var the script
+// reads, even ones with defaults, so the user can decide which to allowlist.
+func referencedShellVarsAll(src []byte) []string {
+	scrub := reShellSingleQuoted.ReplaceAll(src, []byte(`''`))
+	scrub = reShellLineComment.ReplaceAllFunc(scrub, func(b []byte) []byte {
+		if len(b) > 0 && b[0] != '#' {
+			return b[:1]
+		}
+		return nil
+	})
+	all := uniqueEnvNames(reShellVar.FindAllSubmatch(scrub, -1))
+	assigned := shellAssignedNames(scrub)
+	out := all[:0]
+	for _, n := range all {
+		if assigned[n] {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 func referencedShellVars(src []byte) []string {
 	scrub := reShellSingleQuoted.ReplaceAll(src, []byte(`''`))
 	scrub = reShellLineComment.ReplaceAllFunc(scrub, func(b []byte) []byte {
@@ -1612,6 +1695,79 @@ func shellAssignedNames(src []byte) map[string]bool {
 // and bento's "you forgot to allowlist this" note would be misleading.
 // `os.environ["X"]` (subscript) is always included — it raises KeyError if
 // unset, which is not "handling" the unset case.
+// referencedPythonEnvVarsAll is like referencedPythonEnvVars but also returns
+// defaulted forms (os.environ.get("X", default), os.getenv("X", default)).
+// Used at profile time for the manifest's commented env: stub — at profile
+// time we want to surface every var the script reads, even ones with defaults,
+// so the user can decide which to allowlist.
+// pythonEnvDefaultStrings extracts literal string defaults from
+// `os.environ.get("X", "default")` and `os.getenv("X", "default")` calls.
+// These are the values the script ran with when the host env var was unset
+// — and the values that appear in any path the script interpolated from
+// that var. Used by profile to flag write paths whose basename contains a
+// default value (so the brittleness heads-up fires even when the user never
+// set the var on the host).
+func pythonEnvDefaultStrings(src []byte) []string {
+	var out []string
+	for _, m := range rePyEnvVar.FindAllSubmatch(src, -1) {
+		var tail []byte
+		switch {
+		case len(m[3]) > 0:
+			tail = m[3]
+		case len(m[5]) > 0:
+			tail = m[5]
+		default:
+			continue
+		}
+		if v, ok := firstQuotedString(tail); ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// firstQuotedString returns the first '…' or "…" literal in s. Tolerates a
+// leading comma + whitespace (the regex tail starts right after the first
+// quoted name's closing quote). Doesn't handle escapes or f-strings — those
+// don't show up as simple literal defaults in practice.
+func firstQuotedString(s []byte) (string, bool) {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' || c == '\'' {
+			for j := i + 1; j < len(s); j++ {
+				if s[j] == c {
+					return string(s[i+1 : j]), true
+				}
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func referencedPythonEnvVarsAll(src []byte) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(name string) {
+		if seen[name] || name == "" || shellInternalVar(name) {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, m := range rePyEnvVar.FindAllSubmatch(src, -1) {
+		switch {
+		case len(m[1]) > 0:
+			add(string(m[1]))
+		case len(m[2]) > 0:
+			add(string(m[2]))
+		case len(m[4]) > 0:
+			add(string(m[4]))
+		}
+	}
+	return out
+}
+
 func referencedPythonEnvVars(src []byte) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -2233,7 +2389,10 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 		for _, k := range m.Env {
 			merged[k] = ""
 		}
-		warnStrippedShellVars(os.Stderr, scriptForEnvScan, m.Interpreter, merged)
+		// Manifest-driven run: suppress the sandbox-identity portion. The user
+		// has already accepted the manifest (and the identity note fired during
+		// zero-config / profile); re-printing it on every run is just noise.
+		warnStrippedShellVars(os.Stderr, scriptForEnvScan, m.Interpreter, merged, false /* includeIdentity */)
 	}
 	m.Args = append(m.Args, scriptArgs...)
 
