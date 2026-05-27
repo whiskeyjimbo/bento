@@ -443,6 +443,11 @@ func cmdRun(args []string) int {
 		return 2
 	}
 	scriptArgs := fs.Args()[1:]
+	// Convention: a leading `--` separates bento flags from script args
+	// (`bento run foo.py -- --flag`). The separator itself is not forwarded.
+	if len(scriptArgs) > 0 && scriptArgs[0] == "--" {
+		scriptArgs = scriptArgs[1:]
+	}
 	mode, ok := bento.ParseNetworkMode(*netMode)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "error: unknown --network-mode %q (want auto|landlock|bridge)\n", *netMode)
