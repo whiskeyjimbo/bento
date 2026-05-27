@@ -7,7 +7,12 @@ type Manifest struct {
 	// "bash"). Omit for ELF binaries: when empty, LoadManifest sets it to
 	// Script (the binary is its own interpreter).
 	Interpreter string       `yaml:"interpreter,omitempty" json:"interpreter,omitempty"`
-	Script      string       `yaml:"script" json:"script"`
+	Script      string       `yaml:"script,omitempty" json:"script,omitempty"`
+	// Binary is an alias for Script intended for ELF binaries with no
+	// interpreter: `binary: ./mytool` reads more naturally than
+	// `script: ./mytool` for compiled programs. LoadManifest copies a
+	// non-empty Binary into Script when Script is empty.
+	Binary string `yaml:"binary,omitempty" json:"binary,omitempty"`
 	Args        []string     `yaml:"args,omitempty" json:"args,omitempty"`
 	Env         []string     `yaml:"env,omitempty" json:"env,omitempty"`
 	Read        []string     `yaml:"read,omitempty" json:"read,omitempty"`

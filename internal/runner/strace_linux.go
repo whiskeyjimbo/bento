@@ -19,15 +19,19 @@ func straceAvailable() bool {
 	return err == nil
 }
 
-// wrapWithStrace prepends strace to (exe, args) so openat() calls in the
+// wrapWithStrace prepends strace to (exe, args) so file-open calls in the
 // child tree are recorded to tracePath. The "-qq" suppresses strace's own
-// attach/detach lines; "-f" follows forks; "-e trace=openat,openat2" limits
-// recorded syscalls to file opens.
+// attach/detach lines; "-f" follows forks. Syscall coverage:
+//   - openat/openat2: glibc's open() wrapper and the modern direct API
+//   - creat:          older tools (e.g. GNU tar) still use this directly;
+//                     without it, subprocess writes via tar/cpio are invisible
+//   - open:           a handful of statically-linked or non-glibc binaries
+//                     invoke the legacy syscall
 func wrapWithStrace(exe string, args []string, tracePath string) (string, []string) {
 	out := []string{
 		"-f",
 		"-qq",
-		"-e", "trace=openat,openat2",
+		"-e", "trace=openat,openat2,creat,open",
 		"-o", tracePath,
 		"--",
 		exe,
@@ -67,7 +71,7 @@ func parseStraceOpens(tracePath, scriptAbs string, extraPrefixes []string) ([]FS
 		// Keep /sandbox/* opens only when they're writes — they're how we
 		// detect silent writes into the sandbox tmpfs. Everything else
 		// under /sandbox is bento internals (script, launcher, shim files).
-		if isNoisePath(path, scriptAbs, extraPrefixes) && !(write && isSandboxUserPath(path)) {
+		if isNoisePath(path, scriptAbs, extraPrefixes) && !(write && isSandboxUserPath(path)) && !(write && isUserWriteTarget(path)) {
 			continue
 		}
 		prev, exists := seen[path]
@@ -95,6 +99,43 @@ func parseStraceOpens(tracePath, scriptAbs string, extraPrefixes []string) ([]FS
 	return out, nil
 }
 
+// isUserWriteTarget reports whether a path under /tmp, /var, or /run is a
+// plausible user-chosen write destination (e.g. /tmp/output.json), not a
+// bento-internal sidecar (e.g. /tmp/bento-launcher-*). Used to override the
+// /tmp/etc noise filter for writes — scripts writing to /tmp are common and
+// the manifest needs to declare them.
+func isUserWriteTarget(p string) bool {
+	for _, root := range []string{"/tmp/", "/var/tmp/", "/run/user/"} {
+		if !strings.HasPrefix(p, root) {
+			continue
+		}
+		rest := p[len(root):]
+		if strings.HasPrefix(rest, ".bento-") {
+			return false
+		}
+		for _, sidecar := range bentoSidecarPrefixes {
+			if strings.HasPrefix(rest, sidecar) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// bentoSidecarPrefixes are temp-file basename prefixes bento itself creates
+// under /tmp during a sandbox run. They must not be reported back to the user
+// as "writes to declare in the manifest".
+var bentoSidecarPrefixes = []string{
+	"bento-launcher-",
+	"bento-passwd-",
+	"bento-group-",
+	"bento-proxychains-",
+	"bento-fsshim-",
+	"bento-fsobs-",
+	"bento-fstrace-",
+}
+
 // isSandboxUserPath reports whether a /sandbox/* path is a user-visible file
 // (not a bento internal). Bento internals: /sandbox/script, /sandbox/launcher,
 // /sandbox/proxychains.conf, anything starting with /sandbox/.bento-.
@@ -114,14 +155,39 @@ func isSandboxUserPath(p string) bool {
 }
 
 // extractOpenatAttempt parses a single strace line and returns (path, ok, write, found).
-// `found` is true when the line is an openat/openat2 call we recognize; `ok`
-// is true when the return value is a non-negative fd; `write` is true when the
-// flags argument requests write access. Lines look like:
+// `found` is true when the line is a file-open call we recognize; `ok` is true
+// when the return value is a non-negative fd; `write` is true when the flags
+// argument requests write access. Lines look like:
 //
 //	[pid 1234] openat(AT_FDCWD, "/foo/bar", O_RDONLY) = 3
 //	openat(AT_FDCWD, "/foo/bar", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 4
 //	openat(AT_FDCWD, "/foo/bar", O_RDONLY) = -1 ENOENT (No such file)
+//	creat("/tmp/out.tar", 0666) = 3                        // tools like tar
+//	open("/foo/bar", O_RDONLY) = 3                         // legacy open(2)
 func extractOpenatAttempt(line string) (string, bool, bool, bool) {
+	switch {
+	case strings.Contains(line, "openat("), strings.Contains(line, "openat2("):
+		return parseOpenatLine(line)
+	case strings.Contains(line, "creat("):
+		return parseCreatLine(line)
+	case strings.Contains(line, "open("):
+		// Bare "open(" — guard against false positives from substrings like
+		// "openat(" (already handled above) and "reopen(" by checking that the
+		// preceding char isn't an identifier char.
+		if idx := strings.Index(line, "open("); idx > 0 {
+			c := line[idx-1]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' {
+				return "", false, false, false
+			}
+		}
+		return parseOpenLine(line)
+	}
+	return "", false, false, false
+}
+
+// parseOpenatLine handles openat(AT_FDCWD, "path", flags, ...) — also works
+// for openat2 since the first two arguments are the same shape.
+func parseOpenatLine(line string) (string, bool, bool, bool) {
 	i := strings.Index(line, "openat")
 	if i < 0 {
 		return "", false, false, false
@@ -143,23 +209,76 @@ func extractOpenatAttempt(line string) (string, bool, bool, bool) {
 		return "", false, false, false
 	}
 	path := rest[q1+1 : q1+1+q2]
-	// Flags are after the closing quote of the path: `, O_WRONLY|O_CREAT, ...`
 	afterPath := rest[q1+1+q2+1:]
-	write := false
-	if comma := strings.Index(afterPath, ","); comma >= 0 {
-		flagsEnd := strings.IndexAny(afterPath[comma+1:], ",)")
-		if flagsEnd >= 0 {
-			flags := afterPath[comma+1 : comma+1+flagsEnd]
-			write = strings.Contains(flags, "O_WRONLY") ||
-				strings.Contains(flags, "O_RDWR") ||
-				strings.Contains(flags, "O_CREAT") ||
-				strings.Contains(flags, "O_TRUNC") ||
-				strings.Contains(flags, "O_APPEND")
-		}
+	write := flagsRequestWrite(afterPath)
+	return path, returnOK(line), write, true
+}
+
+// parseCreatLine handles creat("path", mode) — always a write.
+func parseCreatLine(line string) (string, bool, bool, bool) {
+	i := strings.Index(line, "creat(")
+	if i < 0 {
+		return "", false, false, false
 	}
+	rest := line[i+len("creat("):]
+	q1 := strings.Index(rest, "\"")
+	if q1 < 0 {
+		return "", false, false, false
+	}
+	q2 := strings.Index(rest[q1+1:], "\"")
+	if q2 < 0 {
+		return "", false, false, false
+	}
+	path := rest[q1+1 : q1+1+q2]
+	return path, returnOK(line), true, true
+}
+
+// parseOpenLine handles the legacy open("path", flags, ...) syscall.
+func parseOpenLine(line string) (string, bool, bool, bool) {
+	i := strings.Index(line, "open(")
+	if i < 0 {
+		return "", false, false, false
+	}
+	rest := line[i+len("open("):]
+	q1 := strings.Index(rest, "\"")
+	if q1 < 0 {
+		return "", false, false, false
+	}
+	q2 := strings.Index(rest[q1+1:], "\"")
+	if q2 < 0 {
+		return "", false, false, false
+	}
+	path := rest[q1+1 : q1+1+q2]
+	afterPath := rest[q1+1+q2+1:]
+	write := flagsRequestWrite(afterPath)
+	return path, returnOK(line), write, true
+}
+
+// flagsRequestWrite scans the flags argument (the chunk after the path) for
+// any O_* token that implies write access.
+func flagsRequestWrite(afterPath string) bool {
+	comma := strings.Index(afterPath, ",")
+	if comma < 0 {
+		return false
+	}
+	flagsEnd := strings.IndexAny(afterPath[comma+1:], ",)")
+	if flagsEnd < 0 {
+		return false
+	}
+	flags := afterPath[comma+1 : comma+1+flagsEnd]
+	return strings.Contains(flags, "O_WRONLY") ||
+		strings.Contains(flags, "O_RDWR") ||
+		strings.Contains(flags, "O_CREAT") ||
+		strings.Contains(flags, "O_TRUNC") ||
+		strings.Contains(flags, "O_APPEND")
+}
+
+// returnOK parses the "= <n>" tail of a strace line and reports whether the
+// syscall succeeded (fd >= 0).
+func returnOK(line string) bool {
 	eq := strings.LastIndex(line, "= ")
 	if eq < 0 {
-		return "", false, false, false
+		return false
 	}
 	tail := strings.TrimSpace(line[eq+2:])
 	end := 0
@@ -167,13 +286,13 @@ func extractOpenatAttempt(line string) (string, bool, bool, bool) {
 		end++
 	}
 	if end == 0 {
-		return "", false, false, false
+		return false
 	}
 	n, err := strconv.Atoi(tail[:end])
 	if err != nil {
-		return "", false, false, false
+		return false
 	}
-	return path, n >= 0, write, true
+	return n >= 0
 }
 
 // isNoisePath filters sandbox/bwrap/system paths the user wouldn't put in a

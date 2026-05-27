@@ -2,6 +2,8 @@ package spec
 
 import (
 	"fmt"
+	"net"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -33,9 +35,49 @@ func (m *Manifest) Validate() error {
 	return nil
 }
 
+// dnsLabelCharset accepts DNS labels plus underscore (for _dmarc-style records).
+var dnsLabelCharset = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// IsCanonicalHostPattern reports whether h is a valid host or host pattern
+// for a NetworkRule: "*", ".suffix", a literal hostname, or a canonical IP.
+// Non-canonical IP shorthand ("127.1", "2852039166", "0x7f.0.0.1") is
+// rejected — those forms are used to bypass naive allowlist matching, and
+// the runtime proxies refuse them at connect time. Validating up front
+// surfaces the issue when the user writes the manifest, not at first run.
+func IsCanonicalHostPattern(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	if strings.ContainsAny(h, "\x00\r\n%") {
+		return false
+	}
+	if h == "*" {
+		return true
+	}
+	bare := strings.TrimPrefix(h, ".") // ".suffix" wildcard
+	if bare == "" {
+		return false
+	}
+	if strings.HasPrefix(bare, "[") && strings.HasSuffix(bare, "]") {
+		bare = bare[1 : len(bare)-1]
+	}
+	if ip := net.ParseIP(bare); ip != nil {
+		return ip.String() == bare
+	}
+	if !dnsLabelCharset.MatchString(bare) {
+		return false
+	}
+	lastDot := strings.LastIndex(bare, ".")
+	lastLabel := bare[lastDot+1:]
+	return strings.ContainsAny(lastLabel, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
 func validateNetworkRule(r NetworkRule) error {
 	if r.Host == "" {
 		return fmt.Errorf("host: required (e.g. \"example.com\", \".example.com\", \"*\")")
+	}
+	if !IsCanonicalHostPattern(r.Host) {
+		return fmt.Errorf("host: %q is not a valid host pattern (use a hostname, .suffix wildcard, \"*\", or canonical IP — shorthand like \"127.1\" is rejected at runtime by the network proxies)", r.Host)
 	}
 	if r.Port == "" {
 		return fmt.Errorf("port: required (e.g. \"443\", \"8000-9000\", \"*\")")

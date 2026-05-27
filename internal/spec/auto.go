@@ -85,7 +85,7 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 	if ext != "" {
 		return "", fmt.Errorf("no interpreter mapped for %q files; use --interpreter or add a shebang line", ext)
 	}
-	return "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); use --interpreter, or if this is a compiled binary, make sure it has the executable bit set", scriptPath)
+	return "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); pass `bento run --interpreter=BIN %s` (or `bento profile --interpreter=BIN ...`), or if this is a compiled binary, make sure it has the executable bit set", scriptPath, scriptPath)
 }
 
 // isExecutableELF reports whether the file at path is an ELF binary with the

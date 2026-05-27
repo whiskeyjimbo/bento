@@ -313,7 +313,7 @@ func filterShimOpens(opens []FSOpen, scriptAbs, interp string) []FSOpen {
 		if !filepath_IsAbs(e.Path) {
 			continue
 		}
-		if isNoisePath(e.Path, scriptAbs, extra) {
+		if isNoisePath(e.Path, scriptAbs, extra) && !(e.Write && isUserWriteTarget(e.Path)) {
 			continue
 		}
 		out = append(out, e)

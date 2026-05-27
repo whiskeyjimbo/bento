@@ -44,8 +44,11 @@ The `bento doctor` step confirms the host has the sandboxing primitives
 bento expects; if it reports something missing (e.g. an AppArmor profile
 on Ubuntu 24.04+), `bento setup` will apply the fix where it can.
 
-The examples below assume `bento` is on your `$PATH`; substitute
-`./bin/bento` if you skipped the install step.
+> **Path note.** All examples below say `bento`, which assumes you ran
+> Option B (`sudo install bin/bento /usr/local/bin/`). If you skipped
+> the install and are running from a clone, every snippet should be
+> read as `./bin/bento` — `bento: command not found` is the first
+> error first-time users hit.
 
 ## Basic Usage
 
@@ -60,13 +63,18 @@ $ bento doctor
 [PASS] mandatory-deny paths — 20 read-protect, 9 write-protect
 all checks passed
 
-# 1. Generate a manifest from a trial run (script's directory is auto-read;
-#    network is permissive and observed so you can trim it).
+# 1. Generate a manifest from a trial run. During profiling:
+#      - the script's directory is read-accessible
+#      - the script's directory and /tmp are write-accessible
+#      - network is permissive; every host:port is observed
+#    The generated manifest contains only what the script actually used.
 $ bento profile ./fetch.py
 [bento] profiling "./fetch.py" (permissive network)...
 [bento] observed network:
   Host                              Port    Count
   api.example.com                   443     2
+[bento] observed filesystem writes:
+  /tmp/fetch-out.json
 [bento] wrote fetch.manifest.yaml — review and trim before running with `bento run`
 
 # 2. Inspect what bento will actually enforce.
@@ -91,6 +99,14 @@ $ bento run --network-mode=bridge fetch.yaml       # kernel < 6.7 fallback
 $ bento run --prompt fetch.yaml                    # interactive allowlist on misses
 $ bento doctor --skip-network --fail-fast          # CI-friendly
 
+# Passing args to the script/binary: anything AFTER the manifest/script path
+# is forwarded as argv to the sandboxed program. bento flags must come BEFORE
+# the path (Go's flag package stops parsing at the first non-flag):
+$ bento run --env API=$API check.yaml arg1 arg2    # bento gets --env, script gets arg1 arg2
+$ bento run check.yaml --env CITY=Tokyo            # ERROR: bento now refuses this — see note below
+$ bento run check.yaml -- --some-script-flag       # explicit `--` disambiguates if you need to
+                                                   # pass a flag-shaped value to the script
+
 # Bash and other shell scripts: zero-config blocks subprocess execve, so
 # any script that runs `ls`, `grep`, `curl`, etc. (i.e. almost every bash
 # script) will fail with "Operation not permitted" until you opt in.
@@ -110,24 +126,74 @@ $ bento profile --help                             # full flag list for profile
   env. A script that reads `$DATABASE_URL` will get an empty string and
   silently misbehave. To inherit specific vars, list them in the
   manifest's `env:` allowlist; to add new ones, use `--env KEY=VALUE` or
-  `WithExtraEnv`.
-- Inside the sandbox `cwd` is `/sandbox` and `$HOME` is `/sandbox`. Scripts
-  that hard-code `$PWD` against the host directory will see a different
-  path; reference the script's own location (`__file__`, `$0`) instead.
-- The script is mounted at `/sandbox/script`; declared `read` and `write`
-  paths keep their host paths.
-- Zero-config (`bento run script.py`) gives the script no network at all.
-  If a `urlopen()` or `curl` call fails with DNS errors, you almost
-  certainly want `bento profile` to record the hosts and then run under
-  the trimmed manifest.
-- Zero-config also blocks subprocess execve. A `subprocess.run([...])`
+  `WithExtraEnv`. If a manifest's `env:` entry isn't set on the host,
+  bento now prints a `[bento] note` so you don't burn an hour debugging
+  an empty string.
+- **Inside the sandbox, the user is `sandbox` (not your host login).** bento
+  mounts a synthetic `/etc/passwd` so libc lookups (`getpwuid`, `os.getlogin`,
+  `id`, `whoami`) succeed inside an isolated uid namespace — but the name they
+  return is `sandbox`, not your real username. Scripts that template `$USER`
+  or `whoami` into output, paths, or audit logs will see `sandbox`. `$USER`
+  and `$LOGNAME` are stripped from the env entirely; `--env` will *not* let
+  you set them. If you need the host login name for a downstream call, pass
+  it explicitly: `bento run --env LOGIN=$USER fetch.yaml`. (bento warns when
+  it spots `$USER`, `$LOGNAME`, `whoami`, or `id -un` in a shell or Python
+  script's source.)
+- **The script runs at `/sandbox/script`, not at its host path.** Inside
+  the sandbox `cwd` is `/sandbox` and `$HOME` is `/sandbox`. Tracebacks
+  and `__file__` will reference `/sandbox/script` — bento has not moved
+  your file; it's bind-mounted there. Declared `read`/`write` paths keep
+  their original host paths. Scripts that hard-code `$PWD` against the
+  host directory will see a different path; reference the script's own
+  location (`__file__`, `$0`) instead. For multi-file scripts
+  (`from utils import x`, `require('./utils')`), bento sets `PYTHONPATH`
+  / `NODE_PATH` to the script's host directory so imports of sibling
+  files Just Work — provided that directory is in `read:` (zero-config
+  always includes it).
+- **Filesystem isolation is deny-by-default and is `--ro-bind` for
+  reads, `--bind` for writes.** A path not listed in `read:` or `write:`
+  is invisible inside the sandbox even if it exists on disk. Zero-config
+  grants read access to the script's directory only; nothing else. The
+  conventional shape is to list narrow, explicit paths rather than
+  blanket `$HOME` or `/`.
+- **Network on three values:**
+  - `network:` field omitted entirely (or `nil` in Go) → no network
+    at all (zero-config default). DNS will fail and most clients
+    surface `Temporary failure in name resolution`.
+  - `network: { rules: [] }` → also "no network", but explicit. Same
+    runtime behaviour, less ambiguity in YAML reviews.
+  - `network: { rules: [{host: ..., port: ...}] }` → connect is
+    proxied and matched per-rule. Anything not matching the rules is
+    refused at the proxy.
+
+  If `urlopen()` or `curl` fails with DNS errors, you almost certainly
+  want `bento profile` to record the hosts and then run under the
+  trimmed manifest.
+- **Zero-config blocks subprocess `execve`.** A `subprocess.run([...])`
   or backtick exec will fail with `Operation not permitted`. To allow
   subprocesses, set `allow_exec: true` in the manifest (or use
-  `bento profile --allow-exec <script>` to generate one).
-- Mandatory-deny shadows file *contents*, not file *existence*. A script
-  with broad read access can `os.listdir("$HOME")` and see the names of
-  protected files (`.ssh/`, `.bashrc`, `.aws/credentials`), but opening
-  them returns `Permission denied`. Don't store secrets in filenames.
+  `bento profile --allow-exec <script>` to generate one). The seccomp
+  layer is all-or-nothing: there is no per-binary allowlist today.
+- **`exec: [...]` is the deprecated legacy field, and any non-empty
+  list is silently treated as `allow_exec: true`** — the entries are
+  not enforced. Don't copy this from older examples expecting per-binary
+  behavior. `bento run`/`validate` warn when they load it.
+- **Mandatory-deny shadows file *contents*, not file *existence*.** A
+  script with broad read access can `os.listdir("$HOME")` and see the
+  names of protected files (`.ssh/`, `.bashrc`, `.aws/credentials`),
+  but opening them returns `Permission denied`. Don't store secrets in
+  filenames.
+- **`bento profile` is permissive on network AND writes during the
+  trial run** — it allows everything outbound, allows writes under the
+  script's directory and `/tmp`, and records what the script actually
+  used. The generated manifest contains only the observed network and
+  write targets; review and trim. Other isolation (mandatory-deny,
+  exec block, limits) stays in place during profiling.
+- **`bento validate` exits non-zero on issues.** Missing script file,
+  unresolvable interpreter, missing `read:` paths, and non-canonical
+  network hosts (e.g. `127.1`) all surface as `ISSUE(S) FOUND` and a
+  non-zero exit. Wire it into pre-commit / CI to catch broken manifests
+  before they ship.
 - If you're just trying bento out, you can run the local build directly
   without installing: after `make build`, use `./bin/bento doctor` etc.
   in place of `bento` in the snippets below.

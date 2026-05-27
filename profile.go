@@ -30,13 +30,17 @@ type NetworkObservation struct {
 type ProfileResult struct {
 	ExitCode          int
 	Observations      []NetworkObservation // sorted by Host, Port
-	FSObservations    []string             // host paths the script opened successfully (deduped, sorted, noise-filtered)
+	FSObservations    []string             // host paths the script opened for read, deduped/sorted/noise-filtered
+	FSWrites          []string             // host paths the script opened for write, deduped/sorted/noise-filtered
 	DeniedAttempts    []string             // host paths the script tried to open but were blocked (e.g. DangerousFiles)
 	SuggestedManifest *Manifest
 }
 
-// Profile runs the script in permissive-network mode: every outbound host:port
-// is allowed AND recorded. Other isolation (filesystem, exec, limits) stays in place.
+// Profile runs the script in permissive-network and permissive-write mode:
+// every outbound host:port is allowed AND recorded, and the script's directory
+// plus /tmp are bound writable so realistic "fetch and save" scripts complete
+// instead of crashing on Read-only-file-system errors. Other isolation
+// (mandatory-deny, exec, limits) stays in place.
 func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, error) {
 	obs := &observations{counts: make(map[obsKey]int)}
 	cb := func(req GrantRequest) GrantDecision {
@@ -50,6 +54,15 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 	// Non-nil but empty Network routes every connect through the grant callback.
 	profile := *m
 	profile.Network = &spec.NetworkPerm{Rules: nil}
+	// Permissive writes during profile: the script's directory and /tmp.
+	// Mandatory-deny still shadows credentials and shell rc files.
+	profile.Write = append([]string{}, m.Write...)
+	if scriptDir := filepath.Dir(m.Script); scriptDir != "" && scriptDir != "/" {
+		profile.Write = appendUnique(profile.Write, scriptDir)
+	}
+	if _, err := os.Stat("/tmp"); err == nil {
+		profile.Write = appendUnique(profile.Write, "/tmp")
+	}
 
 	runOpts := append([]Option{
 		WithGrantCallback(cb),
@@ -57,26 +70,75 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 	}, opts...)
 	code, err := Run(ctx, &profile, runOpts...)
 
-	fsRead, denied := partitionFSObservations(fsOpens, m)
+	fsRead, fsWrite, denied := partitionFSObservations(fsOpens, m)
 	result := &ProfileResult{
 		ExitCode:          code,
 		Observations:      obs.list(),
 		FSObservations:    fsRead,
+		FSWrites:          fsWrite,
 		DeniedAttempts:    denied,
-		SuggestedManifest: synthesizeSuggested(m, obs.list(), fsRead),
+		SuggestedManifest: synthesizeSuggested(m, obs.list(), fsRead, fsWrite),
 	}
 	return result, err
 }
 
+// broadWriteParents lists directories that are too widely shared to grant
+// blanket write access to. If a script wrote `/tmp/out.json`, narrowing to
+// `/tmp` would give the script write access to every other tenant on /tmp.
+// For these parents we keep the leaf file path; everywhere else we collapse
+// siblings to the parent directory (typical workspace pattern).
+func isBroadWriteParent(dir string) bool {
+	switch dir {
+	case "/", "/tmp", "/var/tmp", "/var", "/etc", "/opt", "/srv", "/mnt", "/media", "/run", "/usr", "/home":
+		return true
+	}
+	if home, _ := os.UserHomeDir(); home != "" && dir == home {
+		return true
+	}
+	return false
+}
+
+// narrowWritePaths picks the smallest declaration that still covers the
+// observed writes: leaf paths when the parent is broad (avoids over-granting
+// /tmp), parent dirs otherwise (scripts often rewrite siblings).
+func narrowWritePaths(writes []string) []string {
+	set := make(map[string]struct{})
+	for _, p := range writes {
+		dir := filepath.Dir(p)
+		if isBroadWriteParent(dir) {
+			set[p] = struct{}{}
+		} else {
+			set[dir] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func appendUnique(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
+}
+
 // partitionFSObservations splits the runner's open list into:
-//   - read: successful opens worth suggesting (not covered, not dangerous, not the script,
-//     and not interpreter library / locale / loader noise that bento auto-binds)
+//   - read: successful read opens worth suggesting (not covered, not dangerous,
+//     not the script, and not interpreter library / locale / loader noise that
+//     bento auto-binds)
+//   - write: successful write opens worth suggesting (same filters)
 //   - denied: paths the script tried to open but bento's mandatory-deny list
 //     blocks (regardless of success — even a "successful" open of a /dev/null
 //     shadow is signal that the script tried to read a sensitive file)
-func partitionFSObservations(opens []FSOpen, m *Manifest) (read, denied []string) {
+func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, denied []string) {
 	if len(opens) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	dangerous := make(map[string]struct{})
 	for _, p := range spec.ExpandDangerousPaths(homeDir()) {
@@ -100,13 +162,17 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, denied []string
 		if isUserToolNoise(e.Path) {
 			continue
 		}
+		if e.Write {
+			write = append(write, e.Path)
+			continue
+		}
 		// Keep paths covered by the user's read grants: profile uses these
 		// to tighten broad grants (e.g. `read: [./data]`) into the specific
 		// files that were actually opened, so the generated manifest doesn't
 		// over-grant.
 		read = append(read, e.Path)
 	}
-	return read, denied
+	return read, write, denied
 }
 
 // isUserToolNoise reports whether a path is a known-noisy user-tool artifact
@@ -253,7 +319,7 @@ func (o *observations) list() []NetworkObservation {
 // actually used. When the observer recorded nothing (script did no file IO,
 // or the observer backend was unavailable), we keep the conservative
 // script-directory grant from the original manifest.
-func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsPaths []string) *Manifest {
+func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, fsWrites []string) *Manifest {
 	out := *original
 	rules := make([]NetworkRule, 0, len(obs))
 	for _, o := range obs {
@@ -270,8 +336,16 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsPaths [
 	} else {
 		out.Network = &NetworkPerm{Rules: rules}
 	}
-	if len(fsPaths) > 0 {
-		out.Read = append([]string{}, fsPaths...)
+	if len(fsReads) > 0 {
+		out.Read = append([]string{}, fsReads...)
+	}
+	if len(fsWrites) > 0 {
+		// Default: use the leaf file path. Suggesting the parent directory
+		// makes the manifest brittle and, when the parent is broad (/tmp,
+		// $HOME, /var/tmp), grants far more than the script actually used.
+		// Group leaves by parent only when the parent is a clearly
+		// workspace-local directory (not a broad system-shared path).
+		out.Write = narrowWritePaths(fsWrites)
 	}
 	return &out
 }

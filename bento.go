@@ -207,6 +207,17 @@ func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 	}
 	m.Exec = nil
 
+	// `binary: ./tool` is a more natural alias for `script: ./tool` when
+	// the target is a compiled ELF binary. Resolve into Script so the rest
+	// of the codebase only deals with one field.
+	if m.Script == "" && m.Binary != "" {
+		m.Script = m.Binary
+	}
+	if m.Binary != "" && m.Script != m.Binary {
+		return nil, fmt.Errorf("LoadManifest: cannot set both `script:` and `binary:` to different values")
+	}
+	m.Binary = ""
+
 	if cfg.baseDir != "" {
 		if m.Script != "" && !filepath.IsAbs(m.Script) {
 			m.Script = filepath.Join(cfg.baseDir, m.Script)
@@ -277,6 +288,10 @@ func WithTimeout(d time.Duration) Option { return runner.WithTimeout(d) }
 
 // WithExtraEnv sets env vars on the script in addition to the manifest's Env list.
 func WithExtraEnv(env map[string]string) Option { return runner.WithExtraEnv(env) }
+
+// WithEnv is an alias for [WithExtraEnv] that matches the CLI's `--env` flag
+// name. Library callers can use either; both add to the manifest's Env list.
+func WithEnv(env map[string]string) Option { return runner.WithExtraEnv(env) }
 
 // GrantRequest is what bento hands a [GrantCallback] when a script requests
 // a network host:port that isn't in the manifest's allowlist.

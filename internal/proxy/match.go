@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -10,34 +9,14 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// dnsLabelCharset accepts DNS labels plus underscore (for _dmarc-style records).
-var dnsLabelCharset = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-// isValidHost rejects allowlist-bypass vectors: control chars, "%" (IPv6 zone
-// IDs), non-canonical IP literals ("127.1", "2852039166", "0x7f.0.0.1"), and
-// non-DNS-shaped strings. Stricter than canonicalize-then-compare.
+// isValidHost rejects allowlist-bypass vectors at connect time. Concrete
+// hosts only (no "*" or ".suffix" — those are rule patterns, not connect
+// targets). Shares its canonicalization logic with spec.IsCanonicalHostPattern.
 func isValidHost(h string) bool {
-	if h == "" || len(h) > 253 {
+	if h == "" || h == "*" || strings.HasPrefix(h, ".") {
 		return false
 	}
-	if strings.ContainsAny(h, "\x00\r\n%") {
-		return false
-	}
-	bare := h
-	if strings.HasPrefix(bare, "[") && strings.HasSuffix(bare, "]") {
-		bare = bare[1 : len(bare)-1] // ParseIP doesn't accept brackets
-	}
-	if ip := net.ParseIP(bare); ip != nil {
-		// Require canonical form — reject "::01", which ParseIP would normalize.
-		return ip.String() == bare
-	}
-	// RFC 1123: last label must contain a letter, which also rejects inet_aton bypasses.
-	if !dnsLabelCharset.MatchString(bare) {
-		return false
-	}
-	lastDot := strings.LastIndex(bare, ".")
-	lastLabel := bare[lastDot+1:]
-	return strings.ContainsAny(lastLabel, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	return spec.IsCanonicalHostPattern(h)
 }
 
 // normalizeHost lowercases and strips trailing dot. IP literals pass through.

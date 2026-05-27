@@ -62,6 +62,7 @@ func compileBwrapArgs(c compileCtx) ([]string, []bwrapSection) {
 	args = appendScriptBinding(args, c.scriptAbs)
 	mark("env")
 	args = appendBaseEnv(args)
+	args = appendInterpreterSearchEnv(args, c.interp, c.scriptAbs)
 	args = appendUserEnv(args, c.manifest.Env)
 	args = appendExtraEnv(args, c.extraEnv)
 	args = appendFDLimitEnv(args, c.manifest.Limits)
@@ -271,6 +272,31 @@ func appendBaseEnv(args []string) []string {
 	)
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		args = append(args, "--setenv", "BENTO_HOST_HOME", home)
+	}
+	return args
+}
+
+// appendInterpreterSearchEnv sets language-specific module search paths so that
+// `from utils import x` (Python) and `require('./utils')` (Node) can find sibling
+// files next to the script. The script is bind-mounted at /sandbox/script — a
+// single file — so the interpreter's default "look beside the script" search
+// finds only itself. We point the interpreter at the script's host directory
+// instead; that directory is bind-mounted at its host path whenever it appears
+// in the manifest's read list (zero-config always includes it).
+func appendInterpreterSearchEnv(args []string, interp, scriptAbs string) []string {
+	if scriptAbs == "" {
+		return args
+	}
+	dir := filepath.Dir(scriptAbs)
+	if dir == "" || dir == "/" {
+		return args
+	}
+	base := filepath.Base(interp)
+	switch {
+	case strings.HasPrefix(base, "python"):
+		args = append(args, "--setenv", "PYTHONPATH", dir)
+	case base == "node":
+		args = append(args, "--setenv", "NODE_PATH", dir)
 	}
 	return args
 }

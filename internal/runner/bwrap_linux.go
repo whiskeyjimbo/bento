@@ -388,7 +388,10 @@ func spawnHostSocat(aux *auxiliary, socat, unixPath, tcpAddr string, cfg *Config
 		"UNIX-LISTEN:"+unixPath+",fork,reuseaddr",
 		"TCP:"+tcpAddr+",keepalive,keepidle=10,keepintvl=5,keepcnt=3",
 	)
-	if cfg.Logger != nil {
+	// Only log at --verbose; the bridge plumbing is normal operation, not
+	// something the user needs to see on a healthy run. Without the gate
+	// these two `[socat-host]` lines look error-shaped to first-time users.
+	if cfg.Logger != nil && cfg.Verbose {
 		cfg.Logger.Printf("[socat-host] %s ↔ %s", unixPath, tcpAddr)
 	}
 	if err := cmd.Start(); err != nil {
