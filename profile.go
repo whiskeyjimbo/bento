@@ -32,7 +32,9 @@ type ProfileResult struct {
 	Observations      []NetworkObservation // sorted by Host, Port
 	FSObservations    []string             // host paths the script opened for read, deduped/sorted/noise-filtered
 	FSWrites          []string             // host paths the script opened for write, deduped/sorted/noise-filtered
+	TmpfsWrites       []string             // /sandbox/* writes that landed on tmpfs (no host destination)
 	DeniedAttempts    []string             // host paths the script tried to open but were blocked (e.g. DangerousFiles)
+	BlockedReads      []string             // host paths the script tried to read but were not bind-mounted (deny-by-default; safe to add to `read:` if intentional)
 	SuggestedManifest *Manifest
 }
 
@@ -70,14 +72,16 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 	}, opts...)
 	code, err := Run(ctx, &profile, runOpts...)
 
-	fsRead, fsWrite, denied := partitionFSObservations(fsOpens, m)
+	fsRead, fsWrite, tmpfs, denied, blocked := partitionFSObservations(fsOpens, m)
 	result := &ProfileResult{
 		ExitCode:          code,
 		Observations:      obs.list(),
 		FSObservations:    fsRead,
 		FSWrites:          fsWrite,
+		TmpfsWrites:       tmpfs,
 		DeniedAttempts:    denied,
-		SuggestedManifest: synthesizeSuggested(m, obs.list(), fsRead, fsWrite),
+		BlockedReads:      blocked,
+		SuggestedManifest: synthesizeSuggested(m, obs.list(), fsRead, fsWrite, blocked),
 	}
 	return result, err
 }
@@ -136,9 +140,9 @@ func appendUnique(s []string, v string) []string {
 //   - denied: paths the script tried to open but bento's mandatory-deny list
 //     blocks (regardless of success — even a "successful" open of a /dev/null
 //     shadow is signal that the script tried to read a sensitive file)
-func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, denied []string) {
+func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, tmpfs, denied, blockedReads []string) {
 	if len(opens) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	dangerous := make(map[string]struct{})
 	for _, p := range spec.ExpandDangerousPaths(homeDir()) {
@@ -151,7 +155,32 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, denied [
 			continue
 		}
 		if !e.OK {
-			continue // failed opens outside the deny list are noise
+			// Failed opens outside the deny list: usually noise (interpreter
+			// probes, locale lookups, /proc misses), but sometimes the script
+			// genuinely tried to read a host path that isn't bind-mounted
+			// (e.g. /etc/shells from a bash script). After the same noise
+			// filters used for successful opens, surface what remains as
+			// "blocked reads" so the user can opt in to declaring them.
+			if e.Path == m.Script {
+				continue
+			}
+			if e.Write {
+				continue // tmpfs/EROFS noise; we already report tmpfs writes
+			}
+			if isInterpreterDep(e.Path, interpRoot) {
+				continue
+			}
+			if isUserToolNoise(e.Path) {
+				continue
+			}
+			if isSandboxTmpfsPath(e.Path) {
+				continue
+			}
+			if isSandboxToolingProbe(e.Path) {
+				continue
+			}
+			blockedReads = append(blockedReads, e.Path)
+			continue
 		}
 		if e.Path == m.Script {
 			continue
@@ -160,6 +189,14 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, denied [
 			continue
 		}
 		if isUserToolNoise(e.Path) {
+			continue
+		}
+		// /sandbox/* paths are inside the sandbox tmpfs (the script's cwd is
+		// /sandbox). A write there has no host destination and can't go into a
+		// suggested manifest as-is — the path would dangle. Surface it
+		// separately so the user can see what was lost and pick a real target.
+		if e.Write && isSandboxTmpfsPath(e.Path) {
+			tmpfs = append(tmpfs, e.Path)
 			continue
 		}
 		if e.Write {
@@ -172,7 +209,79 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, write, denied [
 		// over-grant.
 		read = append(read, e.Path)
 	}
-	return read, write, denied
+	blockedReads = dropPathSearchNoise(blockedReads)
+	return read, write, tmpfs, denied, blockedReads
+}
+
+// isSandboxToolingProbe reports whether a failed-open path is a lookup for
+// one of bento's own host tools (bwrap, bento-launcher, the fsshim, socat,
+// proxychains). These probes come from bento's own startup walking the host
+// $PATH; they're never something a user script intentionally tried to read.
+func isSandboxToolingProbe(p string) bool {
+	switch filepath.Base(p) {
+	case "bwrap", "bento-launcher", "fsshim.so", "socat", "proxychains4", "libproxychains.so.4":
+		return true
+	}
+	return false
+}
+
+// dropPathSearchNoise removes the characteristic noise of a shell's PATH
+// lookup for a command that isn't on the host: the same basename probed
+// across several `/.../bin/` directories, all failing. These reads are the
+// shell's, not the script's; keeping them clutters the manifest with paths
+// the user never intended to declare. Heuristic: if a basename appears under
+// >= 2 different `*/bin/` parents, every probe of that basename is noise.
+func dropPathSearchNoise(paths []string) []string {
+	binParents := make(map[string]map[string]struct{}) // basename -> set of bin dirs
+	for _, p := range paths {
+		dir := filepath.Dir(p)
+		if filepath.Base(dir) != "bin" {
+			continue
+		}
+		base := filepath.Base(p)
+		set := binParents[base]
+		if set == nil {
+			set = make(map[string]struct{})
+			binParents[base] = set
+		}
+		set[dir] = struct{}{}
+	}
+	drop := make(map[string]struct{})
+	for base, dirs := range binParents {
+		if len(dirs) >= 2 {
+			drop[base] = struct{}{}
+		}
+	}
+	if len(drop) == 0 {
+		return paths
+	}
+	out := paths[:0]
+	for _, p := range paths {
+		if _, skip := drop[filepath.Base(p)]; skip && filepath.Base(filepath.Dir(p)) == "bin" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// isSandboxTmpfsPath reports whether a path is a user-visible write under
+// /sandbox/. These can't appear in a host manifest — /sandbox is the in-sandbox
+// cwd, not a host directory — so we strip them from the suggested manifest and
+// surface them as "writes that landed on tmpfs" to the user.
+func isSandboxTmpfsPath(p string) bool {
+	if !strings.HasPrefix(p, spec.SandboxRoot+"/") {
+		return false
+	}
+	switch p {
+	case spec.SandboxScriptPath, spec.SandboxLauncherPath, spec.SandboxProxychainsConfPath:
+		return false
+	}
+	rest := p[len(spec.SandboxRoot)+1:]
+	if strings.HasPrefix(rest, ".bento-") {
+		return false
+	}
+	return true
 }
 
 // isUserToolNoise reports whether a path is a known-noisy user-tool artifact
@@ -319,7 +428,7 @@ func (o *observations) list() []NetworkObservation {
 // actually used. When the observer recorded nothing (script did no file IO,
 // or the observer backend was unavailable), we keep the conservative
 // script-directory grant from the original manifest.
-func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, fsWrites []string) *Manifest {
+func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, fsWrites, blockedReads []string) *Manifest {
 	out := *original
 	rules := make([]NetworkRule, 0, len(obs))
 	for _, o := range obs {
@@ -336,8 +445,19 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, 
 	} else {
 		out.Network = &NetworkPerm{Rules: rules}
 	}
-	if len(fsReads) > 0 {
-		out.Read = append([]string{}, fsReads...)
+	// Combine successful reads and blocked-read attempts: both belong in the
+	// generated `read:` list. Without blockedReads here, scripts that touched
+	// paths outside the script directory (e.g. /etc/shells from a bash script)
+	// would silently fail on the first `bento run` because profile only
+	// records successful opens. Auto-including blocked reads matches how
+	// writes are handled — the user reviews and trims.
+	merged := append([]string{}, fsReads...)
+	for _, p := range blockedReads {
+		merged = appendUnique(merged, p)
+	}
+	if len(merged) > 0 {
+		sort.Strings(merged)
+		out.Read = merged
 	}
 	if len(fsWrites) > 0 {
 		// Default: use the leaf file path. Suggesting the parent directory

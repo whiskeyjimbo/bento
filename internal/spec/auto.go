@@ -47,9 +47,29 @@ func WithDisableShebang() ResolveOption {
 	return func(c *resolveConfig) { c.disableShebang = true }
 }
 
+// InterpreterSource records *how* ResolveInterpreterDetailed picked the
+// interpreter. The CLI uses this to warn when the inference was extension-only
+// (so the user knows bento guessed and how to override).
+type InterpreterSource string
+
+const (
+	InterpreterFromExtension InterpreterSource = "extension"
+	InterpreterFromShebang   InterpreterSource = "shebang"
+	InterpreterFromELF       InterpreterSource = "elf"
+	InterpreterFromCustom    InterpreterSource = "custom"
+)
+
 // ResolveInterpreter picks an interpreter via (1) custom mappings, (2) the global
 // extension table, (3) the script's shebang line.
 func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error) {
+	interp, _, err := ResolveInterpreterDetailed(scriptPath, opts...)
+	return interp, err
+}
+
+// ResolveInterpreterDetailed is ResolveInterpreter plus the source of the
+// pick (extension table, shebang, ELF, custom mapping). Callers that want to
+// warn on extension-only inference use this variant.
+func ResolveInterpreterDetailed(scriptPath string, opts ...ResolveOption) (string, InterpreterSource, error) {
 	cfg := &resolveConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -59,7 +79,7 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 
 	if cfg.customExtensions != nil {
 		if interp, ok := cfg.customExtensions[ext]; ok {
-			return interp, nil
+			return interp, InterpreterFromCustom, nil
 		}
 	}
 
@@ -67,25 +87,25 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 	interp, ok := extensionInterpreters[ext]
 	extensionInterpretersMu.RUnlock()
 	if ok {
-		return interp, nil
+		return interp, InterpreterFromExtension, nil
 	}
 
 	if !cfg.disableShebang {
 		if shebang, ok := readShebang(scriptPath); ok {
-			return shebang, nil
+			return shebang, InterpreterFromShebang, nil
 		}
 	}
 	if isExecutableELF(scriptPath) {
 		abs, err := filepath.Abs(scriptPath)
 		if err == nil {
-			return abs, nil
+			return abs, InterpreterFromELF, nil
 		}
-		return scriptPath, nil
+		return scriptPath, InterpreterFromELF, nil
 	}
 	if ext != "" {
-		return "", fmt.Errorf("no interpreter mapped for %q files; use --interpreter or add a shebang line", ext)
+		return "", "", fmt.Errorf("no interpreter mapped for %q files; use --interpreter or add a shebang line", ext)
 	}
-	return "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); pass `bento run --interpreter=BIN %s` (or `bento profile --interpreter=BIN ...`), or if this is a compiled binary, make sure it has the executable bit set", scriptPath, scriptPath)
+	return "", "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); pass `bento run --interpreter=BIN %s` (or `bento profile --interpreter=BIN ...`), or if this is a compiled binary, make sure it has the executable bit set", scriptPath, scriptPath)
 }
 
 // isExecutableELF reports whether the file at path is an ELF binary with the

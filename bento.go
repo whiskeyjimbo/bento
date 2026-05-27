@@ -74,6 +74,24 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 	return spec.ResolveInterpreter(scriptPath, opts...)
 }
 
+// InterpreterSource categorizes how ResolveInterpreterDetailed picked the
+// interpreter. Useful for warnings — e.g. extension-only inference (no shebang,
+// no ELF) is a guess the caller may want to surface.
+type InterpreterSource = spec.InterpreterSource
+
+const (
+	InterpreterFromExtension = spec.InterpreterFromExtension
+	InterpreterFromShebang   = spec.InterpreterFromShebang
+	InterpreterFromELF       = spec.InterpreterFromELF
+	InterpreterFromCustom    = spec.InterpreterFromCustom
+)
+
+// ResolveInterpreterDetailed is ResolveInterpreter plus the source of the pick
+// (extension, shebang, ELF, custom mapping).
+func ResolveInterpreterDetailed(scriptPath string, opts ...ResolveOption) (string, InterpreterSource, error) {
+	return spec.ResolveInterpreterDetailed(scriptPath, opts...)
+}
+
 // PracticalStrictManifest builds the zero-config default manifest: read-only
 // access to the script's directory, no write, no network, no subprocess spawning.
 func PracticalStrictManifest(scriptPath, interpreter string) (*Manifest, error) {

@@ -70,18 +70,27 @@ func newFSObserver(cfg *Config, scriptAbs, interp string) *fsObserver {
 }
 
 func newStraceObserver(scriptAbs, interp string) (*fsObserver, error) {
-	f, err := os.CreateTemp("", "bento-fstrace-*.log")
+	// Use a per-run subdirectory rather than a bare `/tmp/bento-fstrace-*.log`
+	// file so orphans (from crashes / kills) are one directory each and don't
+	// leak into the host's `/tmp` listing as individual files. Same shape as
+	// shim mode's bento-fsshim-* / bento-fsobs-* dirs.
+	dir, err := os.MkdirTemp("", "bento-fstrace-")
 	if err != nil {
 		return nil, err
 	}
-	path := f.Name()
-	f.Close()
+	path := filepath.Join(dir, "trace.log")
+	if f, err := os.Create(path); err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	} else {
+		f.Close()
+	}
 	return &fsObserver{
 		mode:      "strace",
 		scriptAbs: scriptAbs,
 		interp:    interp,
 		tracePath: path,
-		cleanups:  []func(){func() { os.Remove(path) }},
+		cleanups:  []func(){func() { os.RemoveAll(dir) }},
 	}, nil
 }
 

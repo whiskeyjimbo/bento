@@ -129,11 +129,16 @@ func appendSizedTmpfs(args []string, lim *spec.Limits, path string) []string {
 }
 
 // systemReadPaths are bind-mounted read-only so the interpreter resolves libs and CA bundles.
+// /etc/alternatives is bound so Debian/Ubuntu's "alternatives" symlink chain
+// (`/usr/bin/awk -> /etc/alternatives/awk -> /usr/bin/gawk`) resolves inside
+// the sandbox. Without it, awk/editor/pager/java and many other common tools
+// fail with a generic "command not found" that gives no clue why.
 var systemReadPaths = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64",
 	"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
 	"/etc/resolv.conf",
 	"/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+	"/etc/alternatives",
 }
 
 // appendUserDB binds synthetic /etc/passwd and /etc/group from temp files
@@ -283,6 +288,12 @@ func appendBaseEnv(args []string) []string {
 // finds only itself. We point the interpreter at the script's host directory
 // instead; that directory is bind-mounted at its host path whenever it appears
 // in the manifest's read list (zero-config always includes it).
+//
+// BENTO_SCRIPT_DIR is also set unconditionally to the script's host directory.
+// Shell scripts have no PYTHONPATH/NODE_PATH analogue, and inside the sandbox
+// `$0` resolves to /sandbox/script — so `source "$(dirname "$0")/lib.sh"`
+// (idiomatic bash) silently fails. BENTO_SCRIPT_DIR gives shell scripts a
+// reliable way to reference siblings: `source "$BENTO_SCRIPT_DIR/lib.sh"`.
 func appendInterpreterSearchEnv(args []string, interp, scriptAbs string) []string {
 	if scriptAbs == "" {
 		return args
@@ -291,6 +302,7 @@ func appendInterpreterSearchEnv(args []string, interp, scriptAbs string) []strin
 	if dir == "" || dir == "/" {
 		return args
 	}
+	args = append(args, "--setenv", "BENTO_SCRIPT_DIR", dir)
 	base := filepath.Base(interp)
 	switch {
 	case strings.HasPrefix(base, "python"):
