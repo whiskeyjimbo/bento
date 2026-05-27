@@ -239,6 +239,21 @@ The user can't bypass these by adding the paths to their `read`/
 `write` lists — the mandatory-deny binds are emitted AFTER user binds
 and take precedence.
 
+**Existing-files-only caveat.** The shadow is `--ro-bind /dev/null
+<path>`, which requires the path to exist *at sandbox start*. If a
+target file is absent on the host when bento runs, no shadow is
+installed for it. A script with write access to the containing
+directory could then *create* the path inside the sandbox without
+hitting the shadow. In practice this matters in two cases:
+(1) shell rc files that don't exist yet on a fresh user (e.g.
+`~/.zshrc` on a bash-only user) — the persistence vector reopens if
+the script can write `$HOME`; and (2) tools that initialize
+credential stores on first use. `bento doctor` reports the
+present/absent split for both lists (e.g. `20 read-protect (2
+present)`) so you can see which entries are currently load-bearing.
+The safe shape is to declare narrow `write:` paths rather than
+blanket `$HOME`.
+
 ### Bypass-resistant host validation
 
 The proxies refuse hosts that aren't already in canonical form before
@@ -587,6 +602,25 @@ This indirection is necessary because bwrap's own `--seccomp FD`
 mechanism installs the filter before bwrap's own final `execve` into
 the interpreter — which would block bwrap. Doing it post-exec, in a
 shim that itself uses `execveat`, works around that.
+
+**Process visibility.** bwrap is invoked with `--unshare-pid`, so the
+sandboxed process tree lives in its own PID namespace. After
+`bento-launcher`'s `execveat`, the launcher process *becomes* the
+interpreter (same PID); the script runs as PID 1 in the new namespace
+with no sibling or parent visible. Single-binary sandboxes like `srt`
+need a manual second-stage unshare to achieve the same isolation —
+bento gets it from bwrap.
+
+**Seccomp limitation: inherited file descriptors.** A seccomp filter
+intercepts *syscalls*, not the file descriptors a process already
+holds. When `allow_exec: true` lets a script spawn children, those
+children inherit any open fds (sockets, pipes, files) the parent had.
+Filtering at the syscall layer cannot revoke them: a child can `read`
+or `write` an fd opened pre-fork even if it could not `open` the same
+path itself. The same applies to fds passed via `SCM_RIGHTS` over a
+Unix socket. If this matters for your threat model, the only mitigation
+is to close sensitive fds before exec (or set `O_CLOEXEC` at open
+time) and audit the parent's fd table.
 
 ### Mandatory deny paths (auto-protected)
 

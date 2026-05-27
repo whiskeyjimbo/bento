@@ -97,6 +97,9 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, denied []string
 		if isInterpreterDep(e.Path, interpRoot) {
 			continue
 		}
+		if isUserToolNoise(e.Path) {
+			continue
+		}
 		// Keep paths covered by the user's read grants: profile uses these
 		// to tighten broad grants (e.g. `read: [./data]`) into the specific
 		// files that were actually opened, so the generated manifest doesn't
@@ -104,6 +107,45 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, denied []string
 		read = append(read, e.Path)
 	}
 	return read, denied
+}
+
+// isUserToolNoise reports whether a path is a known-noisy user-tool artifact
+// that doesn't belong in a manifest's read list: build caches, editor
+// scratch files, lockfiles, watcher state, language test caches. Including
+// these makes the profile output unstable across runs and across machines.
+// The list is conservative — paths a normal script would never legitimately
+// declare as input. Callers can still hand-add any of these to a manifest.
+func isUserToolNoise(p string) bool {
+	base := filepath.Base(p)
+	switch base {
+	case ".DS_Store", "Thumbs.db", "desktop.ini":
+		return true
+	case ".python-version", ".node-version", ".ruby-version", ".tool-versions":
+		// version manager probes — read on every script start, never user-relevant
+		return true
+	}
+	// Editor lockfiles and swap files: ~lock.foo#, .#foo, .foo.swp, foo~
+	if strings.HasPrefix(base, ".~lock.") || strings.HasPrefix(base, ".#") {
+		return true
+	}
+	if strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, ".swo") || strings.HasSuffix(base, "~") {
+		return true
+	}
+	// Build / test / package-manager caches.
+	for _, marker := range []string{
+		"/__pycache__/", "/.pytest_cache/", "/.mypy_cache/", "/.ruff_cache/",
+		"/.tox/", "/.coverage", "/.hypothesis/",
+		"/node_modules/.cache/", "/.next/cache/", "/.turbo/", "/.parcel-cache/",
+		"/.gradle/", "/.m2/repository/",
+		"/.cargo/registry/", "/target/debug/", "/target/release/",
+		"/.terraform/", "/.serverless/",
+		"/.watchmanconfig", "/.watchman-cookie-",
+	} {
+		if strings.Contains(p, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isInterpreterDep reports whether a path is part of the interpreter's

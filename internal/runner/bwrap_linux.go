@@ -222,7 +222,12 @@ func executeCommand(ctx context.Context, lim *spec.Limits, bwrapArgs []string, c
 	cmd := exec.CommandContext(ctx, exe, fullArgs...)
 	cmd.Stdin = cfg.Stdin
 	cmd.Stdout = cfg.Stdout
-	cmd.Stderr = cfg.Stderr
+	// Capture stderr so we can detect bwrap's userns failures (typical when
+	// running inside a restricted container) and surface a remediation hint
+	// alongside the original message.
+	stderrTee := newBwrapStderrTee(cfg.Stderr)
+	cmd.Stderr = stderrTee
+	defer stderrTee.maybeHintContainer(cfg)
 
 	if cfg.Telemetry != nil {
 		r, w, err := os.Pipe()

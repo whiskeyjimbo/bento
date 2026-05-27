@@ -18,6 +18,7 @@ func platformRegistry(c *config) []registeredCheck {
 		{checkBwrap, CategoryCore},
 		{checkUnprivilegedUserns, CategoryCore},
 		{checkAppArmorProfile, CategoryCore},
+		{checkContainer, CategoryCore},
 		{checkLandlockTCP, CategoryNetwork},
 		{checkLibproxychains, CategoryNetwork},
 		{checkSocat, CategoryNetwork},
@@ -64,6 +65,53 @@ func checkUnprivilegedUserns() CheckResult {
 		}
 	}
 	return CheckResult{Name: "unprivileged user namespaces", Status: StatusPass}
+}
+
+// checkContainer reports whether bento is running inside a container. In a
+// container, unprivileged user namespaces may be restricted (Docker default
+// seccomp blocks `unshare`), seccomp filters may be partially applied
+// already, and the AppArmor profile that allows bwrap is rarely present.
+// We don't fail — bento can still work in many containers — but we surface
+// the situation so users debugging "bwrap: setting up uid map: ..." errors
+// know the cause.
+func checkContainer() CheckResult {
+	kind, ok := detectContainer()
+	if !ok {
+		return CheckResult{Name: "container runtime", Status: StatusPass, Detail: "not in a container"}
+	}
+	return CheckResult{
+		Name: "container runtime", Status: StatusWarn,
+		Detail: "running inside " + kind + " — unprivileged user namespaces may be restricted",
+		Remediation: "if `bento run` fails with bwrap uid-map errors, run the container with " +
+			"`--security-opt seccomp=unconfined --security-opt apparmor=unconfined` " +
+			"(Docker) or `--privileged` (last resort).",
+	}
+}
+
+// detectContainer returns the container kind (e.g. "docker", "podman",
+// "containerd") and true when bento appears to be running inside one.
+// Checks the well-known marker files first, then /proc/1/cgroup.
+func detectContainer() (string, bool) {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "docker", true
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return "podman", true
+	}
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		s := string(data)
+		switch {
+		case strings.Contains(s, "/docker/"), strings.Contains(s, "docker-"):
+			return "docker", true
+		case strings.Contains(s, "/lxc/"):
+			return "lxc", true
+		case strings.Contains(s, "containerd"):
+			return "containerd", true
+		case strings.Contains(s, "kubepods"):
+			return "kubernetes", true
+		}
+	}
+	return "", false
 }
 
 func checkAppArmorProfile() CheckResult {
