@@ -55,10 +55,11 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  bento run [-v] [--timeout=DUR] [--env KEY=VALUE]... [--network-mode=auto|landlock|bridge] <manifest.yaml | script> [-- script-args...]")
+	fmt.Fprintln(os.Stderr, "  bento run [-v] [--timeout=DUR] [--env KEY=VALUE]... [--network-mode=auto|landlock|bridge] <manifest.yaml | script> [script-args...]")
 	fmt.Fprintln(os.Stderr, "      run a script (zero-config) or a manifest. Zero-config picks an interpreter")
 	fmt.Fprintln(os.Stderr, "      from extension, shebang, or — for ELF binaries — runs them directly.")
-	fmt.Fprintln(os.Stderr, "      Use `--` to separate bento flags from arguments passed to the script.")
+	fmt.Fprintln(os.Stderr, "      Trailing args are forwarded to the script. Use `--` only when script args")
+	fmt.Fprintln(os.Stderr, "      start with `-` and would otherwise be parsed as bento flags.")
 	fmt.Fprintln(os.Stderr, "  bento profile [-v] [--out=PATH] [--force] [--interpreter=BIN] <script>")
 	fmt.Fprintln(os.Stderr, "      record one trial run and emit <script>.manifest.yaml. Start here.")
 	fmt.Fprintln(os.Stderr, "  bento validate [-q] <manifest.yaml>")
@@ -546,23 +547,30 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if code != 0 {
-		emitZeroConfigHint(os.Stderr, scriptPath, m, tail.String())
-	}
+	// Always check for hint signatures — a bash script that runs `ls` (blocked)
+	// then `echo done` exits 0, but the user still needs the exec-block hint.
+	emitZeroConfigHint(os.Stderr, scriptPath, m, tail.String())
 	emitSilentWriteWarning(os.Stderr, fsOpens)
 	return code
 }
 
-// warnStrippedShellVars scans shell scripts for references to host env vars
-// (e.g. $USER, $HOME) that bento strips by default. Without this hint, a
-// script like `echo "User: $USER"` silently prints `User:` blank in the
-// sandbox. Only fires for sh/bash interpreters; warns at most once per run.
+// warnStrippedShellVars scans the script for references to host env vars
+// (e.g. $USER, $HOME, os.environ["USER"]) that bento strips by default.
+// Without this hint, a script like `echo "User: $USER"` silently prints
+// `User:` blank in the sandbox. Fires for shell and Python scripts; warns
+// at most once per run.
 func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[string]string) {
-	if !isShellInterpreter(interp) {
-		return
-	}
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
+		return
+	}
+	var refFn func([]byte, string) bool
+	switch {
+	case isShellInterpreter(interp):
+		refFn = shellReferencesVar
+	case isPythonInterpreter(interp):
+		refFn = pythonReferencesEnvVar
+	default:
 		return
 	}
 	commonHostVars := []string{"USER", "LOGNAME", "HOME", "SHELL", "TERM", "LANG", "PATH"}
@@ -571,7 +579,7 @@ func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[strin
 		if _, supplied := env[name]; supplied {
 			continue
 		}
-		if shellReferencesVar(src, name) {
+		if refFn(src, name) {
 			referenced = append(referenced, name)
 		}
 	}
@@ -590,6 +598,33 @@ func isShellInterpreter(interp string) bool {
 	switch base {
 	case "sh", "bash", "dash", "zsh", "ksh":
 		return true
+	}
+	return false
+}
+
+func isPythonInterpreter(interp string) bool {
+	base := filepath.Base(interp)
+	return strings.HasPrefix(base, "python")
+}
+
+// pythonReferencesEnvVar checks for os.environ["NAME"], os.environ.get("NAME"),
+// or os.getenv("NAME") references in src. False positives in comments and
+// string literals are acceptable for a heads-up hint.
+func pythonReferencesEnvVar(src []byte, name string) bool {
+	needles := [][]byte{
+		[]byte(`os.environ["` + name + `"]`),
+		[]byte(`os.environ['` + name + `']`),
+		[]byte(`os.environ.get("` + name + `"`),
+		[]byte(`os.environ.get('` + name + `'`),
+		[]byte(`os.getenv("` + name + `"`),
+		[]byte(`os.getenv('` + name + `'`),
+		[]byte(`environ["` + name + `"]`),
+		[]byte(`environ['` + name + `']`),
+	}
+	for _, n := range needles {
+		if bytes.Contains(src, n) {
+			return true
+		}
 	}
 	return false
 }
@@ -668,6 +703,68 @@ func emitZeroConfigHint(w io.Writer, scriptPath string, m *bento.Manifest, stder
 		)
 		return
 	}
+	// ENOENT for an absolute host path that exists on the host is almost
+	// always a "you forgot to bind-mount this" error rather than a real
+	// missing-file. The kernel sees no such file because bwrap didn't bind
+	// it; the user sees a confusing FileNotFoundError. Surface the real cause.
+	if paths := pathsMissingButOnHost(stderrTail); len(paths) > 0 {
+		lines := []string{
+			"[bento] script tried to open paths that exist on the host but aren't bind-mounted into the sandbox:",
+		}
+		for _, p := range paths {
+			lines = append(lines, "[bento]   "+p)
+		}
+		lines = append(lines,
+			"[bento] add them to the manifest's `read:` (or `write:`) list — bento's filesystem isolation is",
+			"[bento]   deny-by-default, so paths not declared are invisible even though they exist on disk.",
+		)
+		emit(lines...)
+		return
+	}
+}
+
+// pathsMissingButOnHost scans stderr for ENOENT-style errors that name an
+// absolute path which DOES exist on the host. Returns at most a few unique
+// paths. Patterns matched:
+//   - Python: `FileNotFoundError: [Errno 2] No such file or directory: '/etc/hostname'`
+//   - Bash:   `cat: /etc/hostname: No such file or directory`
+//   - Go:     `open /etc/hostname: no such file or directory`
+func pathsMissingButOnHost(stderrTail string) []string {
+	lines := reENOENTLine.FindAllString(stderrTail, -1)
+	if len(lines) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, line := range lines {
+		for _, m := range reAbsPath.FindAllStringSubmatch(line, -1) {
+			p := m[1]
+			if p == "" {
+				p = m[2]
+			}
+			if p == "" {
+				p = m[3]
+			}
+			if p == "" || !strings.HasPrefix(p, "/") {
+				continue
+			}
+			if strings.HasPrefix(p, "/sandbox") {
+				continue
+			}
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			out = append(out, p)
+			if len(out) >= 5 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 var (
@@ -686,6 +783,12 @@ var (
 	// Bash:   `bash: foo.txt: Read-only file system`
 	// Go:     `open /path: read-only file system`
 	reWriteBlock = regexp.MustCompile(`(?i)(read-only file system|errno 30)`)
+	// ENOENT lines paired with a nearby absolute path. Two passes:
+	// reENOENTLine matches the marker, then reAbsPath extracts every absolute
+	// path on that same line (handles "path-before" Go/bash format AND
+	// "path-after" Python format).
+	reENOENTLine = regexp.MustCompile(`(?i).*(?:no such file or directory|errno 2[^0-9]).*`)
+	reAbsPath    = regexp.MustCompile(`(?:'(/[^'\s]+)'|"(/[^"\s]+)"|(/(?:etc|usr|var|opt|home|tmp|root|run|srv|mnt|media|proc|sys)/[^\s:'"]*))`)
 )
 
 func matchesExecBlock(s string) bool { return reExecBlock.MatchString(s) }

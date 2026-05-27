@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -103,6 +104,72 @@ func WithSkipValidation() LoadOption {
 	return func(c *loadConfig) { c.skipValidation = true }
 }
 
+// friendlyYAMLError rewrites the cryptic messages yaml.v3 emits for common
+// manifest mistakes ("!!seq into spec.NetworkPerm") into something a user can
+// act on. Falls back to the raw error if no pattern matches. Idempotent —
+// translates only known patterns and leaves everything else alone.
+func friendlyYAMLError(err error) string {
+	raw := err.Error()
+	// Strip the redundant "yaml: unmarshal errors:" header and trailing
+	// `into spec.TypeName` suffix that exposes internal types.
+	clean := raw
+	clean = strings.TrimPrefix(clean, "yaml: ")
+	clean = strings.TrimPrefix(clean, "unmarshal errors:\n  ")
+
+	// Mistake: `network: [- host: ...]` instead of `network: { rules: [...] }`.
+	if strings.Contains(raw, "!!seq into spec.NetworkPerm") {
+		return clean + "\n\nhint: `network:` must be a mapping with a `rules:` key, not a list. Example:\n" +
+			"    network:\n" +
+			"      rules:\n" +
+			"        - host: api.example.com\n" +
+			"          port: \"443\""
+	}
+	// Generic !!seq into <struct>: user wrote a list where a mapping is expected.
+	if strings.Contains(raw, "!!seq into spec.") {
+		field := extractFieldFromTypeError(raw, "!!seq into spec.")
+		return clean + fmt.Sprintf("\n\nhint: the `%s:` field expects a mapping (with named keys), not a list.", field)
+	}
+	// !!map into []: user wrote a mapping where a list is expected (e.g.
+	// `read: { foo: bar }` instead of `read: [foo]`).
+	if strings.Contains(raw, "!!map into []") {
+		return clean + "\n\nhint: this field expects a list (use `- item` lines), not a mapping."
+	}
+	// !!str into [] or struct: scalar where collection expected.
+	if strings.Contains(raw, "!!str into []") {
+		return clean + "\n\nhint: this field expects a list (use `- item` lines), not a single value."
+	}
+	// Unknown field with KnownFields(true).
+	if strings.Contains(raw, "field ") && strings.Contains(raw, "not found in") {
+		return clean + "\n\nhint: check spelling of the field name. Valid top-level fields:\n" +
+			"    interpreter, script, args, env, read, write, network, allow_exec, limits"
+	}
+	return raw
+}
+
+func extractFieldFromTypeError(raw, marker string) string {
+	// Errors look like: "line 4: cannot unmarshal !!seq into spec.NetworkPerm"
+	// We have no field name in there, so map the struct type to its YAML key.
+	idx := strings.Index(raw, marker)
+	if idx < 0 {
+		return "this"
+	}
+	rest := raw[idx+len(marker):]
+	end := strings.IndexAny(rest, " \n\t")
+	if end < 0 {
+		end = len(rest)
+	}
+	switch rest[:end] {
+	case "NetworkPerm":
+		return "network"
+	case "Limits":
+		return "limits"
+	case "Manifest":
+		return "(root)"
+	default:
+		return rest[:end]
+	}
+}
+
 // LoadManifest reads a YAML manifest from r, unmarshals it, and validates it in one call.
 func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 	if r == nil {
@@ -126,7 +193,7 @@ func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&m); err != nil && err != io.EOF {
-		return nil, fmt.Errorf("LoadManifest: %w", err)
+		return nil, fmt.Errorf("LoadManifest: %s", friendlyYAMLError(err))
 	}
 
 	// Legacy `exec: [...]` is treated as allow_exec: true. Per-binary
