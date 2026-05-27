@@ -69,8 +69,30 @@ func compileBwrapArgs(c compileCtx) ([]string, []bwrapSection) {
 	mark("proxychains")
 	args = appendProxychains(args, c.aux)
 	mark("entrypoint")
-	args = appendEntrypoint(args, c.interp, c.aux, c.manifest.Args)
+	args = appendEntrypoint(args, c.interp, c.scriptAbs, c.aux, c.manifest.Args)
 	return args, sections
+}
+
+// isELFEntrypoint reports whether this run is an ELF binary executing itself
+// (i.e. there is no separate interpreter and script — they are the same file).
+// In that mode we pass only the sandbox script path to the launcher so the
+// binary sees argv[0]=/sandbox/script with no spurious argv[1] script-path.
+func isELFEntrypoint(interp, scriptAbs string) bool {
+	if interp == "" || scriptAbs == "" {
+		return false
+	}
+	if interp == scriptAbs {
+		return true
+	}
+	ri, err := filepath.EvalSymlinks(interp)
+	if err != nil {
+		return false
+	}
+	rs, err := filepath.EvalSymlinks(scriptAbs)
+	if err != nil {
+		return false
+	}
+	return ri == rs
 }
 
 func appendBaseFlags(args []string, lim *spec.Limits) []string {
@@ -305,36 +327,50 @@ func appendProxychains(args []string, aux *auxiliary) []string {
 // appendEntrypoint emits the bwrap "--" separator plus the final argv.
 // Bridge mode wraps in bash to start sandbox-side socats before exec'ing the
 // launcher; user args go via $@ to avoid shell-quoting.
-func appendEntrypoint(args []string, interp string, aux *auxiliary, userArgs []string) []string {
+func appendEntrypoint(args []string, interp, scriptAbs string, aux *auxiliary, userArgs []string) []string {
 	if aux.networkMode == spec.NetworkModeBridge && (aux.unixHTTPSock != "" || aux.unixSocksSock != "") {
-		return appendBridgeEntrypoint(args, interp, aux, userArgs)
+		return appendBridgeEntrypoint(args, interp, scriptAbs, aux, userArgs)
 	}
-	return appendDirectEntrypoint(args, interp, aux, userArgs)
+	return appendDirectEntrypoint(args, interp, scriptAbs, aux, userArgs)
 }
 
-func appendDirectEntrypoint(args []string, interp string, aux *auxiliary, userArgs []string) []string {
+func appendDirectEntrypoint(args []string, interp, scriptAbs string, aux *auxiliary, userArgs []string) []string {
+	elf := isELFEntrypoint(interp, scriptAbs)
 	if aux.launcherPath != "" {
-		args = append(args,
-			"--ro-bind", aux.launcherPath, spec.SandboxLauncherPath,
-			"--", spec.SandboxLauncherPath, interp, spec.SandboxScriptPath,
-		)
+		args = append(args, "--ro-bind", aux.launcherPath, spec.SandboxLauncherPath, "--")
+		if elf {
+			args = append(args, spec.SandboxLauncherPath, spec.SandboxScriptPath)
+		} else {
+			args = append(args, spec.SandboxLauncherPath, interp, spec.SandboxScriptPath)
+		}
 	} else {
-		args = append(args, "--", interp, spec.SandboxScriptPath)
+		args = append(args, "--")
+		if elf {
+			args = append(args, spec.SandboxScriptPath)
+		} else {
+			args = append(args, interp, spec.SandboxScriptPath)
+		}
 	}
 	return append(args, userArgs...)
 }
 
-func appendBridgeEntrypoint(args []string, interp string, aux *auxiliary, userArgs []string) []string {
+func appendBridgeEntrypoint(args []string, interp, scriptAbs string, aux *auxiliary, userArgs []string) []string {
 	// Inner socats bridge fixed sandbox TCP ports → bind-mounted host unix sockets.
 	innerHTTP := fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &",
 		sandboxHTTPProxyPort, aux.unixHTTPSock)
 	innerSOCKS := fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &",
 		sandboxSOCKSProxyPort, aux.unixSocksSock)
 
+	elf := isELFEntrypoint(interp, scriptAbs)
 	var execLine string
-	if aux.launcherPath != "" {
+	switch {
+	case aux.launcherPath != "" && elf:
+		execLine = fmt.Sprintf(`exec %s %s "$@"`, spec.SandboxLauncherPath, spec.SandboxScriptPath)
+	case aux.launcherPath != "":
 		execLine = fmt.Sprintf(`exec %s %s %s "$@"`, spec.SandboxLauncherPath, interp, spec.SandboxScriptPath)
-	} else {
+	case elf:
+		execLine = fmt.Sprintf(`exec %s "$@"`, spec.SandboxScriptPath)
+	default:
 		execLine = fmt.Sprintf(`exec %s %s "$@"`, interp, spec.SandboxScriptPath)
 	}
 

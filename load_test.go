@@ -87,13 +87,26 @@ func TestLoadManifestBadYAML(t *testing.T) {
 }
 
 func TestLoadManifestInvalidManifest(t *testing.T) {
-	// Valid YAML, invalid manifest (missing required field).
-	src := `script: foo.py`
+	// Valid YAML, invalid manifest (script is required).
+	src := `interpreter: python3`
 	_, err := LoadManifest(strings.NewReader(src))
 	if err == nil {
-		t.Fatal("missing interpreter should error")
+		t.Fatal("missing script should error")
 	}
-	if !strings.Contains(err.Error(), "interpreter") {
-		t.Errorf("error should name 'interpreter', got %v", err)
+	if !strings.Contains(err.Error(), "script") {
+		t.Errorf("error should name 'script', got %v", err)
+	}
+}
+
+func TestLoadManifestELFOmitsInterpreter(t *testing.T) {
+	// An ELF-style manifest omits the interpreter; LoadManifest fills it
+	// from the script path so the binary runs as its own interpreter.
+	src := `script: /tmp/hello-go`
+	m, err := LoadManifest(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("ELF manifest should load, got: %v", err)
+	}
+	if m.Interpreter != "/tmp/hello-go" {
+		t.Errorf("interpreter should default to script for ELF, got %q", m.Interpreter)
 	}
 }

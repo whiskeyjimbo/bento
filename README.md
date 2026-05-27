@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/bento-gopher.png" width="15%" alt="Bento Gopher Logo" />
+</p>
+
 # Bento
 
 A polyglot script sandbox for Linux and macOS. Declare a script's

@@ -26,7 +26,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		usage()
-		os.Exit(2)
+		os.Exit(0)
 	}
 	switch os.Args[1] {
 	case "doctor":
@@ -54,9 +54,10 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  bento run [-v] [--timeout=DUR] [--env KEY=VALUE]... [--network-mode=auto|landlock|bridge] <manifest.yaml | script>")
+	fmt.Fprintln(os.Stderr, "  bento run [-v] [--timeout=DUR] [--env KEY=VALUE]... [--network-mode=auto|landlock|bridge] <manifest.yaml | script> [-- script-args...]")
 	fmt.Fprintln(os.Stderr, "      run a script (zero-config) or a manifest. Zero-config picks an interpreter")
 	fmt.Fprintln(os.Stderr, "      from extension, shebang, or — for ELF binaries — runs them directly.")
+	fmt.Fprintln(os.Stderr, "      Use `--` to separate bento flags from arguments passed to the script.")
 	fmt.Fprintln(os.Stderr, "  bento profile [-v] [--out=PATH] [--force] [--interpreter=BIN] <script>")
 	fmt.Fprintln(os.Stderr, "      record one trial run and emit <script>.manifest.yaml. Start here.")
 	fmt.Fprintln(os.Stderr, "  bento validate [-q] <manifest.yaml>")
@@ -65,6 +66,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "      check the host for required and optional sandboxing primitives.")
 	fmt.Fprintln(os.Stderr, "  bento setup [--dry-run]")
 	fmt.Fprintln(os.Stderr, "      install/configure host bits (AppArmor profile, etc.) where needed.")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  bento <subcommand> --help    flags for one subcommand")
+	fmt.Fprintln(os.Stderr, "  bento --help                 this help screen")
 }
 
 func cmdProfile(args []string) int {
@@ -102,7 +106,10 @@ func cmdProfile(args []string) int {
 	}
 	if !*force {
 		if _, err := os.Stat(outPath); err == nil {
-			fmt.Fprintf(os.Stderr, "error: %s already exists; --force to overwrite or --out=PATH\n", outPath)
+			fmt.Fprintf(os.Stderr, "[bento] %s already exists. To proceed, choose one:\n", outPath)
+			fmt.Fprintf(os.Stderr, "[bento]   bento profile --force %s            # overwrite the existing manifest\n", scriptPath)
+			fmt.Fprintf(os.Stderr, "[bento]   bento profile --out=PATH %s         # write somewhere else\n", scriptPath)
+			fmt.Fprintf(os.Stderr, "[bento]   rm %s && bento profile %s           # delete the existing one first\n", outPath, scriptPath)
 			return 1
 		}
 	}
@@ -135,6 +142,8 @@ func cmdProfile(args []string) int {
 		return result.ExitCode
 	}
 
+	rewriteManifestForOutput(result.SuggestedManifest, outPath)
+
 	yamlBytes, err := yaml.Marshal(result.SuggestedManifest)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error marshaling suggested manifest:", err)
@@ -154,6 +163,53 @@ func cmdProfile(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "[bento] wrote %s — review and trim before running with `bento run`\n", outPath)
 	return result.ExitCode
+}
+
+// rewriteManifestForOutput makes a generated manifest portable:
+//   - paths under the manifest's directory become relative (so moving the
+//     directory doesn't break the manifest);
+//   - for ELF binaries (interpreter == script), the redundant `interpreter:`
+//     field is cleared so it's omitted from the YAML.
+func rewriteManifestForOutput(m *bento.Manifest, outPath string) {
+	if m == nil {
+		return
+	}
+	outAbs, err := filepath.Abs(outPath)
+	if err != nil {
+		return
+	}
+	outDir := filepath.Dir(outAbs)
+
+	relIfChild := func(p string) string {
+		if p == "" || !filepath.IsAbs(p) {
+			return p
+		}
+		rel, err := filepath.Rel(outDir, p)
+		if err != nil {
+			return p
+		}
+		// Only rewrite if the path stays inside outDir; avoid emitting
+		// "../../.." style relatives that obscure the real location.
+		if strings.HasPrefix(rel, "..") {
+			return p
+		}
+		if rel == "" {
+			return "."
+		}
+		return rel
+	}
+
+	elf := m.Interpreter != "" && m.Script != "" && m.Interpreter == m.Script
+	m.Script = relIfChild(m.Script)
+	for i, p := range m.Read {
+		m.Read[i] = relIfChild(p)
+	}
+	for i, p := range m.Write {
+		m.Write[i] = relIfChild(p)
+	}
+	if elf {
+		m.Interpreter = ""
+	}
 }
 
 func printFSObservations(w io.Writer, paths []string) {
@@ -225,7 +281,7 @@ func cmdValidate(args []string) int {
 		return 1
 	}
 	defer f.Close()
-	m, err := bento.LoadManifest(f)
+	m, err := bento.LoadManifest(f, bento.WithBaseDir(filepath.Dir(abs)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -245,19 +301,19 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string) 
 	fmt.Fprintf(w, "manifest: %s — ok\n\n", manifestPath)
 
 	interp := m.Interpreter
-	if interp != "" {
+	script := m.Script
+	if !filepath.IsAbs(script) && manifestPath != "" {
+		script = filepath.Join(filepath.Dir(manifestPath), script)
+	}
+	switch {
+	case interp == "" || interp == script:
+		fmt.Fprintln(w, "interpreter: (none — script is run directly)")
+	default:
 		if resolved, err := exec.LookPath(interp); err == nil {
 			fmt.Fprintf(w, "interpreter: %s  →  %s\n", interp, resolved)
 		} else {
 			fmt.Fprintf(w, "interpreter: %s  (NOT FOUND on $PATH)\n", interp)
 		}
-	} else {
-		fmt.Fprintln(w, "interpreter: (none — script is run directly)")
-	}
-
-	script := m.Script
-	if !filepath.IsAbs(script) && manifestPath != "" {
-		script = filepath.Join(filepath.Dir(manifestPath), script)
 	}
 	if _, err := os.Stat(script); err == nil {
 		fmt.Fprintf(w, "script:      %s\n", script)
@@ -382,10 +438,11 @@ func cmdRun(args []string) int {
 	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
 	fs.Parse(args)
 
-	if fs.NArg() != 1 {
+	if fs.NArg() < 1 {
 		usage()
 		return 2
 	}
+	scriptArgs := fs.Args()[1:]
 	mode, ok := bento.ParseNetworkMode(*netMode)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "error: unknown --network-mode %q (want auto|landlock|bridge)\n", *netMode)
@@ -415,9 +472,9 @@ func cmdRun(args []string) int {
 
 	target := fs.Arg(0)
 	if isManifestPath(target) {
-		return runManifest(target, *timeout, env, mode, telemetry, grantCB, *verbose)
+		return runManifest(target, scriptArgs, *timeout, env, mode, telemetry, grantCB, *verbose)
 	}
-	return runScriptZeroConfig(target, *interpreter, *timeout, env, mode, telemetry, grantCB, *verbose)
+	return runScriptZeroConfig(target, scriptArgs, *interpreter, *timeout, env, mode, telemetry, grantCB, *verbose)
 }
 
 func isManifestPath(p string) bool {
@@ -426,7 +483,7 @@ func isManifestPath(p string) bool {
 }
 
 // runScriptZeroConfig synthesizes a practical-strict manifest and runs it.
-func runScriptZeroConfig(scriptPath, interpOverride string, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
+func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride string, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
 	interp := interpOverride
 	if interp == "" {
 		var err error
@@ -441,6 +498,7 @@ func runScriptZeroConfig(scriptPath, interpOverride string, timeout time.Duratio
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	m.Args = append(m.Args, scriptArgs...)
 	tail := newTailBuffer(16 << 10)
 	opts := []bento.Option{
 		bento.WithLogger(log.New(os.Stderr, "", log.LstdFlags)),
@@ -486,6 +544,12 @@ func emitZeroConfigHint(w io.Writer, scriptPath string, m *bento.Manifest, stder
 		fmt.Fprintln(w, "[bento]   bento run <manifest>.yaml  # re-run under the trimmed manifest")
 		return
 	}
+	if matchesWriteBlock(stderrTail) {
+		fmt.Fprintln(w, "[bento] note: zero-config grants no write access. If the script needs to write files,")
+		fmt.Fprintln(w, "[bento]   run `bento profile <script>` and add the destination paths to the manifest's `write:` list,")
+		fmt.Fprintln(w, "[bento]   then re-run with `bento run <manifest>.yaml`.")
+		return
+	}
 	if matchesFSBlock(stderrTail) {
 		fmt.Fprintln(w, "[bento] note: zero-config only grants read access to the script's directory. If the script needs")
 		fmt.Fprintln(w, "[bento]   other paths, run `bento profile <script>` and add them to the generated manifest's `read:` list.")
@@ -505,6 +569,10 @@ var (
 	// Python: `PermissionError: [Errno 13] Permission denied: '/etc/...'`
 	// Bash:   `cat: /etc/shadow: Permission denied`
 	reFSBlock = regexp.MustCompile(`(?i)permission denied`)
+	// Python: `OSError: [Errno 30] Read-only file system: '/path'`
+	// Bash:   `bash: foo.txt: Read-only file system`
+	// Go:     `open /path: read-only file system`
+	reWriteBlock = regexp.MustCompile(`(?i)(read-only file system|errno 30)`)
 )
 
 func matchesExecBlock(s string) bool { return reExecBlock.MatchString(s) }
@@ -515,6 +583,7 @@ func matchesFSBlock(s string) bool {
 	// Exclude execve-related "permission denied" so we don't double-fire.
 	return reFSBlock.MatchString(s) && !reExecBlock.MatchString(s)
 }
+func matchesWriteBlock(s string) bool { return reWriteBlock.MatchString(s) }
 
 // tailBuffer keeps the last N bytes written to it, dropping older bytes
 // once the cap is reached. Safe for concurrent Write.
@@ -535,7 +604,7 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 
 func (t *tailBuffer) String() string { return string(t.buf) }
 
-func runManifest(manifestPath string, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
+func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
 	abs, err := filepath.Abs(manifestPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -546,7 +615,7 @@ func runManifest(manifestPath string, timeout time.Duration, env map[string]stri
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	m, err := bento.LoadManifest(f)
+	m, err := bento.LoadManifest(f, bento.WithBaseDir(filepath.Dir(abs)))
 	f.Close()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -556,9 +625,7 @@ func runManifest(manifestPath string, timeout time.Duration, env map[string]stri
 		fmt.Fprintln(os.Stderr, "[bento] warning: `exec: [...]` is deprecated and was never a per-binary allowlist;")
 		fmt.Fprintln(os.Stderr, "[bento]   any non-empty value disables the subprocess block. Use `allow_exec: true` instead.")
 	}
-	if !filepath.IsAbs(m.Script) {
-		m.Script = filepath.Join(filepath.Dir(abs), m.Script)
-	}
+	m.Args = append(m.Args, scriptArgs...)
 
 	opts := []bento.Option{
 		bento.WithLogger(log.New(os.Stderr, "", log.LstdFlags)),

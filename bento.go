@@ -153,6 +153,13 @@ func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 		}
 	}
 
+	// ELF default: an absent `interpreter:` means the script is its own
+	// interpreter (a compiled binary). Fill it in so downstream consumers
+	// (validate, runner) don't need a special case.
+	if m.Interpreter == "" && m.Script != "" {
+		m.Interpreter = m.Script
+	}
+
 	if !cfg.skipValidation {
 		if err := m.Validate(); err != nil {
 			return nil, err

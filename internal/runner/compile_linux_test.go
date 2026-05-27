@@ -103,7 +103,7 @@ func TestAppendScriptBinding(t *testing.T) {
 
 func TestAppendEntrypointWithLauncher(t *testing.T) {
 	aux := &auxiliary{launcherPath: "/tmp/launcher"}
-	args := appendEntrypoint(nil, "/usr/bin/python3", aux, nil)
+	args := appendEntrypoint(nil, "/usr/bin/python3", "/tmp/s.py", aux, nil)
 	// Launcher path: bwrap exec's launcher, which exec's interpreter.
 	if !containsAdjacent(args, "--", spec.SandboxLauncherPath, "/usr/bin/python3", spec.SandboxScriptPath) {
 		t.Errorf("expected launcher entrypoint, got %v", args)
@@ -112,9 +112,38 @@ func TestAppendEntrypointWithLauncher(t *testing.T) {
 
 func TestAppendEntrypointWithoutLauncher(t *testing.T) {
 	aux := &auxiliary{} // no launcher
-	args := appendEntrypoint(nil, "/usr/bin/python3", aux, nil)
+	args := appendEntrypoint(nil, "/usr/bin/python3", "/tmp/s.py", aux, nil)
 	if !containsAdjacent(args, "--", "/usr/bin/python3", spec.SandboxScriptPath) {
 		t.Errorf("expected direct entrypoint, got %v", args)
+	}
+}
+
+func TestAppendEntrypointELFBinaryDoesNotInjectScriptArg(t *testing.T) {
+	// ELF mode: interp == scriptAbs (binary is its own interpreter). The
+	// launcher must receive only the sandbox script path so argv[0] is
+	// /sandbox/script and no spurious argv[1] is injected.
+	aux := &auxiliary{launcherPath: "/tmp/launcher"}
+	args := appendEntrypoint(nil, "/tmp/hello-go", "/tmp/hello-go", aux, []string{"a", "b"})
+	if !containsAdjacent(args, "--", spec.SandboxLauncherPath, spec.SandboxScriptPath, "a") {
+		t.Errorf("ELF launcher entrypoint should be `-- launcher /sandbox/script a b`, got %v", args)
+	}
+	for _, a := range args {
+		if a == "/tmp/hello-go" {
+			t.Errorf("ELF entrypoint should not pass the host binary path, got %v", args)
+		}
+	}
+}
+
+func TestAppendEntrypointELFBinaryNoLauncher(t *testing.T) {
+	aux := &auxiliary{} // no launcher
+	args := appendEntrypoint(nil, "/tmp/hello-go", "/tmp/hello-go", aux, []string{"a"})
+	if !containsAdjacent(args, "--", spec.SandboxScriptPath, "a") {
+		t.Errorf("ELF no-launcher entrypoint should be `-- /sandbox/script a`, got %v", args)
+	}
+	for _, a := range args {
+		if a == "/tmp/hello-go" {
+			t.Errorf("ELF entrypoint should not pass the host binary path, got %v", args)
+		}
 	}
 }
 

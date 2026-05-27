@@ -3,7 +3,10 @@ package spec
 
 // Manifest is the per-script permission declaration. Empty/nil fields mean "deny".
 type Manifest struct {
-	Interpreter string       `yaml:"interpreter" json:"interpreter"`
+	// Interpreter names the program used to execute the script (e.g. "python3",
+	// "bash"). Omit for ELF binaries: when empty, LoadManifest sets it to
+	// Script (the binary is its own interpreter).
+	Interpreter string       `yaml:"interpreter,omitempty" json:"interpreter,omitempty"`
 	Script      string       `yaml:"script" json:"script"`
 	Args        []string     `yaml:"args,omitempty" json:"args,omitempty"`
 	Env         []string     `yaml:"env,omitempty" json:"env,omitempty"`

@@ -132,7 +132,15 @@ func startDarwinAuxiliary(m *spec.Manifest, cfg *Config) (*darwinAuxiliary, erro
 // executeDarwinCommand spawns sandbox-exec with the compiled SBPL and interpreter argv,
 // wrapping in `sh -c 'ulimit …; exec …'` if Limits are set.
 func executeDarwinCommand(ctx context.Context, m *spec.Manifest, interp, scriptAbs, profile string, aux *darwinAuxiliary, cfg *Config) (int, error) {
-	sandboxArgs := []string{"-p", profile, interp, scriptAbs}
+	// ELF/Mach-O case: the binary is its own interpreter. Pass it only once
+	// so argv[0] is the binary itself and no spurious script-path argv[1] is
+	// injected.
+	var sandboxArgs []string
+	if interp == scriptAbs {
+		sandboxArgs = []string{"-p", profile, scriptAbs}
+	} else {
+		sandboxArgs = []string{"-p", profile, interp, scriptAbs}
+	}
 	sandboxArgs = append(sandboxArgs, m.Args...)
 
 	exe, args := wrapWithUlimits(m.Limits, "/usr/bin/sandbox-exec", sandboxArgs)
