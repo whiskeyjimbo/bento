@@ -114,6 +114,10 @@ $ bento profile --help                             # full flag list for profile
 - Zero-config also blocks subprocess execve. A `subprocess.run([...])`
   or backtick exec will fail with `Operation not permitted`. To allow
   subprocesses you must run from a manifest (see `exec:` below).
+- Mandatory-deny shadows file *contents*, not file *existence*. A script
+  with broad read access can `os.listdir("$HOME")` and see the names of
+  protected files (`.ssh/`, `.bashrc`, `.aws/credentials`), but opening
+  them returns `Permission denied`. Don't store secrets in filenames.
 - If you're just trying bento out, you can run the local build directly
   without installing: after `make build`, use `./bin/bento doctor` etc.
   in place of `bento` in the snippets below.

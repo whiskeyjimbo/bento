@@ -32,7 +32,7 @@ func newTCPProxy(logPrefix string, opts *options, h handler) (*tcpProxy, error) 
 		if err != nil {
 			if len(p.listeners) > 0 {
 				if opts.logger != nil {
-					opts.logger.Printf("["+logPrefix+"] skipping bind %s: %v", addr, err)
+					opts.logger.Printf("[bento] "+logPrefix+": skipping bind %s: %v", addr, err)
 				}
 				continue
 			}
@@ -85,6 +85,6 @@ func (p *tcpProxy) serve() {
 
 func (p *tcpProxy) logf(format string, args ...any) {
 	if p.opts.logger != nil {
-		p.opts.logger.Printf("["+p.prefix+"] "+format, args...)
+		p.opts.logger.Printf("[bento] "+p.prefix+": "+format, args...)
 	}
 }

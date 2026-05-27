@@ -94,12 +94,13 @@ func partitionFSObservations(opens []FSOpen, m *Manifest) (read, denied []string
 		if e.Path == m.Script {
 			continue
 		}
-		if isCovered(e.Path, m.Read) {
-			continue
-		}
 		if isInterpreterDep(e.Path, interpRoot) {
 			continue
 		}
+		// Keep paths covered by the user's read grants: profile uses these
+		// to tighten broad grants (e.g. `read: [./data]`) into the specific
+		// files that were actually opened, so the generated manifest doesn't
+		// over-grant.
 		read = append(read, e.Path)
 	}
 	return read, denied
@@ -169,15 +170,6 @@ func interpreterInstallRoot(interp string) string {
 	return ""
 }
 
-func isCovered(p string, rules []string) bool {
-	for _, r := range rules {
-		if p == r || strings.HasPrefix(p, r+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 type obsKey struct {
 	host string
 	port int
@@ -211,7 +203,14 @@ func (o *observations) list() []NetworkObservation {
 }
 
 // synthesizeSuggested copies the original manifest, populates Network.Rules
-// with discovered host:port pairs, and appends FS observations to Read.
+// with discovered host:port pairs, and uses FS observations to tighten Read.
+//
+// When the observer recorded specific file paths, those replace the blanket
+// script-directory grant — the user can re-add the directory grant if they
+// want broader access, but the default should be the minimum the script
+// actually used. When the observer recorded nothing (script did no file IO,
+// or the observer backend was unavailable), we keep the conservative
+// script-directory grant from the original manifest.
 func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsPaths []string) *Manifest {
 	out := *original
 	rules := make([]NetworkRule, 0, len(obs))
@@ -223,7 +222,7 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsPaths [
 	}
 	out.Network = &NetworkPerm{Rules: rules}
 	if len(fsPaths) > 0 {
-		out.Read = append(append([]string{}, original.Read...), fsPaths...)
+		out.Read = append([]string{}, fsPaths...)
 	}
 	return &out
 }

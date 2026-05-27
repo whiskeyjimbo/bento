@@ -46,66 +46,120 @@ func parseStraceOpens(tracePath, scriptAbs string, extraPrefixes []string) ([]FS
 	}
 	defer f.Close()
 
-	seen := make(map[string]bool) // path -> OK (any success wins)
+	type acc struct {
+		ok    bool
+		write bool
+	}
+	seen := make(map[string]acc)
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		path, ok, found := extractOpenatAttempt(sc.Text())
+		path, ok, write, found := extractOpenatAttempt(sc.Text())
 		if !found {
 			continue
 		}
+		// Relative paths in an openat(AT_FDCWD, ...) are resolved against
+		// the script's cwd, which bento sets to /sandbox. Promote them so
+		// downstream filters can recognize /sandbox/* paths consistently.
 		if !filepath_IsAbs(path) {
+			path = spec.SandboxRoot + "/" + path
+		}
+		// Keep /sandbox/* opens only when they're writes — they're how we
+		// detect silent writes into the sandbox tmpfs. Everything else
+		// under /sandbox is bento internals (script, launcher, shim files).
+		if isNoisePath(path, scriptAbs, extraPrefixes) && !(write && isSandboxUserPath(path)) {
 			continue
 		}
-		if isNoisePath(path, scriptAbs, extraPrefixes) {
+		prev, exists := seen[path]
+		if !exists {
+			seen[path] = acc{ok: ok, write: write}
 			continue
 		}
-		if prev, exists := seen[path]; !exists || (!prev && ok) {
-			seen[path] = ok
+		// Promote: any successful open wins, any write flag wins.
+		if !prev.ok && ok {
+			prev.ok = ok
 		}
+		if write {
+			prev.write = true
+		}
+		seen[path] = prev
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
 	out := make([]FSOpen, 0, len(seen))
-	for p, ok := range seen {
-		out = append(out, FSOpen{Path: p, OK: ok})
+	for p, a := range seen {
+		out = append(out, FSOpen{Path: p, OK: a.ok, Write: a.write})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
 
-// extractOpenatAttempt parses a single strace line and returns (path, ok, found).
+// isSandboxUserPath reports whether a /sandbox/* path is a user-visible file
+// (not a bento internal). Bento internals: /sandbox/script, /sandbox/launcher,
+// /sandbox/proxychains.conf, anything starting with /sandbox/.bento-.
+func isSandboxUserPath(p string) bool {
+	if !strings.HasPrefix(p, spec.SandboxRoot+"/") {
+		return false
+	}
+	switch p {
+	case spec.SandboxScriptPath, spec.SandboxLauncherPath, spec.SandboxProxychainsConfPath:
+		return false
+	}
+	rest := p[len(spec.SandboxRoot)+1:]
+	if strings.HasPrefix(rest, ".bento-") {
+		return false
+	}
+	return true
+}
+
+// extractOpenatAttempt parses a single strace line and returns (path, ok, write, found).
 // `found` is true when the line is an openat/openat2 call we recognize; `ok`
-// is true when the return value is a non-negative fd. Lines look like:
+// is true when the return value is a non-negative fd; `write` is true when the
+// flags argument requests write access. Lines look like:
 //
 //	[pid 1234] openat(AT_FDCWD, "/foo/bar", O_RDONLY) = 3
+//	openat(AT_FDCWD, "/foo/bar", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 4
 //	openat(AT_FDCWD, "/foo/bar", O_RDONLY) = -1 ENOENT (No such file)
-func extractOpenatAttempt(line string) (string, bool, bool) {
+func extractOpenatAttempt(line string) (string, bool, bool, bool) {
 	i := strings.Index(line, "openat")
 	if i < 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	paren := strings.Index(line[i:], "(")
 	if paren < 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	rest := line[i+paren+1:]
 	if !strings.HasPrefix(rest, "AT_FDCWD") {
-		return "", false, false
+		return "", false, false, false
 	}
 	q1 := strings.Index(rest, "\"")
 	if q1 < 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	q2 := strings.Index(rest[q1+1:], "\"")
 	if q2 < 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	path := rest[q1+1 : q1+1+q2]
+	// Flags are after the closing quote of the path: `, O_WRONLY|O_CREAT, ...`
+	afterPath := rest[q1+1+q2+1:]
+	write := false
+	if comma := strings.Index(afterPath, ","); comma >= 0 {
+		flagsEnd := strings.IndexAny(afterPath[comma+1:], ",)")
+		if flagsEnd >= 0 {
+			flags := afterPath[comma+1 : comma+1+flagsEnd]
+			write = strings.Contains(flags, "O_WRONLY") ||
+				strings.Contains(flags, "O_RDWR") ||
+				strings.Contains(flags, "O_CREAT") ||
+				strings.Contains(flags, "O_TRUNC") ||
+				strings.Contains(flags, "O_APPEND")
+		}
+	}
 	eq := strings.LastIndex(line, "= ")
 	if eq < 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	tail := strings.TrimSpace(line[eq+2:])
 	end := 0
@@ -113,13 +167,13 @@ func extractOpenatAttempt(line string) (string, bool, bool) {
 		end++
 	}
 	if end == 0 {
-		return "", false, false
+		return "", false, false, false
 	}
 	n, err := strconv.Atoi(tail[:end])
 	if err != nil {
-		return "", false, false
+		return "", false, false, false
 	}
-	return path, n >= 0, true
+	return path, n >= 0, write, true
 }
 
 // isNoisePath filters sandbox/bwrap/system paths the user wouldn't put in a

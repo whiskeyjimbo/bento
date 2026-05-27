@@ -47,8 +47,9 @@ type Config struct {
 
 // FSOpen is one open() attempt recorded by the filesystem observer.
 type FSOpen struct {
-	Path string
-	OK   bool // open returned a non-negative fd
+	Path  string
+	OK    bool // open returned a non-negative fd
+	Write bool // open requested write access (O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND)
 }
 
 // DefaultTimeout caps unbounded script runs when the caller doesn't pass WithTimeout.
