@@ -452,7 +452,7 @@ func nixStoreClosure(path string) []string {
 	if out, err := exec.Command("nix-store", "--query", "--requisites", path).Output(); err == nil {
 		seen := map[string]bool{}
 		var roots []string
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || seen[line] {
 				continue

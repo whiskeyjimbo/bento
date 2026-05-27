@@ -92,5 +92,6 @@ fmt:
 # -----------------------------------------------------------------------------
 clean:
 	@printf "$(YELLOW)[bento:clean]$(NC) Removing built launcher bins and cache targets...\n"
-	@rm -rf internal/launcherbin internal/fsshimbin bin
+	@rm -f internal/launcherbin/bento-launcher-linux-amd64 internal/fsshimbin/fsshim-linux-amd64.so
+	@rm -rf bin
 	@printf "$(GREEN)[bento:clean]$(NC) Workspace cleaned successfully!\n"

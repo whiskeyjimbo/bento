@@ -1,9 +1,9 @@
 package bento
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,11 +149,11 @@ func friendlyYAMLError(err error) string {
 func extractFieldFromTypeError(raw, marker string) string {
 	// Errors look like: "line 4: cannot unmarshal !!seq into spec.NetworkPerm"
 	// We have no field name in there, so map the struct type to its YAML key.
-	idx := strings.Index(raw, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(raw, marker)
+	if !ok {
 		return "this"
 	}
-	rest := raw[idx+len(marker):]
+	rest := after
 	end := strings.IndexAny(rest, " \n\t")
 	if end < 0 {
 		end = len(rest)
