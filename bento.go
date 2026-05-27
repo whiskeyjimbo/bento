@@ -3,6 +3,7 @@ package bento
 import (
 	"context"
 	"fmt"
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,7 +123,9 @@ func LoadManifest(r io.Reader, opts ...LoadOption) (*Manifest, error) {
 	}
 
 	var m Manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&m); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("LoadManifest: %w", err)
 	}
 

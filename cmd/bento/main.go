@@ -79,9 +79,12 @@ func cmdProfile(args []string) int {
 	interpreter := fs.String("interpreter", "", "override auto-detected interpreter")
 	verbose := fs.Bool("verbose", false, "show sandbox argv and other diagnostic logging")
 	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
+	allowExec := fs.Bool("allow-exec", false, "permit subprocess execve during profiling (required to profile bash scripts and build tools)")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
-		usage()
+		fmt.Fprintln(os.Stderr, "error: bento profile needs exactly one script path")
+		fmt.Fprintln(os.Stderr, "  bento profile <script>")
+		fmt.Fprintln(os.Stderr, "  bento profile --help     # full flag list")
 		return 2
 	}
 	scriptPath := fs.Arg(0)
@@ -99,6 +102,9 @@ func cmdProfile(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	if *allowExec {
+		m.AllowExec = true
 	}
 
 	outPath := *out
@@ -133,9 +139,11 @@ func cmdProfile(args []string) int {
 
 	if result.ExitCode != 0 && !*force {
 		if matchesExecBlock(tail.String()) {
-			fmt.Fprintln(os.Stderr, "[bento] the script tried to spawn a subprocess, which `bento profile` still blocks")
-			fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Profile cannot observe scripts that exec.")
-			fmt.Fprintln(os.Stderr, "[bento]   Hand-author a manifest with `allow_exec: true` and run with `bento run`.")
+			fmt.Fprintln(os.Stderr, "[bento] the script tried to spawn a subprocess, which `bento profile` blocks by default")
+			fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Re-run with --allow-exec to let")
+			fmt.Fprintln(os.Stderr, "[bento]   subprocesses run during profiling; the generated manifest will have")
+			fmt.Fprintln(os.Stderr, "[bento]   `allow_exec: true` set:")
+			fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
 		} else {
 			fmt.Fprintf(os.Stderr, "[bento] trial run exited %d — skipping manifest write (the run did not get far\n", result.ExitCode)
 			fmt.Fprintln(os.Stderr, "[bento] enough to record useful observations). Re-run with --force to write anyway.")
@@ -443,7 +451,9 @@ func cmdRun(args []string) int {
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		usage()
+		fmt.Fprintln(os.Stderr, "error: bento run needs a manifest or script path")
+		fmt.Fprintln(os.Stderr, "  bento run <manifest.yaml | script>")
+		fmt.Fprintln(os.Stderr, "  bento run --help     # full flag list")
 		return 2
 	}
 	scriptArgs := fs.Args()[1:]
@@ -515,6 +525,7 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 		bento.WithLogger(log.New(os.Stderr, "", 0)),
 		bento.WithVerbose(verbose),
 		bento.WithNetworkMode(netMode),
+		bento.WithStdout(io.MultiWriter(os.Stdout, tail)),
 		bento.WithStderr(io.MultiWriter(os.Stderr, tail)),
 		bento.WithFilesystemObserver(func(opens []bento.FSOpen) { fsOpens = opens }),
 	}
@@ -644,8 +655,9 @@ func emitZeroConfigHint(w io.Writer, scriptPath string, m *bento.Manifest, stder
 	if matchesWriteBlock(stderrTail) {
 		emit(
 			"[bento] zero-config grants no write access. If the script needs to write files,",
-			"[bento]   run `bento profile <script>` and add the destination paths to the manifest's `write:` list,",
-			"[bento]   then re-run with `bento run <manifest>.yaml`.",
+			"[bento]   run `bento profile <script>` to generate a manifest, then add the destination",
+			"[bento]   paths to its `write:` list by hand (profile observes network but not writes),",
+			"[bento]   and re-run with `bento run <manifest>.yaml`.",
 		)
 		return
 	}

@@ -262,7 +262,14 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsPaths [
 			Port: strconv.Itoa(o.Port),
 		})
 	}
-	out.Network = &NetworkPerm{Rules: rules}
+	if len(rules) == 0 {
+		// Profile saw no network use; emit no `network:` block at all so the
+		// generated manifest reads "no network" by absence (the same default
+		// as zero-config) rather than the ambiguous `network: { rules: [] }`.
+		out.Network = nil
+	} else {
+		out.Network = &NetworkPerm{Rules: rules}
+	}
 	if len(fsPaths) > 0 {
 		out.Read = append([]string{}, fsPaths...)
 	}

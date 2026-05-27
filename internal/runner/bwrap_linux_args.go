@@ -43,6 +43,7 @@ func compileBwrapArgs(c compileCtx) ([]string, []bwrapSection) {
 	args = appendBaseFlags(args, c.manifest.Limits)
 	mark("system mounts")
 	args = appendSystemMounts(args)
+	args = appendUserDB(args, c.aux)
 	args = appendInterpreterPrefix(args, c.interp)
 	mark("network")
 	args = appendNetworkNamespace(args, c.manifest, c.aux)
@@ -132,6 +133,22 @@ var systemReadPaths = []string{
 	"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
 	"/etc/resolv.conf",
 	"/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+}
+
+// appendUserDB binds synthetic /etc/passwd and /etc/group from temp files
+// startAuxiliary prepared. Without these, `whoami` and similar pwd lookups
+// report "cannot find name for user ID" inside the sandbox.
+func appendUserDB(args []string, aux *auxiliary) []string {
+	if aux == nil {
+		return args
+	}
+	if aux.passwdPath != "" {
+		args = append(args, "--ro-bind", aux.passwdPath, "/etc/passwd")
+	}
+	if aux.groupPath != "" {
+		args = append(args, "--ro-bind", aux.groupPath, "/etc/group")
+	}
+	return args
 }
 
 func appendSystemMounts(args []string) []string {

@@ -91,6 +91,12 @@ $ bento run --network-mode=bridge fetch.yaml       # kernel < 6.7 fallback
 $ bento run --prompt fetch.yaml                    # interactive allowlist on misses
 $ bento doctor --skip-network --fail-fast          # CI-friendly
 
+# Bash and other shell scripts: zero-config blocks subprocess execve, so
+# any script that runs `ls`, `grep`, `curl`, etc. (i.e. almost every bash
+# script) will fail with "Operation not permitted" until you opt in.
+# Profile with --allow-exec to capture a manifest with allow_exec: true:
+$ bento profile --allow-exec ./deploy.sh           # writes deploy.manifest.yaml
+
 # Per-subcommand flags
 $ bento run --help                                 # full flag list for run
 $ bento profile --help                             # full flag list for profile
@@ -98,22 +104,26 @@ $ bento profile --help                             # full flag list for profile
 
 ### Sandbox conventions worth knowing up front
 
+- **Host environment is not passed through.** This is the most common
+  surprise. `$USER`, `$LANG`, `$PATH`, `$AWS_PROFILE`, `$NODE_ENV`, and
+  every other host env var is stripped by default; scripts see a minimal
+  env. A script that reads `$DATABASE_URL` will get an empty string and
+  silently misbehave. To inherit specific vars, list them in the
+  manifest's `env:` allowlist; to add new ones, use `--env KEY=VALUE` or
+  `WithExtraEnv`.
 - Inside the sandbox `cwd` is `/sandbox` and `$HOME` is `/sandbox`. Scripts
   that hard-code `$PWD` against the host directory will see a different
   path; reference the script's own location (`__file__`, `$0`) instead.
 - The script is mounted at `/sandbox/script`; declared `read` and `write`
   paths keep their host paths.
-- **Host environment is not passed through.** `$USER`, `$LANG`, `$PATH`,
-  and similar vars are stripped by default — scripts see a minimal env.
-  To inherit specific vars, list them in the manifest's `env:` allowlist;
-  to add new ones, use `--env KEY=VALUE` or `WithExtraEnv`.
 - Zero-config (`bento run script.py`) gives the script no network at all.
   If a `urlopen()` or `curl` call fails with DNS errors, you almost
   certainly want `bento profile` to record the hosts and then run under
   the trimmed manifest.
 - Zero-config also blocks subprocess execve. A `subprocess.run([...])`
   or backtick exec will fail with `Operation not permitted`. To allow
-  subprocesses you must run from a manifest (see `exec:` below).
+  subprocesses, set `allow_exec: true` in the manifest (or use
+  `bento profile --allow-exec <script>` to generate one).
 - Mandatory-deny shadows file *contents*, not file *existence*. A script
   with broad read access can `os.listdir("$HOME")` and see the names of
   protected files (`.ssh/`, `.bashrc`, `.aws/credentials`), but opening

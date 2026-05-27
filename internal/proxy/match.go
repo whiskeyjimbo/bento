@@ -96,7 +96,7 @@ func (a *defaultAuthorizer) Authorize(host string, port int) (bool, string) {
 	if a.grantCache != nil {
 		if cached, ok := a.grantCache.Lookup(req); ok {
 			if cached == grants.DecisionAllow {
-				return true, "GRANTED-CACHED"
+				return true, "ALLOW"
 			}
 			return false, "DENIED-CACHED"
 		}
@@ -106,7 +106,7 @@ func (a *defaultAuthorizer) Authorize(host string, port int) (bool, string) {
 		a.grantCache.Store(req, decision)
 	}
 	if decision == grants.DecisionAllow {
-		return true, "GRANTED"
+		return true, "ALLOW"
 	}
 	return false, "DENIED-BY-USER"
 }

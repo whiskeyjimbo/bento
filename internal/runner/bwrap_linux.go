@@ -135,6 +135,8 @@ type auxiliary struct {
 	socks        proxy.ProxyServer
 	pchainsCfg   string
 	launcherPath string
+	passwdPath   string // synthetic /etc/passwd bind source
+	groupPath    string // synthetic /etc/group bind source
 
 	// Script-visible endpoints. Landlock: host proxy addrs. Bridge: fixed sandbox ports.
 	httpProxyURL string
@@ -164,6 +166,19 @@ func (a *auxiliary) close() {
 
 func startAuxiliary(m *spec.Manifest, cfg *Config) (*auxiliary, error) {
 	aux := &auxiliary{networkMode: resolveNetworkMode(cfg.NetworkMode, cfg)}
+
+	// Synthetic /etc/passwd + /etc/group so tools like `whoami`, `id`, and
+	// language runtimes that look up the current user (e.g. Python's pwd
+	// module) get a real answer instead of "cannot find name for user ID".
+	// We don't bind the host's files: that would leak every username on the
+	// box. We also can't generate these inside the sandbox (no write to /etc).
+	if passwd, group, err := writeSyntheticUserDB(); err == nil {
+		aux.passwdPath = passwd
+		aux.groupPath = group
+		aux.onClose(func() { os.Remove(passwd); os.Remove(group) })
+	} else {
+		cfg.warn("synthetic /etc/passwd setup failed: %v — whoami / pwd lookups inside the sandbox will fail", err)
+	}
 
 	if m.Network != nil {
 		proxyOpts := []proxy.Option{proxy.WithLogger(cfg.Logger)}
@@ -386,6 +401,42 @@ func spawnHostSocat(aux *auxiliary, socat, unixPath, tcpAddr string, cfg *Config
 		}
 	})
 	return nil
+}
+
+// writeSyntheticUserDB writes minimal /etc/passwd + /etc/group files
+// containing a single entry for the calling user (mapped to "sandbox" /
+// "sandbox") plus the standard root and nobody rows. Returns the two temp
+// paths; caller binds them into the sandbox at /etc/passwd and /etc/group.
+func writeSyntheticUserDB() (string, string, error) {
+	uid := os.Getuid()
+	gid := os.Getgid()
+	passwd := fmt.Sprintf("root:x:0:0:root:/root:/bin/sh\nsandbox:x:%d:%d:bento sandbox:/sandbox:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/sh\n", uid, gid)
+	group := fmt.Sprintf("root:x:0:\nsandbox:x:%d:\nnobody:x:65534:\n", gid)
+
+	pf, err := os.CreateTemp("", "bento-passwd-*")
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := pf.WriteString(passwd); err != nil {
+		pf.Close()
+		os.Remove(pf.Name())
+		return "", "", err
+	}
+	pf.Close()
+
+	gf, err := os.CreateTemp("", "bento-group-*")
+	if err != nil {
+		os.Remove(pf.Name())
+		return "", "", err
+	}
+	if _, err := gf.WriteString(group); err != nil {
+		gf.Close()
+		os.Remove(gf.Name())
+		os.Remove(pf.Name())
+		return "", "", err
+	}
+	gf.Close()
+	return pf.Name(), gf.Name(), nil
 }
 
 func writeProxychainsConfig(socksAddr string) (string, error) {
