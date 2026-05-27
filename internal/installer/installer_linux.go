@@ -13,9 +13,8 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/sysprobe"
 )
 
-// Init runs the install steps. Writes step-by-step output to w.
-// Returns the number of steps that ran (informational) and an error
-// on first failure.
+// Init runs the install steps and writes progress to w.
+// Returns the number of steps that ran and an error on first failure.
 func Init(ctx context.Context, w io.Writer, opts ...InitOption) (int, error) {
 	cfg := &initOpts{}
 	for _, opt := range opts {
@@ -80,7 +79,6 @@ func planStepsWithConfig(w io.Writer, cfg *initOpts) ([]step, error) {
 
 	var steps []step
 
-	// Check + install host packages.
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		steps = append(steps, pm.installStep("bubblewrap"))
 	}
@@ -169,9 +167,8 @@ func needsAppArmorProfile() bool {
 	return err != nil && strings.Contains(string(out), "Permission denied")
 }
 
-// apparmorProfile is the minimal profile that grants bwrap the
-// permissions it needs under the Ubuntu 24.04+ unprivileged_userns
-// AppArmor restriction. Same shape Flatpak ships.
+// apparmorProfile grants bwrap the permissions it needs under the Ubuntu 24.04+
+// unprivileged_userns restriction (same shape Flatpak ships).
 const apparmorProfile = `abi <abi/4.0>,
 include <tunables/global>
 

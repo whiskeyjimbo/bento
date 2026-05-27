@@ -1,24 +1,12 @@
 //go:build linux && amd64
 
-// bento-launcher: tiny shim that installs seccomp (block execve, allow
-// execveat) and Landlock TCP rules, then execveat()s into the target
-// interpreter. We use execveat (different syscall number than execve)
-// so our own transition isn't blocked by the seccomp filter we just
-// installed.
+// bento-launcher: installs seccomp (block execve, allow execveat) and Landlock
+// TCP rules, then execveats into the target interpreter. execveat is used so
+// our own transition isn't blocked by the seccomp filter we just installed.
 //
 // Usage: bento-launcher <interpreter-path> [args...]
-//
-// Environment:
-//
-//	BENTO_ALLOW_PORTS  comma-separated TCP ports the script may connect to
-//	                   (typically the bento HTTP CONNECT + SOCKS5 proxy
-//	                   ports). Empty/unset → all TCP blocked.
-//
-// Architecture: linux/amd64 only — the syscall numbers below
-// (sysExecveat, sysSeccomp, sysLandlock*) are amd64-specific. arm64
-// support requires a separate file with the arm64 numbers and matching
-// build tags.
-//
+// Env BENTO_ALLOW_PORTS: comma-separated TCP ports; empty → all TCP blocked.
+// linux/amd64 only — syscall numbers below are amd64-specific.
 
 package main
 
@@ -136,7 +124,108 @@ func main() {
 		atEmptyPath,
 		0,
 	)
+	if errno == syscall.ENOENT {
+		// The interpreter file exists (we just opened it), so ENOENT from
+		// execveat almost always means the ELF program interpreter (e.g.
+		// /lib64/ld-linux-x86-64.so.2 or a /nix/store/... ld-linux) is
+		// missing inside the sandbox.
+		if ldPath, ok := readElfInterp(interp); ok {
+			die("interpreter %s loaded but its ELF program interpreter %s is missing in the sandbox.\n"+
+				"  This usually means a managed-runtime (Nix, mise, asdf, conda) install whose dynamic\n"+
+				"  linker and shared libraries weren't bind-mounted. Add the closure to the manifest's\n"+
+				"  `read:` list, or use a system interpreter (e.g. /usr/bin/python3, /bin/bash).", interp, ldPath)
+		}
+		die("execveat: %v — interpreter %s could not be loaded (likely missing dynamic-linker dependency)", errno, interp)
+	}
 	die("execveat: %v", errno)
+}
+
+// readElfInterp returns the ELF program-interpreter path embedded in the
+// PT_INTERP segment of an ELF binary, if any. It returns ("", false) for
+// scripts, static binaries, or unreadable files.
+func readElfInterp(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	var ident [16]byte
+	if _, err := f.ReadAt(ident[:], 0); err != nil {
+		return "", false
+	}
+	if ident[0] != 0x7f || ident[1] != 'E' || ident[2] != 'L' || ident[3] != 'F' {
+		return "", false
+	}
+	is64 := ident[4] == 2
+	le := ident[5] == 1
+	read16 := func(b []byte) uint16 {
+		if le {
+			return uint16(b[0]) | uint16(b[1])<<8
+		}
+		return uint16(b[1]) | uint16(b[0])<<8
+	}
+	read32 := func(b []byte) uint32 {
+		if le {
+			return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+		}
+		return uint32(b[3]) | uint32(b[2])<<8 | uint32(b[1])<<16 | uint32(b[0])<<24
+	}
+	read64 := func(b []byte) uint64 {
+		if le {
+			return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+				uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+		}
+		return uint64(b[7]) | uint64(b[6])<<8 | uint64(b[5])<<16 | uint64(b[4])<<24 |
+			uint64(b[3])<<32 | uint64(b[2])<<40 | uint64(b[1])<<48 | uint64(b[0])<<56
+	}
+	var phoff uint64
+	var phentsize, phnum uint16
+	if is64 {
+		var ehdr [64]byte
+		if _, err := f.ReadAt(ehdr[:], 0); err != nil {
+			return "", false
+		}
+		phoff = read64(ehdr[32:40])
+		phentsize = read16(ehdr[54:56])
+		phnum = read16(ehdr[56:58])
+	} else {
+		var ehdr [52]byte
+		if _, err := f.ReadAt(ehdr[:], 0); err != nil {
+			return "", false
+		}
+		phoff = uint64(read32(ehdr[28:32]))
+		phentsize = read16(ehdr[42:44])
+		phnum = read16(ehdr[44:46])
+	}
+	const ptInterp = 3
+	ph := make([]byte, int(phentsize))
+	for i := uint16(0); i < phnum; i++ {
+		if _, err := f.ReadAt(ph, int64(phoff)+int64(i)*int64(phentsize)); err != nil {
+			return "", false
+		}
+		ptype := read32(ph[0:4])
+		if ptype != ptInterp {
+			continue
+		}
+		var off, sz uint64
+		if is64 {
+			off = read64(ph[8:16])
+			sz = read64(ph[32:40])
+		} else {
+			off = uint64(read32(ph[4:8]))
+			sz = uint64(read32(ph[16:20]))
+		}
+		if sz == 0 || sz > 4096 {
+			return "", false
+		}
+		buf := make([]byte, sz)
+		if _, err := f.ReadAt(buf, int64(off)); err != nil {
+			return "", false
+		}
+		s := strings.TrimRight(string(buf), "\x00")
+		return s, s != ""
+	}
+	return "", false
 }
 
 func die(format string, args ...any) {
@@ -145,9 +234,8 @@ func die(format string, args ...any) {
 }
 
 // applyFDLimit caps RLIMIT_NOFILE if BENTO_FD_LIMIT is set. systemd's
-// LimitNOFILE= isn't honored for --scope units; setrlimit is.
-// Applied BEFORE seccomp because the seccomp filter could
-// theoretically block prlimit64 in the future.
+// LimitNOFILE= isn't honored for --scope units; setrlimit is. Applied
+// before seccomp in case the filter ever blocks prlimit64.
 func applyFDLimit() error {
 	s := os.Getenv(spec.EnvFDLimit)
 	if s == "" {

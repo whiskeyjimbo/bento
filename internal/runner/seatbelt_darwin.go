@@ -16,15 +16,8 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// runPlatform on macOS: sandbox-exec + SBPL profile.
-//
-// sandbox-exec is deprecated since 10.15 but still ships and works. App
-// Sandbox (the supported replacement) requires entitlements + code
-// signing, so it's unsuitable for arbitrary script execution.
-//
-// Structure mirrors the Linux runPlatform: resolveTools → startAuxiliary
-// (cleanup stack) → compile profile → executeCommand. Section helpers
-// for the SBPL match the appendXxx pattern in bwrap_linux.go.
+// runPlatform on macOS: sandbox-exec + SBPL profile. sandbox-exec is deprecated
+// since 10.15 but still ships; App Sandbox requires entitlements+signing.
 func runPlatform(ctx context.Context, m *spec.Manifest, cfg *Config) (int, error) {
 	interp, scriptAbs, err := resolveDarwinTools(m)
 	if err != nil {
@@ -57,10 +50,8 @@ func runPlatform(ctx context.Context, m *spec.Manifest, cfg *Config) (int, error
 	return executeDarwinCommand(ctx, m, interp, scriptAbs, profile, aux, cfg)
 }
 
-// resolveDarwinTools verifies sandbox-exec is installed and resolves the
-// manifest's interpreter and script paths. Symlinks on the interpreter
-// are followed so the SBPL profile authorizes the real binary, not a
-// version-shim.
+// resolveDarwinTools verifies sandbox-exec and resolves interpreter/script paths.
+// Interpreter symlinks are followed so SBPL authorizes the real binary, not a shim.
 func resolveDarwinTools(m *spec.Manifest) (interp, scriptAbs string, err error) {
 	if _, err = exec.LookPath("sandbox-exec"); err != nil {
 		return "", "", fmt.Errorf("sandbox-exec not found")
@@ -79,10 +70,8 @@ func resolveDarwinTools(m *spec.Manifest) (interp, scriptAbs string, err error) 
 	return interp, scriptAbs, nil
 }
 
-// darwinInterpreterPrefix returns the install root to authorize via
-// SBPL when the interpreter lives outside system paths. Mirror of the
-// Linux interpreterPrefix logic. Empty string means the system
-// allowances already cover the interpreter.
+// darwinInterpreterPrefix returns the install root to authorize via SBPL when
+// the interpreter lives outside system paths. Empty: system paths already cover it.
 func darwinInterpreterPrefix(interp string) string {
 	real, err := filepath.EvalSymlinks(interp)
 	if err != nil {
@@ -100,10 +89,8 @@ func darwinInterpreterPrefix(interp string) string {
 	return prefix
 }
 
-// darwinAuxiliary mirrors the Linux auxiliary struct: the runtime-only
-// resources started for one Run invocation, with a LIFO cleanup stack.
-// macOS only needs the SOCKS5 proxy today (Seatbelt does its own
-// per-host filtering natively; no HTTP CONNECT or proxychains needed).
+// darwinAuxiliary holds per-Run resources with a LIFO cleanup stack.
+// Only SOCKS5 today — Seatbelt does its own per-host filtering natively.
 type darwinAuxiliary struct {
 	socks     proxy.ProxyServer
 	socksAddr string // socks.Addr() captured at start; "" if no network
@@ -142,12 +129,8 @@ func startDarwinAuxiliary(m *spec.Manifest, cfg *Config) (*darwinAuxiliary, erro
 	return aux, nil
 }
 
-// executeDarwinCommand spawns sandbox-exec with the compiled SBPL +
-// interpreter argv. When limits.{memory,tasks,fds} are set, wraps in
-// /bin/sh -c 'ulimit ...; exec sandbox-exec ...' so the rlimits apply
-// to the child tree. CPU% has no setrlimit equivalent; warned above.
-//
-// Translates *exec.ExitError to (code, nil); other errors bubble up.
+// executeDarwinCommand spawns sandbox-exec with the compiled SBPL and interpreter argv,
+// wrapping in `sh -c 'ulimit …; exec …'` if Limits are set.
 func executeDarwinCommand(ctx context.Context, m *spec.Manifest, interp, scriptAbs, profile string, aux *darwinAuxiliary, cfg *Config) (int, error) {
 	sandboxArgs := []string{"-p", profile, interp, scriptAbs}
 	sandboxArgs = append(sandboxArgs, m.Args...)
@@ -186,16 +169,8 @@ func executeDarwinCommand(ctx context.Context, m *spec.Manifest, interp, scriptA
 	return 0, nil
 }
 
-// wrapWithUlimits wraps the sandbox-exec invocation in /bin/sh -c
-// 'ulimit ...; exec ...' so rlimits apply to the child tree.
-// Returns (sandboxExe, sandboxArgs) unchanged when no Limits set.
-//
-// Mapping:
-//
-//   - Memory ("128M") → ulimit -v in KiB (virtual memory)
-//   - Tasks   (32)    → ulimit -u (max user processes; close cousin of TasksMax)
-//   - FDs    (256)    → ulimit -n
-//   - CPU             → no setrlimit equivalent for "percent of a core"; ignored
+// wrapWithUlimits wraps in `sh -c 'ulimit …; exec …'` so rlimits apply to the child tree.
+// Memory→ulimit -v (KiB), Tasks→-u, FDs→-n. CPU% has no setrlimit equivalent.
 func wrapWithUlimits(lim *spec.Limits, exe string, args []string) (string, []string) {
 	if lim == nil {
 		return exe, args
@@ -215,7 +190,6 @@ func wrapWithUlimits(lim *spec.Limits, exe string, args []string) (string, []str
 	if len(ulimits) == 0 {
 		return exe, args
 	}
-	// Build: 'ulimit -v N; ulimit -u N; exec sandbox-exec ARG1 "ARG2" ...'
 	var quoted []string
 	for _, a := range args {
 		quoted = append(quoted, shellQuote(a))
@@ -224,15 +198,12 @@ func wrapWithUlimits(lim *spec.Limits, exe string, args []string) (string, []str
 	return "/bin/sh", []string{"-c", script}
 }
 
-// shellQuote single-quotes s for safe shell embedding. Escapes
-// internal single-quotes by closing, escaped-quote, reopening.
+// shellQuote single-quotes s for safe shell embedding.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // buildDarwinEnv assembles the env slice passed to sandbox-exec.
-// Structure mirrors Linux's appendBaseEnv + appendUserEnv +
-// appendExtraEnv + appendProxyEnv.
 func buildDarwinEnv(m *spec.Manifest, aux *darwinAuxiliary, cfg *Config) []string {
 	env := []string{
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",

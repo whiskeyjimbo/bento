@@ -17,7 +17,7 @@ NC     := \033[0m # No Color
 # -----------------------------------------------------------------------------
 # Phony Targets
 # -----------------------------------------------------------------------------
-.PHONY: help build launcher test test-verbose vet fmt clean
+.PHONY: help build launcher fsshim test test-verbose vet fmt clean
 
 # -----------------------------------------------------------------------------
 # Group: Help Manual
@@ -40,10 +40,11 @@ help:
 # -----------------------------------------------------------------------------
 # Group: Build Operations
 # -----------------------------------------------------------------------------
-build: launcher
-	@printf "$(BLUE)[bento:build]$(NC) Compiling package targets...\n"
-	@go build ./...
-	@printf "$(GREEN)[bento:build]$(NC) Build successful!\n"
+build: launcher fsshim
+	@printf "$(BLUE)[bento:build]$(NC) Compiling bento CLI to bin/bento...\n"
+	@mkdir -p bin
+	@go build -o bin/bento ./cmd/bento
+	@printf "$(GREEN)[bento:build]$(NC) Built bin/bento (install with: sudo install bin/bento /usr/local/bin/)\n"
 
 launcher:
 	@printf "$(BLUE)[bento:build]$(NC) Creating launcher embed container directory...\n"
@@ -55,6 +56,14 @@ launcher:
 		-o internal/launcherbin/bento-launcher-linux-amd64 \
 		./cmd/bento-launcher
 	@printf "$(GREEN)[bento:build]$(NC) Static launcher compiled & embedded successfully!\n"
+
+fsshim:
+	@printf "$(BLUE)[bento:build]$(NC) Compiling LD_PRELOAD fsshim (strace fallback)...\n"
+	@mkdir -p internal/fsshimbin
+	@gcc -shared -fPIC -O2 -Wno-unused-result -Wno-nonnull-compare \
+		-o internal/fsshimbin/fsshim-linux-amd64.so \
+		internal/fsshim/fsshim.c -ldl
+	@printf "$(GREEN)[bento:build]$(NC) fsshim compiled & embedded successfully!\n"
 
 # -----------------------------------------------------------------------------
 # Group: Verification & Quality
@@ -83,5 +92,5 @@ fmt:
 # -----------------------------------------------------------------------------
 clean:
 	@printf "$(YELLOW)[bento:clean]$(NC) Removing built launcher bins and cache targets...\n"
-	@rm -rf internal/launcherbin bin
+	@rm -rf internal/launcherbin internal/fsshimbin bin
 	@printf "$(GREEN)[bento:clean]$(NC) Workspace cleaned successfully!\n"

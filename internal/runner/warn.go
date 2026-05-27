@@ -7,14 +7,7 @@ import (
 	"os"
 )
 
-// warn emits a degradation notice. bento's policy: required tools
-// missing → hard error; optional capabilities missing → warn +
-// continue with reduced enforcement.
-//
-// If a Logger is configured, the warning goes there with a "[warn]"
-// prefix. Either way the warning ALSO goes to stderr so callers that
-// forgot to pass WithLogger still see security-relevant degradation.
-// See doc.go in the root package for the full policy.
+// warn emits a degradation notice. Goes to the Logger if set, else stderr.
 func (c *Config) warn(format string, args ...any) {
 	msg := "bento [warn] " + fmt.Sprintf(format, args...)
 	if c.Logger != nil {

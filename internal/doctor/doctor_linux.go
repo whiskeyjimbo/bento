@@ -12,8 +12,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/sysprobe"
 )
 
-// platformRegistry returns the built-in Linux checks tagged with their
-// categories. Run() filters and executes them.
+// platformRegistry returns the built-in Linux checks tagged with their categories.
 func platformRegistry(c *config) []registeredCheck {
 	checks := []registeredCheck{
 		{checkBwrap, CategoryCore},
@@ -30,7 +29,7 @@ func platformRegistry(c *config) []registeredCheck {
 		runtimes = []string{"python3", "bash", "node"}
 	}
 	for _, interp := range runtimes {
-		name := interp // capture
+		name := interp
 		checks = append(checks, registeredCheck{
 			run:      func() CheckResult { return checkInterpreter(name) },
 			category: CategoryInterpreter,

@@ -3,17 +3,18 @@
 package runner
 
 import (
+	"debug/elf"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/whiskeyjimbo/bento/internal/spec"
 	"github.com/whiskeyjimbo/bento/internal/sysprobe"
 )
 
-// compileCtx bundles everything compileBwrapArgs needs. Passed as a
-// single value so the public signature doesn't grow as new inputs
-// (timeouts, extra mounts, etc.) are added.
+// compileCtx bundles inputs for compileBwrapArgs.
 type compileCtx struct {
 	manifest  *spec.Manifest
 	interp    string
@@ -22,30 +23,54 @@ type compileCtx struct {
 	extraEnv  map[string]string
 }
 
-// compileBwrapArgs assembles the bwrap argv by composing small section
-// helpers. Each helper is purely additive (append-only) and named for
-// its responsibility, so the order of sandbox layering is readable
-// top-down.
-func compileBwrapArgs(c compileCtx) []string {
-	args := appendBaseFlags(nil, c.manifest.Limits)
+// bwrapSection labels a contiguous run of bwrap args for diagnostic display.
+type bwrapSection struct {
+	label string
+	start int // index into the argv where this section begins
+}
+
+// compileBwrapArgs assembles the bwrap argv from small append-only helpers,
+// ordered to make sandbox layering readable top-down. The second return value
+// is a list of section markers used only by formatBwrapArgs for verbose logging.
+func compileBwrapArgs(c compileCtx) ([]string, []bwrapSection) {
+	var args []string
+	var sections []bwrapSection
+	mark := func(label string) {
+		sections = append(sections, bwrapSection{label, len(args)})
+	}
+
+	mark("isolation")
+	args = appendBaseFlags(args, c.manifest.Limits)
+	mark("system mounts")
 	args = appendSystemMounts(args)
 	args = appendInterpreterPrefix(args, c.interp)
+	mark("network")
 	args = appendNetworkNamespace(args, c.manifest, c.aux)
 	args = appendUnixSocketBinds(args, c.aux)
+	mark("manifest reads")
 	args = appendUserReadPaths(args, c.manifest.Read)
+	mark("manifest writes")
 	args = appendUserWritePaths(args, c.manifest.Write)
+	mark("mandatory deny (read)")
 	args = appendMandatoryDeny(args)
+	mark("mandatory deny (write)")
 	args = appendMandatoryDenyWrite(args)
+	mark("workspace write protection")
 	args = appendWorkspaceWriteProtection(args, c.manifest.Write)
+	mark("script binding")
 	args = appendScriptBinding(args, c.scriptAbs)
+	mark("env")
 	args = appendBaseEnv(args)
 	args = appendUserEnv(args, c.manifest.Env)
 	args = appendExtraEnv(args, c.extraEnv)
 	args = appendFDLimitEnv(args, c.manifest.Limits)
 	args = appendProxyEnv(args, c.aux)
 	args = appendAllowedPortsEnv(args, c.aux)
+	mark("proxychains")
 	args = appendProxychains(args, c.aux)
-	return appendEntrypoint(args, c.interp, c.aux, c.manifest.Args)
+	mark("entrypoint")
+	args = appendEntrypoint(args, c.interp, c.aux, c.manifest.Args)
+	return args, sections
 }
 
 func appendBaseFlags(args []string, lim *spec.Limits) []string {
@@ -68,9 +93,8 @@ func appendBaseFlags(args []string, lim *spec.Limits) []string {
 	)
 }
 
-// appendSizedTmpfs emits "--tmpfs PATH" with an optional "--size N"
-// prefix when limits.tmpfs is set. Without the cap, an in-sandbox
-// script can write to /tmp until it exhausts host memory.
+// appendSizedTmpfs emits --tmpfs PATH with --size when limits.tmpfs is set,
+// to prevent a script from filling host memory via /tmp.
 func appendSizedTmpfs(args []string, lim *spec.Limits, path string) []string {
 	if lim != nil && lim.Tmpfs != "" {
 		if n, err := spec.ParseBytes(lim.Tmpfs); err == nil && n > 0 {
@@ -80,8 +104,7 @@ func appendSizedTmpfs(args []string, lim *spec.Limits, path string) []string {
 	return append(args, "--tmpfs", path)
 }
 
-// systemReadPaths are bind-mounted read-only into every sandbox so the
-// interpreter can resolve libraries and find CA bundles.
+// systemReadPaths are bind-mounted read-only so the interpreter resolves libs and CA bundles.
 var systemReadPaths = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64",
 	"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
@@ -99,20 +122,14 @@ func appendSystemMounts(args []string) []string {
 }
 
 func appendInterpreterPrefix(args []string, interp string) []string {
-	if prefix := interpreterPrefix(interp); prefix != "" {
-		args = append(args, "--ro-bind", prefix, prefix)
+	for _, p := range interpreterPrefixes(interp) {
+		args = append(args, "--ro-bind", p, p)
 	}
 	return args
 }
 
-// appendNetworkNamespace decides whether to isolate the network
-// namespace. Three cases:
-//
-//   - No network rules in manifest → --unshare-net (no network at all).
-//   - Bridge mode → --unshare-net (host net hidden; only loopback +
-//     bridge sockets reach out).
-//   - Landlock mode → keep host network (Landlock TCP restricts which
-//     ports the script can connect to).
+// appendNetworkNamespace adds --unshare-net for no-network and bridge modes;
+// Landlock mode keeps host net (Landlock TCP restricts ports instead).
 func appendNetworkNamespace(args []string, m *spec.Manifest, aux *auxiliary) []string {
 	if m.Network == nil || aux.networkMode == spec.NetworkModeBridge {
 		args = append(args, "--unshare-net")
@@ -120,10 +137,7 @@ func appendNetworkNamespace(args []string, m *spec.Manifest, aux *auxiliary) []s
 	return args
 }
 
-// appendUnixSocketBinds bind-mounts the host-side unix sockets into
-// the sandbox (bridge mode only). The sockets carry HTTP CONNECT and
-// SOCKS5 traffic between sandbox-side socat listeners and the host
-// proxy servers.
+// appendUnixSocketBinds bind-mounts host-side unix sockets into the sandbox (bridge mode only).
 func appendUnixSocketBinds(args []string, aux *auxiliary) []string {
 	if aux.networkMode != spec.NetworkModeBridge {
 		return args
@@ -159,18 +173,9 @@ func appendScriptBinding(args []string, scriptAbs string) []string {
 	return append(args, "--ro-bind", scriptAbs, spec.SandboxScriptPath)
 }
 
-// appendMandatoryDeny shadows the always-block list with /dev/null bind
-// mounts. Even if the user's read: list grants access (e.g. read: ["/"]),
-// the dangerous files appear empty inside the sandbox.
-//
-// Skips paths that don't exist on the host. The "block creation of
-// non-existent dangerous paths" case (a script writing ~/.ssh/id_rsa
-// for the first time) needs a different mechanism — bwrap can't create
-// a mount point inside a read-only parent — and is deferred to a
-// follow-up bead.
-//
-// Runs AFTER appendUserReadPaths so the bind takes precedence; bwrap
-// applies binds in order and the last one wins for a given destination.
+// appendMandatoryDeny shadows always-block paths with /dev/null binds.
+// Must run AFTER appendUserReadPaths so the bind takes precedence (last bind wins).
+// Skips non-existent paths (bwrap can't create mount points under a ro parent).
 func appendMandatoryDeny(args []string) []string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
@@ -179,11 +184,8 @@ func appendMandatoryDeny(args []string) []string {
 	return appendShadowedPaths(args, spec.ExpandDangerousPaths(home))
 }
 
-// appendMandatoryDenyWrite shadows persistence/RCE targets (shell rc
-// files, user git config, etc.). Same mechanism as appendMandatoryDeny
-// — bind /dev/null over the path — but sourced from
-// DangerousWriteFiles, which is curated for the persistence threat
-// model rather than credential exfil.
+// appendMandatoryDenyWrite shadows persistence/RCE targets (shell rc files, etc.)
+// from the DangerousWriteFiles list.
 func appendMandatoryDenyWrite(args []string) []string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
@@ -192,15 +194,8 @@ func appendMandatoryDenyWrite(args []string) []string {
 	return appendShadowedPaths(args, spec.ExpandDangerousWritePaths(home))
 }
 
-// appendWorkspaceWriteProtection shadows the dangerous subpaths inside
-// each user-declared write path. Two mechanisms:
-//
-//   - Directories like .git/hooks are re-bound read-only (--ro-bind
-//     PATH PATH) which shields BOTH existing entries (rendered
-//     unwriteable) AND unborn files (mkdir/touch attempts hit EROFS).
-//     This is what blocks "cp evil .git/hooks/post-checkout".
-//   - Individual files like .git/config and .vscode/tasks.json are
-//     /dev/null-shadowed if they exist (writes discarded, reads empty).
+// appendWorkspaceWriteProtection shadows dangerous subpaths inside each declared
+// write path: directories re-bound ro (EROFS on writes), files /dev/null-shadowed.
 func appendWorkspaceWriteProtection(args []string, writes []string) []string {
 	for _, w := range writes {
 		abs, err := filepath.Abs(w)
@@ -218,12 +213,7 @@ func appendWorkspaceWriteProtection(args []string, writes []string) []string {
 	return args
 }
 
-// appendShadowedPaths emits --ro-bind /dev/null PATH for each path
-// that exists on the host. Shared between read- and write-protection
-// helpers. Skip-on-missing matches the read-protect rationale: bwrap
-// can't create a mount point under a read-only bind, and shielding
-// "what doesn't exist yet" needs separate /dev/null-on-first-missing
-// machinery (out of scope here).
+// appendShadowedPaths emits --ro-bind /dev/null PATH for each existing path.
 func appendShadowedPaths(args []string, paths []string) []string {
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
@@ -235,11 +225,15 @@ func appendShadowedPaths(args []string, paths []string) []string {
 }
 
 func appendBaseEnv(args []string) []string {
-	return append(args,
+	args = append(args,
 		"--setenv", "PATH", "/usr/bin:/bin:/usr/sbin:/sbin",
 		"--setenv", "HOME", spec.SandboxRoot,
 		"--setenv", "LANG", "C.UTF-8",
 	)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		args = append(args, "--setenv", "BENTO_HOST_HOME", home)
+	}
+	return args
 }
 
 func appendUserEnv(args []string, allowlist []string) []string {
@@ -252,8 +246,6 @@ func appendUserEnv(args []string, allowlist []string) []string {
 }
 
 // appendExtraEnv emits caller-supplied env values (via WithExtraEnv).
-// These are sandboxed-script values, separate from the manifest's host
-// passthrough list.
 func appendExtraEnv(args []string, env map[string]string) []string {
 	for k, v := range env {
 		args = append(args, "--setenv", k, v)
@@ -261,9 +253,7 @@ func appendExtraEnv(args []string, env map[string]string) []string {
 	return args
 }
 
-// appendFDLimitEnv passes limits.fds to the launcher via env. The
-// launcher applies it via setrlimit(RLIMIT_NOFILE) before exec'ing
-// the interpreter.
+// appendFDLimitEnv passes limits.fds via env; launcher applies setrlimit before exec.
 func appendFDLimitEnv(args []string, lim *spec.Limits) []string {
 	if lim == nil || lim.FDs <= 0 {
 		return args
@@ -271,14 +261,8 @@ func appendFDLimitEnv(args []string, lim *spec.Limits) []string {
 	return append(args, "--setenv", spec.EnvFDLimit, fmt.Sprintf("%d", lim.FDs))
 }
 
-// appendProxyEnv emits HTTP_PROXY/HTTPS_PROXY so HTTP-aware tools
-// (curl, requests, net/http, …) route through the host-allowlist proxy.
-// noProxyHosts excludes loopback addresses from the script's HTTP
-// proxy routing. Without this, requests.get("http://localhost:8080")
-// from inside the sandbox would round-trip through our proxy before
-// failing (no listener exists at that loopback address inside the
-// namespace). NO_PROXY syntax varies by client but the values below
-// are honored by curl, requests, urllib, and go net/http.
+// noProxyHosts excludes loopback from proxy routing so in-sandbox localhost
+// requests don't pointlessly round-trip through the host proxy.
 const noProxyHosts = "localhost,127.0.0.1,::1,.local"
 
 func appendProxyEnv(args []string, aux *auxiliary) []string {
@@ -295,10 +279,8 @@ func appendProxyEnv(args []string, aux *auxiliary) []string {
 	)
 }
 
-// appendAllowedPortsEnv emits BENTO_ALLOW_PORTS, which the launcher
-// reads to install a Landlock TCP-port allowlist. In bridge mode this
-// is redundant with the network namespace (no route to non-bridge
-// destinations exists) but kept as defense in depth.
+// appendAllowedPortsEnv emits BENTO_ALLOW_PORTS for the launcher's Landlock
+// TCP allowlist. Redundant in bridge mode but kept as defense in depth.
 func appendAllowedPortsEnv(args []string, aux *auxiliary) []string {
 	if aux.allowedPorts == "" {
 		return args
@@ -308,9 +290,9 @@ func appendAllowedPortsEnv(args []string, aux *auxiliary) []string {
 
 func appendProxychains(args []string, aux *auxiliary) []string {
 	if aux.pchainsCfg == "" {
-		return args // either no network or libproxychains missing — see startAuxiliary
+		return args
 	}
-	lib := sysprobe.FindProxychainsLib() // guaranteed non-empty: startAuxiliary checked
+	lib := sysprobe.FindProxychainsLib()
 	return append(args,
 		"--ro-bind", lib, lib,
 		"--ro-bind", aux.pchainsCfg, spec.SandboxProxychainsConfPath,
@@ -321,18 +303,8 @@ func appendProxychains(args []string, aux *auxiliary) []string {
 }
 
 // appendEntrypoint emits the bwrap "--" separator plus the final argv.
-//
-// Landlock mode (or no network): bwrap exec's the launcher (or
-// interpreter directly), which exec's the script.
-//
-// Bridge mode: bwrap exec's bash with an inline script that:
-//
-//  1. Starts inner socat listeners (sandbox-side bridges) in background.
-//  2. Installs a trap so the socats die when the script ends.
-//  3. exec's the launcher (or interpreter) into the foreground.
-//
-// User-supplied script args are passed via $@ rather than embedded in
-// the inline string, so no shell-quoting of user input is needed.
+// Bridge mode wraps in bash to start sandbox-side socats before exec'ing the
+// launcher; user args go via $@ to avoid shell-quoting.
 func appendEntrypoint(args []string, interp string, aux *auxiliary, userArgs []string) []string {
 	if aux.networkMode == spec.NetworkModeBridge && (aux.unixHTTPSock != "" || aux.unixSocksSock != "") {
 		return appendBridgeEntrypoint(args, interp, aux, userArgs)
@@ -353,9 +325,7 @@ func appendDirectEntrypoint(args []string, interp string, aux *auxiliary, userAr
 }
 
 func appendBridgeEntrypoint(args []string, interp string, aux *auxiliary, userArgs []string) []string {
-	// Inner socats: TCP-LISTEN on fixed sandbox ports, UNIX-CONNECT to
-	// the bind-mounted host sockets. Start in background, trap on exit
-	// so they die with the script.
+	// Inner socats bridge fixed sandbox TCP ports → bind-mounted host unix sockets.
 	innerHTTP := fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &",
 		sandboxHTTPProxyPort, aux.unixHTTPSock)
 	innerSOCKS := fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 &",
@@ -370,8 +340,7 @@ func appendBridgeEntrypoint(args []string, interp string, aux *auxiliary, userAr
 
 	script := innerHTTP + "\n" + innerSOCKS + "\n" +
 		`trap 'kill %1 %2 2>/dev/null' EXIT` + "\n" +
-		`# Brief wait for socats to bind their TCP listeners.` + "\n" +
-		`sleep 0.05` + "\n" +
+		`sleep 0.05` + "\n" + // brief wait for socats to bind
 		execLine
 
 	if aux.launcherPath != "" {
@@ -381,6 +350,11 @@ func appendBridgeEntrypoint(args []string, interp string, aux *auxiliary, userAr
 	return append(args, userArgs...)
 }
 
+// interpreterPrefix returns the primary install-root prefix for an interpreter
+// outside of system paths (mise/asdf/pyenv/homebrew). Empty for system paths.
+// For Nix-store interpreters use interpreterPrefixes instead — Nix binaries
+// reference other store paths via RPATH, and binding only the binary's own
+// store path leaves the dynamic linker unable to resolve its dependencies.
 func interpreterPrefix(interp string) string {
 	real, err := filepath.EvalSymlinks(interp)
 	if err != nil {
@@ -396,4 +370,125 @@ func interpreterPrefix(interp string) string {
 		return ""
 	}
 	return prefix
+}
+
+// interpreterPrefixes returns every host path that should be bind-mounted
+// so the interpreter and its dynamic-link dependencies resolve inside the
+// sandbox. For Nix-managed interpreters this is the full store closure;
+// for mise/asdf/pyenv/homebrew it's the install root. System paths return
+// nil (covered by systemReadPaths).
+func interpreterPrefixes(interp string) []string {
+	real, err := filepath.EvalSymlinks(interp)
+	if err != nil {
+		return nil
+	}
+	if strings.HasPrefix(real, "/nix/store/") {
+		return nixStoreClosure(real)
+	}
+	if p := interpreterPrefix(interp); p != "" {
+		return []string{p}
+	}
+	return nil
+}
+
+// nixStoreClosure returns every /nix/store path the binary transitively
+// depends on, including itself. Uses `nix-store --query --requisites` when
+// available; falls back to recursively reading the binary's PT_INTERP and
+// RPATH/RUNPATH/DT_NEEDED entries.
+func nixStoreClosure(path string) []string {
+	if out, err := exec.Command("nix-store", "--query", "--requisites", path).Output(); err == nil {
+		seen := map[string]bool{}
+		var roots []string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			roots = append(roots, line)
+		}
+		if len(roots) > 0 {
+			return roots
+		}
+	}
+	return nixClosureFromElf(path)
+}
+
+// nixClosureFromElf walks PT_INTERP / DT_NEEDED / DT_RPATH / DT_RUNPATH
+// transitively and collects every /nix/store/<hash>-<name> root referenced.
+func nixClosureFromElf(start string) []string {
+	seen := map[string]bool{}
+	var queue []string
+	var roots []string
+	addRoot := func(p string) {
+		if !strings.HasPrefix(p, "/nix/store/") {
+			return
+		}
+		rest := strings.TrimPrefix(p, "/nix/store/")
+		idx := strings.IndexByte(rest, '/')
+		if idx >= 0 {
+			rest = rest[:idx]
+		}
+		root := "/nix/store/" + rest
+		if !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	queue = append(queue, start)
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		addRoot(cur)
+		interp, needed, rpaths := readElfDeps(cur)
+		if interp != "" {
+			addRoot(interp)
+			queue = append(queue, interp)
+		}
+		for _, n := range needed {
+			for _, rp := range rpaths {
+				cand := filepath.Join(rp, n)
+				if _, err := os.Stat(cand); err == nil {
+					addRoot(cand)
+					queue = append(queue, cand)
+					break
+				}
+			}
+		}
+	}
+	return roots
+}
+
+// readElfDeps extracts PT_INTERP, DT_NEEDED names, and DT_RPATH/RUNPATH
+// search dirs from an ELF file. Best-effort: returns zero values on any
+// parse error.
+func readElfDeps(path string) (interp string, needed []string, rpaths []string) {
+	f, err := elf.Open(path)
+	if err != nil {
+		return "", nil, nil
+	}
+	defer f.Close()
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			buf := make([]byte, p.Filesz)
+			if _, err := p.ReadAt(buf, 0); err == nil {
+				interp = strings.TrimRight(string(buf), "\x00")
+			}
+			break
+		}
+	}
+	if libs, err := f.ImportedLibraries(); err == nil {
+		needed = libs
+	}
+	if rps, err := f.DynString(elf.DT_RUNPATH); err == nil && len(rps) > 0 {
+		for _, rp := range rps {
+			rpaths = append(rpaths, strings.Split(rp, ":")...)
+		}
+	}
+	if rps, err := f.DynString(elf.DT_RPATH); err == nil && len(rps) > 0 {
+		for _, rp := range rps {
+			rpaths = append(rpaths, strings.Split(rp, ":")...)
+		}
+	}
+	return interp, needed, rpaths
 }

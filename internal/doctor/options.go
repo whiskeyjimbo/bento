@@ -3,12 +3,10 @@ package doctor
 // Option configures a Run invocation.
 type Option func(*config)
 
-// Check is a caller-supplied health check. The function returns a
-// CheckResult; the Name field should describe what was checked.
+// Check is a caller-supplied health check.
 type Check func() CheckResult
 
-// Category groups checks for selective filtering. WithSkipNetwork, for
-// example, omits all checks tagged CategoryNetwork.
+// Category groups checks for selective filtering.
 type Category string
 
 const (
@@ -19,9 +17,7 @@ const (
 	CategoryCustom      Category = "custom"      // caller-supplied via WithCheck
 )
 
-// registeredCheck pairs a check function with its category for
-// filtering. Built-ins and WithCheck values both flow through this
-// type so the execution path is uniform.
+// registeredCheck pairs a check with its category for filtering.
 type registeredCheck struct {
 	run      Check
 	category Category
@@ -43,20 +39,17 @@ func applyOptions(opts []Option) *config {
 	return c
 }
 
-// WithSkipNetwork omits network-dependent checks (libproxychains,
-// Landlock TCP support). Useful in CI where these aren't relevant.
+// WithSkipNetwork omits network-dependent checks.
 func WithSkipNetwork() Option {
 	return func(c *config) { c.skipNetwork = true }
 }
 
-// WithFailFast stops at the first FAIL. Subsequent checks are not run.
+// WithFailFast stops at the first FAIL.
 func WithFailFast() Option {
 	return func(c *config) { c.failFast = true }
 }
 
-// WithCheck appends a caller-supplied check to the built-in set. Run
-// after the built-ins; affected by WithFailFast. The check is tagged
-// CategoryCustom (not subject to WithSkipNetwork).
+// WithCheck appends a caller-supplied check (tagged CategoryCustom, not subject to WithSkipNetwork).
 func WithCheck(check Check) Option {
 	return func(c *config) {
 		c.extra = append(c.extra, registeredCheck{run: check, category: CategoryCustom})

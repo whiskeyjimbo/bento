@@ -1,15 +1,6 @@
-// Package launcherbin embeds the platform-specific launcher binaries.
-//
-// The launcher is built by `make launcher` (CGO disabled, statically
-// linked) and the resulting blob is embedded at compile time via
-// go:embed. At runtime the parent package extracts it to a temp path
-// with mode 0755 and uses that path as the bwrap entrypoint.
-//
-// Why embed and not require an external binary on PATH? Because library
-// users would otherwise need a separate install step ("brew install
-// bento-launcher", "go install ..."). Embedding makes `go install
-// github.com/whiskeyjimbo/bento/cmd/bento` Just Work, and means library
-// consumers don't have to think about it.
+// Package launcherbin embeds platform-specific launcher binaries.
+// Embedding (instead of requiring an external binary on PATH) keeps
+// `go install` a single step for library users.
 package launcherbin
 
 import _ "embed"

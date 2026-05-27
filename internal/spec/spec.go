@@ -1,12 +1,7 @@
-// Package spec defines the manifest types shared across bento's
-// internal packages. Lives in internal/ so that both the runner and
-// the proxies can depend on the types without creating an import
-// cycle with the root bento package (which re-exports them as aliases).
+// Package spec defines the manifest types shared across internal packages.
 package spec
 
-// Manifest is the per-script permission declaration. Empty / nil fields
-// mean "deny." A nil Network means no network access at all; a non-nil
-// Network with no Rules means the same (but explicit).
+// Manifest is the per-script permission declaration. Empty/nil fields mean "deny".
 type Manifest struct {
 	Interpreter string       `yaml:"interpreter" json:"interpreter"`
 	Script      string       `yaml:"script" json:"script"`
@@ -15,8 +10,21 @@ type Manifest struct {
 	Read        []string     `yaml:"read,omitempty" json:"read,omitempty"`
 	Write       []string     `yaml:"write,omitempty" json:"write,omitempty"`
 	Network     *NetworkPerm `yaml:"network,omitempty" json:"network,omitempty"`
-	Exec        []string     `yaml:"exec,omitempty" json:"exec,omitempty"`
-	Limits      *Limits      `yaml:"limits,omitempty" json:"limits,omitempty"`
+	// AllowExec, when true, permits the script to spawn arbitrary subprocesses
+	// (the seccomp+Landlock launcher is not installed). When false (default),
+	// every execve attempt fails with EPERM.
+	AllowExec bool `yaml:"allow_exec,omitempty" json:"allow_exec,omitempty"`
+	// Exec is the deprecated legacy field. Any non-empty value is treated as
+	// AllowExec=true at load time (the individual entries are not enforced;
+	// per-binary allowlisting is not implemented). New manifests should use
+	// allow_exec instead.
+	Exec   []string `yaml:"exec,omitempty" json:"exec,omitempty"`
+	Limits *Limits  `yaml:"limits,omitempty" json:"limits,omitempty"`
+
+	// LegacyExecField is set by LoadManifest when the deprecated `exec:` key
+	// was present in the source YAML. Callers (CLI) use it to emit a one-time
+	// deprecation warning. Not serialized.
+	LegacyExecField bool `yaml:"-" json:"-"`
 }
 
 // NetworkPerm describes allowed outbound traffic as a list of rules.
@@ -24,20 +32,18 @@ type NetworkPerm struct {
 	Rules []NetworkRule `yaml:"rules" json:"rules"`
 }
 
-// NetworkRule is one host:port allowance. Host may be a literal hostname,
-// ".suffix" (matches any subdomain), or "*". Port may be a literal,
-// "lo-hi" range, or "*".
+// NetworkRule is one host:port allowance. Host: literal, ".suffix", or "*".
+// Port: literal, "lo-hi" range, or "*".
 type NetworkRule struct {
 	Host string `yaml:"host" json:"host"`
 	Port string `yaml:"port" json:"port"`
 }
 
-// Limits is the per-script resource ceiling. Enforced via systemd-run
-// when available.
+// Limits is the per-script resource ceiling, enforced via systemd-run when available.
 type Limits struct {
 	Memory string `yaml:"memory,omitempty" json:"memory,omitempty"`
 	CPU    string `yaml:"cpu,omitempty" json:"cpu,omitempty"`
 	Tasks  int    `yaml:"tasks,omitempty" json:"tasks,omitempty"`
 	FDs    int    `yaml:"fds,omitempty" json:"fds,omitempty"`     // RLIMIT_NOFILE
-	Tmpfs  string `yaml:"tmpfs,omitempty" json:"tmpfs,omitempty"` // size cap on /tmp and /sandbox tmpfs (e.g. "64M")
+	Tmpfs  string `yaml:"tmpfs,omitempty" json:"tmpfs,omitempty"` // size cap on tmpfs mounts
 }

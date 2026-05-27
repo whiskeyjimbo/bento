@@ -23,38 +23,96 @@ without containers and without root.
 # CLI
 git clone https://github.com/whiskeyjimbo/bento
 cd bento
-make build
+make build                             # builds the launcher, fsshim, and bin/bento
+
+# Option A — just try it out, no install:
+./bin/bento doctor
+
+# Option B — install system-wide:
 sudo install bin/bento /usr/local/bin/
+bento doctor
 
 # Library
 go get github.com/whiskeyjimbo/bento
 ```
 
+The `bento doctor` step confirms the host has the sandboxing primitives
+bento expects; if it reports something missing (e.g. an AppArmor profile
+on Ubuntu 24.04+), `bento setup` will apply the fix where it can.
+
+The examples below assume `bento` is on your `$PATH`; substitute
+`./bin/bento` if you skipped the install step.
+
 ## Basic Usage
 
-```bash
-# Run a script per its manifest
-$ bento run check.yaml
-Running script: ./check.py
-Request to api.example.com:443 -> ALLOWED
-Request to malicious.com:443  -> DENIED by host allowlist
+The fastest on-ramp: let `bento profile` record one trial run and write a
+starter manifest you can review and trim.
 
-# Check the host has everything bento needs
+```bash
+# First-time check: does the host have what bento needs?
 $ bento doctor
 [PASS] bwrap binary — bubblewrap 0.9.0
 [PASS] Landlock TCP — ABI=4
 [PASS] mandatory-deny paths — 20 read-protect, 9 write-protect
 all checks passed
 
-# Add a timeout and an extra env var
-$ bento run --timeout=30s --env DEPLOY_ID=abc123 deploy.yaml
+# 1. Generate a manifest from a trial run (script's directory is auto-read;
+#    network is permissive and observed so you can trim it).
+$ bento profile ./fetch.py
+[bento] profiling "./fetch.py" (permissive network)...
+[bento] observed network:
+  Host                              Port    Count
+  api.example.com                   443     2
+[bento] wrote fetch.manifest.yaml — review and trim before running with `bento run`
 
-# Force the bridge network backend (kernel < 6.7 fallback)
-$ bento run --network-mode=bridge fetch.yaml
+# 2. Inspect what bento will actually enforce.
+$ bento validate fetch.manifest.yaml
+manifest: /tmp/fetch.manifest.yaml — ok
+interpreter: python3  →  /usr/bin/python3
+script:      /tmp/fetch.py
+read:
+  - /tmp
+network:
+  - api.example.com:443
+exec:        blocked (no subprocesses)
 
-# Skip slow network checks in CI doctor runs
-$ bento doctor --skip-network --fail-fast
+# 3. Run it.
+$ bento run fetch.manifest.yaml
+
+# Useful variations
+$ bento run script.py                              # zero-config (no network)
+$ bento run ./my-go-binary                         # ELF binary, no interpreter
+$ bento run --timeout=30s --env ID=abc deploy.yaml
+$ bento run --network-mode=bridge fetch.yaml       # kernel < 6.7 fallback
+$ bento run --prompt fetch.yaml                    # interactive allowlist on misses
+$ bento doctor --skip-network --fail-fast          # CI-friendly
+
+# Per-subcommand flags
+$ bento run --help                                 # full flag list for run
+$ bento profile --help                             # full flag list for profile
 ```
+
+### Sandbox conventions worth knowing up front
+
+- Inside the sandbox `cwd` is `/sandbox` and `$HOME` is `/sandbox`. Scripts
+  that hard-code `$PWD` against the host directory will see a different
+  path; reference the script's own location (`__file__`, `$0`) instead.
+- The script is mounted at `/sandbox/script`; declared `read` and `write`
+  paths keep their host paths.
+- **Host environment is not passed through.** `$USER`, `$LANG`, `$PATH`,
+  and similar vars are stripped by default — scripts see a minimal env.
+  To inherit specific vars, list them in the manifest's `env:` allowlist;
+  to add new ones, use `--env KEY=VALUE` or `WithExtraEnv`.
+- Zero-config (`bento run script.py`) gives the script no network at all.
+  If a `urlopen()` or `curl` call fails with DNS errors, you almost
+  certainly want `bento profile` to record the hosts and then run under
+  the trimmed manifest.
+- Zero-config also blocks subprocess execve. A `subprocess.run([...])`
+  or backtick exec will fail with `Operation not permitted`. To allow
+  subprocesses you must run from a manifest (see `exec:` below).
+- If you're just trying bento out, you can run the local build directly
+  without installing: after `make build`, use `./bin/bento doctor` etc.
+  in place of `bento` in the snippets below.
 
 ## Overview
 
@@ -221,16 +279,28 @@ final transition isn't blocked by the filter it just installed).
 ### As a CLI tool
 
 ```bash
-# bento run [flags] <manifest.yaml>
+# bento run [flags] <manifest.yaml | script>
 bento run check.yaml
+bento run check.py                              # zero-config (no network)
+bento run ./my-go-binary                        # ELF binary, no interpreter
 bento run --timeout=30s check.yaml
 bento run --env API_TOKEN=xyz --env DEPLOY_ID=42 check.yaml
 bento run --network-mode=bridge check.yaml
 
-# bento doctor [flags]
+# bento profile [flags] <script>   — record one trial run, emit a manifest
+bento profile ./fetch.py                        # writes fetch.manifest.yaml
+bento profile --out=mine.yaml --force ./fetch.py
+
+# bento validate [-q] <manifest.yaml>           # print resolved view, or just "ok"
+bento validate fetch.manifest.yaml
+
+# bento doctor [flags]                          # host readiness
 bento doctor
 bento doctor --skip-network
 bento doctor --fail-fast
+
+# bento setup [--dry-run]                       # install host bits if needed
+bento setup
 ```
 
 `bento run` returns the script's exit code; a non-zero exit code does
@@ -328,7 +398,13 @@ network:                    # nil = no network at all
     - host: "*"             # wildcard host
       port: "8000-9000"     # or port range
 
-exec: []                    # subprocess allowlist; empty = block all execve
+allow_exec: false           # true = let the script spawn arbitrary subprocesses
+                            # (the seccomp+Landlock exec block is not installed).
+                            # Default false = every execve fails with EPERM.
+                            # NOTE: there is no per-binary allowlist today.
+                            # The legacy `exec: [...]` field is accepted but
+                            # deprecated — any non-empty value is treated as
+                            # allow_exec: true; the list entries are not enforced.
 
 limits:
   memory: "128M"            # systemd MemoryMax syntax

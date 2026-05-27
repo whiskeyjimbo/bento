@@ -28,6 +28,47 @@ network:
 	}
 }
 
+func TestLoadManifestLegacyExecPromotesAllowExec(t *testing.T) {
+	src := `
+interpreter: python3
+script: ./s.py
+exec:
+  - ls
+  - rm
+`
+	m, err := LoadManifest(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !m.AllowExec {
+		t.Error("legacy non-empty exec: should promote AllowExec to true")
+	}
+	if !m.LegacyExecField {
+		t.Error("LegacyExecField should be set so callers can warn")
+	}
+	if len(m.Exec) != 0 {
+		t.Errorf("Exec should be cleared after promotion, got %v", m.Exec)
+	}
+}
+
+func TestLoadManifestAllowExecDirect(t *testing.T) {
+	src := `
+interpreter: python3
+script: ./s.py
+allow_exec: true
+`
+	m, err := LoadManifest(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !m.AllowExec {
+		t.Error("allow_exec: true did not stick")
+	}
+	if m.LegacyExecField {
+		t.Error("LegacyExecField should NOT be set for the new field")
+	}
+}
+
 func TestLoadManifestNilReader(t *testing.T) {
 	if _, err := LoadManifest(nil); err == nil {
 		t.Fatal("nil reader should error")

@@ -1,9 +1,6 @@
 //go:build linux
 
-// Package sysprobe holds platform probes shared between the runner
-// (which needs to find host binaries/libraries) and the doctor (which
-// needs to report whether they're present). Centralised here to avoid
-// duplication and drift.
+// Package sysprobe holds platform probes shared between the runner and the doctor.
 package sysprobe
 
 import (
@@ -24,9 +21,8 @@ func WithLookupPaths(paths []string) ProbeOption {
 	return func(o *probeConfig) { o.customPaths = paths }
 }
 
-// FindSocat returns the absolute path to socat if present on the host,
-// or "" if not found. Used by the bridge network mode (kernel <6.7
-// fallback) to bridge unix sockets ↔ TCP inside the sandbox.
+// FindSocat returns the absolute path to socat if present, or "" if not found.
+// Used by the bridge network mode (kernel <6.7 fallback).
 func FindSocat(opts ...ProbeOption) string {
 	cfg := &probeConfig{}
 	for _, opt := range opts {
@@ -70,11 +66,8 @@ func FindProxychainsLib(opts ...ProbeOption) string {
 	return ""
 }
 
-// LandlockABI returns the supported Landlock ABI version, or -1 if the
-// syscall is unavailable (kernel <5.13).
-//
-// ABI 1: filesystem; ABI 2: refer; ABI 3: truncate; ABI 4: TCP network;
-// ABI 5: ioctl_dev; ABI 6: abstract unix socket + signal scoping.
+// LandlockABI returns the supported Landlock ABI version, or -1 if unavailable (kernel <5.13).
+// ABI 4 adds TCP network rules.
 func LandlockABI() int {
 	const (
 		sysLandlockCreateRuleset = 444

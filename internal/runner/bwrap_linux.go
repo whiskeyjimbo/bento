@@ -18,17 +18,8 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/sysprobe"
 )
 
-// runPlatform on Linux. Orchestrates the sandbox lifecycle:
-//
-//  1. resolveTools verifies bwrap + interpreter + script exist.
-//  2. startAuxiliary brings up proxies, writes proxychains config,
-//     extracts the launcher.
-//  3. compileBwrapArgs turns the manifest + auxiliary state into the
-//     bwrap argv.
-//  4. executeCommand runs bwrap (optionally wrapped with systemd-run
-//     for resource limits) and translates the exit.
-//
-// Auxiliary resources are torn down via aux.close() on return.
+// runPlatform orchestrates the Linux sandbox lifecycle: resolve tools, start
+// auxiliary resources (proxies, launcher), compile bwrap argv, exec.
 func runPlatform(ctx context.Context, m *spec.Manifest, cfg *Config) (int, error) {
 	interp, scriptAbs, err := resolveTools(m)
 	if err != nil {
@@ -44,22 +35,71 @@ func runPlatform(ctx context.Context, m *spec.Manifest, cfg *Config) (int, error
 	}
 	defer aux.close()
 
-	args := compileBwrapArgs(compileCtx{
+	args, sections := compileBwrapArgs(compileCtx{
 		manifest:  m,
 		interp:    interp,
 		scriptAbs: scriptAbs,
 		aux:       aux,
 		extraEnv:  cfg.ExtraEnv,
 	})
-	if cfg.Logger != nil {
-		cfg.Logger.Printf("[bwrap] %v", args)
+	obs := newFSObserver(cfg, scriptAbs, interp)
+	defer obs.close()
+	args = obs.injectArgs(args)
+
+	if cfg.Logger != nil && cfg.Verbose {
+		cfg.Logger.Printf("[bwrap] argv:\n%s", formatBwrapArgs(args, sections))
 	}
-	return executeCommand(ctx, m.Limits, args, cfg)
+
+	code, err := executeCommand(ctx, m.Limits, args, cfg, obs)
+	if cfg.FSObserver != nil {
+		cfg.FSObserver(obs.collect(cfg))
+	}
+	return code, err
 }
 
-// resolveTools verifies bwrap is installed, resolves the manifest's
-// interpreter to a real path (following symlinks), and confirms the
-// script file exists.
+// formatBwrapArgs pretty-prints the bwrap argv as labeled sections with one
+// flag (and its operands) per line. Empty sections are dropped. Flags are
+// tokens starting with "--"; "--" alone is the entrypoint separator.
+func formatBwrapArgs(args []string, sections []bwrapSection) string {
+	var b strings.Builder
+	writeRange := func(lo, hi int) {
+		var line []string
+		flush := func() {
+			if len(line) == 0 {
+				return
+			}
+			b.WriteString("    ")
+			b.WriteString(strings.Join(line, " "))
+			b.WriteByte('\n')
+			line = line[:0]
+		}
+		for _, a := range args[lo:hi] {
+			if strings.HasPrefix(a, "--") && len(line) > 0 {
+				flush()
+			}
+			line = append(line, a)
+		}
+		flush()
+	}
+	if len(sections) == 0 {
+		writeRange(0, len(args))
+		return strings.TrimRight(b.String(), "\n")
+	}
+	for i, s := range sections {
+		end := len(args)
+		if i+1 < len(sections) {
+			end = sections[i+1].start
+		}
+		if s.start == end {
+			continue // empty section
+		}
+		fmt.Fprintf(&b, "  # %s\n", s.label)
+		writeRange(s.start, end)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// resolveTools verifies bwrap is installed and resolves the interpreter and script paths.
 func resolveTools(m *spec.Manifest) (interp, scriptAbs string, err error) {
 	if _, err = exec.LookPath("bwrap"); err != nil {
 		return "", "", fmt.Errorf("bwrap not found in PATH: %w", err)
@@ -81,44 +121,34 @@ func resolveTools(m *spec.Manifest) (interp, scriptAbs string, err error) {
 	return interp, scriptAbs, nil
 }
 
-// Sandbox-side proxy ports used in bridge mode. Fixed (not ephemeral)
-// so the inline shell wrapper can name them without parameterization.
-// These are inside-the-namespace ports; they don't collide with host
-// ports because the network namespace is fully isolated.
+// Sandbox-side proxy ports in bridge mode; fixed inside an isolated netns.
 const (
 	sandboxHTTPProxyPort  = 3128
 	sandboxSOCKSProxyPort = 1080
 )
 
-// auxiliary holds the runtime-only resources started for one Run
-// invocation: filter proxies, proxychains config, extracted launcher
-// binary, unix socket paths and host-side socat processes (bridge
-// mode). Each setup step pushes its cleanup onto the stack; close()
-// runs them in reverse order. This makes ordering self-correcting:
-// callers can't get LIFO wrong by accident.
+// auxiliary holds per-Run resources: proxies, proxychains config, launcher,
+// unix sockets, host socats. Cleanups run LIFO via close().
 type auxiliary struct {
 	networkMode  spec.NetworkMode // resolved (never Auto)
 	httpProxy    proxy.ProxyServer
 	socks        proxy.ProxyServer
-	pchainsCfg   string // temp path; "" if no network or libproxychains missing
-	launcherPath string // temp path; "" if exec is allowed or extract failed
+	pchainsCfg   string
+	launcherPath string
 
-	// What the SCRIPT sees, post-mode-resolution. In landlock mode
-	// these are derived from host proxy addrs; in bridge mode they're
-	// the fixed sandbox-side ports.
-	httpProxyURL string // for HTTP_PROXY env var; "" if no network
-	socksAddr    string // for proxychains config; "" if no network
-	allowedPorts string // for BENTO_ALLOW_PORTS env var; "" if no network
+	// Script-visible endpoints. Landlock: host proxy addrs. Bridge: fixed sandbox ports.
+	httpProxyURL string
+	socksAddr    string
+	allowedPorts string
 
-	// Bridge-mode-only: host-side unix sockets bind-mounted into the
-	// sandbox, plus the socat processes connecting them to host TCP.
+	// Bridge-mode only.
 	unixHTTPSock  string
 	unixSocksSock string
 
 	cleanups []func()
 }
 
-// onClose registers a cleanup; close() invokes them in reverse order.
+// onClose registers a LIFO cleanup.
 func (a *auxiliary) onClose(f func()) {
 	a.cleanups = append(a.cleanups, f)
 }
@@ -138,8 +168,7 @@ func startAuxiliary(m *spec.Manifest, cfg *Config) (*auxiliary, error) {
 	if m.Network != nil {
 		proxyOpts := []proxy.Option{proxy.WithLogger(cfg.Logger)}
 		if cfg.GrantCallback != nil {
-			// Shared cache so HTTP CONNECT + SOCKS5 don't both prompt
-			// for the same host:port within a Run.
+			// Shared cache so HTTP and SOCKS5 don't both prompt for the same host:port.
 			cache := grants.NewCache()
 			proxyOpts = append(proxyOpts, proxy.WithGrants(cfg.GrantCallback, cache))
 		}
@@ -164,14 +193,12 @@ func startAuxiliary(m *spec.Manifest, cfg *Config) (*auxiliary, error) {
 		}
 	}
 
-	// Exec block via launcher (seccomp + Landlock). When extraction
-	// fails we degrade — log it and proceed without the launcher.
-	// When PreExtractedLauncher is set (Sandbox warm-pool), reuse
-	// the existing binary and skip cleanup (the Sandbox owns it).
-	if len(m.Exec) == 0 {
+	// Exec block via launcher (seccomp + Landlock). Extraction failure degrades silently.
+	// PreExtractedLauncher (Sandbox warm-pool) skips per-Run extraction and cleanup.
+	// allow_exec=true (or the deprecated non-empty exec: list) skips the launcher.
+	if !m.AllowExec && len(m.Exec) == 0 {
 		if cfg.PreExtractedLauncher != "" {
 			aux.launcherPath = cfg.PreExtractedLauncher
-			// no cleanup — Sandbox.Close() handles removal
 		} else if path, err := extractLauncher(); err == nil {
 			aux.launcherPath = path
 			aux.onClose(func() { os.Remove(path) })
@@ -187,13 +214,11 @@ func startAuxiliary(m *spec.Manifest, cfg *Config) (*auxiliary, error) {
 	return aux, nil
 }
 
-// executeCommand runs bwrap (optionally wrapped in systemd-run for
-// resource limits) with the given argv. When cfg.Telemetry is set, a
-// pipe is established so the child sees fd 3 (writable) and the parent
-// reads from the other end into cfg.Telemetry concurrently. Translates
-// *exec.ExitError to (exitCode, nil); other errors bubble up.
-func executeCommand(ctx context.Context, lim *spec.Limits, bwrapArgs []string, cfg *Config) (int, error) {
+// executeCommand runs bwrap (optionally wrapped in systemd-run for limits).
+// Sets up the fd-3 telemetry pipe if cfg.Telemetry is set.
+func executeCommand(ctx context.Context, lim *spec.Limits, bwrapArgs []string, cfg *Config, obs *fsObserver) (int, error) {
 	exe, fullArgs := wrapWithLimits(lim, "bwrap", bwrapArgs, cfg)
+	exe, fullArgs = obs.wrapExec(exe, fullArgs)
 	cmd := exec.CommandContext(ctx, exe, fullArgs...)
 	cmd.Stdin = cfg.Stdin
 	cmd.Stdout = cfg.Stdout
@@ -205,16 +230,13 @@ func executeCommand(ctx context.Context, lim *spec.Limits, bwrapArgs []string, c
 			return -1, fmt.Errorf("telemetry pipe: %w", err)
 		}
 		defer r.Close()
-		// ExtraFiles[0] becomes fd 3 in the child.
-		cmd.ExtraFiles = []*os.File{w}
-		// Parent writes the read end into cfg.Telemetry until EOF.
+		cmd.ExtraFiles = []*os.File{w} // becomes fd 3 in the child
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
 			io.Copy(cfg.Telemetry, r)
 		}()
-		// Close the write end in the parent so io.Copy sees EOF when
-		// the child closes its fd 3 (i.e. when the child exits).
+		// Closing the parent's write end lets io.Copy see EOF when the child exits.
 		defer func() {
 			w.Close()
 			<-done
@@ -230,9 +252,7 @@ func executeCommand(ctx context.Context, lim *spec.Limits, bwrapArgs []string, c
 	return 0, nil
 }
 
-// resolveNetworkMode picks the effective mode when the user asks for
-// Auto: Landlock if the kernel supports it (ABI ≥ 4), otherwise Bridge.
-// Explicit modes pass through unchanged.
+// resolveNetworkMode resolves Auto to Landlock (kernel ABI ≥4) or Bridge otherwise.
 func resolveNetworkMode(requested spec.NetworkMode, cfg *Config) spec.NetworkMode {
 	if requested != spec.NetworkModeAuto {
 		return requested
@@ -244,18 +264,7 @@ func resolveNetworkMode(requested spec.NetworkMode, cfg *Config) spec.NetworkMod
 	return spec.NetworkModeBridge
 }
 
-// setupNetworkBridges configures the script-visible network endpoints
-// based on aux.networkMode. After this call:
-//
-//   - aux.httpProxyURL is set to the URL the script's HTTP_PROXY should
-//     point to.
-//   - aux.socksAddr is set to the target for the proxychains config.
-//   - aux.allowedPorts is set for BENTO_ALLOW_PORTS (Landlock allowlist).
-//   - In bridge mode, aux.unixHTTPSock + aux.unixSocksSock are
-//     populated and host-side socats are spawned + registered for
-//     cleanup.
-//   - In all modes, the proxychains config is written if libproxychains
-//     is available, and registered for cleanup.
+// setupNetworkBridges configures script-visible network endpoints based on aux.networkMode.
 func setupNetworkBridges(aux *auxiliary, cfg *Config) error {
 	switch aux.networkMode {
 	case spec.NetworkModeLandlock:
@@ -266,9 +275,8 @@ func setupNetworkBridges(aux *auxiliary, cfg *Config) error {
 	return fmt.Errorf("unresolved network mode %v", aux.networkMode)
 }
 
-// setupLandlockBridge: script reaches host proxies directly on
-// loopback. Both IPv4 and IPv6 ephemeral ports are included in the
-// Landlock allowlist so dual-stack scripts work without fallback delay.
+// setupLandlockBridge: script reaches host proxies directly on loopback.
+// Both IPv4 and IPv6 ephemeral ports are allowlisted for dual-stack scripts.
 func setupLandlockBridge(aux *auxiliary, cfg *Config) error {
 	aux.socksAddr = aux.socks.Addr()
 	aux.httpProxyURL = "http://" + aux.httpProxy.Addr()
@@ -276,8 +284,7 @@ func setupLandlockBridge(aux *auxiliary, cfg *Config) error {
 	return setupProxychainsIfAvailable(aux, cfg, aux.socksAddr)
 }
 
-// collectPorts extracts the port from each addr and returns them as
-// a comma-separated string suitable for BENTO_ALLOW_PORTS.
+// collectPorts returns a comma-separated dedup'd list of ports from addrs.
 func collectPorts(addrSets ...[]string) string {
 	var ports []string
 	seen := map[string]bool{}
@@ -294,9 +301,8 @@ func collectPorts(addrSets ...[]string) string {
 	return strings.Join(ports, ",")
 }
 
-// setupSocketBridge: --unshare-net plus unix-socket bridges. Script
-// sees fixed inner ports (3128/1080) on loopback; bridges relay to
-// host proxy TCP ports via /tmp unix sockets.
+// setupSocketBridge: --unshare-net with unix-socket bridges to host TCP.
+// Script sees fixed inner ports (3128/1080) on loopback.
 func setupSocketBridge(aux *auxiliary, cfg *Config) error {
 	socat := sysprobe.FindSocat()
 	if socat == "" {
@@ -344,9 +350,7 @@ func setupProxychainsIfAvailable(aux *auxiliary, cfg *Config, target string) err
 	return nil
 }
 
-// allocUnixSocket reserves a /tmp path for a unix socket. The socat
-// process binds and lives until killed. We just hold the path; socat
-// creates the actual socket on bind.
+// allocUnixSocket reserves a /tmp path for socat to bind a fresh unix socket.
 func allocUnixSocket(prefix string) (string, error) {
 	f, err := os.CreateTemp("", prefix+"-*.sock")
 	if err != nil {
@@ -354,14 +358,11 @@ func allocUnixSocket(prefix string) (string, error) {
 	}
 	path := f.Name()
 	f.Close()
-	// Remove the temp file so socat can bind a fresh socket at the path.
 	os.Remove(path)
 	return path, nil
 }
 
-// spawnHostSocat runs a UNIX-LISTEN ↔ TCP socat on the host side and
-// registers cleanup. The socat exits when killed; its stdout/stderr
-// go to the logger if one is set.
+// spawnHostSocat runs a host-side UNIX-LISTEN ↔ TCP socat and registers cleanup.
 func spawnHostSocat(aux *auxiliary, socat, unixPath, tcpAddr string, cfg *Config) error {
 	cmd := exec.Command(socat,
 		"UNIX-LISTEN:"+unixPath+",fork,reuseaddr",
@@ -427,13 +428,9 @@ func wrapWithLimits(lim *spec.Limits, bwrapExe string, bwrapArgs []string, cfg *
 		if lim.Tasks > 0 {
 			wrap = append(wrap, "-p", fmt.Sprintf("TasksMax=%d", lim.Tasks))
 		}
-		// LimitNOFILE= not honored by systemd --scope (services only).
-		// FD cap is applied launcher-side via setrlimit; see
-		// appendFDLimitEnv.
+		// LimitNOFILE= not honored by --scope; FD cap is applied launcher-side via setrlimit.
 	}
-	// RuntimeMaxSec= belt-and-suspenders: even if the bento parent
-	// crashes before context.WithTimeout fires SIGKILL, systemd
-	// terminates the scope when this expires.
+	// RuntimeMaxSec= terminates the scope even if the bento parent crashes.
 	if hasTimeoutBackstop {
 		wrap = append(wrap, "-p", fmt.Sprintf("RuntimeMaxSec=%d", int64(cfg.Timeout.Seconds())))
 	}

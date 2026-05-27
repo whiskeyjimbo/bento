@@ -17,21 +17,17 @@ type extractOpts struct {
 	dir string
 }
 
-// WithExtractDir sets the target directory where the launcher binary is extracted.
-// If empty, uses the default system temp directory.
+// WithExtractDir sets the target dir for the launcher binary. Empty → system temp.
 func WithExtractDir(dir string) ExtractOption {
 	return func(o *extractOpts) { o.dir = dir }
 }
 
-// ExtractLauncher writes the embedded launcher binary to a temp file
-// (chmod 0755) and returns its path. Caller removes when done.
+// ExtractLauncher writes the embedded launcher to a temp file (0755) and returns its path.
 // Exported so the warm-pool Sandbox can extract once and reuse.
 func ExtractLauncher(opts ...ExtractOption) (string, error) {
 	return extractLauncher(opts...)
 }
 
-// extractLauncher writes the embedded launcher binary to a temp file
-// (chmod 0755) and returns its path. Caller removes when done.
 func extractLauncher(opts ...ExtractOption) (string, error) {
 	cfg := &extractOpts{}
 	for _, opt := range opts {

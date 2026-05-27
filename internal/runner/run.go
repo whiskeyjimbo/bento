@@ -7,14 +7,8 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// Run executes the script described by m under platform-appropriate
-// sandboxing. Returns the script's exit code and an error for setup
-// failures.
-//
-// Timeout resolution:
-//   - cfg.Timeout == 0       → DefaultTimeout (10m) applies
-//   - cfg.Timeout == sentinel (-1) → no timeout (explicit opt-out via WithTimeout(0))
-//   - cfg.Timeout > 0        → that duration applies
+// Run executes the script under platform-appropriate sandboxing.
+// Timeout: 0 → DefaultTimeout (10m); sentinel(-1) → no timeout; >0 → passthrough.
 func Run(ctx context.Context, m *spec.Manifest, opts ...Option) (int, error) {
 	if err := m.Validate(); err != nil {
 		return -1, err
@@ -32,10 +26,7 @@ func Run(ctx context.Context, m *spec.Manifest, opts ...Option) (int, error) {
 	return runPlatform(ctx, m, cfg)
 }
 
-// resolveTimeout translates the option's three states into an
-// effective duration: 0 → default, sentinel → no timeout, positive →
-// passthrough. Exposed (lowercase) for the platform runners to call
-// when wiring systemd-run RuntimeMaxSec.
+// resolveTimeout: 0 → default, sentinel → no timeout, positive → passthrough.
 func resolveTimeout(t time.Duration) time.Duration {
 	if t == 0 {
 		return DefaultTimeout

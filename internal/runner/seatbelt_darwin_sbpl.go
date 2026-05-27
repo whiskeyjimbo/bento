@@ -12,17 +12,14 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// darwinCompileCtx mirrors compileCtx (Linux). Bundled so compileSBPL's
-// signature doesn't grow as new inputs are added.
 type darwinCompileCtx struct {
 	manifest          *spec.Manifest
 	scriptAbs         string
-	socksAddr         string // "" if no network
+	socksAddr         string
 	interpreterPrefix string // "" if system path, else mise/asdf/pyenv/homebrew install root
 }
 
-// compileSBPL assembles the Seatbelt profile by composing small
-// appendXxx helpers. Same shape as Linux compileBwrapArgs.
+// compileSBPL assembles the Seatbelt profile via small appendXxx helpers.
 func compileSBPL(c darwinCompileCtx) string {
 	var b strings.Builder
 	appendSBPLHeader(&b)
@@ -50,10 +47,8 @@ func appendSBPLSystemAllowances(b *strings.Builder) {
 	b.WriteString("(allow mach-lookup)\n")
 }
 
-// appendSBPLInterpreterPrefix authorizes reads under the interpreter's
-// install root (e.g. mise's ~/.local/share/mise/installs/python/3.14.4)
-// so the interpreter can find its stdlib and shared libs. Empty prefix
-// means the system allowances above already cover it.
+// appendSBPLInterpreterPrefix authorizes reads under the interpreter's install root
+// (mise/asdf/pyenv/homebrew). Empty: system allowances already cover it.
 func appendSBPLInterpreterPrefix(b *strings.Builder, prefix string) {
 	if prefix == "" {
 		return
@@ -83,11 +78,8 @@ func appendSBPLUserWrites(b *strings.Builder, write []string) {
 	}
 }
 
-// appendSBPLMandatoryDeny emits explicit deny rules for the always-block
-// list. SBPL evaluates last-match-wins, so these override any (allow
-// file-read*) rule the user's manifest expanded into. Use literal
-// matchers so a subpath rule on the parent dir doesn't silently shadow
-// this.
+// appendSBPLMandatoryDeny emits explicit deny rules for the always-block list.
+// SBPL is last-match-wins; literal matchers prevent subpath shadowing.
 func appendSBPLMandatoryDeny(b *strings.Builder) {
 	home, _ := os.UserHomeDir()
 	for _, p := range spec.ExpandDangerousPaths(home) {
@@ -95,9 +87,8 @@ func appendSBPLMandatoryDeny(b *strings.Builder) {
 	}
 }
 
-// appendSBPLMandatoryDenyWrite shadows persistence/RCE targets. Read
-// is allowed (these are sometimes legitimately read by scripts —
-// .gitconfig, .bashrc); writes are denied.
+// appendSBPLMandatoryDenyWrite denies writes to persistence/RCE targets.
+// Reads stay allowed (.gitconfig, .bashrc are often legitimately read).
 func appendSBPLMandatoryDenyWrite(b *strings.Builder) {
 	home, _ := os.UserHomeDir()
 	for _, p := range spec.ExpandDangerousWritePaths(home) {
@@ -105,10 +96,8 @@ func appendSBPLMandatoryDenyWrite(b *strings.Builder) {
 	}
 }
 
-// appendSBPLWorkspaceWriteProtection denies writes inside .git/hooks/
-// (subpath catches all current AND future hook files), plus specific
-// IDE config files. SBPL's subpath matcher does the same thing Linux's
-// ro-rebind does — covers unborn files inside the protected dir.
+// appendSBPLWorkspaceWriteProtection denies writes inside protected subpaths
+// (e.g. .git/hooks/) and IDE config files. subpath covers unborn files too.
 func appendSBPLWorkspaceWriteProtection(b *strings.Builder, writes []string) {
 	for _, w := range writes {
 		abs, err := filepath.Abs(w)
@@ -127,7 +116,7 @@ func appendSBPLWorkspaceWriteProtection(b *strings.Builder, writes []string) {
 
 func appendSBPLNetwork(b *strings.Builder, socksAddr string) {
 	if socksAddr == "" {
-		return // no network rules → denied by default
+		return // denied by default
 	}
 	// Allow only loopback to the proxy port; proxy enforces per-host.
 	if _, port, err := net.SplitHostPort(socksAddr); err == nil {

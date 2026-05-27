@@ -99,6 +99,9 @@ func TestPracticalStrictManifest(t *testing.T) {
 	if len(m.Exec) != 0 {
 		t.Error("exec should be empty (strict — blocks subprocesses)")
 	}
+	if m.AllowExec {
+		t.Error("allow_exec should be false (strict — blocks subprocesses)")
+	}
 }
 
 func TestPracticalStrictManifestRequiresInterpreter(t *testing.T) {

@@ -10,25 +10,12 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// dnsLabelCharset accepts standard DNS labels plus dot (separator),
-// hyphen (intra-label), and underscore (real-world records like
-// _dmarc, _acme-challenge). Anything else is rejected outright — no
-// whitespace, no control chars, no %, no NUL.
+// dnsLabelCharset accepts DNS labels plus underscore (for _dmarc-style records).
 var dnsLabelCharset = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// isValidHost rejects host strings that are bypass vectors for our
-// allowlist. See bento-609 for the threat model. Specifically refuses:
-//
-//   - empty / overlong (>253) inputs
-//   - control characters (NUL, CR, LF) anywhere
-//   - "%" anywhere (IPv6 zone-ID payloads like "::1%eth0")
-//   - IP literals that aren't already in canonical form (rejects
-//     "127.1", "2852039166", "0x7f.0.0.1")
-//   - DNS-looking strings that don't match the DNS charset
-//
-// Stricter than canonicalize-then-compare: rather than parse permissive
-// forms and translate, we refuse them. Legit scripts using "127.1"
-// get a clear error and re-declare with "127.0.0.1".
+// isValidHost rejects allowlist-bypass vectors: control chars, "%" (IPv6 zone
+// IDs), non-canonical IP literals ("127.1", "2852039166", "0x7f.0.0.1"), and
+// non-DNS-shaped strings. Stricter than canonicalize-then-compare.
 func isValidHost(h string) bool {
 	if h == "" || len(h) > 253 {
 		return false
@@ -36,24 +23,15 @@ func isValidHost(h string) bool {
 	if strings.ContainsAny(h, "\x00\r\n%") {
 		return false
 	}
-	// Strip IPv6 brackets for ParseIP (it doesn't accept "[::1]").
 	bare := h
 	if strings.HasPrefix(bare, "[") && strings.HasSuffix(bare, "]") {
-		bare = bare[1 : len(bare)-1]
+		bare = bare[1 : len(bare)-1] // ParseIP doesn't accept brackets
 	}
 	if ip := net.ParseIP(bare); ip != nil {
-		// Canonical form check: ParseIP normalizes (e.g. "::01" → "::1");
-		// require the input already match that normalized form.
-		// Note: ParseIP is strict — it returns nil for "127.1",
-		// "0x7f.0.0.1", "2852039166", etc. Those fall through to the
-		// DNS path below where the "letters required" rule catches
-		// them.
+		// Require canonical form — reject "::01", which ParseIP would normalize.
 		return ip.String() == bare
 	}
-	// Not a canonical IP — must look like a DNS hostname AND have at
-	// least one letter in the last label. All-numeric labels are
-	// reserved by DNS (RFC 1123) and are the failure mode for
-	// inet_aton bypass attempts ("127.1", "2852039166", etc.).
+	// RFC 1123: last label must contain a letter, which also rejects inet_aton bypasses.
 	if !dnsLabelCharset.MatchString(bare) {
 		return false
 	}
@@ -62,12 +40,7 @@ func isValidHost(h string) bool {
 	return strings.ContainsAny(lastLabel, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 }
 
-// normalizeHost lower-cases hostnames (DNS is case-insensitive) and
-// strips an optional trailing dot ("example.com." → "example.com").
-// Run on both the rule and the request host before comparison.
-//
-// IP literals are returned as-is — net.ParseIP's canonical form is
-// already what isValidHost accepts.
+// normalizeHost lowercases and strips trailing dot. IP literals pass through.
 func normalizeHost(h string) string {
 	if h == "" {
 		return h
@@ -78,9 +51,8 @@ func normalizeHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(h), ".")
 }
 
-// matchPerm reports whether host:port is allowed by perm. Callers must
-// have already validated host with isValidHost; matchPerm itself only
-// handles the lookup, not the security check.
+// matchPerm reports whether host:port is allowed by perm. Caller must have
+// already validated host with isValidHost.
 func matchPerm(perm *spec.NetworkPerm, host string, port int) bool {
 	if perm == nil {
 		return false
@@ -94,9 +66,7 @@ func matchPerm(perm *spec.NetworkPerm, host string, port int) bool {
 	return false
 }
 
-// matchHost: literal, "*", or ".suffix" (e.g. ".example.com" matches
-// "api.example.com"). Both rule and host are normalized for
-// case-insensitive comparison; DNS is case-insensitive.
+// matchHost: literal, "*", or ".suffix" wildcard. Case-insensitive.
 func matchHost(rule, host string) bool {
 	rule = normalizeHost(rule)
 	host = normalizeHost(host)

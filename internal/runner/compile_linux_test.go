@@ -131,7 +131,7 @@ func TestCompileBwrapArgsOrdering(t *testing.T) {
 		aux:       &auxiliary{}, // no proxies, no launcher
 		extraEnv:  map[string]string{"X": "1"},
 	}
-	args := compileBwrapArgs(c)
+	args, _ := compileBwrapArgs(c)
 	if !strings.HasPrefix(args[0], "--") {
 		t.Errorf("first arg should be a bwrap flag, got %q", args[0])
 	}

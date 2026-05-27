@@ -10,18 +10,14 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// SOCKS5 is a minimal SOCKS5 server that only proxies CONNECT requests
-// to host:port pairs matching the supplied NetworkPerm.
-// No auth (METHOD 0x00). Supports ATYP DOMAIN (3) and IPv4 (1).
-// IPv6 and UDP ASSOCIATE / BIND are refused.
+// SOCKS5 is a minimal SOCKS5 server filtering CONNECT by NetworkPerm.
+// No auth. ATYP DOMAIN + IPv4 only; IPv6/UDP/BIND refused.
 type SOCKS5 struct {
 	*tcpProxy
 	perm *spec.NetworkPerm
 }
 
-// NewSOCKS5 binds a SOCKS5 proxy listener without starting the accept
-// loop. Useful for tests that want to inspect Addr() before traffic
-// flows. Call Start() to begin serving.
+// NewSOCKS5 binds the listener without starting the accept loop.
 func NewSOCKS5(perm *spec.NetworkPerm, opts ...Option) (*SOCKS5, error) {
 	s := &SOCKS5{perm: perm}
 	base, err := newTCPProxy("socks5", applyOptionsFor(perm, opts), s.handle)
@@ -32,11 +28,10 @@ func NewSOCKS5(perm *spec.NetworkPerm, opts ...Option) (*SOCKS5, error) {
 	return s, nil
 }
 
-// Start begins the accept loop in a goroutine. Safe to call once.
+// Start begins the accept loop in a goroutine.
 func (s *SOCKS5) Start() { go s.serve() }
 
-// StartSOCKS5 is the convenience wrapper: New + Start. Equivalent to
-// p, err := NewSOCKS5(...); p.Start().
+// StartSOCKS5 is the New+Start convenience wrapper.
 func StartSOCKS5(perm *spec.NetworkPerm, opts ...Option) (*SOCKS5, error) {
 	s, err := NewSOCKS5(perm, opts...)
 	if err != nil {

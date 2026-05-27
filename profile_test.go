@@ -14,7 +14,7 @@ func TestSynthesizeSuggested(t *testing.T) {
 		{Host: "api.example.com", Port: 443, Count: 5},
 		{Host: "auth.example.com", Port: 443, Count: 2},
 	}
-	out := synthesizeSuggested(original, obs)
+	out := synthesizeSuggested(original, obs, nil)
 	if out.Interpreter != "python3" {
 		t.Errorf("interpreter lost in synthesis: %q", out.Interpreter)
 	}

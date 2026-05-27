@@ -28,24 +28,13 @@ func WithPromptTemplate(t string) TTYOption {
 	return func(o *ttyOpts) { o.promptTemplate = t }
 }
 
-// WithTTYInput configures an alternative reader to read user confirmation inputs
-// (instead of opening /dev/tty). Extremely useful for headless automated tests.
+// WithTTYInput configures an alternative reader for confirmation inputs (for tests).
 func WithTTYInput(r io.Reader) TTYOption {
 	return func(o *ttyOpts) { o.input = r }
 }
 
 // TTYCallback returns a Callback that prompts the user on /dev/tty.
-// Returns an error if /dev/tty isn't available (e.g. running under
-// CI or a daemon).
-//
-// Prompt shape:
-//
-//	[bento] script wants to connect to api.github.com:443. allow? [y/N]
-//
-// The first connect to a given host:port prompts; subsequent ones
-// hit the [Cache] and don't re-ask.
-//
-// "y" / "yes" → Allow. Anything else (including empty / EOF) → Deny.
+// Errors if /dev/tty isn't available. "y"/"yes" → Allow; anything else → Deny.
 func TTYCallback(opts ...TTYOption) (Callback, error) {
 	to := &ttyOpts{}
 	for _, opt := range opts {

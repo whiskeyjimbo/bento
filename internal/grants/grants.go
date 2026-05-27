@@ -1,14 +1,6 @@
 // Package grants is the per-Run permission-prompt machinery.
-//
-// When a callback is configured (via runner.WithGrantCallback or
-// bento.WithGrantCallback), proxy match failures consult it instead
-// of immediately denying. The callback returns Allow or Deny. The
-// proxy caches decisions per host:port so a script making 100 requests
-// to the same host prompts once.
-//
-// The CLI's --prompt / -i flag installs a TTY-backed callback that
-// reads /dev/tty. Library consumers without a TTY plug in their own
-// (auto-allow, deny-with-log, GUI dialog, Slack approval, etc.).
+// Proxy match failures consult a Callback instead of immediately denying;
+// decisions are cached per host:port for the rest of the Run.
 package grants
 
 import (
@@ -16,9 +8,7 @@ import (
 	"sync"
 )
 
-// Request is what the proxy hands the callback when an unrecognized
-// host:port shows up. Network is the only kind today; future kinds
-// (file open, exec spawn) would extend Kind.
+// Request is what the proxy hands the callback when an unrecognized host:port shows up.
 type Request struct {
 	Kind Kind
 	Host string
@@ -32,8 +22,7 @@ const (
 	KindNetwork Kind = iota // outbound TCP connect (HTTP CONNECT or SOCKS5)
 )
 
-// Decision is what the callback returns. Allow/Deny is all v1 needs;
-// future versions may add timeouts or scope hints.
+// Decision is what the callback returns.
 type Decision int
 
 const (
@@ -41,22 +30,18 @@ const (
 	DecisionAllow                 // permit this request (and cache the yes)
 )
 
-// Callback is the per-Run grant decider. Called by the proxies on
-// host:port that aren't in the manifest's network allowlist. Must be
-// safe to call from multiple goroutines.
+// Callback is the per-Run grant decider, consulted on allowlist misses.
+// Must be safe to call from multiple goroutines.
 type Callback func(Request) Decision
 
-// DecisionCache abstracts decision memoization for network and resource
-// prompts. Shared between proxies and runners.
+// DecisionCache abstracts decision memoization, shared between proxies and runners.
 type DecisionCache interface {
 	Lookup(r Request) (Decision, bool)
 	Store(r Request, d Decision)
 }
 
-// Cache memoizes decisions for the lifetime of one Run so scripts
-// making many connections to the same host prompt once. Shared
-// between HTTP and SOCKS5 proxies (a script might use both, and
-// double-prompting the same host:port from both is bad UX).
+// Cache memoizes decisions for the lifetime of one Run, shared across HTTP and SOCKS5
+// proxies so a script using both doesn't double-prompt for the same host:port.
 type Cache struct {
 	mu sync.Mutex
 	m  map[string]Decision

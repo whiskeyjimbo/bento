@@ -47,11 +47,8 @@ func WithDisableShebang() ResolveOption {
 	return func(c *resolveConfig) { c.disableShebang = true }
 }
 
-// ResolveInterpreter picks an interpreter for the given script path.
-// Tries (1) the custom mappings from ResolveOptions; (2) the global extension
-// table; (3) the script's shebang line if it has no extension or the extension
-// isn't mapped. Returns an error with remediation hints when neither path
-// succeeds.
+// ResolveInterpreter picks an interpreter via (1) custom mappings, (2) the global
+// extension table, (3) the script's shebang line.
 func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error) {
 	cfg := &resolveConfig{}
 	for _, opt := range opts {
@@ -60,14 +57,12 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 
-	// 1. Try custom extensions passed via option
 	if cfg.customExtensions != nil {
 		if interp, ok := cfg.customExtensions[ext]; ok {
 			return interp, nil
 		}
 	}
 
-	// 2. Try global thread-safe extension map
 	extensionInterpretersMu.RLock()
 	interp, ok := extensionInterpreters[ext]
 	extensionInterpretersMu.RUnlock()
@@ -75,21 +70,50 @@ func ResolveInterpreter(scriptPath string, opts ...ResolveOption) (string, error
 		return interp, nil
 	}
 
-	// 3. Try shebang if not disabled
 	if !cfg.disableShebang {
 		if shebang, ok := readShebang(scriptPath); ok {
 			return shebang, nil
 		}
 	}
+	if isExecutableELF(scriptPath) {
+		abs, err := filepath.Abs(scriptPath)
+		if err == nil {
+			return abs, nil
+		}
+		return scriptPath, nil
+	}
 	if ext != "" {
 		return "", fmt.Errorf("no interpreter mapped for %q files; use --interpreter or add a shebang line", ext)
 	}
-	return "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); use --interpreter", scriptPath)
+	return "", fmt.Errorf("cannot determine interpreter for %q (no extension, no shebang); use --interpreter, or if this is a compiled binary, make sure it has the executable bit set", scriptPath)
 }
 
-// readShebang returns the first token of the script's #! line if
-// present, or ("", false) if the file is missing / has no shebang.
-// Only the first 128 bytes are read.
+// isExecutableELF reports whether the file at path is an ELF binary with the
+// owner-execute bit set. Used by zero-config to recognize compiled programs
+// (Go, Rust, C) that don't need a separate interpreter — they ARE the
+// interpreter.
+func isExecutableELF(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := f.Read(magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F'
+}
+
+// readShebang returns the first token of the script's #! line, or ("", false).
+// "#!/usr/bin/env X" returns "X" so $PATH resolution works.
 func readShebang(scriptPath string) (string, bool) {
 	f, err := os.Open(scriptPath)
 	if err != nil {
@@ -109,8 +133,6 @@ func readShebang(scriptPath string) (string, bool) {
 	if rest == "" {
 		return "", false
 	}
-	// "#!/usr/bin/env python3" → use "python3" so $PATH resolution
-	// works; "#!/usr/bin/python3" → use "/usr/bin/python3" verbatim.
 	fields := strings.Fields(rest)
 	if fields[0] == "/usr/bin/env" && len(fields) > 1 {
 		return fields[1], true
@@ -118,17 +140,8 @@ func readShebang(scriptPath string) (string, bool) {
 	return fields[0], true
 }
 
-// PracticalStrictManifest builds the zero-config default manifest for
-// a script: the script can read its own directory (most scripts open
-// sibling files); cannot write anywhere; has no network; cannot exec
-// subprocesses. System reads (/usr, /lib, /etc/ssl, etc.) are
-// auto-mounted by the runner regardless of manifest.
-//
-// The interpreter argument is required; pass [ResolveInterpreter]'s
-// output. The script path is converted to absolute.
-//
-// Library callers wanting the same defaults as the CLI's
-// `bento run script.py` use this.
+// PracticalStrictManifest builds the zero-config default manifest: read access
+// to the script's directory, no write/network/exec. System reads are auto-mounted.
 func PracticalStrictManifest(scriptPath, interpreter string) (*Manifest, error) {
 	if interpreter == "" {
 		return nil, fmt.Errorf("PracticalStrictManifest: interpreter is required")
@@ -141,6 +154,5 @@ func PracticalStrictManifest(scriptPath, interpreter string) (*Manifest, error) 
 		Interpreter: interpreter,
 		Script:      abs,
 		Read:        []string{filepath.Dir(abs)},
-		// Write, Network, Exec all zero-value → block by default.
 	}, nil
 }

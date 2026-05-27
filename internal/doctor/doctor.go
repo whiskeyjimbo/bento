@@ -1,6 +1,4 @@
 // Package doctor probes the environment for sandbox prerequisites.
-// Exposes a single Run() that returns CheckResults; callers format
-// them however they like.
 package doctor
 
 import (
@@ -26,10 +24,7 @@ const (
 	StatusFail Status = "FAIL"
 )
 
-// Run executes all platform-appropriate checks (plus any added via
-// WithCheck) and returns the results. Filtering (WithSkipNetwork) and
-// short-circuiting (WithFailFast) apply uniformly to built-ins and
-// custom checks.
+// Run executes all platform-appropriate checks (plus any added via WithCheck) and returns the results.
 func Run(opts ...Option) []CheckResult {
 	c := applyOptions(opts)
 	registry := append(platformRegistry(c), c.extra...)
@@ -48,8 +43,7 @@ func Run(opts ...Option) []CheckResult {
 	return results
 }
 
-// Format writes a human-readable report of checks to w. Returns true
-// iff all checks passed (no FAIL).
+// Format writes a human-readable report to w. Returns true iff all checks passed.
 func Format(w io.Writer, checks []CheckResult) bool {
 	fmt.Fprintf(w, "bento doctor (%s)\n\n", runtime.GOOS)
 	allPass := true

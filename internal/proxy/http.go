@@ -11,16 +11,14 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
-// HTTPConnect filters outbound HTTP/HTTPS by destination. This is the
-// proxy that HTTP_PROXY/HTTPS_PROXY env vars natively understand
-// across curl/python/go/node/etc.
+// HTTPConnect filters outbound HTTP/HTTPS by destination — the proxy that
+// HTTP_PROXY/HTTPS_PROXY env vars natively understand.
 type HTTPConnect struct {
 	*tcpProxy
 	perm *spec.NetworkPerm
 }
 
-// NewHTTPConnect binds an HTTP CONNECT proxy listener without starting
-// the accept loop. Call Start() to begin serving.
+// NewHTTPConnect binds the listener without starting the accept loop.
 func NewHTTPConnect(perm *spec.NetworkPerm, opts ...Option) (*HTTPConnect, error) {
 	h := &HTTPConnect{perm: perm}
 	base, err := newTCPProxy("http-connect", applyOptionsFor(perm, opts), h.handle)
@@ -31,10 +29,10 @@ func NewHTTPConnect(perm *spec.NetworkPerm, opts ...Option) (*HTTPConnect, error
 	return h, nil
 }
 
-// Start begins the accept loop in a goroutine. Safe to call once.
+// Start begins the accept loop in a goroutine.
 func (h *HTTPConnect) Start() { go h.serve() }
 
-// StartHTTPConnect is the convenience wrapper: New + Start.
+// StartHTTPConnect is the New+Start convenience wrapper.
 func StartHTTPConnect(perm *spec.NetworkPerm, opts ...Option) (*HTTPConnect, error) {
 	h, err := NewHTTPConnect(perm, opts...)
 	if err != nil {
@@ -80,11 +78,7 @@ func (h *HTTPConnect) handle(c net.Conn) {
 		return
 	}
 
-	// Allowlist enforcement is complete BEFORE DNS resolution: denied
-	// hosts never reach the host's resolver. Allowed hosts DO get
-	// resolved here on the host — standard forward-proxy behavior,
-	// not a security gap. The hostname is observable in the host's
-	// DNS query stream. See README "How It Works" for details.
+	// Allowlist check happens before DNS, so denied hosts never reach the resolver.
 	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, portStr), h.opts.dialTimeout)
 	if err != nil {
 		writeStatus(c, "502 Bad Gateway")
@@ -95,7 +89,6 @@ func (h *HTTPConnect) handle(c net.Conn) {
 	writeStatus(c, "200 Connection Established")
 	c.SetDeadline(time.Time{})
 
-	// Flush any client bytes buffered past the request.
 	if n := br.Buffered(); n > 0 {
 		buf, _ := br.Peek(n)
 		upstream.Write(buf)

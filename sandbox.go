@@ -9,27 +9,10 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/runner"
 )
 
-// Sandbox is a long-lived holder of reusable setup costs (today: the
-// extracted launcher binary). High-throughput consumers — CI runners,
-// notebook executors, MCP gateways — that run many scripts back to
-// back amortize the ~1.7 MB launcher extract over all of them.
-//
-// Per-Run resources (filter proxies, proxychains config, bwrap
-// process) are still set up and torn down per Run because they
-// depend on the manifest. The Sandbox doesn't make Runs concurrent;
-// concurrent Run calls are supported (each gets its own proxies).
-//
-// Use as:
-//
-//	sb, err := bento.NewSandbox()
-//	defer sb.Close()
-//	for _, m := range manifests {
-//	    code, err := sb.Run(ctx, m, opts...)
-//	}
-//
-// On Linux, the warm asset is the bento-launcher binary. On macOS
-// (no launcher needed today), NewSandbox is a cheap no-op and the
-// throughput win is zero — but the API stays uniform.
+// Sandbox holds reusable setup costs (the extracted launcher binary) so
+// high-throughput consumers amortize the ~1.7 MB launcher extract across many Runs.
+// Per-Run resources (proxies, bwrap process) are still set up per Run.
+// Concurrent Run calls are supported. On macOS, NewSandbox is a no-op.
 type Sandbox struct {
 	mu           sync.Mutex
 	launcherPath string // "" on macOS / when extraction failed

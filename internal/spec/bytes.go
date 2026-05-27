@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// ParseBytes accepts "128M", "1G", "65536", "4K" etc. and returns
-// the byte count. Suffixes are powers-of-1024 (K=1024, M=1024², G=1024³).
-// Bare numbers are treated as bytes. Returns 0 + error for invalid
-// input. Case-insensitive ("1g" == "1G").
+// ParseBytes accepts "128M", "1G", "65536", "4K" etc. Suffixes are powers-of-1024.
+// Case-insensitive.
 func ParseBytes(s string) (int64, error) {
 	if s == "" {
 		return 0, nil
