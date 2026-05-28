@@ -4085,6 +4085,13 @@ func emitPostRunHint(w io.Writer, mode hintMode, scriptPath string, m *bento.Man
 				if hostLine != "" {
 					s = append(s, hostLine)
 				}
+				// The script's own output may surface this DENY as a
+				// connection error (e.g. ELF binaries get TCP reset,
+				// libc HTTP clients get "Forbidden" or "connection
+				// refused"). Tying the two surfaces together avoids
+				// reading them as two separate failures.
+				s = append(s, "[bento]   The script's own error output (connection refused / Forbidden / TCP")
+				s = append(s, "[bento]   reset) is the same event surfaced from the script's side.")
 				sections = append(sections, s)
 			}
 		}
