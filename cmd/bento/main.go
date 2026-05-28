@@ -700,8 +700,12 @@ func cmdProfile(args []string) int {
 	// reviewer has a concrete trimming target. The manifest's grants are often
 	// broader than the observation set (e.g. `read: [.]` granting the whole
 	// script dir to expose one file).
-	if result.SuggestedManifest != nil && (len(result.FSObservations) > 0 || len(result.FSWrites) > 0) {
-		yamlBytes = annotateObservedPaths(yamlBytes, result.FSObservations, result.FSWrites)
+	if result.SuggestedManifest != nil {
+		hasBroadRead := manifestHasBroadDot(result.SuggestedManifest.Read)
+		hasBroadWrite := manifestHasBroadDot(result.SuggestedManifest.Write)
+		if len(result.FSObservations) > 0 || len(result.FSWrites) > 0 || hasBroadRead || hasBroadWrite {
+			yamlBytes = annotateObservedPaths(yamlBytes, result.FSObservations, result.FSWrites, hasBroadRead, hasBroadWrite)
+		}
 	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
@@ -1040,9 +1044,15 @@ func manifestHasRelativeReadWrite(m *bento.Manifest) bool {
 // already prints "observed filesystem writes: <paths>" to the terminal but
 // drops that info on the floor. Re-encode it in the artifact so a reviewer
 // has a concrete trimming target instead of the generic "review and trim".
-func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []string) []byte {
+//
+// broadRead/broadWrite signal that the corresponding block contains a `.`
+// grant. When true and no concrete observations exist for that side (common
+// for `read:` in bash profiles — the profiler doesn't surface individual read
+// paths there), emit a placeholder note so the reader knows the asymmetry
+// with the other block is intentional, not a missing annotation.
+func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []string, broadRead, broadWrite bool) []byte {
 	lines := strings.Split(string(yamlBytes), "\n")
-	insert := func(idx int, paths []string, what string) []string {
+	insertConcrete := func(idx int, paths []string, what string) []string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "# this trial actually touched (%s):\n", what)
 		for _, p := range paths {
@@ -1056,25 +1066,53 @@ func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []str
 		out = append(out, lines[idx:]...)
 		return out
 	}
+	insertPlaceholder := func(idx int, what string) []string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "# this trial: no individual %s paths surfaced by the profiler — `.` below\n", what)
+		b.WriteString("# is the conservative default (grants the manifest's directory). If you know\n")
+		fmt.Fprintf(&b, "# which paths the script %ss, list them explicitly to tighten the grant.", what)
+		out := make([]string, 0, len(lines)+5)
+		out = append(out, lines[:idx]...)
+		out = append(out, b.String())
+		out = append(out, lines[idx:]...)
+		return out
+	}
 	// Walk lines twice (read:, then write:) since each insertion shifts the
 	// index of the next block; recompute by re-scanning the in-flight result.
-	if len(observedReads) > 0 {
-		for i, line := range lines {
-			if line == "read:" {
-				lines = insert(i, observedReads, "read")
-				break
+	for i, line := range lines {
+		if line == "read:" {
+			switch {
+			case len(observedReads) > 0:
+				lines = insertConcrete(i, observedReads, "read")
+			case broadRead:
+				lines = insertPlaceholder(i, "read")
 			}
+			break
 		}
 	}
-	if len(observedWrites) > 0 {
-		for i, line := range lines {
-			if line == "write:" {
-				lines = insert(i, observedWrites, "write")
-				break
+	for i, line := range lines {
+		if line == "write:" {
+			switch {
+			case len(observedWrites) > 0:
+				lines = insertConcrete(i, observedWrites, "write")
+			case broadWrite:
+				lines = insertPlaceholder(i, "write")
 			}
+			break
 		}
 	}
 	return []byte(strings.Join(lines, "\n"))
+}
+
+// manifestHasBroadDot reports whether the slice contains a literal "." entry,
+// which after manifest dir resolution grants the whole manifest directory.
+func manifestHasBroadDot(paths []string) bool {
+	for _, p := range paths {
+		if p == "." {
+			return true
+		}
+	}
+	return false
 }
 
 // annotateRelativePaths inserts a one-line note above the first of read:/write:
