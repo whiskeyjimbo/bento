@@ -511,20 +511,33 @@ func cmdProfile(args []string) int {
 	if len(stub) > 0 {
 		header.WriteString("#\n# To inherit these host env vars at run time — uncomment names under `env:`\n")
 		header.WriteString("# below (bento strips host env by default). Or pass `--env NAME=VALUE` ad-hoc.\n")
-		header.WriteString("# env:\n")
 		// If the trial captured a tmpfs-write failure, one of these names is
 		// the load-bearing one (the var the Quick-apply fix below tells the
-		// user to uncomment + pass to bento run). Mark it inline so a reader
-		// scanning the candidate list knows which name actually unblocks the
-		// failure, instead of guessing among 3+ undifferentiated entries.
+		// user to uncomment + pass to bento run). Split the list so the
+		// required name appears alone under `# env:` while the others fall
+		// into a separate optional block — a flat list invites uncommenting
+		// every name when only one is actually needed.
 		var loadBearing string
 		if len(result.TmpfsWrites) > 0 {
 			loadBearing = pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referenced)
 		}
-		for _, name := range stub {
-			if name == loadBearing {
-				fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below\n", name)
-			} else {
+		var others []string
+		header.WriteString("# env:\n")
+		if loadBearing != "" {
+			fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below\n", loadBearing)
+			for _, name := range stub {
+				if name != loadBearing {
+					others = append(others, name)
+				}
+			}
+		} else {
+			for _, name := range stub {
+				fmt.Fprintf(&header, "#   - %s\n", name)
+			}
+		}
+		if len(others) > 0 {
+			header.WriteString("# env (other candidates, optional — the script reads these but they didn't break this run):\n")
+			for _, name := range others {
 				fmt.Fprintf(&header, "#   - %s\n", name)
 			}
 		}
