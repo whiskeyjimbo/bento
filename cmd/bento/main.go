@@ -3748,6 +3748,57 @@ func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []
 	return true
 }
 
+// emitPersistedWriteNote prints a one-line summary of host-persisted writes
+// after a successful manifest run. Counterpart to emitSilentWriteWarning: that
+// one shows what was lost, this one shows what landed. Only fires when the
+// script actually wrote to a declared destination — silent on read-only runs.
+func emitPersistedWriteNote(w io.Writer, opens []bento.FSOpen, declaredWrites []string) {
+	if len(opens) == 0 || len(declaredWrites) == 0 {
+		return
+	}
+	declared := make(map[string]bool, len(declaredWrites))
+	prefixes := make([]string, 0, len(declaredWrites))
+	for _, p := range declaredWrites {
+		declared[p] = true
+		prefixes = append(prefixes, p+"/")
+	}
+	seen := make(map[string]bool)
+	var persisted []string
+	for _, o := range opens {
+		if !(o.Write && o.OK) {
+			continue
+		}
+		if !declared[o.Path] {
+			under := false
+			for _, pfx := range prefixes {
+				if strings.HasPrefix(o.Path, pfx) {
+					under = true
+					break
+				}
+			}
+			if !under {
+				continue
+			}
+		}
+		if seen[o.Path] {
+			continue
+		}
+		seen[o.Path] = true
+		persisted = append(persisted, o.Path)
+	}
+	if len(persisted) == 0 {
+		return
+	}
+	if len(persisted) == 1 {
+		fmt.Fprintf(w, "[bento] persisted writes: %s\n", persisted[0])
+		return
+	}
+	fmt.Fprintln(w, "[bento] persisted writes:")
+	for _, p := range persisted {
+		fmt.Fprintf(w, "[bento]   %s\n", p)
+	}
+}
+
 // resolveDeclaredWrites returns m.Write with relative entries joined against
 // baseDir and all entries filepath.Cleaned, so emitSilentWriteWarning can do
 // simple prefix matching against the absolute paths strace reports.
@@ -4342,9 +4393,17 @@ func runManifest(manifestPath string, scriptArgs []string, appendArgs bool, time
 	// Silent-tmpfs writes are diagnostically a failure even if the script
 	// itself exited 0 — the user's data didn't land on disk and CI shouldn't
 	// see a green pipeline. Promote a clean exit to exit=1 in that case.
-	if emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs)), tail.String()) && code == 0 {
+	declaredWrites := resolveDeclaredWrites(m, filepath.Dir(abs))
+	if emitSilentWriteWarning(os.Stderr, fsOpens, declaredWrites, tail.String()) && code == 0 {
 		fmt.Fprintln(os.Stderr, "[bento] tmpfs writes are treated as errors; exiting non-zero.")
 		code = 1
+	} else if code == 0 {
+		// Positive counterpart to the silent-tmpfs warning: when the run was
+		// clean, list the host paths that actually persisted. After being
+		// burned once by the tmpfs trap, juniors don't trust the script's
+		// own "wrote X" print without ls-ing — surface the bento-level
+		// confirmation so they don't have to.
+		emitPersistedWriteNote(os.Stderr, fsOpens, declaredWrites)
 	}
 	emitLimitsKillHint(os.Stderr, code, m.Limits)
 	return code
