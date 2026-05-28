@@ -652,6 +652,14 @@ func cmdProfile(args []string) int {
 	if result.SuggestedManifest != nil && len(result.SuggestedManifest.Args) > 0 {
 		yamlBytes = annotateArgsBlock(yamlBytes)
 	}
+	// If the manifest carries relative entries under read:/write: (e.g. "."),
+	// add an in-file note. These resolve against the manifest's directory, not
+	// the shell's cwd — which is the right behavior but invisible from the
+	// file alone, so a reader running the manifest from a different cwd has no
+	// way to know without testing.
+	if result.SuggestedManifest != nil && manifestHasRelativeReadWrite(result.SuggestedManifest) {
+		yamlBytes = annotateRelativePaths(yamlBytes)
+	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
 		return 1
@@ -955,6 +963,45 @@ func annotateArgsBlock(yamlBytes []byte) []byte {
 			out := make([]string, 0, len(lines)+2)
 			out = append(out, lines[:i]...)
 			out = append(out, strings.TrimRight(note, "\n"))
+			out = append(out, lines[i:]...)
+			return []byte(strings.Join(out, "\n"))
+		}
+	}
+	return yamlBytes
+}
+
+// manifestHasRelativeReadWrite reports whether any read: or write: entry in
+// the manifest is a relative path. Used to decide whether to attach the
+// "relative paths resolve against the manifest's directory" note.
+func manifestHasRelativeReadWrite(m *bento.Manifest) bool {
+	if m == nil {
+		return false
+	}
+	for _, p := range m.Read {
+		if !filepath.IsAbs(p) {
+			return true
+		}
+	}
+	for _, p := range m.Write {
+		if !filepath.IsAbs(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// annotateRelativePaths inserts a one-line note above the first of read:/write:
+// in the marshaled YAML so a reader understands that "." resolves against the
+// manifest's directory, not the shell's cwd. No-op if neither block is found.
+func annotateRelativePaths(yamlBytes []byte) []byte {
+	const note = "# relative paths under read:/write: (e.g. `.`) resolve against this manifest's\n" +
+		"# directory, NOT the shell cwd you run `bento` from."
+	lines := strings.Split(string(yamlBytes), "\n")
+	for i, line := range lines {
+		if line == "read:" || line == "write:" {
+			out := make([]string, 0, len(lines)+2)
+			out = append(out, lines[:i]...)
+			out = append(out, note)
 			out = append(out, lines[i:]...)
 			return []byte(strings.Join(out, "\n"))
 		}
