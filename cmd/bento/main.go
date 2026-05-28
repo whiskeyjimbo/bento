@@ -1257,6 +1257,13 @@ func annotateRelativePaths(yamlBytes []byte) []byte {
 // entries that are relative paths. validate resolves these to absolute paths
 // before printing, so without this check a reader can't tell whether the path
 // in the output was literally typed or was rewritten relative to the manifest
+func pluralize(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
 // runtimeReadPathNote returns a short annotation for well-known runtime
 // plumbing paths (libc, resolver, networking) that profile auto-grants but
 // that don't correspond to anything in the user's script. Without this, a
@@ -1748,9 +1755,9 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	status := "ok"
 	switch {
 	case len(issues) > 0:
-		status = fmt.Sprintf("%d ISSUE(S) FOUND — see end of output", len(issues))
+		status = fmt.Sprintf("%d %s FOUND — see end of output", len(issues), pluralize(len(issues), "ISSUE", "ISSUES"))
 	case len(notes) > 0:
-		status = fmt.Sprintf("ok (%d note(s) — see end of output)", len(notes))
+		status = fmt.Sprintf("ok (%d %s — see end of output)", len(notes), pluralize(len(notes), "note", "notes"))
 	}
 	fmt.Fprintf(w, "manifest: %s — %s\n\n", manifestPath, status)
 
