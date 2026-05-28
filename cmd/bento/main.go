@@ -3930,13 +3930,38 @@ func emitPersistedWriteNote(w io.Writer, opens []bento.FSOpen, declaredWrites []
 	if len(persisted) == 0 {
 		return
 	}
+	// Stat each path for a byte-count: a script that silently produces an
+	// empty file (e.g. an API fetch that returned 0 items) otherwise gets
+	// the same green "persisted writes:" line as a script that wrote real
+	// output. Surfacing the size lets a junior catch the silent no-op
+	// without an extra `ls`.
 	if len(persisted) == 1 {
-		fmt.Fprintf(w, "[bento] persisted writes: %s\n", persisted[0])
+		fmt.Fprintf(w, "[bento] persisted writes: %s%s\n", persisted[0], persistedSizeSuffix(persisted[0]))
 		return
 	}
 	fmt.Fprintln(w, "[bento] persisted writes:")
 	for _, p := range persisted {
-		fmt.Fprintf(w, "[bento]   %s\n", p)
+		fmt.Fprintf(w, "[bento]   %s%s\n", p, persistedSizeSuffix(p))
+	}
+}
+
+func persistedSizeSuffix(p string) string {
+	st, err := os.Stat(p)
+	if err != nil || st.IsDir() {
+		return ""
+	}
+	n := st.Size()
+	switch {
+	case n == 0:
+		return " (0 bytes — empty file; script may have silently produced no output)"
+	case n == 1:
+		return " (1 byte)"
+	case n < 1024:
+		return fmt.Sprintf(" (%d bytes)", n)
+	case n < 1024*1024:
+		return fmt.Sprintf(" (%.1f KiB)", float64(n)/1024)
+	default:
+		return fmt.Sprintf(" (%.1f MiB)", float64(n)/(1024*1024))
 	}
 }
 
