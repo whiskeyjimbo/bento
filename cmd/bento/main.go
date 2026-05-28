@@ -2383,91 +2383,119 @@ var (
 // Without this hint, a script like `echo "User: $USER"` silently prints
 // `User:` blank in the sandbox. Fires for shell and Python scripts; warns
 // at most once per run.
-// warnUnsetEnvAllowlist fires when a manifest lists `env: [X]` but X is not
-// set on the host — the var won't be passed in and the script sees an empty
-// value, often silently. CLI --env overrides take precedence and suppress
-// the warning per-variable.
-func warnUnsetEnvAllowlist(w io.Writer, allowlist []string, cliEnv map[string]string) {
-	var missing []string
-	for _, name := range allowlist {
-		if _, overridden := cliEnv[name]; overridden {
-			continue
-		}
-		if _, set := os.LookupEnv(name); !set {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) == 0 {
-		return
-	}
-	fmt.Fprintln(w, "[bento] ──────────────── note ────────────────")
-	fmt.Fprintf(w, "[bento] manifest's env: allowlist names %d var(s) not currently set on the host:\n", len(missing))
-	for _, name := range missing {
-		fmt.Fprintf(w, "[bento]   $%s\n", name)
-	}
-	fmt.Fprintln(w, "[bento] the script will see them as empty strings (no error). Either export them in")
-	fmt.Fprintln(w, "[bento]   your shell, or pass `--env NAME=VALUE` BEFORE the manifest path:")
-	fmt.Fprintf(w, "[bento]   bento run --env %s=... <manifest> [args...]\n", missing[0])
-	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
-}
-
-// warnProfileTimeEnvDivergence reads the `# --env NAME=VALUE` lines from the
-// manifest's header comment block (written by `bento profile` when --env was
-// used) and warns when the current run is about to use a different value
-// than the profile trial recorded. This catches the common trap:
 //
-//	bento profile --env CITY=Paris weather.py    # works, writes /tmp/Paris.csv
-//	bento run weather.manifest.yaml              # silently uses default, writes /tmp/London.csv
+// warnEnvNeedsValue produces a single consolidated note covering two
+// overlapping conditions on every var the manifest mentions:
 //
-// CLI --env overrides suppress the warning per-variable; the user has clearly
-// chosen a value. A host env that happens to match is also fine.
-func warnProfileTimeEnvDivergence(w io.Writer, manifestPath string, cliEnv map[string]string) {
+//   - the var is in the `env:` allowlist but unset on the host AND has no
+//     --env override (script will see empty string)
+//   - the manifest's profile-time header records a `# --env NAME=VALUE` for
+//     the var, and the current run will see a different value (or no value)
+//
+// Previously these emitted two adjacent advisory blocks with overlapping
+// content. They share a root cause — values must be supplied at run time —
+// so collapse to one note. The single corrected-command line lists ALL
+// affected vars in one paste, using profile-time values when available and
+// `NAME=...` placeholders otherwise.
+func warnEnvNeedsValue(w io.Writer, manifestPath string, allowlist []string, cliEnv map[string]string) {
 	profileEnv := readProfileTimeEnvComments(manifestPath)
-	if len(profileEnv) == 0 {
-		return
+
+	// Every name we might need to mention: allowlist ∪ keys-in-profile-header.
+	seen := make(map[string]bool)
+	var names []string
+	add := func(n string) {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
 	}
-	type diff struct{ name, profileVal, runtimeVal string }
-	var diverged []diff
-	names := make([]string, 0, len(profileEnv))
-	for k := range profileEnv {
-		names = append(names, k)
+	for _, n := range allowlist {
+		add(n)
+	}
+	for n := range profileEnv {
+		add(n)
 	}
 	sort.Strings(names)
+
+	type entry struct {
+		name       string
+		profileVal string // "" if no profile-time record
+		runtimeVal string // "" if unset and no --env
+		hasRuntime bool   // distinguish unset from set-to-""
+		fromCLI    bool   // user already passed --env (suppress)
+	}
+	var problems []entry
 	for _, name := range names {
-		profVal := profileEnv[name]
+		var e entry
+		e.name = name
+		if v, ok := profileEnv[name]; ok {
+			e.profileVal = v
+		}
 		if v, ok := cliEnv[name]; ok {
-			if v != profVal {
-				// User explicitly chose a different value — fine, but record.
-				diverged = append(diverged, diff{name, profVal, v})
-			}
+			e.fromCLI = true
+			e.runtimeVal = v
+			e.hasRuntime = true
+			// CLI overrides match-or-mismatch: if it matches profile, silent.
+			// If it mismatches, the user chose deliberately — also silent.
 			continue
 		}
 		if v, ok := os.LookupEnv(name); ok {
-			if v != profVal {
-				diverged = append(diverged, diff{name, profVal, v})
+			e.runtimeVal = v
+			e.hasRuntime = true
+			// Host env present. Problem only if it differs from profile.
+			if e.profileVal != "" && v != e.profileVal {
+				problems = append(problems, e)
 			}
 			continue
 		}
-		// Not in CLI --env, not set on host: script will see empty string
-		// (or its built-in default), which is almost certainly NOT what the
-		// profile trial used.
-		diverged = append(diverged, diff{name, profVal, ""})
+		// Not in CLI --env, not set on host. Always a problem when the var
+		// is in the allowlist (script will read empty string) or has a
+		// profile-time value (run will diverge from trial).
+		problems = append(problems, e)
 	}
-	if len(diverged) == 0 {
+	if len(problems) == 0 {
 		return
 	}
+
 	fmt.Fprintln(w, "[bento] ──────────────── note ────────────────")
-	fmt.Fprintln(w, "[bento] profile-time --env values differ from this run's environment:")
-	for _, d := range diverged {
-		if d.runtimeVal == "" {
-			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see empty (script's default)\n", d.name, d.profileVal)
-		} else {
-			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see %q\n", d.name, d.profileVal, d.runtimeVal)
+	if len(problems) == 1 {
+		fmt.Fprintln(w, "[bento] 1 env var won't have the value the profile trial used (or any value at all):")
+	} else {
+		fmt.Fprintf(w, "[bento] %d env vars won't have the values the profile trial used (or any value at all):\n", len(problems))
+	}
+	for _, p := range problems {
+		switch {
+		case p.profileVal != "" && !p.hasRuntime:
+			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see empty (script's default)\n", p.name, p.profileVal)
+		case p.profileVal != "" && p.hasRuntime:
+			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see %q\n", p.name, p.profileVal, p.runtimeVal)
+		case p.profileVal == "" && !p.hasRuntime:
+			fmt.Fprintf(w, "[bento]   $%s: in allowlist but unset on host (script will see empty string)\n", p.name)
 		}
 	}
-	fmt.Fprintln(w, "[bento] the manifest's `env:` allowlist only forwards a name; values are not preserved.")
-	fmt.Fprintf(w, "[bento] pass `--env %s=%s` to match the profile run, or export in your shell first.\n",
-		diverged[0].name, diverged[0].profileVal)
+	fmt.Fprintln(w, "[bento] the manifest's `env:` allowlist forwards names; values must be supplied at run time.")
+	fmt.Fprintln(w, "[bento] full corrected invocation (one copy-paste):")
+	var b strings.Builder
+	b.WriteString("[bento]   bento run")
+	// Re-emit already-passed --env flags so the line is a true one-paste
+	// replacement of the user's previous command, not just the diff.
+	cliNames := make([]string, 0, len(cliEnv))
+	for n := range cliEnv {
+		cliNames = append(cliNames, n)
+	}
+	sort.Strings(cliNames)
+	for _, n := range cliNames {
+		fmt.Fprintf(&b, " --env %s=%s", n, cliEnv[n])
+	}
+	for _, p := range problems {
+		if p.profileVal != "" {
+			fmt.Fprintf(&b, " --env %s=%s", p.name, p.profileVal)
+		} else {
+			fmt.Fprintf(&b, " --env %s=...", p.name)
+		}
+	}
+	fmt.Fprintf(&b, " %s", manifestPath)
+	fmt.Fprintln(w, b.String())
 	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
 }
 
@@ -3985,12 +4013,12 @@ func runManifest(manifestPath string, scriptArgs []string, appendArgs bool, time
 		fmt.Fprintln(os.Stderr, "[bento]   narrow these paths to the specific subdirectories the script actually needs.")
 		return 1
 	}
-	warnUnsetEnvAllowlist(os.Stderr, m.Env, env)
-	// Profile-time --env values are recorded as comments in the manifest (so
-	// the YAML stays portable across hosts), but a junior re-running from a
-	// fresh shell silently gets a different behavior than the profile run:
-	// the script falls back to its default. Surface the divergence.
-	warnProfileTimeEnvDivergence(os.Stderr, abs, env)
+	// Consolidated env note: the two former calls (unset-allowlist warning
+	// and profile-time divergence warning) shared a root cause — values must
+	// be supplied at run time — and printed adjacent blocks. One note now
+	// covers both and emits a single corrected `bento run --env … --env …
+	// <manifest>` line listing every affected var.
+	warnEnvNeedsValue(os.Stderr, abs, m.Env, env)
 	var manifestPreflightNetFired bool
 	// Also warn when the script references host env vars that the manifest
 	// hasn't allowlisted — same silent-misbehavior trap as the zero-config
