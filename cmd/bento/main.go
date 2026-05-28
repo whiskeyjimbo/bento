@@ -684,6 +684,13 @@ func cmdProfile(args []string) int {
 	if result.SuggestedManifest != nil && manifestHasRelativeReadWrite(result.SuggestedManifest) {
 		yamlBytes = annotateRelativePaths(yamlBytes)
 	}
+	// Inject "this trial actually touched: ..." notes above read:/write: so the
+	// reviewer has a concrete trimming target. The manifest's grants are often
+	// broader than the observation set (e.g. `read: [.]` granting the whole
+	// script dir to expose one file).
+	if result.SuggestedManifest != nil && (len(result.FSObservations) > 0 || len(result.FSWrites) > 0) {
+		yamlBytes = annotateObservedPaths(yamlBytes, result.FSObservations, result.FSWrites)
+	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
 		return 1
@@ -1012,6 +1019,50 @@ func manifestHasRelativeReadWrite(m *bento.Manifest) bool {
 		}
 	}
 	return false
+}
+
+// annotateObservedPaths inserts, above the read:/write: YAML blocks, a comment
+// listing the host paths the trial run actually touched. The manifest's
+// `read:`/`write:` entries are often broader than the literal observations
+// (e.g. `read: [.]` granting the whole script directory) — and `bento profile`
+// already prints "observed filesystem writes: <paths>" to the terminal but
+// drops that info on the floor. Re-encode it in the artifact so a reviewer
+// has a concrete trimming target instead of the generic "review and trim".
+func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []string) []byte {
+	lines := strings.Split(string(yamlBytes), "\n")
+	insert := func(idx int, paths []string, what string) []string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "# this trial actually touched (%s):\n", what)
+		for _, p := range paths {
+			fmt.Fprintf(&b, "#   - %s\n", p)
+		}
+		b.WriteString("# the rule below may be broader (e.g. `.` grants the whole directory); trim to\n")
+		b.WriteString("# the specific entries above to tighten, or keep broad if other invocations need more.")
+		out := make([]string, 0, len(lines)+10)
+		out = append(out, lines[:idx]...)
+		out = append(out, b.String())
+		out = append(out, lines[idx:]...)
+		return out
+	}
+	// Walk lines twice (read:, then write:) since each insertion shifts the
+	// index of the next block; recompute by re-scanning the in-flight result.
+	if len(observedReads) > 0 {
+		for i, line := range lines {
+			if line == "read:" {
+				lines = insert(i, observedReads, "read")
+				break
+			}
+		}
+	}
+	if len(observedWrites) > 0 {
+		for i, line := range lines {
+			if line == "write:" {
+				lines = insert(i, observedWrites, "write")
+				break
+			}
+		}
+	}
+	return []byte(strings.Join(lines, "\n"))
 }
 
 // annotateRelativePaths inserts a one-line note above the first of read:/write:
