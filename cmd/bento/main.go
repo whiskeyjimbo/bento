@@ -2045,7 +2045,7 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 	emitPostRunHint(os.Stderr, hintModeZeroConfig, scriptPath, m, tail.String(), preflightNetFired)
 	// Zero-config has no `write:` list, so every successful write outside
 	// bento's sandbox bookkeeping is by definition lost.
-	if emitSilentWriteWarning(os.Stderr, fsOpens, nil) && code == 0 {
+	if emitSilentWriteWarning(os.Stderr, fsOpens, nil, tail.String()) && code == 0 {
 		fmt.Fprintln(os.Stderr, "[bento] tmpfs writes are treated as errors; exiting non-zero.")
 		code = 1
 	}
@@ -3326,7 +3326,7 @@ func isPythonInterpreter(interp string) bool {
 // Returns true if at least one lost write was reported, so the caller can
 // surface this in the process exit code (an exit-0 run with silently
 // vanished writes is the worst-of-both-worlds for CI).
-func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []string) bool {
+func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []string, scriptTail string) bool {
 	if len(opens) == 0 {
 		return false
 	}
@@ -3387,6 +3387,20 @@ func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []
 			sandboxLost = append(sandboxLost, p)
 		} else {
 			hostLost = append(hostLost, p)
+		}
+	}
+	// Cross-reference the lost paths against the script's own output. When the
+	// script printed "wrote ... ./releases.json" before exiting, the user reads
+	// stdout-then-stderr as "success then failure" — call out the conflict so
+	// the success print doesn't look authoritative.
+	for _, p := range lost {
+		base := filepath.Base(p)
+		if base == "" || base == "/" {
+			continue
+		}
+		if strings.Contains(scriptTail, base) {
+			fmt.Fprintf(w, "[bento]   ↳ the script's output above mentions `%s` — that print referred to a discarded path.\n", base)
+			break
 		}
 	}
 	if len(sandboxLost) > 0 {
@@ -3999,7 +4013,7 @@ func runManifest(manifestPath string, scriptArgs []string, appendArgs bool, time
 	// Silent-tmpfs writes are diagnostically a failure even if the script
 	// itself exited 0 — the user's data didn't land on disk and CI shouldn't
 	// see a green pipeline. Promote a clean exit to exit=1 in that case.
-	if emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs))) && code == 0 {
+	if emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs)), tail.String()) && code == 0 {
 		fmt.Fprintln(os.Stderr, "[bento] tmpfs writes are treated as errors; exiting non-zero.")
 		code = 1
 	}
