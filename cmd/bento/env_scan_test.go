@@ -145,6 +145,68 @@ echo "$TMP"
 	}
 }
 
+func TestPickEnvForLostWrite(t *testing.T) {
+	defaults := map[string]string{
+		"OUT":     "./releases.json",
+		"SUMMARY": "./summary.txt",
+	}
+	referenced := []string{"OUT", "SUMMARY"}
+
+	// Lost write basename matches SUMMARY's default basename.
+	if got := pickEnvForLostWrite([]string{"/sandbox/summary.txt"}, defaults, referenced); got != "SUMMARY" {
+		t.Errorf("lost summary.txt: got %q, want SUMMARY", got)
+	}
+	// Lost write basename matches OUT's default basename.
+	if got := pickEnvForLostWrite([]string{"/sandbox/releases.json"}, defaults, referenced); got != "OUT" {
+		t.Errorf("lost releases.json: got %q, want OUT", got)
+	}
+	// No basename match → fall back to pickOutputEnvName (prefers OUT).
+	if got := pickEnvForLostWrite([]string{"/sandbox/other.bin"}, defaults, referenced); got != "OUT" {
+		t.Errorf("no match: got %q, want OUT (output-shaped fallback)", got)
+	}
+	// Empty defaults → fall back.
+	if got := pickEnvForLostWrite([]string{"/sandbox/summary.txt"}, map[string]string{}, referenced); got != "OUT" {
+		t.Errorf("empty defaults: got %q, want OUT", got)
+	}
+}
+
+func TestShellEnvDefaults(t *testing.T) {
+	src := []byte(`#!/usr/bin/env bash
+OUT="${OUT:-./releases.json}"
+SUMMARY="${SUMMARY:-./summary.txt}"
+ALT="${ALT-fallback}"
+ASSIGN_DEFAULT="${ASSIGN_DEFAULT:=/tmp/x}"
+ERRORED="${ERRORED:?must be set}"
+echo "$OUT $SUMMARY $ALT $ASSIGN_DEFAULT $ERRORED"
+`)
+	got := shellEnvDefaults(src)
+	want := map[string]string{
+		"OUT":            "./releases.json",
+		"SUMMARY":        "./summary.txt",
+		"ALT":            "fallback",
+		"ASSIGN_DEFAULT": "/tmp/x",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestPythonEnvDefaults(t *testing.T) {
+	src := []byte(`import os
+out = os.environ.get("OUT", "./releases.json")
+city = os.getenv("CITY", "London")
+no_default = os.getenv("API_TOKEN")
+`)
+	got := pythonEnvDefaults(src)
+	want := map[string]string{
+		"OUT":  "./releases.json",
+		"CITY": "London",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
 func TestReferencedPythonEnvVars(t *testing.T) {
 	cases := []struct {
 		name string

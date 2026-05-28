@@ -519,7 +519,7 @@ func cmdProfile(args []string) int {
 		// failure, instead of guessing among 3+ undifferentiated entries.
 		var loadBearing string
 		if len(result.TmpfsWrites) > 0 {
-			loadBearing = pickOutputEnvName(referenced)
+			loadBearing = pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referenced)
 		}
 		for _, name := range stub {
 			if name == loadBearing {
@@ -684,9 +684,17 @@ func cmdProfile(args []string) int {
 		// OUTPUT) — falling back to the first referenced name, then a
 		// placeholder. We deliberately do not re-emit `env:` here because
 		// the `env:` comment block above already lists the referenced names.
-		envName := pickOutputEnvName(referenced)
-		header.WriteString("#\n# ── Quick-apply fix (a) ─ uncomment the `write:` block below AND uncomment\n")
-		fmt.Fprintf(&header, "#    `- %s` under the `env:` comment above. Then run with:\n", envName)
+		envName := pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referenced)
+		header.WriteString("#\n# ── Quick-apply fix (a) ─ uncomment the `write:` block below")
+		// If the load-bearing var is already in the manifest's active `env:`
+		// block (because it was passed via --env at profile time), the user
+		// doesn't need to uncomment anything env-side — say so explicitly
+		// instead of telling them to uncomment a line that isn't commented.
+		if already[envName] {
+			fmt.Fprintf(&header, ".\n#    `%s` is already in `env:` below. Then run with:\n", envName)
+		} else {
+			fmt.Fprintf(&header, " AND uncomment\n#    `- %s` under the `env:` comment above. Then run with:\n", envName)
+		}
 		fmt.Fprintf(&header, "#       bento run --env %s=%s/<file> <this manifest>\n", envName, scriptDir)
 		fmt.Fprintf(&header, "# write:\n#   - %s\n", scriptDir)
 	}
@@ -2751,6 +2759,108 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
+// shellEnvDefaults extracts (var name → literal default value) pairs from
+// `${NAME:-DEFAULT}` / `${NAME-DEFAULT}` / `${NAME:=DEFAULT}` / `${NAME=DEFAULT}`
+// expansions in a shell script. Used to correlate a script's env-var defaults
+// with observed lost-write basenames so the Quick-apply scaffold can name the
+// var that actually controls the lost path (e.g. `${SUMMARY:-./summary.txt}`
+// → SUMMARY controls anything ending in `summary.txt`).
+func shellEnvDefaults(src []byte) map[string]string {
+	scrub := reShellSingleQuoted.ReplaceAll(src, []byte(`''`))
+	scrub = reShellLineComment.ReplaceAllFunc(scrub, func(b []byte) []byte {
+		if len(b) > 0 && b[0] != '#' {
+			return b[:1]
+		}
+		return nil
+	})
+	out := make(map[string]string)
+	for _, m := range reShellVarDefaultValue.FindAllSubmatch(scrub, -1) {
+		name := string(m[1])
+		val := strings.TrimSpace(string(m[2]))
+		// Strip surrounding quotes if present — `${X:-"foo"}` and `${X:-'foo'}`.
+		if len(val) >= 2 {
+			first, last := val[0], val[len(val)-1]
+			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if val == "" {
+			continue
+		}
+		if _, exists := out[name]; !exists {
+			out[name] = val
+		}
+	}
+	return out
+}
+
+// pythonEnvDefaults extracts (var name → literal default value) pairs from
+// `os.environ.get("NAME", "DEFAULT")` and `os.getenv("NAME", "DEFAULT")` calls.
+// Parallel to shellEnvDefaults.
+func pythonEnvDefaults(src []byte) map[string]string {
+	out := make(map[string]string)
+	for _, m := range rePyEnvVar.FindAllSubmatch(src, -1) {
+		var name string
+		var tail []byte
+		switch {
+		case len(m[2]) > 0 && len(m[3]) > 0:
+			name = string(m[2])
+			tail = m[3]
+		case len(m[4]) > 0 && len(m[5]) > 0:
+			name = string(m[4])
+			tail = m[5]
+		default:
+			continue
+		}
+		if v, ok := firstQuotedString(tail); ok {
+			if _, exists := out[name]; !exists {
+				out[name] = v
+			}
+		}
+	}
+	return out
+}
+
+// scriptEnvDefaults dispatches to shellEnvDefaults / pythonEnvDefaults based
+// on the interpreter, returning the (name → default value) map or empty for
+// binaries / unreadable files.
+func scriptEnvDefaults(scriptPath, interp string) map[string]string {
+	src, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return nil
+	}
+	switch {
+	case isShellInterpreter(interp):
+		return shellEnvDefaults(src)
+	case isPythonInterpreter(interp):
+		return pythonEnvDefaults(src)
+	}
+	return nil
+}
+
+// pickEnvForLostWrite picks the env-var name that most likely controls a lost
+// tmpfs-write path. Heuristic: for each lost-write path, match its basename
+// against each var's default-value basename — `${SUMMARY:-./summary.txt}`
+// makes SUMMARY the controlling var for any lost path ending in `summary.txt`.
+// Falls back to pickOutputEnvName when no default-value basename matches (the
+// script may not use `${VAR:-default}` idioms at all, or the lost write was
+// hardcoded).
+func pickEnvForLostWrite(lostWrites []string, defaults map[string]string, referenced []string) string {
+	for _, lost := range lostWrites {
+		lostBase := filepath.Base(lost)
+		for name, defVal := range defaults {
+			defBase := filepath.Base(defVal)
+			if defBase == "" || defBase == "." || defBase == "/" {
+				continue
+			}
+			if defBase == lostBase {
+				return name
+			}
+		}
+	}
+	return pickOutputEnvName(referenced)
+}
+
 // pickOutputEnvName picks the most likely "where to write" env-var name from a
 // script's referenced env vars, for the tmpfs-write fix scaffold. Heuristic:
 // prefer names that look output-shaped (OUT, OUTPUT, DEST, FILE, PATH suffix);
@@ -2829,6 +2939,13 @@ var (
 	// this" note is misleading. Names matched here are removed from the
 	// reference set.
 	reShellVarDefaulted = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-=?+])`)
+	// ${NAME:-default} / ${NAME-default} / ${NAME:=default} / ${NAME=default}:
+	// captures the name and the literal default value. Only these four operators
+	// supply a usable value; `:?` errors and `:+` substitutes only when set.
+	// Used by shellEnvDefaults to correlate a script's env-var defaults with
+	// observed lost-write basenames, so the Quick-apply scaffold can name the
+	// var that actually controls the lost path.
+	reShellVarDefaultValue = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=]([^}]*)\}`)
 	// Local assignments / declarations / loop targets. A name assigned in the
 	// script body is local to the script — it is not consumed from the host
 	// env, so the env-strip note is a false positive.
