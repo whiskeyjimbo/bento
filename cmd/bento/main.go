@@ -103,6 +103,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  bento run --env API=$API check.yaml arg     # extra env + script args")
 	fmt.Fprintln(os.Stderr, "  bento profile ./fetch.py                    # generate fetch.manifest.yaml")
 	fmt.Fprintln(os.Stderr, "  bento profile --allow-exec ./deploy.sh      # bash/build scripts that fork")
+	fmt.Fprintln(os.Stderr, "  bento profile --scaffold ./prod-only.py     # commented skeleton, no live run")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  bento <subcommand> --help    flags for one subcommand")
 	fmt.Fprintln(os.Stderr, "  bento --help                 this help screen")
@@ -145,6 +146,7 @@ func cmdProfile(args []string) int {
 	verbose := fs.Bool("verbose", false, "show sandbox argv and other diagnostic logging")
 	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
 	allowExec := fs.Bool("allow-exec", false, "permit subprocess execve during profiling (required to profile bash scripts and build tools)")
+	scaffold := fs.Bool("scaffold", false, "emit a commented manifest skeleton WITHOUT running the script; for production-only scripts that can't be profiled live")
 	env := envFlag{}
 	fs.Var(env, "env", "extra env var KEY=VALUE for the script during profiling; the name is also added to the generated manifest's `env:` allowlist (repeatable)")
 	fs.Parse(args)
@@ -206,6 +208,10 @@ func cmdProfile(args []string) int {
 		}
 	}
 
+	if *scaffold {
+		return writeScaffoldManifest(outPath, scriptPath, interp, m)
+	}
+
 	// Proactive --allow-exec nudge for shells: bash/sh scripts almost
 	// universally shell out (mkdir, sha256sum, …). Without --allow-exec
 	// profile fails on the first subprocess and produces a useless manifest.
@@ -215,20 +221,17 @@ func cmdProfile(args []string) int {
 		fmt.Fprintln(os.Stderr, "[bento]   by default and will make this profile run fail at the first subprocess).")
 	}
 	fmt.Fprintf(os.Stderr, "[bento] profiling %q (permissive network)...\n", scriptPath)
-	// Profile binds the host's /tmp so scripts that write tempfiles (the
-	// `tempfile.mkstemp()` / `mktemp` pattern) complete instead of crashing
-	// on Read-only file system. Side effect: the script can also READ other
-	// processes' tempfiles during the trial run. Surface this once so the
-	// user can decide whether to profile in a more isolated environment.
-	if _, err := os.Stat("/tmp"); err == nil {
-		fmt.Fprintln(os.Stderr, "[bento] note: profile binds host /tmp writable for the trial run — other")
-		fmt.Fprintln(os.Stderr, "[bento]   processes' tempfiles are visible to the script during profiling.")
-	}
 	tail := newTailBuffer(16 << 10)
+	// scriptTail captures ONLY the script's own stdout/stderr (no bento log
+	// lines). On a failing trial run, dumping just the script's output gives
+	// the user a clear signal — `[bento] script exit code: 1` is useless on
+	// its own when bento and the script's stderr are interleaved.
+	scriptTail := newTailBuffer(8 << 10)
 	runOpts := []bento.Option{
-		bento.WithLogger(log.New(os.Stderr, "", 0)),
+		bento.WithLogger(log.New(io.MultiWriter(os.Stderr, tail), "", 0)),
 		bento.WithVerbose(*verbose),
-		bento.WithStderr(io.MultiWriter(os.Stderr, tail)),
+		bento.WithStdout(io.MultiWriter(os.Stdout, scriptTail, tail)),
+		bento.WithStderr(io.MultiWriter(os.Stderr, scriptTail, tail)),
 	}
 	if len(env) > 0 {
 		runOpts = append(runOpts, bento.WithExtraEnv(env))
@@ -246,26 +249,45 @@ func cmdProfile(args []string) int {
 	printDeniedAttempts(os.Stderr, result.DeniedAttempts)
 	printBlockedReads(os.Stderr, result.BlockedReads)
 	noteSandboxPathIfReferenced(os.Stderr, tail.String())
+	// Note about host /tmp visibility moved to post-run and gated on actual
+	// /tmp activity: printing it on every profile run trains the user to
+	// ignore it before it ever matters.
+	noteHostTmpBindIfRelevant(os.Stderr, result.FSWrites, result.FSObservations)
 
-	if result.ExitCode != 0 && !*force {
-		if matchesExecBlock(tail.String()) {
-			fmt.Fprintln(os.Stderr, "[bento] the script tried to spawn a subprocess, which `bento profile` blocks by default")
-			fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Re-run with --allow-exec to let")
-			fmt.Fprintln(os.Stderr, "[bento]   subprocesses run during profiling; the generated manifest will have")
-			fmt.Fprintln(os.Stderr, "[bento]   `allow_exec: true` set:")
-			fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
-		} else {
-			fmt.Fprintf(os.Stderr, "[bento] trial run exited %d — skipping manifest write.\n", result.ExitCode)
-			if len(result.Observations) == 0 && len(result.FSWrites) == 0 {
-				fmt.Fprintln(os.Stderr, "[bento]   no network/write activity was recorded — the script likely failed before doing")
-				fmt.Fprintln(os.Stderr, "[bento]   anything useful. If the failure is unrelated to sandboxing (a Python ImportError,")
-				fmt.Fprintln(os.Stderr, "[bento]   a missing dependency, a syntax error), fix it outside bento first, then re-profile.")
-			}
-			noteShellCwdAssumption(os.Stderr, scriptPath, interp)
-			fmt.Fprintln(os.Stderr, "[bento]   --force writes a partial manifest annotated with the failure (you'll likely")
-			fmt.Fprintln(os.Stderr, "[bento]   need to hand-edit it).")
+	if result.ExitCode != 0 {
+		execBlock := matchesExecBlock(tail.String())
+		// On failure, surface the SCRIPT's own output (separately from bento's
+		// log lines). The interleaved stream made it easy for a shell script
+		// that redirects everything inside `{ … } > file` to fail silently.
+		if !execBlock {
+			emitScriptOutputDiagnostic(os.Stderr, scriptTail.String(), scriptPath, interp)
 		}
-		return result.ExitCode
+		if !*force {
+			if execBlock {
+				fmt.Fprintln(os.Stderr, "[bento] the script tried to spawn a subprocess, which `bento profile` blocks by default")
+				fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Re-run with --allow-exec to let")
+				fmt.Fprintln(os.Stderr, "[bento]   subprocesses run during profiling; the generated manifest will have")
+				fmt.Fprintln(os.Stderr, "[bento]   `allow_exec: true` set:")
+				fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
+			} else {
+				fmt.Fprintf(os.Stderr, "[bento] trial run exited %d — skipping manifest write.\n", result.ExitCode)
+				if len(result.Observations) == 0 && len(result.FSWrites) == 0 {
+					fmt.Fprintln(os.Stderr, "[bento]   no network/write activity was recorded — the script likely failed before doing")
+					fmt.Fprintln(os.Stderr, "[bento]   anything useful. If the failure is unrelated to sandboxing (a Python ImportError,")
+					fmt.Fprintln(os.Stderr, "[bento]   a missing dependency, a syntax error), fix it outside bento first, then re-profile.")
+				} else {
+					// Profile mode bind-mounts host /tmp; run mode gives the
+					// script a fresh tmpfs. A script that fails on `du /tmp/*`
+					// or any other host-tmp content survives `bento run`. Tell
+					// the user so they don't conclude the manifest is broken.
+					noteProfileVsRunTmpDivergence(os.Stderr, scriptPath, result.FSWrites)
+				}
+				noteShellCwdAssumption(os.Stderr, scriptPath, interp)
+				fmt.Fprintln(os.Stderr, "[bento]   --force writes a partial manifest annotated with the failure (you'll likely")
+				fmt.Fprintln(os.Stderr, "[bento]   need to hand-edit it).")
+			}
+			return result.ExitCode
+		}
 	}
 
 	rewriteManifestForOutput(result.SuggestedManifest, outPath)
@@ -290,11 +312,6 @@ func cmdProfile(args []string) int {
 		}
 	}
 
-	yamlBytes, err := yaml.Marshal(result.SuggestedManifest)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error marshaling suggested manifest:", err)
-		return 1
-	}
 	var header strings.Builder
 	fmt.Fprintf(&header, "# generated by `bento profile %s` — review and trim before use\n", scriptPath)
 	fmt.Fprintf(&header, "# bento %s · %s\n", bentoVersionTag(), time.Now().UTC().Format(time.RFC3339))
@@ -305,6 +322,28 @@ func cmdProfile(args []string) int {
 	}
 	if result.SuggestedManifest != nil && result.SuggestedManifest.Interpreter == "" {
 		header.WriteString("#\n# No `interpreter:` field: script is an ELF binary and bento will exec it directly.\n")
+		// Profile usually records `read: - .` for ELF binaries because the script
+		// directory is bind-mounted to expose the binary itself to the sandbox.
+		// Without this hint a reviewer reads "read: - ." and assumes the binary
+		// will read sibling files at runtime, then tries to narrow it.
+		if hasDotRead(result.SuggestedManifest) {
+			header.WriteString("# (`read: - .` below is the script directory — bento mounts it so the binary\n")
+			header.WriteString("# is reachable for execve. Keep it as-is unless you've moved the binary.)\n")
+		}
+		// ELF binaries can't be statically scanned for env reads, so bento can't
+		// detect `os.Getenv("USER")` the way it can for python `os.environ[...]`
+		// or shell `$USER`. Surface the common identity vars in writing — a
+		// junior who runs `bento run binary.manifest.yaml` and sees their tool
+		// behave as if it's running as a different user has no signal otherwise.
+		header.WriteString("#\n# Heads-up: this is a compiled binary, so bento can't scan its source for env\n")
+		header.WriteString("# reads. If the binary reads identity from the environment, you'll see empty\n")
+		header.WriteString("# strings (USER, LOGNAME) or /sandbox (HOME) at run time. To pass host values:\n")
+		header.WriteString("#   bento run --env USER=$USER --env LOGNAME=$LOGNAME <manifest>\n")
+		header.WriteString("# Or uncomment names below to declare them as the manifest's intent (still pass\n")
+		header.WriteString("# values at run time — `env:` only allowlists, it doesn't inherit by itself).\n")
+		header.WriteString("# env:\n")
+		header.WriteString("#   - USER\n")
+		header.WriteString("#   - LOGNAME\n")
 	} else if result.SuggestedManifest != nil && result.SuggestedManifest.Interpreter != "" {
 		// Record the resolved interpreter path so reviewers can spot $PATH
 		// drift between profile-time and run-time. The manifest itself still
@@ -351,6 +390,24 @@ func cmdProfile(args []string) int {
 		header.WriteString("# env:\n")
 		for _, name := range stub {
 			fmt.Fprintf(&header, "#   - %s\n", name)
+		}
+	}
+	// Identity env vars (USER/LOGNAME/HOME) are deliberately not user-settable
+	// in the sandbox — adding them to `env:` won't help. But the script
+	// *references* them and the user-visible symptom is silent (empty string
+	// or "?"). Surface this in the manifest so a reviewer sees, in writing,
+	// why the script will see empty/synthetic identity values.
+	if identity := referencedIdentityEnvVarsInScript(scriptPath, interp); len(identity) > 0 {
+		header.WriteString("#\n# Script also references identity values that bento strips or replaces in the\n")
+		header.WriteString("# sandbox. The manifest's `env:` allowlist deliberately doesn't propagate these\n")
+		header.WriteString("# (HOME is hardcoded to /sandbox; USER/LOGNAME are unset; whoami → \"sandbox\").\n")
+		header.WriteString("# To override at run time, pass the exact name the script reads:\n")
+		for _, name := range identity {
+			if isShellOrLibcIdentityCall(name) {
+				fmt.Fprintf(&header, "#   - %s  ← shell/libc call; can't be overridden, returns sandbox identity\n", name)
+			} else {
+				fmt.Fprintf(&header, "#   - %s  ← `bento run --env %s=$%s manifest.yaml` to reinstate host value\n", name, name, name)
+			}
 		}
 	}
 	// Profile captures the LITERAL write path the script touched. When the
@@ -410,26 +467,156 @@ func cmdProfile(args []string) int {
 			}
 		}
 		if len(flagged) > 0 {
-			header.WriteString("#\n# Heads-up: the write path(s) below look templated — `bento profile` captured\n")
-			header.WriteString("# the LITERAL filename from this run; runs with different inputs will produce a\n")
-			header.WriteString("# different name, won't match the rule, and the write will silently land on the\n")
-			header.WriteString("# sandbox tmpfs. Widen to the containing directory before committing:\n")
+			// Auto-apply the widening: a manifest that we already know will fail
+			// on the next run is worse than one with a wider rule the user can
+			// narrow. The flagged literal goes into the header comment so the
+			// reviewer can see what was captured and tighten if they want.
+			widenedFrom := make(map[string]string, len(flagged))
 			for _, f := range flagged {
-				fmt.Fprintf(&header, "#   - %s  →  %s   (%s)\n", f.path, filepath.Dir(f.path), f.reason)
+				widenedFrom[f.path] = filepath.Dir(f.path)
+			}
+			out := result.SuggestedManifest.Write[:0]
+			seenWidened := make(map[string]bool)
+			for _, p := range result.SuggestedManifest.Write {
+				if widened, ok := widenedFrom[p]; ok {
+					if !seenWidened[widened] {
+						seenWidened[widened] = true
+						out = append(out, widened)
+					}
+					continue
+				}
+				out = append(out, p)
+			}
+			result.SuggestedManifest.Write = out
+
+			header.WriteString("#\n# Heads-up: the write path(s) below were widened to their containing directory.\n")
+			header.WriteString("# `bento profile` captured a LITERAL filename from this run that looks templated\n")
+			header.WriteString("# (timestamp / PID / env-var interpolation). Without widening, the next run with\n")
+			header.WriteString("# different inputs would produce a different name, miss the rule, and silently\n")
+			header.WriteString("# land on the sandbox tmpfs. Narrow back to a literal if you actually want that:\n")
+			for _, f := range flagged {
+				fmt.Fprintf(&header, "#   - %s  ←  observed: %s   (%s)\n", filepath.Dir(f.path), f.path, f.reason)
 			}
 		}
 	}
 	header.WriteString("\n")
+	// Marshal AFTER all header-building code, which may mutate the manifest
+	// (e.g. auto-widening templated write paths).
+	yamlBytes, err := yaml.Marshal(result.SuggestedManifest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error marshaling suggested manifest:", err)
+		return 1
+	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "[bento] wrote %s — review and trim before running with `bento run`\n", outPath)
+	if result.ExitCode != 0 {
+		// --force path: the trial failed but we wrote anyway. Be loud about
+		// it — the final line was previously indistinguishable from a clean
+		// profile, and the manifest header's WARNING block is easy to miss.
+		fmt.Fprintln(os.Stderr, "[bento] ──────────────── warning ────────────────")
+		fmt.Fprintf(os.Stderr, "[bento] wrote %s FROM A FAILED TRIAL (script exit=%d)\n", outPath, result.ExitCode)
+		fmt.Fprintln(os.Stderr, "[bento]   the manifest may be incomplete — see the WARNING block at the top of the file.")
+		fmt.Fprintln(os.Stderr, "[bento]   bento profile is exiting with the script's exit code.")
+		fmt.Fprintln(os.Stderr, "[bento] ─────────────────────────────────────────")
+	} else {
+		fmt.Fprintf(os.Stderr, "[bento] wrote %s — review and trim before running with `bento run`\n", outPath)
+	}
 	if result.SuggestedManifest != nil && result.SuggestedManifest.Network != nil && len(result.SuggestedManifest.Network.Rules) > 0 {
-		fmt.Fprintf(os.Stderr, "[bento] tip: review the %d network rule(s) before committing — profile records what\n", len(result.SuggestedManifest.Network.Rules))
+		n := len(result.SuggestedManifest.Network.Rules)
+		noun := "rule"
+		if n > 1 {
+			noun = fmt.Sprintf("%d rules", n)
+		}
+		fmt.Fprintf(os.Stderr, "[bento] tip: review the network %s before committing — profile records what\n", noun)
 		fmt.Fprintln(os.Stderr, "[bento]   this one run touched; production paths may differ.")
 	}
 	return result.ExitCode
+}
+
+// writeScaffoldManifest emits a commented manifest skeleton without running
+// the script. Used by `bento profile --scaffold` for scripts that can't be
+// profiled live (production-only, destructive on first run, requires
+// secrets the developer doesn't have, etc.). The output is intentionally
+// "everything commented" so the user opts in to each field.
+func writeScaffoldManifest(outPath, scriptPath, interp string, m *bento.Manifest) int {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# generated by `bento profile --scaffold %s` — fill in and uncomment fields.\n", scriptPath)
+	fmt.Fprintf(&b, "# bento %s · %s\n", bentoVersionTag(), time.Now().UTC().Format(time.RFC3339))
+	b.WriteString("#\n# This is a STATIC scaffold: the script was not executed. Compare with\n")
+	b.WriteString("# `bento profile <script>` (which runs the script once and records what it\n")
+	b.WriteString("# actually touched) — that produces a tighter, observation-based manifest.\n")
+	b.WriteString("# Use --scaffold when you can't run the script (production-only, destructive,\n")
+	b.WriteString("# requires unavailable secrets, etc.).\n")
+	b.WriteString("#\n# Required fields are uncommented; everything else is opt-in. Start permissive\n")
+	b.WriteString("# enough that the script runs, then `bento validate <this-file>` and tighten.\n")
+
+	b.WriteString("\n")
+	// ELF binaries report `interpreter == script` from PracticalStrictManifest;
+	// the actual manifest omits `interpreter:` entirely for ELF.
+	isELF := m.Interpreter != "" && m.Script != "" && m.Interpreter == m.Script
+	switch {
+	case isELF:
+		b.WriteString("# (no interpreter: this is an ELF binary — bento execs it directly)\n")
+	case m.Interpreter != "":
+		fmt.Fprintf(&b, "interpreter: %s\n", m.Interpreter)
+	default:
+		b.WriteString("# interpreter: python3   # leave unset for ELF binaries\n")
+	}
+	fmt.Fprintf(&b, "script: %s\n", scriptPath)
+
+	b.WriteString("\n# Paths the script may READ. Add directories rather than individual files when\n")
+	b.WriteString("# the script enumerates a folder. Mandatory-deny paths (SSH keys, cloud creds,\n")
+	b.WriteString("# shell rc files) are always shadowed regardless of what you list here.\n")
+	b.WriteString("# read:\n")
+	b.WriteString("#   - /etc/services\n")
+	b.WriteString("#   - ./inputs\n")
+
+	b.WriteString("\n# Paths the script may WRITE. Prefer containing directories over literal\n")
+	b.WriteString("# filenames — a path with a timestamp/PID/UUID will not match a literal rule\n")
+	b.WriteString("# on the next run, and the write will silently land on the sandbox tmpfs.\n")
+	b.WriteString("# write:\n")
+	b.WriteString("#   - /tmp\n")
+
+	b.WriteString("\n# Outbound network. Bento blocks by default; each allowed destination needs an\n")
+	b.WriteString("# explicit host:port rule. Wildcards: \"*\" (any host) and \".example.com\" (suffix).\n")
+	b.WriteString("# network:\n")
+	b.WriteString("#   rules:\n")
+	b.WriteString("#     - host: api.example.com\n")
+	b.WriteString("#       port: \"443\"\n")
+
+	if isShellInterpreter(interp) {
+		b.WriteString("\n# Shell script — uncomment to permit subprocess execve. Without this every\n")
+		b.WriteString("# external command (ls, tar, curl, ...) fails with EPERM at the first fork.\n")
+		b.WriteString("# allow_exec: true\n")
+	} else {
+		b.WriteString("\n# allow_exec: true   # permit subprocess execve (required by shell scripts and\n")
+		b.WriteString("#                    # any tool that forks — `git`, `make`, `npm`, build wrappers)\n")
+	}
+
+	b.WriteString("\n# Host env vars to inherit into the sandbox. Bento strips host env by default,\n")
+	b.WriteString("# so anything the script reads via `$NAME` / `os.environ[\"NAME\"]` must be listed\n")
+	b.WriteString("# here OR passed at run time with `--env NAME=VALUE`. USER/LOGNAME/HOME are\n")
+	b.WriteString("# always replaced by sandbox values regardless of this list.\n")
+	b.WriteString("# env:\n")
+	b.WriteString("#   - CITY\n")
+
+	b.WriteString("\n# Resource caps (optional). bento installs a cgroup with these limits.\n")
+	b.WriteString("# limits:\n")
+	b.WriteString("#   memory: \"128M\"\n")
+	b.WriteString("#   cpu:    \"100%\"\n")
+	b.WriteString("#   tasks:  32\n")
+
+	if err := os.WriteFile(outPath, []byte(b.String()), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "[bento] wrote %s (scaffold; no observation run performed)\n", outPath)
+	fmt.Fprintln(os.Stderr, "[bento] next: fill in the fields the script needs, then `bento validate` it.")
+	fmt.Fprintln(os.Stderr, "[bento]   when you CAN run the script, `bento profile <script>` produces a tighter")
+	fmt.Fprintln(os.Stderr, "[bento]   manifest by recording actual file/network activity.")
+	return 0
 }
 
 // rewriteManifestForOutput makes a generated manifest portable:
@@ -499,6 +686,167 @@ func printFSWrites(w io.Writer, paths []string) {
 		fmt.Fprintf(w, "  %s\n", p)
 	}
 	fmt.Fprintln(w)
+}
+
+// readCommentedEnvNames returns names listed under a commented `# env:` block
+// in the manifest file. `bento profile` writes such blocks to nudge users to
+// uncomment names they want inherited; without this, `validate` says
+// "env: (none)" while the manifest's own YAML right above shows names like
+// CITY waiting to be activated.
+//
+// Pattern matched (lines starting with `#`, leading whitespace allowed):
+//
+//	# env:
+//	#   - CITY
+//	#   - REGION   ← arbitrary trailing comment
+//
+// Anything that doesn't look like `#   - NAME` ends the block.
+func readCommentedEnvNames(manifestPath string) []string {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	inBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			inBlock = false
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		if body == "env:" {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		// Expect `- NAME` (optionally with comment after).
+		if !strings.HasPrefix(body, "- ") {
+			inBlock = false
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(body, "-"))
+		// Strip any trailing comment after the name (e.g. `CITY  ← uncomment if ...`).
+		if i := strings.IndexAny(name, " \t"); i >= 0 {
+			name = name[:i]
+		}
+		// Env var names: letters, digits, underscore. Bail on anything else.
+		if name == "" || !isEnvVarName(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func isEnvVarName(s string) bool {
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// emitScriptOutputDiagnostic surfaces the failing script's own stdout/stderr
+// when the trial run exited nonzero. Shell scripts that redirect everything
+// inside `{ … } > file` (or via `exec >file`) print nothing to the terminal
+// even on failure — without this block, the user sees only "script exit code:
+// 1" and has no signal where the script broke. When the script DID print
+// something, the lines already streamed live; we just point at them so the
+// reader knows where to look.
+func emitScriptOutputDiagnostic(w io.Writer, scriptOutput, _ string, interp string) {
+	scriptOutput = strings.TrimRight(scriptOutput, "\n")
+	if scriptOutput == "" {
+		fmt.Fprintln(w, "[bento] ──────────────── note ────────────────")
+		fmt.Fprintln(w, "[bento] script printed nothing to stdout/stderr before exiting nonzero.")
+		fmt.Fprintln(w, "[bento]   common when shell scripts redirect with `{ … } > file` or `exec >file`")
+		fmt.Fprintln(w, "[bento]   and never reach a later command that prints to the terminal. To see")
+		fmt.Fprintln(w, "[bento]   where the script broke, add diagnostics that bypass the redirect:")
+		if isShellInterpreter(interp) {
+			fmt.Fprintln(w, "[bento]     set -x                    # at the top of the script (echoes commands as it runs)")
+			fmt.Fprintln(w, "[bento]     command 2>&3 3>&-         # send a key step's stderr around the block redirect")
+		} else {
+			fmt.Fprintln(w, "[bento]     add `print(..., file=sys.stderr, flush=True)` around suspect lines")
+		}
+		fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
+		return
+	}
+	// Show last ~20 lines. Lines already streamed live; we just point.
+	lines := strings.Split(scriptOutput, "\n")
+	const maxLines = 20
+	start := 0
+	truncated := false
+	if len(lines) > maxLines {
+		start = len(lines) - maxLines
+		truncated = true
+	}
+	fmt.Fprintln(w, "[bento] ──────────────── script output (tail) ────────────────")
+	if truncated {
+		fmt.Fprintf(w, "[bento]   (last %d of %d lines; full output is interleaved above)\n", maxLines, len(lines))
+	}
+	for _, l := range lines[start:] {
+		fmt.Fprintf(w, "    %s\n", l)
+	}
+	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
+}
+
+// noteHostTmpBindIfRelevant fires the "host /tmp is bind-mounted" note only
+// when the trial run actually touched /tmp paths (write or read). Printing
+// it unconditionally trains users to ignore it — and it's only meaningful
+// when /tmp content actually mattered to the script.
+func noteHostTmpBindIfRelevant(w io.Writer, fsWrites, fsObservations []string) {
+	touched := func(paths []string) bool {
+		for _, p := range paths {
+			if strings.HasPrefix(p, "/tmp/") || p == "/tmp" {
+				return true
+			}
+		}
+		return false
+	}
+	if !touched(fsWrites) && !touched(fsObservations) {
+		return
+	}
+	if _, err := os.Stat("/tmp"); err != nil {
+		return
+	}
+	fmt.Fprintln(w, "[bento] note: profile bound host /tmp writable for this trial — other processes'")
+	fmt.Fprintln(w, "[bento]   tempfiles were visible to the script, and a script that walks /tmp (`du`,")
+	fmt.Fprintln(w, "[bento]   `ls`, `find`) sees them. `bento run` gives the script a fresh tmpfs at /tmp")
+	fmt.Fprintln(w, "[bento]   instead, so the runtime environment differs from this profile's.")
+}
+
+// noteProfileVsRunTmpDivergence points the user at `bento run` when the
+// trial run failed but the generated manifest looks salvageable AND the
+// script touched host /tmp. The most common shape: `du -sh /tmp/*` exits
+// nonzero under pipefail during profile (host /tmp has unreadable files)
+// but works fine under run (fresh tmpfs).
+func noteProfileVsRunTmpDivergence(w io.Writer, scriptPath string, fsWrites []string) {
+	relevant := false
+	for _, p := range fsWrites {
+		if strings.HasPrefix(p, "/tmp/") || p == "/tmp" {
+			relevant = true
+			break
+		}
+	}
+	if !relevant {
+		return
+	}
+	fmt.Fprintln(w, "[bento]   profile bind-mounted host /tmp, but `bento run` gives the script a fresh")
+	fmt.Fprintln(w, "[bento]   tmpfs at /tmp. If the failure was triggered by something the script saw")
+	fmt.Fprintln(w, "[bento]   under host /tmp (e.g. `du /tmp/*` + `set -o pipefail`), the manifest may")
+	fmt.Fprintln(w, "[bento]   still work — re-run with --force to write it anyway, then:")
+	candidate := strings.TrimSuffix(scriptPath, filepath.Ext(scriptPath)) + ".manifest.yaml"
+	fmt.Fprintf(w, "[bento]     bento profile --force %s   # write the manifest from this failed trial\n", scriptPath)
+	fmt.Fprintf(w, "[bento]     bento run %s   # /tmp is a fresh tmpfs here\n", candidate)
 }
 
 // printTmpfsWrites surfaces /sandbox/* writes that landed on the sandbox tmpfs.
@@ -711,16 +1059,32 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 		fmt.Fprintf(w, "args:        %v\n", m.Args)
 	}
 
+	// Surface commented `# env:` entries from the manifest file as "pending":
+	// the YAML parser ignores them, but the user wrote them in writing, often
+	// as bento profile's nudge "uncomment names you want inherited". Without
+	// this section, `validate` says "env: (none)" while the YAML right above
+	// it lists CITY — a stark disagreement between two views of the manifest.
+	pendingEnv := readCommentedEnvNames(manifestPath)
 	fmt.Fprintln(w)
-	if len(m.Env) == 0 {
+	if len(m.Env) == 0 && len(pendingEnv) == 0 {
 		fmt.Fprintln(w, "env:         (none — host env is fully stripped)")
 	} else {
-		fmt.Fprintln(w, "env:         (allowlist — passed through from host when set)")
-		for _, name := range m.Env {
-			if v, ok := os.LookupEnv(name); ok {
-				fmt.Fprintf(w, "  - %s = %s\n", name, shellQuote(v))
-			} else {
-				fmt.Fprintf(w, "  - %s (NOT SET on host — script will see empty string)\n", name)
+		if len(m.Env) == 0 {
+			fmt.Fprintln(w, "env:         (none active — host env is stripped)")
+		} else {
+			fmt.Fprintln(w, "env:         (allowlist — passed through from host when set)")
+			for _, name := range m.Env {
+				if v, ok := os.LookupEnv(name); ok {
+					fmt.Fprintf(w, "  - %s = %s\n", name, shellQuote(v))
+				} else {
+					fmt.Fprintf(w, "  - %s (NOT SET on host — script will see empty string)\n", name)
+				}
+			}
+		}
+		if len(pendingEnv) > 0 {
+			fmt.Fprintln(w, "             pending (commented in manifest — uncomment to activate):")
+			for _, name := range pendingEnv {
+				fmt.Fprintf(w, "             - %s\n", name)
 			}
 		}
 	}
@@ -1025,11 +1389,11 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 	// time the post-run hint fires, the user has already scrolled past 30
 	// lines of traceback. Surface the diagnosis BEFORE the script runs so
 	// the warning sits above any traceback in the user's terminal.
-	warnLikelyNetworkUseInZeroConfig(os.Stderr, scriptPath, interp)
+	preflightNetFired := warnLikelyNetworkUseInZeroConfig(os.Stderr, scriptPath, interp)
 	tail := newTailBuffer(16 << 10)
 	var fsOpens []bento.FSOpen
 	opts := []bento.Option{
-		bento.WithLogger(log.New(os.Stderr, "", 0)),
+		bento.WithLogger(log.New(io.MultiWriter(os.Stderr, tail), "", 0)),
 		bento.WithVerbose(verbose),
 		bento.WithNetworkMode(netMode),
 		bento.WithStdout(io.MultiWriter(os.Stdout, tail)),
@@ -1055,10 +1419,13 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 	}
 	// Always check for hint signatures — a bash script that runs `ls` (blocked)
 	// then `echo done` exits 0, but the user still needs the exec-block hint.
-	emitPostRunHint(os.Stderr, hintModeZeroConfig, scriptPath, m, tail.String())
+	emitPostRunHint(os.Stderr, hintModeZeroConfig, scriptPath, m, tail.String(), preflightNetFired)
 	// Zero-config has no `write:` list, so every successful write outside
 	// bento's sandbox bookkeeping is by definition lost.
-	emitSilentWriteWarning(os.Stderr, fsOpens, nil)
+	if emitSilentWriteWarning(os.Stderr, fsOpens, nil) && code == 0 {
+		fmt.Fprintln(os.Stderr, "[bento] exiting non-zero because at least one write landed on tmpfs and vanished.")
+		code = 1
+	}
 	return code
 }
 
@@ -1113,10 +1480,13 @@ var reShellCwdAssumption = regexp.MustCompile(
 //
 // Restricted to shell and Python scripts (the source-scanning interpreters);
 // binaries and other languages get the post-run hint only.
-func warnLikelyNetworkUseInZeroConfig(w io.Writer, scriptPath, interp string) {
+// Returns true when the preflight network warning was actually printed. The
+// caller uses this to condense the post-run hint (which would otherwise repeat
+// the same advice 60 lines below a Python traceback).
+func warnLikelyNetworkUseInZeroConfig(w io.Writer, scriptPath, interp string) bool {
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
-		return
+		return false
 	}
 	var pat *regexp.Regexp
 	switch {
@@ -1125,15 +1495,150 @@ func warnLikelyNetworkUseInZeroConfig(w io.Writer, scriptPath, interp string) {
 	case isPythonInterpreter(interp):
 		pat = rePyNetCall
 	default:
-		return
+		return false
 	}
 	if !pat.Match(src) {
-		return
+		return false
 	}
 	fmt.Fprintln(w, "[bento] preflight: script appears to make outbound network calls, but zero-config has")
 	fmt.Fprintln(w, "[bento]   no network access. The call will fail with a DNS or connection error. Run")
 	fmt.Fprintf(w, "[bento]   `bento profile %s` to record observed hosts and emit a manifest.\n", scriptPath)
+	return true
 }
+
+// warnLikelyFailureInManifest runs the same static script-shape detectors
+// in manifest mode and surfaces a preflight note BEFORE the script's own
+// traceback. The post-run hint still fires with the precise host/binary;
+// this just ensures the actionable advice lands above the wall of script
+// stderr rather than below it.
+//
+// Two cheap checks:
+//   - script makes outbound calls AND manifest's network is empty → DNS failure
+//   - shell script forks subprocesses AND manifest doesn't set allow_exec → EPERM
+// Returns true when any preflight network/host warning was printed (the
+// post-run hint uses this to avoid repeating itself below a wall of script
+// stderr).
+func warnLikelyFailureInManifest(w io.Writer, scriptPath string, m *bento.Manifest) bool {
+	src, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return false
+	}
+	interp := m.Interpreter
+	var pat *regexp.Regexp
+	switch {
+	case isShellInterpreter(interp):
+		pat = reShellNetCall
+	case isPythonInterpreter(interp):
+		pat = rePyNetCall
+	}
+	netFired := false
+	if pat != nil && pat.Match(src) && networkRulesEmpty(m.Network) {
+		fmt.Fprintln(w, "[bento] preflight: script appears to make outbound network calls, but this manifest")
+		fmt.Fprintln(w, "[bento]   has no `network.rules`. The call will fail with a DNS or connection error.")
+		fmt.Fprintln(w, "[bento]   Add a `network:` block with the host(s) the script needs, or re-profile.")
+		netFired = true
+	} else if pat != nil && pat.Match(src) && len(scriptHostsMissingFromRules(src, m.Network)) > 0 {
+		// Restrict the wrong-host preflight to shell and python scripts (pat
+		// non-nil) and gate on the same net-call detector so we don't grep
+		// arbitrary binaries for URL substrings — ELF binaries commonly embed
+		// Go runtime URLs (go.dev), Rust panic-handler URLs, certificate
+		// authority issuer URLs, etc., none of which the binary actually
+		// contacts at runtime.
+		missing := scriptHostsMissingFromRules(src, m.Network)
+		// Script source mentions a host that isn't in this manifest's rules.
+		// The post-run hint also names the host (via the proxy DENY log), but
+		// surfacing it preflight puts the advice above the script's traceback
+		// rather than scrolled past it.
+		fmt.Fprintln(w, "[bento] preflight: script source references host(s) that aren't in this manifest's")
+		fmt.Fprintln(w, "[bento]   `network.rules`. The proxy will reject these with 403 and the script's network")
+		fmt.Fprintln(w, "[bento]   call will fail (typically buried in a multi-line traceback):")
+		for _, h := range missing {
+			fmt.Fprintf(w, "[bento]   - %s\n", h)
+		}
+		fmt.Fprintln(w, "[bento]   add to network.rules or re-profile to capture them.")
+		netFired = true
+	}
+	// Exec preflight only applies to shell scripts: Python `subprocess.run`
+	// is too commonly used for non-fork purposes to flag reliably, and ELF
+	// binaries can't be source-scanned.
+	if isShellInterpreter(interp) && !m.AllowExec && reShellExecCall.Match(src) {
+		fmt.Fprintln(w, "[bento] preflight: shell script forks external commands but the manifest leaves")
+		fmt.Fprintln(w, "[bento]   `allow_exec: false` (the default). Every subprocess will fail with EPERM.")
+		fmt.Fprintln(w, "[bento]   Add `allow_exec: true` to the manifest if those subprocesses are expected.")
+	}
+	return netFired
+}
+
+// reScriptHostRef extracts host-like tokens from script source: literal URLs
+// (https://example.com/...) and quoted bare hostnames passed to shell network
+// tools (curl example.com). The pattern is conservative — it favors false
+// negatives over false positives because the resulting preflight message
+// names a specific host. A bogus host in the warning would be worse than
+// missing a real one.
+var reScriptHostRef = regexp.MustCompile(`https?://([A-Za-z0-9][A-Za-z0-9.-]+\.[A-Za-z]{2,})`)
+
+// scriptHostsMissingFromRules returns hostnames the script source mentions in
+// URLs that aren't covered by any rule in net. Returns nil if net is nil or
+// has no rules — the empty-rules case is handled by the caller's separate
+// "no rules" preflight branch. Matches against rule.Host using the same
+// wildcard semantics the proxy uses ("*" / ".suffix" / literal).
+func scriptHostsMissingFromRules(src []byte, net *bento.NetworkPerm) []string {
+	if net == nil || len(net.Rules) == 0 {
+		return nil
+	}
+	matches := reScriptHostRef.FindAllSubmatch(src, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, m := range matches {
+		host := strings.ToLower(string(m[1]))
+		if seen[host] {
+			continue
+		}
+		seen[host] = true
+		if !ruleCoversHost(net.Rules, host) {
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
+// ruleCoversHost matches the proxy's allowlist semantics: literal equality,
+// suffix match for ".example.com", or wildcard "*".
+func ruleCoversHost(rules []bento.NetworkRule, host string) bool {
+	for _, r := range rules {
+		h := strings.ToLower(r.Host)
+		switch {
+		case h == "*":
+			return true
+		case strings.HasPrefix(h, "."):
+			if strings.HasSuffix(host, h) || host == strings.TrimPrefix(h, ".") {
+				return true
+			}
+		case h == host:
+			return true
+		}
+	}
+	return false
+}
+
+// reShellExecCall matches shell commands that clearly fork an external
+// binary. Intentionally NOT matching shell builtins like echo/cd/export.
+// Tuned conservatively — false positives produce a noisy warning every run.
+var reShellExecCall = regexp.MustCompile(
+	`(?m)(?:^|[\s;|&$(` + "`" + `])` +
+		`(?:` +
+		`tar|gzip|gunzip|zip|unzip|` +
+		`cp|mv|rm|mkdir|chmod|chown|ln|find|xargs|` +
+		`ls|cat|head|tail|sort|uniq|wc|cut|tr|sed|awk|grep|` +
+		`date|du|df|stat|file|basename|dirname|realpath|` +
+		`ps|kill|sleep|env|whoami|id|uname|hostname|` +
+		`git|make|cargo|go|npm|node|python3?|ruby|perl|java|` +
+		`docker|kubectl|systemctl|journalctl|` +
+		`curl|wget|nc|ssh|scp|rsync|ping|dig|host|nslookup` +
+		`)\b`)
 
 var (
 	// Conservative — only matches binaries that are almost certainly making
@@ -1404,6 +1909,35 @@ var (
 		`\b(os\.getlogin|getpass\.getuser|pwd\.getpwuid|os\.getuid|os\.geteuid)\s*\(`)
 )
 
+// hasDotRead reports whether the manifest's `read:` list includes "." (the
+// script directory). Used to decide whether to explain the entry in the
+// generated header.
+func hasDotRead(m *bento.Manifest) bool {
+	if m == nil {
+		return false
+	}
+	for _, p := range m.Read {
+		if p == "." {
+			return true
+		}
+	}
+	return false
+}
+
+// isShellOrLibcIdentityCall reports whether name is one of the shell-command
+// or libc-call identity tokens (whoami, id, getlogin, getpass.getuser, …) as
+// opposed to an env-var name (USER, HOME, LOGNAME). The two flavors get
+// different "how to override" advice in profile-generated manifests: env vars
+// can be reinstated with `--env USER=$USER`, but shell/libc calls go through
+// the synthetic /etc/passwd and can't.
+func isShellOrLibcIdentityCall(name string) bool {
+	switch name {
+	case "USER", "LOGNAME", "HOME":
+		return false
+	}
+	return true
+}
+
 // identityShellTokens returns the unique identity-leak tokens a shell script
 // invokes (whoami, id, getent passwd, groups, logname). Each one returns
 // bento's synthetic identity ("sandbox" / a numeric uid) rather than the host
@@ -1465,6 +1999,49 @@ func referencedEnvVarsInScript(scriptPath, interp string) []string {
 			continue // sandbox-managed; not user-settable
 		}
 		out = append(out, n)
+	}
+	return out
+}
+
+// referencedIdentityEnvVarsInScript returns the subset of env vars the script
+// references that bento intentionally strips or replaces inside the sandbox
+// (USER/LOGNAME) or hardcodes (HOME=/sandbox). These do NOT belong in the
+// generated manifest's `env:` allowlist — adding them has no effect — but
+// the profile-emitted header calls them out so a reviewer understands why
+// the script will see empty/synthetic values for these names.
+func referencedIdentityEnvVarsInScript(scriptPath, interp string) []string {
+	src, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	var tokens []string
+	switch {
+	case isShellInterpreter(interp):
+		names = referencedShellVarsAll(src)
+		tokens = identityShellTokens(src)
+	case isPythonInterpreter(interp):
+		names = referencedPythonEnvVarsAll(src)
+		tokens = identityPythonTokens(src)
+	default:
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, n := range names {
+		switch n {
+		case "USER", "LOGNAME", "HOME":
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	for _, t := range tokens {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
 	}
 	return out
 }
@@ -1909,9 +2486,12 @@ func isPythonInterpreter(interp string) bool {
 //     undeclared /tmp writes vanish; same for /var, /opt, /etc, etc.
 //
 // declaredWrites should already be normalized to absolute, cleaned paths.
-func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []string) {
+// Returns true if at least one lost write was reported, so the caller can
+// surface this in the process exit code (an exit-0 run with silently
+// vanished writes is the worst-of-both-worlds for CI).
+func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []string) bool {
 	if len(opens) == 0 {
-		return
+		return false
 	}
 	declared := make(map[string]bool, len(declaredWrites))
 	prefixes := make([]string, 0, len(declaredWrites))
@@ -1951,7 +2531,7 @@ func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []
 		lost = append(lost, o.Path)
 	}
 	if len(lost) == 0 {
-		return
+		return false
 	}
 	fmt.Fprintln(w, "[bento] ──────────────── warning ────────────────")
 	fmt.Fprintln(w, "[bento] script wrote to paths not declared in `write:` — these landed in the")
@@ -1961,6 +2541,7 @@ func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []
 	}
 	fmt.Fprintln(w, "[bento] add the destination(s) to the manifest's `write:` list to persist them on the host.")
 	fmt.Fprintln(w, "[bento] ─────────────────────────────────────────")
+	return true
 }
 
 // resolveDeclaredWrites returns m.Write with relative entries joined against
@@ -2005,7 +2586,7 @@ const (
 // In manifest mode the remediation points at the manifest field to change
 // rather than at `bento profile`, so a junior who has already committed a
 // manifest doesn't get bounced back to the on-ramp tool.
-func emitPostRunHint(w io.Writer, mode hintMode, scriptPath string, m *bento.Manifest, stderrTail string) {
+func emitPostRunHint(w io.Writer, mode hintMode, scriptPath string, m *bento.Manifest, stderrTail string, preflightNetworkFired bool) {
 	var sections [][]string
 
 	if !m.AllowExec && matchesExecBlock(stderrTail) {
@@ -2048,30 +2629,43 @@ func emitPostRunHint(w io.Writer, mode hintMode, scriptPath string, m *bento.Man
 		if len(hosts) > 0 {
 			hostLine = fmt.Sprintf("[bento]   script attempted: %s", strings.Join(hosts, ", "))
 		}
-		switch mode {
-		case hintModeZeroConfig:
-			s := []string{"[bento] zero-config runs have no network access. If the script needs network, try:"}
-			if hostLine != "" {
-				s = append(s, hostLine)
-			}
-			s = append(s,
-				fmt.Sprintf("[bento]   bento profile %s   # records observed hosts into a manifest", scriptPath),
-				"[bento]   bento run <manifest>.yaml  # re-run under the trimmed manifest",
-			)
-			sections = append(sections, s)
-		case hintModeManifest:
-			s := []string{}
-			if m.Network == nil || networkRulesEmpty(m.Network) {
-				s = append(s, "[bento] manifest's `network:` is blocked (no rules). To allow the script to reach hosts,")
-				s = append(s, "[bento]   add a `network:` block with `rules:` listing each allowed host:port.")
-			} else {
-				s = append(s, "[bento] script tried to reach a host that doesn't match any rule in `network.rules`.")
-				s = append(s, "[bento]   Add a matching rule (or widen an existing one) and re-run.")
-			}
+		// When the preflight network warning already fired BEFORE the script
+		// ran, the post-run advice is identical advice — and is now sitting
+		// under however many lines of script traceback. Collapse to a single
+		// pointer line so the user is told once (above) and reminded once
+		// (below) instead of buried in 60 lines of urllib internals.
+		if preflightNetworkFired {
+			s := []string{"[bento] network call failed — see the `preflight: ... no network access` note above for the fix."}
 			if hostLine != "" {
 				s = append(s, hostLine)
 			}
 			sections = append(sections, s)
+		} else {
+			switch mode {
+			case hintModeZeroConfig:
+				s := []string{"[bento] zero-config runs have no network access. If the script needs network, try:"}
+				if hostLine != "" {
+					s = append(s, hostLine)
+				}
+				s = append(s,
+					fmt.Sprintf("[bento]   bento profile %s   # records observed hosts into a manifest", scriptPath),
+					"[bento]   bento run <manifest>.yaml  # re-run under the trimmed manifest",
+				)
+				sections = append(sections, s)
+			case hintModeManifest:
+				s := []string{}
+				if m.Network == nil || networkRulesEmpty(m.Network) {
+					s = append(s, "[bento] manifest's `network:` is blocked (no rules). To allow the script to reach hosts,")
+					s = append(s, "[bento]   add a `network:` block with `rules:` listing each allowed host:port.")
+				} else {
+					s = append(s, "[bento] script tried to reach a host that doesn't match any rule in `network.rules`.")
+					s = append(s, "[bento]   Add a matching rule (or widen an existing one) and re-run.")
+				}
+				if hostLine != "" {
+					s = append(s, hostLine)
+				}
+				sections = append(sections, s)
+			}
 		}
 	}
 
@@ -2220,7 +2814,11 @@ var (
 	// Python: `socket.gaierror: [Errno -3] Temporary failure in name resolution`
 	// curl:   `Could not resolve host`
 	// Go:     `dial tcp: lookup ...: no such host`
-	reNetBlock = regexp.MustCompile(`(?i)(name resolution|could not resolve|no such host|name or service not known|getaddrinfo|connection refused)`)
+	// proxy:  `[bento] http-connect: DENY wttr.in:443`  (bento's own log line on
+	//         a manifest with rules that don't cover the host — the script's own
+	//         stderr only shows "Tunnel connection failed: 403 Forbidden")
+	// proxy body / header from writeRejectStatus
+	reNetBlock = regexp.MustCompile(`(?i)(name resolution|could not resolve|no such host|name or service not known|getaddrinfo|connection refused|http-connect: deny|tunnel connection failed|x-bento-reject-host|bento blocked outbound connection)`)
 	// Python: `PermissionError: [Errno 13] Permission denied: '/etc/...'`
 	// Bash:   `cat: /etc/shadow: Permission denied`
 	reFSBlock = regexp.MustCompile(`(?i)permission denied`)
@@ -2253,6 +2851,14 @@ var reDeniedHost = regexp.MustCompile(
 // We extract the URL host as the next-best signal.
 var rePyTracebackURL = regexp.MustCompile(`https?://([A-Za-z0-9_.-]+)`)
 
+// reProxyDenyHost captures the host from bento's own proxy DENY log line and
+// from the X-Bento-Reject-Host header / 403 body the proxy returns. These are
+// the most reliable signal for the "manifest has rules but not the right ones"
+// case: DNS resolution never happens (rules are checked first), so the
+// gaierror/DNS-pattern matchers can't fire.
+var reProxyDenyHost = regexp.MustCompile(
+	`(?i)(?:http-connect: DENY\s+|x-bento-reject-host:\s*|bento blocked outbound connection to\s+)([A-Za-z0-9_.-]+)(?::[0-9]+)?`)
+
 // extractDeniedHosts returns up to a few unique hostnames the script tried to
 // resolve before the sandbox refused. Empty when nothing matches — the caller
 // then prints the generic hint without naming a host.
@@ -2266,6 +2872,15 @@ func extractDeniedHosts(stderrTail string) []string {
 		}
 		seen[h] = true
 		out = append(out, h)
+	}
+	// Bento's own proxy DENY log line / 403 body is the most authoritative
+	// source — it fires when the manifest has network rules that don't cover
+	// the requested host (the wrong-host case), where DNS never gets to fail.
+	for _, m := range reProxyDenyHost.FindAllStringSubmatch(stderrTail, -1) {
+		add(m[1])
+		if len(out) >= 5 {
+			return out
+		}
 	}
 	for _, m := range reDeniedHost.FindAllStringSubmatch(stderrTail, -1) {
 		add(m[1])
@@ -2377,6 +2992,7 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 		fmt.Fprintln(os.Stderr, "[bento]   any non-empty value disables the subprocess block. Use `allow_exec: true` instead.")
 	}
 	warnUnsetEnvAllowlist(os.Stderr, m.Env, env)
+	var manifestPreflightNetFired bool
 	// Also warn when the script references host env vars that the manifest
 	// hasn't allowlisted — same silent-misbehavior trap as the zero-config
 	// case (user exports FOO, expects it to flow through, gets empty string).
@@ -2393,13 +3009,17 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 		// has already accepted the manifest (and the identity note fired during
 		// zero-config / profile); re-printing it on every run is just noise.
 		warnStrippedShellVars(os.Stderr, scriptForEnvScan, m.Interpreter, merged, false /* includeIdentity */)
+		// Preflight: surface predictable failures (missing network rule, missing
+		// allow_exec) ABOVE the script's own traceback. The post-run hint still
+		// fires with the precise host/binary; this is the "scroll-saver" copy.
+		manifestPreflightNetFired = warnLikelyFailureInManifest(os.Stderr, scriptForEnvScan, m)
 	}
 	m.Args = append(m.Args, scriptArgs...)
 
 	tail := newTailBuffer(16 << 10)
 	var fsOpens []bento.FSOpen
 	opts := []bento.Option{
-		bento.WithLogger(log.New(os.Stderr, "", 0)),
+		bento.WithLogger(log.New(io.MultiWriter(os.Stderr, tail), "", 0)),
 		bento.WithVerbose(verbose),
 		// Tap both streams: scripts often print errors to stdout (Python's
 		// `except: print(e)`), and the hint detector keys off the message
@@ -2432,8 +3052,14 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 	// network/read rules but missing `allow_exec` will silently keep going
 	// past the EPERM and exit 0, but the user still needs the hint pointing
 	// them at the field to flip.
-	emitPostRunHint(os.Stderr, hintModeManifest, m.Script, m, tail.String())
-	emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs)))
+	emitPostRunHint(os.Stderr, hintModeManifest, m.Script, m, tail.String(), manifestPreflightNetFired)
+	// Silent-tmpfs writes are diagnostically a failure even if the script
+	// itself exited 0 — the user's data didn't land on disk and CI shouldn't
+	// see a green pipeline. Promote a clean exit to exit=1 in that case.
+	if emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs))) && code == 0 {
+		fmt.Fprintln(os.Stderr, "[bento] exiting non-zero because at least one write landed on tmpfs and vanished.")
+		code = 1
+	}
 	emitLimitsKillHint(os.Stderr, code, m.Limits)
 	return code
 }

@@ -74,7 +74,12 @@ func (h *HTTPConnect) handle(c net.Conn) {
 	allowed, tag := h.opts.authorizer.Authorize(host, port)
 	h.logf("%s %s:%d", tag, host, port)
 	if !allowed {
-		writeStatus(c, "403 Forbidden")
+		// Include the rejected host:port in the response so error messages that
+		// only surface the proxy response (and not bento's stderr log line)
+		// still convey *what* was blocked. Both the X-Bento-Reject-Host header
+		// and the plaintext body are seen by curl -v, requests' Response.text,
+		// and Python's urllib URLError.reason in some configurations.
+		writeRejectStatus(c, host, port)
 		return
 	}
 
@@ -99,4 +104,19 @@ func (h *HTTPConnect) handle(c net.Conn) {
 
 func writeStatus(c net.Conn, status string) {
 	fmt.Fprintf(c, "HTTP/1.1 %s\r\n\r\n", status)
+}
+
+// writeRejectStatus emits a 403 that names the rejected host:port both in a
+// custom header (machine-readable) and in the response body (so error
+// messages that bubble up to humans still identify what was blocked).
+func writeRejectStatus(c net.Conn, host string, port int) {
+	body := fmt.Sprintf("bento blocked outbound connection to %s:%d — host not in manifest's network.rules", host, port)
+	fmt.Fprintf(c,
+		"HTTP/1.1 403 Forbidden\r\n"+
+			"X-Bento-Reject-Host: %s:%d\r\n"+
+			"Content-Type: text/plain\r\n"+
+			"Content-Length: %d\r\n"+
+			"Connection: close\r\n"+
+			"\r\n%s",
+		host, port, len(body), body)
 }
