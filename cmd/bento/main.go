@@ -204,6 +204,15 @@ func cmdProfile(args []string) int {
 	if !*force {
 		if _, err := os.Stat(outPath); err == nil {
 			fmt.Fprintf(os.Stderr, "[bento] %s already exists — re-run with --force to overwrite or --out=PATH to write elsewhere.\n", outPath)
+			// Iteration nudge: if the user passed --allow-exec but the existing
+			// manifest doesn't have it, the most common path here is "the first
+			// profile silently failed without --allow-exec and I'm re-running
+			// with it now." Surface --force directly so they don't have to read
+			// between the lines.
+			if *allowExec && priorManifestLacksAllowExec(outPath) {
+				fmt.Fprintln(os.Stderr, "[bento]   the existing manifest doesn't set `allow_exec: true`; --allow-exec implies")
+				fmt.Fprintln(os.Stderr, "[bento]   you want to overwrite that — add --force to do so.")
+			}
 			return 1
 		}
 	}
@@ -254,8 +263,30 @@ func cmdProfile(args []string) int {
 	// ignore it before it ever matters.
 	noteHostTmpBindIfRelevant(os.Stderr, result.FSWrites, result.FSObservations)
 
+	execBlock := matchesExecBlock(tail.String())
+	// Silent-failure trap: a shell script that wraps its body in `{ … } > out`
+	// will exit 0 even when every forked subprocess failed with EPERM — the
+	// redirect's exit status is the shell's, not the subprocesses'. Without
+	// this check, profile would emit a manifest WITHOUT allow_exec, and every
+	// future `bento run` would silently reproduce the same garbage output.
+	// Treat exec-blocked + exit 0 the same as exec-blocked + non-zero: bail
+	// unless --force, and point the user at --allow-exec.
+	if execBlock && !*allowExec && result.ExitCode == 0 && !*force {
+		fmt.Fprintln(os.Stderr, "[bento] ──────────────── warning ────────────────")
+		fmt.Fprintln(os.Stderr, "[bento] script forked subprocesses that bento blocked, but it still exited 0.")
+		fmt.Fprintln(os.Stderr, "[bento]   this usually means the script's output is incomplete (e.g. `{ … } > out`")
+		fmt.Fprintln(os.Stderr, "[bento]   swallows subprocess failures, leaving empty fields in the captured file).")
+		if bins := extractDeniedBinaries(tail.String()); len(bins) > 0 {
+			fmt.Fprintf(os.Stderr, "[bento]   blocked: %s\n", strings.Join(bins, ", "))
+		}
+		fmt.Fprintln(os.Stderr, "[bento]   re-run with --allow-exec so subprocesses can execute and the manifest")
+		fmt.Fprintln(os.Stderr, "[bento]   captures `allow_exec: true`:")
+		fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
+		fmt.Fprintln(os.Stderr, "[bento]   (or pass --force to emit the manifest anyway; you'll likely need to hand-edit it.)")
+		fmt.Fprintln(os.Stderr, "[bento] ─────────────────────────────────────────")
+		return 1
+	}
 	if result.ExitCode != 0 {
-		execBlock := matchesExecBlock(tail.String())
 		// On failure, surface the SCRIPT's own output (separately from bento's
 		// log lines). The interleaved stream made it easy for a shell script
 		// that redirects everything inside `{ … } > file` to fail silently.
@@ -336,14 +367,16 @@ func cmdProfile(args []string) int {
 		// junior who runs `bento run binary.manifest.yaml` and sees their tool
 		// behave as if it's running as a different user has no signal otherwise.
 		header.WriteString("#\n# Heads-up: this is a compiled binary, so bento can't scan its source for env\n")
-		header.WriteString("# reads. If the binary reads identity from the environment, you'll see empty\n")
-		header.WriteString("# strings (USER, LOGNAME) or /sandbox (HOME) at run time. To pass host values:\n")
-		header.WriteString("#   bento run --env USER=$USER --env LOGNAME=$LOGNAME <manifest>\n")
-		header.WriteString("# Or uncomment names below to declare them as the manifest's intent (still pass\n")
-		header.WriteString("# values at run time — `env:` only allowlists, it doesn't inherit by itself).\n")
+		header.WriteString("# reads. Two patterns to be aware of at run time:\n")
+		header.WriteString("#   - identity vars (USER, LOGNAME, HOME): bento strips/replaces these inside the\n")
+		header.WriteString("#     sandbox regardless of `env:`. To pass host values, use --env explicitly:\n")
+		header.WriteString("#       bento run --env USER=$USER --env LOGNAME=$LOGNAME <manifest>\n")
+		header.WriteString("#   - other host env vars (API_TOKEN, REGION, …): list the names below and bento\n")
+		header.WriteString("#     will inherit them from your current environment at run time. --env NAME=VAL\n")
+		header.WriteString("#     overrides or supplies a value without needing the name in this list.\n")
 		header.WriteString("# env:\n")
-		header.WriteString("#   - USER\n")
-		header.WriteString("#   - LOGNAME\n")
+		header.WriteString("#   - API_TOKEN\n")
+		header.WriteString("#   - REGION\n")
 	} else if result.SuggestedManifest != nil && result.SuggestedManifest.Interpreter != "" {
 		// Record the resolved interpreter path so reviewers can spot $PATH
 		// drift between profile-time and run-time. The manifest itself still
@@ -521,7 +554,8 @@ func cmdProfile(args []string) int {
 		fmt.Fprintln(os.Stderr, "[bento]   bento profile is exiting with the script's exit code.")
 		fmt.Fprintln(os.Stderr, "[bento] ─────────────────────────────────────────")
 	} else {
-		fmt.Fprintf(os.Stderr, "[bento] wrote %s — review and trim before running with `bento run`\n", outPath)
+		fmt.Fprintf(os.Stderr, "[bento] wrote %s — review, then `bento validate %s` to see the resolved\n", outPath, outPath)
+		fmt.Fprintf(os.Stderr, "[bento]   interpreter/paths, then `bento run %s` to execute under the manifest.\n", outPath)
 	}
 	if result.SuggestedManifest != nil && result.SuggestedManifest.Network != nil && len(result.SuggestedManifest.Network.Rules) > 0 {
 		n := len(result.SuggestedManifest.Network.Rules)
@@ -1479,11 +1513,22 @@ var reShellCwdAssumption = regexp.MustCompile(
 // on actual failure with the precise host name — this is just the heads-up.
 //
 // Restricted to shell and Python scripts (the source-scanning interpreters);
-// binaries and other languages get the post-run hint only.
+// ELF binaries get a parallel, source-blind notice (see below).
 // Returns true when the preflight network warning was actually printed. The
 // caller uses this to condense the post-run hint (which would otherwise repeat
 // the same advice 60 lines below a Python traceback).
 func warnLikelyNetworkUseInZeroConfig(w io.Writer, scriptPath, interp string) bool {
+	// ELF binaries: bento can't source-scan, so we don't know whether the
+	// binary calls out. Print a short, source-blind preflight note so the
+	// Go/Rust/C user gets symmetric advice to the Python/shell case (where
+	// they otherwise have to wait for the post-failure hint). One line; no
+	// false-positive cost — it's framed as conditional.
+	if isELFScript(scriptPath, interp) {
+		fmt.Fprintln(w, "[bento] preflight: compiled binary — bento can't scan for network use; if it calls")
+		fmt.Fprintf(w, "[bento]   out, zero-config has no network and the call will fail. Run `bento profile %s`\n", scriptPath)
+		fmt.Fprintln(w, "[bento]   to capture observed hosts and emit a manifest.")
+		return true
+	}
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return false
@@ -2907,6 +2952,42 @@ func networkRulesEmpty(n *bento.NetworkPerm) bool {
 }
 
 func matchesExecBlock(s string) bool { return reExecBlock.MatchString(s) }
+
+// isELFScript reports whether scriptPath is an ELF binary serving as its own
+// interpreter (the ResolveInterpreterDetailed → InterpreterFromELF case, which
+// returns the script's absolute path as the interpreter). Two equivalent checks
+// — string equality on path or absolute path — cover the common forms.
+func isELFScript(scriptPath, interp string) bool {
+	if interp == "" {
+		return false
+	}
+	if interp == scriptPath {
+		return true
+	}
+	if abs, err := filepath.Abs(scriptPath); err == nil && interp == abs {
+		return true
+	}
+	return false
+}
+
+// priorManifestLacksAllowExec reports whether the manifest at path is missing
+// (or explicitly disables) `allow_exec`. Used by the "already exists" hint to
+// give a stronger --force nudge when the user is iterating with --allow-exec.
+// Returns false on read/parse error — the hint is just a quality-of-life
+// nudge and shouldn't fire on uncertainty.
+func priorManifestLacksAllowExec(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		AllowExec bool `yaml:"allow_exec"`
+	}
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	return !m.AllowExec
+}
 
 // extractDeniedBinaries returns up to a few unique binary names the script
 // tried to exec before seccomp refused. Empty when nothing matches — the
