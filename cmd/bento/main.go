@@ -1704,6 +1704,8 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 
 	if m.AllowExec {
 		fmt.Fprintln(w, "exec:        ALL subprocesses permitted (allow_exec: true)")
+		fmt.Fprintln(w, "             (allow_exec is binary on/off — per-binary allowlisting is not")
+		fmt.Fprintln(w, "              supported; any subprocess the script forks is permitted.)")
 	} else {
 		fmt.Fprintln(w, "exec:        blocked (no subprocesses)")
 	}
