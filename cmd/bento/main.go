@@ -307,7 +307,7 @@ func cmdProfile(args []string) int {
 		}
 		fmt.Fprintln(os.Stderr, "[bento]   re-run with --allow-exec so subprocesses can execute and the manifest")
 		fmt.Fprintln(os.Stderr, "[bento]   captures `allow_exec: true`:")
-		fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
+		fmt.Fprintf(os.Stderr, "[bento]     %s\n", reprofileCmd(scriptPath, scriptArgs, env, preMountReads, *allowExec, []string{"--allow-exec"}))
 		fmt.Fprintln(os.Stderr, "[bento]   (or pass --force to emit the manifest anyway; you'll likely need to hand-edit it.)")
 		fmt.Fprintln(os.Stderr, "[bento] ─────────────────────────────────────────")
 		return 1
@@ -335,7 +335,7 @@ func cmdProfile(args []string) int {
 				fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Re-run with --allow-exec to let")
 				fmt.Fprintln(os.Stderr, "[bento]   subprocesses run during profiling; the generated manifest will have")
 				fmt.Fprintln(os.Stderr, "[bento]   `allow_exec: true` set:")
-				fmt.Fprintf(os.Stderr, "[bento]     bento profile --allow-exec %s\n", scriptPath)
+				fmt.Fprintf(os.Stderr, "[bento]     %s\n", reprofileCmd(scriptPath, scriptArgs, env, preMountReads, *allowExec, []string{"--allow-exec"}))
 			} else {
 				fmt.Fprintf(os.Stderr, "[bento] trial run exited %d — skipping manifest write.\n", result.ExitCode)
 				if len(result.Observations) == 0 && len(result.FSWrites) == 0 {
@@ -349,7 +349,9 @@ func cmdProfile(args []string) int {
 						fmt.Fprintf(os.Stderr, "[bento]   the script's output mentions `%s`, and that file exists on the host\n", hit)
 						fmt.Fprintf(os.Stderr, "[bento]   at %s — but inside the sandbox `./` resolves to `/sandbox/` (a tmpfs),\n", filepath.Join(scriptDir, strings.TrimPrefix(hit, "./")))
 						fmt.Fprintln(os.Stderr, "[bento]   not your host pwd. Fix one of:")
-						fmt.Fprintf(os.Stderr, "[bento]     - re-profile with an absolute host path via --env, e.g. --env IN=%s\n", filepath.Join(scriptDir, strings.TrimPrefix(hit, "./")))
+						absHit := filepath.Join(scriptDir, strings.TrimPrefix(hit, "./"))
+						fmt.Fprintln(os.Stderr, "[bento]     - re-profile with an absolute host path via --env, e.g.:")
+						fmt.Fprintf(os.Stderr, "[bento]         %s\n", reprofileCmd(scriptPath, scriptArgs, env, preMountReads, *allowExec, []string{"--env", shellQuote("IN=" + absHit)}))
 						fmt.Fprintln(os.Stderr, "[bento]     - `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script (and add the script")
 						fmt.Fprintln(os.Stderr, "[bento]       directory to `read:` if needed).")
 					} else {
@@ -2550,6 +2552,47 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// reprofileCmd reconstructs a `bento profile` invocation that preserves the
+// current run's flags and appends `extras` (typically the new flag the user
+// needs — `--allow-exec`, an extra `--env KEY=VAL`). Without this, advisories
+// that say "re-run with --allow-exec" leave the user re-typing every --env
+// and --read flag they originally passed; with two failure modes in sequence
+// (env, then exec) the command grows long and easy to misassemble.
+func reprofileCmd(scriptPath string, scriptArgs []string, env envFlag, preMountReads []string, allowExec bool, extras []string) string {
+	hasAllowExec := allowExec
+	for _, e := range extras {
+		if e == "--allow-exec" {
+			hasAllowExec = true
+		}
+	}
+	var parts []string
+	if hasAllowExec {
+		parts = append(parts, "--allow-exec")
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts = append(parts, "--env", shellQuote(k+"="+env[k]))
+	}
+	for _, p := range preMountReads {
+		parts = append(parts, "--read", shellQuote(p))
+	}
+	for _, e := range extras {
+		if e == "--allow-exec" {
+			continue
+		}
+		parts = append(parts, e)
+	}
+	parts = append(parts, shellQuote(scriptPath))
+	for _, a := range scriptArgs {
+		parts = append(parts, shellQuote(a))
+	}
+	return "bento profile " + strings.Join(parts, " ")
 }
 
 var (
