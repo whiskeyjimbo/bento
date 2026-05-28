@@ -1003,45 +1003,68 @@ func printFSWrites(w io.Writer, paths []string, tmpfsPresent bool) {
 //	#   - REGION   ← arbitrary trailing comment
 //
 // Anything that doesn't look like `#   - NAME` ends the block.
-func readCommentedEnvNames(manifestPath string) []string {
+// readCommentedEnvBuckets parses commented `# env:` blocks in the manifest
+// file and returns two lists: the "required/pending" block (canonical
+// `# env:` header) and the "other candidates, optional" block. The profile
+// generator emits both; validate uses the split to present them as two
+// distinct prompts (Quick-apply vs informational).
+//
+// Both block headers are recognized:
+//
+//	# env:
+//	#   - OUT   ← required
+//	# env (other candidates, optional ...):
+//	#   - REPO
+//	#   - COUNT
+//
+// Anything that doesn't look like `#   - NAME` ends the current block.
+func readCommentedEnvBuckets(manifestPath string) (required, optional []string) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	lines := strings.Split(string(data), "\n")
-	var out []string
-	inBlock := false
-	for _, line := range lines {
+	const (
+		bucketNone     = 0
+		bucketRequired = 1
+		bucketOptional = 2
+	)
+	bucket := bucketNone
+	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "#") {
-			inBlock = false
+			bucket = bucketNone
 			continue
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
-		if body == "env:" {
-			inBlock = true
+		switch {
+		case body == "env:":
+			bucket = bucketRequired
+			continue
+		case strings.HasPrefix(body, "env (") || strings.HasPrefix(body, "env(") || strings.HasPrefix(body, "Other candidates"):
+			bucket = bucketOptional
 			continue
 		}
-		if !inBlock {
+		if bucket == bucketNone {
 			continue
 		}
-		// Expect `- NAME` (optionally with comment after).
 		if !strings.HasPrefix(body, "- ") {
-			inBlock = false
+			bucket = bucketNone
 			continue
 		}
 		name := strings.TrimSpace(strings.TrimPrefix(body, "-"))
-		// Strip any trailing comment after the name (e.g. `CITY  ← uncomment if ...`).
 		if i := strings.IndexAny(name, " \t"); i >= 0 {
 			name = name[:i]
 		}
-		// Env var names: letters, digits, underscore. Bail on anything else.
 		if name == "" || !isEnvVarName(name) {
 			continue
 		}
-		out = append(out, name)
+		if bucket == bucketRequired {
+			required = append(required, name)
+		} else {
+			optional = append(optional, name)
+		}
 	}
-	return out
+	return required, optional
 }
 
 // printImplicitMounts surfaces the directories the runner sets up regardless
@@ -1743,27 +1766,31 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	// as bento profile's nudge "uncomment names you want inherited". Without
 	// this section, `validate` says "env: (none)" while the YAML right above
 	// it lists CITY — a stark disagreement between two views of the manifest.
-	pendingEnv := readCommentedEnvNames(manifestPath)
-	// Filter out names already active in m.Env: when the user follows the
-	// Quick-apply recipe (uncomment a name into the live env: block) the
-	// header comment that originally listed it remains, so the same name
-	// would appear under both "active" and "pending" — a contradictory
-	// reading of the same manifest.
-	if len(pendingEnv) > 0 && len(m.Env) > 0 {
+	pendingEnv, optionalEnv := readCommentedEnvBuckets(manifestPath)
+	// Filter out names already active in m.Env (in either bucket): when the
+	// user follows the Quick-apply recipe (add a name to the live env: block)
+	// the header comment that originally listed it remains, so the same name
+	// would appear under both "active" and "pending/optional" — a
+	// contradictory reading of the same manifest.
+	if len(m.Env) > 0 {
 		active := make(map[string]bool, len(m.Env))
 		for _, name := range m.Env {
 			active[name] = true
 		}
-		filtered := pendingEnv[:0]
-		for _, name := range pendingEnv {
-			if !active[name] {
-				filtered = append(filtered, name)
+		dropActive := func(names []string) []string {
+			out := names[:0]
+			for _, name := range names {
+				if !active[name] {
+					out = append(out, name)
+				}
 			}
+			return out
 		}
-		pendingEnv = filtered
+		pendingEnv = dropActive(pendingEnv)
+		optionalEnv = dropActive(optionalEnv)
 	}
 	fmt.Fprintln(w)
-	if len(m.Env) == 0 && len(pendingEnv) == 0 {
+	if len(m.Env) == 0 && len(pendingEnv) == 0 && len(optionalEnv) == 0 {
 		fmt.Fprintln(w, "env:         (none — host env is fully stripped)")
 	} else {
 		if len(m.Env) == 0 {
@@ -1782,6 +1809,17 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 			fmt.Fprintln(w, "             pending (commented in manifest — uncomment to activate):")
 			for _, name := range pendingEnv {
 				fmt.Fprintf(w, "             - %s\n", name)
+			}
+		}
+		// Optional candidates: env names the script reads that the profile
+		// captured as "other candidates, optional" — they didn't break the
+		// trial run. Surface them so a user configuring the script (e.g.
+		// pointing it at a different repo) discovers them in `validate`
+		// instead of having to grep the manifest source.
+		if len(optionalEnv) > 0 {
+			fmt.Fprintln(w, "             also observed by profile, not in allowlist:")
+			for _, name := range optionalEnv {
+				fmt.Fprintf(w, "             - %s (add to env: and pass `--env %s=...` to forward)\n", name, name)
 			}
 		}
 	}
