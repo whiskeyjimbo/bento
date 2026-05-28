@@ -35,7 +35,12 @@ type ProfileResult struct {
 	TmpfsWrites       []string             // /sandbox/* writes that landed on tmpfs (no host destination)
 	DeniedAttempts    []string             // host paths the script tried to open but were blocked (e.g. DangerousFiles)
 	BlockedReads      []string             // host paths the script tried to read but were not bind-mounted (deny-by-default; safe to add to `read:` if intentional)
+	BlockedConnects   []ConnectAttempt     // outbound connect() calls that the libproxychains shim could not capture (typically denied by Landlock TCP for compiled binaries)
 	SuggestedManifest *Manifest
+	// NarrowedReadPaths lists read paths that conflicted with mandatory-deny
+	// (e.g. $HOME, whose deny shadows would fail bwrap) and were narrowed or
+	// dropped during manifest synthesis. Empty when nothing was narrowed.
+	NarrowedReadPaths []string
 }
 
 // Profile runs the script in permissive-network and permissive-write mode:
@@ -53,6 +58,9 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 	var fsOpens []FSOpen
 	fsCB := func(opens []FSOpen) { fsOpens = opens }
 
+	var connects []ConnectAttempt
+	connectCB := func(c []ConnectAttempt) { connects = c }
+
 	// Non-nil but empty Network routes every connect through the grant callback.
 	profile := *m
 	profile.Network = &spec.NetworkPerm{Rules: nil}
@@ -69,10 +77,19 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 	runOpts := append([]Option{
 		WithGrantCallback(cb),
 		WithFilesystemObserver(fsCB),
+		WithConnectObserver(connectCB),
 	}, opts...)
 	code, err := Run(ctx, &profile, runOpts...)
 
 	fsRead, fsWrite, tmpfs, denied, blocked := partitionFSObservations(fsOpens, m)
+	suggested, narrowed := synthesizeSuggestedWithNotes(m, obs.list(), fsRead, fsWrite, blocked)
+	// Surface connect() calls the libproxychains shim couldn't see (compiled
+	// binaries that bypass libc/proxychains). The grant callback already saw
+	// every host:port the shim DID intercept; anything else is either a denied
+	// raw TCP from a Go/Rust/etc. binary, or a localhost connect to our own
+	// proxy. Filter out the latter — the proxy addrs are what made the
+	// observation pipeline work in the first place.
+	blockedConnects := filterUnshimmedConnects(connects, obs.list())
 	result := &ProfileResult{
 		ExitCode:          code,
 		Observations:      obs.list(),
@@ -81,7 +98,9 @@ func Profile(ctx context.Context, m *Manifest, opts ...Option) (*ProfileResult, 
 		TmpfsWrites:       tmpfs,
 		DeniedAttempts:    denied,
 		BlockedReads:      blocked,
-		SuggestedManifest: synthesizeSuggested(m, obs.list(), fsRead, fsWrite, blocked),
+		BlockedConnects:   blockedConnects,
+		SuggestedManifest: suggested,
+		NarrowedReadPaths: narrowed,
 	}
 	return result, err
 }
@@ -121,6 +140,48 @@ func narrowWritePaths(writes []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// filterUnshimmedConnects drops connect() observations that the libproxychains
+// shim already covered (those re-emerge as Observations with the real hostname)
+// and those targeting localhost — the proxy itself lives on 127.0.0.1, and a
+// script connecting there is bento's own indirection, not a user-meaningful
+// destination. Anything left is a direct outbound the shim couldn't see,
+// typically a statically-linked binary that Landlock TCP denied.
+func filterUnshimmedConnects(connects []ConnectAttempt, shimmed []NetworkObservation) []ConnectAttempt {
+	if len(connects) == 0 {
+		return nil
+	}
+	shimmedPorts := make(map[int]bool, len(shimmed))
+	for _, o := range shimmed {
+		shimmedPorts[o.Port] = true
+	}
+	var out []ConnectAttempt
+	for _, c := range connects {
+		if isLoopbackIP(c.IP) {
+			continue
+		}
+		// If the proxy already captured this port through libproxychains, the
+		// successful kernel-level connect for the same port is bento's own
+		// upstream socat hop, not the user's. Skip to avoid double-reporting.
+		if c.OK && shimmedPorts[c.Port] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func isLoopbackIP(ip string) bool {
+	switch {
+	case ip == "":
+		return false
+	case strings.HasPrefix(ip, "127."):
+		return true
+	case ip == "::1":
+		return true
+	}
+	return false
 }
 
 func appendUnique(s []string, v string) []string {
@@ -419,6 +480,70 @@ func (o *observations) list() []NetworkObservation {
 	return out
 }
 
+// isMandatoryDenyParent reports whether a path R is the direct parent
+// directory of any mandatory-deny file. Emitting `read: R` in a manifest
+// crashes at run time because the mandatory-deny shadow can't create a
+// placeholder mount point under a read-only parent (bwrap: "Can't create
+// file at ~/.bashrc"). Profile must narrow such paths before committing.
+func isMandatoryDenyParent(r string) bool {
+	home := homeDir()
+	if home == "" {
+		return false
+	}
+	clean := filepath.Clean(r)
+	all := append(spec.ExpandDangerousPaths(home), spec.ExpandDangerousWritePaths(home)...)
+	for _, d := range all {
+		if filepath.Dir(d) == clean {
+			return true
+		}
+	}
+	return false
+}
+
+// narrowReadsAgainstMandatoryDeny replaces each read path that conflicts with
+// mandatory-deny (e.g. $HOME, where mandatory-deny needs to shadow ~/.bashrc,
+// ~/.ssh/id_rsa, etc.) with the deepest observed descendants. If no
+// descendant is available, the path is dropped from reads and surfaced via
+// the second return value so the caller can annotate the manifest header.
+func narrowReadsAgainstMandatoryDeny(reads []string, descendantHints []string) (kept, dropped []string) {
+	if len(reads) == 0 {
+		return reads, nil
+	}
+	hintsByParent := func(parent string) []string {
+		var out []string
+		prefix := filepath.Clean(parent) + string(filepath.Separator)
+		for _, h := range descendantHints {
+			abs := filepath.Clean(h)
+			if strings.HasPrefix(abs, prefix) {
+				out = append(out, abs)
+			}
+		}
+		return out
+	}
+	seen := make(map[string]bool)
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			kept = append(kept, p)
+		}
+	}
+	for _, r := range reads {
+		if !isMandatoryDenyParent(r) {
+			add(r)
+			continue
+		}
+		replacements := hintsByParent(r)
+		if len(replacements) == 0 {
+			dropped = append(dropped, r)
+			continue
+		}
+		for _, p := range replacements {
+			add(p)
+		}
+	}
+	return kept, dropped
+}
+
 // synthesizeSuggested copies the original manifest, populates Network.Rules
 // with discovered host:port pairs, and uses FS observations to tighten Read.
 //
@@ -429,6 +554,16 @@ func (o *observations) list() []NetworkObservation {
 // or the observer backend was unavailable), we keep the conservative
 // script-directory grant from the original manifest.
 func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, fsWrites, blockedReads []string) *Manifest {
+	m, _ := synthesizeSuggestedWithNotes(original, obs, fsReads, fsWrites, blockedReads)
+	return m
+}
+
+// synthesizeSuggestedWithNotes is synthesizeSuggested plus the list of read
+// paths that were narrowed/dropped due to mandatory-deny conflicts. Callers
+// that surface diagnostics use this; the original signature stays for
+// backward-compatible callers (tests).
+func synthesizeSuggestedWithNotes(original *Manifest, obs []NetworkObservation, fsReads, fsWrites, blockedReads []string) (*Manifest, []string) {
+	var droppedNotes []string
 	out := *original
 	rules := make([]NetworkRule, 0, len(obs))
 	for _, o := range obs {
@@ -457,7 +592,17 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, 
 	}
 	if len(merged) > 0 {
 		sort.Strings(merged)
-		out.Read = merged
+		// Narrow paths that would conflict with mandatory-deny at run time
+		// (e.g. read: /home/jrose, where ~/.bashrc et al can't be shadowed
+		// under a ro-bound parent). Use observed reads, writes, and args as
+		// descendant hints — anything we have evidence the script actually
+		// used inside the broad parent.
+		hints := append([]string{}, fsReads...)
+		hints = append(hints, fsWrites...)
+		hints = append(hints, original.Args...)
+		narrowed, dropped := narrowReadsAgainstMandatoryDeny(merged, hints)
+		out.Read = narrowed
+		droppedNotes = dropped
 	}
 	if len(fsWrites) > 0 {
 		// Default: use the leaf file path. Suggesting the parent directory
@@ -467,5 +612,5 @@ func synthesizeSuggested(original *Manifest, obs []NetworkObservation, fsReads, 
 		// workspace-local directory (not a broad system-shared path).
 		out.Write = narrowWritePaths(fsWrites)
 	}
-	return &out
+	return &out, droppedNotes
 }

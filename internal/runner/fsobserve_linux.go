@@ -45,9 +45,12 @@ type fsObserver struct {
 }
 
 // newFSObserver chooses a backend based on host capabilities. Returns nil
-// when observation is disabled or both backends are unavailable.
+// when observation is disabled or both backends are unavailable. The strace
+// backend doubles as a connect()-observer when cfg.ConnectObserver is set;
+// fsshim has no socket-syscall capture so connect observation degrades to
+// no-op there.
 func newFSObserver(cfg *Config, scriptAbs, interp string) *fsObserver {
-	if cfg.FSObserver == nil {
+	if cfg.FSObserver == nil && cfg.ConnectObserver == nil {
 		return nil
 	}
 	if straceAvailable() {
@@ -295,6 +298,19 @@ func (o *fsObserver) collect(cfg *Config) []FSOpen {
 		return filterShimOpens(raw, o.scriptAbs, o.interp)
 	}
 	return nil
+}
+
+// collectConnects parses outbound connect() attempts from the strace log.
+// Returns nil for fsshim mode (LD_PRELOAD shim doesn't observe sockets).
+func (o *fsObserver) collectConnects(cfg *Config) []ConnectAttempt {
+	if o == nil || o.mode != "strace" {
+		return nil
+	}
+	conns, err := parseStraceConnects(o.tracePath)
+	if err != nil && cfg.Logger != nil {
+		cfg.Logger.Printf("[bento] parsing strace connect attempts failed: %v", err)
+	}
+	return conns
 }
 
 func (o *fsObserver) close() {

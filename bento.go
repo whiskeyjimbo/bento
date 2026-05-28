@@ -284,11 +284,24 @@ func WithVerbose(v bool) Option { return runner.WithVerbose(v) }
 // FSOpen is one open() attempt recorded by Profile.
 type FSOpen = runner.FSOpen
 
+// ConnectAttempt is one outbound connect() recorded by Profile (strace mode
+// only). Used to surface TCP destinations from compiled binaries that bypass
+// libproxychains.
+type ConnectAttempt = runner.ConnectAttempt
+
 // WithFilesystemObserver installs a callback invoked once after the script
 // exits with every open() attempt the script made. Linux-only; uses strace
 // if available, else the LD_PRELOAD fsshim. nil → no observation.
 func WithFilesystemObserver(cb func(opens []FSOpen)) Option {
 	return runner.WithFilesystemObserver(cb)
+}
+
+// WithConnectObserver installs a callback invoked once after the script
+// exits with every outbound connect() the script and its children attempted
+// (strace mode only). Used by Profile to capture TCP destinations from
+// compiled binaries that don't route through libproxychains.
+func WithConnectObserver(cb func(connects []ConnectAttempt)) Option {
+	return runner.WithConnectObserver(cb)
 }
 
 // WithStdin connects the script's stdin to r. Defaults to os.Stdin.

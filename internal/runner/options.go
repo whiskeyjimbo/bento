@@ -43,6 +43,14 @@ type Config struct {
 	// wraps the sandbox in strace on Linux, falling back to the LD_PRELOAD
 	// fsshim if strace isn't available.
 	FSObserver func(opens []FSOpen)
+
+	// ConnectObserver, if non-nil, is invoked once after the script exits
+	// with every outbound TCP/UDP connect() the script (or a child process)
+	// attempted. This is the only signal Profile has for compiled binaries
+	// that don't route through libproxychains — the in-band HTTP-CONNECT
+	// proxy can't see direct connect(2) calls. Only fires in strace mode;
+	// the LD_PRELOAD fsshim backend can't observe socket syscalls.
+	ConnectObserver func(connects []ConnectAttempt)
 }
 
 // FSOpen is one open() attempt recorded by the filesystem observer.
@@ -50,6 +58,16 @@ type FSOpen struct {
 	Path  string
 	OK    bool // open returned a non-negative fd
 	Write bool // open requested write access (O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND)
+}
+
+// ConnectAttempt is one outbound connect() call observed during a profile run.
+// Recorded by strace from inside the sandbox, so it reflects the literal
+// destination the binary asked the kernel to dial — independent of whether
+// libproxychains rewrote it or Landlock TCP denied it.
+type ConnectAttempt struct {
+	IP   string // dotted-quad or v6 literal as strace reported
+	Port int
+	OK   bool // false if the kernel returned EACCES/EPERM/etc.
 }
 
 // DefaultTimeout caps unbounded script runs when the caller doesn't pass WithTimeout.
@@ -132,6 +150,14 @@ func WithVerbose(v bool) Option {
 // nil → no observation.
 func WithFilesystemObserver(cb func(opens []FSOpen)) Option {
 	return func(c *Config) { c.FSObserver = cb }
+}
+
+// WithConnectObserver installs a callback invoked once after the script exits
+// with every connect() the script and its children issued (Linux strace mode
+// only). Profile uses this to surface outbound TCP destinations from compiled
+// binaries that don't route through libproxychains.
+func WithConnectObserver(cb func(connects []ConnectAttempt)) Option {
+	return func(c *Config) { c.ConnectObserver = cb }
 }
 
 // WithNetworkMode selects the Linux network-enforcement strategy.

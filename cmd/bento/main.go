@@ -23,6 +23,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento"
 	"github.com/whiskeyjimbo/bento/internal/grants"
+	"github.com/whiskeyjimbo/bento/internal/spec"
 )
 
 // bentoVersionTag returns a short identifier for the running binary, used in
@@ -149,6 +150,8 @@ func cmdProfile(args []string) int {
 	scaffold := fs.Bool("scaffold", false, "emit a commented manifest skeleton WITHOUT running the script; for production-only scripts that can't be profiled live")
 	env := envFlag{}
 	fs.Var(env, "env", "extra env var KEY=VALUE for the script during profiling; the name is also added to the generated manifest's `env:` allowlist (repeatable)")
+	var preMountReads stringSliceFlag
+	fs.Var(&preMountReads, "read", "extra read path to bind-mount during profiling AND add to the generated manifest's `read:` list (repeatable). Use when the script gates on `[[ -d PATH ]]` and needs the path visible before profile can observe it.")
 	fs.Parse(args)
 	warnEmptyEnv(os.Stderr, env)
 	if fs.NArg() < 1 {
@@ -193,6 +196,18 @@ func cmdProfile(args []string) int {
 	if len(scriptArgs) > 0 {
 		m.Args = append(m.Args, scriptArgs...)
 	}
+	// --read paths: pre-mount and seed manifest reads. Resolve to absolute paths
+	// up front so the trial-run binding and the emitted manifest are consistent
+	// (relative paths in `read:` resolve against the manifest's directory, but
+	// at profile time we're running from the caller's cwd).
+	for _, p := range preMountReads {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: --read %q: %v\n", p, err)
+			return 2
+		}
+		m.Read = appendUniqueStr(m.Read, abs)
+	}
 
 	outPath := *out
 	if outPath == "" {
@@ -203,7 +218,11 @@ func cmdProfile(args []string) int {
 	outPath = filepath.Clean(outPath)
 	if !*force {
 		if _, err := os.Stat(outPath); err == nil {
-			fmt.Fprintf(os.Stderr, "[bento] %s already exists — re-run with --force to overwrite or --out=PATH to write elsewhere.\n", outPath)
+			fmt.Fprintf(os.Stderr, "[bento] %s already exists. Options:\n", outPath)
+			fmt.Fprintln(os.Stderr, "[bento]   --force                          overwrite (discards any hand-edits to read:/write:/env:)")
+			sideBySide := sideBySidePath(outPath)
+			fmt.Fprintf(os.Stderr, "[bento]   --out=%-25s write the new manifest alongside so you can diff first:\n", sideBySide)
+			fmt.Fprintf(os.Stderr, "[bento]                                      diff %s %s\n", outPath, sideBySide)
 			// Iteration nudge: if the user passed --allow-exec but the existing
 			// manifest doesn't have it, the most common path here is "the first
 			// profile silently failed without --allow-exec and I'm re-running
@@ -229,7 +248,15 @@ func cmdProfile(args []string) int {
 		fmt.Fprintln(os.Stderr, "[bento]   (shell scripts call external binaries — mkdir, ls, curl — which are blocked")
 		fmt.Fprintln(os.Stderr, "[bento]   by default and will make this profile run fail at the first subprocess).")
 	}
-	fmt.Fprintf(os.Stderr, "[bento] profiling %q (permissive network)...\n", scriptPath)
+	netModeLabel := "permissive network"
+	if isProfileTargetELF(scriptPath, interp) {
+		// For ELF binaries the libproxychains-based hostname capture doesn't
+		// fire — connect() calls bypass libc. Say so in the banner instead of
+		// silently producing an empty `network:` block. printBlockedConnects
+		// later surfaces IPs from the strace fallback.
+		netModeLabel = "permissive network: hostnames only intercepted for libc-routed traffic — ELF binaries get IP-level kernel trace instead"
+	}
+	fmt.Fprintf(os.Stderr, "[bento] profiling %q (%s)...\n", scriptPath, netModeLabel)
 	tail := newTailBuffer(16 << 10)
 	// scriptTail captures ONLY the script's own stdout/stderr (no bento log
 	// lines). On a failing trial run, dumping just the script's output gives
@@ -253,10 +280,11 @@ func cmdProfile(args []string) int {
 	fmt.Fprintf(os.Stderr, "[bento] script exit code: %d\n\n", result.ExitCode)
 	printObservations(os.Stderr, result.Observations)
 	printFSObservations(os.Stderr, result.FSObservations)
-	printFSWrites(os.Stderr, result.FSWrites)
-	printTmpfsWrites(os.Stderr, result.TmpfsWrites)
+	printFSWrites(os.Stderr, result.FSWrites, len(result.TmpfsWrites) > 0)
+	printTmpfsWrites(os.Stderr, result.TmpfsWrites, filepath.Dir(absScriptPath(scriptPath)))
 	printDeniedAttempts(os.Stderr, result.DeniedAttempts)
 	printBlockedReads(os.Stderr, result.BlockedReads)
+	printBlockedConnects(os.Stderr, result.BlockedConnects, isProfileTargetELF(scriptPath, interp), result.SuggestedManifest)
 	noteSandboxPathIfReferenced(os.Stderr, tail.String())
 	// Note about host /tmp visibility moved to post-run and gated on actual
 	// /tmp activity: printing it on every profile run trains the user to
@@ -293,7 +321,17 @@ func cmdProfile(args []string) int {
 		if !execBlock {
 			emitScriptOutputDiagnostic(os.Stderr, scriptTail.String(), scriptPath, interp)
 		}
-		if !*force {
+		// If the script failed at the *application* layer (HTTP 502, JSON parse,
+		// upstream timeout) AFTER the sandbox successfully observed network
+		// and/or filesystem use, the manifest captures real signal — the
+		// allow-list for the host the script reached, the paths it touched.
+		// Throwing it away forces the user to either wait for the upstream to
+		// recover or pass --force and accept a "warning: failed trial" header.
+		// Emit the manifest in this case with a non-fatal note instead.
+		sandboxBlocked := execBlock || matchesFSBlock(tail.String()) || matchesWriteBlock(tail.String())
+		hasObservations := len(result.Observations) > 0 || len(result.FSWrites) > 0
+		applicationFailure := !sandboxBlocked && hasObservations
+		if !*force && !applicationFailure {
 			if execBlock {
 				fmt.Fprintln(os.Stderr, "[bento] the script tried to spawn a subprocess, which `bento profile` blocks by default")
 				fmt.Fprintln(os.Stderr, "[bento]   (profile relaxes network, not exec). Re-run with --allow-exec to let")
@@ -303,9 +341,24 @@ func cmdProfile(args []string) int {
 			} else {
 				fmt.Fprintf(os.Stderr, "[bento] trial run exited %d — skipping manifest write.\n", result.ExitCode)
 				if len(result.Observations) == 0 && len(result.FSWrites) == 0 {
-					fmt.Fprintln(os.Stderr, "[bento]   no network/write activity was recorded — the script likely failed before doing")
-					fmt.Fprintln(os.Stderr, "[bento]   anything useful. If the failure is unrelated to sandboxing (a Python ImportError,")
-					fmt.Fprintln(os.Stderr, "[bento]   a missing dependency, a syntax error), fix it outside bento first, then re-profile.")
+					// Before falling back to "fix it outside bento", check whether
+					// the failure looks like a script that referenced a relative
+					// path (./X) that exists on the host script dir but not under
+					// /sandbox. This is the recurring "sandbox cwd ≠ shell pwd"
+					// trap — the script "works on my machine" outside bento.
+					scriptDir := filepath.Dir(absScriptPath(scriptPath))
+					if hit := detectRelativePathHostMiss(scriptTail.String(), scriptDir); hit != "" {
+						fmt.Fprintf(os.Stderr, "[bento]   the script's output mentions `%s`, and that file exists on the host\n", hit)
+						fmt.Fprintf(os.Stderr, "[bento]   at %s — but inside the sandbox `./` resolves to `/sandbox/` (a tmpfs),\n", filepath.Join(scriptDir, strings.TrimPrefix(hit, "./")))
+						fmt.Fprintln(os.Stderr, "[bento]   not your host pwd. Fix one of:")
+						fmt.Fprintf(os.Stderr, "[bento]     - re-profile with an absolute host path via --env, e.g. --env IN=%s\n", filepath.Join(scriptDir, strings.TrimPrefix(hit, "./")))
+						fmt.Fprintln(os.Stderr, "[bento]     - `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script (and add the script")
+						fmt.Fprintln(os.Stderr, "[bento]       directory to `read:` if needed).")
+					} else {
+						fmt.Fprintln(os.Stderr, "[bento]   no network/write activity was recorded — the script likely failed before doing")
+						fmt.Fprintln(os.Stderr, "[bento]   anything useful. If the failure is unrelated to sandboxing (a Python ImportError,")
+						fmt.Fprintln(os.Stderr, "[bento]   a missing dependency, a syntax error), fix it outside bento first, then re-profile.")
+					}
 				} else {
 					// Profile mode bind-mounts host /tmp; run mode gives the
 					// script a fresh tmpfs. A script that fails on `du /tmp/*`
@@ -318,6 +371,14 @@ func cmdProfile(args []string) int {
 				fmt.Fprintln(os.Stderr, "[bento]   need to hand-edit it).")
 			}
 			return result.ExitCode
+		}
+		if applicationFailure && !*force {
+			fmt.Fprintln(os.Stderr, "[bento] ──────────────── note ────────────────")
+			fmt.Fprintf(os.Stderr, "[bento] trial run exited %d, but the sandbox was not the blocker — captured\n", result.ExitCode)
+			fmt.Fprintln(os.Stderr, "[bento]   network/filesystem observations are real. Writing the manifest anyway;")
+			fmt.Fprintln(os.Stderr, "[bento]   the script's own error (HTTP 5xx, parse failure, upstream timeout, etc.)")
+			fmt.Fprintln(os.Stderr, "[bento]   is independent and likely transient — fix it and `bento run` will work.")
+			fmt.Fprintln(os.Stderr, "[bento] ──────────────────────────────────────")
 		}
 	}
 
@@ -340,6 +401,16 @@ func cmdProfile(args []string) int {
 	if result.SuggestedManifest != nil && len(env) > 0 {
 		for name := range env {
 			result.SuggestedManifest.Env = appendUniqueStr(result.SuggestedManifest.Env, name)
+		}
+	}
+	// --read paths the user passed are an explicit declaration of intent. The
+	// observation pipeline may not have caught everything under them (e.g. a
+	// script's `[[ -d PATH ]]` may not record a deep enumeration), so make sure
+	// the user-declared paths land in the emitted manifest's read list.
+	if result.SuggestedManifest != nil && len(preMountReads) > 0 {
+		for _, p := range preMountReads {
+			abs, _ := filepath.Abs(p)
+			result.SuggestedManifest.Read = appendUniqueStr(result.SuggestedManifest.Read, abs)
 		}
 	}
 
@@ -398,6 +469,22 @@ func cmdProfile(args []string) int {
 			fmt.Fprintf(&header, "#   - %s\n", p)
 		}
 	}
+	// When profile observed reads under $HOME (or another mandatory-deny
+	// parent), the broad parent path is dropped from `read:` and replaced
+	// with narrower descendants — emitting it would crash `bento run`
+	// because mandatory-deny can't shadow ~/.bashrc et al under a ro-bound
+	// parent (bwrap: "Can't create file"). Surface what was narrowed so the
+	// reviewer can widen back to specific subpaths if needed.
+	if len(result.NarrowedReadPaths) > 0 {
+		header.WriteString("#\n# Profile observed reads under a path that contains mandatory-deny targets\n")
+		header.WriteString("# (~/.bashrc, ~/.ssh/*, cloud creds, etc.). Emitting the parent as `read:` would\n")
+		header.WriteString("# crash `bento run` because the deny shim can't mount under a ro-bound parent.\n")
+		header.WriteString("# Narrowed away:\n")
+		for _, p := range result.NarrowedReadPaths {
+			fmt.Fprintf(&header, "#   - %s\n", p)
+		}
+		header.WriteString("# If the script needs a specific subdirectory, add it explicitly to `read:` below.\n")
+	}
 	// Emit a commented `env:` stub when the script references host env vars
 	// that aren't already in the manifest's allowlist. Without this, the
 	// generated manifest looks complete but silently strips $CITY / $DEPLOY_ID
@@ -418,8 +505,8 @@ func cmdProfile(args []string) int {
 		}
 	}
 	if len(stub) > 0 {
-		header.WriteString("#\n# Script references these host env vars; uncomment names you want inherited\n")
-		header.WriteString("# (bento strips host env by default). Or pass `--env NAME=VALUE` at run time.\n")
+		header.WriteString("#\n# To inherit these host env vars at run time — uncomment names under `env:`\n")
+		header.WriteString("# below (bento strips host env by default). Or pass `--env NAME=VALUE` ad-hoc.\n")
 		header.WriteString("# env:\n")
 		for _, name := range stub {
 			fmt.Fprintf(&header, "#   - %s\n", name)
@@ -431,10 +518,10 @@ func cmdProfile(args []string) int {
 	// or "?"). Surface this in the manifest so a reviewer sees, in writing,
 	// why the script will see empty/synthetic identity values.
 	if identity := referencedIdentityEnvVarsInScript(scriptPath, interp); len(identity) > 0 {
-		header.WriteString("#\n# Script also references identity values that bento strips or replaces in the\n")
-		header.WriteString("# sandbox. The manifest's `env:` allowlist deliberately doesn't propagate these\n")
+		header.WriteString("#\n# To override identity values at run time — pass `--env NAME=$NAME` (NOT env: above):\n")
+		header.WriteString("# bento strips/replaces these inside the sandbox regardless of the `env:` allowlist\n")
 		header.WriteString("# (HOME is hardcoded to /sandbox; USER/LOGNAME are unset; whoami → \"sandbox\").\n")
-		header.WriteString("# To override at run time, pass the exact name the script reads:\n")
+		header.WriteString("# Per-var run-time recipe:\n")
 		for _, name := range identity {
 			if isShellOrLibcIdentityCall(name) {
 				fmt.Fprintf(&header, "#   - %s  ← shell/libc call; can't be overridden, returns sandbox identity\n", name)
@@ -532,6 +619,24 @@ func cmdProfile(args []string) int {
 			}
 		}
 	}
+	// Surface the literal VALUES from --env NAME=VALUE so a user re-running
+	// from a fresh shell knows what the trial captured. The manifest only
+	// stores the NAME (so it stays portable across hosts); without this hint
+	// a script that conditioned behavior on QUOTES_LOG=/tmp/foo silently uses
+	// its default when run later because the env isn't set on host.
+	if len(env) > 0 {
+		header.WriteString("#\n# Profile-time --env values (script used these defaults — pass them again at run\n")
+		header.WriteString("# time with `--env NAME=VALUE`; the manifest's `env:` allowlist only forwards a\n")
+		header.WriteString("# variable from your shell, it does not preserve the value):\n")
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, k := range names {
+			fmt.Fprintf(&header, "#   --env %s=%s\n", k, env[k])
+		}
+	}
 	header.WriteString("\n")
 	// Marshal AFTER all header-building code, which may mutate the manifest
 	// (e.g. auto-widening templated write paths).
@@ -539,6 +644,13 @@ func cmdProfile(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error marshaling suggested manifest:", err)
 		return 1
+	}
+	// Inject a comment immediately above the marshaled `args:` block. Profile
+	// bakes the one-time trial args into the manifest as defaults; without an
+	// in-file nudge a reviewer has no signal that these were captured from a
+	// specific invocation and will be passed to every future `bento run`.
+	if result.SuggestedManifest != nil && len(result.SuggestedManifest.Args) > 0 {
+		yamlBytes = annotateArgsBlock(yamlBytes)
 	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing manifest:", err)
@@ -711,8 +823,21 @@ func printFSObservations(w io.Writer, paths []string) {
 	fmt.Fprintln(w)
 }
 
-func printFSWrites(w io.Writer, paths []string) {
+func printFSWrites(w io.Writer, paths []string, tmpfsPresent bool) {
+	// Always emit the section header — even when empty. Previously this
+	// branch returned silently, and the asymmetry with the "no network
+	// observations" line trained users to read "no output here" as "didn't
+	// happen" when it actually meant "didn't look hard enough" (e.g. the
+	// strace observer didn't trace unlinkat, so `find -delete` was invisible).
+	// EXCEPT: when tmpfs-doomed writes ARE about to be printed, "no filesystem
+	// writes observed" reads as contradictory — suppress the negative line
+	// since printTmpfsWrites is going to surface the writes anyway.
 	if len(paths) == 0 {
+		if tmpfsPresent {
+			return
+		}
+		fmt.Fprintln(w, "[bento] no persistent filesystem writes observed")
+		fmt.Fprintln(w)
 		return
 	}
 	fmt.Fprintln(w, "[bento] observed filesystem writes:")
@@ -774,6 +899,109 @@ func readCommentedEnvNames(manifestPath string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// printImplicitMounts surfaces the directories the runner sets up regardless
+// of what the manifest declares. Without this, the resolved view in validate
+// leaves a junior thinking the sandbox sees only what's listed under `read:`
+// / `write:` — but procfs, sysfs, the script bind-mount, and the mandatory-
+// deny shadows are all live too.
+func printImplicitMounts(w io.Writer) {
+	home, _ := os.UserHomeDir()
+	fmt.Fprintln(w, "implicit mounts (always present, not in the manifest):")
+	fmt.Fprintln(w, "  /proc          procfs (read-only) — runtime introspection")
+	fmt.Fprintln(w, "  /sys           sysfs (read-only) — limited kernel info")
+	fmt.Fprintln(w, "  /tmp           fresh tmpfs (writable, ephemeral — lost on exit)")
+	fmt.Fprintln(w, "  /sandbox       script bind-mount + cwd ($HOME inside the sandbox)")
+	fmt.Fprintln(w, "  /etc/{resolv.conf,hosts,passwd,group,ssl,...}  network/identity bits the runtime needs")
+	if home != "" {
+		fmt.Fprintln(w, "mandatory-deny shadows (always shadowed with /dev/null, cannot be granted):")
+		shadows := spec.ExpandDangerousPaths(home)
+		shown := 0
+		for _, p := range shadows {
+			if shown >= 6 {
+				fmt.Fprintf(w, "  ... and %d more\n", len(shadows)-shown)
+				break
+			}
+			fmt.Fprintf(w, "  %s\n", p)
+			shown++
+		}
+	} else {
+		fmt.Fprintln(w, "mandatory-deny shadows: SSH keys, cloud creds, shell rc files (always shadowed)")
+	}
+}
+
+// sideBySidePath produces a sibling filename next to the existing manifest
+// so the "already exists" hint can suggest a concrete diff target. For
+// `foo.manifest.yaml` returns `foo.manifest.next.yaml`.
+func sideBySidePath(outPath string) string {
+	dir, base := filepath.Split(outPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	return filepath.Join(dir, stem+".next"+ext)
+}
+
+// annotateArgsBlock inserts a comment immediately above the top-level `args:`
+// key in the marshaled YAML so the reader knows the args were captured from
+// the profile trial — and won't be a surprise when every future `bento run`
+// passes them. No-op if the line isn't found.
+func annotateArgsBlock(yamlBytes []byte) []byte {
+	const note = "# args from this profile trial — used by `bento run` only when no CLI args\n" +
+		"# are passed (CLI args replace by default). Pass `--append-args` to extend\n" +
+		"# these instead of replacing, or comment them out to drop the bake-in entirely.\n"
+	lines := strings.Split(string(yamlBytes), "\n")
+	for i, line := range lines {
+		if line == "args:" {
+			out := make([]string, 0, len(lines)+2)
+			out = append(out, lines[:i]...)
+			out = append(out, strings.TrimRight(note, "\n"))
+			out = append(out, lines[i:]...)
+			return []byte(strings.Join(out, "\n"))
+		}
+	}
+	return yamlBytes
+}
+
+// manifestHasRelativePathEntries scans the raw manifest YAML for read:/write:
+// entries that are relative paths. validate resolves these to absolute paths
+// before printing, so without this check a reader can't tell whether the path
+// in the output was literally typed or was rewritten relative to the manifest
+// dir (a teammate running validate from a different cwd would otherwise see
+// different paths from the same manifest, which looks like an edit).
+func manifestHasRelativePathEntries(manifestPath string) bool {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	section := ""
+	for _, line := range lines {
+		stripped := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(stripped, "#") || stripped == "" {
+			continue
+		}
+		// Top-level keys reset the section context. A line at column 0 that
+		// ends with ":" names the section we're inside.
+		if line == stripped && strings.HasSuffix(stripped, ":") {
+			section = strings.TrimSuffix(stripped, ":")
+			continue
+		}
+		if section != "read" && section != "write" {
+			continue
+		}
+		if !strings.HasPrefix(stripped, "- ") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(stripped, "-"))
+		val = strings.Trim(val, `"'`)
+		if val == "" {
+			continue
+		}
+		if !filepath.IsAbs(val) {
+			return true
+		}
+	}
+	return false
 }
 
 func isEnvVarName(s string) bool {
@@ -886,7 +1114,7 @@ func noteProfileVsRunTmpDivergence(w io.Writer, scriptPath string, fsWrites []st
 // printTmpfsWrites surfaces /sandbox/* writes that landed on the sandbox tmpfs.
 // These don't go into the suggested manifest (they have no host destination),
 // but the script believed them — the user needs to pick a real target.
-func printTmpfsWrites(w io.Writer, paths []string) {
+func printTmpfsWrites(w io.Writer, paths []string, scriptDir string) {
 	if len(paths) == 0 {
 		return
 	}
@@ -894,10 +1122,145 @@ func printTmpfsWrites(w io.Writer, paths []string) {
 	for _, p := range paths {
 		fmt.Fprintf(w, "  %s\n", p)
 	}
-	fmt.Fprintln(w, "[bento]   these were written to relative paths inside the sandbox (cwd=/sandbox).")
-	fmt.Fprintln(w, "[bento]   pick an absolute host path (e.g. /tmp/... or under the script dir) and re-profile,")
-	fmt.Fprintln(w, "[bento]   or add an absolute target to `write:` and rewrite the script to use it.")
+	// The script wrote to /sandbox/X — a relative path resolved against the
+	// in-sandbox cwd, not the host pwd. `write:` declares host destinations,
+	// so adding the host equivalent of /sandbox does NOTHING: the script
+	// still writes to /sandbox/X, which is tmpfs. Only two fixes actually
+	// work: point the script at an absolute host path (via --env), or have
+	// the script `cd $BENTO_SCRIPT_DIR` so its relative writes land in the
+	// bind-mounted script directory.
+	fmt.Fprintln(w, "[bento]   these were written to relative paths, which resolve against the sandbox cwd")
+	fmt.Fprintln(w, "[bento]   `/sandbox` (a tmpfs) — NOT your shell's pwd. Adding the host directory to")
+	fmt.Fprintln(w, "[bento]   `write:` will not help: the script never tries to reach the host path.")
+	fmt.Fprintln(w, "[bento]   Two fixes (pick one):")
+	if hosts := proposeHostWrites(paths, scriptDir); len(hosts) > 0 {
+		fmt.Fprintln(w, "[bento]     (a) point the script at an absolute host path via env, e.g.:")
+		fmt.Fprintf(w, "[bento]           bento run --env OUT=%s/<file> ...\n", hosts[0])
+		fmt.Fprintln(w, "[bento]         (then add the host dir to `write:` so the abs path is grantable):")
+		fmt.Fprintln(w, "[bento]           write:")
+		for _, h := range hosts {
+			fmt.Fprintf(w, "[bento]             - %s\n", h)
+		}
+		fmt.Fprintln(w, "[bento]     (b) `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script so relative paths")
+		fmt.Fprintln(w, "[bento]         land in the script's host directory (already bind-mounted writable")
+		fmt.Fprintln(w, "[bento]         during profile; add it to `write:` for `bento run` to persist).")
+	} else {
+		fmt.Fprintln(w, "[bento]     (a) point the script at an absolute host path via --env NAME=/abs/path,")
+		fmt.Fprintln(w, "[bento]         and add the directory to `write:`.")
+		fmt.Fprintln(w, "[bento]     (b) `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script so relative paths")
+		fmt.Fprintln(w, "[bento]         land in the (writable) script directory.")
+	}
 	fmt.Fprintln(w)
+}
+
+// printBlockedConnects surfaces outbound connect() calls the proxy-based
+// observation pipeline couldn't see — typically a Go/Rust/etc. compiled
+// binary that doesn't route through libproxychains and gets denied by
+// Landlock TCP. Without this, profile silently emits a manifest with no
+// `network:` rules even when the binary clearly tried to dial out.
+// isProfileTargetELF reports whether the script bento is about to profile is a
+// compiled ELF binary (where libproxychains-based hostname capture doesn't
+// fire) rather than a script run under an interpreter. The interp resolver
+// returns the script's own path for ELF targets, so the comparison plus an
+// `os.Stat` of the script is enough to tell.
+func isProfileTargetELF(scriptPath, interp string) bool {
+	if interp == "" {
+		return false
+	}
+	abs, err := filepath.Abs(scriptPath)
+	if err != nil {
+		abs = scriptPath
+	}
+	return abs == interp
+}
+
+func printBlockedConnects(w io.Writer, attempts []bento.ConnectAttempt, elf bool, suggested *bento.Manifest) {
+	if len(attempts) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] outbound connect() attempts the libproxychains shim could not observe:")
+	for _, c := range attempts {
+		status := "DENIED"
+		if c.OK {
+			status = "ok"
+		}
+		fmt.Fprintf(w, "  %s:%d  (%s)\n", c.IP, c.Port, status)
+	}
+	if elf {
+		fmt.Fprintln(w, "[bento]   this is an ELF binary; the proxy-based hostname capture only works")
+		fmt.Fprintln(w, "[bento]   for libc-routed traffic. The IPs above are what the kernel actually")
+		fmt.Fprintln(w, "[bento]   saw — reverse-resolve them and add the hostnames to `network:`:")
+	} else {
+		fmt.Fprintln(w, "[bento]   the script issued raw socket calls outside the libc/proxychains path.")
+		fmt.Fprintln(w, "[bento]   The IPs above are what the kernel saw — add the corresponding hostnames")
+		fmt.Fprintln(w, "[bento]   to `network:` (or use IPs directly):")
+	}
+	fmt.Fprintln(w, "[bento]     network:")
+	fmt.Fprintln(w, "[bento]       rules:")
+	for _, c := range dedupConnectsByPort(attempts) {
+		fmt.Fprintf(w, "[bento]         - host: %s   # or hostname; reverse-DNS may help\n", c.IP)
+		fmt.Fprintf(w, "[bento]           port: \"%d\"\n", c.Port)
+	}
+	if suggested != nil && (suggested.Network == nil || len(suggested.Network.Rules) == 0) {
+		fmt.Fprintln(w, "[bento]   (the emitted manifest has no `network:` block yet — this is exactly the")
+		fmt.Fprintln(w, "[bento]   gap. hand-edit before `bento run`, or the binary will be denied again.)")
+	}
+	fmt.Fprintln(w)
+}
+
+func dedupConnectsByPort(in []bento.ConnectAttempt) []bento.ConnectAttempt {
+	seen := make(map[string]bool)
+	var out []bento.ConnectAttempt
+	for _, c := range in {
+		k := fmt.Sprintf("%s:%d", c.IP, c.Port)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, c)
+	}
+	return out
+}
+
+// proposeHostWrites maps `/sandbox/X` tmpfs writes to their script-dir
+// equivalents. Returns the parent directory of each path (deduped), since
+// scripts that wrote `reports/a.txt` and `reports/b.txt` should grant
+// `<scriptdir>/reports`, not the individual files.
+func proposeHostWrites(tmpfsPaths []string, scriptDir string) []string {
+	if scriptDir == "" {
+		return nil
+	}
+	const prefix = "/sandbox/"
+	seen := make(map[string]bool)
+	var out []string
+	for _, p := range tmpfsPaths {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(p, prefix)
+		if rel == "" {
+			continue
+		}
+		// Use the parent dir so multi-file writes don't blow up the list.
+		host := filepath.Join(scriptDir, filepath.Dir(rel))
+		if seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
+// absScriptPath best-effort resolves a script path to absolute so callers
+// computing a scriptDir don't get a misleading relative one. Returns the
+// input unchanged on error (callers will derive a relative scriptDir,
+// which proposeHostWrites then declines to use).
+func absScriptPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // noteSandboxPathIfReferenced explains the /sandbox/script path that appears
@@ -1077,6 +1440,11 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	default:
 		if resolved, err := exec.LookPath(interp); err == nil {
 			fmt.Fprintf(w, "interpreter: %s  →  %s\n", interp, resolved)
+			if !filepath.IsAbs(interp) {
+				fmt.Fprintln(w, "             (resolved via $PATH at run time — teammates with a different")
+				fmt.Fprintln(w, "              python/bash on $PATH will get a different binary. Pin by replacing")
+				fmt.Fprintf(w, "              `interpreter: %s` with `interpreter: %s` in the manifest.)\n", interp, resolved)
+			}
 		} else {
 			fmt.Fprintf(w, "interpreter: %s  (NOT FOUND on $PATH)\n", interp)
 		}
@@ -1140,6 +1508,9 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 			fmt.Fprintf(w, "  - %s\n", p)
 		}
 	}
+	if manifestHasRelativePathEntries(manifestPath) {
+		fmt.Fprintf(w, "             (relative entries in the manifest were resolved against %s)\n", filepath.Dir(manifestPath))
+	}
 
 	fmt.Fprintln(w)
 	if m.Network == nil {
@@ -1180,7 +1551,7 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "(mandatory-deny paths — SSH keys, cloud creds, shell rc files — are always shadowed)")
+	printImplicitMounts(w)
 
 	if len(issues) > 0 {
 		fmt.Fprintln(w)
@@ -1208,6 +1579,69 @@ func cmdDoctor(args []string) int {
 		return 0
 	}
 	return 1
+}
+
+// mandatoryDenyConflicts returns read paths whose direct children include a
+// mandatory-deny target. Mounting such a path read-only crashes bwrap when it
+// tries to shadow the deny file with /dev/null (can't create the mount point
+// under a ro parent). Profile narrows these before emit; this checks
+// hand-written manifests too.
+func mandatoryDenyConflicts(reads []string) []string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return nil
+	}
+	denyParents := make(map[string]struct{})
+	for _, d := range append(spec.ExpandDangerousPaths(home), spec.ExpandDangerousWritePaths(home)...) {
+		denyParents[filepath.Dir(d)] = struct{}{}
+	}
+	var bad []string
+	for _, r := range reads {
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		if _, ok := denyParents[filepath.Clean(abs)]; ok {
+			bad = append(bad, r)
+		}
+	}
+	return bad
+}
+
+// emitEffectiveArgv prints the script's effective argv when the manifest bakes
+// in args and the user passed more at the CLI. Silent-wrong-args is the
+// classic profile trap: `bento profile script.py sample.txt` bakes sample.txt
+// into the manifest, and `bento run manifest.yaml other.txt` then appends —
+// the script still sees sample.txt as argv[1]. Surface what actually runs so
+// the divergence is visible at a glance.
+func emitEffectiveArgv(w io.Writer, manifestArgs, cliArgs []string, appendMode bool) {
+	if len(manifestArgs) == 0 || len(cliArgs) == 0 {
+		// Nothing to clarify: either the manifest doesn't bake args or the
+		// user didn't pass any. The trap only triggers at the intersection.
+		return
+	}
+	var effective []string
+	suffix := "cli args replaced manifest args (default; --append-args to extend instead)"
+	if appendMode {
+		effective = append(append([]string{}, manifestArgs...), cliArgs...)
+		suffix = "--append-args extended manifest args"
+	} else {
+		effective = cliArgs
+	}
+	fmt.Fprintf(w, "[bento] argv: %q (manifest: %d, cli: %d, %s)\n",
+		effective, len(manifestArgs), len(cliArgs), suffix)
+}
+
+// stringSliceFlag collects repeated values from a flag (e.g. `--read PATH`).
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+func (s *stringSliceFlag) Set(v string) error {
+	if v == "" {
+		return fmt.Errorf("value must not be empty")
+	}
+	*s = append(*s, v)
+	return nil
 }
 
 // envFlag collects repeated --env KEY=VALUE pairs.
@@ -1279,6 +1713,15 @@ func cmdRun(args []string) int {
 	fs.BoolVar(prompt, "i", false, "shorthand for --prompt")
 	verbose := fs.Bool("verbose", false, "show sandbox argv and other diagnostic logging")
 	fs.BoolVar(verbose, "v", false, "shorthand for --verbose")
+	// Default: command-line args REPLACE the manifest's `args:` list. This
+	// matches `make`/`npm run`/`cargo run` mental model and avoids the
+	// profile-bake-in trap (manifest carries the profile-time sample input
+	// as `args:`; a CLI arg silently appended past the script's argv reach).
+	// --append-args opts in to the pipeline case where the manifest args
+	// are a canonical invocation that should be extended, not replaced.
+	// --replace-args is preserved as a no-op for old scripts that pass it.
+	appendArgs := fs.Bool("append-args", false, "append command-line args after the manifest's `args:` list (default: replace). Use when the manifest's args are a canonical invocation to extend.")
+	replaceArgs := fs.Bool("replace-args", false, "(deprecated, now the default) replace the manifest's `args:` list with command-line args.")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -1338,9 +1781,21 @@ func cmdRun(args []string) int {
 		grantCB = cb
 	}
 
+	if *appendArgs && *replaceArgs {
+		fmt.Fprintln(os.Stderr, "error: --append-args and --replace-args are mutually exclusive")
+		return 2
+	}
+	if *replaceArgs {
+		// --replace-args is the new default; keep accepting the flag so
+		// existing scripts/docs don't break, but note that it's a no-op.
+		fmt.Fprintln(os.Stderr, "[bento] note: --replace-args is the default now (kept for compatibility); pass --append-args for the old append behavior.")
+	}
 	target := fs.Arg(0)
 	if isManifestPath(target) {
-		return runManifest(target, scriptArgs, *timeout, env, mode, telemetry, grantCB, *verbose)
+		return runManifest(target, scriptArgs, *appendArgs, *timeout, env, mode, telemetry, grantCB, *verbose)
+	}
+	if *appendArgs {
+		fmt.Fprintln(os.Stderr, "[bento] note: --append-args has no effect in zero-config mode (no manifest args to append to).")
 	}
 	warnSiblingManifest(os.Stderr, target)
 	return runScriptZeroConfig(target, scriptArgs, *interpreter, *timeout, env, mode, telemetry, grantCB, *verbose)
@@ -1457,7 +1912,7 @@ func runScriptZeroConfig(scriptPath string, scriptArgs []string, interpOverride 
 	// Zero-config has no `write:` list, so every successful write outside
 	// bento's sandbox bookkeeping is by definition lost.
 	if emitSilentWriteWarning(os.Stderr, fsOpens, nil) && code == 0 {
-		fmt.Fprintln(os.Stderr, "[bento] exiting non-zero because at least one write landed on tmpfs and vanished.")
+		fmt.Fprintln(os.Stderr, "[bento] tmpfs writes are treated as errors; exiting non-zero.")
 		code = 1
 	}
 	return code
@@ -1473,7 +1928,42 @@ func emitZeroConfigPosture(w io.Writer, scriptPath string) {
 		scriptDir = "."
 	}
 	fmt.Fprintf(w, "[bento] zero-config: read=%s/  write=(none)  network=(none)  exec=blocked\n", scriptDir)
+	// The banner's `read=./` reads as "your current directory is mounted; relative
+	// paths just work." But inside the sandbox cwd is /sandbox (not the host pwd),
+	// so a relative argv like `./input.txt` resolves to /sandbox/input.txt and
+	// hits FileNotFoundError. Pre-empt the most common first-day head-scratch.
+	fmt.Fprintln(w, "[bento]   (inside the sandbox cwd is /sandbox; pass argv paths as absolute —")
+	fmt.Fprintln(w, "[bento]   relative paths resolve against /sandbox, not your shell's pwd.)")
 }
+
+// detectRelativePathHostMiss looks for a script-tail mention of a `./X` path
+// where X exists at scriptDir/X on the host. That's the "script works on my
+// machine because pwd has the file, but inside the sandbox /sandbox is a
+// fresh tmpfs that doesn't" trap — the failure is the sandbox, not the
+// script. Returns the matched relative path (e.g. "./weather.csv") or ""
+// when nothing matches.
+func detectRelativePathHostMiss(scriptTail, scriptDir string) string {
+	if scriptDir == "" {
+		return ""
+	}
+	for _, m := range reRelativePathInOutput.FindAllStringSubmatch(scriptTail, -1) {
+		rel := m[1]
+		// Skip "./" alone or paths with traversal — only flag plain
+		// `./name[/sub]` cases where we can confidently check the host.
+		name := strings.TrimPrefix(rel, "./")
+		if name == "" || strings.Contains(name, "..") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(scriptDir, name)); err == nil {
+			return rel
+		}
+	}
+	return ""
+}
+
+// Matches a relative path token in script output. Anchored on `./` followed
+// by a filename-ish run (letters/digits/_/-/./). Captures the whole `./X`.
+var reRelativePathInOutput = regexp.MustCompile(`(\./[A-Za-z0-9_./-]+)`)
 
 // noteShellCwdAssumption fires when a shell script's profile run failed and
 // the source contains the most common cwd-based patterns that silently break
@@ -1503,8 +1993,11 @@ func noteShellCwdAssumption(w io.Writer, scriptPath, interp string) {
 	fmt.Fprintln(w, "[bento]     cd \"$BENTO_SCRIPT_DIR\"                 # was: cd \"$(dirname \"$0\")\"")
 }
 
-var reShellCwdAssumption = regexp.MustCompile(
-	`\$0\b|\bdirname\b|\$\{?BASH_SOURCE\b`)
+// Match script-self-locating patterns specifically. Plain `dirname` is too
+// loose — scripts often call `dirname "$INPUT"` on user data and have nothing
+// to do with locating the script itself. Require an explicit `$0` /
+// `${BASH_SOURCE…}` reference somewhere in the file.
+var reShellCwdAssumption = regexp.MustCompile(`\$0\b|\$\{?BASH_SOURCE\b`)
 
 // warnLikelyNetworkUseInZeroConfig scans the script source for cheap, high-
 // confidence indicators that it makes outbound network calls. When found, it
@@ -1731,6 +2224,105 @@ func warnUnsetEnvAllowlist(w io.Writer, allowlist []string, cliEnv map[string]st
 	fmt.Fprintln(w, "[bento]   your shell, or pass `--env NAME=VALUE` BEFORE the manifest path:")
 	fmt.Fprintf(w, "[bento]   bento run --env %s=... <manifest> [args...]\n", missing[0])
 	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
+}
+
+// warnProfileTimeEnvDivergence reads the `# --env NAME=VALUE` lines from the
+// manifest's header comment block (written by `bento profile` when --env was
+// used) and warns when the current run is about to use a different value
+// than the profile trial recorded. This catches the common trap:
+//
+//	bento profile --env CITY=Paris weather.py    # works, writes /tmp/Paris.csv
+//	bento run weather.manifest.yaml              # silently uses default, writes /tmp/London.csv
+//
+// CLI --env overrides suppress the warning per-variable; the user has clearly
+// chosen a value. A host env that happens to match is also fine.
+func warnProfileTimeEnvDivergence(w io.Writer, manifestPath string, cliEnv map[string]string) {
+	profileEnv := readProfileTimeEnvComments(manifestPath)
+	if len(profileEnv) == 0 {
+		return
+	}
+	type diff struct{ name, profileVal, runtimeVal string }
+	var diverged []diff
+	names := make([]string, 0, len(profileEnv))
+	for k := range profileEnv {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		profVal := profileEnv[name]
+		if v, ok := cliEnv[name]; ok {
+			if v != profVal {
+				// User explicitly chose a different value — fine, but record.
+				diverged = append(diverged, diff{name, profVal, v})
+			}
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			if v != profVal {
+				diverged = append(diverged, diff{name, profVal, v})
+			}
+			continue
+		}
+		// Not in CLI --env, not set on host: script will see empty string
+		// (or its built-in default), which is almost certainly NOT what the
+		// profile trial used.
+		diverged = append(diverged, diff{name, profVal, ""})
+	}
+	if len(diverged) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] ──────────────── note ────────────────")
+	fmt.Fprintln(w, "[bento] profile-time --env values differ from this run's environment:")
+	for _, d := range diverged {
+		if d.runtimeVal == "" {
+			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see empty (script's default)\n", d.name, d.profileVal)
+		} else {
+			fmt.Fprintf(w, "[bento]   $%s: profile used %q, this run will see %q\n", d.name, d.profileVal, d.runtimeVal)
+		}
+	}
+	fmt.Fprintln(w, "[bento] the manifest's `env:` allowlist only forwards a name; values are not preserved.")
+	fmt.Fprintf(w, "[bento] pass `--env %s=%s` to match the profile run, or export in your shell first.\n",
+		diverged[0].name, diverged[0].profileVal)
+	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
+}
+
+// readProfileTimeEnvComments parses the `# --env NAME=VALUE` lines emitted by
+// `bento profile` into the manifest's header comment block. Returns an empty
+// map when the file is missing or the comment block isn't present.
+func readProfileTimeEnvComments(manifestPath string) map[string]string {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, raw := range strings.Split(string(data), "\n") {
+		// Only consider comment lines (the header is comment-only and the
+		// YAML body starts with `interpreter:` or similar — once we hit
+		// non-comment content, the header is over).
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		// Expected shape: `#   --env NAME=VALUE` (leading spaces vary).
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		if !strings.HasPrefix(body, "--env ") {
+			continue
+		}
+		kv := strings.TrimSpace(strings.TrimPrefix(body, "--env "))
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := kv[:eq]
+		value := kv[eq+1:]
+		if isEnvVarName(name) {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 func warnStrippedShellVars(w io.Writer, scriptPath, interp string, env map[string]string, includeIdentity bool) {
@@ -2581,10 +3173,34 @@ func emitSilentWriteWarning(w io.Writer, opens []bento.FSOpen, declaredWrites []
 	fmt.Fprintln(w, "[bento] ──────────────── warning ────────────────")
 	fmt.Fprintln(w, "[bento] script wrote to paths not declared in `write:` — these landed in the")
 	fmt.Fprintln(w, "[bento]   sandbox tmpfs and vanished on exit (no error was raised inside the script):")
+	// Split the lost writes into two classes so the advice can be specific:
+	//   - /sandbox/X: relative-path writes against the sandbox cwd. `write:`
+	//     can't fix these — the script never tried to reach the host. The
+	//     fix is to point the script at an absolute host path (or `cd
+	//     $BENTO_SCRIPT_DIR`).
+	//   - everything else: host-shaped paths the script DID try to reach but
+	//     the manifest didn't grant. `write:` is the correct fix here.
+	var sandboxLost, hostLost []string
 	for _, p := range lost {
 		fmt.Fprintln(w, "[bento]   "+p)
+		if strings.HasPrefix(p, "/sandbox/") {
+			sandboxLost = append(sandboxLost, p)
+		} else {
+			hostLost = append(hostLost, p)
+		}
 	}
-	fmt.Fprintln(w, "[bento] add the destination(s) to the manifest's `write:` list to persist them on the host.")
+	if len(sandboxLost) > 0 {
+		fmt.Fprintln(w, "[bento] the /sandbox/* paths are relative writes resolved against the sandbox cwd")
+		fmt.Fprintln(w, "[bento]   (`/sandbox` = tmpfs, NOT your host pwd). Adding to `write:` will not help —")
+		fmt.Fprintln(w, "[bento]   the script never tried to reach the host. Fix one of:")
+		fmt.Fprintln(w, "[bento]     - pass `--env NAME=/abs/host/path` and have the script use $NAME, OR")
+		fmt.Fprintln(w, "[bento]     - `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script (and add the script")
+		fmt.Fprintln(w, "[bento]       directory to `write:` so the bind-mount is writable).")
+	}
+	if len(hostLost) > 0 {
+		fmt.Fprintln(w, "[bento] for the host-shaped paths above, add the destination(s) to the manifest's")
+		fmt.Fprintln(w, "[bento]   `write:` list to persist them on the host.")
+	}
 	fmt.Fprintln(w, "[bento] ─────────────────────────────────────────")
 	return true
 }
@@ -3051,7 +3667,7 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 
 func (t *tailBuffer) String() string { return string(t.buf) }
 
-func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
+func runManifest(manifestPath string, scriptArgs []string, appendArgs bool, timeout time.Duration, env map[string]string, netMode bento.NetworkMode, telemetry io.Writer, grantCB bento.GrantCallback, verbose bool) int {
 	abs, err := filepath.Abs(manifestPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -3072,7 +3688,23 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 		fmt.Fprintln(os.Stderr, "[bento] warning: `exec: [...]` is deprecated and was never a per-binary allowlist;")
 		fmt.Fprintln(os.Stderr, "[bento]   any non-empty value disables the subprocess block. Use `allow_exec: true` instead.")
 	}
+	if conflicts := mandatoryDenyConflicts(m.Read); len(conflicts) > 0 {
+		fmt.Fprintln(os.Stderr, "[bento] error: manifest read: contains paths that conflict with mandatory-deny:")
+		for _, c := range conflicts {
+			fmt.Fprintf(os.Stderr, "[bento]   - %s\n", c)
+		}
+		fmt.Fprintln(os.Stderr, "[bento]   bento's mandatory-deny shadows ~/.bashrc, ~/.ssh/*, cloud creds, etc. by")
+		fmt.Fprintln(os.Stderr, "[bento]   binding /dev/null over them. That binding can't be applied under a")
+		fmt.Fprintln(os.Stderr, "[bento]   read-only parent — bwrap would fail with `Can't create file at ...`.")
+		fmt.Fprintln(os.Stderr, "[bento]   narrow these paths to the specific subdirectories the script actually needs.")
+		return 1
+	}
 	warnUnsetEnvAllowlist(os.Stderr, m.Env, env)
+	// Profile-time --env values are recorded as comments in the manifest (so
+	// the YAML stays portable across hosts), but a junior re-running from a
+	// fresh shell silently gets a different behavior than the profile run:
+	// the script falls back to its default. Surface the divergence.
+	warnProfileTimeEnvDivergence(os.Stderr, abs, env)
 	var manifestPreflightNetFired bool
 	// Also warn when the script references host env vars that the manifest
 	// hasn't allowlisted — same silent-misbehavior trap as the zero-config
@@ -3095,7 +3727,16 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 		// fires with the precise host/binary; this is the "scroll-saver" copy.
 		manifestPreflightNetFired = warnLikelyFailureInManifest(os.Stderr, scriptForEnvScan, m)
 	}
-	m.Args = append(m.Args, scriptArgs...)
+	// Echo the effective argv when the manifest bakes in args AND the user
+	// is passing more at the CLI. The default is REPLACE (matches make / npm
+	// run / cargo run); --append-args opts in to the pipeline case where
+	// manifest args are a canonical invocation to extend.
+	emitEffectiveArgv(os.Stderr, m.Args, scriptArgs, appendArgs)
+	if appendArgs {
+		m.Args = append(m.Args, scriptArgs...)
+	} else if len(scriptArgs) > 0 {
+		m.Args = append([]string{}, scriptArgs...)
+	}
 
 	tail := newTailBuffer(16 << 10)
 	var fsOpens []bento.FSOpen
@@ -3138,7 +3779,7 @@ func runManifest(manifestPath string, scriptArgs []string, timeout time.Duration
 	// itself exited 0 — the user's data didn't land on disk and CI shouldn't
 	// see a green pipeline. Promote a clean exit to exit=1 in that case.
 	if emitSilentWriteWarning(os.Stderr, fsOpens, resolveDeclaredWrites(m, filepath.Dir(abs))) && code == 0 {
-		fmt.Fprintln(os.Stderr, "[bento] exiting non-zero because at least one write landed on tmpfs and vanished.")
+		fmt.Fprintln(os.Stderr, "[bento] tmpfs writes are treated as errors; exiting non-zero.")
 		code = 1
 	}
 	emitLimitsKillHint(os.Stderr, code, m.Limits)

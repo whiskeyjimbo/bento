@@ -54,6 +54,9 @@ func runPlatform(ctx context.Context, m *spec.Manifest, cfg *Config) (int, error
 	if cfg.FSObserver != nil {
 		cfg.FSObserver(obs.collect(cfg))
 	}
+	if cfg.ConnectObserver != nil {
+		cfg.ConnectObserver(obs.collectConnects(cfg))
+	}
 	return code, err
 }
 
