@@ -694,7 +694,16 @@ func cmdProfile(args []string) int {
 		}
 		sort.Strings(names)
 		for _, k := range names {
-			fmt.Fprintf(&header, "#   --env %s=%s\n", k, env[k])
+			v := env[k]
+			// Path-shaped values get a <placeholder> in the recipe and a
+			// separate breadcrumb line for the literal — committing a
+			// manifest with the literal would leak the author's workspace
+			// path (e.g. /home/jrose/projects/foo) to the repo.
+			if envValueLooksLikePath(v) {
+				fmt.Fprintf(&header, "#   --env %s=<absolute-host-path>   (recorded at profile time: %s)\n", k, v)
+			} else {
+				fmt.Fprintf(&header, "#   --env %s=%s\n", k, v)
+			}
 		}
 	}
 	// When the trial run wrote to paths that landed on the sandbox tmpfs, the
@@ -1257,6 +1266,26 @@ func annotateRelativePaths(yamlBytes []byte) []byte {
 // entries that are relative paths. validate resolves these to absolute paths
 // before printing, so without this check a reader can't tell whether the path
 // in the output was literally typed or was rewritten relative to the manifest
+// envValueLooksLikePath returns true if v looks like a host filesystem path
+// the manifest author wouldn't want frozen into a committed manifest. Used
+// to hide workspace-local literals behind a <placeholder> in the
+// Profile-time --env breadcrumb.
+func envValueLooksLikePath(v string) bool {
+	if v == "" {
+		return false
+	}
+	// Absolute POSIX paths and ~ are the obvious cases. Drive letters
+	// (C:\...) and Windows-style backslashes are out of scope here.
+	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") {
+		return true
+	}
+	// Relative paths with a separator look path-like too (./foo, foo/bar).
+	if strings.Contains(v, "/") {
+		return true
+	}
+	return false
+}
+
 func pluralize(n int, one, many string) string {
 	if n == 1 {
 		return one
