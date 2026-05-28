@@ -156,12 +156,43 @@ func friendlyYAMLError(err error) string {
 	if strings.Contains(raw, "!!str into []") {
 		return clean + "\n\nhint: this field expects a list (use `- item` lines), not a single value."
 	}
+	// Duplicate top-level mapping key. The common path here is a user who
+	// uncommented a Quick-apply hint's `# env:` candidate block while an
+	// active `env:` block was already present in the manifest (because
+	// `--env NAME=...` was passed at profile time). The raw yaml.v3 message
+	// reads `mapping key "env" already defined at line N` — accurate but
+	// gives the user no path forward.
+	if strings.Contains(raw, "already defined") {
+		key := extractDuplicateKey(raw)
+		hint := "merge the two blocks into one — YAML rejects manifests with the same top-level key listed twice."
+		if key == "env" || key == "read" || key == "write" || key == "network" {
+			hint = fmt.Sprintf("merge the two `%s:` blocks into one. Common cause: the Quick-apply hint in this manifest's header was applied while an active `%s:` block already existed further down. Add the candidate name(s) to the existing block instead of uncommenting a second one.", key, key)
+		}
+		return clean + "\n\nhint: " + hint
+	}
 	// Unknown field with KnownFields(true).
 	if strings.Contains(raw, "field ") && strings.Contains(raw, "not found in") {
 		return clean + "\n\nhint: check spelling of the field name. Valid top-level fields:\n" +
 			"    interpreter, script, args, env, read, write, network, allow_exec, limits"
 	}
 	return raw
+}
+
+// extractDuplicateKey pulls the key name out of a yaml.v3 duplicate-key
+// message like `line 42: mapping key "env" already defined at line 12`.
+// Returns "" if no quoted token is found.
+func extractDuplicateKey(raw string) string {
+	const marker = "mapping key \""
+	i := strings.Index(raw, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := raw[i+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func extractFieldFromTypeError(raw, marker string) string {

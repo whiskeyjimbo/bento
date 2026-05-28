@@ -509,36 +509,66 @@ func cmdProfile(args []string) int {
 		}
 	}
 	if len(stub) > 0 {
-		header.WriteString("#\n# To inherit these host env vars at run time — uncomment names under `env:`\n")
-		header.WriteString("# below (bento strips host env by default). Or pass `--env NAME=VALUE` ad-hoc.\n")
 		// If the trial captured a tmpfs-write failure, one of these names is
 		// the load-bearing one (the var the Quick-apply fix below tells the
-		// user to uncomment + pass to bento run). Split the list so the
-		// required name appears alone under `# env:` while the others fall
-		// into a separate optional block — a flat list invites uncommenting
-		// every name when only one is actually needed.
+		// user to add to env: + pass to bento run). Split the list so the
+		// required name is called out while the others fall into a separate
+		// optional block — a flat list invites enabling every name when only
+		// one is actually needed.
 		var loadBearing string
 		if len(result.TmpfsWrites) > 0 {
 			loadBearing = pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referenced)
 		}
 		var others []string
-		header.WriteString("# env:\n")
 		if loadBearing != "" {
-			fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below\n", loadBearing)
 			for _, name := range stub {
 				if name != loadBearing {
 					others = append(others, name)
 				}
 			}
 		} else {
-			for _, name := range stub {
-				fmt.Fprintf(&header, "#   - %s\n", name)
-			}
+			others = stub
 		}
-		if len(others) > 0 {
-			header.WriteString("# env (other candidates, optional — the script reads these but they didn't break this run):\n")
-			for _, name := range others {
-				fmt.Fprintf(&header, "#   - %s\n", name)
+		// Two presentations:
+		//  - When NO active env: block exists, present `# env:` as a YAML-shaped
+		//    candidate block the user can uncomment (the original Quick-apply
+		//    template).
+		//  - When an active env: block IS present (because `--env NAME=...`
+		//    was passed at profile time), emit a prose list instead. A
+		//    YAML-shaped `# env:` block that gets uncommented would collide
+		//    with the active block and produce a `mapping key "env" already
+		//    defined` YAML error.
+		activeEnvPresent := result.SuggestedManifest != nil && len(result.SuggestedManifest.Env) > 0
+		if activeEnvPresent {
+			header.WriteString("#\n# To inherit additional host env vars at run time — ADD names to the\n")
+			header.WriteString("# `env:` block further down (bento strips host env by default). Or pass\n")
+			header.WriteString("# `--env NAME=VALUE` ad-hoc. Do NOT create a second `env:` block at the\n")
+			header.WriteString("# top of the file — YAML rejects duplicate top-level keys.\n")
+			if loadBearing != "" {
+				fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below (add to `env:` block)\n", loadBearing)
+			}
+			if len(others) > 0 {
+				header.WriteString("# Other candidates, optional — the script reads these but they didn't break this run:\n")
+				for _, name := range others {
+					fmt.Fprintf(&header, "#   - %s\n", name)
+				}
+			}
+		} else {
+			header.WriteString("#\n# To inherit these host env vars at run time — uncomment names under `env:`\n")
+			header.WriteString("# below (bento strips host env by default). Or pass `--env NAME=VALUE` ad-hoc.\n")
+			header.WriteString("# env:\n")
+			if loadBearing != "" {
+				fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below\n", loadBearing)
+			} else {
+				for _, name := range stub {
+					fmt.Fprintf(&header, "#   - %s\n", name)
+				}
+			}
+			if loadBearing != "" && len(others) > 0 {
+				header.WriteString("# env (other candidates, optional — the script reads these but they didn't break this run):\n")
+				for _, name := range others {
+					fmt.Fprintf(&header, "#   - %s\n", name)
+				}
 			}
 		}
 	}
@@ -711,13 +741,21 @@ func cmdProfile(args []string) int {
 		// the `env:` comment block above already lists the referenced names.
 		envName := pickEnvForLostWrite(result.TmpfsWrites, envDefaults, referenced)
 		header.WriteString("#\n# ── Quick-apply fix (a) ─ uncomment the `write:` block below")
-		// If the load-bearing var is already in the manifest's active `env:`
-		// block (because it was passed via --env at profile time), the user
-		// doesn't need to uncomment anything env-side — say so explicitly
-		// instead of telling them to uncomment a line that isn't commented.
-		if already[envName] {
+		// Three cases:
+		//   - load-bearing var already in active env: (--env at profile time
+		//     covered it) — nothing to do env-side.
+		//   - an active env: block exists but doesn't include the load-bearing
+		//     var — ADD it there. Do NOT instruct uncommenting a parallel
+		//     header block; YAML rejects duplicate `env:` keys.
+		//   - no active env: block — point at the header candidate block to
+		//     uncomment, original Quick-apply template.
+		activeEnvPresent := result.SuggestedManifest != nil && len(result.SuggestedManifest.Env) > 0
+		switch {
+		case already[envName]:
 			fmt.Fprintf(&header, ".\n#    `%s` is already in `env:` below. Then run with:\n", envName)
-		} else {
+		case activeEnvPresent:
+			fmt.Fprintf(&header, " AND add\n#    `- %s` to the existing `env:` block below (do NOT add a second `env:`\n#    block — YAML rejects duplicate top-level keys). Then run with:\n", envName)
+		default:
 			fmt.Fprintf(&header, " AND uncomment\n#    `- %s` under the `env:` comment above. Then run with:\n", envName)
 		}
 		fmt.Fprintf(&header, "#       bento run --env %s=%s/<file> <this manifest>\n", envName, scriptDir)

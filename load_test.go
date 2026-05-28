@@ -86,6 +86,30 @@ func TestLoadManifestBadYAML(t *testing.T) {
 	}
 }
 
+func TestLoadManifestDuplicateEnvKey(t *testing.T) {
+	// A user following the Quick-apply hint literally while an active env:
+	// block already exists ends up with two env: mapping keys. The raw yaml.v3
+	// error is accurate but unhelpful; we expect a friendly hint that points
+	// at the manifest template as the likely cause.
+	src := `interpreter: bash
+script: ./s.sh
+env:
+  - OUT
+env:
+  - SUMMARY
+`
+	_, err := LoadManifest(strings.NewReader(src))
+	if err == nil {
+		t.Fatal("duplicate env: key should error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"already defined", "merge", "env:", "Quick-apply"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected friendly hint mentioning %q, got: %v", want, err)
+		}
+	}
+}
+
 func TestLoadManifestInvalidManifest(t *testing.T) {
 	// Valid YAML, invalid manifest (script is required).
 	src := `interpreter: python3`
