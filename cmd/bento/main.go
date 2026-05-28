@@ -3556,8 +3556,10 @@ var reDeniedHost = regexp.MustCompile(
 // rePyTracebackURL pulls URLs out of Python tracebacks. urlopen / requests.get
 // don't include the hostname in the gaierror message itself, but the call
 // frame nearly always does — e.g. `r = urlopen("https://api.github.com")`.
-// We extract the URL host as the next-best signal.
-var rePyTracebackURL = regexp.MustCompile(`https?://([A-Za-z0-9_.-]+)`)
+// We extract the URL host as the next-best signal, and synthesize a default
+// port from the scheme so the hint matches the host:port shape a user adds
+// to network.rules. Explicit ":port" in the URL wins over the scheme default.
+var rePyTracebackURL = regexp.MustCompile(`(https?)://([A-Za-z0-9_.-]+)(?::([0-9]+))?`)
 
 // reProxyDenyHost captures the host from bento's own proxy DENY log line and
 // from the X-Bento-Reject-Host header / 403 body the proxy returns. These are
@@ -3565,7 +3567,7 @@ var rePyTracebackURL = regexp.MustCompile(`https?://([A-Za-z0-9_.-]+)`)
 // case: DNS resolution never happens (rules are checked first), so the
 // gaierror/DNS-pattern matchers can't fire.
 var reProxyDenyHost = regexp.MustCompile(
-	`(?i)(?:http-connect: DENY\s+|x-bento-reject-host:\s*|bento blocked outbound connection to\s+)([A-Za-z0-9_.-]+)(?::[0-9]+)?`)
+	`(?i)(?:http-connect: DENY\s+|x-bento-reject-host:\s*|bento blocked outbound connection to\s+)([A-Za-z0-9_.-]+)(?::([0-9]+))?`)
 
 // extractDeniedHosts returns up to a few unique hostnames the script tried to
 // resolve before the sandbox refused. Empty when nothing matches — the caller
@@ -3573,33 +3575,52 @@ var reProxyDenyHost = regexp.MustCompile(
 func extractDeniedHosts(stderrTail string) []string {
 	seen := make(map[string]bool)
 	var out []string
-	add := func(h string) {
+	add := func(h, port string) {
 		h = strings.Trim(h, "'\".:")
-		if h == "" || seen[h] {
+		if h == "" {
 			return
 		}
-		seen[h] = true
-		out = append(out, h)
+		key := h
+		if port != "" {
+			key = h + ":" + port
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, key)
 	}
 	// Bento's own proxy DENY log line / 403 body is the most authoritative
 	// source — it fires when the manifest has network rules that don't cover
 	// the requested host (the wrong-host case), where DNS never gets to fail.
+	// The proxy log includes the port; pass it through so the hint says
+	// `host:port` (matching the shape a user adds to network.rules).
 	for _, m := range reProxyDenyHost.FindAllStringSubmatch(stderrTail, -1) {
-		add(m[1])
+		add(m[1], m[2])
 		if len(out) >= 5 {
 			return out
 		}
 	}
 	for _, m := range reDeniedHost.FindAllStringSubmatch(stderrTail, -1) {
-		add(m[1])
+		add(m[1], "")
 		if len(out) >= 5 {
 			return out
 		}
 	}
 	// Python fallback: gaierror doesn't name the host, but the traceback
-	// frame that triggered it almost always does as a URL literal.
+	// frame that triggered it almost always does as a URL literal. The URL
+	// scheme implies the port (https → 443, http → 80) — encode it so the
+	// hint stays copy-pasteable. Explicit ":port" in the URL wins.
 	for _, m := range rePyTracebackURL.FindAllStringSubmatch(stderrTail, -1) {
-		add(m[1])
+		scheme, host, port := m[1], m[2], m[3]
+		if port == "" {
+			if strings.EqualFold(scheme, "https") {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		add(host, port)
 		if len(out) >= 5 {
 			return out
 		}
