@@ -240,14 +240,12 @@ func cmdProfile(args []string) int {
 		return writeScaffoldManifest(outPath, scriptPath, interp, m)
 	}
 
-	// Proactive --allow-exec nudge for shells: bash/sh scripts almost
-	// universally shell out (mkdir, sha256sum, …). Without --allow-exec
-	// profile fails on the first subprocess and produces a useless manifest.
-	if !*allowExec && isShellInterpreter(interp) {
-		fmt.Fprintf(os.Stderr, "[bento] note: %q looks like a shell script; consider --allow-exec\n", scriptPath)
-		fmt.Fprintln(os.Stderr, "[bento]   (shell scripts call external binaries — mkdir, ls, curl — which are blocked")
-		fmt.Fprintln(os.Stderr, "[bento]   by default and will make this profile run fail at the first subprocess).")
-	}
+	// Pre-run nudge intentionally omitted: it primes the user to read every
+	// later failure as "a subprocess got blocked," even when the trial fails
+	// for an unrelated reason (e.g. a bash builtin tripping the tmpfs-cwd).
+	// The post-run path below already emits a specific --allow-exec advisory
+	// when the script actually tried to execve, which is the only case where
+	// the advice is relevant.
 	netModeLabel := "permissive network"
 	if isProfileTargetELF(scriptPath, interp) {
 		// For ELF binaries the libproxychains-based hostname capture doesn't
