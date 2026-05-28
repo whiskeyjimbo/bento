@@ -665,13 +665,25 @@ func cmdProfile(args []string) int {
 		header.WriteString("#\n# ⚠ WARNING: the trial run wrote to relative paths that landed on the sandbox\n")
 		header.WriteString("# tmpfs and were lost. `bento run <this manifest>` will exit non-zero with the\n")
 		header.WriteString("# same diagnostic unless you apply one of the fixes below.\n")
+		// Annotate each lost-write line with the env var whose default value
+		// has the same basename. Connects the WARNING list to the Quick-apply
+		// scaffold below — without it, the reader has to mentally correlate
+		// `summary.txt` with `${SUMMARY:-./summary.txt}` themselves.
+		envDefaults := scriptEnvDefaults(scriptPath, interp)
 		header.WriteString("# Lost writes:\n")
 		for _, p := range result.TmpfsWrites {
-			fmt.Fprintf(&header, "#   - %s\n", p)
+			if v := envVarForLostPath(p, envDefaults); v != "" {
+				fmt.Fprintf(&header, "#   - %s   ← controlled by $%s (pass `--env %s=/abs/host/path`)\n", p, v, v)
+			} else {
+				fmt.Fprintf(&header, "#   - %s\n", p)
+			}
 		}
+		// Use the load-bearing env name (if derivable) in the generic recipe
+		// instead of the literal "OUT" placeholder.
+		genericEnv := pickEnvForLostWrite(result.TmpfsWrites, envDefaults, referenced)
 		header.WriteString("# Fix one of:\n")
 		header.WriteString("#   (a) point the script at an absolute host path via --env, e.g.\n")
-		fmt.Fprintf(&header, "#       bento run --env OUT=%s/<file> <this manifest>\n", scriptDir)
+		fmt.Fprintf(&header, "#       bento run --env %s=%s/<file> <this manifest>\n", genericEnv, scriptDir)
 		fmt.Fprintf(&header, "#       and add `%s` to `write:` below.\n", scriptDir)
 		header.WriteString("#   (b) add `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script so relative paths\n")
 		fmt.Fprintf(&header, "#       land in the (writable) script directory, then add `%s` to `write:`.\n", scriptDir)
@@ -684,7 +696,7 @@ func cmdProfile(args []string) int {
 		// OUTPUT) — falling back to the first referenced name, then a
 		// placeholder. We deliberately do not re-emit `env:` here because
 		// the `env:` comment block above already lists the referenced names.
-		envName := pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referenced)
+		envName := pickEnvForLostWrite(result.TmpfsWrites, envDefaults, referenced)
 		header.WriteString("#\n# ── Quick-apply fix (a) ─ uncomment the `write:` block below")
 		// If the load-bearing var is already in the manifest's active `env:`
 		// block (because it was passed via --env at profile time), the user
@@ -2836,6 +2848,23 @@ func scriptEnvDefaults(scriptPath, interp string) map[string]string {
 		return pythonEnvDefaults(src)
 	}
 	return nil
+}
+
+// envVarForLostPath returns the env-var name whose default-value basename
+// matches `lost`'s basename, or "" when no default matches. Used to annotate
+// individual lost-write lines in the manifest WARNING block.
+func envVarForLostPath(lost string, defaults map[string]string) string {
+	lostBase := filepath.Base(lost)
+	for name, defVal := range defaults {
+		defBase := filepath.Base(defVal)
+		if defBase == "" || defBase == "." || defBase == "/" {
+			continue
+		}
+		if defBase == lostBase {
+			return name
+		}
+	}
+	return ""
 }
 
 // pickEnvForLostWrite picks the env-var name that most likely controls a lost
