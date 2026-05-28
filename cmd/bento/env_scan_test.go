@@ -100,6 +100,51 @@ select OPT in x y; do echo "$OPT"; break; done
 	}
 }
 
+func TestReferencedShellVarsAll(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "defaulted forms surface (unlike strict scanner)",
+			src: `#!/usr/bin/env bash
+echo "${TARGET:-https://default.example.com}"
+echo "${ALT-fallback}"
+`,
+			want: []string{"TARGET", "ALT"},
+		},
+		{
+			name: "self-referential default idiom surfaces despite the assignment",
+			src: `#!/usr/bin/env bash
+OUT="${OUT:-./releases.json}"
+SUMMARY="${SUMMARY:-./summary.txt}"
+echo "$OUT $SUMMARY"
+`,
+			want: []string{"OUT", "SUMMARY"},
+		},
+		{
+			name: "pure-local assignment without self-default stays filtered",
+			src: `#!/usr/bin/env bash
+TMP="/tmp/x"
+echo "$TMP"
+`,
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := referencedShellVarsAll([]byte(tc.src))
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(sorted(got), sorted(tc.want)) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReferencedPythonEnvVars(t *testing.T) {
 	cases := []struct {
 		name string

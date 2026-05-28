@@ -3180,9 +3180,16 @@ func referencedShellVarsAll(src []byte) []string {
 	})
 	all := uniqueEnvNames(reShellVar.FindAllSubmatch(scrub, -1))
 	assigned := shellAssignedNames(scrub)
+	defaulted := make(map[string]bool)
+	for _, m := range reShellVarDefaulted.FindAllSubmatch(scrub, -1) {
+		defaulted[string(m[1])] = true
+	}
 	out := all[:0]
 	for _, n := range all {
-		if assigned[n] {
+		// Self-referential default idiom (`FOO="${FOO:-x}"`) is BOTH an
+		// assignment AND a host env read. Treat it as a host env read so
+		// the manifest's candidate-env block surfaces it.
+		if assigned[n] && !defaulted[n] {
 			continue
 		}
 		out = append(out, n)
