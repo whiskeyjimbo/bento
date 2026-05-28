@@ -279,7 +279,7 @@ func cmdProfile(args []string) int {
 	printObservations(os.Stderr, result.Observations)
 	printFSObservations(os.Stderr, result.FSObservations)
 	printFSWrites(os.Stderr, result.FSWrites, len(result.TmpfsWrites) > 0)
-	printTmpfsWrites(os.Stderr, result.TmpfsWrites, filepath.Dir(absScriptPath(scriptPath)))
+	printTmpfsWrites(os.Stderr, result.TmpfsWrites, filepath.Dir(absScriptPath(scriptPath)), pickEnvForLostWrite(result.TmpfsWrites, scriptEnvDefaults(scriptPath, interp), referencedEnvVarsInScript(scriptPath, interp)))
 	printDeniedAttempts(os.Stderr, result.DeniedAttempts)
 	printBlockedReads(os.Stderr, result.BlockedReads)
 	printBlockedConnects(os.Stderr, result.BlockedConnects, isProfileTargetELF(scriptPath, interp), result.SuggestedManifest)
@@ -1323,9 +1323,12 @@ func noteProfileVsRunTmpDivergence(w io.Writer, scriptPath string, fsWrites []st
 // printTmpfsWrites surfaces /sandbox/* writes that landed on the sandbox tmpfs.
 // These don't go into the suggested manifest (they have no host destination),
 // but the script believed them — the user needs to pick a real target.
-func printTmpfsWrites(w io.Writer, paths []string, scriptDir string) {
+func printTmpfsWrites(w io.Writer, paths []string, scriptDir, envName string) {
 	if len(paths) == 0 {
 		return
+	}
+	if envName == "" {
+		envName = "OUT"
 	}
 	fmt.Fprintln(w, "[bento] writes that landed on sandbox tmpfs (NOT persisted, no host destination):")
 	for _, p := range paths {
@@ -1344,7 +1347,7 @@ func printTmpfsWrites(w io.Writer, paths []string, scriptDir string) {
 	fmt.Fprintln(w, "[bento]   Two fixes (pick one):")
 	if hosts := proposeHostWrites(paths, scriptDir); len(hosts) > 0 {
 		fmt.Fprintln(w, "[bento]     (a) point the script at an absolute host path via env, e.g.:")
-		fmt.Fprintf(w, "[bento]           bento run --env OUT=%s/<file> ...\n", hosts[0])
+		fmt.Fprintf(w, "[bento]           bento run --env %s=%s/<file> ...\n", envName, hosts[0])
 		fmt.Fprintln(w, "[bento]         (then add the host dir to `write:` so the abs path is grantable):")
 		fmt.Fprintln(w, "[bento]           write:")
 		for _, h := range hosts {
