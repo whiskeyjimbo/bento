@@ -635,6 +635,30 @@ func cmdProfile(args []string) int {
 			fmt.Fprintf(&header, "#   --env %s=%s\n", k, env[k])
 		}
 	}
+	// When the trial run wrote to paths that landed on the sandbox tmpfs, the
+	// profile-time warning told the user how to fix it — but the manifest
+	// itself carries none of those fixes, so the first `bento run <manifest>`
+	// will fail with the same error. Inline the warning into the manifest so
+	// the artifact matches what profile said, and a reviewer/teammate opening
+	// it cold sees the failure mode before running.
+	if len(result.TmpfsWrites) > 0 {
+		scriptDir := filepath.Dir(absScriptPath(scriptPath))
+		header.WriteString("#\n# ⚠ WARNING: the trial run wrote to relative paths that landed on the sandbox\n")
+		header.WriteString("# tmpfs and were lost. `bento run <this manifest>` will exit non-zero with the\n")
+		header.WriteString("# same diagnostic unless you apply one of the fixes below.\n")
+		header.WriteString("# Lost writes:\n")
+		for _, p := range result.TmpfsWrites {
+			fmt.Fprintf(&header, "#   - %s\n", p)
+		}
+		header.WriteString("# Fix one of:\n")
+		header.WriteString("#   (a) point the script at an absolute host path via --env, e.g.\n")
+		fmt.Fprintf(&header, "#       bento run --env OUT=%s/<file> <this manifest>\n", scriptDir)
+		fmt.Fprintf(&header, "#       and add `%s` to `write:` below.\n", scriptDir)
+		header.WriteString("#   (b) add `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script so relative paths\n")
+		fmt.Fprintf(&header, "#       land in the (writable) script directory, then add `%s` to `write:`.\n", scriptDir)
+		header.WriteString("# Adding the host directory to `write:` ALONE will not help — the script must\n")
+		header.WriteString("# also be pointed at the host path; otherwise it keeps writing to /sandbox.\n")
+	}
 	header.WriteString("\n")
 	// Marshal AFTER all header-building code, which may mutate the manifest
 	// (e.g. auto-widening templated write paths).
