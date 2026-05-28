@@ -512,8 +512,21 @@ func cmdProfile(args []string) int {
 		header.WriteString("#\n# To inherit these host env vars at run time — uncomment names under `env:`\n")
 		header.WriteString("# below (bento strips host env by default). Or pass `--env NAME=VALUE` ad-hoc.\n")
 		header.WriteString("# env:\n")
+		// If the trial captured a tmpfs-write failure, one of these names is
+		// the load-bearing one (the var the Quick-apply fix below tells the
+		// user to uncomment + pass to bento run). Mark it inline so a reader
+		// scanning the candidate list knows which name actually unblocks the
+		// failure, instead of guessing among 3+ undifferentiated entries.
+		var loadBearing string
+		if len(result.TmpfsWrites) > 0 {
+			loadBearing = pickOutputEnvName(referenced)
+		}
 		for _, name := range stub {
-			fmt.Fprintf(&header, "#   - %s\n", name)
+			if name == loadBearing {
+				fmt.Fprintf(&header, "#   - %s   ← required for the Quick-apply fix below\n", name)
+			} else {
+				fmt.Fprintf(&header, "#   - %s\n", name)
+			}
 		}
 	}
 	// Identity env vars (USER/LOGNAME/HOME) are deliberately not user-settable
