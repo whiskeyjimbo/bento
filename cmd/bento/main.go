@@ -1257,6 +1257,31 @@ func annotateRelativePaths(yamlBytes []byte) []byte {
 // entries that are relative paths. validate resolves these to absolute paths
 // before printing, so without this check a reader can't tell whether the path
 // in the output was literally typed or was rewritten relative to the manifest
+// runtimeReadPathNote returns a short annotation for well-known runtime
+// plumbing paths (libc, resolver, networking) that profile auto-grants but
+// that don't correspond to anything in the user's script. Without this, a
+// junior sees `read: /etc/services` on a JSON-fetcher manifest and either
+// trusts a path they don't understand, or deletes it and breaks the run.
+func runtimeReadPathNote(p string) string {
+	switch p {
+	case "/etc/services":
+		return "runtime: TCP/UDP port-name lookup (libc) — safe to keep"
+	case "/etc/resolv.conf":
+		return "runtime: DNS resolver config — safe to keep"
+	case "/etc/nsswitch.conf":
+		return "runtime: name-service switch (libc) — safe to keep"
+	case "/etc/hosts":
+		return "runtime: static hostname → IP map — safe to keep"
+	case "/etc/host.conf":
+		return "runtime: resolver options (libc) — safe to keep"
+	case "/etc/gai.conf":
+		return "runtime: getaddrinfo policy (libc) — safe to keep"
+	case "/etc/protocols":
+		return "runtime: IP protocol name lookup (libc) — safe to keep"
+	}
+	return ""
+}
+
 // dir (a teammate running validate from a different cwd would otherwise see
 // different paths from the same manifest, which looks like an edit).
 func manifestHasRelativePathEntries(manifestPath string) bool {
@@ -1830,7 +1855,11 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	} else {
 		fmt.Fprintln(w, "read:")
 		for _, p := range m.Read {
-			fmt.Fprintf(w, "  - %s\n", p)
+			if note := runtimeReadPathNote(p); note != "" {
+				fmt.Fprintf(w, "  - %s   (%s)\n", p, note)
+			} else {
+				fmt.Fprintf(w, "  - %s\n", p)
+			}
 		}
 	}
 	if len(m.Write) == 0 {
