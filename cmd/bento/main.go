@@ -1685,6 +1685,24 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 	// this section, `validate` says "env: (none)" while the YAML right above
 	// it lists CITY — a stark disagreement between two views of the manifest.
 	pendingEnv := readCommentedEnvNames(manifestPath)
+	// Filter out names already active in m.Env: when the user follows the
+	// Quick-apply recipe (uncomment a name into the live env: block) the
+	// header comment that originally listed it remains, so the same name
+	// would appear under both "active" and "pending" — a contradictory
+	// reading of the same manifest.
+	if len(pendingEnv) > 0 && len(m.Env) > 0 {
+		active := make(map[string]bool, len(m.Env))
+		for _, name := range m.Env {
+			active[name] = true
+		}
+		filtered := pendingEnv[:0]
+		for _, name := range pendingEnv {
+			if !active[name] {
+				filtered = append(filtered, name)
+			}
+		}
+		pendingEnv = filtered
+	}
 	fmt.Fprintln(w)
 	if len(m.Env) == 0 && len(pendingEnv) == 0 {
 		fmt.Fprintln(w, "env:         (none — host env is fully stripped)")
