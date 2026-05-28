@@ -660,6 +660,18 @@ func cmdProfile(args []string) int {
 		fmt.Fprintf(&header, "#       land in the (writable) script directory, then add `%s` to `write:`.\n", scriptDir)
 		header.WriteString("# Adding the host directory to `write:` ALONE will not help — the script must\n")
 		header.WriteString("# also be pointed at the host path; otherwise it keeps writing to /sandbox.\n")
+		// Scaffold fix (a) as edit-ready YAML below the prose. The user
+		// uncomments two lines instead of synthesizing them from the recipe
+		// above. Pick the most plausible env-var name from the script's
+		// referenced set — prefer output-shaped names (OUT, DEST, FILE,
+		// OUTPUT) — falling back to the first referenced name, then a
+		// placeholder. We deliberately do not re-emit `env:` here because
+		// the `env:` comment block above already lists the referenced names.
+		envName := pickOutputEnvName(referenced)
+		header.WriteString("#\n# ── Quick-apply fix (a) ─ uncomment the `write:` block below AND uncomment\n")
+		fmt.Fprintf(&header, "#    `- %s` under the `env:` comment above. Then run with:\n", envName)
+		fmt.Fprintf(&header, "#       bento run --env %s=%s/<file> <this manifest>\n", envName, scriptDir)
+		fmt.Fprintf(&header, "# write:\n#   - %s\n", scriptDir)
 	}
 	header.WriteString("\n")
 	// Marshal AFTER all header-building code, which may mutate the manifest
@@ -2603,6 +2615,31 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// pickOutputEnvName picks the most likely "where to write" env-var name from a
+// script's referenced env vars, for the tmpfs-write fix scaffold. Heuristic:
+// prefer names that look output-shaped (OUT, OUTPUT, DEST, FILE, PATH suffix);
+// fall back to the first referenced name; fall back to a generic placeholder.
+func pickOutputEnvName(referenced []string) string {
+	outShaped := []string{"OUT", "OUTPUT", "DEST", "DESTINATION", "FILE", "OUTFILE", "TARGET"}
+	contains := func(s, sub string) bool { return strings.Contains(strings.ToUpper(s), sub) }
+	for _, want := range outShaped {
+		for _, name := range referenced {
+			if strings.EqualFold(name, want) {
+				return name
+			}
+		}
+	}
+	for _, name := range referenced {
+		if contains(name, "OUT") || contains(name, "DEST") || strings.HasSuffix(strings.ToUpper(name), "_FILE") || strings.HasSuffix(strings.ToUpper(name), "_PATH") {
+			return name
+		}
+	}
+	if len(referenced) > 0 {
+		return referenced[0]
+	}
+	return "OUT"
 }
 
 // reprofileCmd reconstructs a `bento profile` invocation that preserves the
