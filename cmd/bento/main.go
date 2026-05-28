@@ -350,8 +350,12 @@ func cmdProfile(args []string) int {
 						fmt.Fprintf(os.Stderr, "[bento]   at %s — but inside the sandbox `./` resolves to `/sandbox/` (a tmpfs),\n", filepath.Join(scriptDir, strings.TrimPrefix(hit, "./")))
 						fmt.Fprintln(os.Stderr, "[bento]   not your host pwd. Fix one of:")
 						absHit := filepath.Join(scriptDir, strings.TrimPrefix(hit, "./"))
+						envName := inferEnvVarForRelativePath(absScriptPath(scriptPath), hit)
+						if envName == "" {
+							envName = "NAME"
+						}
 						fmt.Fprintln(os.Stderr, "[bento]     - re-profile with an absolute host path via --env, e.g.:")
-						fmt.Fprintf(os.Stderr, "[bento]         %s\n", reprofileCmd(scriptPath, scriptArgs, env, preMountReads, *allowExec, []string{"--env", shellQuote("IN=" + absHit)}))
+						fmt.Fprintf(os.Stderr, "[bento]         %s\n", reprofileCmd(scriptPath, scriptArgs, env, preMountReads, *allowExec, []string{"--env", shellQuote(envName + "=" + absHit)}))
 						fmt.Fprintln(os.Stderr, "[bento]     - `cd \"$BENTO_SCRIPT_DIR\"` at the top of the script (and add the script")
 						fmt.Fprintln(os.Stderr, "[bento]       directory to `read:` if needed).")
 					} else {
@@ -2151,6 +2155,42 @@ func detectRelativePathHostMiss(scriptTail, scriptDir string) string {
 // Matches a relative path token in script output. Anchored on `./` followed
 // by a filename-ish run (letters/digits/_/-/./). Captures the whole `./X`.
 var reRelativePathInOutput = regexp.MustCompile(`(\./[A-Za-z0-9_./-]+)`)
+
+// inferEnvVarForRelativePath scans the script source for the env var name
+// associated with a relative path that failed during profile. Returns "" if
+// no clear association is found. Patterns recognized:
+//
+//	bash:    VAR="${VAR:-./path}"        / VAR="${VAR:=./path}"
+//	bash:    VAR="${VAR-./path}"         (less common but valid)
+//	python:  os.environ.get("VAR", "./path")
+//	python:  os.getenv("VAR", "./path")
+//
+// The caller uses the result to suggest `--env <VAR>=<abs-path>` in the
+// re-profile advisory; falling back to a placeholder name (NAME) when
+// inference fails is honest about not knowing, whereas the previous hard-
+// coded `IN=` was actively misleading for scripts that use a different name.
+func inferEnvVarForRelativePath(scriptPath, relPath string) string {
+	src, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return ""
+	}
+	// Path inside source may be `"./releases.json"`, `'./releases.json'`, or
+	// bare. Quote the literal so it appears safely in a regex.
+	q := regexp.QuoteMeta(relPath)
+	patterns := []*regexp.Regexp{
+		// Bash default-value expansions: ${VAR:-...}, ${VAR-...}, ${VAR:=...}
+		regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=]` + q + `\}`),
+		// Python os.environ.get("VAR", "./path") and os.getenv(...)
+		regexp.MustCompile(`os\.environ\.get\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,\s*['"]` + q + `['"]`),
+		regexp.MustCompile(`os\.getenv\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,\s*['"]` + q + `['"]`),
+	}
+	for _, re := range patterns {
+		if m := re.FindSubmatch(src); m != nil {
+			return string(m[1])
+		}
+	}
+	return ""
+}
 
 // noteShellCwdAssumption fires when a shell script's profile run failed and
 // the source contains the most common cwd-based patterns that silently break
