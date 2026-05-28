@@ -1490,7 +1490,7 @@ func cmdValidate(args []string) int {
 	if m.LegacyExecField {
 		fmt.Fprintln(os.Stderr, "[bento] warning: `exec: [...]` is deprecated; use `allow_exec: true` instead.")
 	}
-	issues := collectManifestIssues(m, abs)
+	issues, notes := collectManifestIssues(m, abs)
 	if *quiet {
 		if len(issues) > 0 {
 			for _, s := range issues {
@@ -1501,20 +1501,26 @@ func cmdValidate(args []string) int {
 		fmt.Println("ok")
 		return 0
 	}
-	printResolvedManifest(os.Stdout, m, abs, issues)
+	printResolvedManifest(os.Stdout, m, abs, issues, notes)
 	if len(issues) > 0 {
 		return 1
 	}
 	return 0
 }
 
-// collectManifestIssues returns human-readable problems detected in a manifest
-// that LoadManifest's structural parse accepts but that would surprise the
-// user at run time: missing script file, unresolvable interpreter, missing
-// read/write paths. Network rule canonicality is already enforced by
-// Manifest.Validate at load time.
-func collectManifestIssues(m *bento.Manifest, manifestPath string) []string {
-	var issues []string
+// collectManifestIssues returns:
+//   - issues: real problems (missing script, unresolvable interpreter, missing
+//     read paths, missing write parents) that will fail or surprise at run time.
+//     Exits non-zero from `bento validate`.
+//   - notes: informational findings that aren't necessarily wrong — most
+//     commonly, env: allowlist names that aren't set in the current shell.
+//     Those become empty strings at run time, but the documented happy path is
+//     to supply them via `--env NAME=VALUE` to `bento run` (which `validate`
+//     can't see). Surface as a note; do not exit non-zero.
+//
+// Network rule canonicality is already enforced by Manifest.Validate at load
+// time.
+func collectManifestIssues(m *bento.Manifest, manifestPath string) (issues, notes []string) {
 	script := m.Script
 	if !filepath.IsAbs(script) && manifestPath != "" {
 		script = filepath.Join(filepath.Dir(manifestPath), script)
@@ -1545,21 +1551,21 @@ func collectManifestIssues(m *bento.Manifest, manifestPath string) []string {
 			issues = append(issues, fmt.Sprintf("write path's parent directory does not exist: %s", p))
 		}
 	}
-	// Env allowlist entries that aren't set on the host become empty strings
-	// at runtime with no error — the script just misbehaves. Validate should
-	// surface this so CI fails fast on a misconfigured deploy env.
 	for _, name := range m.Env {
 		if _, ok := os.LookupEnv(name); !ok {
-			issues = append(issues, fmt.Sprintf("env: %s is declared in allowlist but not set on host (script will see empty string)", name))
+			notes = append(notes, fmt.Sprintf("env: %s is in allowlist but not set in current shell — pass `--env %s=VALUE` to `bento run`, or export it before running", name, name))
 		}
 	}
-	return issues
+	return issues, notes
 }
 
-func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, issues []string) {
+func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, issues, notes []string) {
 	status := "ok"
-	if len(issues) > 0 {
+	switch {
+	case len(issues) > 0:
 		status = fmt.Sprintf("%d ISSUE(S) FOUND — see end of output", len(issues))
+	case len(notes) > 0:
+		status = fmt.Sprintf("ok (%d note(s) — see end of output)", len(notes))
 	}
 	fmt.Fprintf(w, "manifest: %s — %s\n\n", manifestPath, status)
 
@@ -1691,6 +1697,13 @@ func printResolvedManifest(w io.Writer, m *bento.Manifest, manifestPath string, 
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "ISSUES:")
 		for _, s := range issues {
+			fmt.Fprintf(w, "  - %s\n", s)
+		}
+	}
+	if len(notes) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "NOTES:")
+		for _, s := range notes {
 			fmt.Fprintf(w, "  - %s\n", s)
 		}
 	}
