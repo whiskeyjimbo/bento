@@ -741,7 +741,7 @@ func cmdProfile(args []string) int {
 		hasBroadRead := manifestHasBroadDot(result.SuggestedManifest.Read)
 		hasBroadWrite := manifestHasBroadDot(result.SuggestedManifest.Write)
 		if len(result.FSObservations) > 0 || len(result.FSWrites) > 0 || hasBroadRead || hasBroadWrite {
-			yamlBytes = annotateObservedPaths(yamlBytes, result.FSObservations, result.FSWrites, hasBroadRead, hasBroadWrite)
+			yamlBytes = annotateObservedPaths(yamlBytes, result.FSObservations, result.FSWrites, hasBroadRead, hasBroadWrite, result.SuggestedManifest.AllowExec)
 		}
 	}
 	if err := os.WriteFile(outPath, append([]byte(header.String()), yamlBytes...), 0o644); err != nil {
@@ -1087,7 +1087,7 @@ func manifestHasRelativeReadWrite(m *bento.Manifest) bool {
 // for `read:` in bash profiles — the profiler doesn't surface individual read
 // paths there), emit a placeholder note so the reader knows the asymmetry
 // with the other block is intentional, not a missing annotation.
-func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []string, broadRead, broadWrite bool) []byte {
+func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []string, broadRead, broadWrite, allowExec bool) []byte {
 	lines := strings.Split(string(yamlBytes), "\n")
 	insertConcrete := func(idx int, paths []string, what string) []string {
 		var b strings.Builder
@@ -1108,6 +1108,14 @@ func annotateObservedPaths(yamlBytes []byte, observedReads, observedWrites []str
 		fmt.Fprintf(&b, "# this trial: no individual %s paths surfaced by the profiler — `.` below\n", what)
 		b.WriteString("# is the conservative default (grants the manifest's directory). If you know\n")
 		fmt.Fprintf(&b, "# which paths the script %ss, list them explicitly to tighten the grant.", what)
+		// allow_exec subprocesses (e.g. `python3 -c ...` from a bash script)
+		// aren't traced for fs activity, so the script can legitimately have
+		// read paths the profiler never saw. Acknowledge the limitation
+		// inline — the placeholder otherwise reads as a profiler bug.
+		if what == "read" && allowExec {
+			b.WriteString("\n# (allow_exec subprocesses are not traced for read paths; fs activity inside\n")
+			b.WriteString("# spawned binaries is invisible to the profiler.)")
+		}
 		out := make([]string, 0, len(lines)+5)
 		out = append(out, lines[:idx]...)
 		out = append(out, b.String())
