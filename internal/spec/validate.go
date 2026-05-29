@@ -20,6 +20,11 @@ func (m *Manifest) Validate() error {
 	if m.Script == "" {
 		return fmt.Errorf("manifest.script: required (path to the script file)")
 	}
+	for i, name := range m.Env {
+		if err := validateEnvName(name); err != nil {
+			return fmt.Errorf("manifest.env[%d]: %w", i, err)
+		}
+	}
 	if m.Network != nil {
 		for i, rule := range m.Network.Rules {
 			if err := validateNetworkRule(rule); err != nil {
@@ -37,6 +42,35 @@ func (m *Manifest) Validate() error {
 
 // dnsLabelCharset accepts DNS labels plus underscore (for _dmarc-style records).
 var dnsLabelCharset = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// posixEnvName matches IEEE Std 1003.1 environment-variable names:
+// first char [A-Za-z_], remainder [A-Za-z0-9_].
+var posixEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateEnvName rejects entries that aren't valid POSIX env-var names.
+// The common failure mode this catches: a user uncommented a Quick-apply
+// hint line like `#   - OUT   # required for the Quick-apply fix below`
+// but stripped the prefix as `  - OUT   ← required for the Quick-apply fix below`
+// — the `←` is not a YAML comment marker, so the whole trailing string
+// becomes part of the name. The error names that exact trap so the user
+// doesn't have to puzzle it out from the YAML.
+func validateEnvName(name string) error {
+	if name == "" {
+		return fmt.Errorf("env name: empty entry (every `- ` line under `env:` needs a name)")
+	}
+	if posixEnvName.MatchString(name) {
+		return nil
+	}
+	// Whitespace inside the value is the classic "uncommented arrow annotation"
+	// trap. Detect it specifically and point at the fix.
+	if first := strings.IndexAny(name, " \t"); first > 0 {
+		head := name[:first]
+		if posixEnvName.MatchString(head) {
+			return fmt.Errorf("env name %q contains whitespace and trailing text; did you uncomment a `#   - %s   ← annotation` line from the manifest header? `←` is not a YAML comment marker, so the annotation became part of the name. Trim to just `%s`, or change the annotation prefix to `#`", name, head, head)
+		}
+	}
+	return fmt.Errorf("env name %q is not a valid POSIX environment-variable name (expected `[A-Za-z_][A-Za-z0-9_]*`)", name)
+}
 
 // IsCanonicalHostPattern reports whether h is a valid host or host pattern
 // for a NetworkRule: "*", ".suffix", a literal hostname, or a canonical IP.

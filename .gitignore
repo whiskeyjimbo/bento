@@ -12,3 +12,5 @@ internal/launcherbin/bento-launcher-*
 .dolt/
 *.db
 .beads-credential-key
+
+.claude/

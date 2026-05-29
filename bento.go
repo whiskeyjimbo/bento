@@ -145,7 +145,14 @@ func friendlyYAMLError(err error) string {
 	// Generic !!seq into <struct>: user wrote a list where a mapping is expected.
 	if strings.Contains(raw, "!!seq into spec.") {
 		field := extractFieldFromTypeError(raw, "!!seq into spec.")
-		return clean + fmt.Sprintf("\n\nhint: the `%s:` field expects a mapping (with named keys), not a list.", field)
+		hint := fmt.Sprintf("the `%s:` field expects a mapping (with named keys), not a list.", field)
+		if field == "(root)" {
+			// Common cause: user uncommented a Quick-apply hint's list item
+			// (e.g. `  - OUT`) but left its parent key (`env:`) commented,
+			// leaving a top-level list where the manifest mapping should be.
+			hint = "the manifest's top level must be a mapping (e.g. `interpreter:`, `script:`, `env:` …), not a list.\n\ncommon cause: you uncommented a list item (e.g. `  - OUT`) from a Quick-apply hint but left its parent key (`env:`) commented. Uncomment BOTH the key line and the list item."
+		}
+		return clean + "\n\nhint: " + hint
 	}
 	// !!map into []: user wrote a mapping where a list is expected (e.g.
 	// `read: { foo: bar }` instead of `read: [foo]`).
