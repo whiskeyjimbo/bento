@@ -274,7 +274,7 @@ var profileCmd = &cobra.Command{
 			header.WriteString("#   - other host env vars (API_TOKEN, REGION, …): list the names below and bento\n")
 			header.WriteString("#     will inherit them from your current environment at run time. --env NAME=VAL\n")
 			header.WriteString("#     overrides or supplies a value without needing the name in this list.\n")
-			header.WriteString("# env:\n")
+			header.WriteString("# env (example placeholders — replace names with the env vars your binary reads, then uncomment):\n")
 			header.WriteString("#   - API_TOKEN\n")
 			header.WriteString("#   - REGION\n")
 		} else if result.SuggestedManifest != nil && result.SuggestedManifest.Interpreter != "" {

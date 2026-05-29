@@ -491,6 +491,8 @@ var (
 	rePyTracebackURL = regexp.MustCompile(`(https?)://([A-Za-z0-9_.-]+)(?::([0-9]+))?`)
 	reProxyDenyHost = regexp.MustCompile(
 		`(?i)(?:http-connect: DENY\s+|x-bento-reject-host:\s*|bento blocked outbound connection to\s+)([A-Za-z0-9_.-]+)(?::([0-9]+))?`)
+	reProxyAllowHost = regexp.MustCompile(
+		`(?i)http-connect: ALLOW\s+([A-Za-z0-9_.-]+)(?::[0-9]+)?`)
 )
 
 func warnLikelyNetworkUseInZeroConfig(w io.Writer, scriptPath, interp string) bool {
@@ -649,6 +651,11 @@ func warnEnvNeedsValue(w io.Writer, manifestPath string, allowlist []string, cli
 		return
 	}
 	sort.Strings(missing)
+	// Profile recorded the actual values it used at profile time in the
+	// manifest header (`#   --env NAME=value` or `#   --env NAME=<absolute-host-path>
+	// (recorded at profile time: /abs/path)`). Reuse them in the example so the
+	// junior doesn't have to scroll up and copy them by hand.
+	recorded := readProfileTimeEnvValues(manifestPath)
 	fmt.Fprintln(w, "[bento] ──────────────── note ────────────────")
 	fmt.Fprintln(w, "[bento] the manifest allows these host env vars, but they are NOT currently")
 	fmt.Fprintln(w, "[bento]   set in your environment (script will see empty strings):")
@@ -658,11 +665,53 @@ func warnEnvNeedsValue(w io.Writer, manifestPath string, allowlist []string, cli
 	fmt.Fprintln(w, "[bento]   to supply values, either export them in your shell first or pass")
 	fmt.Fprintln(w, "[bento]   them literally on the command line, e.g.:")
 	var examples []string
+	var reusedRecorded bool
 	for _, name := range missing {
-		examples = append(examples, fmt.Sprintf("--env %s=VALUE", name))
+		if v, ok := recorded[name]; ok {
+			examples = append(examples, fmt.Sprintf("--env %s=%s", name, v))
+			reusedRecorded = true
+		} else {
+			examples = append(examples, fmt.Sprintf("--env %s=VALUE", name))
+		}
 	}
 	fmt.Fprintf(w, "[bento]     bento run %s %s\n", strings.Join(examples, " "), filepath.Base(manifestPath))
+	if reusedRecorded {
+		fmt.Fprintln(w, "[bento]   (recorded values come from `bento profile` — may differ from what you need now.)")
+	}
 	fmt.Fprintln(w, "[bento] ──────────────────────────────────────")
+}
+
+// readProfileTimeEnvValues returns NAME → value pairs the profile recorded in
+// the manifest header. Supports two emitted shapes:
+//   - `#   --env NAME=value`
+//   - `#   --env NAME=<absolute-host-path>   (recorded at profile time: /abs)`
+//
+// Returns an empty map if the manifest can't be read or has no such block.
+func readProfileTimeEnvValues(manifestPath string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return out
+	}
+	reRecordedPath := regexp.MustCompile(
+		`^#\s*--env\s+([A-Za-z_][A-Za-z0-9_]*)=<absolute-host-path>\s*\(recorded at profile time:\s*(.+?)\)\s*$`)
+	reLiteral := regexp.MustCompile(
+		`^#\s*--env\s+([A-Za-z_][A-Za-z0-9_]*)=(.+?)\s*$`)
+	for _, line := range strings.Split(string(data), "\n") {
+		if m := reRecordedPath.FindStringSubmatch(line); m != nil {
+			out[m[1]] = m[2]
+			continue
+		}
+		if m := reLiteral.FindStringSubmatch(line); m != nil {
+			// Skip the `<absolute-host-path>` template literal — that's the
+			// outer pattern's placeholder, not a real value.
+			if strings.HasPrefix(m[2], "<") {
+				continue
+			}
+			out[m[1]] = m[2]
+		}
+	}
+	return out
 }
 
 func emitPostRunHint(w io.Writer, mode hintMode, scriptPath string, m *bento.Manifest, stderrTail string, preflightNetworkFired bool) {
@@ -843,14 +892,25 @@ func pathsMissingButOnHost(stderrTail string) []string {
 }
 
 func extractDeniedHosts(stderrTail string) []string {
+	// Allowed-host set: the http-connect ALLOW log lines name hosts the proxy
+	// actually let through. The script's own output frequently echoes those
+	// hosts back (e.g. a JSON response containing the request URL), which the
+	// permissive rePyTracebackURL fallback would otherwise pick up as "denied".
+	// Subtracting the ALLOW set keeps the hint focused on hosts the manifest
+	// truly doesn't cover.
+	allowed := make(map[string]bool)
+	for _, m := range reProxyAllowHost.FindAllStringSubmatch(stderrTail, -1) {
+		allowed[strings.ToLower(m[1])] = true
+	}
 	var out []string
 	seen := make(map[string]bool)
 	add := func(h string) {
 		h = strings.ToLower(h)
-		if !seen[h] {
-			seen[h] = true
-			out = append(out, h)
+		if allowed[h] || seen[h] {
+			return
 		}
+		seen[h] = true
+		out = append(out, h)
 	}
 	for _, m := range reProxyDenyHost.FindAllStringSubmatch(stderrTail, -1) {
 		add(m[1])

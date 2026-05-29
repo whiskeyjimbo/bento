@@ -301,6 +301,7 @@ func readCommentedEnvBuckets(manifestPath string) (required, optional []string) 
 		bucketNone     = 0
 		bucketRequired = 1
 		bucketOptional = 2
+		bucketSkip     = 3 // scaffold example/placeholder block — parsed but not surfaced
 	)
 	bucket := bucketNone
 	for _, line := range strings.Split(string(data), "\n") {
@@ -313,6 +314,9 @@ func readCommentedEnvBuckets(manifestPath string) (required, optional []string) 
 		switch {
 		case body == "env:":
 			bucket = bucketRequired
+			continue
+		case strings.HasPrefix(body, "env (example") || strings.HasPrefix(body, "env (placeholder"):
+			bucket = bucketSkip
 			continue
 		case strings.HasPrefix(body, "env (") || strings.HasPrefix(body, "env(") || strings.HasPrefix(body, "Other candidates"):
 			bucket = bucketOptional
@@ -332,9 +336,10 @@ func readCommentedEnvBuckets(manifestPath string) (required, optional []string) 
 		if name == "" || !isEnvVarName(name) {
 			continue
 		}
-		if bucket == bucketRequired {
+		switch bucket {
+		case bucketRequired:
 			required = append(required, name)
-		} else {
+		case bucketOptional:
 			optional = append(optional, name)
 		}
 	}
