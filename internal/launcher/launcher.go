@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
@@ -33,6 +34,9 @@ type Config struct {
 	// Block installs the exec-block seccomp filter (policy exec is none or
 	// none-strict). When false the target may spawn subprocesses freely.
 	Block bool
+	// Writable are the policy's resolved write-grant paths. Landlock confines
+	// writes to these (plus runtime scratch) as a second layer behind bwrap.
+	Writable []string
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -65,11 +69,21 @@ func Run(cfg Config) (int, error) {
 			// subprocesses.
 			return 0, fmt.Errorf("launcher: refusing to run — could not install the exec-block filter: %w", err)
 		}
-		// execveat replaces this process with the target under the filter, so this
+	}
+
+	// The Landlock backstop is applied last, after the egress bridge has already
+	// started (the bridge must open its socket before writes are confined) and
+	// after seccomp. It is inherited across the coming exec, so the target runs
+	// under it.
+	if err := landlock.Restrict(cfg.Writable); err != nil {
+		return 0, fmt.Errorf("launcher: applying filesystem backstop: %w", err)
+	}
+
+	if cfg.Block {
+		// execveat replaces this process with the target under the filters, so this
 		// returns only if the transition itself fails.
 		return 0, seccomp.Exec(cfg.Target, env)
 	}
-
 	return superviseTarget(cfg.Target, env)
 }
 

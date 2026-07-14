@@ -118,6 +118,11 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		if sb.proxySocket != "" {
 			launch = append(launch, "--socket", sandboxProxySocket)
 		}
+		// The write grants feed the launcher's Landlock backstop, which confines
+		// writes to them (plus runtime scratch) as a second layer behind bwrap.
+		for _, w := range writes {
+			launch = append(launch, "--rw", w)
+		}
 		launch = append(launch, "--")
 		args = append(args, launch...)
 	}

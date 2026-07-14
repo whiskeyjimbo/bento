@@ -1,0 +1,12 @@
+//go:build !linux
+
+package landlock
+
+// Restrict is a no-op off Linux; there is no Landlock backstop to apply.
+func Restrict(writable []string) error { return nil }
+
+// RestrictTo is a no-op off Linux.
+func RestrictTo(read, write []string) error { return nil }
+
+// Available reports false: Landlock is Linux-only.
+func Available() bool { return false }

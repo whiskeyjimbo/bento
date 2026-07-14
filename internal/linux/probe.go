@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
@@ -28,7 +29,14 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		if err := canUnshare(ctx, bwrap); err != nil {
 			r.Add(enforce.LayerFilesystem, enforce.Unavailable, usernsReason(err))
 		} else {
-			r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+			// The filesystem layer is enforced by bwrap. Landlock, when present, is
+			// a second independent kernel backstop behind it; note whether it is
+			// active so its presence is not silently assumed.
+			detail := "Landlock backstop active"
+			if !landlock.Available() {
+				detail = "no Landlock backstop on this kernel; bwrap alone confines"
+			}
+			r.Add(enforce.LayerFilesystem, enforce.Enforced, detail)
 		}
 	}
 

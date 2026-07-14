@@ -17,6 +17,7 @@ func newLaunchCmd() *cobra.Command {
 	var (
 		socket   string
 		execMode string
+		writable []string
 	)
 	cmd := &cobra.Command{
 		Use:    "__launch -- <command>...",
@@ -24,9 +25,10 @@ func newLaunchCmd() *cobra.Command {
 		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			code, err := launcher.Run(launcher.Config{
-				Socket: socket,
-				Block:  execMode != "all",
-				Target: args,
+				Socket:   socket,
+				Block:    execMode != "all",
+				Writable: writable,
+				Target:   args,
 			})
 			if err != nil {
 				return err
@@ -36,6 +38,7 @@ func newLaunchCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&socket, "socket", "", "egress proxy unix socket to bridge to")
 	cmd.Flags().StringVar(&execMode, "exec", "none", "exec policy: none, none-strict, or all")
+	cmd.Flags().StringArrayVar(&writable, "rw", nil, "a write-granted path the Landlock backstop permits (repeatable)")
 	return cmd
 }
 
