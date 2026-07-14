@@ -148,6 +148,48 @@ func TestPortMismatchDenied(t *testing.T) {
 	}
 }
 
+// The proxy must bound concurrent tunnels so untrusted code cannot exhaust host
+// resources by opening connections in a loop. Beyond the cap, connections are
+// refused (503) rather than handled.
+func TestConcurrencyIsCapped(t *testing.T) {
+	// A dialer that blocks until the test unblocks it, so every accepted tunnel
+	// occupies a slot and none free up while the cap is being probed.
+	block := make(chan struct{})
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(func(context.Context, string, string) (net.Conn, error) {
+			<-block
+			return nil, fmt.Errorf("test dialer unblocked")
+		}))
+	dialProxy, stop := startProxy(t, p)
+	// Unblock the handlers BEFORE stopping, or Serve's wg.Wait would deadlock on
+	// handlers that never return.
+	defer func() { close(block); stop() }()
+
+	// Fill every slot with a held-open tunnel.
+	held := make([]net.Conn, 0, maxConcurrent)
+	for i := 0; i < maxConcurrent; i++ {
+		c := dialProxy()
+		fmt.Fprintf(c, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+		held = append(held, c)
+	}
+	defer func() {
+		for _, c := range held {
+			c.Close()
+		}
+	}()
+
+	// Give the handlers a moment to occupy their slots, then the next connection
+	// must be refused at capacity rather than handled.
+	over := dialProxy()
+	defer over.Close()
+	fmt.Fprintf(over, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+	over.SetReadDeadline(time.Now().Add(3 * time.Second))
+	status, _ := bufio.NewReader(over).ReadString('\n')
+	if !strings.Contains(status, "503") {
+		t.Errorf("connection past the cap should be refused with 503; got %q", status)
+	}
+}
+
 func TestMalformedRequestRejected(t *testing.T) {
 	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
 	dialProxy, stop := startProxy(t, p)

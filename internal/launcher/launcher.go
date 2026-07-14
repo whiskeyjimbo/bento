@@ -152,9 +152,31 @@ func bridgeConn(client net.Conn, socket string) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); io.Copy(upstream, client); halfClose(upstream) }()
-	go func() { defer wg.Done(); io.Copy(client, upstream); halfClose(client) }()
+	go func() { defer wg.Done(); copyIdle(upstream, client, client); halfClose(upstream) }()
+	go func() { defer wg.Done(); copyIdle(client, upstream, upstream); halfClose(client) }()
 	wg.Wait()
+}
+
+// idleTimeout tears down a bridged connection that has sat with no traffic this
+// long, so a stalled connection cannot pin a goroutine for the life of the run.
+const idleTimeout = 5 * time.Minute
+
+// copyIdle copies src→dst, resetting ctl's deadline on every read so an active
+// connection stays open while an idle one is dropped after idleTimeout.
+func copyIdle(dst io.Writer, src io.Reader, ctl net.Conn) {
+	buf := make([]byte, 32*1024)
+	for {
+		ctl.SetDeadline(time.Now().Add(idleTimeout))
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func halfClose(c net.Conn) {

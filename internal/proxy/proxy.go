@@ -65,10 +65,18 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 	return p
 }
 
+// maxConcurrent bounds how many tunnels the proxy handles at once. It caps the
+// host-side goroutines and file descriptors untrusted code can pin by opening
+// connections in a loop — the cgroup limits confine the sandbox, but not this
+// host process. The limit is generous enough that no legitimate script reaches
+// it; a script that does is refused, not allowed to exhaust the host.
+const maxConcurrent = 512
+
 // Serve accepts connections on l and enforces the allowlist on each until ctx is
 // cancelled or l is closed. It returns when l stops accepting.
 func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrent)
 	go func() {
 		<-ctx.Done()
 		l.Close()
@@ -82,9 +90,17 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return err
 		}
-		wg.Go(func() {
-			p.handle(ctx, c)
-		})
+		select {
+		case sem <- struct{}{}:
+			wg.Go(func() {
+				defer func() { <-sem }()
+				p.handle(ctx, c)
+			})
+		default:
+			// At capacity: refuse rather than let the host process grow unbounded.
+			writeStatus(c, "503 Service Unavailable", "bento egress proxy is at its connection limit")
+			c.Close()
+		}
 	}
 }
 
