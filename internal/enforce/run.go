@@ -37,7 +37,13 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
-	return e.Run(ctx, p, proc)
+	res, err := e.Run(ctx, p, proc)
+
+	// Report exactly what was judged. A backend probes every layer it knows about,
+	// but warning that egress allowlisting is unavailable to a policy that asked
+	// for no network is noise that trains users to ignore the warnings that matter.
+	res.Report = required
+	return res, err
 }
 
 // requiredLayers returns the layers a policy actually depends on.

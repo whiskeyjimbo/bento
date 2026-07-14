@@ -53,6 +53,29 @@ func TestRunDelegatesAndPropagatesExit(t *testing.T) {
 	}
 }
 
+// The result must report only the layers the policy was judged against. Warning
+// that egress allowlisting is unavailable to a policy that asked for no network
+// is noise, and noise trains users to ignore the warnings that matter.
+func TestResultReportsOnlyRequiredLayers(t *testing.T) {
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerNetwork, Unavailable, "egress stack not built")
+	f.probe.Add(LayerExec, Enforced, "")
+
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, l := range res.Report.Layers {
+		if l.Layer == LayerNetwork {
+			t.Error("result reported the network layer to a policy that requested no network")
+		}
+	}
+	if res.Report.HasDegradation() {
+		t.Errorf("result should report no shortfall; got %+v", res.Report.Degradations())
+	}
+}
+
 func TestRunValidatesPolicy(t *testing.T) {
 	f := &fakeEnforcer{probe: fullyEnforced()}
 	bad := &policy.Policy{Entrypoint: "./x", Env: []string{"NOT A NAME"}}
