@@ -9,13 +9,13 @@
 package launcher
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
@@ -106,20 +106,49 @@ func proxyEnv() []string {
 // superviseTarget runs the target as a child and returns its exit code. Used
 // only when the target is not exec-blocked (nothing needs to replace this
 // process, and supervising lets us return the exit code directly).
+//
+// This process is PID 1 in the sandbox's PID namespace, so a grandchild whose
+// parent exits reparents here. It therefore acts as an init: it reaps every
+// exiting child, not just the target, so orphaned grandchildren of a
+// subprocess-spawning target do not accumulate as zombies (which would otherwise
+// consume the pids the limit budgets).
 func superviseTarget(target, env []string) (int, error) {
 	cmd := exec.Command(target[0], target[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = env
 
-	err := cmd.Run()
-	if err == nil {
-		return 0, nil
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("launcher: starting target: %w", err)
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode(), nil
+	return reapUntil(cmd.Process.Pid)
+}
+
+// reapUntil reaps every child that exits until the target does, then returns the
+// target's exit code. Wait4(-1) blocks until any child exits, so orphaned
+// grandchildren are collected as they finish rather than lingering as zombies.
+func reapUntil(targetPid int) (int, error) {
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, 0, nil)
+		switch {
+		case err == syscall.EINTR:
+			continue
+		case err != nil:
+			return 0, fmt.Errorf("launcher: reaping children: %w", err)
+		case pid == targetPid:
+			return waitExitCode(ws), nil
+		}
+		// Any other pid was an orphaned grandchild, now reaped — keep going.
 	}
-	return 0, fmt.Errorf("launcher: running target: %w", err)
+}
+
+// waitExitCode maps a wait status to a conventional exit code: a signalled
+// process reports 128+signal, matching what a shell would return.
+func waitExitCode(ws syscall.WaitStatus) int {
+	if ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ws.ExitStatus()
 }
 
 // BridgeMain is the `bento __bridge <socket>` child: it forwards every loopback

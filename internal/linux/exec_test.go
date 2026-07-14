@@ -1,9 +1,14 @@
 package linux
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 )
 
@@ -52,5 +57,40 @@ func TestExecBlockAndEgressTogether(t *testing.T) {
 	}
 	if !strings.Contains(out, "SUBPROCESS-BLOCKED") {
 		t.Fatalf("expected the subprocess to be refused: %q", out)
+	}
+}
+
+// When the launcher supervises a subprocess-spawning target (exec: all + egress),
+// it is PID 1 and must act as an init: return the target's exit code as soon as
+// the target exits, reaping — not waiting on — an orphaned background grandchild.
+// If reaping waited for every child, this run would hang on the long sleep.
+func TestSuperviseReapsOrphanAndReturnsPromptly(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "orphan.sh")
+	// Background a long sleep (orphaned when the shell exits), then exit 7.
+	if err := os.WriteFile(script, []byte("sleep 30 &\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{
+		Entrypoint:  script,
+		Interpreter: "sh",
+		Read:        []string{dir},
+		Exec:        policy.ExecAll,
+		Network:     []policy.NetworkRule{{Host: "127.0.0.2", Port: "1"}}, // forces the launcher/supervise path
+	}
+
+	start := time.Now()
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ExitCode != 7 {
+		t.Errorf("exit code = %d, want 7 (the target's code, returned via the reaper)", res.ExitCode)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("run took %s — the reaper waited on the orphaned sleep instead of returning on target exit", elapsed)
 	}
 }
