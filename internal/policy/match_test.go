@@ -20,12 +20,12 @@ func TestAllows(t *testing.T) {
 		{"api.github.com.", "443", true},  // trailing dot normalized
 		{"sub.example.com", "8080", true}, // suffix + range
 		{"sub.example.com", "9001", false},
-		{"example.com", "8080", false},  // suffix must NOT match the apex
+		{"example.com", "8080", false}, // suffix must NOT match the apex
 		{"evil-example.com", "8080", false},
-		{"10.0.0.1", "5432", true},      // IP + any port
-		{"anything.net", "22", true},    // any host + literal port
+		{"10.0.0.1", "5432", true},   // IP + any port
+		{"anything.net", "22", true}, // any host + literal port
 		{"anything.net", "23", false},
-		{"github.com", "443", false},    // not a subdomain of a rule
+		{"github.com", "443", false}, // not a subdomain of a rule
 	}
 	for _, tc := range cases {
 		if got := Allows(rules, tc.host, tc.port); got != tc.want {
