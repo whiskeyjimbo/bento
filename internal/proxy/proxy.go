@@ -93,7 +93,7 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
-	host, port, err := readConnect(client)
+	host, port, br, err := readConnect(client)
 	if err != nil {
 		writeStatus(client, "400 Bad Request", err.Error())
 		return
@@ -121,7 +121,11 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
-	splice(client, upstream)
+	// The client half is read through br, not client, because a pipelining client
+	// may have already sent its TLS ClientHello into br's buffer along with the
+	// CONNECT headers; reading the raw conn would drop those bytes and break the
+	// handshake.
+	tunnel(br, client, upstream)
 }
 
 func (p *Proxy) report(d Decision, host, port string) {
@@ -133,59 +137,83 @@ func (p *Proxy) report(d Decision, host, port string) {
 // readConnect parses a single `CONNECT host:port HTTP/1.1` request and drains its
 // headers. Only CONNECT is accepted: this proxy tunnels TLS, it does not relay
 // plaintext HTTP, so there is nothing to inspect or rewrite in a request body.
-func readConnect(c net.Conn) (host, port string, err error) {
-	br := bufio.NewReader(c)
+// It returns the buffered reader so the caller can keep reading the client from
+// it — bytes pipelined after the headers are already buffered here.
+func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
+	br = bufio.NewReader(c)
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return "", "", fmt.Errorf("reading request: %w", err)
+		return "", "", nil, fmt.Errorf("reading request: %w", err)
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 2 || strings.ToUpper(fields[0]) != "CONNECT" {
-		return "", "", fmt.Errorf("expected a CONNECT request")
+		return "", "", nil, fmt.Errorf("expected a CONNECT request")
 	}
 	host, port, err = net.SplitHostPort(fields[1])
 	if err != nil {
-		return "", "", fmt.Errorf("malformed target %q: %w", fields[1], err)
+		return "", "", nil, fmt.Errorf("malformed target %q: %w", fields[1], err)
 	}
 	if host == "" {
-		return "", "", fmt.Errorf("empty target host")
+		return "", "", nil, fmt.Errorf("empty target host")
 	}
 	// Drain the remaining request headers up to the blank line.
 	for {
 		h, err := br.ReadString('\n')
 		if err != nil {
-			return "", "", fmt.Errorf("reading headers: %w", err)
+			return "", "", nil, fmt.Errorf("reading headers: %w", err)
 		}
 		if h == "\r\n" || h == "\n" {
 			break
 		}
 	}
-	return host, port, nil
+	return host, port, br, nil
 }
 
 func writeStatus(c net.Conn, status, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %s\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", status, body)
 }
 
-// splice copies bytes in both directions until either side closes, then tears
-// the tunnel down. It returns only when both directions are finished, so a
-// half-closed direction cannot truncate an in-flight response.
-func splice(a, b net.Conn) {
+// idleTimeout tears down a tunnel that has sat with no traffic in either
+// direction for this long, so untrusted code cannot pin host resources with idle
+// connections held open indefinitely.
+const idleTimeout = 5 * time.Minute
+
+// tunnel copies bytes both ways until either side closes or the tunnel goes idle.
+// The client side is read through clientR (which may hold buffered bytes); client
+// and upstream are the conns used to write, half-close, and bound idleness.
+func tunnel(clientR io.Reader, client, upstream net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	cp := func(dst, src net.Conn) {
-		defer wg.Done()
-		io.Copy(dst, src)
-		// Unblock the other direction: once one side is done, signal EOF onward so
-		// the paired copy can finish instead of hanging on a peer that will never
-		// send again.
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		} else {
-			dst.SetDeadline(time.Now())
+	go func() { defer wg.Done(); copyIdle(upstream, clientR, client); halfClose(upstream) }()
+	go func() { defer wg.Done(); copyIdle(client, upstream, upstream); halfClose(client) }()
+	wg.Wait()
+}
+
+// copyIdle copies src→dst, resetting ctl's deadline on every read so an active
+// tunnel stays open while an idle one is torn down after idleTimeout. ctl is the
+// connection src ultimately reads from.
+func copyIdle(dst io.Writer, src io.Reader, ctl net.Conn) {
+	buf := make([]byte, 32*1024)
+	for {
+		ctl.SetDeadline(time.Now().Add(idleTimeout))
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
-	go cp(a, b)
-	go cp(b, a)
-	wg.Wait()
+}
+
+// halfClose signals EOF to the write side of c so the paired copy finishes
+// instead of hanging on a peer that will never send again.
+func halfClose(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+		return
+	}
+	c.SetDeadline(time.Now())
 }
