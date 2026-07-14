@@ -67,7 +67,18 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		return enforce.Result{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, bwrap, args...)
+	// When the policy sets limits and this host can enforce them, run bwrap inside
+	// a transient systemd scope carrying the limits. When it cannot, the run
+	// proceeds without them and the report (from Probe) says so — the gap is
+	// never silent.
+	exe, cargs := bwrap, args
+	if !p.Limits.IsZero() {
+		if ok, _ := limitsAvailable(); ok {
+			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 
 	switch err := cmd.Run(); {

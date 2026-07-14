@@ -243,7 +243,8 @@ func TestHostEnvironmentIsNotInherited(t *testing.T) {
 // Probe must report honestly: what is enforced as enforced, what is not yet
 // built as unavailable. Exec-blocking is now implemented (seccomp), so on a
 // seccomp-capable host it must report enforced; resource limits are not built, so
-// they must report unavailable rather than claiming a guarantee they can't keep.
+// each layer's reported state must match what this host can actually do: a claim
+// of enforced only where the capability is present, unavailable otherwise.
 func TestProbeReportsLayersHonestly(t *testing.T) {
 	report := New().Probe(context.Background())
 
@@ -259,7 +260,12 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	if states[enforce.LayerExec] != wantExec {
 		t.Errorf("exec-block state = %v, want %v", states[enforce.LayerExec], wantExec)
 	}
-	if states[enforce.LayerLimits] != enforce.Unavailable {
-		t.Error("resource limits are not implemented in this build; the probe must not claim them")
+
+	wantLimits := enforce.Unavailable
+	if ok, _ := limitsAvailable(); ok {
+		wantLimits = enforce.Enforced
+	}
+	if states[enforce.LayerLimits] != wantLimits {
+		t.Errorf("limits state = %v, want %v", states[enforce.LayerLimits], wantLimits)
 	}
 }

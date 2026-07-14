@@ -49,8 +49,11 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 			"this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced")
 	}
 
-	r.Add(enforce.LayerLimits, enforce.Unavailable,
-		"resource limits (cgroup v2) are not implemented yet")
+	if ok, reason := limitsAvailable(); ok {
+		r.Add(enforce.LayerLimits, enforce.Enforced, "")
+	} else {
+		r.Add(enforce.LayerLimits, enforce.Unavailable, reason)
+	}
 
 	return r
 }
