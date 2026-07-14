@@ -193,6 +193,52 @@ func TestAllowDegradedStillRefusesUnavailableCore(t *testing.T) {
 	}
 }
 
+// A requested resource limit that cannot be enforced must refuse by default —
+// running untrusted code without its memory/CPU cap risks exhausting the host,
+// which is worse than a merely weaker sandbox. --allow-degraded overrides.
+func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
+	newProbe := func() Report {
+		var r Report
+		r.Add(LayerFilesystem, Enforced, "")
+		r.Add(LayerLimits, Unavailable, "no systemd user manager")
+		return r
+	}
+	limited := func() *policy.Policy {
+		return &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	}
+
+	f := &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, limited(), Process{}, Options{}); err == nil {
+		t.Error("default mode should refuse a requested limit it cannot enforce")
+	}
+	if f.ran {
+		t.Error("ran an untrusted target unbounded despite a requested memory limit")
+	}
+
+	f = &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, limited(), Process{}, Options{AllowDegraded: true}); err != nil {
+		t.Fatalf("--allow-degraded should permit running without the limit: %v", err)
+	}
+	if !f.ran {
+		t.Error("--allow-degraded should have run the target")
+	}
+}
+
+// A limit that is NOT requested (no limits in the policy) must not affect
+// admission — the limits layer is only relevant when the manifest asks for it.
+func TestUnrequestedLimitDoesNotRefuse(t *testing.T) {
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerLimits, Unavailable, "no systemd user manager")
+
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+		t.Errorf("a policy that requests no limits must not be blocked by unavailable limits: %v", err)
+	}
+	if !f.ran {
+		t.Error("run was blocked by a layer the policy does not use")
+	}
+}
+
 func TestRunRejectsNilEnforcer(t *testing.T) {
 	if _, err := Run(context.Background(), nil, validPolicy(), Process{}, Options{}); err == nil {
 		t.Error("expected error for nil enforcer")

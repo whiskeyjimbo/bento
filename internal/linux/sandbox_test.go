@@ -262,7 +262,7 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	}
 
 	wantLimits := enforce.Unavailable
-	if ok, _ := limitsAvailable(); ok {
+	if ok, _ := canCreateScope(); ok {
 		wantLimits = enforce.Enforced
 	}
 	if states[enforce.LayerLimits] != wantLimits {

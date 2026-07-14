@@ -60,7 +60,7 @@ func TestWrapWithLimitsOnlySetsWhatIsAsked(t *testing.T) {
 // succeeds when unbounded, so the kill is the limit and not a broken script.
 func TestMemoryLimitEnforced(t *testing.T) {
 	requireSandbox(t)
-	if ok, reason := limitsAvailable(); !ok {
+	if ok, reason := canCreateScope(); !ok {
 		t.Skip("resource limits unavailable on this host: " + reason)
 	}
 	if _, err := exec.LookPath("python3"); err != nil {

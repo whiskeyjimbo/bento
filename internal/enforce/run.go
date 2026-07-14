@@ -88,8 +88,28 @@ func (o Options) admit(r Report) error {
 		if short := r.shortfall(TierCore, Degraded); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be fully enforced on this host", Short: short}
 		}
+		// Resource limits are hardening-tier, but unlike the others a limit the
+		// manifest explicitly requested protects the *host*: running an untrusted
+		// target without its requested memory/CPU cap risks exhausting host
+		// resources. So a requested-but-unenforceable limit refuses by default,
+		// rather than running unbounded. --allow-degraded overrides.
+		if short := unenforcedRequestedLimits(r); len(short) > 0 {
+			return &Refusal{Report: r, Reason: "the manifest requests resource limits this host cannot enforce; running unbounded could exhaust host resources", Short: short}
+		}
 	}
 	return nil
+}
+
+// unenforcedRequestedLimits returns the limits layer when the policy required it
+// (it is present in the required-filtered report) but it is not fully enforced.
+func unenforcedRequestedLimits(r Report) []LayerStatus {
+	var out []LayerStatus
+	for _, l := range r.Layers {
+		if l.Layer == LayerLimits && l.State != Enforced {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // Refusal is returned when Bento declines to run because this host cannot

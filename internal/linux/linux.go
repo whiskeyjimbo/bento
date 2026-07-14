@@ -68,12 +68,18 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
-	// a transient systemd scope carrying the limits. When it cannot, the run
-	// proceeds without them and the report (from Probe) says so — the gap is
-	// never silent.
+	// a transient systemd scope carrying the limits. When it cannot, the run has
+	// already been admitted (refused by default, or permitted under
+	// --allow-degraded) — here it simply proceeds unwrapped.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
-		if ok, _ := limitsAvailable(); ok {
+		if ok, _ := canCreateScope(); ok {
+			// Preflight the exact limits so a scope-creation failure surfaces as a
+			// clear error, never as the target's exit code for a target that never
+			// ran.
+			if err := preflightLimits(p.Limits); err != nil {
+				return enforce.Result{}, fmt.Errorf("linux: %w", err)
+			}
 			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
 		}
 	}

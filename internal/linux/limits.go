@@ -1,9 +1,13 @@
 package linux
 
 import (
-	"os"
+	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 )
@@ -20,20 +24,68 @@ import (
 // manager is reachable, limits cannot be enforced unprivileged, and that is
 // reported rather than silently ignored (v1's actual failure).
 
-// limitsAvailable reports whether resource limits can be enforced on this host,
-// with a reason when they cannot.
-func limitsAvailable() (bool, string) {
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return false, "systemd-run is not installed, so resource limits cannot be enforced unprivileged"
-	}
-	// A reachable user manager is required to create the scope. Its runtime
-	// directory is the cheapest reliable signal without spawning a probe unit.
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		if _, err := os.Stat(dir + "/systemd"); err == nil {
-			return true, ""
+var (
+	scopeOnce   sync.Once
+	scopeOK     bool
+	scopeReason string
+)
+
+// canCreateScope reports whether this host can create a transient user scope at
+// all. It answers by actually creating a throwaway one — a stat of a runtime
+// directory does not prove the manager will answer — and caches the result,
+// which is stable for the life of the process.
+func canCreateScope() (bool, string) {
+	scopeOnce.Do(func() {
+		if _, err := exec.LookPath("systemd-run"); err != nil {
+			scopeReason = "systemd-run is not installed, so resource limits cannot be enforced unprivileged"
+			return
 		}
+		if err := runScopeProbe(policy.Limits{Memory: "64M"}); err != nil {
+			scopeReason = "no usable systemd user manager for resource limits: " + err.Error()
+			return
+		}
+		scopeOK = true
+	})
+	return scopeOK, scopeReason
+}
+
+// preflightLimits verifies the exact requested limits can be applied, by creating
+// a throwaway scope carrying them. This turns a run-time scope-creation failure
+// into a clear error up front, instead of letting systemd-run's own exit code
+// masquerade as the target's when the scope never starts.
+func preflightLimits(l policy.Limits) error {
+	if l.IsZero() {
+		return nil
 	}
-	return false, "no systemd user manager is reachable (no lingering user session), so resource limits cannot be enforced unprivileged"
+	if err := runScopeProbe(l); err != nil {
+		return fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
+	}
+	return nil
+}
+
+// runScopeProbe creates a transient scope with the given limits running /bin/true
+// and returns whether it succeeded.
+func runScopeProbe(l policy.Limits) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	exe, args := wrapWithLimits(trueBinary(), nil, l)
+	out, err := exec.CommandContext(ctx, exe, args...).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+func trueBinary() string {
+	if p, err := exec.LookPath("true"); err == nil {
+		return p
+	}
+	return "/bin/true"
 }
 
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's
