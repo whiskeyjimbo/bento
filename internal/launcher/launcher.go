@@ -75,8 +75,14 @@ func Run(cfg Config) (int, error) {
 	// started (the bridge must open its socket before writes are confined) and
 	// after seccomp. It is inherited across the coming exec, so the target runs
 	// under it.
+	//
+	// It is a best-effort second layer, not the primary guarantee: bwrap already
+	// confines the filesystem. So a failure to apply it warns and proceeds rather
+	// than aborting the run — failing here would make bwrap's confinement
+	// contingent on the backstop, inverting the relationship. (An absent Landlock
+	// is a silent no-op inside Restrict, not an error.)
 	if err := landlock.Restrict(cfg.Writable); err != nil {
-		return 0, fmt.Errorf("launcher: applying filesystem backstop: %w", err)
+		fmt.Fprintf(os.Stderr, "[bento] warning: the Landlock filesystem backstop could not be applied (%v); bwrap confinement still holds\n", err)
 	}
 
 	if cfg.Block {

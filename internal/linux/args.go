@@ -118,9 +118,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		if sb.proxySocket != "" {
 			launch = append(launch, "--socket", sandboxProxySocket)
 		}
-		// The write grants feed the launcher's Landlock backstop, which confines
-		// writes to them (plus runtime scratch) as a second layer behind bwrap.
-		for _, w := range writes {
+		// The launcher's Landlock backstop confines writes to exactly the paths
+		// passed here. They must match what bwrap made writable — the runtime
+		// scratch mounts plus the write grants — or Landlock would deny a write
+		// bwrap allows. Deriving both from this one place is what keeps the two
+		// layers in sync.
+		for _, w := range append(append([]string{}, sandboxWritableMounts...), writes...) {
 			launch = append(launch, "--rw", w)
 		}
 		launch = append(launch, "--")
@@ -129,6 +132,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	args = append(args, command(p, sb)...)
 	return args, nil
 }
+
+// sandboxWritableMounts are the paths baseFlags makes writable for every run
+// (independently of the policy's write grants). The Landlock backstop is handed
+// these plus the grants; keep this list and baseFlags' writable mounts in step,
+// or Landlock will deny a write bwrap permits.
+var sandboxWritableMounts = []string{"/tmp", "/dev", "/proc"}
 
 func baseFlags() []string {
 	return []string{
