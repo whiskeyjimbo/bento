@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,10 +18,16 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
 )
 
 // Enforcer applies policies with bubblewrap.
-type Enforcer struct{}
+type Enforcer struct {
+	// selfPath overrides the path to the bento binary used as the in-sandbox
+	// egress forwarder. Empty means "the running executable", which is correct in
+	// production; tests set it because the test process is not bento.
+	selfPath string
+}
 
 // New returns a bubblewrap-backed Enforcer.
 func New() *Enforcer { return &Enforcer{} }
@@ -38,11 +45,22 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
 	}
-	sb, cleanup, err := newSandbox(p)
+	sb, cleanup, err := newSandbox(p, e.selfPath)
 	if err != nil {
 		return enforce.Result{}, err
 	}
 	defer cleanup()
+
+	// When the policy allows egress, run the allowlist proxy on the sandbox's
+	// unix socket for the lifetime of the run. The sandbox reaches it only through
+	// that socket; nothing else can leave the network namespace.
+	if sb.proxySocket != "" {
+		stopProxy, err := startProxy(ctx, p, sb.proxySocket)
+		if err != nil {
+			return enforce.Result{}, err
+		}
+		defer stopProxy()
+	}
 
 	args, err := compile(p, proc, sb)
 	if err != nil {
@@ -71,7 +89,7 @@ func isExitError(err error) bool {
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
-func newSandbox(p *policy.Policy) (sandbox, func(), error) {
+func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 	noop := func() {}
 
 	entrypoint, err := resolve(p.Entrypoint)
@@ -99,8 +117,15 @@ func newSandbox(p *policy.Policy) (sandbox, func(), error) {
 		return sandbox{}, noop, fmt.Errorf("linux: resolving home directory: %w", err)
 	}
 
-	empty, err := newEmptyFile()
+	dir, err := os.MkdirTemp("", "bento-run-")
 	if err != nil {
+		return sandbox{}, noop, fmt.Errorf("linux: creating run directory: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(dir) }
+
+	empty := filepath.Join(dir, "shield")
+	if err := writeEmptyFile(empty); err != nil {
+		cleanup()
 		return sandbox{}, noop, err
 	}
 
@@ -111,26 +136,51 @@ func newSandbox(p *policy.Policy) (sandbox, func(), error) {
 		interpreter: interp,
 		exists:      hostExists,
 	}
-	return sb, func() { os.Remove(empty) }, nil
+
+	// Egress requires the forwarder (the bento binary) and a socket the host-side
+	// proxy will listen on.
+	if len(p.Network) > 0 {
+		self := selfPath
+		if self == "" {
+			self, err = os.Executable()
+			if err != nil {
+				cleanup()
+				return sandbox{}, noop, fmt.Errorf("linux: locating the bento binary for the egress forwarder: %w", err)
+			}
+		}
+		sb.bentoPath = self
+		sb.proxySocket = filepath.Join(dir, "proxy.sock")
+	}
+	return sb, cleanup, nil
 }
 
-// newEmptyFile creates the empty file the deny-list binds over paths that must
-// be shielded even though they do not exist on the host yet.
-func newEmptyFile() (string, error) {
-	f, err := os.CreateTemp("", "bento-shield-")
+// writeEmptyFile creates the empty file the deny-list binds over paths that must
+// be shielded even though they do not exist on the host yet. It lives in the
+// per-run temp directory, so it is created fresh and removed with it.
+func writeEmptyFile(path string) error {
+	if err := os.WriteFile(path, nil, 0o444); err != nil {
+		return fmt.Errorf("linux: creating deny-list shield: %w", err)
+	}
+	return nil
+}
+
+// startProxy serves the egress allowlist on socket for the run's lifetime and
+// returns a function that stops it.
+func startProxy(ctx context.Context, p *policy.Policy, socket string) (func(), error) {
+	l, err := net.Listen("unix", socket)
 	if err != nil {
-		return "", fmt.Errorf("linux: creating deny-list shield: %w", err)
+		return nil, fmt.Errorf("linux: starting egress proxy: %w", err)
 	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		os.Remove(name)
-		return "", fmt.Errorf("linux: creating deny-list shield: %w", err)
-	}
-	if err := os.Chmod(name, 0o444); err != nil {
-		os.Remove(name)
-		return "", fmt.Errorf("linux: creating deny-list shield: %w", err)
-	}
-	return name, nil
+	proxyCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		proxy.New(p.Network).Serve(proxyCtx, l)
+		close(done)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}, nil
 }
 
 // ResolveInterpreter guesses the interpreter for a script from its extension or

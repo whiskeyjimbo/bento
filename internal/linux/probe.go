@@ -31,13 +31,15 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		}
 	}
 
-	// Network is all-or-nothing in this build: denying egress needs only an
-	// unshared network namespace, which comes with the sandbox. Enforcing a
-	// per-host allowlist needs the egress stack, which is not built yet — so a
-	// policy that declares network rules is refused rather than silently run with
-	// unrestricted egress.
-	r.Add(enforce.LayerNetwork, enforce.Unavailable,
-		"per-host egress allowlisting is not implemented yet; only all-or-nothing network is enforced")
+	// Egress is enforced by the network namespace (nothing leaves except through
+	// our proxy) plus the host-side allowlist proxy. The guarantee that matters —
+	// nothing reaches a non-allowlisted host — holds fully and unprivileged. The
+	// one nuance is that a program which ignores the proxy environment fails
+	// closed rather than being transparently redirected to an allowed host;
+	// transparent redirect needs the one-time `bento setup`. That is an
+	// availability nuance for uncooperative clients, not a containment gap, so the
+	// layer is enforced.
+	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
 
 	r.Add(enforce.LayerExec, enforce.Unavailable,
 		"subprocess blocking (seccomp) is not implemented yet")

@@ -35,10 +35,24 @@ type sandbox struct {
 	// interpreter is empty when the entrypoint is its own interpreter.
 	entrypoint  string
 	interpreter string
+	// proxySocket is the host path of the egress proxy's unix socket, set only
+	// when the policy declares network rules. When set, the sandbox is funneled
+	// through the proxy: the bento binary is re-exec'd inside as the forwarder.
+	proxySocket string
+	// bentoPath is the host path of the running bento binary, bound into the
+	// sandbox to serve as the forwarder. Set only alongside proxySocket.
+	bentoPath string
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
 	exists func(string) bool
 }
+
+// Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
+// so these are constant.
+const (
+	sandboxBentoPath   = "/bento"
+	sandboxProxySocket = "/proxy.sock"
+)
 
 // compile builds the bwrap argv for a policy.
 //
@@ -52,11 +66,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	args := baseFlags()
 	args = append(args, systemMounts(sb)...)
 
-	// Phase 1 enforces network as all-or-nothing. A policy with no rules denies
-	// all egress, which an unshared network namespace provides outright.
-	if len(p.Network) == 0 {
-		args = append(args, "--unshare-net")
-	}
+	// The network namespace is always unshared: it is the egress fence. With no
+	// rules that is the whole story (no route out at all). With rules, the only
+	// reachable peer is the loopback forwarder the re-exec'd bento sets up, which
+	// bridges to the host-side allowlist proxy — the sandbox still has no route to
+	// the outside, so nothing bypasses the proxy.
+	args = append(args, "--unshare-net")
 
 	reads, writes, err := resolveGrants(p)
 	if err != nil {
@@ -79,8 +94,21 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// directory cannot leave the script itself writable mid-run.
 	args = append(args, "--ro-bind", sb.entrypoint, sb.entrypoint)
 
+	// When egress is allowed, bind the bento binary (the forwarder) and the proxy
+	// socket into the sandbox.
+	if sb.proxySocket != "" {
+		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
+		args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
+	}
+
 	args = append(args, envArgs(proc)...)
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
+
+	// With egress, the entrypoint is the forwarder, which runs the real command
+	// with the proxy environment set; without it, the command runs directly.
+	if sb.proxySocket != "" {
+		args = append(args, sandboxBentoPath, "__forward", sandboxProxySocket, "--")
+	}
 	args = append(args, command(p, sb)...)
 	return args, nil
 }
