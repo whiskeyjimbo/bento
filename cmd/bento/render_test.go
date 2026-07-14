@@ -9,6 +9,22 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 )
 
+func TestIsLoopbackHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"localhost":       true,
+		"127.0.0.1":       true,
+		"127.0.0.2":       true, // all of 127/8 is loopback
+		"::1":             true,
+		"example.com":     false,
+		"10.0.0.1":        false,
+		"169.254.169.254": false,
+	} {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
 func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	networked := &policy.Policy{Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 	noNetwork := &policy.Policy{}

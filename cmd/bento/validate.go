@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -120,6 +121,14 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 			rules = append(rules, r.Host+":"+r.Port)
 		}
 		fmt.Fprintf(w, "network:      %v\n", rules)
+		for _, r := range p.Network {
+			if isLoopbackHost(r.Host) {
+				fmt.Fprintf(w, "  note: %q is a loopback address. The sandbox exempts loopback from the egress\n", r.Host)
+				fmt.Fprintf(w, "        proxy so a script can reach its own in-sandbox services, which means this\n")
+				fmt.Fprintf(w, "        rule will NOT reach a service on the host's loopback. Use a routable\n")
+				fmt.Fprintf(w, "        address if you meant the host.\n")
+			}
+		}
 	}
 
 	switch p.Exec {
@@ -133,6 +142,18 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
+}
+
+// isLoopbackHost reports whether a network-rule host is one the sandbox's
+// NO_PROXY exempts, so a rule for it would not reach the host's loopback.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func orNone(v []string) string {

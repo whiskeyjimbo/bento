@@ -64,6 +64,10 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 // namespace and fails closed. When a network-using run failed and made *no*
 // connections through the proxy, that bypass is the likely cause — and a bare
 // "network unreachable" would leave the user with no idea why.
+//
+// This is a heuristic, not proof: without syscall observation we cannot tell a
+// bypass from a script that simply made no network calls and failed for another
+// reason, so the wording is hedged ("if it needs network") rather than asserting.
 func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	if len(p.Network) == 0 || res.ExitCode == 0 || res.EgressConnections > 0 {
 		return

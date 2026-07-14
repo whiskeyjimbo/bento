@@ -89,9 +89,12 @@ func startBridge(socket string) error {
 
 func proxyEnv() []string {
 	u := "http://" + proxyAddr
-	// NO_PROXY keeps a client from routing its own loopback traffic (including to
-	// the forwarder itself) through the proxy, which would loop. Both cases are
-	// set because different tools read different casings.
+	// NO_PROXY exempts loopback so a script that runs its own in-sandbox service
+	// (a local server on 127.0.0.1) can reach it directly, instead of the client
+	// sending that connection to the host-side proxy — which would try to dial the
+	// host's loopback, not the sandbox's. The tradeoff: a manifest cannot allowlist
+	// a loopback address as an egress target; `validate` warns when one does. Both
+	// casings are set because different tools read different ones.
 	const noProxy = "localhost,127.0.0.1,::1"
 	return []string{
 		"HTTP_PROXY=" + u, "HTTPS_PROXY=" + u,
