@@ -43,7 +43,10 @@ func wrapWithLimits(exe string, args []string, l policy.Limits) (string, []strin
 	if l.IsZero() {
 		return exe, args
 	}
-	scope := []string{"--user", "--scope", "--quiet"}
+	// --collect garbage-collects the transient scope even when the target exits
+	// non-zero (e.g. an OOM kill); without it, failed scope units linger in the
+	// user manager forever.
+	scope := []string{"--user", "--scope", "--quiet", "--collect"}
 	if l.Memory != "" {
 		// MemorySwapMax=0 stops a memory-limited target from escaping the cap into
 		// swap.
