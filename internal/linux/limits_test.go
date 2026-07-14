@@ -38,8 +38,8 @@ func TestWrapWithLimitsBuildsScope(t *testing.T) {
 		}
 	}
 	// The wrapped command must follow the -- separator, intact.
-	sep := strings.Index(joined, " -- ")
-	if sep < 0 || !strings.HasSuffix(joined, "-- bwrap --proc /proc") {
+	found := strings.Contains(joined, " -- ")
+	if !found || !strings.HasSuffix(joined, "-- bwrap --proc /proc") {
 		t.Errorf("wrapped command not appended after --: %q", joined)
 	}
 }

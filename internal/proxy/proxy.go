@@ -82,11 +82,9 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return err
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			p.handle(ctx, c)
-		}()
+		})
 	}
 }
 
