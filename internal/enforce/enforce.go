@@ -48,4 +48,10 @@ type Process struct {
 type Result struct {
 	ExitCode int
 	Report   Report
+	// EgressConnections is how many outbound connections reached the egress proxy
+	// during the run. It is meaningful only when the policy allows egress; a
+	// count of zero there means the target either used no network or bypassed the
+	// proxy (which, in the default cooperative mode, fails closed) — letting a
+	// frontend explain a network failure precisely.
+	EgressConnections int
 }

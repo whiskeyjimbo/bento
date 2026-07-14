@@ -83,15 +83,17 @@ func newRunCmd() *cobra.Command {
 
 			if asJSON {
 				if err := writeJSON(os.Stdout, struct {
-					ExitCode int        `json:"exit_code"`
-					Stdout   string     `json:"stdout"`
-					Stderr   string     `json:"stderr"`
-					Report   reportJSON `json:"report"`
-				}{res.ExitCode, out.String(), errOut.String(), toReportJSON(res.Report)}); err != nil {
+					ExitCode          int        `json:"exit_code"`
+					Stdout            string     `json:"stdout"`
+					Stderr            string     `json:"stderr"`
+					EgressConnections int        `json:"egress_connections"`
+					Report            reportJSON `json:"report"`
+				}{res.ExitCode, out.String(), errOut.String(), res.EgressConnections, toReportJSON(res.Report)}); err != nil {
 					return err
 				}
 			} else {
 				writeDegradations(os.Stderr, res.Report)
+				writeEgressHint(os.Stderr, p, res)
 			}
 
 			// The script ran; its exit code is the result, passed up so cleanup

@@ -75,9 +75,11 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not available")
 	}
-	// A loopback HTTPS-less listener standing in for an upstream. The proxy will
-	// CONNECT to it by the host:port the script requests; we allow "localhost".
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// A loopback HTTPS-less listener standing in for an upstream. 127.0.0.2 (not
+	// 127.0.0.1) is used deliberately: the sandbox's NO_PROXY exempts 127.0.0.1 so
+	// a client would try to reach it directly and fail in the netns, whereas
+	// 127.0.0.2 is proxied — which is exactly the path under test.
+	ln, err := net.Listen("tcp", "127.0.0.2:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +101,14 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	// HTTP). The upstream is a bare loopback listener, so no TLS is needed.
 	curl := "curl -sS --proxytunnel -o /dev/null -w '%{http_code}' --max-time 5 "
 	script := "" +
-		"echo -n allowed=; " + curl + "http://127.0.0.1:" + port + "/ 2>/dev/null || echo failed\n" +
+		"echo -n allowed=; " + curl + "http://127.0.0.2:" + port + "/ 2>/dev/null || echo failed\n" +
 		"echo\n" +
 		"echo -n denied=; " + curl + "http://169.254.254.254:" + port + "/ >/dev/null 2>&1 && echo REACHED || echo blocked\n"
 
 	// exec: all because the script legitimately spawns curl as a subprocess; this
 	// test is about egress, not exec-blocking.
 	p := &policy.Policy{
-		Network: []policy.NetworkRule{{Host: "127.0.0.1", Port: port}},
+		Network: []policy.NetworkRule{{Host: "127.0.0.2", Port: port}},
 		Exec:    policy.ExecAll,
 	}
 	out := runShell(t, sandboxEnforcer(t), p, script)

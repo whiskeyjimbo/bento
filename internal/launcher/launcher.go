@@ -89,9 +89,14 @@ func startBridge(socket string) error {
 
 func proxyEnv() []string {
 	u := "http://" + proxyAddr
+	// NO_PROXY keeps a client from routing its own loopback traffic (including to
+	// the forwarder itself) through the proxy, which would loop. Both cases are
+	// set because different tools read different casings.
+	const noProxy = "localhost,127.0.0.1,::1"
 	return []string{
 		"HTTP_PROXY=" + u, "HTTPS_PROXY=" + u,
 		"http_proxy=" + u, "https_proxy=" + u,
+		"NO_PROXY=" + noProxy, "no_proxy=" + noProxy,
 	}
 }
 

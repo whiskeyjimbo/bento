@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 )
 
 // The JSON shapes below are the machine-readable contract for agents and CI.
@@ -55,6 +56,22 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
 	}
 	tw.Flush()
+}
+
+// writeEgressHint explains a likely proxy-bypass. Bento intercepts egress
+// cooperatively: a program that honors HTTP_PROXY reaches its allowlisted hosts,
+// but one that ignores it and dials a raw address hits the empty network
+// namespace and fails closed. When a network-using run failed and made *no*
+// connections through the proxy, that bypass is the likely cause — and a bare
+// "network unreachable" would leave the user with no idea why.
+func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
+	if len(p.Network) == 0 || res.ExitCode == 0 || res.EgressConnections > 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] the script exited non-zero and made no connections through the egress proxy.")
+	fmt.Fprintln(w, "[bento] if it needs network: bento intercepts egress via HTTP_PROXY, so a program that")
+	fmt.Fprintln(w, "[bento] ignores proxy settings (some static binaries) cannot reach allowlisted hosts and")
+	fmt.Fprintln(w, "[bento] fails to connect. Programs that honor HTTP_PROXY (curl, requests, pip, npm) work.")
 }
 
 // writeDegradations tells the user, before their script's own output, exactly

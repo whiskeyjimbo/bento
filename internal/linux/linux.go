@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
@@ -54,11 +55,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// When the policy allows egress, run the allowlist proxy on the sandbox's
 	// unix socket for the lifetime of the run. The sandbox reaches it only through
 	// that socket; nothing else can leave the network namespace.
+	egress := func() int { return 0 }
 	if sb.proxySocket != "" {
-		stopProxy, err := startProxy(ctx, p, sb.proxySocket)
+		stopProxy, count, err := startProxy(ctx, p, sb.proxySocket)
 		if err != nil {
 			return enforce.Result{}, err
 		}
+		egress = count
 		defer stopProxy()
 	}
 
@@ -89,11 +92,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	switch err := cmd.Run(); {
 	case err == nil:
-		return enforce.Result{ExitCode: 0, Report: report}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress()}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress()}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -187,23 +190,25 @@ func writeEmptyFile(path string) error {
 	return nil
 }
 
-// startProxy serves the egress allowlist on socket for the run's lifetime and
-// returns a function that stops it.
-func startProxy(ctx context.Context, p *policy.Policy, socket string) (func(), error) {
+// startProxy serves the egress allowlist on socket for the run's lifetime. It
+// returns a stop function and a count function reporting how many connections
+// reached the proxy — a zero count on a network-using run tells the frontend the
+// target never went through the proxy (used no network, or bypassed it).
+func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func(), count func() int, err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
-		return nil, fmt.Errorf("linux: starting egress proxy: %w", err)
+		return nil, nil, fmt.Errorf("linux: starting egress proxy: %w", err)
 	}
+	var connections atomic.Int64
+	observe := func(proxy.Decision, string, string) { connections.Add(1) }
+
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
-		proxy.New(p.Network).Serve(proxyCtx, l)
+		proxy.New(p.Network, proxy.WithObserver(observe)).Serve(proxyCtx, l)
 		close(done)
 	}()
-	return func() {
-		cancel()
-		<-done
-	}, nil
+	return func() { cancel(); <-done }, func() int { return int(connections.Load()) }, nil
 }
 
 // ResolveInterpreter guesses the interpreter for a script from its extension or
