@@ -14,29 +14,36 @@ import (
 )
 
 func newValidateCmd() *cobra.Command {
-	var asJSON bool
+	var (
+		asJSON bool
+		strict bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "validate <manifest>",
 		Short: "Check a manifest and show the permissions it grants",
 		Long: "validate parses the manifest, rejects any malformed field, and prints the\n" +
 			"permissions it would grant — so the boundary can be reviewed before running\n" +
-			"anything inside it.",
+			"anything inside it.\n\n" +
+			"It also checks the approval: a manifest whose permissions changed since it was\n" +
+			"approved is reported. --strict makes a stale or missing approval a failure (exit\n" +
+			"non-zero), for use as a CI gate; without it, a stale approval is only a warning.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := loadManifest(args[0])
+			doc, err := loadDocument(args[0])
 			if err != nil {
 				return err
 			}
 			if asJSON {
-				return writeJSON(os.Stdout, toPolicyJSON(p))
+				return writeJSON(os.Stdout, toPolicyJSON(doc.Policy))
 			}
-			writePolicySummary(os.Stdout, args[0], p)
-			return nil
+			writePolicySummary(os.Stdout, args[0], doc.Policy)
+			return reportApproval(os.Stdout, doc, strict)
 		},
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the parsed policy as JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "fail if the manifest's approval is stale or missing")
 	return cmd
 }
 
@@ -71,6 +78,63 @@ func resolveAgainst(base, path string) string {
 		return path
 	}
 	return filepath.Join(base, path)
+}
+
+// loadDocument parses a manifest into its policy and provenance without resolving
+// paths, so approval and the fingerprint check see the manifest exactly as
+// written. (run resolves paths for execution; the fingerprint attests the
+// manifest, so it must not depend on where bento was invoked.)
+func loadDocument(path string) (*manifest.Document, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return manifest.Parse(f)
+}
+
+// approvalState describes how a manifest's stored approval relates to its current
+// policy.
+type approvalState int
+
+const (
+	approvalUnstamped approvalState = iota // no provenance approval recorded
+	approvalCurrent                        // stored fingerprint matches the policy
+	approvalStale                          // policy changed since it was approved
+)
+
+func checkApproval(doc *manifest.Document) approvalState {
+	switch doc.Provenance.Approves {
+	case "":
+		return approvalUnstamped
+	case doc.Policy.Fingerprint():
+		return approvalCurrent
+	default:
+		return approvalStale
+	}
+}
+
+// reportApproval prints the approval status and, under strict, fails when it is
+// not current — the CI signal that a manifest's permissions changed without
+// re-approval.
+func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
+	switch checkApproval(doc) {
+	case approvalCurrent:
+		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
+		return nil
+	case approvalUnstamped:
+		fmt.Fprintf(w, "\napproval:     not approved — run `bento approve` after reviewing the permissions above\n")
+		if strict {
+			return fmt.Errorf("manifest is not approved")
+		}
+	case approvalStale:
+		fmt.Fprintf(w, "\napproval:     STALE — the permissions changed since this manifest was approved\n")
+		fmt.Fprintf(w, "              re-review and run `bento approve` to re-stamp it\n")
+		if strict {
+			return fmt.Errorf("manifest approval is stale: permissions changed since it was approved")
+		}
+	}
+	return nil
 }
 
 type policyJSON struct {

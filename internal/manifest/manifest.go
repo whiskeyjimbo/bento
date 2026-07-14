@@ -18,15 +18,36 @@ import (
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the
 // domain carries no serialization concerns.
 type manifest struct {
-	Entrypoint  string        `yaml:"entrypoint"`
-	Interpreter string        `yaml:"interpreter"`
-	Args        []string      `yaml:"args"`
-	Env         []string      `yaml:"env"`
-	Read        []string      `yaml:"read"`
-	Write       []string      `yaml:"write"`
-	Network     []networkRule `yaml:"network"`
-	Exec        string        `yaml:"exec"`
-	Limits      *limits       `yaml:"limits"`
+	Entrypoint  string        `yaml:"entrypoint,omitempty"`
+	Interpreter string        `yaml:"interpreter,omitempty"`
+	Args        []string      `yaml:"args,omitempty"`
+	Env         []string      `yaml:"env,omitempty"`
+	Read        []string      `yaml:"read,omitempty"`
+	Write       []string      `yaml:"write,omitempty"`
+	Network     []networkRule `yaml:"network,omitempty"`
+	Exec        string        `yaml:"exec,omitempty"`
+	Limits      *limits       `yaml:"limits,omitempty"`
+	Provenance  *Provenance   `yaml:"provenance,omitempty"`
+}
+
+// Provenance is the tool-written block that records how a manifest was produced
+// and stamps the policy it was approved for. It is a real field, not a comment,
+// because re-marshalling drops comments — and this block must survive the tool
+// rewriting the file.
+type Provenance struct {
+	// GeneratedBy names the tool/version that produced the manifest.
+	GeneratedBy string `yaml:"generated-by,omitempty"`
+	// GeneratedAt is when it was produced or last approved.
+	GeneratedAt string `yaml:"generated-at,omitempty"`
+	// Approves is the policy fingerprint this manifest was approved for. If it no
+	// longer matches the policy, the permissions changed without re-approval.
+	Approves string `yaml:"approves,omitempty"`
+}
+
+// Document is a parsed manifest: its validated policy and its provenance.
+type Document struct {
+	Policy     *policy.Policy
+	Provenance Provenance
 }
 
 type networkRule struct {
@@ -61,8 +82,8 @@ func (r *networkRule) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
-// Load parses a YAML manifest and returns a validated Policy.
-func Load(r io.Reader) (*policy.Policy, error) {
+// Parse parses a YAML manifest into a validated policy and its provenance.
+func Parse(r io.Reader) (*Document, error) {
 	if r == nil {
 		return nil, fmt.Errorf("manifest: nil reader")
 	}
@@ -74,7 +95,50 @@ func Load(r io.Reader) (*policy.Policy, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-	return p, nil
+	var prov Provenance
+	if m.Provenance != nil {
+		prov = *m.Provenance
+	}
+	return &Document{Policy: p, Provenance: prov}, nil
+}
+
+// Load parses a YAML manifest and returns just its validated policy.
+func Load(r io.Reader) (*policy.Policy, error) {
+	d, err := Parse(r)
+	if err != nil {
+		return nil, err
+	}
+	return d.Policy, nil
+}
+
+// Marshal serializes a policy and its provenance to canonical manifest YAML. The
+// manifest is machine-owned, so this is how the tool writes it after profiling
+// or approval, rather than editing the file in place.
+func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
+	m := fromPolicy(p)
+	if prov != (Provenance{}) {
+		m.Provenance = &prov
+	}
+	return yaml.Marshal(&m)
+}
+
+func fromPolicy(p *policy.Policy) manifest {
+	m := manifest{
+		Entrypoint:  p.Entrypoint,
+		Interpreter: p.Interpreter,
+		Args:        p.Args,
+		Env:         p.Env,
+		Read:        p.Read,
+		Write:       p.Write,
+		Exec:        string(p.Exec),
+	}
+	for _, r := range p.Network {
+		m.Network = append(m.Network, networkRule{Host: r.Host, Port: r.Port})
+	}
+	if !p.Limits.IsZero() {
+		m.Limits = &limits{Memory: p.Limits.Memory, CPU: p.Limits.CPU, PIDs: p.Limits.PIDs}
+	}
+	return m
 }
 
 func (m *manifest) toPolicy() *policy.Policy {

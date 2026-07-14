@@ -101,3 +101,31 @@ func TestLoadRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestMarshalRoundTrip(t *testing.T) {
+	src := "entrypoint: ./fetch.py\ninterpreter: python3\nread: [.]\nnetwork:\n  - {host: api.github.com, port: \"443\"}\nexec: none\nprovenance:\n  generated-by: bento-test\n  approves: abc123\n"
+	doc, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if doc.Provenance.Approves != "abc123" || doc.Provenance.GeneratedBy != "bento-test" {
+		t.Fatalf("provenance not parsed: %+v", doc.Provenance)
+	}
+
+	out, err := Marshal(doc.Policy, doc.Provenance)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// Re-parsing the marshalled form must yield the same policy fingerprint and
+	// provenance — the machine-owned round trip is lossless for what matters.
+	doc2, err := Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-Parse: %v\n%s", err, out)
+	}
+	if doc.Policy.Fingerprint() != doc2.Policy.Fingerprint() {
+		t.Errorf("fingerprint changed across marshal round trip:\n%s", out)
+	}
+	if doc2.Provenance != doc.Provenance {
+		t.Errorf("provenance changed across round trip: %+v vs %+v", doc2.Provenance, doc.Provenance)
+	}
+}
