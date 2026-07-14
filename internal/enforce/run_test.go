@@ -295,3 +295,16 @@ func TestStateString(t *testing.T) {
 		}
 	}
 }
+
+func TestReportSetReplacesOrAdds(t *testing.T) {
+	var r Report
+	r.Add(LayerLimits, Enforced, "")
+	r.Set(LayerLimits, Degraded, "cpu not delegated")
+	if len(r.Layers) != 1 || r.Layers[0].State != Degraded || r.Layers[0].Reason != "cpu not delegated" {
+		t.Errorf("Set should replace an existing layer in place; got %+v", r.Layers)
+	}
+	r.Set(LayerNetwork, Enforced, "")
+	if len(r.Layers) != 2 {
+		t.Errorf("Set should add a missing layer; got %+v", r.Layers)
+	}
+}

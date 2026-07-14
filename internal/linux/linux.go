@@ -84,6 +84,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
 			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+
+			// systemd-run accepts an undelegated controller (typically cpu) and
+			// silently does not enforce it. Report that specific controller as not
+			// enforced rather than claiming the whole limits layer holds.
+			if missing := undelegatedController(p.Limits); missing != "" {
+				report.Set(enforce.LayerLimits, enforce.Degraded,
+					fmt.Sprintf("%s limit not enforced: the %s controller is not delegated to your systemd user manager (a one-time admin step: Delegate=%s on user@.service)", missing, missing, missing))
+			}
 		}
 	}
 

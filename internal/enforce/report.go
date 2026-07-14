@@ -93,6 +93,19 @@ func (r *Report) Add(layer Layer, state State, reason string) {
 	r.Layers = append(r.Layers, LayerStatus{Layer: layer, State: state, Reason: reason})
 }
 
+// Set replaces a layer's status, or adds it if absent. A backend uses it to
+// refine what the policy-independent Probe reported with policy-specific facts —
+// e.g. that a requested cgroup controller is not actually delegated.
+func (r *Report) Set(layer Layer, state State, reason string) {
+	for i := range r.Layers {
+		if r.Layers[i].Layer == layer {
+			r.Layers[i] = LayerStatus{Layer: layer, State: state, Reason: reason}
+			return
+		}
+	}
+	r.Add(layer, state, reason)
+}
+
 // HasDegradation reports whether any layer is not fully enforced.
 func (r Report) HasDegradation() bool {
 	for _, l := range r.Layers {

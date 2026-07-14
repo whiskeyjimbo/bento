@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -86,6 +87,49 @@ func trueBinary() string {
 		return p
 	}
 	return "/bin/true"
+}
+
+// undelegatedController returns the name of a controller the policy requests that
+// is not delegated to this user's systemd manager, or "" if all requested ones
+// are (or delegation can't be determined).
+//
+// systemd-run *accepts* a property like CPUQuota even when the controller is not
+// delegated, then silently does not enforce it. So a wholesale "limits enforced"
+// claim is dishonest when, say, cpu isn't delegated (the common default — it
+// needs a one-time admin `Delegate=cpu` drop-in). Checking the delegated set lets
+// the run report that specific controller as not enforced.
+func undelegatedController(l policy.Limits) string {
+	ctrls, ok := delegatedControllers()
+	if !ok {
+		// Can't determine delegation; don't manufacture a degraded claim.
+		return ""
+	}
+	switch {
+	case l.CPU != "" && !ctrls["cpu"]:
+		return "cpu"
+	case l.Memory != "" && !ctrls["memory"]:
+		return "memory"
+	case l.PIDs > 0 && !ctrls["pids"]:
+		return "pids"
+	}
+	return ""
+}
+
+// delegatedControllers reads the cgroup-v2 controllers systemd has delegated to
+// this user's manager, under which `systemd-run --user --scope` creates scopes.
+// A controller absent here is accepted but not enforced.
+func delegatedControllers() (map[string]bool, bool) {
+	uid := os.Getuid()
+	path := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/cgroup.controllers", uid, uid)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	set := make(map[string]bool)
+	for _, c := range strings.Fields(string(b)) {
+		set[c] = true
+	}
+	return set, true
 }
 
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's
