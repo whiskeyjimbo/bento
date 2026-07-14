@@ -12,7 +12,42 @@ const (
 	LayerLimits     Layer = "limits"
 )
 
-// State is how fully a layer is enforced on this host.
+// Tier separates the guarantees Bento makes on every supported platform from
+// those only Linux can enforce. It is what lets one manifest run in both places
+// without either platform lying about what protected it.
+type Tier int
+
+const (
+	// TierCore is enforced on every supported platform. A core layer that falls
+	// short of Enforced refuses the run by default: silently substituting a
+	// weaker sandbox is the failure this tool exists to prevent.
+	TierCore Tier = iota
+	// TierHardening has no unprivileged equivalent on every platform (seccomp and
+	// cgroup limits are Linux-only). A hardening layer that cannot be enforced is
+	// reported loudly and the run proceeds.
+	TierHardening
+)
+
+func (t Tier) String() string {
+	if t == TierHardening {
+		return "hardening"
+	}
+	return "core"
+}
+
+// Tier reports which tier a layer belongs to.
+func (l Layer) Tier() Tier {
+	switch l {
+	case LayerExec, LayerLimits:
+		return TierHardening
+	default:
+		return TierCore
+	}
+}
+
+// State is how fully a layer is enforced on this host. The values are ordered by
+// severity (Enforced < Degraded < Unavailable) and admission checks compare
+// against that order, so a new state must be inserted at its correct severity.
 type State int
 
 const (
@@ -73,6 +108,35 @@ func (r Report) Degradations() []LayerStatus {
 	var out []LayerStatus
 	for _, l := range r.Layers {
 		if l.State != Enforced {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// For returns the subset of the report covering the given layers. Admission
+// decisions use it to judge a host only on the layers a policy actually needs: a
+// manifest with no network rules must not be blocked by a host that cannot run
+// the egress stack, because it never asked for egress.
+func (r Report) For(layers []Layer) Report {
+	want := make(map[Layer]bool, len(layers))
+	for _, l := range layers {
+		want[l] = true
+	}
+	var out Report
+	for _, l := range r.Layers {
+		if want[l.Layer] {
+			out.Layers = append(out.Layers, l)
+		}
+	}
+	return out
+}
+
+// shortfall returns the layers in the given tier that are not fully enforced.
+func (r Report) shortfall(tier Tier, atLeast State) []LayerStatus {
+	var out []LayerStatus
+	for _, l := range r.Layers {
+		if l.Layer.Tier() == tier && l.State >= atLeast {
 			out = append(out, l)
 		}
 	}

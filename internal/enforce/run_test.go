@@ -9,7 +9,7 @@ import (
 )
 
 // fakeEnforcer is an in-memory Enforcer for exercising the core orchestration
-// without any platform backend: it records that Run was reached and returns
+// without a platform backend: it records whether Run was reached and returns
 // canned probe/result values.
 type fakeEnforcer struct {
 	probe  Report
@@ -24,9 +24,24 @@ func (f *fakeEnforcer) Run(context.Context, *policy.Policy, Process) (Result, er
 	return f.result, nil
 }
 
+// validPolicy is the minimal policy that passes validation: no network, no
+// limits, exec blocked.
+func validPolicy() *policy.Policy {
+	return &policy.Policy{Entrypoint: "./x"}
+}
+
+// fullyEnforced is a probe reporting every layer as enforced.
+func fullyEnforced() Report {
+	var r Report
+	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerLimits} {
+		r.Add(l, Enforced, "")
+	}
+	return r
+}
+
 func TestRunDelegatesAndPropagatesExit(t *testing.T) {
-	f := &fakeEnforcer{result: Result{ExitCode: 7}}
-	res, err := Run(context.Background(), f, &policy.Policy{Entrypoint: "./x"}, Process{}, Options{})
+	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{ExitCode: 7}}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -38,41 +53,153 @@ func TestRunDelegatesAndPropagatesExit(t *testing.T) {
 	}
 }
 
-func TestStrictRefusesOnDegradation(t *testing.T) {
-	f := &fakeEnforcer{}
-	f.probe.Add(LayerNetwork, Degraded, "pasta missing")
-	_, err := Run(context.Background(), f, &policy.Policy{Entrypoint: "./x"}, Process{}, Options{Strict: true})
-
-	var refusal *StrictRefusal
-	if !errors.As(err, &refusal) {
-		t.Fatalf("err = %v, want *StrictRefusal", err)
+func TestRunValidatesPolicy(t *testing.T) {
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	bad := &policy.Policy{Entrypoint: "./x", Env: []string{"NOT A NAME"}}
+	if _, err := Run(context.Background(), f, bad, Process{}, Options{}); err == nil {
+		t.Fatal("expected an invalid policy to be rejected")
 	}
 	if f.ran {
-		t.Error("strict mode ran the target despite a degraded layer")
-	}
-	if len(refusal.Report.Degradations()) != 1 {
-		t.Errorf("degradations = %d, want 1", len(refusal.Report.Degradations()))
+		t.Error("an invalid policy reached the enforcer")
 	}
 }
 
-func TestStrictRunsWhenFullyEnforced(t *testing.T) {
+// A policy that asks for no network must not be blocked by a host that cannot
+// run the egress stack: it never requested egress, and namespace isolation alone
+// denies it.
+func TestUnusedLayerDoesNotBlockRun(t *testing.T) {
 	f := &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
-	f.probe.Add(LayerNetwork, Enforced, "")
-	if _, err := Run(context.Background(), f, &policy.Policy{Entrypoint: "./x"}, Process{}, Options{Strict: true}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !f.ran {
-		t.Error("strict mode refused a fully-enforced host")
+	f.probe.Add(LayerNetwork, Unavailable, "pasta not installed")
+	f.probe.Add(LayerExec, Enforced, "")
+
+	for _, opts := range []Options{{}, {Strict: true}} {
+		f.ran = false
+		if _, err := Run(context.Background(), f, validPolicy(), Process{}, opts); err != nil {
+			t.Fatalf("opts %+v: unexpected refusal: %v", opts, err)
+		}
+		if !f.ran {
+			t.Errorf("opts %+v: run was blocked by a layer the policy does not use", opts)
+		}
 	}
 }
 
-func TestRunRejectsNilArgs(t *testing.T) {
-	if _, err := Run(context.Background(), nil, &policy.Policy{}, Process{}, Options{}); err == nil {
+// The same host must refuse when the policy actually asks for egress.
+func TestRequiredLayerBlocksRun(t *testing.T) {
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerNetwork, Unavailable, "pasta not installed")
+
+	p := validPolicy()
+	p.Network = []policy.NetworkRule{{Host: "api.github.com", Port: "443"}}
+
+	_, err := Run(context.Background(), f, p, Process{}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want *Refusal", err)
+	}
+	if f.ran {
+		t.Error("ran despite an unenforceable core layer the policy requires")
+	}
+}
+
+// A hardening layer that cannot be enforced (no seccomp) is reported loudly but
+// does not refuse the run by default — that is the macOS reality.
+func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
+	newProbe := func() Report {
+		var r Report
+		r.Add(LayerFilesystem, Enforced, "")
+		r.Add(LayerExec, Unavailable, "no seccomp on this platform")
+		return r
+	}
+
+	f := &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+		t.Fatalf("default mode should run despite a hardening gap: %v", err)
+	}
+	if !f.ran {
+		t.Error("default mode refused on a hardening gap")
+	}
+
+	f = &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true}); err == nil {
+		t.Error("strict mode should refuse on a hardening gap")
+	}
+	if f.ran {
+		t.Error("strict mode ran despite a hardening gap")
+	}
+}
+
+// A degraded core layer refuses by default, runs under --allow-degraded.
+func TestDegradedCoreRefusesByDefaultAndRunsWhenAllowed(t *testing.T) {
+	newProbe := func() Report {
+		var r Report
+		r.Add(LayerFilesystem, Degraded, "userns blocked; Landlock-only confinement")
+		return r
+	}
+
+	f := &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err == nil {
+		t.Error("default mode should refuse a degraded core layer")
+	}
+	if f.ran {
+		t.Error("default mode ran with a degraded core layer")
+	}
+
+	f = &fakeEnforcer{probe: newProbe()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true}); err != nil {
+		t.Fatalf("--allow-degraded should permit a degraded core layer: %v", err)
+	}
+	if !f.ran {
+		t.Error("--allow-degraded refused a degraded core layer")
+	}
+}
+
+// --allow-degraded is reduced confinement, not absent confinement: a core layer
+// that enforces nothing at all still refuses.
+func TestAllowDegradedStillRefusesUnavailableCore(t *testing.T) {
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Unavailable, "no userns and no Landlock")
+
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true})
+	if err == nil {
+		t.Fatal("--allow-degraded should still refuse when a core layer enforces nothing")
+	}
+	if f.ran {
+		t.Error("ran with no core confinement at all")
+	}
+}
+
+func TestRunRejectsNilEnforcer(t *testing.T) {
+	if _, err := Run(context.Background(), nil, validPolicy(), Process{}, Options{}); err == nil {
 		t.Error("expected error for nil enforcer")
 	}
-	if _, err := Run(context.Background(), &fakeEnforcer{}, nil, Process{}, Options{}); err == nil {
-		t.Error("expected error for nil policy")
+}
+
+func TestLayerTiers(t *testing.T) {
+	for layer, want := range map[Layer]Tier{
+		LayerFilesystem: TierCore,
+		LayerNetwork:    TierCore,
+		LayerExec:       TierHardening,
+		LayerLimits:     TierHardening,
+	} {
+		if got := layer.Tier(); got != want {
+			t.Errorf("%s.Tier() = %s, want %s", layer, got, want)
+		}
+	}
+}
+
+func TestReportForFiltersToRequestedLayers(t *testing.T) {
+	var r Report
+	r.Add(LayerFilesystem, Enforced, "")
+	r.Add(LayerNetwork, Unavailable, "no pasta")
+
+	got := r.For([]Layer{LayerFilesystem})
+	if len(got.Layers) != 1 || got.Layers[0].Layer != LayerFilesystem {
+		t.Fatalf("For([filesystem]) = %+v", got.Layers)
+	}
+	if got.HasDegradation() {
+		t.Error("filtered report should not carry the excluded layer's degradation")
 	}
 }
 

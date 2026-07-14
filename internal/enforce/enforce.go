@@ -27,13 +27,20 @@ type Enforcer interface {
 }
 
 // Process is the runtime binding a policy does not carry: where the target's
-// standard streams connect. A nil stream means "no stream" (e.g. /dev/null),
-// not "inherit"; frontends pass os.Stdin/os.Stdout explicitly when they want
-// inheritance.
+// standard streams connect, and the environment values it runs with.
 type Process struct {
+	// Stdin, Stdout, Stderr connect the target's standard streams. A nil stream
+	// means "no stream" (e.g. /dev/null), not "inherit"; frontends pass
+	// os.Stdin/os.Stdout explicitly when they want inheritance.
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// Env are the resolved environment values handed to the target. The policy
+	// declares which NAMES may pass through; resolving those names against the
+	// host, and merging any values supplied at invocation, is the core's job —
+	// a backend applies this map and makes no decisions about it.
+	Env map[string]string
 }
 
 // Result is the outcome of a Run: the target's exit code and the report of what
