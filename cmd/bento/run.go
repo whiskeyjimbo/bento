@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -50,38 +51,52 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
+			// In --json mode the script's streams are captured into the envelope
+			// rather than shared with bento's own stdout — otherwise the script's
+			// output interleaves with the JSON and corrupts the machine contract.
 			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
+			var out, errOut bytes.Buffer
+			if asJSON {
+				proc.Stdin, proc.Stdout, proc.Stderr = nil, &out, &errOut
+			}
+
 			res, err := enforce.Run(cmd.Context(), e, p, proc, enforce.Options{
 				Strict:        strict,
 				AllowDegraded: allowDegraded,
 			})
 
 			var refusal *enforce.Refusal
-			if errors.As(err, &refusal) {
+			switch {
+			case errors.As(err, &refusal):
 				if asJSON {
 					_ = writeJSON(os.Stdout, struct {
 						Refused bool       `json:"refused"`
 						Reason  string     `json:"reason"`
 						Report  reportJSON `json:"report"`
 					}{true, refusal.Reason, toReportJSON(refusal.Report)})
+					return &exitError{code: bentoFailed}
 				}
 				return err
-			}
-			if err != nil {
+			case err != nil:
 				return err
 			}
 
 			if asJSON {
-				return writeJSON(os.Stdout, struct {
+				if err := writeJSON(os.Stdout, struct {
 					ExitCode int        `json:"exit_code"`
+					Stdout   string     `json:"stdout"`
+					Stderr   string     `json:"stderr"`
 					Report   reportJSON `json:"report"`
-				}{res.ExitCode, toReportJSON(res.Report)})
+				}{res.ExitCode, out.String(), errOut.String(), toReportJSON(res.Report)}); err != nil {
+					return err
+				}
+			} else {
+				writeDegradations(os.Stderr, res.Report)
 			}
-			writeDegradations(os.Stderr, res.Report)
 
-			// The script ran; its exit code is the command's result, not bento's.
-			os.Exit(res.ExitCode)
-			return nil
+			// The script ran; its exit code is the result, passed up so cleanup
+			// unwinds before the process exits.
+			return &exitError{code: res.ExitCode}
 		},
 	}
 

@@ -2,20 +2,34 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
 
-// exitUsage is returned for anything that stopped bento itself from running the
-// target: a bad manifest, an unenforceable policy, a missing sandbox. The
-// target's own exit code is passed through untouched, so a script that exits 2 is
-// not confused with bento refusing to run it — use --json when a caller needs to
-// tell those apart without ambiguity.
-const exitUsage = 2
+// bentoFailed is the exit code when bento itself could not run the target — a
+// bad manifest, or a guarantee this host cannot enforce. It is deliberately high
+// and distinct so a caller can tell "bento refused" from the target's own exit
+// code, which is passed through untouched. 125 follows the convention env(1) and
+// docker use for "the command could not be executed".
+const bentoFailed = 125
+
+// exitError carries a target's exit code up to main so all deferred cleanup runs
+// before the process exits. Returning it instead of calling os.Exit inside a
+// command keeps the frontend from bypassing the sandbox's own teardown.
+type exitError struct{ code int }
+
+func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "bento: %v\n", err)
-		os.Exit(exitUsage)
+	err := newRootCmd().Execute()
+	if err == nil {
+		return
 	}
+	var ee *exitError
+	if errors.As(err, &ee) {
+		os.Exit(ee.code)
+	}
+	fmt.Fprintf(os.Stderr, "bento: %v\n", err)
+	os.Exit(bentoFailed)
 }

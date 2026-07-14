@@ -62,6 +62,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
+	if err := checkNotShielded(sb.home, append(append([]string{}, reads...), writes...)); err != nil {
+		return nil, err
+	}
 	for _, path := range reads {
 		args = append(args, "--ro-bind-try", path, path)
 	}
@@ -192,6 +195,27 @@ func shield(r denylist.Rule, sb sandbox) []string {
 		}
 		return []string{"--ro-bind", sb.emptyFile, r.Path}
 	}
+}
+
+// checkNotShielded rejects a grant that falls inside a fully-shielded location
+// (a DenyAll deny-list directory such as ~/.ssh). Such a grant cannot be honored
+// — the shield wins — so silently dropping it would leave the user believing a
+// path is available when it is not. A grant that *contains* a shielded path is
+// fine and common (write: ~ with ~/.ssh shielded inside it); only a grant at or
+// below a shield is the mistake.
+func checkNotShielded(home string, grants []string) error {
+	rules := denylist.Home(home)
+	for _, g := range grants {
+		for _, r := range rules {
+			if r.Deny != denylist.DenyAll {
+				continue
+			}
+			if g == r.Path || under(g, r.Path) {
+				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; remove it", g, r.Path)
+			}
+		}
+	}
+	return nil
 }
 
 // reachable reports whether a grant could expose path — either because a grant

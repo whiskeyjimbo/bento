@@ -173,6 +173,28 @@ func TestWorkspaceHooksAreProtected(t *testing.T) {
 	}
 }
 
+// A grant inside an always-shielded directory cannot be honored, so it must be a
+// hard error rather than silently vanishing behind the shield.
+func TestGrantInsideShieldedPathIsRejected(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh/pubkeys"}}
+	_, err := compile(p, enforce.Process{}, testSandbox())
+	if err == nil {
+		t.Fatal("a grant inside ~/.ssh should be rejected, not silently dropped")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want it to explain the shield conflict", err)
+	}
+}
+
+// A grant that merely contains a shielded path is the normal case and must be
+// allowed: the shield is applied inside it.
+func TestGrantContainingShieldedPathIsAllowed(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
+	if _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
+		t.Fatalf("granting $HOME (with ~/.ssh shielded inside) should be allowed: %v", err)
+	}
+}
+
 func TestEnvIsClearedAndAllowlistApplied(t *testing.T) {
 	proc := enforce.Process{Env: map[string]string{"LANG": "C", "TOKEN": "abc"}}
 	args, err := compile(&policy.Policy{Entrypoint: "/work/run.py"}, proc, testSandbox())

@@ -59,11 +59,13 @@ func Home(home string) []Rule {
 	}
 	files := []string{
 		".git-credentials",
+		".config/git/credentials", // XDG location for the same
 		".netrc",
 		".npmrc",
 		".pypirc",
 		".gem/credentials",
 		".cargo/credentials.toml",
+		".vault-token",
 	}
 	// Modifying any of these grants persistence or code execution on the host the
 	// next time the user opens a shell or runs git. Reads stay allowed: git
