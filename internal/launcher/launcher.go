@@ -112,6 +112,13 @@ func proxyEnv() []string {
 // exiting child, not just the target, so orphaned grandchildren of a
 // subprocess-spawning target do not accumulate as zombies (which would otherwise
 // consume the pids the limit budgets).
+//
+// This covers the supervise path only (exec: all with egress). When the target
+// is PID 1 directly — exec: all without egress, or a target reached via execveat
+// — reaping is the target's own responsibility; we cannot reap for it without
+// staying resident, which the execveat-replace design precludes. The sandbox is
+// short-lived and torn down with the pid namespace, so any such zombies are
+// transient and bounded by the pids limit.
 func superviseTarget(target, env []string) (int, error) {
 	cmd := exec.Command(target[0], target[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

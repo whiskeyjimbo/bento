@@ -45,6 +45,18 @@ func canCreateScope() (bool, string) {
 			scopeReason = "no usable systemd user manager for resource limits: " + err.Error()
 			return
 		}
+		// A scope can be *created*, but systemd-run silently accepts a property for
+		// an undelegated controller without enforcing it. memory and pids are the
+		// host-safety controllers (an uncapped memory bomb can OOM the host) and are
+		// delegated by default; if they are not, limits genuinely cannot protect the
+		// host, so report unavailable at probe time — that is what lets admission
+		// refuse a requested memory limit rather than run unbounded. cpu, which
+		// commonly needs a Delegate= drop-in, is handled per-run (undelegatedController)
+		// because an uncapped cpu is a far milder failure.
+		if ctrls, known := delegatedControllers(); known && (!ctrls["memory"] || !ctrls["pids"]) {
+			scopeReason = "the memory/pids controllers are not delegated to your systemd user manager, so resource limits cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
+			return
+		}
 		scopeOK = true
 	})
 	return scopeOK, scopeReason

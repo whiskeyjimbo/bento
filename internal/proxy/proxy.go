@@ -104,14 +104,25 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	}
 }
 
+// connectTimeout bounds how long a client may take to send its CONNECT request
+// before its handler slot is reclaimed, so a client that connects and sends
+// nothing cannot pin a concurrency slot for the whole run.
+const connectTimeout = 30 * time.Second
+
 func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
+	// A panic in a handler must not take down the whole bento process mid-run; the
+	// slot is released by Serve's deferred receive regardless.
+	defer func() { _ = recover() }()
 
+	client.SetReadDeadline(time.Now().Add(connectTimeout))
 	host, port, br, err := readConnect(client)
 	if err != nil {
 		writeStatus(client, "400 Bad Request", err.Error())
 		return
 	}
+	// Hand the tunnel a clean slate; copyIdle installs its own idle deadlines.
+	client.SetReadDeadline(time.Time{})
 
 	if !policy.Allows(p.rules, host, port) {
 		p.report(Denied, host, port)
