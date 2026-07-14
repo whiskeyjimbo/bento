@@ -155,7 +155,7 @@ func TestMalformedRequestRejected(t *testing.T) {
 
 	for _, req := range []string{
 		"GET http://example.com/ HTTP/1.1\r\n\r\n", // not CONNECT
-		"CONNECT example.com HTTP/1.1\r\n\r\n",      // no port
+		"CONNECT example.com HTTP/1.1\r\n\r\n",     // no port
 		"garbage\r\n\r\n",
 	} {
 		c := dialProxy()
