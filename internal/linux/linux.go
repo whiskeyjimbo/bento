@@ -137,18 +137,24 @@ func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 		exists:      hostExists,
 	}
 
-	// Egress requires the forwarder (the bento binary) and a socket the host-side
-	// proxy will listen on.
-	if len(p.Network) > 0 {
+	// The in-sandbox launcher (the bento binary) is bound whenever egress or
+	// exec-blocking is in play; the proxy socket only when egress is.
+	execMode := p.Exec
+	if execMode == "" {
+		execMode = policy.ExecNone
+	}
+	if len(p.Network) > 0 || execMode != policy.ExecAll {
 		self := selfPath
 		if self == "" {
 			self, err = os.Executable()
 			if err != nil {
 				cleanup()
-				return sandbox{}, noop, fmt.Errorf("linux: locating the bento binary for the egress forwarder: %w", err)
+				return sandbox{}, noop, fmt.Errorf("linux: locating the bento binary for the in-sandbox launcher: %w", err)
 			}
 		}
 		sb.bentoPath = self
+	}
+	if len(p.Network) > 0 {
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}
 	return sb, cleanup, nil

@@ -2,11 +2,13 @@ package linux
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
@@ -21,25 +23,50 @@ import (
 // needed, and the allowlist is checked against the host we tell the sandbox to
 // reach, which is exactly what the proxy sees.
 
-// buildBento compiles the bento binary so the sandbox can re-exec it as the
-// forwarder. Returns the path.
-func buildBento(t *testing.T) string {
+var (
+	bentoOnce sync.Once
+	bentoBin  string
+	bentoErr  error
+)
+
+// testBento builds the bento binary once per test run and returns its path. The
+// in-sandbox launcher is bento re-exec'd, so any sandbox test that routes through
+// the launcher — which is every test not running with exec: all — needs the real
+// binary, not the test process. Building once keeps the suite from recompiling it
+// for each test.
+func testBento(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")
 	}
-	bin := filepath.Join(t.TempDir(), "bento")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/cmd/bento")
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building bento: %v\n%s", err, out)
+	bentoOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "bento-test-bin-")
+		if err != nil {
+			bentoErr = err
+			return
+		}
+		bin := filepath.Join(dir, "bento")
+		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/cmd/bento")
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			bentoErr = fmt.Errorf("building bento: %v\n%s", err, out)
+			return
+		}
+		bentoBin = bin
+	})
+	if bentoErr != nil {
+		t.Fatal(bentoErr)
 	}
-	return bin
+	return bentoBin
 }
 
-// enforcerUsing returns an Enforcer whose forwarder is the freshly built bento
+// enforcerUsing returns an Enforcer whose in-sandbox launcher is the built bento
 // binary rather than the test process (which is not bento).
 func enforcerUsing(bento string) *Enforcer { return &Enforcer{selfPath: bento} }
+
+// sandboxEnforcer is the enforcer sandbox tests should use: it routes the
+// in-sandbox launcher to the real bento binary.
+func sandboxEnforcer(t *testing.T) *Enforcer { return enforcerUsing(testBento(t)) }
 
 // A curl-based probe reaching an allowlisted host must succeed; a non-allowlisted
 // host must be refused by the proxy.
@@ -48,8 +75,6 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not available")
 	}
-	bento := buildBento(t)
-
 	// A loopback HTTPS-less listener standing in for an upstream. The proxy will
 	// CONNECT to it by the host:port the script requests; we allow "localhost".
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -78,10 +103,13 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 		"echo\n" +
 		"echo -n denied=; " + curl + "http://169.254.254.254:" + port + "/ >/dev/null 2>&1 && echo REACHED || echo blocked\n"
 
+	// exec: all because the script legitimately spawns curl as a subprocess; this
+	// test is about egress, not exec-blocking.
 	p := &policy.Policy{
 		Network: []policy.NetworkRule{{Host: "127.0.0.1", Port: port}},
+		Exec:    policy.ExecAll,
 	}
-	out := runShell(t, enforcerUsing(bento), p, script)
+	out := runShell(t, sandboxEnforcer(t), p, script)
 
 	if !strings.Contains(out, "allowed=204") {
 		t.Errorf("allowlisted host was not reachable through the proxy: %q", out)

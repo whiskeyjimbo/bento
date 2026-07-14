@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
 // Probe reports what this host can actually enforce.
@@ -41,8 +42,13 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// layer is enforced.
 	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
 
-	r.Add(enforce.LayerExec, enforce.Unavailable,
-		"subprocess blocking (seccomp) is not implemented yet")
+	if seccomp.Supported() {
+		r.Add(enforce.LayerExec, enforce.Enforced, "")
+	} else {
+		r.Add(enforce.LayerExec, enforce.Unavailable,
+			"this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced")
+	}
+
 	r.Add(enforce.LayerLimits, enforce.Unavailable,
 		"resource limits (cgroup v2) are not implemented yet")
 

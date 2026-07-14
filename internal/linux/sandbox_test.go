@@ -11,6 +11,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
 // These tests assert that the sandbox actually denies what it claims to. They
@@ -39,9 +40,15 @@ func runScript(t *testing.T, p *policy.Policy, src string) (int, string) {
 	p.Entrypoint = script
 	p.Interpreter = "sh"
 	p.Read = append(p.Read, dir)
+	// These tests exercise filesystem and network boundaries, and their scripts
+	// invoke external helpers (cat, mkdir, getent) that are themselves
+	// subprocesses. Run with exec: all so a blocked helper cannot masquerade as a
+	// passing security assertion — the boundary under test must be what denies,
+	// not the exec filter.
+	p.Exec = policy.ExecAll
 
 	var out bytes.Buffer
-	res, err := New().Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
@@ -233,17 +240,24 @@ func TestHostEnvironmentIsNotInherited(t *testing.T) {
 	}
 }
 
-// Probe must report honestly. This build has no seccomp and no cgroup limits, so
-// those layers must say so rather than claiming a guarantee they do not deliver.
-func TestProbeReportsUnimplementedLayersHonestly(t *testing.T) {
+// Probe must report honestly: what is enforced as enforced, what is not yet
+// built as unavailable. Exec-blocking is now implemented (seccomp), so on a
+// seccomp-capable host it must report enforced; resource limits are not built, so
+// they must report unavailable rather than claiming a guarantee they can't keep.
+func TestProbeReportsLayersHonestly(t *testing.T) {
 	report := New().Probe(context.Background())
 
 	states := map[enforce.Layer]enforce.State{}
 	for _, l := range report.Layers {
 		states[l.Layer] = l.State
 	}
-	if states[enforce.LayerExec] != enforce.Unavailable {
-		t.Error("exec-blocking is not implemented in this build; the probe must not claim it")
+
+	wantExec := enforce.Unavailable
+	if seccomp.Supported() {
+		wantExec = enforce.Enforced
+	}
+	if states[enforce.LayerExec] != wantExec {
+		t.Errorf("exec-block state = %v, want %v", states[enforce.LayerExec], wantExec)
 	}
 	if states[enforce.LayerLimits] != enforce.Unavailable {
 		t.Error("resource limits are not implemented in this build; the probe must not claim them")

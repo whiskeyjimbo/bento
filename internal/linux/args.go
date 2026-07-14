@@ -94,20 +94,32 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// directory cannot leave the script itself writable mid-run.
 	args = append(args, "--ro-bind", sb.entrypoint, sb.entrypoint)
 
-	// When egress is allowed, bind the bento binary (the forwarder) and the proxy
-	// socket into the sandbox.
-	if sb.proxySocket != "" {
+	// The in-sandbox launcher stage runs whenever the sandbox needs setup that
+	// must happen inside it: the egress bridge and/or the exec-block filter. When
+	// neither is needed (exec: all and no network), the target runs directly.
+	execMode := p.Exec
+	if execMode == "" {
+		execMode = policy.ExecNone
+	}
+	useLauncher := sb.proxySocket != "" || execMode != policy.ExecAll
+
+	if useLauncher {
 		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
-		args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
+		if sb.proxySocket != "" {
+			args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
+		}
 	}
 
 	args = append(args, envArgs(proc)...)
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
-	// With egress, the entrypoint is the forwarder, which runs the real command
-	// with the proxy environment set; without it, the command runs directly.
-	if sb.proxySocket != "" {
-		args = append(args, sandboxBentoPath, "__forward", sandboxProxySocket, "--")
+	if useLauncher {
+		launch := []string{sandboxBentoPath, "__launch", "--exec", string(execMode)}
+		if sb.proxySocket != "" {
+			launch = append(launch, "--socket", sandboxProxySocket)
+		}
+		launch = append(launch, "--")
+		args = append(args, launch...)
 	}
 	args = append(args, command(p, sb)...)
 	return args, nil
