@@ -1,0 +1,104 @@
+package linux
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+)
+
+// Probe reports what this host can actually enforce.
+//
+// It reports what it can prove, not what it hopes: the filesystem layer is only
+// Enforced if bwrap is present and a user namespace can really be created here,
+// which is checked by creating one rather than by inspecting sysctls. Ubuntu's
+// AppArmor restriction, container policies, and kernel builds all interact, and
+// the only trustworthy answer is an empirical one.
+func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
+	var r enforce.Report
+
+	switch bwrap, err := exec.LookPath("bwrap"); {
+	case err != nil:
+		r.Add(enforce.LayerFilesystem, enforce.Unavailable,
+			"bubblewrap (bwrap) is not installed; no filesystem confinement is possible")
+	default:
+		if err := canUnshare(ctx, bwrap); err != nil {
+			r.Add(enforce.LayerFilesystem, enforce.Unavailable, usernsReason(err))
+		} else {
+			r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+		}
+	}
+
+	// Network is all-or-nothing in this build: denying egress needs only an
+	// unshared network namespace, which comes with the sandbox. Enforcing a
+	// per-host allowlist needs the egress stack, which is not built yet — so a
+	// policy that declares network rules is refused rather than silently run with
+	// unrestricted egress.
+	r.Add(enforce.LayerNetwork, enforce.Unavailable,
+		"per-host egress allowlisting is not implemented yet; only all-or-nothing network is enforced")
+
+	r.Add(enforce.LayerExec, enforce.Unavailable,
+		"subprocess blocking (seccomp) is not implemented yet")
+	r.Add(enforce.LayerLimits, enforce.Unavailable,
+		"resource limits (cgroup v2) are not implemented yet")
+
+	return r
+}
+
+// canUnshare reports whether an unprivileged user namespace can be created here,
+// by asking bwrap to create one.
+func canUnshare(ctx context.Context, bwrap string) error {
+	cmd := exec.CommandContext(ctx, bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return &usernsError{output: string(out), err: err}
+	}
+	return nil
+}
+
+type usernsError struct {
+	output string
+	err    error
+}
+
+func (e *usernsError) Error() string { return e.err.Error() }
+
+// usernsReason turns a failed namespace creation into something a user can act
+// on. The bare bwrap message ("No permissions to create a new user namespace")
+// tells a user nothing about why or what to do, and on current Ubuntu the cause
+// is a specific, fixable AppArmor policy.
+func usernsReason(err error) string {
+	var out string
+	if ue, ok := err.(*usernsError); ok {
+		out = ue.output
+	}
+	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
+
+	if !strings.Contains(out, "user namespace") && !strings.Contains(out, "Permission denied") {
+		if out != "" {
+			return base + ": " + strings.TrimSpace(out)
+		}
+		return base
+	}
+	if restricted("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1") {
+		return base + ": AppArmor restricts unprivileged user namespaces on this host " +
+			"(kernel.apparmor_restrict_unprivileged_userns=1). Install an AppArmor profile permitting bwrap, " +
+			"or set it to 0 to allow them system-wide."
+	}
+	if restricted("/proc/sys/kernel/unprivileged_userns_clone", "0") {
+		return base + ": unprivileged user namespaces are disabled " +
+			"(kernel.unprivileged_userns_clone=0). Set it to 1 to allow them."
+	}
+	return base + ": " + strings.TrimSpace(out)
+}
+
+// restricted reports whether a sysctl file holds the given value.
+func restricted(path, value string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == value
+}
