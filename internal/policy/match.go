@@ -21,6 +21,12 @@ func Allows(rules []NetworkRule, host, port string) bool {
 	return false
 }
 
+// PortMatches reports whether a port matches a rule's port pattern (exact, "*",
+// or "lo-hi"). The egress proxy's resolved-IP guard uses it to apply the same
+// port semantics as Allows when deciding whether an explicit IP-literal rule
+// authorizes a connection to a non-public address.
+func PortMatches(pattern, port string) bool { return matchPort(pattern, port) }
+
 // normalizeHost lowercases and strips a trailing dot (the DNS root label), so
 // "API.Example.Com." and "api.example.com" compare equal.
 func normalizeHost(host string) string {

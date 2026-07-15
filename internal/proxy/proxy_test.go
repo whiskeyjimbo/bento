@@ -110,7 +110,7 @@ func TestDeniedHostRefusedWithReason(t *testing.T) {
 }
 
 // WithoutEgress (profiling) records the intended destination and refuses it,
-// even for a host the allowlist would permit, and never opens an upstream — so
+// even for a host the allowlist would permit, and never opens an upstream, so
 // the destination is captured while the script's data stays on the host.
 func TestWithoutEgressRecordsButRefuses(t *testing.T) {
 	var seen []string
@@ -224,6 +224,117 @@ func TestConcurrencyIsCapped(t *testing.T) {
 	status, _ := bufio.NewReader(over).ReadString('\n')
 	if !strings.Contains(status, "503") {
 		t.Errorf("connection past the cap should be refused with 503; got %q", status)
+	}
+}
+
+// A request with no terminating newline must not let a sandboxed client grow the
+// host process's memory: the proxy caps what it buffers before the tunnel and
+// rejects an oversized request instead of reading it forever.
+func TestOversizedRequestRejected(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	// Stream more than the cap with no newline, in the background so the proxy
+	// closing its read side cannot deadlock the writer.
+	go func() {
+		junk := strings.Repeat("A", maxRequestBytes+4096)
+		io.WriteString(c, junk)
+	}()
+
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	status, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		return // closing without a response is an acceptable rejection
+	}
+	if strings.Contains(status, "200") {
+		t.Errorf("oversized newline-free request was accepted; got %q", status)
+	}
+}
+
+func TestIsNonPublicIP(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "::1", "::ffff:127.0.0.1", // loopback
+		"169.254.169.254", "fe80::1", // link-local (incl. cloud metadata)
+		"10.0.0.5", "172.16.0.1", "192.168.1.1", "fc00::1", // private / ULA
+		"100.64.0.1", "100.127.255.255", // CGNAT
+		"0.0.0.0", "::", // unspecified
+		"64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254 (metadata)
+		"64:ff9b::a00:5",     // NAT64 of 10.0.0.5
+		"2002:0a00:0005::1",  // 6to4 embedding 10.0.0.5
+	}
+	for _, s := range blocked {
+		if !isNonPublicIP(net.ParseIP(s)) {
+			t.Errorf("%s should be treated as non-public", s)
+		}
+	}
+	public := []string{
+		"1.1.1.1", "8.8.8.8", "93.184.216.34",
+		"2606:2800:220:1:248:1893:25c8:1946",
+		"100.63.255.255", "100.128.0.1", // just outside CGNAT 100.64/10
+		"64:ff9b::808:808", // NAT64 of public 8.8.8.8 stays public
+	}
+	for _, s := range public {
+		if isNonPublicIP(net.ParseIP(s)) {
+			t.Errorf("%s should be treated as public", s)
+		}
+	}
+}
+
+// An allowlisted hostname that resolves to a non-public address must be refused:
+// the name check passed, but the sandbox must not reach host-internal services
+// (loopback, cloud metadata, RFC1918) by resolving a permitted name to them.
+func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "localhost", Port: "9"}})
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "localhost:9")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (localhost resolves to loopback)", status)
+	}
+	body, _ := io.ReadAll(br)
+	if !strings.Contains(string(body), "non-public") {
+		t.Errorf("refusal body should explain the non-public address; got %q", body)
+	}
+}
+
+// A rule that names the IP literal explicitly is a deliberate choice to reach a
+// non-public address, so the guard permits it and the tunnel carries bytes.
+func TestExplicitIPLiteralRuleReachesInternal(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		io.WriteString(conn, "UPSTREAM")
+		time.Sleep(20 * time.Millisecond)
+		conn.Close()
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	p := New([]policy.NetworkRule{{Host: "127.0.0.1", Port: port}})
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "127.0.0.1:"+port)
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (explicit IP rule permits the internal address)", status)
+	}
+	rest, _ := io.ReadAll(br)
+	if !strings.Contains(string(rest), "UPSTREAM") {
+		t.Errorf("tunnel did not carry upstream bytes; got %q", rest)
 	}
 }
 
