@@ -138,8 +138,16 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 
-	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false); err != nil {
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false)
+	if err != nil {
 		t.Fatalf("Profile with exec:all and no network failed: %v", err)
+	}
+	// Assert the target actually ran under the launcher. An empty /bento bind aborts
+	// bwrap, but Profile swallows the exit error and returns an empty observation, so
+	// a bare err==nil check would pass even unfixed; a run that reached the
+	// interpreter always opens its runtime files.
+	if len(obs.Reads) == 0 {
+		t.Fatal("no file accesses observed — the target did not run (empty /bento bind?)")
 	}
 }
 
