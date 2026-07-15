@@ -56,6 +56,21 @@ func Home(home string) []Rule {
 		".terraform.d",    // credentials.tfrc.json
 		".config/gh",      // GitHub CLI tokens
 		".local/share/gh", // GitHub CLI tokens
+		".config/rclone",  // remote storage tokens
+		".oci",            // Oracle Cloud keys
+		".config/doctl",   // DigitalOcean tokens
+		".config/op",      // 1Password CLI
+
+		// OS secret stores: the master keyring behind saved passwords and tokens.
+		".local/share/keyrings", // GNOME Keyring
+		".local/share/kwalletd", // KDE Wallet
+
+		// Browser profiles: cookies, session tokens, and saved-password databases.
+		".mozilla",               // Firefox
+		".config/google-chrome",  // Chrome
+		".config/chromium",       // Chromium
+		".config/BraveSoftware",  // Brave
+		".config/microsoft-edge", // Edge
 	}
 	files := []string{
 		".git-credentials",
@@ -66,6 +81,10 @@ func Home(home string) []Rule {
 		".gem/credentials",
 		".cargo/credentials.toml",
 		".vault-token",
+		".pgpass",        // PostgreSQL passwords
+		".s3cfg",         // s3cmd keys
+		".boto",          // legacy AWS/GCP credentials
+		".databrickscfg", // Databricks tokens
 	}
 	// Modifying any of these grants persistence or code execution on the host the
 	// next time the user opens a shell or runs git. Reads stay allowed: git
