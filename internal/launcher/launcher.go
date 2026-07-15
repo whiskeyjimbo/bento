@@ -114,6 +114,9 @@ func runObserve(cfg Config, env []string) (int, error) {
 	}
 
 	var b strings.Builder
+	// The marker goes first, only after a successful trace, so the reader can tell a
+	// genuine (even empty) observation from a report we never got to write.
+	b.WriteString(observe.ReportStart + "\n")
 	for _, a := range res.Accesses {
 		verb := "R"
 		if a.Write {

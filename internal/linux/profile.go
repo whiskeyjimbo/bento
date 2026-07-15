@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 	"github.com/whiskeyjimbo/bento-v2/internal/profile"
 	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
@@ -121,10 +122,13 @@ func parseObservations(path string) (profile.Observation, error) {
 	defer f.Close()
 
 	var obs profile.Observation
+	var started bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
 		switch {
+		case line == observe.ReportStart:
+			started = true
 		case line == "EXEC":
 			obs.Execed = true
 		case strings.HasPrefix(line, "R "):
@@ -133,5 +137,14 @@ func parseObservations(path string) (profile.Observation, error) {
 			obs.Writes = append(obs.Writes, line[2:])
 		}
 	}
-	return obs, s.Err()
+	if err := s.Err(); err != nil {
+		return profile.Observation{}, err
+	}
+	// No start marker means the launcher never wrote the report: the sandbox failed
+	// to start or tracing failed. Surfacing an error here is what stops the profiler
+	// from proposing a silently-empty manifest on a bwrap abort.
+	if !started {
+		return profile.Observation{}, fmt.Errorf("linux: the profiling sandbox did not run the target (the observation is empty); check the output above for a bubblewrap or tracing error")
+	}
+	return obs, nil
 }
