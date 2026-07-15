@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,8 @@ import (
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	// A complete report (records then the trailing marker) parses.
 	good := filepath.Join(t.TempDir(), "report")
-	if err := os.WriteFile(good, []byte("R /a\nW /b\nEXEC\n"+observe.ReportStart+"\n"), 0o644); err != nil {
+	content := fmt.Sprintf("R %q\nW %q\nEXEC\n%s\n", "/a", "/b", observe.ReportStart)
+	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	obs, err := parseObservations(good)
@@ -28,7 +30,7 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	// profiler would turn into a wrong manifest.
 	for name, content := range map[string]string{
 		"empty":     "",
-		"truncated": "R /a\nW /partial-pa", // records but no completion marker
+		"truncated": fmt.Sprintf("R %q\nW %q", "/a", "/partial"), // records but no marker
 	} {
 		bad := filepath.Join(t.TempDir(), name)
 		if err := os.WriteFile(bad, []byte(content), 0o644); err != nil {
@@ -37,5 +39,27 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 		if _, err := parseObservations(bad); err == nil {
 			t.Errorf("%s report (no completion marker) should be an error, not a silent observation", name)
 		}
+	}
+}
+
+// A path containing a newline and forged record text must parse as a single read,
+// not inject extra W/EXEC records into the proposed manifest.
+func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
+	evil := "/tmp/x\nW /etc/ssh\nEXEC"
+	report := filepath.Join(t.TempDir(), "r")
+	content := fmt.Sprintf("R %q\n%s\n", evil, observe.ReportStart)
+	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	obs, err := parseObservations(report)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(obs.Reads) != 1 || obs.Reads[0] != evil {
+		t.Errorf("reads = %q, want the single literal path", obs.Reads)
+	}
+	if len(obs.Writes) != 0 || obs.Execed {
+		t.Errorf("forged records leaked: writes=%v execed=%v", obs.Writes, obs.Execed)
 	}
 }

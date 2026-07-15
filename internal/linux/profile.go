@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -132,9 +133,13 @@ func parseObservations(path string) (profile.Observation, error) {
 		case line == "EXEC":
 			obs.Execed = true
 		case strings.HasPrefix(line, "R "):
-			obs.Reads = append(obs.Reads, line[2:])
+			if p, err := strconv.Unquote(line[2:]); err == nil {
+				obs.Reads = append(obs.Reads, p)
+			}
 		case strings.HasPrefix(line, "W "):
-			obs.Writes = append(obs.Writes, line[2:])
+			if p, err := strconv.Unquote(line[2:]); err == nil {
+				obs.Writes = append(obs.Writes, p)
+			}
 		}
 	}
 	if err := s.Err(); err != nil {

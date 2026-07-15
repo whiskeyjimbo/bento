@@ -108,29 +108,35 @@ func Run(cfg Config) (int, error) {
 // no Landlock — a permissive run so every access is seen) and writes what the
 // target opened, and whether it exec'd, to the report path for the host to read.
 func runObserve(cfg Config, env []string) (int, error) {
-	res, err := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
-	if err != nil {
-		return 0, fmt.Errorf("launcher: observing target: %w", err)
-	}
+	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
+	// The report is written unconditionally, and always here — after Trace returns,
+	// when the target and every subprocess are ptrace-stopped and cannot run — so
+	// this write is the last one to the bind-mounted report path, truncating
+	// anything the (unsandboxed, profiled) target may have written there to forge
+	// its own observations. Paths are quoted (%q) so a newline embedded in a path
+	// cannot forge extra R/W/EXEC records. The completion marker is written LAST and
+	// only on a successful trace: its presence means the report is genuinely
+	// complete, so a failed or truncated trace lacks it and the reader rejects it.
 	var b strings.Builder
-	for _, a := range res.Accesses {
-		verb := "R"
-		if a.Write {
-			verb = "W"
+	if traceErr == nil {
+		for _, a := range res.Accesses {
+			verb := "R"
+			if a.Write {
+				verb = "W"
+			}
+			fmt.Fprintf(&b, "%s %q\n", verb, a.Path)
 		}
-		fmt.Fprintf(&b, "%s %s\n", verb, a.Path)
+		if res.Execed {
+			b.WriteString("EXEC\n")
+		}
+		b.WriteString(observe.ReportStart + "\n")
 	}
-	if res.Execed {
-		b.WriteString("EXEC\n")
-	}
-	// The marker goes LAST, only after a successful trace serialized every record.
-	// Its presence therefore means the report is complete: a reader that finds it
-	// knows the observer ran to the end, and a truncated write (or a report the
-	// launcher never got to write) lacks it and is treated as a failure.
-	b.WriteString(observe.ReportStart + "\n")
 	if err := os.WriteFile(cfg.Observe, []byte(b.String()), 0o644); err != nil {
 		return 0, fmt.Errorf("launcher: writing observations: %w", err)
+	}
+	if traceErr != nil {
+		return 0, fmt.Errorf("launcher: observing target: %w", traceErr)
 	}
 	return res.ExitCode, nil
 }
