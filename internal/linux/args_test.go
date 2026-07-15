@@ -21,6 +21,18 @@ func testSandbox(existing ...string) sandbox {
 		emptyFile:  "/tmp/shield",
 		entrypoint: "/work/run.py",
 		exists:     func(p string) bool { return set[p] },
+		// A path is a directory if the fake filesystem has an entry strictly under
+		// it; a leaf entry is a file. This lets a write grant that is a project
+		// directory get its workspace shields while a plain-file grant does not.
+		isDir: func(p string) bool {
+			for e := range set {
+				if e != p && under(e, p) {
+					return true
+				}
+			}
+			return false
+		},
+		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
 	}
 }
 
@@ -170,6 +182,52 @@ func TestWorkspaceHooksAreProtected(t *testing.T) {
 	}
 	if !found {
 		t.Error("an existing .git/hooks under a write grant must be re-bound read-only")
+	}
+}
+
+// A write grant to a plain file is not a project checkout, so it must not drag in
+// the workspace shields: ".git/hooks" under a file is a path bwrap cannot create.
+func TestFileWriteGrantIsNotTreatedAsWorkspace(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work/out.txt"}}
+	sb := testSandbox("/work/out.txt") // exists, but as a file (no children)
+	args := compileOrFail(t, p, sb)
+
+	for j := 0; j+1 < len(args); j++ {
+		if strings.HasSuffix(args[j+1], "/out.txt/.git/hooks") {
+			t.Fatalf("a file write grant must not get workspace shields: %v", args[j:j+2])
+		}
+	}
+}
+
+// A read-only grant already makes a write-denied path unwritable, so no shield
+// mount is needed — and adding one over a read-only parent would abort bwrap.
+func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
+	sb := testSandbox("/home/u/.gitconfig")
+	args := compileOrFail(t, p, sb)
+
+	if has(args, "--ro-bind", "/home/u/.gitconfig") {
+		t.Error("a write-denied file reached only by a read grant needs no shield: the read-only bind already blocks writes")
+	}
+}
+
+// A "/" read grant must bind the root's children individually, never the host
+// root onto the sandbox root — and never the mounts baseFlags manages, or the
+// host's /proc, /dev, /tmp would overmount the sandbox's own.
+func TestRootReadGrantExpandsToChildren(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}
+	args := compileOrFail(t, p, testSandbox())
+
+	if has(args, "--ro-bind-try", "/") {
+		t.Error("a \"/\" read grant must not bind the host root onto the sandbox root")
+	}
+	if !has(args, "--ro-bind-try", "/home") {
+		t.Error("a \"/\" read grant must bind the root's children individually")
+	}
+	for _, managed := range []string{"/proc", "/dev", "/tmp"} {
+		if has(args, "--ro-bind-try", managed) {
+			t.Errorf("%s is managed by baseFlags and must not be overmounted from the host", managed)
+		}
 	}
 }
 

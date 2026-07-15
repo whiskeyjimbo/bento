@@ -14,11 +14,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
+	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
@@ -37,6 +39,11 @@ type Config struct {
 	// Writable are the policy's resolved write-grant paths. Landlock confines
 	// writes to these (plus runtime scratch) as a second layer behind bwrap.
 	Writable []string
+	// Observe, when set, runs the target under the ptrace observer instead of
+	// enforcing, writing the files it opened and whether it exec'd to this path.
+	// The profiler uses it to synthesize a manifest from a permissive run; no
+	// seccomp or Landlock is applied, so what the target does is fully observed.
+	Observe string
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -61,6 +68,10 @@ func Run(cfg Config) (int, error) {
 			return 0, err
 		}
 		env = append(env, proxyEnv()...)
+	}
+
+	if cfg.Observe != "" {
+		return runObserve(cfg, env)
 	}
 
 	if cfg.Block {
@@ -91,6 +102,32 @@ func Run(cfg Config) (int, error) {
 		return 0, seccomp.Exec(cfg.Target, env)
 	}
 	return superviseTarget(cfg.Target, env)
+}
+
+// runObserve profiles the target: it runs under the ptrace observer (no seccomp,
+// no Landlock — a permissive run so every access is seen) and writes what the
+// target opened, and whether it exec'd, to the report path for the host to read.
+func runObserve(cfg Config, env []string) (int, error) {
+	res, err := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
+	if err != nil {
+		return 0, fmt.Errorf("launcher: observing target: %w", err)
+	}
+
+	var b strings.Builder
+	for _, a := range res.Accesses {
+		verb := "R"
+		if a.Write {
+			verb = "W"
+		}
+		fmt.Fprintf(&b, "%s %s\n", verb, a.Path)
+	}
+	if res.Execed {
+		b.WriteString("EXEC\n")
+	}
+	if err := os.WriteFile(cfg.Observe, []byte(b.String()), 0o644); err != nil {
+		return 0, fmt.Errorf("launcher: writing observations: %w", err)
+	}
+	return res.ExitCode, nil
 }
 
 // startBridge launches the bridge as a separate child process before any filter

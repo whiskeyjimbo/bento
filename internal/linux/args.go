@@ -42,16 +42,30 @@ type sandbox struct {
 	// bentoPath is the host path of the running bento binary, bound into the
 	// sandbox to serve as the forwarder. Set only alongside proxySocket.
 	bentoPath string
+	// observe is the host path of the profiling report file, bound writable into
+	// the sandbox. When set, the launcher runs the target under the ptrace
+	// observer instead of enforcing.
+	observe string
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
 	exists func(string) bool
+	// isDir reports whether a host path is an existing directory. Injected
+	// alongside exists; used to decide whether a write grant is a workspace (a
+	// project checkout gets git-hook/editor-task shields) rather than a plain file.
+	isDir func(string) bool
+	// rootDirs lists the host's top-level entries to bind individually when a
+	// read grant is "/". Injected alongside exists so the expansion is testable
+	// against a hypothetical root. It must exclude the mounts baseFlags manages
+	// (/proc, /dev, /tmp) so the host versions do not overmount them.
+	rootDirs func() []string
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
 // so these are constant.
 const (
-	sandboxBentoPath   = "/bento"
-	sandboxProxySocket = "/proxy.sock"
+	sandboxBentoPath     = "/bento"
+	sandboxProxySocket   = "/proxy.sock"
+	sandboxObserveReport = "/observe.report"
 )
 
 // compile builds the bwrap argv for a policy.
@@ -81,6 +95,18 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		return nil, err
 	}
 	for _, path := range reads {
+		if path == "/" {
+			// Binding the host root onto the sandbox root would make the root
+			// read-only, and bwrap could then no longer create the top-level mount
+			// points the launcher needs (/bento, /observe.report, /proxy.sock). Bind
+			// the root's children individually instead, leaving the sandbox root the
+			// writable tmpfs bwrap starts with. The literal "/" is still carried in
+			// reads for deny-list reachability below.
+			for _, top := range sb.rootDirs() {
+				args = append(args, "--ro-bind-try", top, top)
+			}
+			continue
+		}
 		args = append(args, "--ro-bind-try", path, path)
 	}
 	for _, path := range writes {
@@ -101,12 +127,18 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if execMode == "" {
 		execMode = policy.ExecNone
 	}
-	useLauncher := sb.proxySocket != "" || execMode != policy.ExecAll
+	// Profiling always runs through the launcher (it hosts the observer); so does
+	// egress or exec-blocking. Only a plain exec:all, no-network, non-profiling
+	// run skips the launcher and executes the target directly.
+	useLauncher := sb.proxySocket != "" || sb.observe != "" || execMode != policy.ExecAll
 
 	if useLauncher {
 		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
 		if sb.proxySocket != "" {
 			args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
+		}
+		if sb.observe != "" {
+			args = append(args, "--bind", sb.observe, sandboxObserveReport)
 		}
 	}
 
@@ -117,6 +149,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		launch := []string{sandboxBentoPath, "__launch", "--exec", string(execMode)}
 		if sb.proxySocket != "" {
 			launch = append(launch, "--socket", sandboxProxySocket)
+		}
+		if sb.observe != "" {
+			launch = append(launch, "--observe", sandboxObserveReport)
 		}
 		// The launcher's Landlock backstop confines writes to exactly the paths
 		// passed here. They must match what bwrap made writable — the runtime
@@ -205,17 +240,43 @@ func interpreterPrefix(interp string) string {
 func denyArgs(sb sandbox, grants, writes []string) []string {
 	rules := denylist.Home(sb.home)
 	for _, w := range writes {
-		rules = append(rules, denylist.Workspace(w)...)
+		// Workspace shields (git hooks, editor tasks) only make sense for a project
+		// directory. A write grant that is a plain file — or a path that does not
+		// exist yet — is not a checkout, and shielding a ".git/hooks" under it would
+		// force bwrap to create that path inside a file, or pre-create the target as
+		// a directory the script then cannot write as a file.
+		if sb.isDir(w) {
+			rules = append(rules, denylist.Workspace(w)...)
+		}
 	}
 
 	var args []string
 	for _, r := range rules {
-		if !reachable(r.Path, grants) {
+		if !shieldNeeded(r, sb, grants, writes) {
 			continue
 		}
 		args = append(args, shield(r, sb)...)
 	}
 	return args
+}
+
+// shieldNeeded decides whether a deny rule needs a shield mount, given what the
+// grants expose. Beyond protecting the path, this avoids asking bwrap to bind a
+// shield over a path whose parent is read-only — which it cannot do — for paths
+// that are not actually a threat there.
+func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
+	if !reachable(r.Path, grants) {
+		return false // not exposed by any grant; already invisible
+	}
+	writable := reachable(r.Path, writes)
+	if r.Deny == denylist.DenyAll {
+		// Hide existing contents from reads; prevent creation only where a write
+		// grant could create it (a read-only parent cannot).
+		return sb.exists(r.Path) || writable
+	}
+	// DenyWrite: a read-only grant already prevents writes, so a shield is only
+	// needed where the path is actually writable.
+	return writable
 }
 
 // shield returns the bwrap arguments that enforce one deny rule.
@@ -384,4 +445,30 @@ func command(p *policy.Policy, sb sandbox) []string {
 func hostExists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+// hostIsDir reports whether path is an existing directory, following symlinks so
+// a symlinked workspace grant is recognized as one.
+func hostIsDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// hostRootDirs lists the host's top-level entries to bind for a "/" read grant,
+// excluding the mounts baseFlags manages so the host's /proc, /dev, and /tmp
+// never overmount the sandbox's own.
+func hostRootDirs() []string {
+	entries, err := os.ReadDir("/")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		switch e.Name() {
+		case "proc", "dev", "tmp":
+			continue
+		}
+		out = append(out, "/"+e.Name())
+	}
+	return out
 }

@@ -163,6 +163,8 @@ func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 		entrypoint:  entrypoint,
 		interpreter: interp,
 		exists:      hostExists,
+		isDir:       hostIsDir,
+		rootDirs:    hostRootDirs,
 	}
 
 	// The in-sandbox launcher (the bento binary) is bound whenever egress or
@@ -203,20 +205,25 @@ func writeEmptyFile(path string) error {
 // reached the proxy — a zero count on a network-using run tells the frontend the
 // target never went through the proxy (used no network, or bypassed it).
 func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func(), count func() int, err error) {
+	var connections atomic.Int64
+	stop, _, err = startProxyWith(ctx, p, socket, func(proxy.Decision, string, string) { connections.Add(1) })
+	return stop, func() int { return int(connections.Load()) }, err
+}
+
+// startProxyWith serves the egress allowlist on socket with a caller-supplied
+// observer, returning a stop function.
+func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string)) (stop func(), count func() int, err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, nil, fmt.Errorf("linux: starting egress proxy: %w", err)
 	}
-	var connections atomic.Int64
-	observe := func(proxy.Decision, string, string) { connections.Add(1) }
-
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		proxy.New(p.Network, proxy.WithObserver(observe)).Serve(proxyCtx, l)
 		close(done)
 	}()
-	return func() { cancel(); <-done }, func() int { return int(connections.Load()) }, nil
+	return func() { cancel(); <-done }, nil, nil
 }
 
 // ResolveInterpreter guesses the interpreter for a script from its extension or
