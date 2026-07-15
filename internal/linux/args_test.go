@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,66 @@ func testSandbox(existing ...string) sandbox {
 		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
 		// The hypothetical filesystem has no symlinks, so shields bind in place.
 		resolve: func(p string) string { return p },
+	}
+}
+
+// resolve must stay kernel-accurate when a relative symlink target has to
+// traverse a parent that is itself a symlink: a lexical join against the
+// unresolved path would land on the wrong sibling, leaving the real credential
+// target unshielded and un-caught by checkNotShielded.
+func TestResolveFollowsRelativeDanglingLeafThroughSymlinkedParent(t *testing.T) {
+	base := t.TempDir()
+	canon, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "data", "cfg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// home/.config -> data/cfg (real); data/cfg/gh -> ../secrets/gh (dangling).
+	if err := os.Symlink(filepath.Join(canon, "data", "cfg"), filepath.Join(canon, "home", ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../secrets/gh", filepath.Join(canon, "data", "cfg", "gh")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolve(filepath.Join(canon, "home", ".config", "gh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canon, "data", "secrets", "gh")
+	if got != want {
+		t.Errorf("resolve = %q, want %q (relative dangling leaf through a symlinked parent)", got, want)
+	}
+}
+
+// resolve must follow a multi-hop symlink chain whose final link is dangling, not
+// stop at the first hop (which would leave the shield on an intermediate symlink,
+// aborting the run).
+func TestResolveFollowsMultiHopDanglingChain(t *testing.T) {
+	base := t.TempDir()
+	canon, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := filepath.Join(canon, "a"), filepath.Join(canon, "b"), filepath.Join(canon, "c")
+	if err := os.Symlink(c, b); err != nil { // b -> c (c missing)
+		t.Fatal(err)
+	}
+	if err := os.Symlink(b, a); err != nil { // a -> b
+		t.Fatal(err)
+	}
+
+	got, err := resolve(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != c {
+		t.Errorf("resolve(a) = %q, want %q (chain followed to the final dangling target)", got, c)
 	}
 }
 

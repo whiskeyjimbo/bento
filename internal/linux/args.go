@@ -275,6 +275,11 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 		// mounts where bwrap can actually create the mount point (never at a
 		// symlink, which aborts the run).
 		r.Path = sb.resolve(r.Path)
+		if r.Path == "/" {
+			// A deny dotfile that resolves to the root (a symlink to "/") would
+			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
+			continue
+		}
 		if !shieldNeeded(r, sb, grants, writes) {
 			continue
 		}
@@ -427,19 +432,38 @@ func resolve(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("linux: %q: %w", path, err)
 	}
-	rest := ""
-	for cur := abs; ; {
-		real, err := filepath.EvalSymlinks(cur)
-		if err == nil {
-			return filepath.Join(real, rest), nil
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return abs, nil
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
+	return resolveExisting(abs, 0), nil
+}
+
+// maxSymlinkDepth bounds symlink following, matching the kernel's ELOOP limit, so
+// a self-referential or cyclic deny-list symlink cannot spin forever.
+const maxSymlinkDepth = 40
+
+// resolveExisting resolves abs where it exists via the kernel (EvalSymlinks,
+// which is accurate through parent symlinks, "..", and chains). Where the final
+// component does not exist, it resolves the parent, then — crucially — follows a
+// *dangling* leaf symlink against that resolved parent, so a deny-list dotfile
+// pointing into a not-yet-populated store still resolves to the target a write
+// through it would reach, rather than stalling at the unmountable symlink itself.
+func resolveExisting(abs string, depth int) string {
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
 	}
+	parent := filepath.Dir(abs)
+	if parent == abs {
+		return abs // reached the root; nothing left to resolve
+	}
+	rparent := resolveExisting(parent, depth)
+	leaf := filepath.Join(rparent, filepath.Base(abs))
+	if depth < maxSymlinkDepth {
+		if target, err := os.Readlink(leaf); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(rparent, target)
+			}
+			return resolveExisting(target, depth+1)
+		}
+	}
+	return leaf
 }
 
 // envArgs clears the inherited environment and sets only what the policy allowed
@@ -487,23 +511,11 @@ func hostIsDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// hostResolve follows a path's symlinks, resolving as much of it as exists and
-// keeping any not-yet-existing tail — the same resolution grants get, so deny
-// rules and grants are compared on the same footing (e.g. when /home is itself a
-// symlink, both sides resolve through it).
-//
-// A leaf symlink is followed explicitly, because a *dangling* one (a dotfile
-// symlinked into a not-yet-populated store) would otherwise stall resolution at
-// the symlink itself — and a shield cannot mount at a symlink (bwrap aborts), nor
-// would it cover the target a write through the symlink actually reaches.
+// hostResolve resolves a deny-list path the same way grants are resolved, so the
+// two are compared on the same footing (a symlinked /home component, a symlinked
+// deny dir, or a dangling dotfile symlink all resolve to the target a write would
+// reach). resolve already follows a dangling leaf against its resolved parent.
 func hostResolve(path string) string {
-	if target, err := os.Readlink(path); err == nil {
-		if filepath.IsAbs(target) {
-			path = target
-		} else {
-			path = filepath.Join(filepath.Dir(path), target)
-		}
-	}
 	if resolved, err := resolve(path); err == nil {
 		return resolved
 	}
