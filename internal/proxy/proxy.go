@@ -108,13 +108,25 @@ func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.Ra
 		return nil
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || !isNonPublicIP(ip) {
+	if ip == nil {
 		return nil
 	}
-	if p.explicitlyAllowsIP(ip, port) {
-		return nil
+	switch classifyIP(ip) {
+	case ipHostReserved:
+		// Loopback, link-local (incl. cloud metadata), and unspecified name the host
+		// itself or its infrastructure. The proxy runs on the host, so dialing these
+		// reaches the HOST's own services - never a legitimate sandbox egress target,
+		// so no rule may reach them, not even an explicit IP literal.
+		return &blockedUpstreamError{ip: ip}
+	case ipPrivate:
+		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only when
+		// a rule names the exact IP literal; a permitted hostname resolving there is
+		// the SSRF case and stays blocked.
+		if !p.explicitlyAllowsIP(ip, port) {
+			return &blockedUpstreamError{ip: ip}
+		}
 	}
-	return &blockedUpstreamError{ip: ip}
+	return nil
 }
 
 // explicitlyAllowsIP reports whether a rule names this exact IP as a literal (not
@@ -129,25 +141,43 @@ func (p *Proxy) explicitlyAllowsIP(ip net.IP, port string) bool {
 	return false
 }
 
-// isNonPublicIP reports whether ip names a host-internal or infrastructure
-// target a sandbox should not reach by resolving a permitted hostname to it.
-func isNonPublicIP(ip net.IP) bool {
+// ipClass groups a resolved address by how the egress guard treats it.
+type ipClass int
+
+const (
+	// ipPublic is a routable address the allowlist alone governs.
+	ipPublic ipClass = iota
+	// ipHostReserved names the host or its infrastructure - loopback, link-local
+	// (incl. cloud metadata), unspecified. No rule may reach it through the proxy.
+	ipHostReserved
+	// ipPrivate is RFC1918/ULA/CGNAT space: reachable only when a rule names the
+	// exact IP literal, never by resolving a permitted hostname to it.
+	ipPrivate
+)
+
+// classifyIP groups ip for the egress guard. An IPv6 transition address embeds an
+// IPv4 that To4 does not surface, so a synthesized address (DNS64/NAT64 is the
+// live case on IPv6-only subnets) is classified by its embedded IPv4.
+func classifyIP(ip net.IP) ipClass {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsPrivate() || ip.IsUnspecified() {
-		return true
+		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() {
+		return ipHostReserved
+	}
+	if ip.IsPrivate() {
+		return ipPrivate
 	}
 	if v4 := ip.To4(); v4 != nil {
 		// CGNAT 100.64.0.0/10 (RFC 6598) is not covered by IsPrivate but names
 		// carrier/infrastructure space just the same.
-		return v4[0] == 100 && v4[1]&0xc0 == 64
+		if v4[0] == 100 && v4[1]&0xc0 == 64 {
+			return ipPrivate
+		}
+		return ipPublic
 	}
-	// An IPv6 transition address embeds an IPv4 that To4 does not surface, so a
-	// synthesized address (DNS64/NAT64 is the live case on IPv6-only subnets) can
-	// route to an internal v4 target. Re-check any embedded IPv4.
 	if embedded := embeddedIPv4(ip); embedded != nil {
-		return isNonPublicIP(embedded)
+		return classifyIP(embedded)
 	}
-	return false
+	return ipPublic
 }
 
 // embeddedIPv4 returns the IPv4 carried by an IPv6 transition address, or nil.

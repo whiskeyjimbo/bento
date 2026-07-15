@@ -75,11 +75,13 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not available")
 	}
-	// A loopback HTTPS-less listener standing in for an upstream. 127.0.0.2 (not
-	// 127.0.0.1) is used deliberately: the sandbox's NO_PROXY exempts 127.0.0.1 so
-	// a client would try to reach it directly and fail in the netns, whereas
-	// 127.0.0.2 is proxied - which is exactly the path under test.
-	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	// The upstream must be bound on a NON-loopback address: the proxy runs on the
+	// host, so a loopback target names the host's own loopback, which the resolved-IP
+	// guard now refuses even for an explicit rule. Bind on the machine's outbound IP
+	// (private on most hosts) and allowlist it as an explicit literal - which is also
+	// the guard's explicit-private-IP exemption exercised end to end.
+	host := outboundIP(t)
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,17 +100,17 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 
 	// --proxytunnel forces curl to CONNECT even for an http:// URL, which is the
 	// tunnel path the proxy implements (it tunnels TLS; it does not relay plain
-	// HTTP). The upstream is a bare loopback listener, so no TLS is needed.
+	// HTTP). The upstream is a bare listener, so no TLS is needed.
 	curl := "curl -sS --proxytunnel -o /dev/null -w '%{http_code}' --max-time 5 "
 	script := "" +
-		"echo -n allowed=; " + curl + "http://127.0.0.2:" + port + "/ 2>/dev/null || echo failed\n" +
+		"echo -n allowed=; " + curl + "http://" + net.JoinHostPort(host, port) + "/ 2>/dev/null || echo failed\n" +
 		"echo\n" +
 		"echo -n denied=; " + curl + "http://169.254.254.254:" + port + "/ >/dev/null 2>&1 && echo REACHED || echo blocked\n"
 
 	// exec: all because the script legitimately spawns curl as a subprocess; this
 	// test is about egress, not exec-blocking.
 	p := &policy.Policy{
-		Network: []policy.NetworkRule{{Host: "127.0.0.2", Port: port}},
+		Network: []policy.NetworkRule{{Host: host, Port: port}},
 		Exec:    policy.ExecAll,
 	}
 	out := runShell(t, sandboxEnforcer(t), p, script)
@@ -119,6 +121,24 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	if !strings.Contains(out, "denied=blocked") || strings.Contains(out, "denied=REACHED") {
 		t.Errorf("a non-allowlisted host was not blocked: %q", out)
 	}
+}
+
+// outboundIP returns the machine's primary non-loopback IP, or skips the test if
+// there is none. A UDP "dial" sends no packets; it just selects the local address
+// the kernel would route from, which is the address a host-side listener is
+// reachable at through the proxy.
+func outboundIP(t *testing.T) string {
+	t.Helper()
+	c, err := net.Dial("udp", "192.0.2.1:9") // TEST-NET-1, unrouted
+	if err != nil {
+		t.Skip("no outbound route to bind a non-loopback upstream")
+	}
+	defer c.Close()
+	ip := c.LocalAddr().(*net.UDPAddr).IP
+	if ip == nil || ip.IsLoopback() {
+		t.Skip("no non-loopback local IP to reach an upstream through the proxy")
+	}
+	return ip.String()
 }
 
 // runShell runs sh -c script under the enforcer with the given policy.
