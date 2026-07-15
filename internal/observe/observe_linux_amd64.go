@@ -12,8 +12,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -32,12 +34,15 @@ type Result struct {
 
 // amd64 syscall numbers.
 const (
-	sysOpen     = 2
-	sysOpenat   = 257
-	sysCreat    = 85
-	sysExecve   = 59
-	sysExecveat = 322
+	sysOpen   = 2
+	sysOpenat = 257
+	sysCreat  = 85
+	sysExecve = 59
 )
+
+// atFdCwd is openat's dirfd value meaning "relative to the working directory".
+// A real dirfd instead anchors a relative path at that descriptor's directory.
+const atFdCwd = -100
 
 // Open flags that mean the open requested write access.
 const writeFlags = syscall.O_WRONLY | syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC | syscall.O_APPEND
@@ -130,14 +135,34 @@ func inspect(pid int, record func(string, bool), res *Result) {
 	}
 	switch regs.Orig_rax {
 	case sysOpenat:
-		record(readString(pid, uintptr(regs.Rsi)), regs.Rdx&writeFlags != 0)
+		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
+		record(path, regs.Rdx&writeFlags != 0)
 	case sysOpen:
 		record(readString(pid, uintptr(regs.Rdi)), regs.Rsi&writeFlags != 0)
 	case sysCreat:
 		record(readString(pid, uintptr(regs.Rdi)), true)
-	case sysExecve, sysExecveat:
+	case sysExecve:
+		// Only execve is counted: the enforcement exec-block filter blocks execve
+		// but allows execveat, so a program that spawns via execveat runs fine under
+		// exec: none and does not need exec: all.
 		res.Execed = true
 	}
+}
+
+// resolveAt anchors an openat pathname. An absolute path, or one opened relative
+// to the working directory (AT_FDCWD), is returned unchanged — the profiler
+// anchors the latter at the run's working directory. A path opened relative to a
+// real directory descriptor is joined onto that descriptor's directory, read from
+// /proc/<pid>/fd, so it is not mis-anchored at the working directory instead.
+func resolveAt(pid int, dirfd int32, path string) string {
+	if path == "" || strings.HasPrefix(path, "/") || dirfd == atFdCwd {
+		return path
+	}
+	dir, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd))
+	if err != nil {
+		return path
+	}
+	return filepath.Join(dir, path)
 }
 
 // readString reads a NUL-terminated string from the traced process's memory.

@@ -1,9 +1,11 @@
 package observe
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +56,40 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 
 	if !res.Execed {
 		t.Error("the script spawned `true` but no exec was observed")
+	}
+}
+
+// A path opened relative to a real directory descriptor (openat with a dirfd,
+// not AT_FDCWD) must be anchored at that directory, not left bare — otherwise the
+// profiler would anchor it at the working directory and grant the wrong path.
+func TestTraceResolvesOpenatDirfd(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "viadir.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Open the directory, then open the file relative to that descriptor.
+	script := fmt.Sprintf("import os\nd=os.open(%q,os.O_RDONLY)\nos.close(os.open('viadir.txt',os.O_RDONLY,dir_fd=d))\n", dir)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+
+	var anchored bool
+	for _, a := range res.Accesses {
+		if a.Path == "viadir.txt" {
+			t.Errorf("dirfd-relative open recorded bare-relative, not anchored: %q", a.Path)
+		}
+		if strings.HasPrefix(a.Path, "/") && strings.HasSuffix(a.Path, "/viadir.txt") {
+			anchored = true
+		}
+	}
+	if !anchored {
+		t.Errorf("dirfd-relative open was not anchored to an absolute path; accesses: %v", res.Accesses)
 	}
 }
 
