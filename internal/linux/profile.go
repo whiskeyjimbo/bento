@@ -16,12 +16,14 @@ import (
 )
 
 // Profile runs p under observation and reports what the target did. p should be
-// permissive (broad reads, allow-all network, exec allowed) so the run exercises
-// the script's real behavior; the caller synthesizes a tight policy from the
-// result. The filesystem accesses come from the in-sandbox ptrace observer; the
-// outbound hosts come from the egress proxy, which sees hostnames the target
-// would otherwise resolve to bare IPs.
-func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process) (profile.Observation, error) {
+// permissive (broad reads, exec allowed) so the run exercises the script's real
+// behavior; the caller synthesizes a tight policy from the result. The filesystem
+// accesses come from the in-sandbox ptrace observer; the outbound hosts come from
+// the egress proxy, which sees hostnames the target would otherwise resolve to
+// bare IPs. By default the proxy records those hosts but refuses to forward the
+// traffic, so profiling untrusted code cannot exfiltrate; allowNetwork forwards
+// it for a faithful run of code whose later behavior depends on the response.
+func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool) (profile.Observation, error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
 	}
@@ -50,7 +52,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		hosts []profile.HostPort
 	)
 	if sb.proxySocket != "" {
-		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, func(host, port string) {
+		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(host, port string) {
 			mu.Lock()
 			hosts = append(hosts, profile.HostPort{Host: host, Port: port})
 			mu.Unlock()
@@ -82,14 +84,19 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	return obs, nil
 }
 
-// startRecordingProxy runs the egress proxy and reports every host it allows, so
-// a profiling run captures the outbound destinations by hostname.
-func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, record func(host, port string)) (func(), error) {
+// startRecordingProxy runs the egress proxy and reports every destination a
+// profiling run reaches for, by hostname. By default the proxy records each
+// CONNECT and refuses it, so the script's data never leaves the host; passing
+// allowNetwork forwards the traffic for a faithful run of network-dependent code.
+// Either way the host is recorded, so the proposed manifest is the same.
+func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(host, port string)) (func(), error) {
+	var opts []proxy.Option
+	if !allowNetwork {
+		opts = append(opts, proxy.WithoutEgress())
+	}
 	stop, _, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
-		if d == proxy.Allowed {
-			record(host, port)
-		}
-	})
+		record(host, port)
+	}, opts...)
 	return stop, err
 }
 

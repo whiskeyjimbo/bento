@@ -17,20 +17,23 @@ import (
 
 func newProfileCmd() *cobra.Command {
 	var (
-		interpreter string
-		out         string
+		interpreter  string
+		out          string
+		allowNetwork bool
 	)
 	cmd := &cobra.Command{
 		Use:   "profile <script> [-- args...]",
 		Short: "Run a script under observation and propose a manifest",
 		Long: "profile runs the script permissively while observing what it opens and where\n" +
 			"it connects, then writes a proposed manifest tightened to just that.\n\n" +
-			"WARNING: profiling executes the script with broad read access and open\n" +
-			"network so it runs its real code paths. Only profile code you would run\n" +
-			"unsandboxed, in a context you trust. A built-in set of sensitive paths (SSH\n" +
-			"keys, cloud and VCS credentials) stays shielded, but that list is not\n" +
-			"exhaustive — assume the script can read anything else and send it anywhere.\n" +
-			"Review the proposed manifest, then `bento approve` it.\n\n" +
+			"WARNING: profiling executes the script with broad read access so it runs\n" +
+			"its real code paths. Only profile code you would run unsandboxed, in a\n" +
+			"context you trust. A built-in set of sensitive paths (SSH keys, cloud and\n" +
+			"VCS credentials) stays shielded, but that list is not exhaustive — assume\n" +
+			"the script can read anything else. Egress is recorded but not forwarded by\n" +
+			"default, so the script's data stays on the host; --allow-network forwards it\n" +
+			"for a faithful run of network-dependent code. Review the proposed manifest,\n" +
+			"then `bento approve` it.\n\n" +
 			"The proposal reflects only the code paths this run exercised; profile again\n" +
 			"with different inputs to widen it (grants are merged, not overwritten).",
 		Args: cobra.MinimumNArgs(1),
@@ -62,9 +65,13 @@ func newProfileCmd() *cobra.Command {
 				Exec:        policy.ExecAll,
 			}
 
-			fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively...\n", args[0])
+			if allowNetwork {
+				fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively (egress allowed)...\n", args[0])
+			} else {
+				fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
+			}
 			obs, err := backend.Profile(cmd.Context(), permissive,
-				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr})
+				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr}, allowNetwork)
 			if err != nil {
 				return err
 			}
@@ -96,6 +103,7 @@ func newProfileCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the extension if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
+	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
 }
 

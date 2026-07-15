@@ -40,6 +40,11 @@ type Proxy struct {
 	// observe is called for every decision. Profiling and logging hang off it;
 	// nil disables observation.
 	observe func(d Decision, host, port string)
+
+	// refuse records each CONNECT and then refuses it, never opening an upstream.
+	// Profiling uses it to learn a script's intended destinations without letting
+	// the script's data leave the host.
+	refuse bool
 }
 
 // Option configures a Proxy.
@@ -53,6 +58,13 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // WithObserver installs a callback invoked for every allow/deny decision.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
+}
+
+// WithoutEgress makes the proxy record every CONNECT and then refuse it, without
+// opening any upstream connection. Profiling uses it to capture a script's
+// intended destinations while keeping its data on the host.
+func WithoutEgress() Option {
+	return func(p *Proxy) { p.refuse = true }
 }
 
 // New returns a proxy that permits only the given rules.
@@ -123,6 +135,16 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	}
 	// Hand the tunnel a clean slate; copyIdle installs its own idle deadlines.
 	client.SetReadDeadline(time.Time{})
+
+	if p.refuse {
+		// Record the intended destination, then refuse — the script learns it could
+		// not connect, and its data never leaves the host. The plaintext body
+		// surfaces in the script's own error output.
+		p.report(Denied, host, port)
+		writeStatus(client, "403 Forbidden",
+			fmt.Sprintf("bento recorded intended egress to %s:%s but did not forward it (profiling; re-run with --allow-network to permit it)", host, port))
+		return
+	}
 
 	if !policy.Allows(p.rules, host, port) {
 		p.report(Denied, host, port)

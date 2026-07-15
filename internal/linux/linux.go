@@ -249,7 +249,7 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func
 
 // startProxyWith serves the egress allowlist on socket with a caller-supplied
 // observer, returning a stop function.
-func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string)) (stop func(), count func() int, err error) {
+func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func(), count func() int, err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, nil, fmt.Errorf("linux: starting egress proxy: %w", err)
@@ -257,7 +257,7 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
-		proxy.New(p.Network, proxy.WithObserver(observe)).Serve(proxyCtx, l)
+		proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
 		close(done)
 	}()
 	return func() { cancel(); <-done }, nil, nil

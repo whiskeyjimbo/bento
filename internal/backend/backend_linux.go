@@ -20,6 +20,9 @@ func New() (enforce.Enforcer, error) {
 }
 
 // Profile runs p under observation and reports what the target did. Linux-only.
-func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process) (profile.Observation, error) {
-	return linux.New().Profile(ctx, p, proc)
+// When allowNetwork is false the run records intended egress but does not forward
+// it, so profiling untrusted code cannot exfiltrate; passing true permits egress
+// for a faithful run of network-dependent code.
+func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool) (profile.Observation, error) {
+	return linux.New().Profile(ctx, p, proc, allowNetwork)
 }

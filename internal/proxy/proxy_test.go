@@ -109,6 +109,43 @@ func TestDeniedHostRefusedWithReason(t *testing.T) {
 	}
 }
 
+// WithoutEgress (profiling) records the intended destination and refuses it,
+// even for a host the allowlist would permit, and never opens an upstream — so
+// the destination is captured while the script's data stays on the host.
+func TestWithoutEgressRecordsButRefuses(t *testing.T) {
+	var seen []string
+	var dialed bool
+	var mu sync.Mutex
+	p := New(
+		[]policy.NetworkRule{{Host: "*", Port: "*"}}, // allow-all, as profiling uses
+		WithoutEgress(),
+		WithDialer(func(context.Context, string, string) (net.Conn, error) {
+			mu.Lock()
+			dialed = true
+			mu.Unlock()
+			return nil, fmt.Errorf("should not be reached")
+		}),
+		WithObserver(func(d Decision, host, port string) { seen = append(seen, host+":"+port) }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (recorded but not forwarded)", status)
+	}
+	if len(seen) != 1 || seen[0] != "example.com:443" {
+		t.Errorf("observer saw %v, want the destination recorded", seen)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if dialed {
+		t.Error("WithoutEgress must never open an upstream connection")
+	}
+}
+
 func TestDeniedHostIsNeverDialed(t *testing.T) {
 	var dialed bool
 	var mu sync.Mutex
