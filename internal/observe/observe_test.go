@@ -93,6 +93,41 @@ func TestTraceResolvesOpenatDirfd(t *testing.T) {
 	}
 }
 
+// openat2 (syscall 437) must be decoded like openat, or a program that uses it
+// (Rust std, systemd tools) profiles as touching nothing.
+func TestTraceDecodesOpenat2(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "via_openat2.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`import ctypes, struct, os
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+how = struct.pack("QQQ", os.O_RDONLY, 0, 0)  # struct open_how {flags, mode, resolve}
+buf = ctypes.create_string_buffer(how, len(how))
+fd = libc.syscall(ctypes.c_long(437), ctypes.c_long(-100), %q.encode(), buf, ctypes.c_size_t(len(how)))
+if fd < 0:
+    raise SystemExit("openat2 unsupported")
+os.close(fd)
+`, target)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Skipf("openat2 not usable on this host (exit %d)", res.ExitCode)
+	}
+	if _, ok := find(res, target); !ok {
+		t.Errorf("openat2 open was not observed; accesses: %v", res.Accesses)
+	}
+}
+
 func TestResolveAtPassthroughAndDrop(t *testing.T) {
 	// An absolute path, a working-directory-relative path, and an empty path are
 	// returned unchanged; the profiler anchors the AT_FDCWD case itself.

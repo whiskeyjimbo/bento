@@ -8,6 +8,7 @@
 package observe
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -34,10 +35,11 @@ type Result struct {
 
 // amd64 syscall numbers.
 const (
-	sysOpen   = 2
-	sysOpenat = 257
-	sysCreat  = 85
-	sysExecve = 59
+	sysOpen    = 2
+	sysOpenat  = 257
+	sysOpenat2 = 437
+	sysCreat   = 85
+	sysExecve  = 59
 )
 
 // atFdCwd is openat's dirfd value meaning "relative to the working directory".
@@ -140,6 +142,12 @@ func inspect(pid int, record func(string, bool), res *Result) {
 	case sysOpenat:
 		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
 		record(path, regs.Rdx&writeFlags != 0)
+	case sysOpenat2:
+		// openat2(dirfd, path, struct open_how *how, size): the flags are the first
+		// u64 of *how, not a register. Increasingly used (Rust std, systemd tools),
+		// so a program using it must not profile as touching nothing.
+		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
+		record(path, openHowWrite(pid, uintptr(regs.Rdx)))
 	case sysOpen:
 		record(readString(pid, uintptr(regs.Rdi)), regs.Rsi&writeFlags != 0)
 	case sysCreat:
@@ -170,6 +178,22 @@ func resolveAt(pid int, dirfd int32, path string) string {
 		return ""
 	}
 	return filepath.Join(dir, path)
+}
+
+// openHowWrite reads open_how.flags — the first u64 of the struct openat2 points
+// at — and reports whether the open requested write access.
+func openHowWrite(pid int, addr uintptr) bool {
+	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
+	if err != nil {
+		return false
+	}
+	defer mem.Close()
+
+	var buf [8]byte
+	if n, _ := mem.ReadAt(buf[:], int64(addr)); n < 8 {
+		return false
+	}
+	return binary.LittleEndian.Uint64(buf[:])&uint64(writeFlags) != 0
 }
 
 // readString reads a NUL-terminated string from the traced process's memory.
