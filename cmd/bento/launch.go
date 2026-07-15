@@ -26,11 +26,12 @@ func newLaunchCmd() *cobra.Command {
 		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			code, err := launcher.Run(launcher.Config{
-				Socket:    socket,
-				Block:     execMode != "all",
-				Writable:  writable,
-				ObserveFD: observeFD,
-				Target:    args,
+				Socket:      socket,
+				Block:       execMode != "all",
+				StrictBlock: execMode == "none-strict",
+				Writable:    writable,
+				ObserveFD:   observeFD,
+				Target:      args,
 			})
 			if err != nil {
 				return err

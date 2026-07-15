@@ -33,48 +33,57 @@ func validPolicy() *policy.Policy {
 // fullyEnforced is a probe reporting every layer as enforced.
 func fullyEnforced() Report {
 	var r Report
-	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerLimits} {
+	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimits} {
 		r.Add(l, Enforced, "")
 	}
 	return r
 }
 
-// none-strict asks for fork/clone blocking no backend enforces yet, so the exec
-// layer must come back degraded through the orchestrator: --strict refuses it,
-// and a default run proceeds (exec is hardening tier) but reports the shortfall
+// none-strict requires the exec-strict layer (fork/clone blocking). Where the host
+// provides it, --strict admits and the report shows it enforced. Where it does not
+// (e.g. a non-amd64 build that blocks only execve), the default run proceeds
+// (exec-strict is hardening tier) but the report and --strict surface the gap
 // rather than silently claiming the stricter mode.
-func TestNoneStrictExecReportedDegraded(t *testing.T) {
-	noneStrict := func() *policy.Policy {
-		return &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
+func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
+	noneStrict := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
+
+	// Host provides exec-strict: --strict admits, report shows it enforced.
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	res, err := Run(context.Background(), f, noneStrict, Process{}, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("--strict should admit none-strict where exec-strict is enforced; got %v", err)
+	}
+	if got := res.Report.StateOf(LayerExecStrict); got != Enforced {
+		t.Errorf("exec-strict state = %v, want enforced", got)
 	}
 
-	f := &fakeEnforcer{probe: fullyEnforced()}
-	res, err := Run(context.Background(), f, noneStrict(), Process{}, Options{})
+	// Host lacks exec-strict: default proceeds, but the report names the gap.
+	degraded := fullyEnforced()
+	degraded.Set(LayerExecStrict, Unavailable, "not implemented for this architecture")
+	f = &fakeEnforcer{probe: degraded}
+	res, err = Run(context.Background(), f, noneStrict, Process{}, Options{})
 	if err != nil {
 		t.Fatalf("default run should proceed for a hardening-tier gap; got %v", err)
 	}
-	if got := res.Report.StateOf(LayerExec); got != Degraded {
-		t.Errorf("exec state = %v, want degraded", got)
+	if got := res.Report.StateOf(LayerExecStrict); got != Unavailable {
+		t.Errorf("exec-strict state = %v, want unavailable", got)
 	}
 
-	f = &fakeEnforcer{probe: fullyEnforced()}
-	_, err = Run(context.Background(), f, noneStrict(), Process{}, Options{Strict: true})
+	// ...and --strict refuses it.
+	f = &fakeEnforcer{probe: degraded}
+	_, err = Run(context.Background(), f, noneStrict, Process{}, Options{Strict: true})
 	var refusal *Refusal
 	if !errors.As(err, &refusal) {
-		t.Fatalf("--strict must refuse none-strict; got %v", err)
+		t.Fatalf("--strict must refuse none-strict where exec-strict is unavailable; got %v", err)
 	}
 	if f.ran {
 		t.Error("a refused run must not reach the enforcer")
 	}
 
-	// Plain none must not be spuriously downgraded.
+	// Plain none does not require exec-strict and passes --strict.
 	f = &fakeEnforcer{probe: fullyEnforced()}
-	res, err = Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true})
-	if err != nil {
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true}); err != nil {
 		t.Fatalf("plain none under --strict should pass; got %v", err)
-	}
-	if got := res.Report.StateOf(LayerExec); got != Enforced {
-		t.Errorf("none exec state = %v, want enforced", got)
 	}
 }
 

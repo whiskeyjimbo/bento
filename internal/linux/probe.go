@@ -57,6 +57,20 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 			"this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced")
 	}
 
+	// exec-strict (none-strict's fork/vfork/clone blocking) needs both seccomp and
+	// the architecture-specific filter; off amd64 it degrades to the execve-only
+	// block rather than silently claiming the stricter guarantee.
+	switch {
+	case !seccomp.Supported():
+		r.Add(enforce.LayerExecStrict, enforce.Unavailable,
+			"this kernel does not support seccomp BPF")
+	case !seccomp.StrictExecSupported():
+		r.Add(enforce.LayerExecStrict, enforce.Unavailable,
+			"fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here")
+	default:
+		r.Add(enforce.LayerExecStrict, enforce.Enforced, "")
+	}
+
 	if ok, reason := canCreateScope(); ok {
 		r.Add(enforce.LayerLimits, enforce.Enforced, "")
 	} else {

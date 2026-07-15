@@ -9,6 +9,10 @@ const (
 	LayerFilesystem Layer = "filesystem"
 	LayerNetwork    Layer = "network"
 	LayerExec       Layer = "exec-block"
+	// LayerExecStrict is the extra none-strict guarantee (fork/vfork/process-clone
+	// blocking) on top of the execve block. A policy needs it only for exec:
+	// none-strict; a host that blocks execve but not fork reports it degraded.
+	LayerExecStrict Layer = "exec-strict"
 	LayerLimits     Layer = "limits"
 )
 
@@ -38,7 +42,7 @@ func (t Tier) String() string {
 // Tier reports which tier a layer belongs to.
 func (l Layer) Tier() Tier {
 	switch l {
-	case LayerExec, LayerLimits:
+	case LayerExec, LayerExecStrict, LayerLimits:
 		return TierHardening
 	default:
 		return TierCore

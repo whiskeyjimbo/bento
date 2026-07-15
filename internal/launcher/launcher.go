@@ -38,6 +38,11 @@ type Config struct {
 	// Block installs the exec-block seccomp filter (policy exec is none or
 	// none-strict). When false the target may spawn subprocesses freely.
 	Block bool
+	// StrictBlock additionally blocks fork/vfork/process-clone (policy exec is
+	// none-strict), where the architecture supports it. Off amd64 it falls back to
+	// the execve-only block, which the report surfaces as a degraded exec-strict
+	// layer. Only meaningful when Block is set.
+	StrictBlock bool
 	// Writable are the policy's resolved write-grant paths. Landlock confines
 	// writes to these (plus runtime scratch) as a second layer behind bwrap.
 	Writable []string
@@ -91,7 +96,7 @@ func Run(cfg Config) (int, error) {
 	}
 
 	if cfg.Block {
-		if err := seccomp.BlockExec(); err != nil {
+		if err := installExecFilter(cfg.StrictBlock); err != nil {
 			// Fail closed: never run the target unconfined while claiming to block
 			// subprocesses.
 			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
@@ -171,6 +176,18 @@ func runObserve(cfg Config, env []string) (int, error) {
 		return 0, fmt.Errorf("launcher: observing target: %w", traceErr)
 	}
 	return res.ExitCode, nil
+}
+
+// installExecFilter installs the strongest exec-block filter the policy asks for
+// and this architecture provides. none-strict gets the fork/clone-blocking filter
+// on amd64; where that is unavailable it falls back to the execve-only block, and
+// the run report (from Probe) marks the exec-strict layer degraded so the gap is
+// never silent.
+func installExecFilter(strict bool) error {
+	if strict && seccomp.StrictExecSupported() {
+		return seccomp.BlockExecStrict()
+	}
+	return seccomp.BlockExec()
 }
 
 // startBridge launches the bridge as a separate child process before any filter

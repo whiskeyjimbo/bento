@@ -34,7 +34,6 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		return Result{}, err
 	}
 	required := e.Probe(ctx).For(requiredLayers(p))
-	downgradeUnenforceablePolicy(p, &required)
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
@@ -45,23 +44,6 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// for no network is noise that trains users to ignore the warnings that matter.
 	res.Report = required
 	return res, err
-}
-
-// downgradeUnenforceablePolicy marks a required layer degraded when the policy
-// asks for a guarantee no backend enforces yet, so the shortfall reaches both
-// admission (--strict refuses) and the run report instead of being silently
-// claimed. It is applied to the required report before admission, so it must
-// cover only statically-known gaps, not anything discovered by running.
-//
-// none-strict requests fork/vfork/process-creating clone blocking on top of the
-// execve soft-block; that arg-matched filter is unimplemented, so the exec layer
-// is no stronger than plain none. Remove the exec case when a backend implements
-// none-strict and can advertise it at probe time.
-func downgradeUnenforceablePolicy(p *policy.Policy, required *Report) {
-	if p.Exec == policy.ExecNoneStrict && required.StateOf(LayerExec) == Enforced {
-		required.Set(LayerExec, Degraded,
-			"none-strict requested but only execve is blocked; fork/vfork/process-creating clone are not yet enforced")
-	}
 }
 
 // requiredLayers returns the layers a policy actually depends on.
@@ -78,6 +60,9 @@ func requiredLayers(p *policy.Policy) []Layer {
 	}
 	if p.Exec != policy.ExecAll {
 		layers = append(layers, LayerExec)
+	}
+	if p.Exec == policy.ExecNoneStrict {
+		layers = append(layers, LayerExecStrict)
 	}
 	if !p.Limits.IsZero() {
 		layers = append(layers, LayerLimits)

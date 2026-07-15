@@ -199,10 +199,10 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 	case policy.ExecAll:
 		fmt.Fprintf(w, "exec:         allowed (the script may spawn subprocesses)\n")
 	case policy.ExecNoneStrict:
-		fmt.Fprintf(w, "exec:         blocked (no subprocesses)\n")
-		fmt.Fprintf(w, "  note: none-strict also asks to block fork/vfork/clone, which is not yet\n")
-		fmt.Fprintf(w, "        enforced; it currently confines the same as `none`. run reports this\n")
-		fmt.Fprintf(w, "        as a degraded exec layer, and --strict refuses it.\n")
+		fmt.Fprintf(w, "exec:         blocked, strictly (no subprocesses; fork/vfork/clone blocked, threads allowed)\n")
+		fmt.Fprintf(w, "  note: fork/clone blocking needs an architecture-specific seccomp filter\n")
+		fmt.Fprintf(w, "        (amd64). Where it is unavailable, run and doctor report the exec-strict\n")
+		fmt.Fprintf(w, "        layer degraded and --strict refuses it.\n")
 	default:
 		fmt.Fprintf(w, "exec:         blocked (no subprocesses)\n")
 	}
