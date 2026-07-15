@@ -185,17 +185,18 @@ func TestWorkspaceHooksAreProtected(t *testing.T) {
 	}
 }
 
-// A write grant to a plain file is not a project checkout, so it must not drag in
-// the workspace shields: ".git/hooks" under a file is a path bwrap cannot create.
-func TestFileWriteGrantIsNotTreatedAsWorkspace(t *testing.T) {
+// Write grants are directory-granular: binding a file makes it a mount point,
+// which breaks save-via-rename. A grant naming an existing file is refused,
+// pointing the user at the directory.
+func TestFileWriteGrantIsRejected(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work/out.txt"}}
-	sb := testSandbox("/work/out.txt") // exists, but as a file (no children)
-	args := compileOrFail(t, p, sb)
-
-	for j := 0; j+1 < len(args); j++ {
-		if strings.HasSuffix(args[j+1], "/out.txt/.git/hooks") {
-			t.Fatalf("a file write grant must not get workspace shields: %v", args[j:j+2])
-		}
+	sb := testSandbox("/work/out.txt") // exists as a file (no children)
+	_, err := compile(p, enforce.Process{}, sb)
+	if err == nil {
+		t.Fatal("a write grant naming an existing file should be rejected")
+	}
+	if !strings.Contains(err.Error(), "parent directory") {
+		t.Errorf("error = %v, want it to point at the parent directory", err)
 	}
 }
 

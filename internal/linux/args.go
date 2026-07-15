@@ -110,6 +110,14 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		args = append(args, "--ro-bind-try", path, path)
 	}
 	for _, path := range writes {
+		// Write grants are directory-granular: bwrap can only make a directory
+		// writable in a way that supports creating and renaming files inside it.
+		// Binding a file makes it a mount point, which returns EBUSY on the
+		// save-to-temp-then-rename that editors and libraries use. So a grant that
+		// names an existing file is refused, pointing at the directory instead.
+		if sb.exists(path) && !sb.isDir(path) {
+			return nil, fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", path)
+		}
 		args = append(args, "--bind-try", path, path)
 	}
 

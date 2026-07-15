@@ -45,7 +45,7 @@ func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
 func TestSynthesizeAbsolutizesRelativePaths(t *testing.T) {
 	// The script runs with its directory as the working directory, so a relative
 	// path it opened must be anchored there or the manifest would mean something
-	// else at run time.
+	// else at run time. A write becomes a grant of its directory.
 	obs := Observation{
 		Reads:  []string{"input.txt"},
 		Writes: []string{"out/result.txt"},
@@ -54,22 +54,24 @@ func TestSynthesizeAbsolutizesRelativePaths(t *testing.T) {
 	if !reflect.DeepEqual(p.Read, []string{"/work/input.txt"}) {
 		t.Fatalf("read = %v, want /work/input.txt", p.Read)
 	}
-	if !reflect.DeepEqual(p.Write, []string{"/work/out/result.txt"}) {
-		t.Fatalf("write = %v, want /work/out/result.txt", p.Write)
+	if !reflect.DeepEqual(p.Write, []string{"/work/out"}) {
+		t.Fatalf("write = %v, want the directory /work/out", p.Write)
 	}
 }
 
-func TestSynthesizeWrittenPathIsNotAlsoRead(t *testing.T) {
+func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
+	// A write to a file grants its directory, and a read at or below that
+	// directory is already covered, so it is not listed again.
 	obs := Observation{
-		Reads:  []string{"/data/shared.txt"},
-		Writes: []string{"/data/shared.txt"},
+		Reads:  []string{"/data/shared.txt", "/data/nested/in.txt"},
+		Writes: []string{"/data/out.txt"},
 	}
 	p := Synthesize("/work/run.py", "python3", obs)
-	if len(p.Read) != 0 {
-		t.Fatalf("read = %v, want empty (a written path is implicitly readable)", p.Read)
+	if !reflect.DeepEqual(p.Write, []string{"/data"}) {
+		t.Fatalf("write = %v, want the directory /data", p.Write)
 	}
-	if !reflect.DeepEqual(p.Write, []string{"/data/shared.txt"}) {
-		t.Fatalf("write = %v", p.Write)
+	if len(p.Read) != 0 {
+		t.Fatalf("read = %v, want empty (all reads are under the writable /data)", p.Read)
 	}
 }
 

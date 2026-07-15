@@ -71,19 +71,29 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 			(runtime != "" && strings.HasPrefix(p, runtime+"/"))
 	}
 
+	// Write grants are directory-granular (bwrap can only make a directory
+	// writable in a rename-safe way), so an observed write to a file becomes a
+	// grant of its directory.
+	writeDir := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		return filepath.Dir(abs(p))
+	}
+
 	p := &policy.Policy{
 		Entrypoint:  entrypoint,
 		Interpreter: interpreter,
 		Read:        cleanPaths(obs.Reads, abs, skip),
-		Write:       cleanPaths(obs.Writes, abs, skip),
+		Write:       cleanPaths(obs.Writes, writeDir, skip),
 		Exec:        policy.ExecNone,
 	}
 	if obs.Execed {
 		p.Exec = policy.ExecAll
 	}
-	// A written path is implicitly readable too; drop it from reads to avoid
-	// listing the same path twice.
-	p.Read = subtract(p.Read, p.Write)
+	// A write grant is readable too, so a read at or below a granted write
+	// directory is already covered; drop it rather than list it twice.
+	p.Read = dropCovered(p.Read, p.Write)
 
 	seen := map[string]bool{}
 	for _, h := range obs.Hosts {
@@ -139,16 +149,30 @@ func cleanPaths(paths []string, canon func(string) string, skip func(string) boo
 	return out
 }
 
-func subtract(a, b []string) []string {
-	in := map[string]bool{}
-	for _, x := range b {
-		in[x] = true
-	}
+// dropCovered removes any read path that is at or below one of the write
+// directories, since a write grant is readable too.
+func dropCovered(reads, writeDirs []string) []string {
 	var out []string
-	for _, x := range a {
-		if !in[x] {
-			out = append(out, x)
+	for _, r := range reads {
+		covered := false
+		for _, w := range writeDirs {
+			if r == w || isUnder(r, w) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// isUnder reports whether child is inside parent.
+func isUnder(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

@@ -52,6 +52,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	defer cleanup()
 
+	if err := prepareWriteDirs(p, sb.home); err != nil {
+		return enforce.Result{}, err
+	}
+
 	// When the policy allows egress, run the allowlist proxy on the sandbox's
 	// unix socket for the lifetime of the run. The sandbox reaches it only through
 	// that socket; nothing else can leave the network namespace.
@@ -113,6 +117,39 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 func isExitError(err error) bool {
 	var ee *exec.ExitError
 	return errors.As(err, &ee)
+}
+
+// prepareWriteDirs makes each granted write directory exist on the host before it
+// is bound, so writes persist. bwrap can only bind an existing path, and only a
+// directory can be made writable in a way that supports creating and renaming
+// files inside it — binding a file makes it a mount point, which breaks atomic
+// save-and-rename. A write grant is therefore a directory: a missing one is
+// created, an existing file is refused. The shield check runs first so a grant
+// that lands inside an always-shielded path is rejected before anything is
+// created under it (never mkdir inside ~/.ssh only to reject the grant).
+func prepareWriteDirs(p *policy.Policy, home string) error {
+	writes, err := resolveAll(p.Write)
+	if err != nil {
+		return err
+	}
+	if err := checkNotShielded(home, writes); err != nil {
+		return err
+	}
+	for _, w := range writes {
+		switch fi, err := os.Stat(w); {
+		case err == nil && fi.IsDir():
+			// Already a directory: nothing to prepare.
+		case err == nil:
+			return fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", w)
+		case os.IsNotExist(err):
+			if err := os.MkdirAll(w, 0o755); err != nil {
+				return fmt.Errorf("linux: creating write directory %q: %w", w, err)
+			}
+		default:
+			return fmt.Errorf("linux: checking write grant %q: %w", w, err)
+		}
+	}
+	return nil
 }
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a

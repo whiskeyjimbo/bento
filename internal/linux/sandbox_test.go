@@ -124,6 +124,55 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 	}
 }
 
+// A write grant to a directory that does not exist yet is created on the host so
+// the run can persist into it. This is the case a profiled manifest hits: the
+// script writes a new output file, and the grant is that file's directory.
+func TestWriteGrantToMissingDirIsCreatedAndPersists(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "generated") // does not exist yet
+	result := filepath.Join(outDir, "result.txt")
+
+	p := &policy.Policy{Write: []string{outDir}}
+	if code, output := runScript(t, p, "echo WROTE > "+result+"\n"); code != 0 {
+		t.Fatalf("write into a granted-but-missing directory failed: exit=%d out=%s", code, output)
+	}
+	got, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatalf("write into a created grant directory did not persist: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "WROTE" {
+		t.Fatalf("file = %q, want WROTE", got)
+	}
+}
+
+// Saving via write-temp-then-rename — what editors and os.replace do — must work
+// under a write grant. This is the whole reason write grants are directory-
+// granular: a file-level bind mount makes rename onto the target fail with EBUSY.
+func TestAtomicRenameSaveWorksUnderWriteGrant(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Write: []string{dir}}
+	tmp := filepath.Join(dir, ".data.tmp")
+	if code, output := runScript(t, p, "echo new > "+tmp+" && mv -f "+tmp+" "+target+"\n"); code != 0 {
+		t.Fatalf("atomic save-and-rename failed under a write grant: exit=%d out=%s", code, output)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "new" {
+		t.Fatalf("target = %q, want new after an atomic rename save", got)
+	}
+}
+
 // The mandatory deny-list must hold even when the policy grants the whole home
 // directory. A credential file that does not exist yet must not be creatable —
 // this is the v1 hole, where an absent ~/.ssh could be created and a key planted.
