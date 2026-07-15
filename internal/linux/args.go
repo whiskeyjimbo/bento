@@ -159,6 +159,15 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		}
 	}
 
+	// With every mount point now created, remount the sandbox root read-only. bwrap
+	// starts the root as a writable tmpfs; left writable, a run could create files
+	// directly at "/" that no grant allows. Making it read-only confines writes to
+	// exactly the submounts made writable — the runtime scratch (/tmp, /dev, /proc)
+	// and the write grants — which is also what the Landlock backstop confines to,
+	// so the two layers agree. Must come last: an earlier remount would stop bwrap
+	// creating the remaining root-level mount points.
+	args = append(args, "--remount-ro", "/")
+
 	args = append(args, envArgs(proc)...)
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
@@ -171,10 +180,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 			launch = append(launch, "--observe", sandboxObserveReport)
 		}
 		// The launcher's Landlock backstop confines writes to exactly the paths
-		// passed here. They must match what bwrap made writable — the runtime
-		// scratch mounts plus the write grants — or Landlock would deny a write
-		// bwrap allows. Deriving both from this one place is what keeps the two
-		// layers in sync.
+		// passed here: the runtime scratch mounts plus the write grants. These are
+		// all bwrap makes writable too — the root is remounted read-only above — so
+		// the two layers agree and neither denies a write the other allows. Deriving
+		// both from this one place is what keeps them in sync.
 		for _, w := range append(append([]string{}, sandboxWritableMounts...), writes...) {
 			launch = append(launch, "--rw", w)
 		}

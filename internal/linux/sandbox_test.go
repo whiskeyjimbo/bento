@@ -124,6 +124,24 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 	}
 }
 
+// bwrap starts the sandbox root as a writable tmpfs; bento remounts it read-only
+// so a run cannot create files at "/" that no grant allows. Writes stay confined
+// to the runtime scratch and grants. (This exercises the direct exec:all path; the
+// launcher path shares the same remount, and its Landlock rw-set matches.)
+func TestSandboxRootIsReadOnly(t *testing.T) {
+	requireSandbox(t)
+
+	_, out := runScript(t, &policy.Policy{}, "mkdir /rootdir 2>&1 || true\n")
+	if !strings.Contains(out, "Read-only file system") {
+		t.Errorf("a write to the sandbox root should be denied (read-only), got: %q", out)
+	}
+	// Sanity: /tmp (a writable submount) still works, so only the root was locked.
+	_, out2 := runScript(t, &policy.Policy{}, "echo x > /tmp/probe && echo TMP_OK\n")
+	if !strings.Contains(out2, "TMP_OK") {
+		t.Errorf("/tmp should remain writable under a read-only root, got: %q", out2)
+	}
+}
+
 // A write grant to a directory that does not exist yet is created on the host so
 // the run can persist into it. This is the case a profiled manifest hits: the
 // script writes a new output file, and the grant is that file's directory.
