@@ -140,11 +140,12 @@ func parseObservations(path string) (profile.Observation, error) {
 	if err := s.Err(); err != nil {
 		return profile.Observation{}, err
 	}
-	// No start marker means the launcher never wrote the report: the sandbox failed
-	// to start or tracing failed. Surfacing an error here is what stops the profiler
-	// from proposing a silently-empty manifest on a bwrap abort.
+	// A missing completion marker means the observer did not finish: the sandbox
+	// failed to start, tracing failed, or the report was truncated. Surfacing an
+	// error here is what stops the profiler from proposing a silently-empty or
+	// partial manifest instead of the run's real accesses.
 	if !started {
-		return profile.Observation{}, fmt.Errorf("linux: the profiling sandbox did not run the target (the observation is empty); check the output above for a bubblewrap or tracing error")
+		return profile.Observation{}, fmt.Errorf("linux: profiling did not complete (the observation report is empty or truncated); the sandbox may have failed to start")
 	}
 	return obs, nil
 }

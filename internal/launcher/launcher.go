@@ -114,9 +114,6 @@ func runObserve(cfg Config, env []string) (int, error) {
 	}
 
 	var b strings.Builder
-	// The marker goes first, only after a successful trace, so the reader can tell a
-	// genuine (even empty) observation from a report we never got to write.
-	b.WriteString(observe.ReportStart + "\n")
 	for _, a := range res.Accesses {
 		verb := "R"
 		if a.Write {
@@ -127,6 +124,11 @@ func runObserve(cfg Config, env []string) (int, error) {
 	if res.Execed {
 		b.WriteString("EXEC\n")
 	}
+	// The marker goes LAST, only after a successful trace serialized every record.
+	// Its presence therefore means the report is complete: a reader that finds it
+	// knows the observer ran to the end, and a truncated write (or a report the
+	// launcher never got to write) lacks it and is treated as a failure.
+	b.WriteString(observe.ReportStart + "\n")
 	if err := os.WriteFile(cfg.Observe, []byte(b.String()), 0o644); err != nil {
 		return 0, fmt.Errorf("launcher: writing observations: %w", err)
 	}
