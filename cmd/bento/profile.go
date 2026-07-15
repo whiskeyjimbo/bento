@@ -25,10 +25,12 @@ func newProfileCmd() *cobra.Command {
 		Short: "Run a script under observation and propose a manifest",
 		Long: "profile runs the script permissively while observing what it opens and where\n" +
 			"it connects, then writes a proposed manifest tightened to just that.\n\n" +
-			"WARNING: profiling runs the script — do it on code you are willing to execute,\n" +
-			"in a context you trust. Mandatory-deny paths (credentials, SSH keys) stay\n" +
-			"shielded even during profiling, but the script otherwise runs with broad\n" +
-			"access. Review the proposed manifest, then `bento approve` it.\n\n" +
+			"WARNING: profiling executes the script with broad read access and open\n" +
+			"network so it runs its real code paths. Only profile code you would run\n" +
+			"unsandboxed, in a context you trust. A built-in set of sensitive paths (SSH\n" +
+			"keys, cloud and VCS credentials) stays shielded, but that list is not\n" +
+			"exhaustive — assume the script can read anything else and send it anywhere.\n" +
+			"Review the proposed manifest, then `bento approve` it.\n\n" +
 			"The proposal reflects only the code paths this run exercised; profile again\n" +
 			"with different inputs to widen it (grants are merged, not overwritten).",
 		Args: cobra.MinimumNArgs(1),
@@ -45,13 +47,17 @@ func newProfileCmd() *cobra.Command {
 			}
 
 			// A permissive policy so the run exercises the script's real behavior;
-			// the deny-list still shields credentials.
+			// the deny-list still shields the known-sensitive paths. Write is granted
+			// only to the script's own directory: the sandbox already provides a
+			// private writable /tmp, so granting host /tmp is both unnecessary and
+			// unsafe (it would overmount the private tmpfs with the real one). Writes
+			// elsewhere still fail during the run but are observed as intent.
 			permissive := &policy.Policy{
 				Entrypoint:  script,
 				Interpreter: interpreter,
 				Args:        args[1:],
 				Read:        []string{"/"},
-				Write:       []string{filepath.Dir(script), "/tmp"},
+				Write:       []string{filepath.Dir(script)},
 				Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
 				Exec:        policy.ExecAll,
 			}

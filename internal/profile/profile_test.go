@@ -26,6 +26,22 @@ func TestSynthesizeDropsInterpreterTree(t *testing.T) {
 	}
 }
 
+func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
+	// The sandbox's /tmp is a private tmpfs, so a randomly-named scratch file
+	// there is not a grant a manifest should carry.
+	obs := Observation{
+		Reads:  []string{"/tmp/tmp8f3k/data", "/data/input.txt"},
+		Writes: []string{"/tmp/tmpq1/scratch"},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
+		t.Fatalf("read = %v, want /tmp scratch dropped", p.Read)
+	}
+	if len(p.Write) != 0 {
+		t.Fatalf("write = %v, want /tmp scratch dropped", p.Write)
+	}
+}
+
 func TestSynthesizeAbsolutizesRelativePaths(t *testing.T) {
 	// The script runs with its directory as the working directory, so a relative
 	// path it opened must be anchored there or the manifest would mean something

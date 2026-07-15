@@ -43,6 +43,9 @@ var systemPrefixes = []string{
 	"/etc/nsswitch.conf", "/etc/passwd", "/etc/group", "/etc/resolv.conf", "/etc/hosts",
 	"/etc/localtime",
 	"/proc/", "/sys/", "/dev/", "/run/", "/nix/store/",
+	// The sandbox's /tmp is a private tmpfs; anything a run writes there is
+	// ephemeral and randomly named, so it is scratch, never a manifest grant.
+	"/tmp/",
 }
 
 // Synthesize assembles a proposed policy from observations. It drops the paths
