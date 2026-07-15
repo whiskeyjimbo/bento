@@ -200,6 +200,19 @@ func TestFileWriteGrantIsRejected(t *testing.T) {
 	}
 }
 
+// A "/" write grant would make the entire host root writable, defeating the
+// sandbox; unlike a "/" read grant it is never expanded, only refused.
+func TestRootWriteGrantIsRejected(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/"}}
+	_, err := compile(p, enforce.Process{}, testSandbox())
+	if err == nil {
+		t.Fatal("a \"/\" write grant should be rejected")
+	}
+	if !strings.Contains(err.Error(), "host root") {
+		t.Errorf("error = %v, want it to explain the whole-root-writable refusal", err)
+	}
+}
+
 // A read-only grant already makes a write-denied path unwritable, so no shield
 // mount is needed — and adding one over a read-only parent would abort bwrap.
 func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {

@@ -99,7 +99,16 @@ func Home(home string) []Rule {
 		".mcp.json",
 	}
 
-	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly))
+	// Directories whose contents run on the host at the next login or shell start.
+	// Reads stay allowed (a script may legitimately inspect them); creating or
+	// modifying an entry is what grants persistence, so writes are denied.
+	writeOnlyDirs := []string{
+		".config/autostart",            // XDG autostart .desktop entries
+		".config/systemd/user",         // systemd user services and timers
+		".config/plasma-workspace/env", // KDE login shell scripts
+	}
+
+	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))
 	for _, d := range dirs {
 		rules = append(rules, Rule{Path: join(d), Deny: DenyAll, Dir: true})
 	}
@@ -108,6 +117,9 @@ func Home(home string) []Rule {
 	}
 	for _, f := range writeOnly {
 		rules = append(rules, Rule{Path: join(f), Deny: DenyWrite})
+	}
+	for _, d := range writeOnlyDirs {
+		rules = append(rules, Rule{Path: join(d), Deny: DenyWrite, Dir: true})
 	}
 	return rules
 }

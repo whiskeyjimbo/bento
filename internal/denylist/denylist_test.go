@@ -45,4 +45,21 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 			t.Errorf("%s: got Deny=%v Dir=%v, want DenyAll file", p, r.Deny, r.Dir)
 		}
 	}
+
+	// Login-persistence directories: readable, but no new entry may be created,
+	// so a broad home write grant cannot plant an autostart entry or user service.
+	wantDenyWriteDir := []string{
+		"/home/u/.config/autostart",
+		"/home/u/.config/systemd/user",
+	}
+	for _, p := range wantDenyWriteDir {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s: got Deny=%v Dir=%v, want DenyWrite directory", p, r.Deny, r.Dir)
+		}
+	}
 }

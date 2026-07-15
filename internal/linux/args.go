@@ -110,6 +110,11 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		args = append(args, "--ro-bind-try", path, path)
 	}
 	for _, path := range writes {
+		// Unlike a read grant, "/" is never expanded for writes: making the entire
+		// host root writable would defeat the sandbox, and it is never a real grant.
+		if path == "/" {
+			return nil, fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
+		}
 		// Write grants are directory-granular: bwrap can only make a directory
 		// writable in a way that supports creating and renaming files inside it.
 		// Binding a file makes it a mount point, which returns EBUSY on the

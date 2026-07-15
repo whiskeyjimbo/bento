@@ -78,6 +78,18 @@ func newProfileCmd() *cobra.Command {
 
 			proposed := profile.Synthesize(script, interpreter, obs)
 
+			// A write to a file directly in a broad directory (the home directory, a
+			// top-level system directory, or the root) collapses to a grant of that
+			// whole directory, since write grants are directory-granular. Refuse to
+			// propose such a grant automatically — it would expose far more than the
+			// script needs — and tell the user to add a narrower one by hand.
+			if kept, dropped := clampBroadWrites(proposed.Write); len(dropped) > 0 {
+				proposed.Write = kept
+				for _, d := range dropped {
+					fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q — too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
+				}
+			}
+
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
 			if existing, err := loadDocument(out); err == nil {
@@ -105,6 +117,24 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// clampBroadWrites splits proposed write directories into those safe to grant
+// automatically and those too broad to. A directory is too broad if it is the
+// root, a top-level directory (a direct child of "/", such as /etc or /home), or
+// the user's home directory itself — granting write to any of those exposes far
+// more than a profiled script needs.
+func clampBroadWrites(writes []string) (kept, dropped []string) {
+	home, _ := os.UserHomeDir()
+	for _, w := range writes {
+		switch {
+		case w == "/", filepath.Dir(w) == "/", home != "" && w == home:
+			dropped = append(dropped, w)
+		default:
+			kept = append(kept, w)
+		}
+	}
+	return kept, dropped
 }
 
 // guessInterpreter picks an interpreter from the script's extension. An empty
