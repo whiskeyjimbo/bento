@@ -39,6 +39,45 @@ func fullyEnforced() Report {
 	return r
 }
 
+// none-strict asks for fork/clone blocking no backend enforces yet, so the exec
+// layer must come back degraded through the orchestrator: --strict refuses it,
+// and a default run proceeds (exec is hardening tier) but reports the shortfall
+// rather than silently claiming the stricter mode.
+func TestNoneStrictExecReportedDegraded(t *testing.T) {
+	noneStrict := func() *policy.Policy {
+		return &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
+	}
+
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	res, err := Run(context.Background(), f, noneStrict(), Process{}, Options{})
+	if err != nil {
+		t.Fatalf("default run should proceed for a hardening-tier gap; got %v", err)
+	}
+	if got := res.Report.StateOf(LayerExec); got != Degraded {
+		t.Errorf("exec state = %v, want degraded", got)
+	}
+
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	_, err = Run(context.Background(), f, noneStrict(), Process{}, Options{Strict: true})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("--strict must refuse none-strict; got %v", err)
+	}
+	if f.ran {
+		t.Error("a refused run must not reach the enforcer")
+	}
+
+	// Plain none must not be spuriously downgraded.
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	res, err = Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("plain none under --strict should pass; got %v", err)
+	}
+	if got := res.Report.StateOf(LayerExec); got != Enforced {
+		t.Errorf("none exec state = %v, want enforced", got)
+	}
+}
+
 func TestRunDelegatesAndPropagatesExit(t *testing.T) {
 	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{ExitCode: 7}}
 	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
@@ -127,7 +166,7 @@ func TestRequiredLayerBlocksRun(t *testing.T) {
 }
 
 // A hardening layer that cannot be enforced (no seccomp) is reported loudly but
-// does not refuse the run by default — that is the macOS reality.
+// does not refuse the run by default - that is the macOS reality.
 func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	newProbe := func() Report {
 		var r Report
@@ -193,7 +232,7 @@ func TestAllowDegradedStillRefusesUnavailableCore(t *testing.T) {
 	}
 }
 
-// A requested resource limit that cannot be enforced must refuse by default —
+// A requested resource limit that cannot be enforced must refuse by default -
 // running untrusted code without its memory/CPU cap risks exhausting the host,
 // which is worse than a merely weaker sandbox. --allow-degraded overrides.
 func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
@@ -225,7 +264,7 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 }
 
 // A limit that is NOT requested (no limits in the policy) must not affect
-// admission — the limits layer is only relevant when the manifest asks for it.
+// admission - the limits layer is only relevant when the manifest asks for it.
 func TestUnrequestedLimitDoesNotRefuse(t *testing.T) {
 	f := &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")

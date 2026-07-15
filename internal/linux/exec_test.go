@@ -62,7 +62,7 @@ func TestExecBlockAndEgressTogether(t *testing.T) {
 
 // When the launcher supervises a subprocess-spawning target (exec: all + egress),
 // it is PID 1 and must act as an init: return the target's exit code as soon as
-// the target exits, reaping — not waiting on — an orphaned background grandchild.
+// the target exits, reaping - not waiting on - an orphaned background grandchild.
 // If reaping waited for every child, this run would hang on the long sleep.
 func TestSuperviseReapsOrphanAndReturnsPromptly(t *testing.T) {
 	requireSandbox(t)
@@ -91,6 +91,6 @@ func TestSuperviseReapsOrphanAndReturnsPromptly(t *testing.T) {
 		t.Errorf("exit code = %d, want 7 (the target's code, returned via the reaper)", res.ExitCode)
 	}
 	if elapsed > 10*time.Second {
-		t.Errorf("run took %s — the reaper waited on the orphaned sleep instead of returning on target exit", elapsed)
+		t.Errorf("run took %s - the reaper waited on the orphaned sleep instead of returning on target exit", elapsed)
 	}
 }

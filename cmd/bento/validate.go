@@ -23,7 +23,7 @@ func newValidateCmd() *cobra.Command {
 		Use:   "validate <manifest>",
 		Short: "Check a manifest and show the permissions it grants",
 		Long: "validate parses the manifest, rejects any malformed field, and prints the\n" +
-			"permissions it would grant — so the boundary can be reviewed before running\n" +
+			"permissions it would grant - so the boundary can be reviewed before running\n" +
 			"anything inside it.\n\n" +
 			"It also checks the approval: a manifest whose permissions changed since it was\n" +
 			"approved is reported. --strict makes a stale or missing approval a failure (exit\n" +
@@ -115,7 +115,7 @@ func checkApproval(doc *manifest.Document) approvalState {
 }
 
 // reportApproval prints the approval status and, under strict, fails when it is
-// not current — the CI signal that a manifest's permissions changed without
+// not current - the CI signal that a manifest's permissions changed without
 // re-approval.
 func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 	switch checkApproval(doc) {
@@ -123,12 +123,12 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
 		return nil
 	case approvalUnstamped:
-		fmt.Fprintf(w, "\napproval:     not approved — run `bento approve` after reviewing the permissions above\n")
+		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
 		if strict {
 			return fmt.Errorf("manifest is not approved")
 		}
 	case approvalStale:
-		fmt.Fprintf(w, "\napproval:     STALE — the permissions changed since this manifest was approved\n")
+		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              re-review and run `bento approve` to re-stamp it\n")
 		if strict {
 			return fmt.Errorf("manifest approval is stale: permissions changed since it was approved")
@@ -166,12 +166,12 @@ func toPolicyJSON(p *policy.Policy) policyJSON {
 }
 
 func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
-	fmt.Fprintf(w, "manifest:     %s — ok\n", path)
+	fmt.Fprintf(w, "manifest:     %s - ok\n", path)
 	fmt.Fprintf(w, "entrypoint:   %s\n", p.Entrypoint)
 	if p.Interpreter != "" {
 		fmt.Fprintf(w, "interpreter:  %s\n", p.Interpreter)
 	} else {
-		fmt.Fprintf(w, "interpreter:  (none — the entrypoint is a compiled binary)\n")
+		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is a compiled binary)\n")
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
@@ -199,7 +199,10 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 	case policy.ExecAll:
 		fmt.Fprintf(w, "exec:         allowed (the script may spawn subprocesses)\n")
 	case policy.ExecNoneStrict:
-		fmt.Fprintf(w, "exec:         blocked, strictly (no subprocesses, no fork)\n")
+		fmt.Fprintf(w, "exec:         blocked (no subprocesses)\n")
+		fmt.Fprintf(w, "  note: none-strict also asks to block fork/vfork/clone, which is not yet\n")
+		fmt.Fprintf(w, "        enforced; it currently confines the same as `none`. run reports this\n")
+		fmt.Fprintf(w, "        as a degraded exec layer, and --strict refuses it.\n")
 	default:
 		fmt.Fprintf(w, "exec:         blocked (no subprocesses)\n")
 	}

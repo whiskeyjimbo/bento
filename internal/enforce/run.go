@@ -11,7 +11,7 @@ import (
 // Options tunes a Run. The zero value is the default posture: refuse to run when
 // a core guarantee the policy depends on cannot be fully enforced.
 type Options struct {
-	// Strict refuses unless every layer the policy needs — hardening included —
+	// Strict refuses unless every layer the policy needs - hardening included -
 	// is fully enforced.
 	Strict bool
 	// AllowDegraded opts into a reduced-confinement run when a core layer can
@@ -34,6 +34,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		return Result{}, err
 	}
 	required := e.Probe(ctx).For(requiredLayers(p))
+	downgradeUnenforceablePolicy(p, &required)
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
@@ -46,10 +47,27 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	return res, err
 }
 
+// downgradeUnenforceablePolicy marks a required layer degraded when the policy
+// asks for a guarantee no backend enforces yet, so the shortfall reaches both
+// admission (--strict refuses) and the run report instead of being silently
+// claimed. It is applied to the required report before admission, so it must
+// cover only statically-known gaps, not anything discovered by running.
+//
+// none-strict requests fork/vfork/process-creating clone blocking on top of the
+// execve soft-block; that arg-matched filter is unimplemented, so the exec layer
+// is no stronger than plain none. Remove the exec case when a backend implements
+// none-strict and can advertise it at probe time.
+func downgradeUnenforceablePolicy(p *policy.Policy, required *Report) {
+	if p.Exec == policy.ExecNoneStrict && required.StateOf(LayerExec) == Enforced {
+		required.Set(LayerExec, Degraded,
+			"none-strict requested but only execve is blocked; fork/vfork/process-creating clone are not yet enforced")
+	}
+}
+
 // requiredLayers returns the layers a policy actually depends on.
 //
 // A policy with no network rules denies all egress, which namespace isolation
-// alone provides — it does not need the egress-allowlist stack, so a host that
+// alone provides - it does not need the egress-allowlist stack, so a host that
 // cannot run that stack must not block it. Likewise a policy that permits
 // subprocesses does not need exec-blocking, and one with no limits does not need
 // cgroups.
@@ -77,7 +95,7 @@ func (o Options) admit(r Report) error {
 		}
 	case o.AllowDegraded:
 		// Reduced confinement was opted into, but a core layer that enforces
-		// nothing at all is not reduced confinement — it is none.
+		// nothing at all is not reduced confinement - it is none.
 		if short := r.shortfall(TierCore, Unavailable); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be enforced at all on this host", Short: short}
 		}

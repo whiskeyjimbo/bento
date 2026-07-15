@@ -94,7 +94,7 @@ func (r *Report) Add(layer Layer, state State, reason string) {
 }
 
 // Set replaces a layer's status, or adds it if absent. A backend uses it to
-// refine what the policy-independent Probe reported with policy-specific facts —
+// refine what the policy-independent Probe reported with policy-specific facts -
 // e.g. that a requested cgroup controller is not actually delegated.
 func (r *Report) Set(layer Layer, state State, reason string) {
 	for i := range r.Layers {
@@ -104,6 +104,17 @@ func (r *Report) Set(layer Layer, state State, reason string) {
 		}
 	}
 	r.Add(layer, state, reason)
+}
+
+// StateOf returns the recorded state of a layer. A layer the report does not
+// mention is not enforced, so it reports Unavailable.
+func (r Report) StateOf(layer Layer) State {
+	for _, l := range r.Layers {
+		if l.Layer == layer {
+			return l.State
+		}
+	}
+	return Unavailable
 }
 
 // HasDegradation reports whether any layer is not fully enforced.

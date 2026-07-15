@@ -2,7 +2,7 @@
 //
 // It is an adapter behind the enforce.Enforcer seam: the core hands it a
 // validated policy and it answers with what it actually enforced. Nothing here
-// decides policy — that is the core's job — and no type from here appears in the
+// decides policy - that is the core's job - and no type from here appears in the
 // core's signatures.
 package linux
 
@@ -77,7 +77,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
 	// already been admitted (refused by default, or permitted under
-	// --allow-degraded) — here it simply proceeds unwrapped.
+	// --allow-degraded) - here it simply proceeds unwrapped.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(); ok {
@@ -122,7 +122,7 @@ func isExitError(err error) bool {
 // prepareWriteDirs makes each granted write directory exist on the host before it
 // is bound, so writes persist. bwrap can only bind an existing path, and only a
 // directory can be made writable in a way that supports creating and renaming
-// files inside it — binding a file makes it a mount point, which breaks atomic
+// files inside it - binding a file makes it a mount point, which breaks atomic
 // save-and-rename. A write grant is therefore a directory: a missing one is
 // created, an existing file is refused. The shield check runs first so a grant
 // that lands inside an always-shielded path is rejected before anything is
@@ -249,7 +249,7 @@ func writeEmptyFile(path string) error {
 
 // startProxy serves the egress allowlist on socket for the run's lifetime. It
 // returns a stop function and a count function reporting how many connections
-// reached the proxy — a zero count on a network-using run tells the frontend the
+// reached the proxy - a zero count on a network-using run tells the frontend the
 // target never went through the proxy (used no network, or bypassed it).
 func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func(), count func() int, err error) {
 	var connections atomic.Int64
