@@ -52,7 +52,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	defer cleanup()
 
-	if err := prepareWriteDirs(p, sb.home); err != nil {
+	if err := prepareWriteDirs(p, sb); err != nil {
 		return enforce.Result{}, err
 	}
 
@@ -127,12 +127,12 @@ func isExitError(err error) bool {
 // created, an existing file is refused. The shield check runs first so a grant
 // that lands inside an always-shielded path is rejected before anything is
 // created under it (never mkdir inside ~/.ssh only to reject the grant).
-func prepareWriteDirs(p *policy.Policy, home string) error {
+func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	writes, err := resolveAll(p.Write)
 	if err != nil {
 		return err
 	}
-	if err := checkNotShielded(home, writes); err != nil {
+	if err := checkNotShielded(sb, writes); err != nil {
 		return err
 	}
 	for _, w := range writes {

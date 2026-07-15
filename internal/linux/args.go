@@ -95,7 +95,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := checkNotShielded(sb.home, append(append([]string{}, reads...), writes...)); err != nil {
+	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
 		return nil, err
 	}
 	for _, path := range reads {
@@ -269,6 +269,12 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 
 	var args []string
 	for _, r := range rules {
+		// Resolve the rule's path the same way grants are resolved, so the shield
+		// decision compares like with like (a symlinked deny path, or a symlinked
+		// /home component, would otherwise slip past reachability) and the shield
+		// mounts where bwrap can actually create the mount point (never at a
+		// symlink, which aborts the run).
+		r.Path = sb.resolve(r.Path)
 		if !shieldNeeded(r, sb, grants, writes) {
 			continue
 		}
@@ -302,37 +308,36 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
 // "plant a new credential file or shell profile under a broad write grant" hole:
 // bwrap creates the mount point, and the shield — not the host — receives the
 // write.
+// shield's rule path is already symlink-resolved by denyArgs, so it binds where
+// bwrap can create the mount point (never at a symlink, which aborts the run). A
+// symlinked dotfile (~/.bashrc under home-manager) is thereby shielded via its
+// real target: reads follow the symlink to it, and the bind makes it read-only.
+// (Replacing the symlink itself under a broad home write grant is not preventable
+// this way, but that grant is discouraged and the profiler no longer proposes it.)
 func shield(r denylist.Rule, sb sandbox) []string {
-	// bwrap cannot create a mount point at a symlink — it aborts the whole run —
-	// so a shield binds at the resolved path. A symlinked dotfile (~/.bashrc under
-	// home-manager) is then shielded via its real target: reads follow the symlink
-	// to it, and the bind makes it read-only. (Replacing the symlink itself under a
-	// broad home write grant is not preventable this way, but that grant is
-	// discouraged and the profiler no longer proposes it.)
-	dst := sb.resolve(r.Path)
 	switch {
 	case r.Deny == denylist.DenyAll && r.Dir:
 		// An empty tmpfs hides existing contents and absorbs any new file.
-		return []string{"--tmpfs", dst}
+		return []string{"--tmpfs", r.Path}
 	case r.Deny == denylist.DenyAll:
 		// An empty read-only file: contents unreadable, writes rejected.
-		return []string{"--ro-bind", sb.emptyFile, dst}
+		return []string{"--ro-bind", sb.emptyFile, r.Path}
 	case r.Dir:
 		// DenyWrite on a directory. Rebinding it read-only keeps existing contents
 		// readable while rejecting new files (a planted git hook). If it does not
 		// exist, a tmpfs both keeps it empty and absorbs writes.
 		if sb.exists(r.Path) {
-			return []string{"--ro-bind", dst, dst}
+			return []string{"--ro-bind", r.Path, r.Path}
 		}
-		return []string{"--tmpfs", dst}
+		return []string{"--tmpfs", r.Path}
 	default:
 		// DenyWrite on a file. Rebinding the real file read-only keeps it readable
 		// — git must still read ~/.gitconfig — while rejecting writes. Shadowing it
 		// with /dev/null, as v1 did, would have blinded those legitimate reads.
 		if sb.exists(r.Path) {
-			return []string{"--ro-bind", dst, dst}
+			return []string{"--ro-bind", r.Path, r.Path}
 		}
-		return []string{"--ro-bind", sb.emptyFile, dst}
+		return []string{"--ro-bind", sb.emptyFile, r.Path}
 	}
 }
 
@@ -342,14 +347,18 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // path is available when it is not. A grant that *contains* a shielded path is
 // fine and common (write: ~ with ~/.ssh shielded inside it); only a grant at or
 // below a shield is the mistake.
-func checkNotShielded(home string, grants []string) error {
-	rules := denylist.Home(home)
+func checkNotShielded(sb sandbox, grants []string) error {
+	rules := denylist.Home(sb.home)
 	for _, g := range grants {
 		for _, r := range rules {
 			if r.Deny != denylist.DenyAll {
 				continue
 			}
-			if g == r.Path || under(g, r.Path) {
+			// Resolve the rule path as grants are resolved, so a grant that names a
+			// symlinked shield's real target (write: /data/keys with ~/.ssh ->
+			// /data/keys) is still caught, not silently honored.
+			rp := sb.resolve(r.Path)
+			if g == rp || under(g, rp) {
 				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; remove it", g, r.Path)
 			}
 		}
@@ -478,11 +487,12 @@ func hostIsDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// hostResolve follows a path's symlinks, returning the path unchanged if it does
-// not resolve (e.g. it does not exist yet — then it is not a symlink and needs no
-// resolving).
+// hostResolve follows a path's symlinks, resolving as much of it as exists and
+// keeping any not-yet-existing tail — the same resolution grants get, so deny
+// rules and grants are compared on the same footing (e.g. when /home is itself a
+// symlink, both sides resolve through it).
 func hostResolve(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	if resolved, err := resolve(path); err == nil {
 		return resolved
 	}
 	return path

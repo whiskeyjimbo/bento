@@ -228,6 +228,39 @@ func TestSymlinkedDenyFileIsShieldedWithoutCrashing(t *testing.T) {
 	}
 }
 
+// A grant that names the resolved target of a symlinked shield (~/.ssh -> a real
+// key store, then write to that store) must still be refused: the deny rule and
+// the grant are compared after both are symlink-resolved, so the shield cannot be
+// side-stepped by naming what the symlink points to.
+func TestGrantOnSymlinkedShieldTargetIsRejected(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	keys := filepath.Join(t.TempDir(), "keystore")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(keys, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{keys}}
+
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	if err == nil {
+		t.Fatal("granting write to ~/.ssh's symlink target should be rejected")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want the shield-conflict message", err)
+	}
+}
+
 // The same for a shell profile, the classic persistence vector.
 func TestDenyListShieldsShellProfileUnderHomeGrant(t *testing.T) {
 	requireSandbox(t)
