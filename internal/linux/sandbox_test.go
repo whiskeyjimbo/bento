@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
@@ -148,6 +149,59 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	// interpreter always opens its runtime files.
 	if len(obs.Reads) == 0 {
 		t.Fatal("no file accesses observed - the target did not run (empty /bento bind?)")
+	}
+}
+
+// The observation report must be unreachable from the profiled target: the report
+// path must not exist in the sandbox, and the inherited report descriptor must be
+// closed in the target, so a malicious profiled run cannot forge the observations.
+// This fix fails invisibly (the happy path passes whether or not the target can
+// still reach the channel), so the assertions here are the fix.
+func TestProfileTargetCannotReachReport(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	// (a) the report path must be gone; (b) FD 3 must be closed in the target;
+	// (c) a well-formed forged report the target CAN write must not become the
+	// observations.
+	forge := "printf 'R \"/FORGED-BY-TARGET\"\\n" + observe.ReportStart + "\\n'"
+	procForge := "printf 'R \"/PROCFS-FORGE\"\\n" + observe.ReportStart + "\\n'"
+	body := "#!/bin/sh\n" +
+		"[ -e /observe.report ] && echo REPORT_EXISTS || echo REPORT_ABSENT\n" +
+		"echo forged >&3 2>/dev/null && echo FD3_WRITABLE || echo FD3_CLOSED\n" +
+		forge + " > /tmp/forge\n" +
+		// Also try to reach the report through whichever process still holds it open,
+		// via /proc/<pid>/fd. The launcher truncates after the target exits, so this
+		// must not leak either.
+		"for pid in 1 2 3; do " + procForge + " > /proc/$pid/fd/3 2>/dev/null || true; done\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false)
+	if err != nil {
+		t.Fatalf("profile: %v (out: %q)", err, out.String())
+	}
+	if got := out.String(); !strings.Contains(got, "REPORT_ABSENT") || strings.Contains(got, "REPORT_EXISTS") {
+		t.Errorf("the report path is still reachable in the sandbox; output: %q", got)
+	}
+	if got := out.String(); !strings.Contains(got, "FD3_CLOSED") || strings.Contains(got, "FD3_WRITABLE") {
+		t.Errorf("the report descriptor is still open in the target; output: %q", got)
+	}
+	// No forged record the target wrote - to a file it could reach, or through a
+	// /proc/<pid>/fd handle to the report - may appear in the synthesized observations.
+	for _, r := range append(append([]string{}, obs.Reads...), obs.Writes...) {
+		if strings.Contains(r, "FORGED-BY-TARGET") || strings.Contains(r, "PROCFS-FORGE") {
+			t.Errorf("a target-forged record leaked into observations: %q", r)
+		}
+	}
+	// Sanity: profiling still captured the run (the FD channel works), so the
+	// negative assertions above are not vacuously true on an empty report.
+	if len(obs.Reads) == 0 {
+		t.Fatal("no observations captured; the FD report channel is broken")
 	}
 }
 

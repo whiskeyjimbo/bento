@@ -15,10 +15,10 @@ import (
 // the logic lives in internal/launcher.
 func newLaunchCmd() *cobra.Command {
 	var (
-		socket   string
-		execMode string
-		writable []string
-		observe  string
+		socket    string
+		execMode  string
+		writable  []string
+		observeFD int
 	)
 	cmd := &cobra.Command{
 		Use:    "__launch -- <command>...",
@@ -26,11 +26,11 @@ func newLaunchCmd() *cobra.Command {
 		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			code, err := launcher.Run(launcher.Config{
-				Socket:   socket,
-				Block:    execMode != "all",
-				Writable: writable,
-				Observe:  observe,
-				Target:   args,
+				Socket:    socket,
+				Block:     execMode != "all",
+				Writable:  writable,
+				ObserveFD: observeFD,
+				Target:    args,
 			})
 			if err != nil {
 				return err
@@ -41,7 +41,7 @@ func newLaunchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&socket, "socket", "", "egress proxy unix socket to bridge to")
 	cmd.Flags().StringVar(&execMode, "exec", "none", "exec policy: none, none-strict, or all")
 	cmd.Flags().StringArrayVar(&writable, "rw", nil, "a write-granted path the Landlock backstop permits (repeatable)")
-	cmd.Flags().StringVar(&observe, "observe", "", "profile the target under ptrace, writing observations to this path")
+	cmd.Flags().IntVar(&observeFD, "observe-fd", 0, "profile the target under ptrace, writing observations to this inherited file descriptor")
 	return cmd
 }
 

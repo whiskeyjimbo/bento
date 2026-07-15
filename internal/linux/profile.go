@@ -45,9 +45,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		return profile.Observation{}, fmt.Errorf("linux: creating observation report: %w", err)
 	}
 	reportPath := report.Name()
-	report.Close()
 	defer os.Remove(reportPath)
-	sb.observe = reportPath
+	defer report.Close()
+	sb.observe = true
 
 	// Observation always runs through the launcher (it hosts the observer), so the
 	// bento binary must be bound even when the policy alone would not require the
@@ -81,6 +81,11 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	}
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
+	// The open report file becomes FD observeReportFD in the bwrap child, which bwrap
+	// passes through to the launcher. The launcher writes observations there and
+	// marks it close-on-exec, so the profiled target never inherits the channel and
+	// cannot forge the report; the host reads it back by path below.
+	cmd.ExtraFiles = []*os.File{report}
 	if err := cmd.Run(); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
 	}
@@ -127,6 +132,16 @@ func parseObservations(path string) (profile.Observation, error) {
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
+		if started {
+			// The completion marker is written last, in the launcher's single write.
+			// Anything after it did not come from that write, so treat the report as
+			// tampered rather than parse records from an appended tail. This is
+			// defense in depth: the write channel is already unreachable by the target.
+			if line != "" {
+				return profile.Observation{}, fmt.Errorf("linux: observation report has content after the completion marker; treating it as tampered")
+			}
+			continue
+		}
 		switch {
 		case line == observe.ReportStart:
 			started = true

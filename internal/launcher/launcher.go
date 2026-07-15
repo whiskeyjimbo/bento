@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
@@ -39,11 +41,13 @@ type Config struct {
 	// Writable are the policy's resolved write-grant paths. Landlock confines
 	// writes to these (plus runtime scratch) as a second layer behind bwrap.
 	Writable []string
-	// Observe, when set, runs the target under the ptrace observer instead of
-	// enforcing, writing the files it opened and whether it exec'd to this path.
-	// The profiler uses it to synthesize a manifest from a permissive run; no
-	// seccomp or Landlock is applied, so what the target does is fully observed.
-	Observe string
+	// ObserveFD, when > 0, runs the target under the ptrace observer instead of
+	// enforcing, writing the files it opened and whether it exec'd to this inherited
+	// descriptor. It is a descriptor rather than a path so the report channel is
+	// never reachable from the target's mount namespace: the target cannot forge the
+	// observations. The profiler uses it to synthesize a manifest from a permissive
+	// run; no seccomp or Landlock is applied, so what the target does is fully observed.
+	ObserveFD int
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -62,6 +66,18 @@ func Run(cfg Config) (int, error) {
 		return 0, fmt.Errorf("launcher: no target command")
 	}
 
+	if cfg.ObserveFD > 0 {
+		// The observation report is written through this inherited descriptor, never
+		// through a path in the target's mount. Mark it close-on-exec now - before the
+		// bridge child starts and before the target is exec'd under the observer - so
+		// neither the bridge, the target, nor any grandchild inherits a handle to the
+		// report and can forge observations. The launcher itself still writes it;
+		// close-on-exec only drops the descriptor across exec, not in this process.
+		if _, err := unix.FcntlInt(uintptr(cfg.ObserveFD), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+			return 0, fmt.Errorf("launcher: securing the observation channel: %w", err)
+		}
+	}
+
 	env := os.Environ()
 	if cfg.Socket != "" {
 		if err := startBridge(cfg.Socket); err != nil {
@@ -70,7 +86,7 @@ func Run(cfg Config) (int, error) {
 		env = append(env, proxyEnv()...)
 	}
 
-	if cfg.Observe != "" {
+	if cfg.ObserveFD > 0 {
 		return runObserve(cfg, env)
 	}
 
@@ -106,21 +122,17 @@ func Run(cfg Config) (int, error) {
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
 // no Landlock - a permissive run so every access is seen) and writes what the
-// target opened, and whether it exec'd, to the report path for the host to read.
+// target opened, and whether it exec'd, to the inherited report descriptor for
+// the host to read.
 func runObserve(cfg Config, env []string) (int, error) {
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
-	// The report is written unconditionally and only here, after Trace returns. This
-	// truncates whatever the (unsandboxed) target wrote to the bind-mounted report
-	// path during the run to forge its own observations, and closes the window where
-	// a failed trace previously left the launcher's write un-done. It is NOT a
-	// complete defense: a descendant whose write() to the report was already past
-	// its syscall-entry stop when the root exited can still complete that write and
-	// race this one - the report channel being target-writable is the root weakness,
-	// tracked for a proper fix (write the report through a descriptor the target's
-	// mount never includes). Paths are quoted (%q) so a newline in a path cannot
-	// forge extra R/W/EXEC records. The completion marker is written last and only on
-	// a successful trace, so a failed or truncated trace lacks it and is rejected.
+	// The report is written only here, after Trace returns, and only through the
+	// close-on-exec descriptor secured in Run - which the target and its descendants
+	// never held, so nothing they wrote can appear in it. Paths are quoted (%q) so a
+	// newline in a path cannot forge extra R/W/EXEC records. The completion marker is
+	// written last and only on a successful trace, so a failed or truncated trace
+	// lacks it and is rejected by the host.
 	var b strings.Builder
 	if traceErr == nil {
 		for _, a := range res.Accesses {
@@ -135,8 +147,25 @@ func runObserve(cfg Config, env []string) (int, error) {
 		}
 		b.WriteString(observe.ReportStart + "\n")
 	}
-	if err := os.WriteFile(cfg.Observe, []byte(b.String()), 0o644); err != nil {
+	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
+	if report == nil {
+		return 0, fmt.Errorf("launcher: observation descriptor %d is not valid", cfg.ObserveFD)
+	}
+	// Truncate before writing. The target never held this descriptor, but it could
+	// reach the same file through the launcher's /proc/<pid>/fd while the launcher
+	// held it open during the run; truncating here (after the target has exited)
+	// discards anything so written, so only the launcher's own records remain. A
+	// still-live descendant cannot race this: once Trace returns it stops resuming
+	// tracees, so every auto-attached descendant is frozen at a syscall-entry stop
+	// and cannot complete a write, and PTRACE_O_EXITKILL reaps them on launcher exit.
+	if err := report.Truncate(0); err != nil {
+		return 0, fmt.Errorf("launcher: truncating the observation report: %w", err)
+	}
+	if _, err := report.Write([]byte(b.String())); err != nil {
 		return 0, fmt.Errorf("launcher: writing observations: %w", err)
+	}
+	if err := report.Close(); err != nil {
+		return 0, fmt.Errorf("launcher: closing the observation report: %w", err)
 	}
 	if traceErr != nil {
 		return 0, fmt.Errorf("launcher: observing target: %w", traceErr)

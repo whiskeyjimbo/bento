@@ -42,6 +42,19 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	}
 }
 
+// Records appended after the completion marker did not come from the launcher's
+// single write, so the report must be rejected as tampered, not parsed.
+func TestParseObservationsRejectsContentAfterMarker(t *testing.T) {
+	report := filepath.Join(t.TempDir(), "r")
+	content := fmt.Sprintf("R %q\n%s\nR %q\n", "/real", observe.ReportStart, "/appended-forgery")
+	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseObservations(report); err == nil {
+		t.Error("a record after the completion marker should be rejected as tampered")
+	}
+}
+
 // A path containing a newline and forged record text must parse as a single read,
 // not inject extra W/EXEC records into the proposed manifest.
 func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
@@ -42,10 +43,11 @@ type sandbox struct {
 	// bentoPath is the host path of the running bento binary, bound into the
 	// sandbox to serve as the forwarder. Set only alongside proxySocket.
 	bentoPath string
-	// observe is the host path of the profiling report file, bound writable into
-	// the sandbox. When set, the launcher runs the target under the ptrace
-	// observer instead of enforcing.
-	observe string
+	// observe signals a profiling run: the launcher runs the target under the
+	// ptrace observer instead of enforcing, and writes its report to an inherited
+	// descriptor (FD observeReportFD), not a bound path - so the target's mount
+	// never includes the report and it cannot forge the observations.
+	observe bool
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
 	exists func(string) bool
@@ -67,10 +69,15 @@ type sandbox struct {
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
 // so these are constant.
 const (
-	sandboxBentoPath     = "/bento"
-	sandboxProxySocket   = "/proxy.sock"
-	sandboxObserveReport = "/observe.report"
+	sandboxBentoPath   = "/bento"
+	sandboxProxySocket = "/proxy.sock"
 )
+
+// observeReportFD is the descriptor the profiling report is written through. The
+// host passes the open report file as the bwrap child's first extra file, which
+// Go places at FD 3; bwrap passes it through to the launcher. Using a descriptor
+// rather than a bound path keeps the report out of the target's mount namespace.
+const observeReportFD = 3
 
 // compile builds the bwrap argv for a policy.
 //
@@ -102,7 +109,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		if path == "/" {
 			// Binding the host root onto the sandbox root would make the root
 			// read-only, and bwrap could then no longer create the top-level mount
-			// points the launcher needs (/bento, /observe.report, /proxy.sock). Bind
+			// points the launcher needs (/bento, /proxy.sock). Bind
 			// the root's children individually instead, leaving the sandbox root the
 			// writable tmpfs bwrap starts with. The literal "/" is still carried in
 			// reads for deny-list reachability below.
@@ -147,15 +154,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// Profiling always runs through the launcher (it hosts the observer); so does
 	// egress or exec-blocking. Only a plain exec:all, no-network, non-profiling
 	// run skips the launcher and executes the target directly.
-	useLauncher := sb.proxySocket != "" || sb.observe != "" || execMode != policy.ExecAll
+	useLauncher := sb.proxySocket != "" || sb.observe || execMode != policy.ExecAll
 
 	if useLauncher {
 		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
 		if sb.proxySocket != "" {
 			args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
-		}
-		if sb.observe != "" {
-			args = append(args, "--bind", sb.observe, sandboxObserveReport)
 		}
 	}
 
@@ -176,8 +180,8 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		if sb.proxySocket != "" {
 			launch = append(launch, "--socket", sandboxProxySocket)
 		}
-		if sb.observe != "" {
-			launch = append(launch, "--observe", sandboxObserveReport)
+		if sb.observe {
+			launch = append(launch, "--observe-fd", strconv.Itoa(observeReportFD))
 		}
 		// The launcher's Landlock backstop confines writes to exactly the paths
 		// passed here: the runtime scratch mounts plus the write grants. With the
