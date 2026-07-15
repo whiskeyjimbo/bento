@@ -32,6 +32,25 @@ func TestCheckApproval(t *testing.T) {
 	}
 }
 
+// run refuses an unapproved or stale manifest by default, so a tampered manifest
+// cannot escalate permissions at run time; --allow-unapproved opts out.
+func TestRequireApproval(t *testing.T) {
+	current := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	approved := &manifest.Document{Policy: current, Provenance: manifest.Provenance{Approves: current.Fingerprint()}}
+
+	if err := requireApproval(approved, false); err != nil {
+		t.Errorf("a current approval must run; got %v", err)
+	}
+	for name, d := range map[string]*manifest.Document{"stale": doc("old"), "unstamped": doc("")} {
+		if err := requireApproval(d, false); err == nil {
+			t.Errorf("%s approval must be refused without --allow-unapproved", name)
+		}
+		if err := requireApproval(d, true); err != nil {
+			t.Errorf("%s approval must run under --allow-unapproved; got %v", name, err)
+		}
+	}
+}
+
 // --strict must fail on a stale or missing approval and pass on a current one;
 // without --strict, none of them fail.
 func TestReportApprovalStrictness(t *testing.T) {

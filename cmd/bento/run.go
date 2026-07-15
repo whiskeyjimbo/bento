@@ -11,14 +11,16 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/internal/backend"
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/manifest"
 )
 
 func newRunCmd() *cobra.Command {
 	var (
-		strict        bool
-		allowDegraded bool
-		envFlags      []string
-		asJSON        bool
+		strict          bool
+		allowDegraded   bool
+		allowUnapproved bool
+		envFlags        []string
+		asJSON          bool
 	)
 
 	cmd := &cobra.Command{
@@ -26,7 +28,7 @@ func newRunCmd() *cobra.Command {
 		Short: "Run a script under the permissions its manifest declares",
 		Long: "run enforces the manifest's policy and executes the script.\n\n" +
 			"The script's exit code is passed through. If bento itself could not run the\n" +
-			"script — a bad manifest, or a guarantee this host cannot enforce — it exits 2.",
+			"script - a bad manifest, or a guarantee this host cannot enforce - it exits 2.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			overrides, err := parseEnvFlags(envFlags)
@@ -35,6 +37,13 @@ func newRunCmd() *cobra.Command {
 			}
 			p, err := loadManifest(args[0])
 			if err != nil {
+				return err
+			}
+			doc, err := loadDocument(args[0])
+			if err != nil {
+				return err
+			}
+			if err := requireApproval(doc, allowUnapproved); err != nil {
 				return err
 			}
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
@@ -52,7 +61,7 @@ func newRunCmd() *cobra.Command {
 			}
 
 			// In --json mode the script's streams are captured into the envelope
-			// rather than shared with bento's own stdout — otherwise the script's
+			// rather than shared with bento's own stdout - otherwise the script's
 			// output interleaves with the JSON and corrupts the machine contract.
 			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
 			var out, errOut bytes.Buffer
@@ -104,9 +113,31 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&strict, "strict", false, "refuse to run unless every guarantee the policy needs is fully enforced")
 	cmd.Flags().BoolVar(&allowDegraded, "allow-degraded", false, "run even when a core guarantee can only be partially enforced")
+	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output instead of the script's own streams being summarized")
 	return cmd
+}
+
+// requireApproval refuses to run a manifest whose approval is not current, so an
+// unapproved or tampered manifest cannot escalate permissions at run time the way
+// it could when only `validate --strict` checked the fingerprint. --allow-unapproved
+// opts out for the profile-then-run inner loop, where a manifest is run before a
+// human has stamped it.
+func requireApproval(doc *manifest.Document, allow bool) error {
+	if allow {
+		return nil
+	}
+	switch checkApproval(doc) {
+	case approvalCurrent:
+		return nil
+	case approvalStale:
+		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; " +
+			"re-review and run `bento approve`, or pass --allow-unapproved")
+	default:
+		return fmt.Errorf("refusing to run: the manifest is not approved; " +
+			"review it and run `bento approve`, or pass --allow-unapproved")
+	}
 }
 
 func parseEnvFlags(flags []string) (map[string]string, error) {
