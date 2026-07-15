@@ -180,10 +180,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 			launch = append(launch, "--observe", sandboxObserveReport)
 		}
 		// The launcher's Landlock backstop confines writes to exactly the paths
-		// passed here: the runtime scratch mounts plus the write grants. These are
-		// all bwrap makes writable too — the root is remounted read-only above — so
-		// the two layers agree and neither denies a write the other allows. Deriving
-		// both from this one place is what keeps them in sync.
+		// passed here: the runtime scratch mounts plus the write grants. With the
+		// root remounted read-only above, those are the only paths bwrap leaves
+		// writable, so Landlock never denies a granted write bwrap would allow.
+		// (Both layers are still stricter on the deny-list shields, by design — a
+		// shield denies the write and that is the intent.) Deriving both from this
+		// one place keeps them in sync.
 		for _, w := range append(append([]string{}, sandboxWritableMounts...), writes...) {
 			launch = append(launch, "--rw", w)
 		}
