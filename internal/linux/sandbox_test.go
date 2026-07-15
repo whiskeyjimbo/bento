@@ -124,6 +124,25 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 	}
 }
 
+// Profiling always runs through the launcher, so the bento binary must be bound
+// even for exec:all + no network — the one case where the policy alone would not
+// require the launcher and newSandbox leaves bentoPath unset. Without the fix this
+// emitted an empty bind source for /bento and bwrap aborted.
+func TestProfileExecAllNoNetworkRuns(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false); err != nil {
+		t.Fatalf("Profile with exec:all and no network failed: %v", err)
+	}
+}
+
 // bwrap starts the sandbox root as a writable tmpfs; bento remounts it read-only
 // so a run cannot create files at "/" that no grant allows. Writes stay confined
 // to the runtime scratch and grants. (This exercises the direct exec:all path; the
