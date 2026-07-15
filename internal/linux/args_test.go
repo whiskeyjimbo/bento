@@ -99,6 +99,41 @@ func TestResolveFollowsMultiHopDanglingChain(t *testing.T) {
 	}
 }
 
+// A ".." in a dangling symlink's target must be applied only AFTER the symlink
+// component before it is followed — not cleaned away lexically, which would land
+// the shield on the wrong path and leave the real target unshielded.
+func TestResolveFollowsSymlinkBeforeDotDotInDanglingTarget(t *testing.T) {
+	base := t.TempDir()
+	canon, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "elsewhere"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// home/linkdir -> elsewhere (real); home/.bad -> linkdir/../planted (dangling).
+	// A write through .bad resolves linkdir to <canon>/elsewhere, then ".." to
+	// <canon>, then "planted": target is <canon>/planted, NOT <canon>/home/planted.
+	if err := os.Symlink(filepath.Join(canon, "elsewhere"), filepath.Join(canon, "home", "linkdir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("linkdir/../planted", filepath.Join(canon, "home", ".bad")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolve(filepath.Join(canon, "home", ".bad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canon, "planted")
+	if got != want {
+		t.Errorf("resolve = %q, want %q (\"..\" applied after the symlink is followed)", got, want)
+	}
+}
+
 func compileOrFail(t *testing.T, p *policy.Policy, sb sandbox) []string {
 	t.Helper()
 	args, err := compile(p, enforce.Process{}, sb)

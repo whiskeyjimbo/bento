@@ -440,30 +440,51 @@ func resolve(path string) (string, error) {
 const maxSymlinkDepth = 40
 
 // resolveExisting resolves abs where it exists via the kernel (EvalSymlinks,
-// which is accurate through parent symlinks, "..", and chains). Where the final
-// component does not exist, it resolves the parent, then — crucially — follows a
-// *dangling* leaf symlink against that resolved parent, so a deny-list dotfile
-// pointing into a not-yet-populated store still resolves to the target a write
-// through it would reach, rather than stalling at the unmountable symlink itself.
+// which is accurate through parent symlinks, "..", and chains). Where a component
+// does not exist — including a *dangling* leaf symlink pointing into a not-yet-
+// populated store — it walks the components against a fully-resolved prefix,
+// following each symlink before any later "..", so the result is the target a
+// write through the path would actually reach (not the unmountable symlink, and
+// not the wrong sibling filepath.Join's lexical ".." cleaning would produce).
 func resolveExisting(abs string, depth int) string {
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		return real
 	}
-	parent := filepath.Dir(abs)
-	if parent == abs {
-		return abs // reached the root; nothing left to resolve
+	if depth >= maxSymlinkDepth {
+		return abs // a symlink loop; leave it — a shield here fails closed
 	}
-	rparent := resolveExisting(parent, depth)
-	leaf := filepath.Join(rparent, filepath.Base(abs))
-	if depth < maxSymlinkDepth {
-		if target, err := os.Readlink(leaf); err == nil {
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(rparent, target)
-			}
-			return resolveExisting(target, depth+1)
+
+	resolved := "/"
+	parts := strings.Split(strings.Trim(abs, "/"), "/")
+	for i, c := range parts {
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
 		}
+		next := filepath.Join(resolved, c)
+		target, err := os.Readlink(next)
+		if err != nil {
+			// A real directory/file, or a not-yet-existing component: take it as is.
+			// Since resolved is already symlink-free, a later ".." on it is safe.
+			resolved = next
+			continue
+		}
+		// A symlink: rebuild the path as its target followed by the not-yet-walked
+		// remainder — raw, not lexically joined, so a ".." *inside* the target still
+		// follows its own leading symlink — and resolve that from the top.
+		rebuilt := target
+		if !filepath.IsAbs(target) {
+			rebuilt = resolved + "/" + target
+		}
+		if rem := parts[i+1:]; len(rem) > 0 {
+			rebuilt += "/" + strings.Join(rem, "/")
+		}
+		return resolveExisting(rebuilt, depth+1)
 	}
-	return leaf
+	return resolved
 }
 
 // envArgs clears the inherited environment and sets only what the policy allowed
