@@ -93,6 +93,22 @@ func TestTraceResolvesOpenatDirfd(t *testing.T) {
 	}
 }
 
+func TestResolveAtPassthroughAndDrop(t *testing.T) {
+	// An absolute path, a working-directory-relative path, and an empty path are
+	// returned unchanged; the profiler anchors the AT_FDCWD case itself.
+	if got := resolveAt(0, atFdCwd, "rel/x"); got != "rel/x" {
+		t.Errorf("AT_FDCWD: got %q, want the path unchanged", got)
+	}
+	if got := resolveAt(0, 5, "/abs/x"); got != "/abs/x" {
+		t.Errorf("absolute: got %q, want it unchanged", got)
+	}
+	// A descriptor that is not a live directory (here, a nonexistent fd) must drop
+	// to empty rather than pass the bare relative path through to be mis-anchored.
+	if got := resolveAt(os.Getpid(), 0x7fffffff, "rel/x"); got != "" {
+		t.Errorf("unresolvable dirfd: got %q, want dropped to empty", got)
+	}
+}
+
 func TestTracePropagatesExitCode(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {

@@ -85,6 +85,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	seen := map[string]bool{}
 	var res Result
 	record := func(path string, write bool) {
+		if path == "" {
+			return
+		}
 		key := path + boolKey(write)
 		if seen[key] {
 			return
@@ -159,8 +162,12 @@ func resolveAt(pid int, dirfd int32, path string) string {
 		return path
 	}
 	dir, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd))
-	if err != nil {
-		return path
+	// Drop rather than mis-anchor: a descriptor that is not a live directory
+	// readlinks to a non-path ("socket:[N]", "anon_inode:...") or a deleted
+	// directory ("/path (deleted)"), and passing the bare relative path through
+	// would wrongly anchor it at the working directory — the bug being fixed.
+	if err != nil || !strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, " (deleted)") {
+		return ""
 	}
 	return filepath.Join(dir, path)
 }
