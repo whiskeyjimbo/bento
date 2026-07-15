@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// bentoFailed is the exit code when bento itself could not run the target — a
+// bentoFailed is the exit code when bento itself could not run the target - a
 // bad manifest, or a guarantee this host cannot enforce. It is deliberately high
 // and distinct so a caller can tell "bento refused" from the target's own exit
 // code, which is passed through untouched. 125 follows the convention env(1) and

@@ -38,7 +38,7 @@ type Process struct {
 
 	// Env are the resolved environment values handed to the target. The policy
 	// declares which NAMES may pass through; resolving those names against the
-	// host, and merging any values supplied at invocation, is the core's job —
+	// host, and merging any values supplied at invocation, is the core's job -
 	// a backend applies this map and makes no decisions about it.
 	Env map[string]string
 }
@@ -51,7 +51,7 @@ type Result struct {
 	// EgressConnections is how many outbound connections reached the egress proxy
 	// during the run. It is meaningful only when the policy allows egress; a
 	// count of zero there means the target either used no network or bypassed the
-	// proxy (which, in the default cooperative mode, fails closed) — letting a
+	// proxy (which, in the default cooperative mode, fails closed) - letting a
 	// frontend explain a network failure precisely.
 	EgressConnections int
 }

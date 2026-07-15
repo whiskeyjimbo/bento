@@ -19,7 +19,7 @@ type Lookup func(name string) (string, bool)
 // policy allowed through; overrides supplied at invocation (--env NAME=VALUE) win
 // over the host, so a caller can inject a value without exporting it. An
 // override for a name the policy did not allow is an error rather than a silent
-// pass-through — otherwise the manifest would no longer describe what the script
+// pass-through - otherwise the manifest would no longer describe what the script
 // can see.
 //
 // A name that is allowed but unset on the host is reported in `unset` rather than

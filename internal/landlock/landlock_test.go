@@ -16,7 +16,7 @@ func TestAvailableOnLinux(t *testing.T) {
 	}
 }
 
-// Landlock must actually confine filesystem access on this host — that it loads
+// Landlock must actually confine filesystem access on this host - that it loads
 // without error is not the same as that it denies. The probe confines itself to
 // one directory in a fresh process; a path inside must stay readable and a path
 // outside must be denied.
@@ -41,7 +41,7 @@ func TestRestrictConfinesReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An outside path the process can read without Landlock, so a denial proves
-	// Landlock — not permissions — is what confines.
+	// Landlock - not permissions - is what confines.
 	outside := filepath.Join(t.TempDir(), "out.txt")
 	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)

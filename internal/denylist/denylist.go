@@ -3,7 +3,7 @@
 //
 // The list is data, not code: it is platform-independent and testable on its
 // own, while each backend decides how to enforce a rule (bind mounts on Linux,
-// SBPL rules on macOS). A policy that grants a broad path — say all of $HOME —
+// SBPL rules on macOS). A policy that grants a broad path - say all of $HOME -
 // must never expose these.
 package denylist
 
@@ -30,7 +30,7 @@ type Rule struct {
 	// Deny is how completely the path is shielded.
 	Deny Deny
 	// Dir reports whether Path is a directory, in which case the rule covers
-	// everything under it — including files that do not exist yet. Shielding the
+	// everything under it - including files that do not exist yet. Shielding the
 	// directory rather than each known filename is what closes the "plant a new
 	// credential file" hole.
 	Dir bool

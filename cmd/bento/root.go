@@ -11,7 +11,7 @@ func newRootCmd() *cobra.Command {
 		Long: "bento runs a script under the permissions declared in its manifest:\n" +
 			"deny-by-default filesystem access, no network unless allowed, no subprocesses.\n\n" +
 			"What a given host can actually enforce varies. bento reports every gap rather\n" +
-			"than quietly substituting a weaker sandbox — run `bento doctor` to see what\n" +
+			"than quietly substituting a weaker sandbox - run `bento doctor` to see what\n" +
 			"this host enforces.",
 		SilenceUsage:  true,
 		SilenceErrors: true,

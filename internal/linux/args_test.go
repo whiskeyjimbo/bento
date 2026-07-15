@@ -100,7 +100,7 @@ func TestResolveFollowsMultiHopDanglingChain(t *testing.T) {
 }
 
 // A ".." in a dangling symlink's target must be applied only AFTER the symlink
-// component before it is followed — not cleaned away lexically, which would land
+// component before it is followed - not cleaned away lexically, which would land
 // the shield on the wrong path and leave the real target unshielded.
 func TestResolveFollowsSymlinkBeforeDotDotInDanglingTarget(t *testing.T) {
 	base := t.TempDir()
@@ -312,7 +312,7 @@ func TestRootWriteGrantIsRejected(t *testing.T) {
 }
 
 // A read-only grant already makes a write-denied path unwritable, so no shield
-// mount is needed — and adding one over a read-only parent would abort bwrap.
+// mount is needed - and adding one over a read-only parent would abort bwrap.
 func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
 	sb := testSandbox("/home/u/.gitconfig")
@@ -324,7 +324,7 @@ func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
 }
 
 // A "/" read grant must bind the root's children individually, never the host
-// root onto the sandbox root — and never the mounts baseFlags manages, or the
+// root onto the sandbox root - and never the mounts baseFlags manages, or the
 // host's /proc, /dev, /tmp would overmount the sandbox's own.
 func TestRootReadGrantExpandsToChildren(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}

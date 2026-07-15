@@ -1,5 +1,5 @@
-// Package observe records what a program does — the files it opens and whether
-// it spawns subprocesses — by running it under ptrace. It is the profiler's
+// Package observe records what a program does - the files it opens and whether
+// it spawns subprocesses - by running it under ptrace. It is the profiler's
 // observation backend: run a script permissively under observe, then synthesize
 // a tight manifest from what it actually touched.
 //
@@ -161,7 +161,7 @@ func inspect(pid int, record func(string, bool), res *Result) {
 }
 
 // resolveAt anchors an openat pathname. An absolute path, or one opened relative
-// to the working directory (AT_FDCWD), is returned unchanged — the profiler
+// to the working directory (AT_FDCWD), is returned unchanged - the profiler
 // anchors the latter at the run's working directory. A path opened relative to a
 // real directory descriptor is joined onto that descriptor's directory, read from
 // /proc/<pid>/fd, so it is not mis-anchored at the working directory instead.
@@ -173,15 +173,15 @@ func resolveAt(pid int, dirfd int32, path string) string {
 	// Drop rather than mis-anchor: a descriptor that is not a live directory
 	// readlinks to a non-path ("socket:[N]", "anon_inode:...") or a deleted
 	// directory ("/path (deleted)"), and passing the bare relative path through
-	// would wrongly anchor it at the working directory — the bug being fixed.
+	// would wrongly anchor it at the working directory - the bug being fixed.
 	if err != nil || !strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, " (deleted)") {
 		return ""
 	}
 	return filepath.Join(dir, path)
 }
 
-// openHowWrite reads open_how.flags — the first u64 of the struct openat2 points
-// at — and reports whether the open requested write access.
+// openHowWrite reads open_how.flags - the first u64 of the struct openat2 points
+// at - and reports whether the open requested write access.
 func openHowWrite(pid int, addr uintptr) bool {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {

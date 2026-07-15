@@ -4,8 +4,8 @@
 // The filter denies execve(2) but allows execveat(2). That asymmetry is the
 // whole trick: the launcher installs the filter, then transitions to the target
 // via execveat, so the target starts normally while any subprocess it later
-// spawns through the standard exec path is refused. This is a *soft* block —
-// stated plainly — because execveat itself stays open by construction; it stops
+// spawns through the standard exec path is refused. This is a *soft* block -
+// stated plainly - because execveat itself stays open by construction; it stops
 // the ~100% of real-world exec paths (glibc/musl execve, subprocess, fork+exec,
 // os.system) that go through execve.
 package seccomp

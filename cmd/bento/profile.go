@@ -29,7 +29,7 @@ func newProfileCmd() *cobra.Command {
 			"WARNING: profiling executes the script with broad read access so it runs\n" +
 			"its real code paths. Only profile code you would run unsandboxed, in a\n" +
 			"context you trust. A built-in set of sensitive paths (SSH keys, cloud and\n" +
-			"VCS credentials) stays shielded, but that list is not exhaustive — assume\n" +
+			"VCS credentials) stays shielded, but that list is not exhaustive - assume\n" +
 			"the script can read anything else. Egress is recorded but not forwarded by\n" +
 			"default, so the script's data stays on the host; --allow-network forwards it\n" +
 			"for a faithful run of network-dependent code. Review the proposed manifest,\n" +
@@ -81,12 +81,12 @@ func newProfileCmd() *cobra.Command {
 			// A write to a file directly in a broad directory (the home directory, a
 			// top-level system directory, or the root) collapses to a grant of that
 			// whole directory, since write grants are directory-granular. Refuse to
-			// propose such a grant automatically — it would expose far more than the
-			// script needs — and tell the user to add a narrower one by hand.
+			// propose such a grant automatically - it would expose far more than the
+			// script needs - and tell the user to add a narrower one by hand.
 			if kept, dropped := clampBroadWrites(proposed.Write); len(dropped) > 0 {
 				proposed.Write = kept
 				for _, d := range dropped {
-					fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q — too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
+					fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
 				}
 			}
 
@@ -108,7 +108,7 @@ func newProfileCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(os.Stderr, "\n[bento] wrote %s — review it, then run `bento validate %s` and `bento approve %s`.\n", out, out, out)
+			fmt.Fprintf(os.Stderr, "\n[bento] wrote %s - review it, then run `bento validate %s` and `bento approve %s`.\n", out, out, out)
 			fmt.Fprintf(os.Stderr, "[bento] it reflects only this run; profile again with other inputs to widen it.\n")
 			return nil
 		},
@@ -122,7 +122,7 @@ func newProfileCmd() *cobra.Command {
 // clampBroadWrites splits proposed write directories into those safe to grant
 // automatically and those too broad to. A directory is too broad if it is the
 // root, a top-level directory (a direct child of "/", such as /etc or /home), or
-// the user's home directory itself — granting write to any of those exposes far
+// the user's home directory itself - granting write to any of those exposes far
 // more than a profiled script needs.
 func clampBroadWrites(writes []string) (kept, dropped []string) {
 	home, _ := os.UserHomeDir()

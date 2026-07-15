@@ -41,8 +41,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	// Egress is enforced by the network namespace (nothing leaves except through
-	// our proxy) plus the host-side allowlist proxy. The guarantee that matters —
-	// nothing reaches a non-allowlisted host — holds fully and unprivileged. The
+	// our proxy) plus the host-side allowlist proxy. The guarantee that matters -
+	// nothing reaches a non-allowlisted host - holds fully and unprivileged. The
 	// one nuance is that a program which ignores the proxy environment fails
 	// closed rather than being transparently redirected to an allowed host;
 	// transparent redirect needs the one-time `bento setup`. That is an

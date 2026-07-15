@@ -7,7 +7,7 @@
 // nothing of theirs. Empty/nil fields mean "deny".
 //
 // Validate is the single gate on a well-formed Policy. Every construction path
-// must pass through it — the YAML loader and Go library embedders alike — so an
+// must pass through it - the YAML loader and Go library embedders alike - so an
 // invalid Policy can never reach a backend.
 package policy
 
@@ -191,7 +191,7 @@ func isHostname(h string) bool {
 	}
 	// The rightmost label must contain a non-digit. An all-numeric final label
 	// means the string is IP shorthand the libc resolver treats as an address,
-	// not a name — rejecting it stops a rule that string-mismatches an allowlist
+	// not a name - rejecting it stops a rule that string-mismatches an allowlist
 	// entry but still resolves to a real host.
 	last := labels[len(labels)-1]
 	return strings.IndexFunc(last, func(c rune) bool { return c < '0' || c > '9' }) >= 0

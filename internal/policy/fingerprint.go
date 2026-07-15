@@ -11,7 +11,7 @@ import (
 // manifest's approval attests: if the fingerprint changes, the permissions
 // changed and the manifest must be re-approved.
 //
-// It covers the fields that define what the sandbox permits — not the manifest's
+// It covers the fields that define what the sandbox permits - not the manifest's
 // formatting, comments, or its own provenance block, so reformatting a manifest
 // does not invalidate its approval. Set-like fields (env, read, write, network)
 // are sorted so reordering them is not a change; args are kept in order because
@@ -19,7 +19,7 @@ import (
 //
 // The fingerprint says nothing about the *contents* of the entrypoint file: it
 // attests the policy, not the code. Swapping the script body under an approved
-// manifest still matches — by design, since the manifest governs permissions,
+// manifest still matches - by design, since the manifest governs permissions,
 // not code identity.
 func (p *Policy) Fingerprint() string {
 	h := sha256.New()

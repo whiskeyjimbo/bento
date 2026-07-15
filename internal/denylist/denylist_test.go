@@ -3,7 +3,7 @@ package denylist
 import "testing"
 
 // The deny-list is a security invariant: dropping an entry silently re-exposes a
-// credential store. This guards the high-value stores that are easy to forget —
+// credential store. This guards the high-value stores that are easy to forget -
 // OS keyrings and browser profiles hold saved passwords and session tokens.
 func TestHomeShieldsSecretStores(t *testing.T) {
 	rules := Home("/home/u")

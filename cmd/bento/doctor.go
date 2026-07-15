@@ -20,7 +20,7 @@ func newDoctorCmd() *cobra.Command {
 			"Each layer is reported as enforced, degraded, or unavailable, with the reason.\n" +
 			"Core layers are the guarantees bento makes everywhere; a core layer that falls\n" +
 			"short refuses a run by default. Hardening layers have no equivalent on every\n" +
-			"platform — when one is unavailable, runs proceed and say so.",
+			"platform - when one is unavailable, runs proceed and say so.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := backend.New()
@@ -41,7 +41,7 @@ func newDoctorCmd() *cobra.Command {
 				return nil
 			}
 			if report.HasDegradation() {
-				fmt.Println("Core guarantees hold on this host. Some hardening layers are unavailable —")
+				fmt.Println("Core guarantees hold on this host. Some hardening layers are unavailable -")
 				fmt.Println("runs proceed and report the gap; --strict refuses instead.")
 				return nil
 			}

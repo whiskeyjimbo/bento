@@ -13,7 +13,7 @@ import (
 
 // The bridge is the in-sandbox hop between the target's loopback proxy port and
 // the host-side proxy socket. These tests exercise it directly with a fake unix
-// "proxy" and a plain TCP client — no sandbox needed — so its byte-plumbing is
+// "proxy" and a plain TCP client - no sandbox needed - so its byte-plumbing is
 // covered independently of the end-to-end sandbox test.
 
 // echoSocket starts a unix listener that echoes a banner then whatever it

@@ -117,7 +117,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	// Re-parsing the marshalled form must yield the same policy fingerprint and
-	// provenance — the machine-owned round trip is lossless for what matters.
+	// provenance - the machine-owned round trip is lossless for what matters.
 	doc2, err := Parse(strings.NewReader(string(out)))
 	if err != nil {
 		t.Fatalf("re-Parse: %v\n%s", err, out)

@@ -60,7 +60,7 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 }
 
 // A path opened relative to a real directory descriptor (openat with a dirfd,
-// not AT_FDCWD) must be anchored at that directory, not left bare — otherwise the
+// not AT_FDCWD) must be anchored at that directory, not left bare - otherwise the
 // profiler would anchor it at the working directory and grant the wrong path.
 func TestTraceResolvesOpenatDirfd(t *testing.T) {
 	py, err := exec.LookPath("python3")

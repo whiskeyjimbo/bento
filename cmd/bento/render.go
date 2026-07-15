@@ -12,7 +12,7 @@ import (
 
 // The JSON shapes below are the machine-readable contract for agents and CI.
 // They are defined here, in the frontend, so the core stays free of wire-format
-// concerns — and they use explicit strings rather than the core's enum values, so
+// concerns - and they use explicit strings rather than the core's enum values, so
 // reordering a Go constant can never silently change the contract.
 
 type layerJSON struct {
@@ -62,7 +62,7 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 // cooperatively: a program that honors HTTP_PROXY reaches its allowlisted hosts,
 // but one that ignores it and dials a raw address hits the empty network
 // namespace and fails closed. When a network-using run failed and made *no*
-// connections through the proxy, that bypass is the likely cause — and a bare
+// connections through the proxy, that bypass is the likely cause - and a bare
 // "network unreachable" would leave the user with no idea why.
 //
 // This is a heuristic, not proof: without syscall observation we cannot tell a
@@ -80,7 +80,7 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 
 // writeDegradations tells the user, before their script's own output, exactly
 // which guarantees this host is not delivering. Nothing that weakens a requested
-// guarantee is ever silent — that was the failure this tool exists to prevent.
+// guarantee is ever silent - that was the failure this tool exists to prevent.
 func writeDegradations(w io.Writer, r enforce.Report) {
 	short := r.Degradations()
 	if len(short) == 0 {
@@ -88,7 +88,7 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 	}
 	fmt.Fprintln(w, "[bento] this host does not enforce everything your policy asked for:")
 	for _, l := range short {
-		fmt.Fprintf(w, "[bento]   %s (%s tier): %s — %s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
+		fmt.Fprintf(w, "[bento]   %s (%s tier): %s - %s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
 	}
 	fmt.Fprintln(w, "[bento] run `bento doctor` for the full picture, or --strict to refuse rather than degrade.")
 }

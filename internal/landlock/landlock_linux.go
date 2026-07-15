@@ -4,7 +4,7 @@
 // bwrap confines the filesystem by only mounting the granted paths; Landlock
 // confines it by denying access the kernel LSM does not permit. Running both
 // means a bug or escape in the mount-namespace layer does not by itself grant
-// filesystem access — the target's writes stay confined to its grants even then.
+// filesystem access - the target's writes stay confined to its grants even then.
 // Landlock is a backstop, not the primary guarantee, so it is best-effort: where
 // the kernel lacks it the sandbox still holds via bwrap, and `doctor` reports
 // whether the backstop is actually present.
@@ -21,7 +21,7 @@ import (
 // Restrict makes the whole visible filesystem read-and-execute only, except the
 // given writable paths. It is applied inside the sandbox after the mount
 // confinement is already in place, so "the whole visible filesystem" is just the
-// granted mounts — Landlock re-denies writes to anything outside the writable
+// granted mounts - Landlock re-denies writes to anything outside the writable
 // set, independently of bwrap.
 //
 // The writable set MUST include every path bwrap made writable that the target

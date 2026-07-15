@@ -43,7 +43,7 @@ func runScript(t *testing.T, p *policy.Policy, src string) (int, string) {
 	// These tests exercise filesystem and network boundaries, and their scripts
 	// invoke external helpers (cat, mkdir, getent) that are themselves
 	// subprocesses. Run with exec: all so a blocked helper cannot masquerade as a
-	// passing security assertion — the boundary under test must be what denies,
+	// passing security assertion - the boundary under test must be what denies,
 	// not the exec filter.
 	p.Exec = policy.ExecAll
 
@@ -125,7 +125,7 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 }
 
 // Profiling always runs through the launcher, so the bento binary must be bound
-// even for exec:all + no network — the one case where the policy alone would not
+// even for exec:all + no network - the one case where the policy alone would not
 // require the launcher and newSandbox leaves bentoPath unset. Without the fix this
 // emitted an empty bind source for /bento and bwrap aborted.
 func TestProfileExecAllNoNetworkRuns(t *testing.T) {
@@ -147,7 +147,7 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	// a bare err==nil check would pass even unfixed; a run that reached the
 	// interpreter always opens its runtime files.
 	if len(obs.Reads) == 0 {
-		t.Fatal("no file accesses observed — the target did not run (empty /bento bind?)")
+		t.Fatal("no file accesses observed - the target did not run (empty /bento bind?)")
 	}
 }
 
@@ -192,7 +192,7 @@ func TestWriteGrantToMissingDirIsCreatedAndPersists(t *testing.T) {
 	}
 }
 
-// Saving via write-temp-then-rename — what editors and os.replace do — must work
+// Saving via write-temp-then-rename - what editors and os.replace do - must work
 // under a write grant. This is the whole reason write grants are directory-
 // granular: a file-level bind mount makes rename onto the target fail with EBUSY.
 func TestAtomicRenameSaveWorksUnderWriteGrant(t *testing.T) {
@@ -219,7 +219,7 @@ func TestAtomicRenameSaveWorksUnderWriteGrant(t *testing.T) {
 }
 
 // The mandatory deny-list must hold even when the policy grants the whole home
-// directory. A credential file that does not exist yet must not be creatable —
+// directory. A credential file that does not exist yet must not be creatable -
 // this is the v1 hole, where an absent ~/.ssh could be created and a key planted.
 func TestDenyListShieldsUnbornCredentialUnderHomeGrant(t *testing.T) {
 	requireSandbox(t)
@@ -273,7 +273,7 @@ func TestSymlinkedDenyFileIsShieldedWithoutCrashing(t *testing.T) {
 	}
 }
 
-// A deny-list dotfile that is a DANGLING symlink (target not created yet — the
+// A deny-list dotfile that is a DANGLING symlink (target not created yet - the
 // half-populated home-manager / stow layout) must still be shielded: the shield
 // follows the symlink to its target and blocks a write through it, rather than
 // silently no-opping (letting a credential be planted) or aborting the run.

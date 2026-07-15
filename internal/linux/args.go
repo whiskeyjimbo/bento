@@ -87,7 +87,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// The network namespace is always unshared: it is the egress fence. With no
 	// rules that is the whole story (no route out at all). With rules, the only
 	// reachable peer is the loopback forwarder the re-exec'd bento sets up, which
-	// bridges to the host-side allowlist proxy — the sandbox still has no route to
+	// bridges to the host-side allowlist proxy - the sandbox still has no route to
 	// the outside, so nothing bypasses the proxy.
 	args = append(args, "--unshare-net")
 
@@ -162,8 +162,8 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// With every mount point now created, remount the sandbox root read-only. bwrap
 	// starts the root as a writable tmpfs; left writable, a run could create files
 	// directly at "/" that no grant allows. Making it read-only confines writes to
-	// exactly the submounts made writable — the runtime scratch (/tmp, /dev, /proc)
-	// and the write grants — which is also what the Landlock backstop confines to,
+	// exactly the submounts made writable - the runtime scratch (/tmp, /dev, /proc)
+	// and the write grants - which is also what the Landlock backstop confines to,
 	// so the two layers agree. Must come last: an earlier remount would stop bwrap
 	// creating the remaining root-level mount points.
 	args = append(args, "--remount-ro", "/")
@@ -183,7 +183,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		// passed here: the runtime scratch mounts plus the write grants. With the
 		// root remounted read-only above, those are the only paths bwrap leaves
 		// writable, so Landlock never denies a granted write bwrap would allow.
-		// (Both layers are still stricter on the deny-list shields, by design — a
+		// (Both layers are still stricter on the deny-list shields, by design - a
 		// shield denies the write and that is the intent.) Deriving both from this
 		// one place keeps them in sync.
 		for _, w := range append(append([]string{}, sandboxWritableMounts...), writes...) {
@@ -269,8 +269,8 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 	rules := denylist.Home(sb.home)
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
-		// directory. A write grant that is a plain file — or a path that does not
-		// exist yet — is not a checkout, and shielding a ".git/hooks" under it would
+		// directory. A write grant that is a plain file - or a path that does not
+		// exist yet - is not a checkout, and shielding a ".git/hooks" under it would
 		// force bwrap to create that path inside a file, or pre-create the target as
 		// a directory the script then cannot write as a file.
 		if sb.isDir(w) {
@@ -301,7 +301,7 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 
 // shieldNeeded decides whether a deny rule needs a shield mount, given what the
 // grants expose. Beyond protecting the path, this avoids asking bwrap to bind a
-// shield over a path whose parent is read-only — which it cannot do — for paths
+// shield over a path whose parent is read-only - which it cannot do - for paths
 // that are not actually a threat there.
 func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
 	if !reachable(r.Path, grants) {
@@ -322,7 +322,7 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
 //
 // Both branches cover paths that do not exist yet, which is what closes the
 // "plant a new credential file or shell profile under a broad write grant" hole:
-// bwrap creates the mount point, and the shield — not the host — receives the
+// bwrap creates the mount point, and the shield - not the host - receives the
 // write.
 // shield's rule path is already symlink-resolved by denyArgs, so it binds where
 // bwrap can create the mount point (never at a symlink, which aborts the run). A
@@ -348,7 +348,7 @@ func shield(r denylist.Rule, sb sandbox) []string {
 		return []string{"--tmpfs", r.Path}
 	default:
 		// DenyWrite on a file. Rebinding the real file read-only keeps it readable
-		// — git must still read ~/.gitconfig — while rejecting writes. Shadowing it
+		// - git must still read ~/.gitconfig - while rejecting writes. Shadowing it
 		// with /dev/null, as v1 did, would have blinded those legitimate reads.
 		if sb.exists(r.Path) {
 			return []string{"--ro-bind", r.Path, r.Path}
@@ -359,7 +359,7 @@ func shield(r denylist.Rule, sb sandbox) []string {
 
 // checkNotShielded rejects a grant that falls inside a fully-shielded location
 // (a DenyAll deny-list directory such as ~/.ssh). Such a grant cannot be honored
-// — the shield wins — so silently dropping it would leave the user believing a
+// - the shield wins - so silently dropping it would leave the user believing a
 // path is available when it is not. A grant that *contains* a shielded path is
 // fine and common (write: ~ with ~/.ssh shielded inside it); only a grant at or
 // below a shield is the mistake.
@@ -382,7 +382,7 @@ func checkNotShielded(sb sandbox, grants []string) error {
 	return nil
 }
 
-// reachable reports whether a grant could expose path — either because a grant
+// reachable reports whether a grant could expose path - either because a grant
 // contains it, or because it contains a grant.
 func reachable(path string, grants []string) bool {
 	for _, g := range grants {
@@ -405,8 +405,8 @@ func under(child, parent string) bool {
 // resolveGrants makes every granted path absolute and symlink-free.
 //
 // Resolving is the defense against a symlinked grant: if `write: /tmp/out` points
-// at ~/.ssh, we bind the real target, and the deny-list — which runs after and
-// also works on real paths — still shields it. Binding the unresolved path would
+// at ~/.ssh, we bind the real target, and the deny-list - which runs after and
+// also works on real paths - still shields it. Binding the unresolved path would
 // have let the symlink redirect the mount.
 func resolveGrants(p *policy.Policy) (reads, writes []string, err error) {
 	if reads, err = resolveAll(p.Read); err != nil {
@@ -452,8 +452,8 @@ const maxSymlinkDepth = 40
 
 // resolveExisting resolves abs where it exists via the kernel (EvalSymlinks,
 // which is accurate through parent symlinks, "..", and chains). Where a component
-// does not exist — including a *dangling* leaf symlink pointing into a not-yet-
-// populated store — it walks the components against a fully-resolved prefix,
+// does not exist - including a *dangling* leaf symlink pointing into a not-yet-
+// populated store - it walks the components against a fully-resolved prefix,
 // following each symlink before any later "..", so the result is the target a
 // write through the path would actually reach (not the unmountable symlink, and
 // not the wrong sibling filepath.Join's lexical ".." cleaning would produce).
@@ -462,7 +462,7 @@ func resolveExisting(abs string, depth int) string {
 		return real
 	}
 	if depth >= maxSymlinkDepth {
-		return abs // a symlink loop; leave it — a shield here fails closed
+		return abs // a symlink loop; leave it - a shield here fails closed
 	}
 
 	resolved := "/"
@@ -484,8 +484,8 @@ func resolveExisting(abs string, depth int) string {
 			continue
 		}
 		// A symlink: rebuild the path as its target followed by the not-yet-walked
-		// remainder — raw, not lexically joined, so a ".." *inside* the target still
-		// follows its own leading symlink — and resolve that from the top.
+		// remainder - raw, not lexically joined, so a ".." *inside* the target still
+		// follows its own leading symlink - and resolve that from the top.
 		rebuilt := target
 		if !filepath.IsAbs(target) {
 			rebuilt = resolved + "/" + target

@@ -51,7 +51,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 
 	// Observation always runs through the launcher (it hosts the observer), so the
 	// bento binary must be bound even when the policy alone would not require the
-	// launcher — exec: all with no network. newSandbox cannot know observation is
+	// launcher - exec: all with no network. newSandbox cannot know observation is
 	// coming (it is set here), so ensure the bind source is set now.
 	if sb.bentoPath == "" {
 		if sb.bentoPath, err = bentoSelfPath(e.selfPath); err != nil {

@@ -81,7 +81,7 @@ func TestMemoryLimitEnforced(t *testing.T) {
 		p := &policy.Policy{Entrypoint: bomb, Interpreter: "python3", Read: []string{dir}, Exec: policy.ExecAll, Limits: l}
 		var out strings.Builder
 		// A non-zero exit is expected under the limit, so the error is not fatal
-		// here — the assertion is on whether the allocation completed.
+		// here - the assertion is on whether the allocation completed.
 		sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
 		return out.String()
 	}

@@ -1,7 +1,7 @@
 // Package launcher is the in-sandbox stage bento re-execs into.
 //
 // bwrap runs a single entrypoint; when a run needs setup that must happen inside
-// the sandbox — the egress bridge and/or the seccomp exec-block filter — that
+// the sandbox - the egress bridge and/or the seccomp exec-block filter - that
 // setup happens here, in one place, before the real target runs. Doing both in
 // one stage is deliberate: they must not become two competing entrypoints, and
 // their ordering matters (the bridge is started before the filter, because
@@ -52,7 +52,7 @@ type Config struct {
 //
 // Order is load-bearing. The bridge child is started first, while execve still
 // works. The exec-block filter is installed next; if it cannot be installed the
-// run is refused rather than proceeding unconfined — a report that claims
+// run is refused rather than proceeding unconfined - a report that claims
 // "enforced" must never accompany a target that ran without the filter. Finally
 // the target is started: under the filter it is reached via execveat (which the
 // filter allows), replacing this process; without the filter it is supervised as
@@ -78,7 +78,7 @@ func Run(cfg Config) (int, error) {
 		if err := seccomp.BlockExec(); err != nil {
 			// Fail closed: never run the target unconfined while claiming to block
 			// subprocesses.
-			return 0, fmt.Errorf("launcher: refusing to run — could not install the exec-block filter: %w", err)
+			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
 		}
 	}
 
@@ -89,7 +89,7 @@ func Run(cfg Config) (int, error) {
 	//
 	// It is a best-effort second layer, not the primary guarantee: bwrap already
 	// confines the filesystem. So a failure to apply it warns and proceeds rather
-	// than aborting the run — failing here would make bwrap's confinement
+	// than aborting the run - failing here would make bwrap's confinement
 	// contingent on the backstop, inverting the relationship. (An absent Landlock
 	// is a silent no-op inside Restrict, not an error.)
 	if err := landlock.Restrict(cfg.Writable); err != nil {
@@ -105,7 +105,7 @@ func Run(cfg Config) (int, error) {
 }
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
-// no Landlock — a permissive run so every access is seen) and writes what the
+// no Landlock - a permissive run so every access is seen) and writes what the
 // target opened, and whether it exec'd, to the report path for the host to read.
 func runObserve(cfg Config, env []string) (int, error) {
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
@@ -116,7 +116,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// a failed trace previously left the launcher's write un-done. It is NOT a
 	// complete defense: a descendant whose write() to the report was already past
 	// its syscall-entry stop when the root exited can still complete that write and
-	// race this one — the report channel being target-writable is the root weakness,
+	// race this one - the report channel being target-writable is the root weakness,
 	// tracked for a proper fix (write the report through a descriptor the target's
 	// mount never includes). Paths are quoted (%q) so a newline in a path cannot
 	// forge extra R/W/EXEC records. The completion marker is written last and only on
@@ -162,7 +162,7 @@ func proxyEnv() []string {
 	u := "http://" + proxyAddr
 	// NO_PROXY exempts loopback so a script that runs its own in-sandbox service
 	// (a local server on 127.0.0.1) can reach it directly, instead of the client
-	// sending that connection to the host-side proxy — which would try to dial the
+	// sending that connection to the host-side proxy - which would try to dial the
 	// host's loopback, not the sandbox's. The tradeoff: a manifest cannot allowlist
 	// a loopback address as an egress target; `validate` warns when one does. Both
 	// casings are set because different tools read different ones.
@@ -210,7 +210,7 @@ func reapUntil(targetPid int) (int, error) {
 		case pid == targetPid:
 			return waitExitCode(ws), nil
 		}
-		// Any other pid was an orphaned grandchild, now reaped — keep going.
+		// Any other pid was an orphaned grandchild, now reaped - keep going.
 	}
 }
 

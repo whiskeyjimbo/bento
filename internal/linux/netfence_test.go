@@ -15,7 +15,7 @@ import (
 
 // The egress design rests on one claim: a sandbox with no network namespace of
 // its own cannot reach any external host, even when the payload is a static
-// binary issuing raw connect(2) — the class of program v1's LD_PRELOAD proxy
+// binary issuing raw connect(2) - the class of program v1's LD_PRELOAD proxy
 // leaked on. These tests prove that claim on a real sandbox, so it is a standing
 // guarantee rather than an assumption. If the kernel fence ever stops holding,
 // CI fails here before anything ships.
@@ -79,7 +79,7 @@ func runProbe(t *testing.T, p *policy.Policy, bin, target string) string {
 }
 
 // A policy with no network rules denies all egress. A static binary must not be
-// able to reach an external host — this is the exact case v1 leaked on.
+// able to reach an external host - this is the exact case v1 leaked on.
 func TestStaticBinaryCannotReachExternalHost(t *testing.T) {
 	requireSandbox(t)
 	bin := buildStaticProbe(t)
@@ -116,7 +116,7 @@ func TestLoopbackIsReachableInsideSandbox(t *testing.T) {
 }
 
 // Control: without a sandbox, the very same probe binary can reach a loopback
-// listener we start — proving the probe itself works and the denial above is the
+// listener we start - proving the probe itself works and the denial above is the
 // sandbox, not a broken probe.
 func TestProbeItselfWorksUnsandboxed(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {

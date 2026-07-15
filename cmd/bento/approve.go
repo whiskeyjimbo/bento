@@ -18,7 +18,7 @@ func newApproveCmd() *cobra.Command {
 			"It writes a provenance fingerprint of the policy into the manifest. `validate`\n" +
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
-			"permissions, not the script's contents — it attests the policy, not the code.\n\n" +
+			"permissions, not the script's contents - it attests the policy, not the code.\n\n" +
 			"The manifest is rewritten in canonical form (it is machine-owned); review the\n" +
 			"diff as you would any change.",
 		Args: cobra.ExactArgs(1),

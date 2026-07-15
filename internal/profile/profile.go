@@ -3,7 +3,7 @@
 // A profiling run executes the script permissively under observation; this
 // package filters the raw observations down to the paths and hosts a human would
 // actually put in a manifest, and assembles a Policy from them. The result is a
-// proposal to review, not a final manifest — profiling sees only the code paths
+// proposal to review, not a final manifest - profiling sees only the code paths
 // one run exercised.
 package profile
 
@@ -29,7 +29,7 @@ type Observation struct {
 	Execed bool
 	// Interpreter is the absolute, resolved path the interpreter ran from (empty
 	// for a self-interpreting binary). It anchors dropping the interpreter's own
-	// runtime tree from the proposal — under a version manager that tree lives in
+	// runtime tree from the proposal - under a version manager that tree lives in
 	// $HOME, so a system-prefix filter alone does not catch it.
 	Interpreter string
 }

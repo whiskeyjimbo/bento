@@ -19,7 +19,7 @@ import (
 // forwarder, the bind-mounted socket, and the host-side allowlist proxy. The
 // forwarder is the bento binary, so the tests build it once.
 //
-// The "upstream" is a loopback listener started by the test — no real internet is
+// The "upstream" is a loopback listener started by the test - no real internet is
 // needed, and the allowlist is checked against the host we tell the sandbox to
 // reach, which is exactly what the proxy sees.
 
@@ -31,7 +31,7 @@ var (
 
 // testBento builds the bento binary once per test run and returns its path. The
 // in-sandbox launcher is bento re-exec'd, so any sandbox test that routes through
-// the launcher — which is every test not running with exec: all — needs the real
+// the launcher - which is every test not running with exec: all - needs the real
 // binary, not the test process. Building once keeps the suite from recompiling it
 // for each test.
 func testBento(t *testing.T) string {
@@ -78,7 +78,7 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	// A loopback HTTPS-less listener standing in for an upstream. 127.0.0.2 (not
 	// 127.0.0.1) is used deliberately: the sandbox's NO_PROXY exempts 127.0.0.1 so
 	// a client would try to reach it directly and fail in the netns, whereas
-	// 127.0.0.2 is proxied — which is exactly the path under test.
+	// 127.0.0.2 is proxied - which is exactly the path under test.
 	ln, err := net.Listen("tcp", "127.0.0.2:0")
 	if err != nil {
 		t.Fatal(err)

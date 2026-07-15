@@ -20,7 +20,7 @@ import (
 // login session the process's own cgroup is a session scope that systemd does
 // not delegate: it is not writable and child cgroups cannot be created there.
 // systemd, which owns the hierarchy, will create a delegated, limited scope for
-// us unprivileged — and a scope applies its limits before the command starts, so
+// us unprivileged - and a scope applies its limits before the command starts, so
 // there is no window in which the target runs unbounded. When no systemd user
 // manager is reachable, limits cannot be enforced unprivileged, and that is
 // reported rather than silently ignored (v1's actual failure).
@@ -32,8 +32,8 @@ var (
 )
 
 // canCreateScope reports whether this host can create a transient user scope at
-// all. It answers by actually creating a throwaway one — a stat of a runtime
-// directory does not prove the manager will answer — and caches the result,
+// all. It answers by actually creating a throwaway one - a stat of a runtime
+// directory does not prove the manager will answer - and caches the result,
 // which is stable for the life of the process.
 func canCreateScope() (bool, string) {
 	scopeOnce.Do(func() {
@@ -49,7 +49,7 @@ func canCreateScope() (bool, string) {
 		// an undelegated controller without enforcing it. memory and pids are the
 		// host-safety controllers (an uncapped memory bomb can OOM the host) and are
 		// delegated by default; if they are not, limits genuinely cannot protect the
-		// host, so report unavailable at probe time — that is what lets admission
+		// host, so report unavailable at probe time - that is what lets admission
 		// refuse a requested memory limit rather than run unbounded. cpu, which
 		// commonly needs a Delegate= drop-in, is handled per-run (undelegatedController)
 		// because an uncapped cpu is a far milder failure.
@@ -107,7 +107,7 @@ func trueBinary() string {
 //
 // systemd-run *accepts* a property like CPUQuota even when the controller is not
 // delegated, then silently does not enforce it. So a wholesale "limits enforced"
-// claim is dishonest when, say, cpu isn't delegated (the common default — it
+// claim is dishonest when, say, cpu isn't delegated (the common default - it
 // needs a one-time admin `Delegate=cpu` drop-in). Checking the delegated set lets
 // the run report that specific controller as not enforced.
 func undelegatedController(l policy.Limits) string {

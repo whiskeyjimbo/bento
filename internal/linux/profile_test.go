@@ -26,7 +26,7 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 
 	// The empty file bwrap leaves when it aborts before the launcher runs, and a
 	// truncated write that never reached the trailing marker, both lack the marker
-	// and must surface an error — not a silent empty or partial observation the
+	// and must surface an error - not a silent empty or partial observation the
 	// profiler would turn into a wrong manifest.
 	for name, content := range map[string]string{
 		"empty":     "",

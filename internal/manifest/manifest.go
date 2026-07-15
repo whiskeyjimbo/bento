@@ -2,7 +2,7 @@
 //
 // It is the serialization adapter: the domain knows nothing about YAML, and the
 // wire format and its parsing concerns live only here. Unknown fields are a hard
-// error at every level of the document — the manifest is machine-owned, so a
+// error at every level of the document - the manifest is machine-owned, so a
 // shape mistake is caught at the boundary rather than silently carried inward.
 package manifest
 
@@ -32,7 +32,7 @@ type manifest struct {
 
 // Provenance is the tool-written block that records how a manifest was produced
 // and stamps the policy it was approved for. It is a real field, not a comment,
-// because re-marshalling drops comments — and this block must survive the tool
+// because re-marshalling drops comments - and this block must survive the tool
 // rewriting the file.
 type Provenance struct {
 	// GeneratedBy names the tool/version that produced the manifest.
