@@ -192,6 +192,42 @@ func TestDenyListShieldsUnbornCredentialUnderHomeGrant(t *testing.T) {
 	}
 }
 
+// A write-denied dotfile that is a symlink (the home-manager / nix layout, where
+// ~/.gitconfig points into an immutable store) must be shielded without aborting
+// the run: bwrap cannot mount over a symlink path, so the shield binds the
+// resolved target. Content stays readable; the write is refused.
+func TestSymlinkedDenyFileIsShieldedWithoutCrashing(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	real := filepath.Join(home, "store-gitconfig")
+	if err := os.WriteFile(real, []byte("[user]\n\tname = Real Name\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".gitconfig")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Write: []string{home}}
+	_, out := runScript(t, p, "cat "+link+" 2>&1; echo TAMPERED >> "+link+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("shielding a symlinked dotfile aborted bwrap: %s", out)
+	}
+	if !strings.Contains(out, "Real Name") {
+		t.Errorf("a symlinked write-denied file should stay readable, got: %q", out)
+	}
+	got, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "TAMPERED") {
+		t.Fatalf("a write reached the shielded symlink target: %q", got)
+	}
+}
+
 // The same for a shell profile, the classic persistence vector.
 func TestDenyListShieldsShellProfileUnderHomeGrant(t *testing.T) {
 	requireSandbox(t)

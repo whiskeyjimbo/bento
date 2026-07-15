@@ -33,6 +33,8 @@ func testSandbox(existing ...string) sandbox {
 			return false
 		},
 		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
+		// The hypothetical filesystem has no symlinks, so shields bind in place.
+		resolve: func(p string) string { return p },
 	}
 }
 

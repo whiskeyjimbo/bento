@@ -58,6 +58,10 @@ type sandbox struct {
 	// against a hypothetical root. It must exclude the mounts baseFlags manages
 	// (/proc, /dev, /tmp) so the host versions do not overmount them.
 	rootDirs func() []string
+	// resolve returns a path with its symlinks followed, or the path unchanged if
+	// it does not resolve. Shields bind at the resolved path because bwrap cannot
+	// create a mount point at a symlink (it aborts the whole run).
+	resolve func(string) string
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -299,29 +303,36 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
 // bwrap creates the mount point, and the shield — not the host — receives the
 // write.
 func shield(r denylist.Rule, sb sandbox) []string {
+	// bwrap cannot create a mount point at a symlink — it aborts the whole run —
+	// so a shield binds at the resolved path. A symlinked dotfile (~/.bashrc under
+	// home-manager) is then shielded via its real target: reads follow the symlink
+	// to it, and the bind makes it read-only. (Replacing the symlink itself under a
+	// broad home write grant is not preventable this way, but that grant is
+	// discouraged and the profiler no longer proposes it.)
+	dst := sb.resolve(r.Path)
 	switch {
 	case r.Deny == denylist.DenyAll && r.Dir:
 		// An empty tmpfs hides existing contents and absorbs any new file.
-		return []string{"--tmpfs", r.Path}
+		return []string{"--tmpfs", dst}
 	case r.Deny == denylist.DenyAll:
 		// An empty read-only file: contents unreadable, writes rejected.
-		return []string{"--ro-bind", sb.emptyFile, r.Path}
+		return []string{"--ro-bind", sb.emptyFile, dst}
 	case r.Dir:
 		// DenyWrite on a directory. Rebinding it read-only keeps existing contents
 		// readable while rejecting new files (a planted git hook). If it does not
 		// exist, a tmpfs both keeps it empty and absorbs writes.
 		if sb.exists(r.Path) {
-			return []string{"--ro-bind", r.Path, r.Path}
+			return []string{"--ro-bind", dst, dst}
 		}
-		return []string{"--tmpfs", r.Path}
+		return []string{"--tmpfs", dst}
 	default:
 		// DenyWrite on a file. Rebinding the real file read-only keeps it readable
 		// — git must still read ~/.gitconfig — while rejecting writes. Shadowing it
 		// with /dev/null, as v1 did, would have blinded those legitimate reads.
 		if sb.exists(r.Path) {
-			return []string{"--ro-bind", r.Path, r.Path}
+			return []string{"--ro-bind", dst, dst}
 		}
-		return []string{"--ro-bind", sb.emptyFile, r.Path}
+		return []string{"--ro-bind", sb.emptyFile, dst}
 	}
 }
 
@@ -465,6 +476,16 @@ func hostExists(path string) bool {
 func hostIsDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
+}
+
+// hostResolve follows a path's symlinks, returning the path unchanged if it does
+// not resolve (e.g. it does not exist yet — then it is not a symlink and needs no
+// resolving).
+func hostResolve(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // hostRootDirs lists the host's top-level entries to bind for a "/" read grant,
