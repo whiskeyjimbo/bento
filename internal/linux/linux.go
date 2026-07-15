@@ -205,19 +205,23 @@ func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 		resolve:     hostResolve,
 	}
 
-	// The in-sandbox launcher (the bento binary) is always bound: it is the
-	// sandbox's PID 1, so it reaps orphaned grandchildren rather than leaking
-	// zombies, and it hosts the egress bridge, exec-block filter, and profiling
-	// observer when those are in play. The proxy socket is bound only for egress.
-	self := selfPath
-	if self == "" {
-		self, err = os.Executable()
-		if err != nil {
-			cleanup()
-			return sandbox{}, noop, fmt.Errorf("linux: locating the bento binary for the in-sandbox launcher: %w", err)
-		}
+	// The in-sandbox launcher (the bento binary) is bound whenever egress or
+	// exec-blocking is in play; the proxy socket only when egress is.
+	execMode := p.Exec
+	if execMode == "" {
+		execMode = policy.ExecNone
 	}
-	sb.bentoPath = self
+	if len(p.Network) > 0 || execMode != policy.ExecAll {
+		self := selfPath
+		if self == "" {
+			self, err = os.Executable()
+			if err != nil {
+				cleanup()
+				return sandbox{}, noop, fmt.Errorf("linux: locating the bento binary for the in-sandbox launcher: %w", err)
+			}
+		}
+		sb.bentoPath = self
+	}
 	if len(p.Network) > 0 {
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}

@@ -137,28 +137,32 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// directory cannot leave the script itself writable mid-run.
 	args = append(args, "--ro-bind", sb.entrypoint, sb.entrypoint)
 
-	// The in-sandbox launcher stage always runs: it is the sandbox's PID 1 and so
-	// reaps orphaned grandchildren (a subprocess-spawning target that double-forks
-	// would otherwise leak zombies, since a bare target as PID 1 does not reap). It
-	// also hosts the egress bridge, the exec-block filter, and the profiling
-	// observer when those are needed.
+	// The in-sandbox launcher stage runs whenever the sandbox needs setup that
+	// must happen inside it: the egress bridge and/or the exec-block filter. When
+	// neither is needed (exec: all and no network), the target runs directly.
 	execMode := p.Exec
 	if execMode == "" {
 		execMode = policy.ExecNone
 	}
+	// Profiling always runs through the launcher (it hosts the observer); so does
+	// egress or exec-blocking. Only a plain exec:all, no-network, non-profiling
+	// run skips the launcher and executes the target directly.
+	useLauncher := sb.proxySocket != "" || sb.observe != "" || execMode != policy.ExecAll
 
-	args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
-	if sb.proxySocket != "" {
-		args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
-	}
-	if sb.observe != "" {
-		args = append(args, "--bind", sb.observe, sandboxObserveReport)
+	if useLauncher {
+		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
+		if sb.proxySocket != "" {
+			args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
+		}
+		if sb.observe != "" {
+			args = append(args, "--bind", sb.observe, sandboxObserveReport)
+		}
 	}
 
 	args = append(args, envArgs(proc)...)
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
-	{
+	if useLauncher {
 		launch := []string{sandboxBentoPath, "__launch", "--exec", string(execMode)}
 		if sb.proxySocket != "" {
 			launch = append(launch, "--socket", sandboxProxySocket)

@@ -164,19 +164,12 @@ func proxyEnv() []string {
 // only when the target is not exec-blocked (nothing needs to replace this
 // process, and supervising lets us return the exit code directly).
 //
-// This process is PID 1 in the sandbox's PID namespace, so a grandchild whose
-// parent exits reparents here. It therefore acts as an init: it reaps every
-// exiting child, not just the target, so orphaned grandchildren of a
-// subprocess-spawning target do not accumulate as zombies (which would otherwise
-// consume the pids the limit budgets).
-//
-// This covers every non-exec-blocked run (any exec: all), since the launcher is
-// always the sandbox's PID 1. An exec-blocked target is instead reached via
-// execveat and replaces this process, becoming PID 1 itself, so reaping is then
-// its own responsibility. Under exec: none-strict it cannot spawn at all; under
-// exec: none it can spawn only via the soft-allowed execveat, so any orphaned
-// grandchildren are a bounded, transient edge of that soft block, torn down with
-// the pid namespace.
+// reapUntil waits on all of this process's children until the target exits, so
+// the egress bridge started alongside it is reaped too. Orphaned *grandchildren*
+// of a subprocess-spawning target are not this process's concern: bwrap runs its
+// own init as PID 1 (this launcher is PID 2), so an orphan reparents to bwrap's
+// init, which reaps it. The whole pid namespace is torn down at the end of the
+// run regardless.
 func superviseTarget(target, env []string) (int, error) {
 	cmd := exec.Command(target[0], target[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
