@@ -110,14 +110,17 @@ func Run(cfg Config) (int, error) {
 func runObserve(cfg Config, env []string) (int, error) {
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
-	// The report is written unconditionally, and always here — after Trace returns,
-	// when the target and every subprocess are ptrace-stopped and cannot run — so
-	// this write is the last one to the bind-mounted report path, truncating
-	// anything the (unsandboxed, profiled) target may have written there to forge
-	// its own observations. Paths are quoted (%q) so a newline embedded in a path
-	// cannot forge extra R/W/EXEC records. The completion marker is written LAST and
-	// only on a successful trace: its presence means the report is genuinely
-	// complete, so a failed or truncated trace lacks it and the reader rejects it.
+	// The report is written unconditionally and only here, after Trace returns. This
+	// truncates whatever the (unsandboxed) target wrote to the bind-mounted report
+	// path during the run to forge its own observations, and closes the window where
+	// a failed trace previously left the launcher's write un-done. It is NOT a
+	// complete defense: a descendant whose write() to the report was already past
+	// its syscall-entry stop when the root exited can still complete that write and
+	// race this one — the report channel being target-writable is the root weakness,
+	// tracked for a proper fix (write the report through a descriptor the target's
+	// mount never includes). Paths are quoted (%q) so a newline in a path cannot
+	// forge extra R/W/EXEC records. The completion marker is written last and only on
+	// a successful trace, so a failed or truncated trace lacks it and is rejected.
 	var b strings.Builder
 	if traceErr == nil {
 		for _, a := range res.Accesses {
