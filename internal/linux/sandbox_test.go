@@ -124,6 +124,22 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 	}
 }
 
+// An exec:all target with no network previously ran as bwrap's bare PID 1, which
+// does not reap, so orphaned grandchildren leaked as zombies. It now runs as a
+// child of the launcher-init (PID 1), which reaps — so the target is not PID 1.
+func TestExecAllRunsUnderLauncherInitReaper(t *testing.T) {
+	requireSandbox(t)
+
+	// runScript uses exec:all and no network — exactly the previously-uncovered case.
+	_, out := runScript(t, &policy.Policy{}, "echo MYPID=$$\n")
+	if strings.Contains(out, "MYPID=1\n") {
+		t.Errorf("exec:all target ran as PID 1 (no init reaper in place); out=%q", out)
+	}
+	if !strings.Contains(out, "MYPID=") {
+		t.Fatalf("target did not report its pid; out=%q", out)
+	}
+}
+
 // A write grant to a directory that does not exist yet is created on the host so
 // the run can persist into it. This is the case a profiled manifest hits: the
 // script writes a new output file, and the grant is that file's directory.
