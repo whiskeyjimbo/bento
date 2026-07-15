@@ -491,7 +491,19 @@ func hostIsDir(path string) bool {
 // keeping any not-yet-existing tail — the same resolution grants get, so deny
 // rules and grants are compared on the same footing (e.g. when /home is itself a
 // symlink, both sides resolve through it).
+//
+// A leaf symlink is followed explicitly, because a *dangling* one (a dotfile
+// symlinked into a not-yet-populated store) would otherwise stall resolution at
+// the symlink itself — and a shield cannot mount at a symlink (bwrap aborts), nor
+// would it cover the target a write through the symlink actually reaches.
 func hostResolve(path string) string {
+	if target, err := os.Readlink(path); err == nil {
+		if filepath.IsAbs(target) {
+			path = target
+		} else {
+			path = filepath.Join(filepath.Dir(path), target)
+		}
+	}
 	if resolved, err := resolve(path); err == nil {
 		return resolved
 	}

@@ -228,6 +228,60 @@ func TestSymlinkedDenyFileIsShieldedWithoutCrashing(t *testing.T) {
 	}
 }
 
+// A deny-list dotfile that is a DANGLING symlink (target not created yet — the
+// half-populated home-manager / stow layout) must still be shielded: the shield
+// follows the symlink to its target and blocks a write through it, rather than
+// silently no-opping (letting a credential be planted) or aborting the run.
+func TestDanglingSymlinkDenyFileBlocksPlantThrough(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "store"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "store", "netrc") // does not exist yet
+	if err := os.Symlink(target, filepath.Join(home, ".netrc")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Write: []string{home}}
+	_, out := runScript(t, p, "echo MALICIOUS > "+filepath.Join(home, ".netrc")+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("a dangling-symlink shield aborted the run: %s", out)
+	}
+	if b, err := os.ReadFile(target); err == nil && strings.Contains(string(b), "MALICIOUS") {
+		t.Fatalf("a credential was planted through a dangling symlink: %q", b)
+	}
+}
+
+// A deny-list dotfile symlinked to a target OUTSIDE every grant must not be bound
+// into the sandbox by its shield: the target is unreachable to begin with, so
+// shielding it would expose content at a path no grant named. The shield is
+// simply skipped, and the target stays invisible.
+func TestSymlinkDenyTargetOutsideGrantsNotExposed(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outside := t.TempDir() // not under any grant
+	secret := filepath.Join(outside, "gitconfig")
+	if err := os.WriteFile(secret, []byte("SECRET_TOKEN"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(home, ".gitconfig")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{home}}
+	_, out := runScript(t, p, "cat "+secret+" 2>&1 || true\n")
+
+	if strings.Contains(out, "SECRET_TOKEN") {
+		t.Fatalf("a shield exposed a symlink target outside all grants: %q", out)
+	}
+}
+
 // A grant that names the resolved target of a symlinked shield (~/.ssh -> a real
 // key store, then write to that store) must still be refused: the deny rule and
 // the grant are compared after both are symlink-resolved, so the shield cannot be
