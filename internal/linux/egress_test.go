@@ -78,8 +78,10 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 	// The upstream must be bound on a NON-loopback address: the proxy runs on the
 	// host, so a loopback target names the host's own loopback, which the resolved-IP
 	// guard now refuses even for an explicit rule. Bind on the machine's outbound IP
-	// (private on most hosts) and allowlist it as an explicit literal - which is also
-	// the guard's explicit-private-IP exemption exercised end to end.
+	// and allowlist it as an explicit literal. When that IP is private (the common
+	// case) this also exercises the guard's explicit-private-IP exemption; on a
+	// public-IP host it is a plain allowlist test. The explicit-loopback-still-blocked
+	// behavior is regression-tested in the proxy package's unit tests, not here.
 	host := outboundIP(t)
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
