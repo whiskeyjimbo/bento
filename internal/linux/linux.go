@@ -318,9 +318,22 @@ func shebang(path string) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	// "#!/usr/bin/env python3" names the interpreter in the second field.
-	if filepath.Base(fields[0]) == "env" && len(fields) > 1 {
-		return fields[1]
+	// "#!/usr/bin/env python3" runs the interpreter named after env. env may be
+	// given options first - notably `-S`/`--split-string`, the standard way a
+	// shebang passes multiple args to the interpreter (`env -S python3 -u`) - and
+	// NAME=VALUE assignments; the interpreter is the first field that is neither, not
+	// simply fields[1] (which would be `-S`).
+	if filepath.Base(fields[0]) == "env" {
+		for _, f := range fields[1:] {
+			// Skip env's leading options and NAME=VALUE assignments; an interpreter
+			// (a path or a bare name) contains neither, so any '='-bearing word is an
+			// assignment, matching env's own handling.
+			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
+				continue
+			}
+			return f
+		}
+		return ""
 	}
 	return fields[0]
 }
