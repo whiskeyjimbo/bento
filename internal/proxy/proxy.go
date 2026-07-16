@@ -281,6 +281,15 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// slot is released by Serve's deferred receive regardless.
 	defer func() { _ = recover() }()
 
+	// A run cancellation (timeout or abort) must unblock this handler at once, not
+	// leave it pinning a slot until readConnect's connectTimeout or the tunnel's
+	// idle timeout expires. Closing client interrupts the CONNECT read and the
+	// client-side copy loop; upstream gets the same treatment once dialed. stop()
+	// drops the registration on the normal path, so nothing stays registered past
+	// the handler.
+	stopClient := context.AfterFunc(ctx, func() { client.Close() })
+	defer stopClient()
+
 	client.SetReadDeadline(time.Now().Add(connectTimeout))
 	host, port, br, err := readConnect(client)
 	if err != nil {
@@ -324,6 +333,11 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		return
 	}
 	defer upstream.Close()
+
+	// Cancellation must also interrupt the upstream-side copy loop, which is
+	// otherwise blocked on Read until the idle timeout. Pairs with stopClient above.
+	stopUpstream := context.AfterFunc(ctx, func() { upstream.Close() })
+	defer stopUpstream()
 
 	p.report(Allowed, host, port)
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
@@ -395,28 +409,40 @@ func writeStatus(c net.Conn, status, body string) {
 // idleTimeout tears down a tunnel that has sat with no traffic in either
 // direction for this long, so untrusted code cannot pin host resources with idle
 // connections held open indefinitely.
-const idleTimeout = 5 * time.Minute
+var idleTimeout = 5 * time.Minute
 
 // tunnel copies bytes both ways until either side closes or the tunnel goes idle.
 // The client side is read through clientR (which may hold buffered bytes); client
 // and upstream are the conns used to write, half-close, and bound idleness.
 func tunnel(clientR io.Reader, client, upstream net.Conn) {
+	// Traffic in either direction means the tunnel is active, so re-arm the idle
+	// deadline on BOTH conns on every read. A long one-way transfer (a large
+	// upload with a silent upstream, say) keeps only its own direction busy; if
+	// each direction armed only its own conn, the silent side would trip the idle
+	// timeout after idleTimeout and - because SetDeadline bounds writes too - kill
+	// the active side's next write, aborting a transfer that never went idle.
+	extend := func() {
+		t := time.Now().Add(idleTimeout)
+		client.SetDeadline(t)
+		upstream.SetDeadline(t)
+	}
+	extend()
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); copyIdle(upstream, clientR, client); halfClose(upstream) }()
-	go func() { defer wg.Done(); copyIdle(client, upstream, upstream); halfClose(client) }()
+	go func() { defer wg.Done(); copyIdle(upstream, clientR, extend); halfClose(upstream) }()
+	go func() { defer wg.Done(); copyIdle(client, upstream, extend); halfClose(client) }()
 	wg.Wait()
 }
 
-// copyIdle copies src→dst, resetting ctl's deadline on every read so an active
-// tunnel stays open while an idle one is torn down after idleTimeout. ctl is the
-// connection src ultimately reads from.
-func copyIdle(dst io.Writer, src io.Reader, ctl net.Conn) {
+// copyIdle copies src→dst, calling extend on every read so activity in this
+// direction keeps the tunnel's idle deadline fresh; an idle tunnel is torn down
+// after idleTimeout when neither direction reads.
+func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 	buf := make([]byte, 32*1024)
 	for {
-		ctl.SetDeadline(time.Now().Add(idleTimeout))
 		n, err := src.Read(buf)
 		if n > 0 {
+			extend()
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
 			}

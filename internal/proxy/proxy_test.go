@@ -254,6 +254,114 @@ func TestOversizedRequestRejected(t *testing.T) {
 	}
 }
 
+// A transfer that stays busy in one direction while the other is silent must not
+// trip the idle timeout: activity in either direction re-arms both conns. With a
+// per-direction deadline, the silent conn's deadline would expire and - because
+// SetDeadline bounds writes too - abort the busy direction mid-transfer.
+func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
+	old := idleTimeout
+	idleTimeout = 200 * time.Millisecond
+	defer func() { idleTimeout = old }()
+
+	// tunnel writes client->upstream and upstream->client; the test feeds the
+	// client side and drains the upstream side, leaving the upstream->client
+	// direction permanently silent.
+	sandbox, clientConn := net.Pipe()
+	upstreamConn, server := net.Pipe()
+	defer sandbox.Close()
+	defer server.Close()
+	go tunnel(clientConn, clientConn, upstreamConn)
+
+	// Total transfer (~300ms) outlasts the idle timeout, but each per-chunk gap
+	// (20ms) stays an order of magnitude under it, so scheduler jitter under load
+	// cannot spuriously trip the timeout.
+	const chunks = 15
+	const spacing = 20 * time.Millisecond
+	go func() {
+		for i := 0; i < chunks; i++ {
+			if _, err := io.WriteString(sandbox, "x"); err != nil {
+				return
+			}
+			time.Sleep(spacing)
+		}
+		sandbox.Close()
+	}()
+
+	// Read exactly the bytes sent rather than to EOF: net.Pipe has no CloseWrite,
+	// so halfClose cannot signal EOF here. Under the bug the busy direction is
+	// aborted at the idle timeout and fewer than chunks bytes arrive.
+	server.SetDeadline(time.Now().Add(3 * time.Second))
+	got := make([]byte, chunks)
+	if n, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("forwarded %d of %d bytes: a busy one-way transfer was torn down by the idle timeout: %v", n, chunks, err)
+	}
+}
+
+// A run cancellation must tear down in-flight tunnels promptly rather than leave
+// their goroutines and sockets alive until the idle timeout. idleTimeout stays at
+// its default here so the only thing that can end the tunnel is the cancellation.
+func TestServeCancelTearsDownTunnel(t *testing.T) {
+	// A dialer whose upstream stays open and silent, so the tunnel blocks in both
+	// copy loops with no traffic and only cancellation can end it.
+	held := make(chan net.Conn, 1)
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(func(context.Context, string, string) (net.Conn, error) {
+			c, s := net.Pipe()
+			held <- s
+			return c, nil
+		}))
+	dialProxy, stop := startProxy(t, p)
+	// Non-blocking: on an early failure the dialer may never run and held is empty,
+	// so a plain receive here would hang the test past its Fatal instead of failing.
+	t.Cleanup(func() {
+		select {
+		case c := <-held:
+			c.Close()
+		default:
+		}
+	})
+
+	c := dialProxy()
+	defer c.Close()
+	if status, _ := connect(t, c, "example.com:443"); !strings.Contains(status, "200") {
+		stop()
+		t.Fatalf("status = %q, want 200", status)
+	}
+
+	// stop() cancels Serve's ctx and waits for Serve to return; that only happens
+	// once the handler's tunnel goroutines exit, so it stands in for teardown.
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after cancellation; the tunnel was not torn down")
+	}
+}
+
+// Cancellation must also unblock a handler still parsing the CONNECT request, not
+// only an established tunnel: a client that connects and sends nothing otherwise
+// pins its slot until connectTimeout, and Serve blocks on it.
+func TestServeCancelUnblocksPendingConnect(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
+	dialProxy, stop := startProxy(t, p)
+
+	c := dialProxy()
+	defer c.Close()
+	// Connect but never send a CONNECT line, so the handler sits in readConnect.
+	if _, err := c.Write([]byte("CONNECT ")); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after cancellation; a pending CONNECT was not interrupted")
+	}
+}
+
 func TestClassifyIP(t *testing.T) {
 	cases := map[ipClass][]string{
 		// Never reachable through the proxy, not even with an explicit rule.

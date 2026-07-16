@@ -315,25 +315,38 @@ func bridgeConn(client net.Conn, socket string) {
 	}
 	defer upstream.Close()
 
+	// Traffic in either direction means the bridge is active, so re-arm the idle
+	// deadline on BOTH conns on every read. A long one-way transfer keeps only its
+	// own direction busy; if each direction armed only its own conn, the silent
+	// side would trip the idle timeout after idleTimeout and - because SetDeadline
+	// bounds writes too - kill the active side's next write, dropping a connection
+	// that never went idle.
+	extend := func() {
+		t := time.Now().Add(idleTimeout)
+		client.SetDeadline(t)
+		upstream.SetDeadline(t)
+	}
+	extend()
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); copyIdle(upstream, client, client); halfClose(upstream) }()
-	go func() { defer wg.Done(); copyIdle(client, upstream, upstream); halfClose(client) }()
+	go func() { defer wg.Done(); copyIdle(upstream, client, extend); halfClose(upstream) }()
+	go func() { defer wg.Done(); copyIdle(client, upstream, extend); halfClose(client) }()
 	wg.Wait()
 }
 
 // idleTimeout tears down a bridged connection that has sat with no traffic this
 // long, so a stalled connection cannot pin a goroutine for the life of the run.
-const idleTimeout = 5 * time.Minute
+var idleTimeout = 5 * time.Minute
 
-// copyIdle copies src→dst, resetting ctl's deadline on every read so an active
-// connection stays open while an idle one is dropped after idleTimeout.
-func copyIdle(dst io.Writer, src io.Reader, ctl net.Conn) {
+// copyIdle copies src→dst, calling extend on every read so activity in this
+// direction keeps the bridge's idle deadline fresh; an idle bridge is dropped
+// after idleTimeout when neither direction reads.
+func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 	buf := make([]byte, 32*1024)
 	for {
-		ctl.SetDeadline(time.Now().Add(idleTimeout))
 		n, err := src.Read(buf)
 		if n > 0 {
+			extend()
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
 			}

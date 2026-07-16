@@ -81,6 +81,76 @@ func TestBridgeForwardsBothDirections(t *testing.T) {
 	}
 }
 
+// A transfer busy in one direction while the other is silent must not trip the
+// idle timeout: activity in either direction re-arms both conns. With a
+// per-direction deadline the silent conn's deadline would expire and - because
+// SetDeadline bounds writes too - abort the busy direction mid-transfer.
+func TestBridgeOneWayTransferNotIdleTimedOut(t *testing.T) {
+	old := idleTimeout
+	idleTimeout = 200 * time.Millisecond
+	defer func() { idleTimeout = old }()
+
+	// A silent upstream: it drains what the client sends but never replies, so the
+	// upstream->client direction stays idle for the whole transfer.
+	sock := filepath.Join(t.TempDir(), "proxy.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	got := make(chan int, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		n, _ := io.Copy(io.Discard, c)
+		got <- int(n)
+	}()
+
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	go func() {
+		c, err := tcp.Accept()
+		if err != nil {
+			return
+		}
+		bridgeConn(c, sock)
+	}()
+
+	c, err := net.Dial("tcp", tcp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Total transfer (~300ms) outlasts the idle timeout, but each per-chunk gap
+	// (20ms) stays an order of magnitude under it, so scheduler jitter under load
+	// cannot spuriously trip the timeout.
+	const chunks = 15
+	const spacing = 20 * time.Millisecond
+	for i := 0; i < chunks; i++ {
+		if _, err := io.WriteString(c, "x"); err != nil {
+			t.Fatalf("write %d: a busy one-way transfer was torn down by the idle timeout: %v", i, err)
+		}
+		time.Sleep(spacing)
+	}
+	c.(*net.TCPConn).CloseWrite()
+
+	select {
+	case n := <-got:
+		if n != chunks {
+			t.Fatalf("upstream received %d bytes, want %d", n, chunks)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream did not receive the full transfer")
+	}
+}
+
 // A half-close from the client (it is done sending) must not truncate data the
 // upstream is still delivering. The prior implementation waited on only one
 // direction and closed both, dropping in-flight bytes.
