@@ -105,6 +105,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
 		return nil, err
 	}
+	if err := checkWriteNotAboveShield(sb, writes); err != nil {
+		return nil, err
+	}
 	for _, path := range reads {
 		if path == "/" {
 			// Binding the host root onto the sandbox root would make the root
@@ -364,9 +367,10 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // checkNotShielded rejects a grant that falls inside a fully-shielded location
 // (a DenyAll deny-list directory such as ~/.ssh). Such a grant cannot be honored
 // - the shield wins - so silently dropping it would leave the user believing a
-// path is available when it is not. A grant that *contains* a shielded path is
-// fine and common (write: ~ with ~/.ssh shielded inside it); only a grant at or
-// below a shield is the mistake.
+// path is available when it is not. A READ grant that *contains* a shield is fine
+// and common (read: ~ with ~/.ssh shielded inside it); a WRITE grant that contains
+// one is refused separately by checkWriteNotAboveShield, since it would make the
+// shield's parent writable.
 func checkNotShielded(sb sandbox, grants []string) error {
 	rules := denylist.Home(sb.home)
 	for _, g := range grants {
@@ -380,6 +384,36 @@ func checkNotShielded(sb sandbox, grants []string) error {
 			rp := sb.resolve(r.Path)
 			if g == rp || under(g, rp) {
 				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; remove it", g, r.Path)
+			}
+		}
+	}
+	return nil
+}
+
+// checkWriteNotAboveShield refuses a write grant that contains a DenyAll home
+// shield (a credential directory such as ~/.ssh). Such a grant binds the shield's
+// parent read-write, so a run could create the shield on the host where it did not
+// exist (leaving an empty, wrong-permission directory that breaks ssh/gpg), or
+// delete and replace a symlinked one - because bwrap cannot mount a shield over a
+// symlink and so protects only its target, not the name in the granted directory.
+// Read grants are not restricted: they cannot write the parent, and shielding a
+// broad read grant is the deny-list's normal use.
+func checkWriteNotAboveShield(sb sandbox, writes []string) error {
+	for _, w := range writes {
+		if w == "/" {
+			continue // rejected with a clearer message by the write-grant loop
+		}
+		for _, r := range denylist.Home(sb.home) {
+			if r.Deny != denylist.DenyAll {
+				continue
+			}
+			// The tamperable entry is the shield's name in the granted directory, so
+			// compare its location - parent resolved so it shares the grant's namespace,
+			// own name kept literal - rather than its symlink target, which lies outside
+			// the grant.
+			loc := filepath.Join(sb.resolve(filepath.Dir(r.Path)), filepath.Base(r.Path))
+			if under(loc, w) {
+				return fmt.Errorf("linux: write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
 			}
 		}
 	}

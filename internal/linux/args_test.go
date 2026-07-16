@@ -184,10 +184,12 @@ func TestGrantsAreBound(t *testing.T) {
 // resolves mounts in argv order and the last one wins. If this inverts, a grant
 // of $HOME silently re-exposes ~/.ssh.
 func TestDenyListIsAppliedAfterGrants(t *testing.T) {
-	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	args := compileOrFail(t, p, testSandbox())
+	// A read grant of $HOME is the case that still reaches the shields (a write grant
+	// above them is refused); the shield must be applied after the grant.
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
 
-	grant := pairIndex(args, "--bind-try", "/home/u")
+	grant := pairIndex(args, "--ro-bind-try", "/home/u")
 	shield := pairIndex(args, "--tmpfs", "/home/u/.ssh")
 	if grant < 0 || shield < 0 {
 		t.Fatalf("expected both a $HOME grant and a ~/.ssh shield; grant=%d shield=%d", grant, shield)
@@ -200,50 +202,49 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 // A broad grant must shield credential directories even when they do not exist
 // on the host: otherwise a script can create ~/.ssh and plant a key. This is the
 // v1 hole.
-func TestUnbornCredentialDirIsShielded(t *testing.T) {
-	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	// Note: ~/.ssh is deliberately absent from the fake filesystem.
-	args := compileOrFail(t, p, testSandbox())
+// A write grant above a home credential shield is refused, so the "shield an
+// unborn path so it cannot be planted" case now lives under a workspace grant: a
+// project directory whose hooks dir does not exist yet must still be shielded.
+func TestUnbornWorkspaceDirIsShielded(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
+	// Note: .git/hooks is deliberately absent from the fake filesystem.
+	args := compileOrFail(t, p, testSandbox("/home/u/proj/src"))
 
-	if !has(args, "--tmpfs", "/home/u/.ssh") {
-		t.Error("a credential directory that does not exist yet must still be shielded")
+	if !has(args, "--tmpfs", "/home/u/proj/.git/hooks") {
+		t.Error("a workspace hooks directory that does not exist yet must still be shielded")
 	}
 }
 
 // Likewise an unborn shell profile: a script must not be able to create ~/.bashrc
 // and gain persistence.
-func TestUnbornShellProfileIsShielded(t *testing.T) {
-	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	args := compileOrFail(t, p, testSandbox())
+// The unborn write-denied FILE shield (an empty read-only file) likewise now lives
+// under a workspace grant: an editor-tasks file that does not exist yet must be
+// shielded against creation.
+func TestUnbornWorkspaceFileIsShielded(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
+	args := compileOrFail(t, p, testSandbox("/home/u/proj/src"))
 
-	if !has(args, "--ro-bind", "/tmp/shield") {
-		t.Error("an unborn write-denied file must be shielded by an empty read-only file")
+	found := false
+	for j := 0; j+2 < len(args); j++ {
+		if args[j] == "--ro-bind" && args[j+1] == "/tmp/shield" && args[j+2] == "/home/u/proj/.vscode/tasks.json" {
+			found = true
+		}
 	}
-	i := pairIndex(args, "--ro-bind", "/tmp/shield")
-	if i < 0 || args[i+2] != "/home/u/.bashrc" {
-		// Find the specific .bashrc shield.
-		found := false
-		for j := 0; j+2 < len(args); j++ {
-			if args[j] == "--ro-bind" && args[j+1] == "/tmp/shield" && args[j+2] == "/home/u/.bashrc" {
-				found = true
-			}
-		}
-		if !found {
-			t.Error("~/.bashrc was not shielded against creation")
-		}
+	if !found {
+		t.Error("an unborn write-denied workspace file must be shielded by an empty read-only file")
 	}
 }
 
 // A write-denied file that DOES exist stays readable. v1 shadowed these with
 // /dev/null, which also destroyed reads and left git seeing an empty config.
 func TestExistingWriteDeniedFileStaysReadable(t *testing.T) {
-	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	sb := testSandbox("/home/u/.gitconfig")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/.git/config")
 	args := compileOrFail(t, p, sb)
 
 	found := false
 	for j := 0; j+2 < len(args); j++ {
-		if args[j] == "--ro-bind" && args[j+1] == "/home/u/.gitconfig" && args[j+2] == "/home/u/.gitconfig" {
+		if args[j] == "--ro-bind" && args[j+1] == "/home/u/proj/.git/config" && args[j+2] == "/home/u/proj/.git/config" {
 			found = true
 		}
 	}
@@ -356,12 +357,50 @@ func TestGrantInsideShieldedPathIsRejected(t *testing.T) {
 	}
 }
 
-// A grant that merely contains a shielded path is the normal case and must be
-// allowed: the shield is applied inside it.
-func TestGrantContainingShieldedPathIsAllowed(t *testing.T) {
-	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
+// A READ grant that contains a shielded path is the normal deny-list case and
+// must be allowed: the shield is applied inside it and a read grant cannot mutate
+// the parent.
+func TestReadGrantContainingShieldedPathIsAllowed(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
 	if _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
-		t.Fatalf("granting $HOME (with ~/.ssh shielded inside) should be allowed: %v", err)
+		t.Fatalf("reading $HOME (with ~/.ssh shielded inside) should be allowed: %v", err)
+	}
+}
+
+// A WRITE grant that contains a credential shield is refused: it binds the
+// shield's parent read-write, so a run could create the shield on the host or
+// replace a symlinked one, bypassing it.
+func TestWriteGrantContainingShieldedPathIsRejected(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
+	_, err := compile(p, enforce.Process{}, testSandbox())
+	if err == nil {
+		t.Fatal("a write grant of $HOME (above ~/.ssh) should be rejected")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want it to explain the shield conflict", err)
+	}
+}
+
+// The refusal must catch a write grant above a SYMLINKED shield. The shield is
+// applied at the symlink's target (outside the grant), so the resolved-path check
+// for a grant-inside-a-shield does not fire; the grant-contains-a-shield check
+// must use the shield's location (~/.ssh) so the symlink cannot be deleted and
+// replaced inside the writable parent.
+func TestWriteGrantAboveSymlinkedShieldIsRejected(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string {
+		if p == "/home/u/.ssh" { // ~/.ssh is a symlink pointing out of $HOME
+			return "/data/keys"
+		}
+		return p
+	}
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
+	_, err := compile(p, enforce.Process{}, sb)
+	if err == nil {
+		t.Fatal("a write grant above a symlinked ~/.ssh should be rejected (the symlink is deletable in the writable parent)")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want it to explain the shield conflict", err)
 	}
 }
 

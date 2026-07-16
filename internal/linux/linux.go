@@ -135,6 +135,11 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	if err := checkNotShielded(sb, writes); err != nil {
 		return err
 	}
+	// Refuse a grant above a credential shield before creating any directory, so a
+	// to-be-refused grant does not leave a host artifact from the MkdirAll below.
+	if err := checkWriteNotAboveShield(sb, writes); err != nil {
+		return err
+	}
 	for _, w := range writes {
 		switch fi, err := os.Stat(w); {
 		case err == nil && fi.IsDir():

@@ -275,19 +275,33 @@ func TestAtomicRenameSaveWorksUnderWriteGrant(t *testing.T) {
 // The mandatory deny-list must hold even when the policy grants the whole home
 // directory. A credential file that does not exist yet must not be creatable -
 // this is the v1 hole, where an absent ~/.ssh could be created and a key planted.
-func TestDenyListShieldsUnbornCredentialUnderHomeGrant(t *testing.T) {
+// A write grant of $HOME is above the credential shields (~/.ssh, ~/.aws, ...), so
+// it must be refused rather than run: honoring it would bind their parent
+// read-write, letting a run plant or replace them on the host. This is the
+// end-to-end form of the refusal, replacing the old "plant under write:$HOME"
+// tests whose scenario no longer runs.
+func TestWriteGrantAboveCredentialsIsRefused(t *testing.T) {
 	requireSandbox(t)
 
 	// Stand in a fake home so the test never touches the developer's real one.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
-	planted := filepath.Join(home, ".ssh", "authorized_keys")
-	p := &policy.Policy{Write: []string{home}}
-	runScript(t, p, "mkdir -p "+filepath.Join(home, ".ssh")+" && echo PLANTED > "+planted+" 2>&1 || true\n")
-
-	if b, err := os.ReadFile(planted); err == nil && strings.Contains(string(b), "PLANTED") {
-		t.Fatalf("a key was planted in ~/.ssh despite the mandatory deny-list: %q", b)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{home}}
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	if err == nil {
+		t.Fatal("a write grant of $HOME (above the credential shields) must be refused, not run")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want it to explain the shield conflict", err)
 	}
 }
 
@@ -295,35 +309,34 @@ func TestDenyListShieldsUnbornCredentialUnderHomeGrant(t *testing.T) {
 // ~/.gitconfig points into an immutable store) must be shielded without aborting
 // the run: bwrap cannot mount over a symlink path, so the shield binds the
 // resolved target. Content stays readable; the write is refused.
-func TestSymlinkedDenyFileIsShieldedWithoutCrashing(t *testing.T) {
+// A symlinked credential directory must be shielded at its resolved target without
+// aborting bwrap (which cannot mount over a symlink). Under a read grant of $HOME
+// the DenyAll shield still applies, so this keeps the symlink-resolution coverage.
+func TestSymlinkedDenyDirIsShieldedWithoutCrashing(t *testing.T) {
 	requireSandbox(t)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	real := filepath.Join(home, "store-gitconfig")
-	if err := os.WriteFile(real, []byte("[user]\n\tname = Real Name\n"), 0o644); err != nil {
+	real := filepath.Join(home, "store-aws")
+	if err := os.MkdirAll(real, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(filepath.Join(real, "credentials"), []byte("SECRETKEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".aws")
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
 
-	p := &policy.Policy{Write: []string{home}}
-	_, out := runScript(t, p, "cat "+link+" 2>&1; echo TAMPERED >> "+link+" 2>&1 || true\n")
+	p := &policy.Policy{Read: []string{home}}
+	_, out := runScript(t, p, "cat "+filepath.Join(link, "credentials")+" 2>&1 || true\n")
 
 	if strings.Contains(out, "bwrap:") {
-		t.Fatalf("shielding a symlinked dotfile aborted bwrap: %s", out)
+		t.Fatalf("shielding a symlinked credential dir aborted bwrap: %s", out)
 	}
-	if !strings.Contains(out, "Real Name") {
-		t.Errorf("a symlinked write-denied file should stay readable, got: %q", out)
-	}
-	got, err := os.ReadFile(real)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(got), "TAMPERED") {
-		t.Fatalf("a write reached the shielded symlink target: %q", got)
+	if strings.Contains(out, "SECRETKEY") {
+		t.Fatalf("a symlinked credential dir was readable despite the deny-list: %q", out)
 	}
 }
 
@@ -344,7 +357,10 @@ func TestDanglingSymlinkDenyFileBlocksPlantThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &policy.Policy{Write: []string{home}}
+	// Read $HOME to reach the ~/.netrc symlink and write its target directory (a
+	// write grant of $HOME itself is refused). ~/.netrc's shield resolves to
+	// store/netrc, so a write through the symlink into the granted dir is absorbed.
+	p := &policy.Policy{Read: []string{home}, Write: []string{filepath.Join(home, "store")}}
 	_, out := runScript(t, p, "echo MALICIOUS > "+filepath.Join(home, ".netrc")+" 2>&1 || true\n")
 
 	if strings.Contains(out, "bwrap:") {
@@ -415,21 +431,6 @@ func TestGrantOnSymlinkedShieldTargetIsRejected(t *testing.T) {
 }
 
 // The same for a shell profile, the classic persistence vector.
-func TestDenyListShieldsShellProfileUnderHomeGrant(t *testing.T) {
-	requireSandbox(t)
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	rc := filepath.Join(home, ".bashrc")
-
-	p := &policy.Policy{Write: []string{home}}
-	runScript(t, p, "echo APPENDED >> "+rc+" 2>&1 || true\n")
-
-	if b, err := os.ReadFile(rc); err == nil && strings.Contains(string(b), "APPENDED") {
-		t.Fatalf("a shell profile was modified despite the mandatory deny-list: %q", b)
-	}
-}
-
 // An existing credential must be unreadable under a home grant: the deny-list
 // covers exfiltration, not just persistence.
 func TestDenyListHidesExistingCredentialUnderHomeGrant(t *testing.T) {
@@ -445,7 +446,9 @@ func TestDenyListHidesExistingCredentialUnderHomeGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &policy.Policy{Write: []string{home}}
+	// A read grant of $HOME is the case that still reaches the shields (a write grant
+	// above them is refused); the credential must stay hidden under it.
+	p := &policy.Policy{Read: []string{home}}
 	_, out := runScript(t, p, "cat "+creds+" 2>&1 || true\n")
 
 	if strings.Contains(out, "SECRETKEY") {
@@ -456,26 +459,33 @@ func TestDenyListHidesExistingCredentialUnderHomeGrant(t *testing.T) {
 // A write-denied file that exists must still be READABLE. v1 shadowed these with
 // /dev/null, so git saw an empty ~/.gitconfig. Read and write denial are
 // different things and must stay so.
+// A DenyWrite shield under a WRITE grant keeps a file readable but not writable.
+// This lives under a workspace grant now (a write grant above a home shield is
+// refused): a project's .git/config stays readable while writes to it are denied.
 func TestWriteDeniedFileRemainsReadable(t *testing.T) {
 	requireSandbox(t)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	gitconfig := filepath.Join(home, ".gitconfig")
-	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Real Name\n"), 0o644); err != nil {
+	proj := filepath.Join(home, "proj")
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(proj, ".git", "config")
+	if err := os.WriteFile(cfg, []byte("[user]\n\tname = Real Name\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	p := &policy.Policy{Write: []string{home}}
-	_, out := runScript(t, p, "cat "+gitconfig+" 2>&1 || true\n")
+	p := &policy.Policy{Write: []string{proj}}
+	_, out := runScript(t, p, "cat "+cfg+" 2>&1 || true\n")
 
 	if !strings.Contains(out, "Real Name") {
 		t.Fatalf("a write-denied file should stay readable, but reads were blinded: %q", out)
 	}
 
 	// ...and still not writable.
-	runScript(t, p, "echo TAMPERED >> "+gitconfig+" 2>&1 || true\n")
-	got, err := os.ReadFile(gitconfig)
+	runScript(t, p, "echo TAMPERED >> "+cfg+" 2>&1 || true\n")
+	got, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
