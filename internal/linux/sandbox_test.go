@@ -565,6 +565,21 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 		states[l.Layer] = l.State
 	}
 
+	// Filesystem and network confinement both need bwrap's user namespace; a host
+	// that cannot create one must report both unavailable, not claim network is
+	// enforced while bwrap cannot even run (the overclaim this replaced).
+	nsOK, _ := usableNamespaces(context.Background())
+	wantNS := enforce.Unavailable
+	if nsOK {
+		wantNS = enforce.Enforced
+	}
+	if states[enforce.LayerFilesystem] != wantNS {
+		t.Errorf("filesystem state = %v, want %v", states[enforce.LayerFilesystem], wantNS)
+	}
+	if states[enforce.LayerNetwork] != wantNS {
+		t.Errorf("network state = %v, want %v (must track namespace availability, not be unconditionally enforced)", states[enforce.LayerNetwork], wantNS)
+	}
+
 	wantExec := enforce.Unavailable
 	if seccomp.Supported() {
 		wantExec = enforce.Enforced

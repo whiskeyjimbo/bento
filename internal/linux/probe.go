@@ -21,34 +21,36 @@ import (
 func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	var r enforce.Report
 
-	switch bwrap, err := exec.LookPath("bwrap"); {
-	case err != nil:
-		r.Add(enforce.LayerFilesystem, enforce.Unavailable,
-			"bubblewrap (bwrap) is not installed; no filesystem confinement is possible")
-	default:
-		if err := canUnshare(ctx, bwrap); err != nil {
-			r.Add(enforce.LayerFilesystem, enforce.Unavailable, usernsReason(err))
-		} else {
-			// The filesystem layer is enforced by bwrap. Landlock, when present, is
-			// a second independent kernel backstop behind it; note whether it is
-			// active so its presence is not silently assumed.
-			detail := "Landlock backstop active"
-			if !landlock.Available() {
-				detail = "no Landlock backstop on this kernel; bwrap alone confines"
-			}
-			r.Add(enforce.LayerFilesystem, enforce.Enforced, detail)
+	// bwrap's filesystem and network confinement both depend on creating an
+	// unprivileged user namespace here; probe that once and report both layers
+	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
+	nsOK, nsReason := usableNamespaces(ctx)
+	if nsOK {
+		// The filesystem layer is enforced by bwrap. Landlock, when present, is a
+		// second independent kernel backstop behind it; note whether it is active so
+		// its presence is not silently assumed.
+		detail := "Landlock backstop active"
+		if !landlock.Available() {
+			detail = "no Landlock backstop on this kernel; bwrap alone confines"
 		}
+		r.Add(enforce.LayerFilesystem, enforce.Enforced, detail)
+	} else {
+		r.Add(enforce.LayerFilesystem, enforce.Unavailable, nsReason)
 	}
 
-	// Egress is enforced by the network namespace (nothing leaves except through
-	// our proxy) plus the host-side allowlist proxy. The guarantee that matters -
-	// nothing reaches a non-allowlisted host - holds fully and unprivileged. The
-	// one nuance is that a program which ignores the proxy environment fails
-	// closed rather than being transparently redirected to an allowed host;
-	// transparent redirect needs the one-time `bento setup`. That is an
-	// availability nuance for uncooperative clients, not a containment gap, so the
-	// layer is enforced.
-	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	// Egress is enforced by the network namespace (nothing leaves except through our
+	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
+	// reaches a non-allowlisted host - holds fully and unprivileged, but only where the
+	// namespace can be created: without it there is no netns to fence egress into, so
+	// the layer is unavailable, not enforced. (The one nuance where it IS enforced: a
+	// program that ignores the proxy environment fails closed rather than being
+	// transparently redirected; transparent redirect needs the one-time `bento setup`.
+	// That is an availability nuance for uncooperative clients, not a containment gap.)
+	if nsOK {
+		r.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	} else {
+		r.Add(enforce.LayerNetwork, enforce.Unavailable, nsReason)
+	}
 
 	if seccomp.Supported() {
 		r.Add(enforce.LayerExec, enforce.Enforced, "")
@@ -90,6 +92,20 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	return r
+}
+
+// usableNamespaces reports whether bwrap is installed and can create here the
+// unprivileged user namespace its filesystem and network confinement depend on,
+// with a reason a user can act on when it cannot.
+func usableNamespaces(ctx context.Context) (bool, string) {
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		return false, "bubblewrap (bwrap) is not installed; no filesystem or network confinement is possible"
+	}
+	if err := canUnshare(ctx, bwrap); err != nil {
+		return false, usernsReason(err)
+	}
+	return true, ""
 }
 
 // canUnshare reports whether an unprivileged user namespace can be created here,
