@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
 )
@@ -36,6 +38,33 @@ func testSandbox(existing ...string) sandbox {
 		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
 		// The hypothetical filesystem has no symlinks, so shields bind in place.
 		resolve: func(p string) string { return p },
+		// listDir returns the immediate SUBDIRECTORY names of p implied by the fake
+		// entries (a segment with something under it), matching hostListDir which
+		// excludes files and symlinks. ok is true when p is a directory (has any entry
+		// under it); the fake has no unreadable directories. A bare leaf entry directly
+		// under p is a file.
+		listDir: func(p string) ([]string, bool) {
+			prefix := p + "/"
+			seen := map[string]bool{}
+			var names []string
+			isDir := false
+			for e := range set {
+				if !strings.HasPrefix(e, prefix) {
+					continue
+				}
+				isDir = true
+				rest := e[len(prefix):]
+				i := strings.IndexByte(rest, '/')
+				if i < 0 {
+					continue // a leaf directly under p is a file, not a subdirectory
+				}
+				if name := rest[:i]; !seen[name] {
+					seen[name] = true
+					names = append(names, name)
+				}
+			}
+			return names, isDir
+		},
 	}
 }
 
@@ -309,6 +338,309 @@ func TestWorkspaceHooksAreProtected(t *testing.T) {
 	}
 	if !found {
 		t.Error("an existing .git/hooks under a write grant must be re-bound read-only")
+	}
+}
+
+// A write grant on a repo with submodules must also shield each submodule gitdir's
+// hooks and config under .git/modules/<name>/: a submodule's working-tree .git is a
+// gitfile into that gitdir, whose hooks/config run on the host when the developer
+// uses the submodule - a code-execution surface the top-level .git shields miss.
+// Nested submodules and linked-worktree config.worktree are covered too.
+func TestSubmoduleGitDirsAreProtected(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work"}}
+	sb := testSandbox(
+		"/work/src", // makes /work a directory workspace
+		"/work/.git/modules/sub/config",
+		"/work/.git/modules/sub/hooks", // the hooks dir itself, plus a child below
+		"/work/.git/modules/sub/hooks/pre-commit",
+		"/work/.git/modules/sub/objects/pack/x", // a pruned store: must not break discovery
+		"/work/.git/modules/sub/modules/inner/config",
+		"/work/.git/modules/sub/modules/inner/hooks",
+		"/work/.git/modules/sub/modules/inner/hooks/post-commit",
+		"/work/.git/worktrees/wt/config.worktree",
+	)
+	args := compileOrFail(t, p, sb)
+
+	roBound := func(path string) bool {
+		for j := 0; j+2 < len(args); j++ {
+			if args[j] == "--ro-bind" && args[j+1] == path && args[j+2] == path {
+				return true
+			}
+		}
+		return false
+	}
+	for _, path := range []string{
+		"/work/.git/modules/sub/config",
+		"/work/.git/modules/sub/hooks",
+		"/work/.git/modules/sub/modules/inner/config",
+		"/work/.git/modules/sub/modules/inner/hooks",
+		"/work/.git/worktrees/wt/config.worktree",
+	} {
+		if !roBound(path) {
+			t.Errorf("submodule/worktree gitdir surface %q must be re-bound read-only", path)
+		}
+	}
+}
+
+// gitDirShields' traversal runs on the real filesystem via the host* seams, which
+// the fake testSandbox never exercises. This drives it against a real tree with two
+// cases the fake cannot represent: a submodule whose path segment is a git store
+// name ("logs/mylib" - the gitdir is .git/modules/logs/mylib, and a name-based
+// prune would skip it), and a gitdir with a config but NO hooks/ dir (which must
+// still be shielded so the dir cannot be planted). A large object store is present
+// to confirm the walk never descends into it.
+func TestGitDirShieldsRealFilesystem(t *testing.T) {
+	root := t.TempDir()
+	gitdir := filepath.Join(root, ".git", "modules", "logs", "mylib")
+	if err := os.MkdirAll(filepath.Join(gitdir, "objects", "pack"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no hooks/ dir: the shield must be emitted regardless.
+
+	sb := sandbox{
+		home:      "/home/u",
+		emptyFile: "/tmp/shield",
+		exists:    hostExists,
+		isDir:     hostIsDir,
+		listDir:   hostListDir,
+		resolve:   hostResolve,
+	}
+	got := make(map[string]bool) // path -> Dir
+	for _, r := range gitDirShields(sb, root) {
+		if r.Deny == denylist.DenyWrite {
+			got[r.Path] = r.Dir
+		}
+	}
+
+	for path, wantDir := range map[string]bool{
+		filepath.Join(gitdir, "config"): false,
+		filepath.Join(gitdir, "hooks"):  true,
+	} {
+		d, ok := got[path]
+		if !ok {
+			t.Errorf("%s not shielded (store-name path segment or absent hooks dir was skipped)", path)
+		} else if d != wantDir {
+			t.Errorf("%s: Dir=%v, want %v", path, d, wantDir)
+		}
+	}
+	if _, walked := got[filepath.Join(gitdir, "objects", "pack")]; walked {
+		t.Error("the walk descended into a gitdir's object store")
+	}
+}
+
+// A submodule named "config" puts its gitdir at .git/modules/config/, so
+// .git/modules/config is a DIRECTORY. Identifying a gitdir by mere existence of a
+// "config" child would then misread .git/modules itself as a gitdir and skip every
+// sibling submodule. The gitdir predicate must require a regular file, so both the
+// config-named submodule and its siblings stay shielded.
+func TestGitDirShieldsConfigNamedSubmoduleDoesNotMaskSiblings(t *testing.T) {
+	root := t.TempDir()
+	modules := filepath.Join(root, ".git", "modules")
+	for _, name := range []string{"config", "normal"} {
+		gd := filepath.Join(modules, name)
+		if err := os.MkdirAll(filepath.Join(gd, "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gd, "config"), []byte("[core]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	got := make(map[string]bool)
+	for _, r := range gitDirShields(sb, root) {
+		if r.Deny == denylist.DenyWrite {
+			got[r.Path] = true
+		}
+	}
+	for _, sub := range []string{"config", "normal"} {
+		for _, leaf := range []string{"config", "hooks"} {
+			path := filepath.Join(modules, sub, leaf)
+			if !got[path] {
+				t.Errorf("%s not shielded (a config-named submodule masked the sibling scan)", path)
+			}
+		}
+	}
+	// The container .git/modules must NOT be treated as a gitdir itself.
+	if got[filepath.Join(modules, "hooks")] {
+		t.Error(".git/modules was misidentified as a gitdir (bogus hooks shield emitted)")
+	}
+}
+
+// .git/modules is writable and unshielded across runs, so a prior run can plant a
+// decoy regular file named "config" in a container to try to make the scanner
+// misidentify that container as a gitdir and stop descending into real siblings.
+// Traversal is unconditional, so the decoy only adds a harmless shield and every
+// real submodule gitdir is still found and shielded.
+func TestGitDirShieldsPlantedConfigDoesNotMaskSiblings(t *testing.T) {
+	root := t.TempDir()
+	modules := filepath.Join(root, ".git", "modules")
+	// The decoy: a regular file at .git/modules/config (as if the container were a gitdir).
+	if err := os.MkdirAll(modules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modules, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A real sibling submodule gitdir that must still be shielded.
+	real := filepath.Join(modules, "plainsub")
+	if err := os.MkdirAll(filepath.Join(real, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	got := make(map[string]bool)
+	for _, r := range gitDirShields(sb, root) {
+		got[r.Path] = true
+	}
+	for _, leaf := range []string{"config", "hooks"} {
+		if !got[filepath.Join(real, leaf)] {
+			t.Errorf("%s not shielded: a planted decoy config truncated the walk", filepath.Join(real, leaf))
+		}
+	}
+}
+
+// A prior run can plant a symlink under .git/modules pointing outside the tree; the
+// unconditional walk must not follow it (which would traverse the whole target and
+// emit shields for paths outside the checkout, or loop). listDir excludes symlinks.
+func TestGitDirShieldsDoesNotFollowSymlinkedChild(t *testing.T) {
+	root := t.TempDir()
+	// A real gitdir OUTSIDE .git/modules, that a planted symlink points at.
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modules := filepath.Join(root, ".git", "modules")
+	if err := os.MkdirAll(modules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(modules, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	for _, r := range gitDirShields(sb, root) {
+		if strings.HasPrefix(r.Path, outside) || strings.Contains(r.Path, "escape") {
+			t.Errorf("the walk followed a symlink out of .git/modules and emitted %q", r.Path)
+		}
+	}
+}
+
+// A prior run can chmod a directory under .git/modules to mode 0111 - traversable
+// by name (so host git still reaches hooks inside it) but unlistable, so the scan
+// cannot enumerate the gitdirs within. The scan must not silently treat that as
+// empty; it fails closed by shielding the unreadable directory read-only so nothing
+// new can be planted under it.
+func TestGitDirShieldsFailsClosedOnUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permissions")
+	}
+	root := t.TempDir()
+	modules := filepath.Join(root, ".git", "modules")
+	sub := filepath.Join(modules, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(modules, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(modules, 0o755) }) // so t.TempDir cleanup can recurse
+	if _, err := os.ReadDir(modules); err == nil {
+		t.Skip("filesystem did not enforce the unreadable mode")
+	}
+
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	shieldsModules := false
+	for _, r := range gitDirShields(sb, root) {
+		if r.Path == modules && r.Deny == denylist.DenyWrite && r.Dir {
+			shieldsModules = true
+		}
+	}
+	if !shieldsModules {
+		t.Error("an unreadable .git/modules must be shielded read-only (fail closed), not treated as empty")
+	}
+}
+
+// The same fail-closed rule applies to an unreadable .git/worktrees: the scan must
+// shield it read-only rather than silently miss a config.worktree it cannot see.
+func TestGitDirShieldsFailsClosedOnUnreadableWorktrees(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permissions")
+	}
+	root := t.TempDir()
+	worktrees := filepath.Join(root, ".git", "worktrees")
+	if err := os.MkdirAll(filepath.Join(worktrees, "w"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktrees, "w", "config.worktree"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(worktrees, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(worktrees, 0o755) })
+	if _, err := os.ReadDir(worktrees); err == nil {
+		t.Skip("filesystem did not enforce the unreadable mode")
+	}
+
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	shielded := false
+	for _, r := range gitDirShields(sb, root) {
+		if r.Path == worktrees && r.Deny == denylist.DenyWrite && r.Dir {
+			shielded = true
+		}
+	}
+	if !shielded {
+		t.Error("an unreadable .git/worktrees must be shielded read-only (fail closed)")
+	}
+}
+
+// A prior write-grant run can plant a symlink loop under .git/modules (which is not
+// itself shielded); the scan on the next launch must not recurse forever. The depth
+// bound makes gitDirShields return instead of spinning until the path overflows.
+func TestGitDirShieldsTerminatesOnSymlinkLoop(t *testing.T) {
+	root := t.TempDir()
+	modules := filepath.Join(root, ".git", "modules")
+	if err := os.MkdirAll(modules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(modules, filepath.Join(modules, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{
+		home: "/home/u", emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	done := make(chan struct{})
+	go func() { gitDirShields(sb, root); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gitDirShields did not terminate on a symlink loop under .git/modules")
 	}
 }
 

@@ -217,6 +217,7 @@ func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 		isDir:       hostIsDir,
 		rootDirs:    hostRootDirs,
 		resolve:     hostResolve,
+		listDir:     hostListDir,
 	}
 
 	// The in-sandbox launcher (the bento binary) is bound whenever egress or

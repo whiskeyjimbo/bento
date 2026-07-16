@@ -134,6 +134,7 @@ func Workspace(dir string) []Rule {
 	return []Rule{
 		{Path: join(".git/hooks"), Deny: DenyWrite, Dir: true},
 		{Path: join(".git/config"), Deny: DenyWrite},
+		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
 		{Path: join(".vscode/tasks.json"), Deny: DenyWrite},
 		{Path: join(".vscode/launch.json"), Deny: DenyWrite},
 		{Path: join(".idea/workspace.xml"), Deny: DenyWrite},

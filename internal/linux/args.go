@@ -64,6 +64,13 @@ type sandbox struct {
 	// it does not resolve. Shields bind at the resolved path because bwrap cannot
 	// create a mount point at a symlink (it aborts the whole run).
 	resolve func(string) string
+	// listDir returns a directory's immediate subdirectory names and whether it was
+	// read successfully. ok is false when the path is not a directory OR cannot be
+	// enumerated (e.g. an unreadable dir): the caller must distinguish an enumerated
+	// empty directory from one it could not see into, so a chmod cannot silently hide
+	// gitdirs from the scan. Injected alongside exists so the git-directory scan
+	// (gitDirShields) is testable against a hypothetical filesystem.
+	listDir func(string) (names []string, ok bool)
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -267,12 +274,12 @@ func interpreterPrefix(interp string) string {
 	return dir
 }
 
-// denyArgs shields every deny-list rule that a grant could otherwise expose.
-//
-// A rule whose path no grant reaches is skipped: it is already invisible under
-// deny-by-default, and binding over it would force bwrap to create a mount point
-// it has no parent for.
-func denyArgs(sb sandbox, grants, writes []string) []string {
+// shieldRules is the full deny-list for a run: the mandatory Home shields plus,
+// for each write-granted checkout, the static Workspace shields and the git
+// directories discovered under it (see gitDirShields). Building it in one place
+// keeps denyArgs and createdShieldDirs enforcing and cleaning up the exact same
+// set - a divergence would either leak a host artifact or leave a path unshielded.
+func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	rules := denylist.Home(sb.home)
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
@@ -282,8 +289,118 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 		// a directory the script then cannot write as a file.
 		if sb.isDir(w) {
 			rules = append(rules, denylist.Workspace(w)...)
+			rules = append(rules, gitDirShields(sb, w)...)
 		}
 	}
+	return rules
+}
+
+// gitDirShields discovers, under a write-granted checkout dir, the git directories
+// that sit at deterministic locations and returns DenyWrite shields for their
+// code-execution surfaces. The top-level .git/hooks and .git/config shields cover
+// the main repo, but a repo with submodules or linked worktrees keeps additional
+// live hooks/config the main shields miss:
+//
+//   - submodule gitdirs at dir/.git/modules/<name>/ (recursively, so a nested
+//     submodule at .git/modules/<a>/modules/<b>/ is covered too), each with its own
+//     hooks/ and config that run when the developer uses that submodule on the host;
+//   - linked-worktree config at dir/.git/worktrees/<name>/config.worktree.
+//
+// The hooks directory is shielded whether or not it exists yet, matching the
+// top-level .git/hooks shield: an absent hooks/ under a real gitdir is still
+// plantable, so it is tmpfs'd and reclaimed by createdShieldDirs. config and
+// config.worktree are only shielded where they exist (they are files, not planting
+// surfaces on their own - a new config.worktree is inert unless config, which is
+// shielded, enables extensions.worktreeConfig).
+//
+// Not covered, because a concrete-path deny-list cannot express them (documented in
+// docs/design.md 6.7): independent nested repos created anywhere under the grant,
+// repos created during the run, and in-tree hook runners (husky, core.hooksPath
+// pointing at a tracked directory) whose hooks are ordinary project files.
+func gitDirShields(sb sandbox, dir string) []denylist.Rule {
+	gitDir := filepath.Join(dir, ".git")
+	var rules []denylist.Rule
+
+	// worktreeConfigs shields the config.worktree of every linked worktree of a
+	// gitdir. Linked worktrees share the gitdir's hooks (already shielded), but each
+	// keeps its own config.worktree, which can carry core.hooksPath.
+	worktreeConfigs := func(gd string) {
+		wt := filepath.Join(gd, "worktrees")
+		names, ok := sb.listDir(wt)
+		if !ok {
+			// Unreadable but traversable-by-name: fail closed like the module walk.
+			if sb.isDir(wt) {
+				rules = append(rules, denylist.Rule{Path: wt, Deny: denylist.DenyWrite, Dir: true})
+			}
+			return
+		}
+		for _, name := range names {
+			if cfg := filepath.Join(wt, name, "config.worktree"); sb.exists(cfg) {
+				rules = append(rules, denylist.Rule{Path: cfg, Deny: denylist.DenyWrite})
+			}
+		}
+	}
+
+	// Traversal is UNCONDITIONAL over real directories; identification gates only
+	// whether shields are emitted, never whether recursion continues. .git/modules
+	// is writable and unshielded across runs, so any predicate that decided *where to
+	// walk* from attacker-writable content could be spoofed: a planted decoy config
+	// file, or a fabricated gitdir-shaped container, could redirect or truncate the
+	// walk and hide a real submodule's hooks. Walking every real subdirectory removes
+	// that lever - a decoy can only add a harmless extra ro-bind. The cost is walking
+	// git's store dirs (objects/refs/...), which hold no config file so emit nothing
+	// and are bounded and setup-time. sb.listDir returns only real subdirectories
+	// (symlinks skipped), so a planted symlink cannot escape the tree or loop; depth
+	// bounds a deeply-nested planted tree as a backstop.
+	var walk func(d string, depth int)
+	walk = func(d string, depth int) {
+		if depth > maxGitdirDepth {
+			return
+		}
+		// A gitdir is identified by a regular config FILE (not a directory named
+		// "config", which is how a submodule literally named "config" nests its own
+		// gitdir at .git/modules/config/).
+		if cfg := filepath.Join(d, "config"); sb.exists(cfg) && !sb.isDir(cfg) {
+			rules = append(rules,
+				denylist.Rule{Path: cfg, Deny: denylist.DenyWrite},
+				denylist.Rule{Path: filepath.Join(d, "hooks"), Deny: denylist.DenyWrite, Dir: true},
+			)
+			if cw := filepath.Join(d, "config.worktree"); sb.exists(cw) {
+				rules = append(rules, denylist.Rule{Path: cw, Deny: denylist.DenyWrite})
+			}
+			worktreeConfigs(d)
+		}
+		names, ok := sb.listDir(d)
+		if !ok {
+			// d could not be enumerated. If it is a real directory (traversable by
+			// name, so host git still reaches gitdirs inside it) that we cannot read -
+			// a prior run can chmod it 0111 to blind this scan - fail closed: shield the
+			// whole subtree read-only so nothing new can be planted under it.
+			if sb.isDir(d) {
+				rules = append(rules, denylist.Rule{Path: d, Deny: denylist.DenyWrite, Dir: true})
+			}
+			return
+		}
+		for _, name := range names {
+			walk(filepath.Join(d, name), depth+1)
+		}
+	}
+	walk(filepath.Join(gitDir, "modules"), 0)
+	worktreeConfigs(gitDir)
+	return rules
+}
+
+// maxGitdirDepth bounds the .git/modules recursion so a symlink loop a prior run
+// could plant cannot spin setup forever. Real submodule nesting is a handful deep.
+const maxGitdirDepth = 64
+
+// denyArgs shields every deny-list rule that a grant could otherwise expose.
+//
+// A rule whose path no grant reaches is skipped: it is already invisible under
+// deny-by-default, and binding over it would force bwrap to create a mount point
+// it has no parent for.
+func denyArgs(sb sandbox, grants, writes []string) []string {
+	rules := shieldRules(sb, writes)
 
 	var args []string
 	for _, r := range rules {
@@ -319,12 +436,7 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 // atomic save (write-temp then rename) over that path and could delete a real file.
 // The rule selection mirrors denyArgs exactly.
 func createdShieldDirs(sb sandbox, grants, writes []string) []string {
-	rules := denylist.Home(sb.home)
-	for _, w := range writes {
-		if sb.isDir(w) {
-			rules = append(rules, denylist.Workspace(w)...)
-		}
-	}
+	rules := shieldRules(sb, writes)
 	var dirs []string
 	for _, r := range rules {
 		r.Path = sb.resolve(r.Path)
@@ -623,6 +735,28 @@ func hostExists(path string) bool {
 func hostIsDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
+}
+
+// hostListDir returns the names of a directory's immediate children that are
+// themselves real directories, or nil if it is not readable. Symlinks and regular
+// files are excluded: gitDirShields walks the result unconditionally, so a symlink
+// (DirEntry.Type reports it without a follow) must not be traversed or it could
+// escape .git/modules or loop.
+func hostListDir(path string) ([]string, bool) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		// Not a directory, or a directory we cannot read (e.g. mode 0111, still
+		// traversable-by-name so host git reaches hooks inside it). ok=false lets the
+		// caller fail closed rather than treat it as empty.
+		return nil, false
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() { // DirEntry.IsDir is false for a symlink (even to a directory)
+			names = append(names, e.Name())
+		}
+	}
+	return names, true
 }
 
 // hostResolve resolves a deny-list path the same way grants are resolved, so the
