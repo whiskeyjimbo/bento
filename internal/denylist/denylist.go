@@ -90,6 +90,8 @@ func Home(home string) []Rule {
 		".netrc",
 		".npmrc",
 		".pypirc",
+		".my.cnf",      // MySQL client option file, commonly holds a plaintext password
+		".mylogin.cnf", // mysql_config_editor login paths; obfuscated, not encrypted, and read by default
 		".gem/credentials",
 		".cargo/credentials.toml",
 		".vault-token",
@@ -130,27 +132,35 @@ func Home(home string) []Rule {
 		".xprofile",
 		".xinitrc",
 		".xsession",
+		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
+		// PAM login environment: pam_env can set LD_PRELOAD/PATH for the whole session
+		// from here. Deprecated and default-off on modern Linux-PAM (user_readenv
+		// defaults off since 1.4.0), but still present and live on older hosts, so
+		// shield it cheaply.
+		".pam_environment",
 		// Tool configs that define a command run on a common host action.
 		".gitconfig",
-		".config/git/config", // XDG location git reads the same as ~/.gitconfig
-		".cargo/config.toml", // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
-		".cargo/config",      // legacy (pre-1.39) cargo config filename, still read
-		".cargo/env",         // shell script rustup makes .profile source; runs on next shell
-		".vimrc",             // sourced when vim opens a file
-		".exrc",              // vim also sources this (ex/vi rc) on startup
-		".gvimrc",            // gvim rc, sourced on gvim startup
-		".emacs",             // elisp run at emacs startup
-		".emacs.el",          // alternate emacs init filename
-		".screenrc",          // GNU screen runs commands from it
-		".gdbinit",           // executed by gdb on startup
-		".tmux.conf",         // run-shell hooks execute on tmux start
-		".direnvrc",          // legacy direnv global rc (XDG dir shielded below)
-		".mailcap",           // maps MIME types to commands run on attachment open
-		".yarnrc",            // yarn-path names a binary yarn execs (classic; rarely holds a token)
-		".xscreensaver",      // names programs run as screensavers
-		".psqlrc",            // \! runs a shell command when psql starts
-		".Rprofile",          // R sources it at startup
-		".Renviron",          // can set R_PROFILE_USER to a writable file; creating it is the attack
+		".config/git/config",   // XDG location git reads the same as ~/.gitconfig
+		".cargo/config.toml",   // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
+		".cargo/config",        // legacy (pre-1.39) cargo config filename, still read
+		".cargo/env",           // shell script rustup makes .profile source; runs on next shell
+		".vimrc",               // sourced when vim opens a file
+		".exrc",                // vim also sources this (ex/vi rc) on startup
+		".gvimrc",              // gvim rc, sourced on gvim startup
+		".emacs",               // elisp run at emacs startup
+		".emacs.el",            // alternate emacs init filename
+		".screenrc",            // GNU screen runs commands from it
+		".gdbinit",             // executed by gdb on startup
+		".tmux.conf",           // run-shell hooks execute on tmux start
+		".direnvrc",            // legacy direnv global rc (XDG dir shielded below)
+		".mailcap",             // maps MIME types to commands run on attachment open
+		".yarnrc",              // yarn-path names a binary yarn execs (classic; rarely holds a token)
+		".config/pip/pip.conf", // index-url can redirect installs to a malicious registry; readable but not writable
+		".pip/pip.conf",        // legacy per-user pip config, also read by default (same index-url redirect)
+		".xscreensaver",        // names programs run as screensavers
+		".psqlrc",              // \! runs a shell command when psql starts
+		".Rprofile",            // R sources it at startup
+		".Renviron",            // can set R_PROFILE_USER to a writable file; creating it is the attack
 		".mcp.json",
 	}
 

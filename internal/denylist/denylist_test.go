@@ -44,6 +44,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/hub",     // hub OAuth token
 		"/home/u/.msmtprc",        // SMTP passwords (hidden, not just write-denied)
 		"/home/u/.yarnrc.yml",     // yarn npmAuthToken
+		"/home/u/.my.cnf",         // MySQL plaintext password
+		"/home/u/.mylogin.cnf",    // MySQL login-path store (obfuscated, not encrypted)
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]
@@ -62,26 +64,30 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// write grant must not be able to plant core.hooksPath/core.pager in either.
 	wantDenyWriteFile := []string{
 		"/home/u/.gitconfig",
-		"/home/u/.config/git/config", // XDG git config
-		"/home/u/.zshenv",            // read for every zsh invocation, incl. non-interactive
-		"/home/u/.zlogin",            // zsh login
-		"/home/u/.zlogout",           // zsh logout
-		"/home/u/.bash_login",        // bash login fallback
-		"/home/u/.bash_aliases",      // sourced by the default .bashrc; usually absent so plantable
-		"/home/u/.bash_logout",       // bash logout
-		"/home/u/.cargo/config.toml", // cargo honors rustc-wrapper / target runners
-		"/home/u/.cargo/config",      // legacy cargo config filename
-		"/home/u/.vimrc",             // sourced when vim opens a file
-		"/home/u/.emacs",             // elisp at emacs startup
-		"/home/u/.gdbinit",           // executed by gdb on startup
-		"/home/u/.direnvrc",          // legacy direnv global rc
-		"/home/u/.Renviron",          // can set R_PROFILE_USER
-		"/home/u/.cargo/env",         // rustup makes .profile source it
-		"/home/u/.exrc",              // vim also sources this
-		"/home/u/.gvimrc",            // gvim rc
-		"/home/u/.screenrc",          // GNU screen runs commands
-		"/home/u/.mailcap",           // MIME handler commands
-		"/home/u/.yarnrc",            // yarn-path exec (classic, no token)
+		"/home/u/.config/git/config",   // XDG git config
+		"/home/u/.zshenv",              // read for every zsh invocation, incl. non-interactive
+		"/home/u/.zlogin",              // zsh login
+		"/home/u/.zlogout",             // zsh logout
+		"/home/u/.bash_login",          // bash login fallback
+		"/home/u/.bash_aliases",        // sourced by the default .bashrc; usually absent so plantable
+		"/home/u/.bash_logout",         // bash logout
+		"/home/u/.cargo/config.toml",   // cargo honors rustc-wrapper / target runners
+		"/home/u/.cargo/config",        // legacy cargo config filename
+		"/home/u/.vimrc",               // sourced when vim opens a file
+		"/home/u/.emacs",               // elisp at emacs startup
+		"/home/u/.gdbinit",             // executed by gdb on startup
+		"/home/u/.direnvrc",            // legacy direnv global rc
+		"/home/u/.Renviron",            // can set R_PROFILE_USER
+		"/home/u/.cargo/env",           // rustup makes .profile source it
+		"/home/u/.exrc",                // vim also sources this
+		"/home/u/.gvimrc",              // gvim rc
+		"/home/u/.screenrc",            // GNU screen runs commands
+		"/home/u/.mailcap",             // MIME handler commands
+		"/home/u/.yarnrc",              // yarn-path exec (classic, no token)
+		"/home/u/.xsessionrc",          // Debian/Ubuntu Xsession startup
+		"/home/u/.pam_environment",     // PAM login env (LD_PRELOAD/PATH)
+		"/home/u/.config/pip/pip.conf", // pip index-url registry redirect
+		"/home/u/.pip/pip.conf",        // legacy per-user pip config, also default-read
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
