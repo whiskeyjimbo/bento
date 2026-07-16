@@ -96,6 +96,7 @@ func Home(home string) []Rule {
 		".zprofile",
 		".profile",
 		".gitconfig",
+		".config/git/config", // XDG location git reads the same as ~/.gitconfig
 		".mcp.json",
 	}
 

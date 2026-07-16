@@ -46,6 +46,25 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		}
 	}
 
+	// Config files that grant host code execution when modified must be readable
+	// (git legitimately reads them) but not writable. Both the classic ~/.gitconfig
+	// and its XDG twin ~/.config/git/config are read the same way by git, so a home
+	// write grant must not be able to plant core.hooksPath/core.pager in either.
+	wantDenyWriteFile := []string{
+		"/home/u/.gitconfig",
+		"/home/u/.config/git/config",
+	}
+	for _, p := range wantDenyWriteFile {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("%s: got Deny=%v Dir=%v, want DenyWrite file", p, r.Deny, r.Dir)
+		}
+	}
+
 	// Login-persistence directories: readable, but no new entry may be created,
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
