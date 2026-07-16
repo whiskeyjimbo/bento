@@ -98,13 +98,14 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 	return p
 }
 
-// blockedUpstreamError is returned by guardUpstream when a resolved address is a
-// non-public IP the rules do not explicitly authorize, so handle can refuse it
-// distinctly from an ordinary dial failure.
-type blockedUpstreamError struct{ ip net.IP }
+// blockedUpstreamError is returned by guardUpstream when a resolved address must
+// not be dialed: a non-public IP the rules do not explicitly authorize, or an
+// address the guard cannot parse (refused rather than dialed blind). handle uses
+// it to refuse the tunnel distinctly from an ordinary dial failure.
+type blockedUpstreamError struct{ addr string }
 
 func (e *blockedUpstreamError) Error() string {
-	return fmt.Sprintf("refusing egress to non-public address %s", e.ip)
+	return fmt.Sprintf("refusing egress to non-public address %s", e.addr)
 }
 
 // guardUpstream rejects connecting to a resolved address that names a
@@ -118,11 +119,23 @@ func (e *blockedUpstreamError) Error() string {
 func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.RawConn) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return nil
+		// The dialer hands ControlContext a resolved host:port; an address that does
+		// not even split is anomalous, so refuse it rather than fail open.
+		return &blockedUpstreamError{addr: address}
+	}
+	// Strip an IPv6 zone id before parsing. net.ParseIP rejects a zoned literal -
+	// "fe80::1%eth0", and the mapped-IPv4 "::ffff:169.254.169.254%eth0" or its
+	// collapsed "169.254.169.254%eth0" form - returning nil. Without this the zoned
+	// address would slip past classification into the fail-open path below, and the
+	// kernel then dials the underlying (host-reserved) address ignoring the zone.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return nil
+		// A resolved dial target that is not a plain IP cannot be classified, so
+		// refuse it rather than dial an address the guard could not vet.
+		return &blockedUpstreamError{addr: address}
 	}
 	switch classifyIP(ip) {
 	case ipHostReserved:
@@ -130,13 +143,13 @@ func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.Ra
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
 		// reaches the HOST's own services - never a legitimate sandbox egress target,
 		// so no rule may reach them, not even an explicit IP literal.
-		return &blockedUpstreamError{ip: ip}
+		return &blockedUpstreamError{addr: ip.String()}
 	case ipPrivate:
 		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only when
 		// a rule names the exact IP literal; a permitted hostname resolving there is
 		// the SSRF case and stays blocked.
 		if !p.explicitlyAllowsIP(ip, port) {
-			return &blockedUpstreamError{ip: ip}
+			return &blockedUpstreamError{addr: ip.String()}
 		}
 	}
 	return nil
@@ -303,7 +316,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		if errors.As(err, &blocked) {
 			p.report(Denied, host, port)
 			writeStatus(client, "403 Forbidden",
-				fmt.Sprintf("bento denied egress to %s:%s (%s resolves to non-public address %s; list it as an explicit IP rule if you meant it)", host, port, host, blocked.ip))
+				fmt.Sprintf("bento denied egress to %s:%s (%s resolves to non-public address %s; list it as an explicit IP rule if you meant it)", host, port, host, blocked.addr))
 			return
 		}
 		p.report(Allowed, host, port)

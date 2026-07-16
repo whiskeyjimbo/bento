@@ -344,6 +344,49 @@ func TestGuardExemptsExplicitPrivateNotLoopback(t *testing.T) {
 	}
 }
 
+// An IPv6 zone id makes net.ParseIP return nil; the guard must strip it and
+// classify the underlying address rather than fail open. The mapped-IPv4 form
+// reaches the IPv4 cloud-metadata endpoint and host loopback (the kernel dials
+// the embedded address ignoring the zone), and a dotted zone lets the CONNECT
+// host match an ordinary ".suffix" allowlist - so this is not wildcard-only.
+func TestGuardBlocksZonedHostReserved(t *testing.T) {
+	// A permissive suffix rule, to prove the bypass is not limited to wildcards.
+	p := New([]policy.NetworkRule{{Host: ".example.com", Port: "*"}})
+	guard := func(addr string) error { return p.guardUpstream(context.Background(), "tcp", addr, nil) }
+
+	blocked := []string{
+		"[fe80::1%eth0]:80",                // link-local, zoned (bracketed, the form ControlContext delivers)
+		"[::1%lo]:6379",                    // loopback, zoned IPv6
+		"169.254.169.254%eth0:80",          // collapsed mapped-IPv4 metadata
+		"[::ffff:169.254.169.254%eth0]:80", // mapped-IPv4 metadata, bracketed
+		"not-an-ip%zone:80",                // unparseable after stripping: fail closed, do not dial blind
+	}
+	for _, addr := range blocked {
+		if err := guard(addr); err == nil {
+			t.Errorf("guard(%q) allowed a zoned/unparseable host-reserved address; want blocked", addr)
+		}
+	}
+
+	// Prove the zone strip actually ran, not merely the fail-closed-on-unparseable
+	// branch: a mapped loopback with a dotted zone (which matches the .example.com
+	// rule) must be refused as its classified 127.0.0.1. That dotted address only
+	// appears in the error if the guard stripped the zone and classified the
+	// underlying IP; the raw fail-closed path would report the whole address string.
+	err := guard("[::ffff:127.0.0.1%foo.example.com]:6379")
+	blk, ok := err.(*blockedUpstreamError)
+	if !ok {
+		t.Fatalf("guard mapped-loopback-with-dotted-zone: got %v, want *blockedUpstreamError", err)
+	}
+	if blk.addr != "127.0.0.1" {
+		t.Errorf("blocked addr = %q, want 127.0.0.1 (the zone strip + classify must run, not raw fail-closed)", blk.addr)
+	}
+
+	// A plain public literal must still be permitted (no over-blocking).
+	if err := guard("93.184.216.34:443"); err != nil {
+		t.Errorf("a public address must still be allowed: %v", err)
+	}
+}
+
 func TestMalformedRequestRejected(t *testing.T) {
 	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
 	dialProxy, stop := startProxy(t, p)
