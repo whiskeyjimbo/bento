@@ -39,9 +39,24 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	}
 	res, err := e.Run(ctx, p, proc)
 
-	// Report exactly what was judged. A backend probes every layer it knows about,
-	// but warning that egress allowlisting is unavailable to a policy that asked
-	// for no network is noise that trains users to ignore the warnings that matter.
+	// Report exactly what was judged. Start from the pre-run probe (already filtered
+	// to the required layers - warning about egress a no-network policy never asked
+	// for is noise that trains users to ignore the warnings that matter), then
+	// overlay any refinement the backend made during the run. The backend may
+	// discover a shortfall only while running - e.g. that a requested cgroup
+	// controller is not delegated - and that must reach the caller rather than being
+	// overwritten by the pre-run probe. Overlaying only the required layers keeps a
+	// partial or empty backend report from dropping a layer the probe already judged.
+	wanted := requiredLayers(p)
+	want := make(map[Layer]bool, len(wanted))
+	for _, l := range wanted {
+		want[l] = true
+	}
+	for _, l := range res.Report.Layers {
+		if want[l.Layer] {
+			required.Set(l.Layer, l.State, l.Reason)
+		}
+	}
 	res.Report = required
 	return res, err
 }

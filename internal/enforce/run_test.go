@@ -87,6 +87,34 @@ func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	}
 }
 
+// A degradation the backend discovers during Run - such as a requested cgroup
+// controller that is not delegated - must reach Result.Report, not be silently
+// overwritten by the pre-run probe.
+func TestRunPreservesBackendReportRefinement(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+
+	// The pre-run probe says limits are enforceable, but the backend's Run refines
+	// the limits layer to degraded. The result must reflect the backend's view.
+	refined := fullyEnforced()
+	refined.Set(LayerLimits, Degraded, "cpu controller not delegated")
+	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{Report: refined}}
+
+	res, err := Run(context.Background(), f, limited, Process{}, Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := res.Report.StateOf(LayerLimits); got != Degraded {
+		t.Errorf("limits state = %v, want degraded (backend refinement was dropped)", got)
+	}
+	// And the report is still filtered to what the policy required (no network rules,
+	// so the egress layer must not appear as noise, in any state).
+	for _, l := range res.Report.Layers {
+		if l.Layer == LayerNetwork {
+			t.Errorf("a layer the policy did not require leaked into the report: %+v", l)
+		}
+	}
+}
+
 func TestRunDelegatesAndPropagatesExit(t *testing.T) {
 	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{ExitCode: 7}}
 	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
