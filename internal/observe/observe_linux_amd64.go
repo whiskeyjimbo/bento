@@ -125,9 +125,21 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			inspect(wpid, record, &res)
 			syscall.PtraceSyscall(wpid, 0)
 		default:
-			// A group-stop, a ptrace event (a new child, already being traced), or
-			// a delivered signal. Resume; a new child stops on its own next syscall.
-			syscall.PtraceSyscall(wpid, 0)
+			// A group-stop, a ptrace event (a new child), or a genuine
+			// signal-delivery-stop. Forward a real signal so the tracee actually
+			// receives it: suppressing a synchronous fault (SIGSEGV/SIGILL/...) would
+			// re-run the faulting instruction forever and spin the profiler, and
+			// eating SIGINT/SIGTERM/SIGALRM/SIGCHLD would hang or misbehave an
+			// otherwise healthy target. SIGTRAP is the exception - ptrace event stops
+			// and a forked child's exec (PTRACE_O_TRACEEXEC is not set) report SIGTRAP,
+			// and forwarding it (default action: core dump) would kill them.
+			sig := 0
+			if ws.Stopped() {
+				if s := ws.StopSignal(); s != syscall.SIGTRAP && s != syscall.SIGTRAP|0x80 {
+					sig = int(s)
+				}
+			}
+			syscall.PtraceSyscall(wpid, sig)
 		}
 	}
 }

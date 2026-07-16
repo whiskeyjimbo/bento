@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -155,5 +156,68 @@ func TestTracePropagatesExitCode(t *testing.T) {
 	}
 	if res.ExitCode != 5 {
 		t.Errorf("exit code = %d, want 5", res.ExitCode)
+	}
+}
+
+// A signal delivered to the tracee must reach it, not be swallowed by the tracer.
+// The target signals itself with SIGTERM; if the tracer suppresses the delivered
+// signal (the bug), the target instead runs to the `exit 0` and this fails. With
+// the signal forwarded, the target dies by SIGTERM and reports 128+SIGTERM. This
+// also stands in for the crash case: a suppressed synchronous SIGSEGV would re-run
+// the faulting instruction forever and spin the profiler.
+func TestTraceForwardsDeliveredSignal(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	res, err := Trace([]string{sh, "-c", "kill -TERM $$; sleep 5; exit 0"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if want := 128 + int(syscall.SIGTERM); res.ExitCode != want {
+		t.Errorf("exit code = %d, want %d (SIGTERM must be delivered, not eaten)", res.ExitCode, want)
+	}
+}
+
+// The SIGTRAP exclusion in the signal-forwarding path is load-bearing: with
+// PTRACE_O_TRACEEXEC unset, a forked child's execve reports as a SIGTRAP
+// signal-delivery-stop, and forwarding SIGTRAP (default action: core dump) would
+// kill the exec'ing subprocess. The target's exit status is that of an exec'd
+// child, so if SIGTRAP were forwarded the child would die and the status be
+// non-zero. It must exit 0 and the exec must be observed.
+func TestTraceForkExecSurvivesSignalForwarding(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	res, err := Trace([]string{sh, "-c", "cat /dev/null; exit $?"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if !res.Execed {
+		t.Skip("`cat` did not exec on this system; SIGTRAP-forwarding is not exercised")
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0 (an exec'ing subprocess must not be SIGTRAP-killed)", res.ExitCode)
+	}
+}
+
+// A healthy, signal-driven target must have its signal delivered to its own
+// handler, not eaten. The target installs a SIGTERM handler that exits 7; if the
+// tracer suppresses the signal (the bug), the handler never runs and it falls
+// through to `exit 0`. This covers the class of ordinary scripts that rely on
+// signals (timeouts, SIGCHLD, self-pipe) rather than only a target killed by the
+// signal's default action.
+func TestTraceDeliversSignalToHandler(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	res, err := Trace([]string{sh, "-c", "trap 'exit 7' TERM; kill -TERM $$; sleep 3; exit 0"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if res.ExitCode != 7 {
+		t.Errorf("exit code = %d, want 7 (the target's SIGTERM handler must run)", res.ExitCode)
 	}
 }
