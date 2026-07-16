@@ -6,6 +6,7 @@ func TestAllows(t *testing.T) {
 	rules := []NetworkRule{
 		{Host: "api.github.com", Port: "443"},
 		{Host: ".example.com", Port: "8000-9000"},
+		{Host: ".Uppercase.Dev", Port: "443"}, // DNS is case-insensitive
 		{Host: "10.0.0.1", Port: "*"},
 		{Host: "*", Port: "22"},
 	}
@@ -20,6 +21,7 @@ func TestAllows(t *testing.T) {
 		{"api.github.com.", "443", true},  // trailing dot normalized
 		{"sub.example.com", "8080", true}, // suffix + range
 		{"sub.example.com", "9001", false},
+		{"api.uppercase.dev", "443", true}, // uppercase suffix-wildcard rule still matches
 		{"example.com", "8080", false}, // suffix must NOT match the apex
 		{"evil-example.com", "8080", false},
 		{"10.0.0.1", "5432", true},   // IP + any port

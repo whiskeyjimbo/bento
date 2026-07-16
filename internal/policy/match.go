@@ -41,13 +41,16 @@ func normalizeHost(host string) string {
 //     ".example.com" does not silently also grant the apex.
 //   - literal      matches exactly.
 func matchHost(pattern, host string) bool {
+	// host is already normalized by Allows; normalize the pattern too so a rule
+	// written with uppercase (DNS is case-insensitive) matches the same targets.
+	pattern = normalizeHost(pattern)
 	switch {
 	case pattern == "*":
 		return true
 	case strings.HasPrefix(pattern, "."):
 		return strings.HasSuffix(host, pattern)
 	default:
-		return normalizeHost(pattern) == host
+		return pattern == host
 	}
 }
 
