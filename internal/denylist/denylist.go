@@ -90,23 +90,64 @@ func Home(home string) []Rule {
 	// next time the user opens a shell or runs git. Reads stay allowed: git
 	// legitimately reads ~/.gitconfig, and blinding it breaks real work.
 	writeOnly := []string{
+		// Shell startup and shutdown files: read when a shell starts or exits. The
+		// default .bashrc sources .bash_aliases, which is usually absent and so
+		// plantable (a write grant creates it and the next bash runs it).
 		".bashrc",
 		".bash_profile",
+		".bash_login", // bash login shells read the first of bash_profile/bash_login/.profile
+		".bash_aliases",
+		".bash_logout",
+		".zshenv", // zsh reads this for EVERY invocation, including non-interactive
 		".zshrc",
 		".zprofile",
+		".zlogin",
+		".zlogout",
 		".profile",
+		// Graphical-login scripts (X11; Wayland persistence routes through the
+		// systemd/autostart dirs below).
+		".xprofile",
+		".xinitrc",
+		".xsession",
+		// Tool configs that define a command run on a common host action.
 		".gitconfig",
 		".config/git/config", // XDG location git reads the same as ~/.gitconfig
+		".cargo/config.toml", // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
+		".cargo/config",      // legacy (pre-1.39) cargo config filename, still read
+		".vimrc",             // sourced when vim opens a file
+		".emacs",             // elisp run at emacs startup
+		".emacs.el",          // alternate emacs init filename
+		".gdbinit",           // executed by gdb on startup
+		".tmux.conf",         // run-shell hooks execute on tmux start
+		".direnvrc",          // legacy direnv global rc (XDG dir shielded below)
+		".psqlrc",            // \! runs a shell command when psql starts
+		".Rprofile",          // R sources it at startup
+		".Renviron",          // can set R_PROFILE_USER to a writable file; creating it is the attack
 		".mcp.json",
 	}
 
-	// Directories whose contents run on the host at the next login or shell start.
-	// Reads stay allowed (a script may legitimately inspect them); creating or
-	// modifying an entry is what grants persistence, so writes are denied.
+	// Directories whose contents run on the host at the next login, shell start, or
+	// editor/tool invocation. Reads stay allowed (a script may legitimately inspect
+	// them); creating or modifying an entry is what grants persistence, so writes are
+	// denied. These are shielded as whole directories because their autoloaded/plugin
+	// files cannot be pre-enumerated - a not-yet-created entry is still plantable, the
+	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
 		".config/autostart",            // XDG autostart .desktop entries
 		".config/systemd/user",         // systemd user services and timers
+		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
 		".config/plasma-workspace/env", // KDE login shell scripts
+		".config/fish",                 // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
+		".config/nushell",              // config.nu/env.nu and autoloads
+		".vim",                         // plugin/, autoload/, after/plugin/ are auto-sourced
+		".config/nvim",                 // init.{vim,lua}, lua/, plugin/, after/
+		".local/share/nvim/site",       // packpath: site/pack/*/start/*/plugin/ auto-sourced
+		".emacs.d",                     // init.el and site-lisp
+		".config/emacs",                // XDG location for the same
+		".config/gdb",                  // gdb 11+ reads gdbinit/gdbearlyinit here
+		".config/tmux",                 // XDG location for tmux.conf
+		".config/direnv",               // direnvrc, sourced on cd for direnv users
+		".local/share/direnv/allow",    // authorization records: an entry pre-approves a workspace .envrc
 	}
 
 	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))

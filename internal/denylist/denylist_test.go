@@ -52,7 +52,20 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// write grant must not be able to plant core.hooksPath/core.pager in either.
 	wantDenyWriteFile := []string{
 		"/home/u/.gitconfig",
-		"/home/u/.config/git/config",
+		"/home/u/.config/git/config", // XDG git config
+		"/home/u/.zshenv",            // read for every zsh invocation, incl. non-interactive
+		"/home/u/.zlogin",            // zsh login
+		"/home/u/.zlogout",           // zsh logout
+		"/home/u/.bash_login",        // bash login fallback
+		"/home/u/.bash_aliases",      // sourced by the default .bashrc; usually absent so plantable
+		"/home/u/.bash_logout",       // bash logout
+		"/home/u/.cargo/config.toml", // cargo honors rustc-wrapper / target runners
+		"/home/u/.cargo/config",      // legacy cargo config filename
+		"/home/u/.vimrc",             // sourced when vim opens a file
+		"/home/u/.emacs",             // elisp at emacs startup
+		"/home/u/.gdbinit",           // executed by gdb on startup
+		"/home/u/.direnvrc",          // legacy direnv global rc
+		"/home/u/.Renviron",          // can set R_PROFILE_USER
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -70,6 +83,14 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	wantDenyWriteDir := []string{
 		"/home/u/.config/autostart",
 		"/home/u/.config/systemd/user",
+		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
+		"/home/u/.config/nushell",           // nushell config and autoloads
+		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
+		"/home/u/.config/nvim",              // neovim config tree
+		"/home/u/.local/share/nvim/site",    // nvim packpath auto-source
+		"/home/u/.emacs.d",                  // emacs init and site-lisp
+		"/home/u/.config/environment.d",     // systemd user-session env
+		"/home/u/.local/share/direnv/allow", // direnv authorization records
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
