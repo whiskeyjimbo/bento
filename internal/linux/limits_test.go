@@ -94,23 +94,14 @@ func TestMemoryLimitEnforced(t *testing.T) {
 	}
 }
 
-func TestDelegatedControllersAndUndelegated(t *testing.T) {
+func TestDelegatedControllers(t *testing.T) {
 	ctrls, ok := delegatedControllers()
 	if !ok {
 		t.Skip("cannot read delegated controllers on this host")
 	}
-	// A systemd user session delegates at least memory and pids by default.
+	// A systemd user session delegates at least memory and pids by default; those
+	// are the host-safety controllers the probe's LayerLimits capability depends on.
 	if !ctrls["memory"] || !ctrls["pids"] {
 		t.Errorf("expected memory and pids delegated, got %v", ctrls)
-	}
-	// undelegatedController must return "" for a controller that IS delegated, so
-	// a working host is never falsely reported as degraded.
-	if ctrls["cpu"] {
-		if got := undelegatedController(policy.Limits{CPU: "50%"}); got != "" {
-			t.Errorf("cpu is delegated here; undelegatedController = %q, want empty", got)
-		}
-	}
-	if got := undelegatedController(policy.Limits{Memory: "64M"}); got != "" {
-		t.Errorf("memory is delegated; undelegatedController = %q, want empty", got)
 	}
 }

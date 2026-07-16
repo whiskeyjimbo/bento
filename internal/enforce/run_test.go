@@ -30,10 +30,20 @@ func validPolicy() *policy.Policy {
 	return &policy.Policy{Entrypoint: "./x"}
 }
 
+// hasLayer reports whether a refusal's shortfall names a given layer.
+func hasLayer(short []LayerStatus, layer Layer) bool {
+	for _, l := range short {
+		if l.Layer == layer {
+			return true
+		}
+	}
+	return false
+}
+
 // fullyEnforced is a probe reporting every layer as enforced.
 func fullyEnforced() Report {
 	var r Report
-	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimits} {
+	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimits, LayerLimitsCPU} {
 		r.Add(l, Enforced, "")
 	}
 	return r
@@ -87,6 +97,77 @@ func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	}
 }
 
+// A manifest that requests a cpu limit requires the cpu-limits layer, which needs
+// the cpu controller delegated. systemd-run silently ignores an undelegated
+// CPUQuota, so an undelegated host must REFUSE the run by default (like an
+// unenforceable memory limit) rather than run it uncapped - not just report it
+// afterward. --allow-degraded is the explicit override.
+func TestCPULimitRequiresDelegation(t *testing.T) {
+	cpuLimited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{CPU: "50%"}}
+
+	undelegated := func() *fakeEnforcer {
+		p := fullyEnforced()
+		p.Set(LayerLimitsCPU, Unavailable, "the cpu controller is not delegated")
+		return &fakeEnforcer{probe: p}
+	}
+
+	// Default: refuse naming the cpu-limits layer, and never reach the enforcer.
+	f := undelegated()
+	_, err := Run(context.Background(), f, cpuLimited, Process{}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("default run should refuse an undelegated cpu limit; got %v", err)
+	}
+	if f.ran {
+		t.Error("a refused cpu-limit run must not reach the enforcer")
+	}
+	if !hasLayer(refusal.Short, LayerLimitsCPU) {
+		t.Errorf("refusal should name the limits-cpu layer; short = %+v", refusal.Short)
+	}
+
+	// No scope at all: the limits layer is unavailable and subsumes cpu, so the
+	// cpu-limit policy is refused by that single layer, without a duplicate
+	// limits-cpu entry (the probe does not emit one when there is no scope).
+	var noScope Report
+	noScope.Add(LayerFilesystem, Enforced, "")
+	noScope.Add(LayerLimits, Unavailable, "no usable systemd user manager")
+	f = &fakeEnforcer{probe: noScope}
+	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); !errors.As(err, &refusal) {
+		t.Errorf("no-scope host should refuse a cpu-limit policy; got %v", err)
+	} else if hasLayer(refusal.Short, LayerLimitsCPU) {
+		t.Errorf("no-scope refusal should not duplicate a limits-cpu line; short = %+v", refusal.Short)
+	}
+
+	// --strict: also refuse.
+	f = undelegated()
+	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{Strict: true}); !errors.As(err, &refusal) {
+		t.Errorf("--strict should refuse an undelegated cpu limit; got %v", err)
+	}
+
+	// --allow-degraded: explicit opt-in runs, and the report still names the gap.
+	f = undelegated()
+	res, err := Run(context.Background(), f, cpuLimited, Process{}, Options{AllowDegraded: true})
+	if err != nil {
+		t.Fatalf("--allow-degraded should permit an undelegated cpu limit; got %v", err)
+	}
+	if got := res.Report.StateOf(LayerLimitsCPU); got != Unavailable {
+		t.Errorf("cpu-limits state = %v, want unavailable (the gap must still be reported)", got)
+	}
+
+	// A delegated host admits and runs under --strict.
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{Strict: true}); err != nil {
+		t.Fatalf("a delegated cpu limit should pass --strict; got %v", err)
+	}
+
+	// A policy that requests NO cpu limit is unaffected by cpu delegation.
+	f = undelegated()
+	memOnly := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	if _, err := Run(context.Background(), f, memOnly, Process{}, Options{}); err != nil {
+		t.Errorf("a memory-only limit must not be refused for undelegated cpu; got %v", err)
+	}
+}
+
 // A degradation the backend discovers during Run - such as a requested cgroup
 // controller that is not delegated - must reach Result.Report, not be silently
 // overwritten by the pre-run probe.
@@ -96,7 +177,7 @@ func TestRunPreservesBackendReportRefinement(t *testing.T) {
 	// The pre-run probe says limits are enforceable, but the backend's Run refines
 	// the limits layer to degraded. The result must reflect the backend's view.
 	refined := fullyEnforced()
-	refined.Set(LayerLimits, Degraded, "cpu controller not delegated")
+	refined.Set(LayerLimits, Degraded, "systemd reported the limited scope degraded")
 	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{Report: refined}}
 
 	res, err := Run(context.Background(), f, limited, Process{}, Options{})
@@ -327,6 +408,7 @@ func TestLayerTiers(t *testing.T) {
 		LayerNetwork:    TierCore,
 		LayerExec:       TierHardening,
 		LayerLimits:     TierHardening,
+		LayerLimitsCPU:  TierHardening,
 	} {
 		if got := layer.Tier(); got != want {
 			t.Errorf("%s.Tier() = %s, want %s", layer, got, want)
@@ -375,8 +457,8 @@ func TestStateString(t *testing.T) {
 func TestReportSetReplacesOrAdds(t *testing.T) {
 	var r Report
 	r.Add(LayerLimits, Enforced, "")
-	r.Set(LayerLimits, Degraded, "cpu not delegated")
-	if len(r.Layers) != 1 || r.Layers[0].State != Degraded || r.Layers[0].Reason != "cpu not delegated" {
+	r.Set(LayerLimits, Degraded, "scope degraded")
+	if len(r.Layers) != 1 || r.Layers[0].State != Degraded || r.Layers[0].Reason != "scope degraded" {
 		t.Errorf("Set should replace an existing layer in place; got %+v", r.Layers)
 	}
 	r.Set(LayerNetwork, Enforced, "")

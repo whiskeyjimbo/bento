@@ -82,6 +82,9 @@ func requiredLayers(p *policy.Policy) []Layer {
 	if !p.Limits.IsZero() {
 		layers = append(layers, LayerLimits)
 	}
+	if p.Limits.CPU != "" {
+		layers = append(layers, LayerLimitsCPU)
+	}
 	return layers
 }
 
@@ -123,7 +126,7 @@ func (o Options) admit(r Report) error {
 func unenforcedRequestedLimits(r Report) []LayerStatus {
 	var out []LayerStatus
 	for _, l := range r.Layers {
-		if l.Layer == LayerLimits && l.State != Enforced {
+		if (l.Layer == LayerLimits || l.Layer == LayerLimitsCPU) && l.State != Enforced {
 			out = append(out, l)
 		}
 	}

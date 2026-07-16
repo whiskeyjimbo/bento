@@ -13,7 +13,13 @@ const (
 	// blocking) on top of the execve block. A policy needs it only for exec:
 	// none-strict; a host that blocks execve but not fork reports it degraded.
 	LayerExecStrict Layer = "exec-strict"
-	LayerLimits     Layer = "limits"
+	// LayerLimits is the ability to run under a limited transient scope at all,
+	// which needs the host-safety controllers (memory, pids) delegated. LayerLimitsCPU
+	// is the separate ability to enforce a cpu limit: systemd-run accepts a CPUQuota
+	// even when the cpu controller is not delegated (a common default) and silently
+	// ignores it, so a policy that requests a cpu limit needs this layer specifically.
+	LayerLimits    Layer = "limits"
+	LayerLimitsCPU Layer = "limits-cpu"
 )
 
 // Tier separates the guarantees Bento makes on every supported platform from
@@ -42,7 +48,7 @@ func (t Tier) String() string {
 // Tier reports which tier a layer belongs to.
 func (l Layer) Tier() Tier {
 	switch l {
-	case LayerExec, LayerExecStrict, LayerLimits:
+	case LayerExec, LayerExecStrict, LayerLimits, LayerLimitsCPU:
 		return TierHardening
 	default:
 		return TierCore

@@ -580,6 +580,24 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	if states[enforce.LayerLimits] != wantLimits {
 		t.Errorf("limits state = %v, want %v", states[enforce.LayerLimits], wantLimits)
 	}
+
+	// The cpu-limits layer is a refinement reported only when a scope can be created
+	// (memory/pids delegated); when the whole limits layer is unavailable the cpu gap
+	// is subsumed by it and no separate limits-cpu entry is emitted.
+	_, cpuReported := states[enforce.LayerLimitsCPU]
+	if wantLimits == enforce.Unavailable {
+		if cpuReported {
+			t.Errorf("limits-cpu should not be reported when the scope is unavailable")
+		}
+	} else {
+		wantCPU := enforce.Enforced
+		if ctrls, known := delegatedControllers(); known && !ctrls["cpu"] {
+			wantCPU = enforce.Unavailable
+		}
+		if states[enforce.LayerLimitsCPU] != wantCPU {
+			t.Errorf("limits-cpu state = %v, want %v", states[enforce.LayerLimitsCPU], wantCPU)
+		}
+	}
 }
 
 // A run leaves no host artifact: the shield mount point bwrap creates for a

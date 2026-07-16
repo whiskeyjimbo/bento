@@ -49,10 +49,11 @@ func canCreateScope() (bool, string) {
 		// an undelegated controller without enforcing it. memory and pids are the
 		// host-safety controllers (an uncapped memory bomb can OOM the host) and are
 		// delegated by default; if they are not, limits genuinely cannot protect the
-		// host, so report unavailable at probe time - that is what lets admission
-		// refuse a requested memory limit rather than run unbounded. cpu, which
-		// commonly needs a Delegate= drop-in, is handled per-run (undelegatedController)
-		// because an uncapped cpu is a far milder failure.
+		// host, so report unavailable here - that is what lets admission refuse a
+		// requested memory limit rather than run unbounded. cpu, which commonly needs
+		// a Delegate=cpu drop-in, is reported separately by the probe as its own
+		// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
+		// unenforced) without gating scope creation on cpu delegation.
 		if ctrls, known := delegatedControllers(); known && (!ctrls["memory"] || !ctrls["pids"]) {
 			scopeReason = "the memory/pids controllers are not delegated to your systemd user manager, so resource limits cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
 			return
@@ -101,31 +102,12 @@ func trueBinary() string {
 	return "/bin/true"
 }
 
-// undelegatedController returns the name of a controller the policy requests that
-// is not delegated to this user's systemd manager, or "" if all requested ones
-// are (or delegation can't be determined).
-//
-// systemd-run *accepts* a property like CPUQuota even when the controller is not
-// delegated, then silently does not enforce it. So a wholesale "limits enforced"
-// claim is dishonest when, say, cpu isn't delegated (the common default - it
-// needs a one-time admin `Delegate=cpu` drop-in). Checking the delegated set lets
-// the run report that specific controller as not enforced.
-func undelegatedController(l policy.Limits) string {
-	ctrls, ok := delegatedControllers()
-	if !ok {
-		// Can't determine delegation; don't manufacture a degraded claim.
-		return ""
-	}
-	switch {
-	case l.CPU != "" && !ctrls["cpu"]:
-		return "cpu"
-	case l.Memory != "" && !ctrls["memory"]:
-		return "memory"
-	case l.PIDs > 0 && !ctrls["pids"]:
-		return "pids"
-	}
-	return ""
-}
+// cpuUndelegatedReason explains why a requested cpu limit cannot be enforced.
+// systemd-run *accepts* a CPUQuota even when the cpu controller is not delegated
+// (the common default - it needs a one-time admin `Delegate=cpu` drop-in), then
+// silently does not enforce it, so the probe reports LayerLimitsCPU unavailable and
+// admission refuses a requested cpu limit rather than running it unenforced.
+const cpuUndelegatedReason = "the cpu controller is not delegated to your systemd user manager, so a requested cpu limit cannot be enforced (a one-time admin step: Delegate=cpu on user@.service)"
 
 // delegatedControllers reads the cgroup-v2 controllers systemd has delegated to
 // this user's manager, under which `systemd-run --user --scope` creates scopes.
