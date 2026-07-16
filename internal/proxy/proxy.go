@@ -77,7 +77,20 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 	// ControlContext fires just before each upstream connect with the resolved
 	// address, so the allowlisted-name-resolves-to-internal-IP hole is closed
 	// against the actual IP being dialed, with no separate resolve step to race.
-	d := &net.Dialer{ControlContext: p.guardUpstream}
+	//
+	// PreferGo pins the pure-Go resolver, closing the cgo getaddrinfo fallback so
+	// upstream resolution follows one libc-independent path (reads resolv.conf and
+	// hosts directly). The cost is names only the host resolver would answer:
+	// nsswitch-only modules and macOS scoped resolvers (VPN split DNS) do not apply,
+	// and .local goes to unicast DNS rather than mDNS - acceptable because egress
+	// targets are public hosts, and an explicit IP-literal rule dials the address
+	// without resolving at all. The stdlib already handles the EDNS/truncation/retry
+	// edges, and guardUpstream validates whatever address it returns, so bento owns
+	// no separate DNS stack.
+	d := &net.Dialer{
+		ControlContext: p.guardUpstream,
+		Resolver:       &net.Resolver{PreferGo: true},
+	}
 	p.dial = d.DialContext
 	for _, opt := range opts {
 		opt(p)
