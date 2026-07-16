@@ -45,8 +45,9 @@ type sandbox struct {
 	bentoPath string
 	// observe signals a profiling run: the launcher runs the target under the
 	// ptrace observer instead of enforcing, and writes its report to an inherited
-	// descriptor (FD observeReportFD), not a bound path - so the target's mount
-	// never includes the report and it cannot forge the observations.
+	// descriptor (FD observeReportFD), not a bound path - so the target's mount never
+	// includes the report. That is not tamper-proof (a descendant can reach the fd via
+	// /proc/<launcher>/fd; see the launcher's runObserve and docs/design.md 8.1).
 	observe bool
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.

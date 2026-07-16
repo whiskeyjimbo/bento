@@ -88,9 +88,11 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// The open report file becomes FD observeReportFD in the bwrap child, which bwrap
-	// passes through to the launcher. The launcher writes observations there and
-	// marks it close-on-exec, so the profiled target never inherits the channel and
-	// cannot forge the report; the host reads it back by path below.
+	// passes through to the launcher. The launcher writes observations there and marks
+	// it close-on-exec, so the profiled target never inherits the channel - though a
+	// descendant can still reach it via /proc/<launcher>/fd, so the report is
+	// trustworthy only to the degree the profiled code is (see the launcher's
+	// runObserve and docs/design.md 8.1). The host reads it back by path below.
 	cmd.ExtraFiles = []*os.File{report}
 	if err := cmd.Run(); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
@@ -141,8 +143,9 @@ func parseObservations(path string) (profile.Observation, error) {
 		if started {
 			// The completion marker is written last, in the launcher's single write.
 			// Anything after it did not come from that write, so treat the report as
-			// tampered rather than parse records from an appended tail. This is
-			// defense in depth: the write channel is already unreachable by the target.
+			// tampered rather than parse records from an appended tail. This is defense
+			// in depth against a target that reaches the report via /proc/<launcher>/fd
+			// and appends records after the launcher's marker.
 			if line != "" {
 				return profile.Observation{}, fmt.Errorf("linux: observation report has content after the completion marker; treating it as tampered")
 			}

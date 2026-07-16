@@ -48,10 +48,13 @@ type Config struct {
 	Writable []string
 	// ObserveFD, when > 0, runs the target under the ptrace observer instead of
 	// enforcing, writing the files it opened and whether it exec'd to this inherited
-	// descriptor. It is a descriptor rather than a path so the report channel is
-	// never reachable from the target's mount namespace: the target cannot forge the
-	// observations. The profiler uses it to synthesize a manifest from a permissive
-	// run; no seccomp or Landlock is applied, so what the target does is fully observed.
+	// descriptor. It is a descriptor rather than a path so the report is not in the
+	// target's mount namespace and is not inherited across exec (see Run). That raises
+	// the bar but is not tamper-proof: a descendant can still reopen it via
+	// /proc/<launcher>/fd during the run, so the report is trustworthy only to the
+	// degree the profiled code is (runObserve and docs/design.md 8.1). The profiler
+	// uses it to synthesize a manifest from a permissive run; no seccomp or Landlock is
+	// applied, so what the target does is fully observed.
 	ObserveFD int
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
@@ -75,9 +78,10 @@ func Run(cfg Config) (int, error) {
 		// The observation report is written through this inherited descriptor, never
 		// through a path in the target's mount. Mark it close-on-exec now - before the
 		// bridge child starts and before the target is exec'd under the observer - so
-		// neither the bridge, the target, nor any grandchild inherits a handle to the
-		// report and can forge observations. The launcher itself still writes it;
-		// close-on-exec only drops the descriptor across exec, not in this process.
+		// neither the bridge, the target, nor any grandchild *inherits* a handle to the
+		// report. This does not make forgery impossible (a descendant can reopen the fd
+		// by path via /proc/<launcher>/fd - see runObserve), only harder. The launcher
+		// itself still writes it; close-on-exec only drops the descriptor across exec.
 		if _, err := unix.FcntlInt(uintptr(cfg.ObserveFD), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
 			return 0, fmt.Errorf("launcher: securing the observation channel: %w", err)
 		}
@@ -132,12 +136,13 @@ func Run(cfg Config) (int, error) {
 func runObserve(cfg Config, env []string) (int, error) {
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
-	// The report is written only here, after Trace returns, and only through the
-	// close-on-exec descriptor secured in Run - which the target and its descendants
-	// never held, so nothing they wrote can appear in it. Paths are quoted (%q) so a
-	// newline in a path cannot forge extra R/W/EXEC records. The completion marker is
-	// written last and only on a successful trace, so a failed or truncated trace
-	// lacks it and is rejected by the host.
+	// The report is written here, after Trace returns, through the close-on-exec
+	// descriptor secured in Run. Paths are quoted (%q) so a newline in a path cannot
+	// forge extra R/W/EXEC records, and the completion marker is written last and only
+	// on a successful trace, so a failed or truncated trace lacks it and is rejected by
+	// the host. The report is NOT tamper-proof against the profiled target itself (see
+	// the Truncate note below and docs/design.md 8.1): a profiling report is
+	// trustworthy only to the degree the profiled code is.
 	var b strings.Builder
 	if traceErr == nil {
 		for _, a := range res.Accesses {
@@ -156,13 +161,17 @@ func runObserve(cfg Config, env []string) (int, error) {
 	if report == nil {
 		return 0, fmt.Errorf("launcher: observation descriptor %d is not valid", cfg.ObserveFD)
 	}
-	// Truncate before writing. The target never held this descriptor, but it could
-	// reach the same file through the launcher's /proc/<pid>/fd while the launcher
-	// held it open during the run; truncating here (after the target has exited)
-	// discards anything so written, so only the launcher's own records remain. A
-	// still-live descendant cannot race this: once Trace returns it stops resuming
-	// tracees, so every auto-attached descendant is frozen at a syscall-entry stop
-	// and cannot complete a write, and PTRACE_O_EXITKILL reaps them on launcher exit.
+	// Truncate before writing, to discard anything a descendant wrote to this file
+	// through the launcher's /proc/<pid>/fd while it was held open during the run.
+	// This is best-effort, not a guarantee: a descendant that mmap'd the report
+	// MAP_SHARED keeps writing forged records with plain memory stores (no syscall, so
+	// ptrace never stops it - a syscall-free loop is not frozen when Trace returns -
+	// and the mapped pages survive this truncate), landing them before the marker.
+	// That residual is bounded: a hostile target can already inject arbitrary records
+	// by merely *attempting* opens during the permissive run (inspect records the path
+	// from the syscall args regardless of whether the open succeeds), so the report's
+	// integrity rests on the trusted-code threat model and human manifest review, not
+	// on this truncate. PTRACE_O_EXITKILL reaps descendants on launcher exit.
 	if err := report.Truncate(0); err != nil {
 		return 0, fmt.Errorf("launcher: truncating the observation report: %w", err)
 	}
