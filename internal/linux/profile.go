@@ -117,7 +117,7 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 	if !allowNetwork {
 		opts = append(opts, proxy.WithoutEgress())
 	}
-	stop, _, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
+	stop, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
 		record(host, port)
 	}, opts...)
 	return stop, err

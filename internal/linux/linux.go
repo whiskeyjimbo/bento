@@ -267,16 +267,16 @@ func writeEmptyFile(path string) error {
 // target never went through the proxy (used no network, or bypassed it).
 func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func(), count func() int, err error) {
 	var connections atomic.Int64
-	stop, _, err = startProxyWith(ctx, p, socket, func(proxy.Decision, string, string) { connections.Add(1) })
+	stop, err = startProxyWith(ctx, p, socket, func(proxy.Decision, string, string) { connections.Add(1) })
 	return stop, func() int { return int(connections.Load()) }, err
 }
 
 // startProxyWith serves the egress allowlist on socket with a caller-supplied
 // observer, returning a stop function.
-func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func(), count func() int, err error) {
+func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func(), err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
-		return nil, nil, fmt.Errorf("linux: starting egress proxy: %w", err)
+		return nil, fmt.Errorf("linux: starting egress proxy: %w", err)
 	}
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -284,7 +284,7 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 		proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
 		close(done)
 	}()
-	return func() { cancel(); <-done }, nil, nil
+	return func() { cancel(); <-done }, nil
 }
 
 // ResolveInterpreter guesses the interpreter for a script from its extension or

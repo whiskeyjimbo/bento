@@ -277,6 +277,7 @@ func BridgeMain(socket string) error {
 	if err != nil {
 		return fmt.Errorf("bridge: cannot listen on %s inside the sandbox: %w", proxyAddr, err)
 	}
+	defer l.Close()
 	for {
 		c, err := l.Accept()
 		if err != nil {
