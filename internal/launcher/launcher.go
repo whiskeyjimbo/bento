@@ -52,7 +52,7 @@ type Config struct {
 	// target's mount namespace and is not inherited across exec (see Run). That raises
 	// the bar but is not tamper-proof: a descendant can still reopen it via
 	// /proc/<launcher>/fd during the run, so the report is trustworthy only to the
-	// degree the profiled code is (runObserve and docs/design.md 8.1). The profiler
+	// degree the profiled code is (see runObserve). The profiler
 	// uses it to synthesize a manifest from a permissive run; no seccomp or Landlock is
 	// applied, so what the target does is fully observed.
 	ObserveFD int
@@ -141,7 +141,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// forge extra R/W/EXEC records, and the completion marker is written last and only
 	// on a successful trace, so a failed or truncated trace lacks it and is rejected by
 	// the host. The report is NOT tamper-proof against the profiled target itself (see
-	// the Truncate note below and docs/design.md 8.1): a profiling report is
+	// the Truncate note below): a profiling report is
 	// trustworthy only to the degree the profiled code is.
 	var b strings.Builder
 	if traceErr == nil {

@@ -47,7 +47,7 @@ type sandbox struct {
 	// ptrace observer instead of enforcing, and writes its report to an inherited
 	// descriptor (FD observeReportFD), not a bound path - so the target's mount never
 	// includes the report. That is not tamper-proof (a descendant can reach the fd via
-	// /proc/<launcher>/fd; see the launcher's runObserve and docs/design.md 8.1).
+	// /proc/<launcher>/fd; see the launcher's runObserve).
 	observe bool
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
@@ -314,8 +314,8 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 // surfaces on their own - a new config.worktree is inert unless config, which is
 // shielded, enables extensions.worktreeConfig).
 //
-// Not covered, because a concrete-path deny-list cannot express them (documented in
-// docs/design.md 6.7): independent nested repos created anywhere under the grant,
+// Not covered, because a concrete-path deny-list cannot express them (a documented
+// residual): independent nested repos created anywhere under the grant,
 // repos created during the run, and in-tree hook runners (husky, core.hooksPath
 // pointing at a tracked directory) whose hooks are ordinary project files.
 func gitDirShields(sb sandbox, dir string) []denylist.Rule {
@@ -456,7 +456,7 @@ func createdShieldDirs(sb sandbox, grants, writes []string) []string {
 // rmdir syscall: it removes only an empty directory, so a path a host process wrote
 // into during the run survives (ENOTEMPTY, ignored), and a pre-existing path is
 // never in the list to begin with. Best effort: a kill before this runs, or an
-// intermediate parent bwrap created, can survive - see docs/design.md 6.7.
+// intermediate parent bwrap created, can survive.
 func removeCreatedShieldDirs(dirs []string) {
 	for _, d := range dirs {
 		os.Remove(d)

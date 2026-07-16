@@ -92,7 +92,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// it close-on-exec, so the profiled target never inherits the channel - though a
 	// descendant can still reach it via /proc/<launcher>/fd, so the report is
 	// trustworthy only to the degree the profiled code is (see the launcher's
-	// runObserve and docs/design.md 8.1). The host reads it back by path below.
+	// runObserve). The host reads it back by path below.
 	cmd.ExtraFiles = []*os.File{report}
 	if err := cmd.Run(); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
