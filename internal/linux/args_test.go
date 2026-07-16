@@ -155,6 +155,34 @@ func pairIndex(args []string, flag, target string) int {
 
 func has(args []string, flag, target string) bool { return pairIndex(args, flag, target) >= 0 }
 
+// The post-run cleanup targets only DIRECTORY shield mount points: os.Remove on a
+// directory is empty-only (rmdir), so it can never delete host data, whereas an
+// os.Remove of a FILE is unconditional and would race a host-side atomic save over
+// that path. So file shields must never be scheduled for removal.
+func TestCreatedShieldDirsExcludesFileShields(t *testing.T) {
+	sb := testSandbox("/home/u/proj/src") // an entry under proj makes it a workspace dir
+	grants := []string{"/home/u/proj"}
+	dirs := createdShieldDirs(sb, grants, grants)
+
+	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
+		t.Errorf("the .git/hooks directory shield should be scheduled for cleanup; got %v", dirs)
+	}
+	for _, f := range []string{"/home/u/proj/.git/config", "/home/u/proj/.vscode/tasks.json"} {
+		if containsStr(dirs, f) {
+			t.Errorf("file shield %s must not be scheduled for cleanup (os.Remove would delete a real file)", f)
+		}
+	}
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNoNetworkRulesUnsharesNetwork(t *testing.T) {
 	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py"}, testSandbox())
 	found := false

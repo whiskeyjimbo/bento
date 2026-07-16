@@ -306,6 +306,50 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 	return args
 }
 
+// createdShieldDirs returns the DIRECTORY shield mount points bwrap will create on
+// the host because the shielded path does not exist yet and a write grant makes its
+// parent writable (a nonexistent path is only shielded when a write grant reaches
+// it, so its parent is a read-write host bind). The caller removes these after the
+// run so the sandbox leaves no directory artifact.
+//
+// Only directory shields are returned: removing a directory is empty-only by the
+// rmdir syscall, so cleanup can never delete host data even if a process wrote into
+// the path during the run. File shield mount points are deliberately excluded - an
+// os.Remove of a file is unconditional, so cleaning one would race a host-side
+// atomic save (write-temp then rename) over that path and could delete a real file.
+// The rule selection mirrors denyArgs exactly.
+func createdShieldDirs(sb sandbox, grants, writes []string) []string {
+	rules := denylist.Home(sb.home)
+	for _, w := range writes {
+		if sb.isDir(w) {
+			rules = append(rules, denylist.Workspace(w)...)
+		}
+	}
+	var dirs []string
+	for _, r := range rules {
+		r.Path = sb.resolve(r.Path)
+		if r.Path == "/" || !r.Dir || !shieldNeeded(r, sb, grants, writes) {
+			continue
+		}
+		if !sb.exists(r.Path) {
+			dirs = append(dirs, r.Path)
+		}
+	}
+	return dirs
+}
+
+// removeCreatedShieldDirs removes directory shield mount points bento caused bwrap
+// to create (see createdShieldDirs), after the run. os.Remove on a directory is the
+// rmdir syscall: it removes only an empty directory, so a path a host process wrote
+// into during the run survives (ENOTEMPTY, ignored), and a pre-existing path is
+// never in the list to begin with. Best effort: a kill before this runs, or an
+// intermediate parent bwrap created, can survive - see docs/design.md 6.7.
+func removeCreatedShieldDirs(dirs []string) {
+	for _, d := range dirs {
+		os.Remove(d)
+	}
+}
+
 // shieldNeeded decides whether a deny rule needs a shield mount, given what the
 // grants expose. Beyond protecting the path, this avoids asking bwrap to bind a
 // shield over a path whose parent is read-only - which it cannot do - for paths

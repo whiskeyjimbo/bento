@@ -56,6 +56,15 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		return enforce.Result{}, err
 	}
 
+	// bwrap creates a directory shield mount point on the host when the shielded
+	// path does not exist yet and a write grant makes its parent writable (e.g. a
+	// project's unborn .git/hooks). Remove those after the run so the sandbox leaves
+	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
+	// best-effort.
+	if reads, writes, err := resolveGrants(p); err == nil {
+		defer removeCreatedShieldDirs(createdShieldDirs(sb, append(append([]string{}, reads...), writes...), writes))
+	}
+
 	// When the policy allows egress, run the allowlist proxy on the sandbox's
 	// unix socket for the lifetime of the run. The sandbox reaches it only through
 	// that socket; nothing else can leave the network namespace.

@@ -550,3 +550,45 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 		t.Errorf("limits state = %v, want %v", states[enforce.LayerLimits], wantLimits)
 	}
 }
+
+// A run leaves no host artifact: the shield mount point bwrap creates for a
+// nonexistent shielded path under a write grant (an unborn .git/hooks) is removed
+// after the run. Best effort by design - a kill could leave it - but a normal exit
+// must clean it up.
+func TestNonexistentShieldLeavesNoHostArtifact(t *testing.T) {
+	requireSandbox(t)
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(proj, ".git", "hooks") // deliberately absent
+
+	p := &policy.Policy{Write: []string{proj}}
+	runScript(t, p, "echo hi\n")
+
+	if _, err := os.Stat(hooks); err == nil {
+		t.Errorf("bento left a host artifact at %s after the run", hooks)
+	}
+}
+
+// The cleanup must never remove a pre-existing shield path or its contents: it only
+// removes leaves that did not exist before the run, and only when empty.
+func TestExistingShieldedDirIsNotRemoved(t *testing.T) {
+	requireSandbox(t)
+	proj := t.TempDir()
+	hooks := filepath.Join(proj, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(hooks, "pre-commit")
+	if err := os.WriteFile(marker, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Write: []string{proj}}
+	runScript(t, p, "echo hi\n")
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("cleanup removed a pre-existing shielded path's contents: %v", err)
+	}
+}
