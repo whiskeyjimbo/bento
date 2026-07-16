@@ -656,3 +656,28 @@ func TestExistingShieldedDirIsNotRemoved(t *testing.T) {
 		t.Errorf("cleanup removed a pre-existing shielded path's contents: %v", err)
 	}
 }
+
+// Profiling applies the same shields as a run, so it must clean up the same host
+// artifacts. This guards the cleanup at the profile.go site independently: its scan
+// must also run before bwrap, and no Profile test otherwise exercises it.
+func TestProfileLeavesNoHostArtifact(t *testing.T) {
+	requireSandbox(t)
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(proj, ".git", "hooks") // deliberately absent
+	script := filepath.Join(proj, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{proj}, Exec: policy.ExecAll}
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false); err != nil {
+		t.Fatalf("Profile failed: %v", err)
+	}
+
+	if _, err := os.Stat(hooks); err == nil {
+		t.Errorf("profiling left a host artifact at %s", hooks)
+	}
+}
