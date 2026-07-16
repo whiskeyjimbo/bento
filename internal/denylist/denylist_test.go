@@ -19,6 +19,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.mozilla",
 		"/home/u/.config/google-chrome",
 		"/home/u/.config/rclone",
+		"/home/u/.config/keybase",       // Keybase keys/tokens
+		"/home/u/.pki",                  // NSS cert/key DBs
+		"/home/u/.gnome2/keyrings",      // legacy keyring path
+		"/home/u/.git-credential-cache", // git credential cache
+		"/home/u/.mutt",                 // mutt config (imap_pass) hidden
+		"/home/u/.config/mutt",          // XDG mutt config
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -34,6 +40,10 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	wantDenyAllFile := []string{
 		"/home/u/.netrc",
 		"/home/u/.pgpass",
+		"/home/u/.smbcredentials", // SMB mount credentials
+		"/home/u/.config/hub",     // hub OAuth token
+		"/home/u/.msmtprc",        // SMTP passwords (hidden, not just write-denied)
+		"/home/u/.yarnrc.yml",     // yarn npmAuthToken
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]
@@ -66,6 +76,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.gdbinit",           // executed by gdb on startup
 		"/home/u/.direnvrc",          // legacy direnv global rc
 		"/home/u/.Renviron",          // can set R_PROFILE_USER
+		"/home/u/.cargo/env",         // rustup makes .profile source it
+		"/home/u/.exrc",              // vim also sources this
+		"/home/u/.gvimrc",            // gvim rc
+		"/home/u/.screenrc",          // GNU screen runs commands
+		"/home/u/.mailcap",           // MIME handler commands
+		"/home/u/.yarnrc",            // yarn-path exec (classic, no token)
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -91,6 +107,10 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.emacs.d",                  // emacs init and site-lisp
 		"/home/u/.config/environment.d",     // systemd user-session env
 		"/home/u/.local/share/direnv/allow", // direnv authorization records
+		"/home/u/.config/Code",              // VS Code User settings (git.path etc.)
+		"/home/u/.vscode",                   // VS Code extensions dir
+		"/home/u/.config/mpv",               // mpv autoloaded scripts
+		"/home/u/.xmonad",                   // xmonad.hs compiled+run
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
