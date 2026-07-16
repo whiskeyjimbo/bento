@@ -77,6 +77,19 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	}
 	root := cmd.Process.Pid
 
+	// The child comes up ptrace-stopped and every error path below returns while it
+	// is still suspended. Kill and reap it on any such early return, so a failed
+	// trace leaks no TASK_TRACED process: PTRACE_O_EXITKILL only fires when this
+	// tracer exits, which for a library embedder's process may be never. Reaping
+	// stays on the locked thread (this defer runs before UnlockOSThread), as ptrace
+	// requires. The happy path clears this after the loop has already reaped root.
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			killAndReap(root)
+		}
+	}()
+
 	// The child stops at its initial execve; set options to follow subprocesses
 	// and to tag syscall stops distinctly, then let it run.
 	var ws syscall.WaitStatus
@@ -114,11 +127,19 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			continue
 		}
 		if err != nil {
+			// This wait almost never errors (EINTR is retried above; ECHILD cannot
+			// happen while root is unreaped), so it is effectively a defensive exit.
+			// The cleanup guard reaps root; any descendant tracees already attached
+			// here are left to PTRACE_O_EXITKILL rather than individually reaped.
 			return Result{}, fmt.Errorf("observe: wait: %w", err)
 		}
 
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):
+			// The wait above already reaped root, so the cleanup guard must not also
+			// wait on it; mark success before touching res so nothing between here
+			// and the return can leave the guard waiting on a freed pid.
+			succeeded = true
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {
 				res.Signaled = true
@@ -150,6 +171,27 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 				}
 			}
 			syscall.PtraceSyscall(wpid, sig)
+		}
+	}
+}
+
+// killAndReap SIGKILLs a tracee and waits for its death, so a trace that returns
+// before the target completes leaves no suspended TASK_TRACED process behind. A
+// ptrace-stopped tracee is not exempt from SIGKILL, so this does not hang. The
+// wait loops to retry EINTR and to step past a pending ptrace-stop notification
+// that may be reported before the death.
+func killAndReap(pid int) {
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	for {
+		var ws syscall.WaitStatus
+		_, err := syscall.Wait4(pid, &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		// ECHILD (already reaped) or a terminal status means the tracee is gone; a
+		// non-terminal stop status means the SIGKILL has not landed yet, so wait on.
+		if err != nil || ws.Exited() || ws.Signaled() {
+			return
 		}
 	}
 }

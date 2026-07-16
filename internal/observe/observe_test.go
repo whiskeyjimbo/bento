@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -57,6 +58,51 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 
 	if !res.Execed {
 		t.Error("the script spawned `true` but no exec was observed")
+	}
+}
+
+// killAndReap is the cleanup Trace defers on an early error; it must fully remove
+// a ptrace-stopped child rather than leave a TASK_TRACED process (or an unreaped
+// zombie) behind. This exercises the helper directly against a real child driven
+// into that suspended state - Trace has no seam to inject a mid-setup failure, so
+// the wiring of the deferred guard itself is covered by review, not this test.
+func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	// ptrace is per-thread: the tracer must start, wait on, and reap the child from
+	// the same OS thread, as Trace does.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	cmd := exec.Command(sh, "-c", "sleep 30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting tracee: %v", err)
+	}
+	pid := cmd.Process.Pid
+	// If an assertion below fails before killAndReap runs (or it misbehaves), do not
+	// leave the stopped child pinned for its whole sleep.
+	defer func() {
+		syscall.Kill(pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+	}()
+
+	// Consume the initial execve stop; the child is now suspended in TASK_TRACED,
+	// the state every early return in Trace would abandon it in.
+	var ws syscall.WaitStatus
+	if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
+		t.Fatalf("initial wait: %v", err)
+	}
+
+	killAndReap(pid)
+
+	// A signal-0 probe to a reaped pid reports ESRCH; anything else means the child
+	// (or an unreaped zombie) is still around.
+	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+		t.Fatalf("tracee still present after killAndReap: kill(pid, 0) = %v, want ESRCH", err)
 	}
 }
 
