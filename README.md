@@ -21,7 +21,9 @@ Two properties define bento:
 - **Declarative permissions.** The policy lives in a manifest, not in code. There is no
   runtime prompting: bento either runs within the declared permissions or refuses. That is
   what makes it usable unattended (CI, agents, Go embedders), where no human is present to
-  answer a dialog.
+  answer a dialog. `run` also refuses a manifest whose approval is missing or stale (the
+  permissions changed since it was approved), so an unreviewed change cannot run unattended;
+  `--allow-unapproved` opts out for the profile-then-run inner loop.
 
 When the host cannot enforce something a manifest declares, bento does not silently run a
 weaker sandbox. It surfaces the shortfall in `bento doctor` and in the run output, and
@@ -57,7 +59,8 @@ bento validate ./fetch.py.manifest.yaml
 # 3. Approve it (stamps an approval fingerprint over the policy fields).
 bento approve ./fetch.py.manifest.yaml
 
-# 4. Run the script under the approved manifest.
+# 4. Run the script under the approved manifest. run refuses an unapproved or stale
+#    manifest by default (pass --allow-unapproved to run one anyway).
 bento run ./fetch.py.manifest.yaml
 
 # At any time: what can this host actually enforce?
@@ -80,7 +83,7 @@ network:                        # a list of rules; omitted/empty means all egres
   - host: api.github.com        # host + quoted port; suffix match with a leading dot
     port: "443"
 
-exec: none                      # none (blocks execve) | none-strict (also fork) | all
+exec: none                      # none (blocks execve) | none-strict (also fork/clone, threads ok; amd64) | all
 limits: { memory: 128M, cpu: 100%, pids: 32 }
 
 # Written by the tool, not by hand:
@@ -96,6 +99,12 @@ in a way that supports creating and renaming files inside it. Naming a file brea
 save-via-rename (editors, `os.replace`, git), so a write grant that names an existing file
 is refused, and a granted directory that does not exist yet is created before the run.
 
+A write grant that *contains* a shielded credential path is also refused: `write: ~`
+(above `~/.ssh`) or `write: ~/.cargo` (above `~/.cargo/credentials`) would make the
+shield's parent writable, so bento refuses it and asks you to grant a narrower directory.
+A *read* grant over the same tree is fine - the deny-list still shields the credentials
+inside it.
+
 ## What is enforced
 
 bento reports capabilities in tiers. The **core tier** is the baseline both platforms aim
@@ -108,7 +117,7 @@ to provide; the **hardening tier** is Linux-only for now.
 | Credentials/dotfiles always shielded | core | deny-list bind mounts (even for unborn paths) |
 | No egress unless a rule allows it | core | empty network namespace (no route out) |
 | Per-host:port egress | core | host-side SNI/CONNECT allowlist proxy behind the fence |
-| No `execve` subprocesses | hardening | seccomp exec-block filter |
+| No `execve` subprocesses | hardening | seccomp exec-block filter (`none-strict` also blocks fork/clone on amd64) |
 | memory / pids / cpu limits | hardening | transient `systemd` scope |
 | Filesystem backstop behind bubblewrap | hardening | Landlock (best-effort) |
 
