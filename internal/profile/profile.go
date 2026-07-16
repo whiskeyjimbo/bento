@@ -32,6 +32,13 @@ type Observation struct {
 	// runtime tree from the proposal - under a version manager that tree lives in
 	// $HOME, so a system-prefix filter alone does not catch it.
 	Interpreter string
+	// ExitCode is the profiled run's exit status (128+signal when Signaled).
+	// Signaled/Signal report a run that died from a signal (crash, OOM, timeout). A
+	// nonzero or signaled run may have stopped partway, so the observations - and any
+	// manifest synthesized from them - may be incomplete; the frontend warns.
+	ExitCode int
+	Signaled bool
+	Signal   int
 }
 
 // systemPrefixes are paths every program touches to load its runtime and libs.

@@ -157,6 +157,9 @@ func TestTracePropagatesExitCode(t *testing.T) {
 	if res.ExitCode != 5 {
 		t.Errorf("exit code = %d, want 5", res.ExitCode)
 	}
+	if res.Signaled {
+		t.Errorf("a plain nonzero exit must not be reported as signaled")
+	}
 }
 
 // A signal delivered to the tracee must reach it, not be swallowed by the tracer.
@@ -176,6 +179,11 @@ func TestTraceForwardsDeliveredSignal(t *testing.T) {
 	}
 	if want := 128 + int(syscall.SIGTERM); res.ExitCode != want {
 		t.Errorf("exit code = %d, want %d (SIGTERM must be delivered, not eaten)", res.ExitCode, want)
+	}
+	// The run must be reported as signaled (a crash/OOM/timeout), so the profiler can
+	// warn the observations may be partial - distinct from a plain nonzero exit.
+	if !res.Signaled || res.Signal != int(syscall.SIGTERM) {
+		t.Errorf("got Signaled=%v Signal=%d, want signaled by SIGTERM (%d)", res.Signaled, res.Signal, syscall.SIGTERM)
 	}
 }
 

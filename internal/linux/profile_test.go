@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
+	"github.com/whiskeyjimbo/bento-v2/internal/profile"
 )
 
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
@@ -74,5 +75,33 @@ func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
 	}
 	if len(obs.Writes) != 0 || obs.Execed {
 		t.Errorf("forged records leaked: writes=%v execed=%v", obs.Writes, obs.Execed)
+	}
+}
+
+// The report carries the run's exit status so the profiler can warn when a
+// signaled or nonzero run may have stopped partway and the observations are
+// incomplete. An EXIT line sets ExitCode; a SIGNAL line sets Signaled/Signal.
+func TestParseObservationsReadsExitStatus(t *testing.T) {
+	report := func(t *testing.T, statusLine string) profile.Observation {
+		p := filepath.Join(t.TempDir(), "report")
+		content := fmt.Sprintf("R %q\n%s\n%s\n", "/a", statusLine, observe.ReportStart)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		obs, err := parseObservations(p)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return obs
+	}
+
+	if obs := report(t, "EXIT 0"); obs.Signaled || obs.ExitCode != 0 {
+		t.Errorf("EXIT 0: got Signaled=%v ExitCode=%d, want clean exit", obs.Signaled, obs.ExitCode)
+	}
+	if obs := report(t, "EXIT 5"); obs.Signaled || obs.ExitCode != 5 {
+		t.Errorf("EXIT 5: got Signaled=%v ExitCode=%d, want ExitCode 5", obs.Signaled, obs.ExitCode)
+	}
+	if obs := report(t, "SIGNAL 9"); !obs.Signaled || obs.Signal != 9 || obs.ExitCode != 137 {
+		t.Errorf("SIGNAL 9: got Signaled=%v Signal=%d ExitCode=%d, want signaled 9 / 137", obs.Signaled, obs.Signal, obs.ExitCode)
 	}
 }

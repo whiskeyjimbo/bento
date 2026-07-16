@@ -76,6 +76,13 @@ func newProfileCmd() *cobra.Command {
 				return err
 			}
 
+			// A run that was signaled or exited nonzero may have stopped before
+			// exercising all its code paths, so the observations - and the manifest
+			// synthesized from them - can be silently over-tight. Warn before writing it.
+			if w := partialRunWarning(obs); w != "" {
+				fmt.Fprintln(os.Stderr, w)
+			}
+
 			proposed := profile.Synthesize(script, interpreter, obs)
 
 			// A write to a file directly in a broad directory (the home directory, a
@@ -117,6 +124,21 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// partialRunWarning returns a warning when the profiled run may not have finished -
+// killed by a signal (crash, OOM, timeout) or exited nonzero - so its observations,
+// and the manifest synthesized from them, can be silently over-tight. It returns ""
+// for a clean run. Signaled takes priority since it implies a nonzero exit.
+func partialRunWarning(obs profile.Observation) string {
+	switch {
+	case obs.Signaled:
+		return fmt.Sprintf("[bento] WARNING: the profiled run was killed by signal %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.Signal)
+	case obs.ExitCode != 0:
+		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.ExitCode)
+	default:
+		return ""
+	}
 }
 
 // clampBroadWrites splits proposed write directories into those safe to grant

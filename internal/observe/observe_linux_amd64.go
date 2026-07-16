@@ -31,6 +31,12 @@ type Result struct {
 	Accesses []Access
 	Execed   bool // the program exec'd at least one subprocess
 	ExitCode int
+	// Signaled reports the root died from a signal (crash, OOM-kill, timeout);
+	// Signal is that signal number. A signaled or nonzero run may have stopped
+	// partway, so its accesses - and any manifest synthesized from them - are
+	// incomplete.
+	Signaled bool
+	Signal   int
 }
 
 // amd64 syscall numbers.
@@ -114,6 +120,10 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):
 			res.ExitCode = exitCode(ws)
+			if ws.Signaled() {
+				res.Signaled = true
+				res.Signal = int(ws.Signal())
+			}
 			sort.Slice(res.Accesses, func(i, j int) bool { return res.Accesses[i].Path < res.Accesses[j].Path })
 			return res, nil
 		case ws.Exited() || ws.Signaled():

@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/internal/profile"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
@@ -149,6 +151,35 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	// interpreter always opens its runtime files.
 	if len(obs.Reads) == 0 {
 		t.Fatal("no file accesses observed - the target did not run (empty /bento bind?)")
+	}
+}
+
+// A profiled run that exits nonzero or dies from a signal may have stopped before
+// exercising all its paths, so Profile must surface the exit status end-to-end (the
+// launcher writes it into the report, parseObservations reads it) for the frontend
+// to warn on. Otherwise the profiler proposes a silently over-tight manifest.
+func TestProfileSurfacesExitStatus(t *testing.T) {
+	requireSandbox(t)
+
+	run := func(t *testing.T, body string) profile.Observation {
+		dir := t.TempDir()
+		script := filepath.Join(dir, "p.sh")
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+		obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false)
+		if err != nil {
+			t.Fatalf("Profile: %v", err)
+		}
+		return obs
+	}
+
+	if obs := run(t, "exit 7\n"); obs.Signaled || obs.ExitCode != 7 {
+		t.Errorf("nonzero exit: got Signaled=%v ExitCode=%d, want ExitCode 7", obs.Signaled, obs.ExitCode)
+	}
+	if obs := run(t, "kill -TERM $$\n"); !obs.Signaled || obs.Signal != int(syscall.SIGTERM) {
+		t.Errorf("signaled run: got Signaled=%v Signal=%d, want signaled by SIGTERM (%d)", obs.Signaled, obs.Signal, syscall.SIGTERM)
 	}
 }
 

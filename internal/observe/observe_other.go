@@ -18,6 +18,8 @@ type Result struct {
 	Accesses []Access
 	Execed   bool
 	ExitCode int
+	Signaled bool
+	Signal   int
 }
 
 // Trace is unavailable: the ptrace observer is implemented for linux/amd64 only.

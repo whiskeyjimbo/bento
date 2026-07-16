@@ -126,8 +126,8 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 }
 
 // parseObservations reads the launcher's observation report: "R <path>" and
-// "W <path>" lines for opens, and an "EXEC" line if the target spawned a
-// subprocess.
+// "W <path>" lines for opens, an "EXEC" line if the target spawned a subprocess,
+// and an "EXIT <code>" or "SIGNAL <n>" line carrying the run's exit status.
 func parseObservations(path string) (profile.Observation, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -163,6 +163,16 @@ func parseObservations(path string) (profile.Observation, error) {
 		case strings.HasPrefix(line, "W "):
 			if p, err := strconv.Unquote(line[2:]); err == nil {
 				obs.Writes = append(obs.Writes, p)
+			}
+		case strings.HasPrefix(line, "EXIT "):
+			if n, err := strconv.Atoi(line[5:]); err == nil {
+				obs.ExitCode = n
+			}
+		case strings.HasPrefix(line, "SIGNAL "):
+			if n, err := strconv.Atoi(line[7:]); err == nil {
+				obs.Signaled = true
+				obs.Signal = n
+				obs.ExitCode = 128 + n
 			}
 		}
 	}

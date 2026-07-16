@@ -155,6 +155,14 @@ func runObserve(cfg Config, env []string) (int, error) {
 		if res.Execed {
 			b.WriteString("EXEC\n")
 		}
+		// The run's exit status, so the host can warn when a signaled/nonzero run may
+		// have stopped partway and the observations are incomplete. Written before the
+		// marker, like the records.
+		if res.Signaled {
+			fmt.Fprintf(&b, "SIGNAL %d\n", res.Signal)
+		} else {
+			fmt.Fprintf(&b, "EXIT %d\n", res.ExitCode)
+		}
 		b.WriteString(observe.ReportStart + "\n")
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
