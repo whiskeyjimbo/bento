@@ -103,6 +103,16 @@ func (s *store) save() error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
+	// Re-read under the lock and fold in anything a concurrent run wrote, so
+	// finishing last does not clobber another run's newly-remembered decisions (in
+	// particular a deny). This run's own values win on a per-key conflict.
+	if disk, err := os.ReadFile(s.path); err == nil {
+		var d store
+		if json.Unmarshal(disk, &d) == nil {
+			s.fillMissing(&d)
+		}
+	}
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -114,12 +124,55 @@ func (s *store) save() error {
 	return os.Rename(tmp, s.path)
 }
 
+// fillMissing copies entries present on disk but absent in s, so a concurrent
+// run's writes survive this run's save. This run's values win where both have a
+// key; disk-only keys (another run's additions) are preserved.
+func (s *store) fillMissing(disk *store) {
+	fill := func(dst *map[string]decision, src map[string]decision) {
+		for k, v := range src {
+			if *dst == nil {
+				*dst = map[string]decision{}
+			}
+			if _, ok := (*dst)[k]; !ok {
+				(*dst)[k] = v
+			}
+		}
+	}
+	fill(&s.Global.Network, disk.Global.Network)
+	for key, da := range disk.Apps {
+		ma := s.Apps[key]
+		if ma == nil {
+			s.Apps[key] = da
+			continue
+		}
+		fill(&ma.Read, da.Read)
+		fill(&ma.Write, da.Write)
+		fill(&ma.Network, da.Network)
+		if ma.Exec == "" {
+			ma.Exec = da.Exec
+		}
+		if ma.Entrypoint == "" {
+			ma.Entrypoint = da.Entrypoint
+		}
+		if ma.Interpreter == "" {
+			ma.Interpreter = da.Interpreter
+		}
+	}
+}
+
 // appKey identifies an app by the SHA-256 of its entrypoint bytes: same code, same
 // key, so approvals are shared regardless of where the script lives, and changed
 // code gets a fresh key and re-prompts. It is launcher identity, not behavior
 // identity (a script that sources or downloads more code keeps its key) - so it is
 // convenience memory, not a security boundary.
 func appKey(entrypoint string) (string, error) {
+	// Only hash a regular file: a FIFO or device entrypoint would otherwise block or
+	// misbehave in ReadFile.
+	if fi, err := os.Stat(entrypoint); err != nil {
+		return "", err
+	} else if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("entrypoint %q is not a regular file", entrypoint)
+	}
 	data, err := os.ReadFile(entrypoint)
 	if err != nil {
 		return "", err

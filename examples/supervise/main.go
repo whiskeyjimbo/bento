@@ -234,14 +234,14 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 	}
 
 	for _, r := range trimScratch(proposal.Read) {
-		if consider("read", pretty(r), r,
+		if consider("read", quotePath(r), r,
 			func() (decision, bool) { return s.decidePath(key, "read", r) },
 			func(d decision) { s.rememberPath(key, "read", r, d) }) {
 			final.Read = append(final.Read, r)
 		}
 	}
 	for _, w := range trimScratch(proposal.Write) {
-		if consider("write", pretty(w), w,
+		if consider("write", quotePath(w), w,
 			func() (decision, bool) { return s.decidePath(key, "write", w) },
 			func(d decision) { s.rememberPath(key, "write", w, d) }) {
 			final.Write = append(final.Write, w)
@@ -297,7 +297,7 @@ func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy)
 			for _, g := range grants {
 				if path != g && underComponent(path, g) {
 					fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
-						kind, pretty(path), pretty(g))
+						kind, quotePath(path), quotePath(g))
 				}
 			}
 		}
@@ -453,6 +453,12 @@ func trimScratch(paths []string) []string {
 	}
 	return out
 }
+
+// quotePath shortens a path for display and quotes it. The path comes from the
+// untrusted trial (a filename the script chose), so it can carry terminal escape
+// sequences; quoting neutralizes them at the approval prompt, the same as the gate
+// quotes an attacker-chosen host. The policy keeps the literal path.
+func quotePath(p string) string { return strconv.Quote(pretty(p)) }
 
 // pretty shortens a home-anchored path to ~ for display; the policy keeps the
 // real absolute path.

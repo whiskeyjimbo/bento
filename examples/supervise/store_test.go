@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,6 +69,60 @@ func TestApproveRefusesStoreCoveringGrant(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "refused") {
 		t.Errorf("the refusal should be reported; got %q", out.String())
+	}
+}
+
+// A path from the untrusted trial can carry terminal escapes; the approval prompt
+// must quote it (as the gate quotes a host), or a crafted filename spoofs what the
+// operator sees while a different path is stored/granted.
+func TestApproveQuotesAttackerPath(t *testing.T) {
+	s := newTestStore()
+	evil := "/home/u/proj/\x1b[2Kinnocent"
+	var out strings.Builder
+	// "y" grants it; the display must not contain the raw ESC byte.
+	p := newPrompter(strings.NewReader("y\n"), &out)
+	got := approve(p, s, "k", "/s", "sh", &policy.Policy{Read: []string{evil}})
+
+	if len(got.Read) != 1 || got.Read[0] != evil {
+		t.Fatalf("the literal path must be granted; got %v", got.Read)
+	}
+	if strings.ContainsRune(out.String(), '\x1b') {
+		t.Errorf("the approval prompt leaked a raw escape byte: %q", out.String())
+	}
+}
+
+// save folds in a concurrent run's writes instead of clobbering them: after run A
+// saves app "a", run B (which loaded before A saved) saves app "b" and both survive.
+func TestStoreSaveMergesConcurrentWrites(t *testing.T) {
+	dir := t.TempDir()
+	mk := func() *store {
+		return &store{Version: 1, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
+	}
+	a := mk()
+	a.rememberNetwork("a", "a.example", "443", allow, false)
+	if err := a.save(); err != nil {
+		t.Fatal(err)
+	}
+	// b was loaded empty before a's save; it must not erase a's record on its own save.
+	b := mk()
+	b.rememberNetwork("b", "b.example", "443", deny, false)
+	if err := b.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "permissions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final store
+	if err := json.Unmarshal(data, &final); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := final.Apps["a"]; !ok {
+		t.Error("app 'a' was clobbered by a concurrent save")
+	}
+	if _, ok := final.Apps["b"]; !ok {
+		t.Error("app 'b' was not saved")
 	}
 }
 
