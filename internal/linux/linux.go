@@ -14,8 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"syscall"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
@@ -40,14 +41,17 @@ var _ enforce.Enforcer = (*Enforcer)(nil)
 // inside it. A non-zero exit from the target is returned in the Result; err is
 // reserved for a failure to build or start the sandbox, so a script that merely
 // fails is never confused with a sandbox that did not hold.
-func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process) (enforce.Result, error) {
+func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, gate enforce.NetworkGate) (enforce.Result, error) {
 	report := e.Probe(ctx)
 
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return enforce.Result{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
 	}
-	sb, cleanup, err := newSandbox(p, e.selfPath)
+	// A gate forces the egress stack up even with zero rules: a supervised run with
+	// no manifest network means "prompt on every host", so the proxy must exist for
+	// the gate to be consulted at all.
+	sb, cleanup, err := newSandbox(p, e.selfPath, gate != nil)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -66,16 +70,22 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		defer removeCreatedShieldDirs(createdShieldDirs(sb, append(append([]string{}, reads...), writes...), writes))
 	}
 
-	// When the policy allows egress, run the allowlist proxy on the sandbox's
-	// unix socket for the lifetime of the run. The sandbox reaches it only through
-	// that socket; nothing else can leave the network namespace.
+	// When the policy allows egress (or a gate supervises it), run the allowlist
+	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox
+	// reaches it only through that socket; nothing else can leave the network
+	// namespace. stopProxy waits for every in-flight handler (Serve's wg.Wait), so
+	// it is called explicitly before each success return - not just deferred - so
+	// a gate admitted during target teardown is recorded before the result is read.
+	// It is idempotent (sync.OnceFunc inside startProxy), so the defer stays as a
+	// safety net for the error paths without double-closing.
+	stopProxy := func() {}
 	egress := func() int { return 0 }
+	admitted := func() []enforce.HostPort { return nil }
 	if sb.proxySocket != "" {
-		stopProxy, count, err := startProxy(ctx, p, sb.proxySocket)
+		stopProxy, egress, admitted, err = startProxy(ctx, p, sb.proxySocket, gate)
 		if err != nil {
 			return enforce.Result{}, err
 		}
-		egress = count
 		defer stopProxy()
 	}
 
@@ -110,11 +120,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	switch err := cmd.Run(); {
 	case err == nil:
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress()}, nil
+		stopProxy()
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted()}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress()}, nil
+		stopProxy()
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted()}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -169,7 +181,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
-func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
+func newSandbox(p *policy.Policy, selfPath string, gated bool) (sandbox, func(), error) {
 	noop := func() {}
 
 	entrypoint, err := resolve(p.Entrypoint)
@@ -221,19 +233,23 @@ func newSandbox(p *policy.Policy, selfPath string) (sandbox, func(), error) {
 		listDir:     hostListDir,
 	}
 
-	// The in-sandbox launcher (the bento binary) is bound whenever egress or
-	// exec-blocking is in play; the proxy socket only when egress is.
+	// The in-sandbox launcher (the bento binary) is bound whenever egress,
+	// exec-blocking, or a supervising gate is in play; the proxy socket whenever
+	// egress or a gate is. gated must appear in BOTH conditions: it forces the
+	// proxy socket up for a no-rules supervised run, and useLauncher then keys off
+	// the socket, so an unset bentoPath would emit a broken --ro-bind "" /bento in
+	// the gate + no-rules + exec:all shape.
 	execMode := p.Exec
 	if execMode == "" {
 		execMode = policy.ExecNone
 	}
-	if len(p.Network) > 0 || execMode != policy.ExecAll {
+	if len(p.Network) > 0 || execMode != policy.ExecAll || gated {
 		if sb.bentoPath, err = bentoSelfPath(selfPath); err != nil {
 			cleanup()
 			return sandbox{}, noop, err
 		}
 	}
-	if len(p.Network) > 0 {
+	if len(p.Network) > 0 || gated {
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}
 	return sb, cleanup, nil
@@ -263,14 +279,71 @@ func writeEmptyFile(path string) error {
 	return nil
 }
 
-// startProxy serves the egress allowlist on socket for the run's lifetime. It
-// returns a stop function and a count function reporting how many connections
-// reached the proxy - a zero count on a network-using run tells the frontend the
-// target never went through the proxy (used no network, or bypassed it).
-func startProxy(ctx context.Context, p *policy.Policy, socket string) (stop func(), count func() int, err error) {
-	var connections atomic.Int64
-	stop, err = startProxyWith(ctx, p, socket, func(proxy.Decision, string, string) { connections.Add(1) })
-	return stop, func() int { return int(connections.Load()) }, err
+// startProxy serves the egress allowlist on socket for the run's lifetime,
+// optionally consulting gate for hosts the manifest does not declare. It returns
+// an idempotent stop function, a count of how many connections reached the proxy
+// (a zero count on an egress-capable run tells the frontend the target never went
+// through the proxy - used no network, or bypassed it), and the hosts the gate
+// admitted beyond the manifest.
+func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func(), count func() int, admitted func() []enforce.HostPort, err error) {
+	c := &egressCollector{}
+	var opts []proxy.Option
+	if gate != nil {
+		opts = append(opts, proxy.WithGatekeeper(gate))
+	}
+	stop, err = startProxyWith(ctx, p, socket, c.observe, opts...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return sync.OnceFunc(stop), c.counted, c.gateAdmitted, nil
+}
+
+// egressCollector records the proxy's per-connection decisions for the run
+// result: a total count and the deduped set of hosts the gate admitted beyond
+// the manifest. The observer runs in each handler's own goroutine, so a mutex
+// guards the shared state; the gate itself is never called under this lock (it
+// runs in the handler, the observer only records the outcome).
+type egressCollector struct {
+	mu       sync.Mutex
+	count    int
+	admitted map[string]enforce.HostPort
+}
+
+func (c *egressCollector) observe(d proxy.Decision, host, port string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.count++
+	if d == proxy.AdmittedByGate {
+		if c.admitted == nil {
+			c.admitted = make(map[string]enforce.HostPort)
+		}
+		// Key on JoinHostPort so an IPv6 host:port dedupes correctly.
+		c.admitted[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	}
+}
+
+func (c *egressCollector) counted() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.count
+}
+
+// gateAdmitted returns a copy of the admitted set, sorted so the result is
+// deterministic (map iteration order would flap tests and JSON output).
+func (c *egressCollector) gateAdmitted() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]enforce.HostPort, 0, len(c.admitted))
+	for _, hp := range c.admitted {
+		out = append(out, hp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Host != out[j].Host {
+			return out[i].Host < out[j].Host
+		}
+		return out[i].Port < out[j].Port
+	})
+	return out
 }
 
 // startProxyWith serves the egress allowlist on socket with a caller-supplied

@@ -34,7 +34,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		return profile.Observation{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
 	}
 
-	sb, cleanup, err := newSandbox(p, e.selfPath)
+	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
+	// presence is signalled here.
+	sb, cleanup, err := newSandbox(p, e.selfPath, false)
 	if err != nil {
 		return profile.Observation{}, err
 	}

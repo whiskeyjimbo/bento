@@ -23,8 +23,20 @@ type Enforcer interface {
 	// Run enforces p around proc, runs it to completion, and reports what was
 	// actually enforced. A non-zero process exit is returned in Result, not as
 	// err; err is reserved for a failure to set up or run the sandbox itself.
-	Run(ctx context.Context, p *policy.Policy, proc Process) (Result, error)
+	//
+	// gate, when non-nil, admits an egress host the manifest does not declare; nil
+	// keeps the declarative default of denying anything undeclared.
+	Run(ctx context.Context, p *policy.Policy, proc Process, gate NetworkGate) (Result, error)
 }
+
+// NetworkGate decides an egress host the manifest's allowlist does not permit.
+// Returning true admits that connection for this run only; it is the seam a
+// supervising caller uses to prompt a human. It is consulted synchronously in
+// the connection's own goroutine, so it MAY block to prompt - but it must return
+// promptly once ctx is done (the run is ending), or it stalls run teardown. host
+// and port are attacker-controlled (a sandboxed target chose them); sanitize
+// before displaying. A nil gate denies everything undeclared.
+type NetworkGate func(ctx context.Context, host, port string) bool
 
 // Process is the runtime binding a policy does not carry: where the target's
 // standard streams connect, and the environment values it runs with.
@@ -49,9 +61,23 @@ type Result struct {
 	ExitCode int
 	Report   Report
 	// EgressConnections is how many outbound connections reached the egress proxy
-	// during the run. It is meaningful only when the policy allows egress; a
-	// count of zero there means the target either used no network or bypassed the
-	// proxy (which, in the default cooperative mode, fails closed) - letting a
-	// frontend explain a network failure precisely.
+	// during the run. A count of zero on a run that could egress (the policy allows
+	// it, or a NetworkGate is present) means the target either used no network or
+	// bypassed the proxy (which, in the default cooperative mode, fails closed) -
+	// letting a frontend explain a network failure precisely.
 	EgressConnections int
+	// GateAdmitted lists the destinations a NetworkGate admitted beyond the
+	// manifest, deduped and sorted. A host appears once the gate approved it, even
+	// if the subsequent dial then failed - EXCEPT a dial the upstream guard blocked
+	// (a gate-approved host resolving to a non-public address): that reports Denied
+	// and is not listed, since it was never admitted past the guard. Empty when no
+	// gate is set, so the count and this list keep the run honest about egress it
+	// permitted beyond the declared policy.
+	GateAdmitted []HostPort
 }
+
+// HostPort is one egress destination admitted at runtime by a NetworkGate rather
+// than declared in the manifest. It duplicates profile.HostPort deliberately:
+// enforce importing profile for a two-field value would point the dependency the
+// wrong way.
+type HostPort struct{ Host, Port string }

@@ -495,6 +495,149 @@ func TestGuardBlocksZonedHostReserved(t *testing.T) {
 	}
 }
 
+// A gatekeeper admits a host the static allowlist denies, and the connection
+// then tunnels like any allowed host. The observer sees the distinct gate
+// decision, not a plain allow, so the run stays honest about the widening.
+func TestGatekeeperAdmitsUndeclaredHost(t *testing.T) {
+	var seen []string
+	p := New(
+		[]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(fakeDialer("HELLO")),
+		WithGatekeeper(func(context.Context, string, string) bool { return true }),
+		WithObserver(func(d Decision, host, port string) { seen = append(seen, string(d)+" "+host) }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "undeclared.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (gate admitted the host)", status)
+	}
+	rest, _ := io.ReadAll(br)
+	if !strings.Contains(string(rest), "HELLO") {
+		t.Errorf("gate-admitted tunnel did not carry upstream bytes; got %q", rest)
+	}
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(AdmittedByGate)) {
+		t.Errorf("observer saw %v, want a single %q decision", seen, AdmittedByGate)
+	}
+}
+
+// A gatekeeper that declines leaves the declarative behavior intact: the host is
+// refused exactly as with no gate.
+func TestGatekeeperDenyStillRefused(t *testing.T) {
+	p := New(
+		[]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(fakeDialer("HELLO")),
+		WithGatekeeper(func(context.Context, string, string) bool { return false }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "undeclared.com:443")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (gate declined)", status)
+	}
+}
+
+// Profiling (WithoutEgress) must never consult the gate: the refuse check
+// precedes the allowlist check, so a profiling run captures destinations without
+// any host's data leaving, gate or not.
+func TestGatekeeperNotConsultedWhileProfiling(t *testing.T) {
+	consulted := false
+	p := New(
+		[]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithoutEgress(),
+		WithGatekeeper(func(context.Context, string, string) bool { consulted = true; return true }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (profiling refuses)", status)
+	}
+	if consulted {
+		t.Error("the gate must not be consulted in profiling mode")
+	}
+}
+
+// A gate can widen to public hosts, but guardUpstream still runs on the dial: a
+// gate-admitted hostname that resolves to a private IP with no explicit IP rule
+// stays blocked. This uses the real guarded dialer (not WithDialer, which would
+// bypass the guard); localhost:9 resolves to loopback and is refused pre-connect.
+func TestGatekeeperCannotReachNonPublic(t *testing.T) {
+	p := New(
+		nil,
+		WithGatekeeper(func(context.Context, string, string) bool { return true }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "localhost:9")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (gate admission cannot reach loopback)", status)
+	}
+	body, _ := io.ReadAll(br)
+	if !strings.Contains(string(body), "non-public") {
+		t.Errorf("refusal body should explain the non-public address; got %q", body)
+	}
+}
+
+// A gate that blocks (a pending human prompt) must return once the run's ctx is
+// cancelled, or it pins a handler slot and stalls teardown. The gate contract is
+// to watch ctx.Done(); the proxy passes the handler's ctx so it can.
+func TestGatekeeperUnblockedByCancel(t *testing.T) {
+	p := New(nil, WithGatekeeper(func(ctx context.Context, _, _ string) bool {
+		<-ctx.Done() // block as a human prompt would, until the run ends
+		return false
+	}))
+	dialProxy, stop := startProxy(t, p)
+
+	c := dialProxy()
+	defer c.Close()
+	// Send a full CONNECT so the handler reaches the gate and blocks there.
+	fmt.Fprintf(c, "CONNECT undeclared.com:443 HTTP/1.1\r\n\r\n")
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after cancellation; a gate blocked in a prompt was not interrupted")
+	}
+}
+
+// A panicking embedder gate must fail loudly-as-deny: handle's own recover would
+// otherwise drop the connection with no 403 and no report(), a silent failure.
+func TestGatekeeperPanicIsDeny(t *testing.T) {
+	var seen []string
+	p := New(
+		nil,
+		WithGatekeeper(func(context.Context, string, string) bool { panic("embedder gate blew up") }),
+		WithObserver(func(d Decision, host, port string) { seen = append(seen, string(d)+" "+host) }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "undeclared.com:443")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (a panicking gate denies)", status)
+	}
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(Denied)) {
+		t.Errorf("observer saw %v, want a single deny", seen)
+	}
+}
+
 func TestMalformedRequestRejected(t *testing.T) {
 	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
 	dialProxy, stop := startProxy(t, p)

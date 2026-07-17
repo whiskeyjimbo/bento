@@ -38,12 +38,15 @@ type sandbox struct {
 	// interpreter is empty when the entrypoint is its own interpreter.
 	entrypoint  string
 	interpreter string
-	// proxySocket is the host path of the egress proxy's unix socket, set only
-	// when the policy declares network rules. When set, the sandbox is funneled
-	// through the proxy: the bento binary is re-exec'd inside as the forwarder.
+	// proxySocket is the host path of the egress proxy's unix socket, set when the
+	// policy declares network rules or a supervising gate is present. When set, the
+	// sandbox is funneled through the proxy: the bento binary is re-exec'd inside as
+	// the forwarder.
 	proxySocket string
 	// bentoPath is the host path of the running bento binary, bound into the
-	// sandbox to serve as the forwarder. Set only alongside proxySocket.
+	// sandbox to serve as the forwarder or the exec-block launcher. Set whenever the
+	// launcher runs: alongside proxySocket, and also for exec-blocking with no
+	// egress.
 	bentoPath string
 	// observe signals a profiling run: the launcher runs the target under the
 	// ptrace observer instead of enforcing, and writes its report to an inherited
@@ -130,10 +133,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	args = append(args, systemMounts(sb)...)
 
 	// The network namespace is always unshared: it is the egress fence. With no
-	// rules that is the whole story (no route out at all). With rules, the only
-	// reachable peer is the loopback forwarder the re-exec'd bento sets up, which
-	// bridges to the host-side allowlist proxy - the sandbox still has no route to
-	// the outside, so nothing bypasses the proxy.
+	// rules and no gate that is the whole story (no route out at all). Otherwise the
+	// only reachable peer is the loopback forwarder the re-exec'd bento sets up,
+	// which bridges to the host-side allowlist proxy - the sandbox still has no route
+	// to the outside, so nothing bypasses the proxy.
 	args = append(args, "--unshare-net")
 
 	for _, path := range reads {

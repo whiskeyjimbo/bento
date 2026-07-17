@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/whiskeyjimbo/bento-v2/backend"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
@@ -65,7 +66,15 @@ func run(manifestPath string) int {
 	}
 
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
-	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{})
+	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{
+		// The network gate is the seam a supervising wrapper uses to admit an egress
+		// host the manifest did not declare - where a real CLI would prompt a human,
+		// this example consults an env allowlist so it stays non-interactive. Unset
+		// (no BENTO_GATE_ALLOW) leaves gate nil, the declarative default of denying
+		// anything undeclared. host and port are attacker-controlled; a real wrapper
+		// sanitizes before displaying them.
+		NetworkGate: envGate(os.Getenv("BENTO_GATE_ALLOW")),
+	})
 
 	var refusal *enforce.Refusal
 	switch {
@@ -83,5 +92,31 @@ func run(manifestPath string) int {
 	for _, d := range res.Report.Degradations() {
 		fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
 	}
+	// GateAdmitted is the honesty surface: hosts the gate let out beyond the
+	// manifest. A wrapper would offer to persist these into the manifest via the
+	// normal approve/fingerprint path, turning ad-hoc runtime approvals back into
+	// declared, attested policy.
+	for _, hp := range res.GateAdmitted {
+		fmt.Fprintf(os.Stderr, "embed: gate admitted undeclared egress to %s:%s\n", hp.Host, hp.Port)
+	}
 	return res.ExitCode
+}
+
+// envGate builds a NetworkGate from a comma-separated allowlist of "host" or
+// "host:port" entries. An empty spec returns nil - the declarative default - so
+// an unconfigured embedder denies undeclared egress exactly as the box does.
+func envGate(spec string) enforce.NetworkGate {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	allow := make(map[string]bool)
+	for _, e := range strings.Split(spec, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			allow[e] = true
+		}
+	}
+	return func(_ context.Context, host, port string) bool {
+		return allow[host] || allow[host+":"+port]
+	}
 }

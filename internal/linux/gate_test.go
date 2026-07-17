@@ -1,0 +1,168 @@
+package linux
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
+)
+
+// runGated runs sh -c script under the enforcer with the given policy and gate,
+// returning the run result (for GateAdmitted/EgressConnections) and combined
+// output.
+func runGated(t *testing.T, p *policy.Policy, script string, gate enforce.NetworkGate) (enforce.Result, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p.Entrypoint = path
+	p.Interpreter = "sh"
+	p.Read = append(p.Read, dir)
+
+	var buf strings.Builder
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &buf, Stderr: &buf}, gate)
+	if err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, buf.String())
+	}
+	return res, buf.String()
+}
+
+// A supervised run with no manifest network rules still stands up the egress
+// stack (the gate forces it), so the gate is consulted for a host the empty
+// allowlist denies. This proves the gate is threaded all the way from Run
+// through startProxy into the proxy handler. It also proves the SSRF property
+// survives the gate: guardUpstream blocks the admitted host because it resolves
+// to host-reserved (link-local) space, so it never reaches the target and is NOT
+// listed in GateAdmitted - a gate widens to public/declared-private hosts, never
+// to the host's own infrastructure.
+func TestGateConsultedButGuardBlocksHostReserved(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available")
+	}
+
+	// 169.254.254.254 is link-local: guardUpstream refuses it regardless of the
+	// host's own addresses, so this test is deterministic on any machine (unlike a
+	// public-IP admit-success, which is proven at the proxy unit level).
+	const target = "169.254.254.254:1"
+
+	var mu sync.Mutex
+	var consulted []string
+	gate := func(_ context.Context, host, port string) bool {
+		mu.Lock()
+		consulted = append(consulted, host+":"+port)
+		mu.Unlock()
+		return true // admit; the upstream guard must still block it
+	}
+
+	curl := "curl -sS --proxytunnel -o /dev/null -w '%{http_code}' --max-time 5 "
+	script := "echo -n reached=; " + curl + "http://" + target + "/ >/dev/null 2>&1 && echo YES || echo no\n"
+
+	// No network rules, exec: all (the script spawns curl legitimately).
+	p := &policy.Policy{Exec: policy.ExecAll}
+	res, out := runGated(t, p, script, gate)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(consulted) == 0 {
+		t.Fatal("the gate was never consulted; it was not threaded to the proxy handler")
+	}
+	found := false
+	for _, hp := range consulted {
+		if hp == target {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("gate consulted with %v, want it to include %q", consulted, target)
+	}
+	if strings.Contains(out, "reached=YES") {
+		t.Errorf("a gate-admitted link-local host was reached; the upstream guard must still block it: %q", out)
+	}
+	if len(res.GateAdmitted) != 0 {
+		t.Errorf("GateAdmitted = %v, want empty: a host the guard blocked was never admitted past it", res.GateAdmitted)
+	}
+	if res.EgressConnections == 0 {
+		t.Error("EgressConnections = 0, want the guard-blocked connection to have been counted")
+	}
+}
+
+// egressCollector is the honesty surface a wrapper reads: it must count every
+// decision, dedupe gate admissions by host:port, sort them, and keep a
+// guard-blocked (Denied) host out of the admitted list. The real-sandbox test
+// only reaches the empty path (guard blocks), and the proxy unit tests use their
+// own observer, so this exercises the populated collector directly.
+func TestEgressCollectorDedupesAndSorts(t *testing.T) {
+	c := &egressCollector{}
+	c.observe(proxy.AdmittedByGate, "b.example", "443")
+	c.observe(proxy.AdmittedByGate, "b.example", "443") // duplicate: same key
+	c.observe(proxy.AdmittedByGate, "a.example", "443") // sorts before b
+	c.observe(proxy.AdmittedByGate, "a.example", "22")  // same host, tiebreak on port
+	c.observe(proxy.Denied, "blocked.example", "443")   // counted, never admitted
+	c.observe(proxy.Allowed, "declared.example", "443") // counted, not a gate admission
+
+	if got := c.counted(); got != 6 {
+		t.Errorf("counted() = %d, want 6 (every decision counts, duplicates included)", got)
+	}
+
+	want := []enforce.HostPort{
+		{Host: "a.example", Port: "22"},
+		{Host: "a.example", Port: "443"},
+		{Host: "b.example", Port: "443"},
+	}
+	got := c.gateAdmitted()
+	if len(got) != len(want) {
+		t.Fatalf("gateAdmitted() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("gateAdmitted()[%d] = %v, want %v (deduped, sorted, blocked host absent)", i, got[i], want[i])
+		}
+	}
+}
+
+// newSandbox with a gate present must build a valid sandbox even for the one
+// shape the policy alone would leave the launcher out of: gate + no network
+// rules + exec: all. The gate forces the proxy socket up, useLauncher then keys
+// off the socket, so bentoPath must be set too - an unset one emits a broken
+// --ro-bind "" /bento. gated must therefore appear in both newSandbox
+// conditions; this guards the pairing directly, without a real sandbox.
+func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
+
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", true)
+	if err != nil {
+		t.Fatalf("newSandbox: %v", err)
+	}
+	defer cleanup()
+	if sb.proxySocket == "" {
+		t.Error("a gate must force the proxy socket up even with no network rules")
+	}
+	if sb.bentoPath == "" {
+		t.Error("bentoPath must be set alongside the gated proxy socket, or --ro-bind emits an empty source")
+	}
+
+	// The same policy WITHOUT a gate leaves both unset (exec: all needs no launcher).
+	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false)
+	if err != nil {
+		t.Fatalf("newSandbox (ungated): %v", err)
+	}
+	defer cleanupNo()
+	if sbNo.proxySocket != "" || sbNo.bentoPath != "" {
+		t.Errorf("ungated exec:all + no rules should leave the launcher out; got socket=%q bento=%q", sbNo.proxySocket, sbNo.bentoPath)
+	}
+}

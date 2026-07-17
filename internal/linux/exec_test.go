@@ -82,7 +82,7 @@ func TestSuperviseReapsOrphanAndReturnsPromptly(t *testing.T) {
 	}
 
 	start := time.Now()
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Run: %v", err)

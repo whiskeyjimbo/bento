@@ -31,6 +31,10 @@ type Decision string
 const (
 	Allowed Decision = "allow"
 	Denied  Decision = "deny"
+	// AdmittedByGate marks a connection the static allowlist denied but a
+	// gatekeeper admitted at runtime. It is distinct from Allowed so a run can be
+	// honest about egress it permitted beyond the declared manifest.
+	AdmittedByGate Decision = "gate"
 )
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
@@ -44,6 +48,10 @@ type Proxy struct {
 	// observe is called for every decision. Profiling and logging hang off it;
 	// nil disables observation.
 	observe func(d Decision, host, port string)
+
+	// gate decides a host the static allowlist does not permit. Nil means deny,
+	// preserving the declarative box behavior; see WithGatekeeper.
+	gate func(ctx context.Context, host, port string) bool
 
 	// refuse records each CONNECT and then refuses it, never opening an upstream.
 	// Profiling uses it to learn a script's intended destinations without letting
@@ -62,6 +70,31 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // WithObserver installs a callback invoked for every allow/deny decision.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
+}
+
+// WithGatekeeper supplies a decision for a host the static allowlist does not
+// already permit. It is consulted per connection, in that connection's own
+// goroutine, so it MAY block to prompt a human - but it must return false once
+// ctx is done (the run is ending), or it will pin a handler slot and stall run
+// teardown. Nil (unset) means deny, preserving the declarative box behavior.
+//
+// host and port are ATTACKER-CONTROLLED: a sandboxed target chose them, so a
+// crafted hostname can carry terminal escapes or look-alike characters.
+// Sanitize before displaying either to a human.
+//
+// Admission only widens to public hosts and to private IPs a rule already names
+// as an explicit IP literal: guardUpstream still runs on the dial, so a gate can
+// never reach loopback or cloud-metadata space, and a gate-admitted hostname
+// that resolves to a private IP is still refused unless a rule lists that exact
+// IP for the port. A panic in the gate is treated as a denial (the connection
+// gets a 403 and is reported Denied), never swallowed silently.
+//
+// A pending prompt pins one of the proxy's bounded handler slots with no
+// deadline, so a hostile target can fire many undeclared CONNECTs to flood the
+// caller with prompts; serializing or rate-limiting them is the caller's job,
+// and ctx cancellation is how it sheds that load.
+func WithGatekeeper(gate func(ctx context.Context, host, port string) bool) Option {
+	return func(p *Proxy) { p.gate = gate }
 }
 
 // WithoutEgress makes the proxy record every CONNECT and then refuse it, without
@@ -309,14 +342,28 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		return
 	}
 
+	admittedByGate := false
 	if !policy.Allows(p.rules, host, port) {
-		p.report(Denied, host, port)
-		// The body is plaintext so it surfaces in the script's own error output,
-		// so a curl/requests user sees exactly which host was refused, not a blank
-		// failure.
-		writeStatus(client, "403 Forbidden",
-			fmt.Sprintf("bento denied egress to %s:%s (not in the manifest's network allowlist)", host, port))
-		return
+		if !p.callGate(ctx, host, port) {
+			p.report(Denied, host, port)
+			// The body is plaintext so it surfaces in the script's own error output,
+			// so a curl/requests user sees exactly which host was refused, not a blank
+			// failure.
+			writeStatus(client, "403 Forbidden",
+				fmt.Sprintf("bento denied egress to %s:%s (not in the manifest's network allowlist)", host, port))
+			return
+		}
+		admittedByGate = true
+	}
+
+	// A gate admission is reported distinctly from a manifest allow so the run
+	// stays honest about egress it permitted beyond the declared policy. The
+	// blocked-upstream refusal below still reports Denied: the guard overrides the
+	// gate, so a gate-admitted host resolving to non-public space was never
+	// admitted past it.
+	decision := Allowed
+	if admittedByGate {
+		decision = AdmittedByGate
 	}
 
 	upstream, err := p.dial(ctx, "tcp", net.JoinHostPort(host, port))
@@ -328,7 +375,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 				fmt.Sprintf("bento denied egress to %s:%s (%s resolves to non-public address %s; list it as an explicit IP rule if you meant it)", host, port, host, blocked.addr))
 			return
 		}
-		p.report(Allowed, host, port)
+		p.report(decision, host, port)
 		writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s: %v", host, port, err))
 		return
 	}
@@ -339,7 +386,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	stopUpstream := context.AfterFunc(ctx, func() { upstream.Close() })
 	defer stopUpstream()
 
-	p.report(Allowed, host, port)
+	p.report(decision, host, port)
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
@@ -354,6 +401,23 @@ func (p *Proxy) report(d Decision, host, port string) {
 	if p.observe != nil {
 		p.observe(d, host, port)
 	}
+}
+
+// callGate consults the gatekeeper for a host the allowlist did not permit,
+// returning whether to admit it. A nil gate denies. A panic is recovered here
+// and treated as a denial: handle's own recover would otherwise swallow a
+// panicking embedder gate into a silently dropped connection with no 403 and no
+// report(), so the outcome would neither surface nor even count.
+func (p *Proxy) callGate(ctx context.Context, host, port string) (admit bool) {
+	if p.gate == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			admit = false
+		}
+	}()
+	return p.gate(ctx, host, port)
 }
 
 // maxRequestBytes bounds the CONNECT request line plus headers the proxy reads

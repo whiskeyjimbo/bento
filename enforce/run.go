@@ -18,6 +18,12 @@ type Options struct {
 	// only be partially enforced (e.g. Landlock-only, with no mount namespace).
 	// It does not permit running with a core layer that enforces nothing at all.
 	AllowDegraded bool
+	// NetworkGate, when set, is consulted for an egress host the manifest does not
+	// allow; returning true admits that connection for this run only. It is the
+	// additive seam a supervising caller uses to prompt a human. Unset means deny
+	// (the declarative default). A gate admission is surfaced in
+	// Result.GateAdmitted, never folded into the policy or its fingerprint.
+	NetworkGate NetworkGate
 }
 
 // Run orchestrates a sandboxed execution: it validates the policy, probes what
@@ -37,7 +43,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
-	res, err := e.Run(ctx, p, proc)
+	res, err := e.Run(ctx, p, proc, opts.NetworkGate)
 
 	// Report exactly what was judged. Start from the pre-run probe (already filtered
 	// to the required layers - warning about egress a no-network policy never asked

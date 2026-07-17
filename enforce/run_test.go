@@ -15,12 +15,21 @@ type fakeEnforcer struct {
 	probe  Report
 	result Result
 	ran    bool
+	// Func values are not comparable, so the fake proves what enforce.Run
+	// forwarded by invoking the gate it received: gotGate is that gate's return,
+	// gateNil records whether a nil gate arrived.
+	gotGate bool
+	gateNil bool
 }
 
 func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
 
-func (f *fakeEnforcer) Run(context.Context, *policy.Policy, Process) (Result, error) {
+func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, gate NetworkGate) (Result, error) {
 	f.ran = true
+	f.gateNil = gate == nil
+	if gate != nil {
+		f.gotGate = gate(ctx, "example.com", "443")
+	}
 	return f.result, nil
 }
 
@@ -207,6 +216,31 @@ func TestRunDelegatesAndPropagatesExit(t *testing.T) {
 	}
 	if res.ExitCode != 7 {
 		t.Errorf("exit code = %d, want 7", res.ExitCode)
+	}
+}
+
+// enforce.Run forwards Options.NetworkGate to the enforcer unchanged, and a
+// zero Options forwards a nil gate (the declarative default). Func values are
+// not comparable, so the fake proves receipt by invoking the gate it got.
+func TestRunForwardsNetworkGate(t *testing.T) {
+	admitted := false
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{
+		NetworkGate: func(context.Context, string, string) bool { admitted = true; return true },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !admitted || !f.gotGate {
+		t.Error("the NetworkGate was not forwarded to the enforcer")
+	}
+
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !f.gateNil {
+		t.Error("a zero Options must forward a nil gate")
 	}
 }
 

@@ -51,7 +51,7 @@ func runScript(t *testing.T, p *policy.Policy, src string) (int, string) {
 	p.Exec = policy.ExecAll
 
 	var out bytes.Buffer
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
@@ -327,7 +327,7 @@ func TestWriteGrantAboveCredentialsIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{home}}
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil)
 	if err == nil {
 		t.Fatal("a write grant of $HOME (above the credential shields) must be refused, not run")
 	}
@@ -452,7 +452,7 @@ func TestGrantOnSymlinkedShieldTargetIsRejected(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{keys}}
 
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil)
 	if err == nil {
 		t.Fatal("granting write to ~/.ssh's symlink target should be rejected")
 	}
@@ -956,7 +956,7 @@ func TestProcessPathGrantIsRefused(t *testing.T) {
 			}
 			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, path}, Exec: policy.ExecAll}
 
-			_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+			_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil)
 			if err == nil {
 				t.Fatalf("grant %s was accepted; want a refusal", path)
 			}
@@ -1170,7 +1170,7 @@ func TestLoopedGrantIsRefused(t *testing.T) {
 		}
 		p.Entrypoint, p.Interpreter, p.Exec = script, "sh", policy.ExecAll
 		p.Read = append(p.Read, dir)
-		_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+		_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil)
 		return err
 	}
 
