@@ -27,6 +27,11 @@ var (
 	bentoOnce sync.Once
 	bentoBin  string
 	bentoErr  error
+	// toolchainHome is the real HOME, captured before any test can override it.
+	// Tests that anchor the deny-list at a temp dir set HOME, and the build below
+	// would otherwise inherit it and put the module cache - read-only files the
+	// test's own cleanup then cannot remove - inside that temp dir.
+	toolchainHome = os.Getenv("HOME")
 )
 
 // testBento builds the bento binary once per test run and returns its path. The
@@ -47,7 +52,7 @@ func testBento(t *testing.T) string {
 		}
 		bin := filepath.Join(dir, "bento")
 		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/cmd/bento")
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = append(os.Environ(), "GOWORK=off", "HOME="+toolchainHome)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			bentoErr = fmt.Errorf("building bento: %v\n%s", err, out)
 			return
