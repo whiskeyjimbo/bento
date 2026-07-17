@@ -276,11 +276,17 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("linux: deny path %q must be absolute", p)
 		}
-		if sb.resolve(p) == "/" {
+		// Classify by the RESOLVED path, since the shield binds there (denyArgs
+		// resolves r.Path). Only an existing regular file gets a file shield; a
+		// directory, an absent path, or a dangling symlink (resolves to an absent
+		// target) all get a directory shield - so a nonexistent target never leaves an
+		// uncleanable empty host file.
+		rp := sb.resolve(p)
+		if rp == "/" {
 			return nil, fmt.Errorf("linux: deny path %q resolves to the root and cannot be shielded", p)
 		}
 		dir := true
-		if sb.exists(p) && !sb.isDir(p) {
+		if sb.exists(rp) && !sb.isDir(rp) {
 			dir = false
 		}
 		rules = append(rules, denylist.Rule{Path: p, Deny: denylist.DenyAll, Dir: dir})
