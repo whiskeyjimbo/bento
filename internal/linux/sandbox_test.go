@@ -873,3 +873,31 @@ func TestGrantOnMountedSymlinkPathStillRuns(t *testing.T) {
 		})
 	}
 }
+
+// A read grant of "/" must not suppress the symlink a narrower grant needs. "/"
+// is never bound at "/" - it is carried for deny-list reachability and bound as
+// its children, which deliberately omit the empty /tmp - so treating it as a
+// filled path would cover every name there is and erode the grant again.
+func TestRootReadGrantDoesNotErodeSymlinkGrant(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	target := filepath.Join(data, "rc")
+	if err := os.WriteFile(target, []byte("RCCONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(data, ".bashrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{"/", link}}
+	_, out := runScript(t, p, "cat "+link+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("a symlink grant alongside read \"/\" aborted bwrap: %s", out)
+	}
+	if !strings.Contains(out, "RCCONTENT") {
+		t.Errorf("read \"/\" suppressed the symlink a narrower grant needed: %q", out)
+	}
+}

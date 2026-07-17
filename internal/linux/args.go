@@ -662,13 +662,18 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 	// exists only if made here.
 	filled := []string{"/dev", "/proc"}
 	filled = append(filled, systemMountPaths(sb)...)
-	filled = append(filled, reads...)
 	filled = append(filled, writes...)
 	filled = append(filled, sb.entrypoint)
 	for _, r := range reads {
+		// A read grant of "/" is never bound at "/" - it is carried in reads for
+		// deny-list reachability and bound as its children, which is what fills the
+		// sandbox. Taking it literally would cover every path there is and skip
+		// every link, including under the empty /tmp that the expansion omits.
 		if r == "/" {
 			filled = append(filled, sb.rootDirs()...)
+			continue
 		}
+		filled = append(filled, r)
 	}
 
 	var links [][2]string
