@@ -901,3 +901,36 @@ func TestRootReadGrantDoesNotErodeSymlinkGrant(t *testing.T) {
 		t.Errorf("read \"/\" suppressed the symlink a narrower grant needed: %q", out)
 	}
 }
+
+// Profiling compiles the same argv as a run, so a symlinked grant must reach the
+// target there too - a profile that cannot read its own grants observes nothing
+// and proposes a manifest built from silence.
+func TestProfileReadsSymlinkedGrant(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	target := filepath.Join(data, "rc")
+	if err := os.WriteFile(target, []byte("RCCONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(data, ".bashrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("cat "+link+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, link}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false)
+	if err != nil {
+		t.Fatalf("Profile: %v (output: %s)", err, out.String())
+	}
+	if obs.ExitCode != 0 {
+		t.Fatalf("profiled run failed to read its symlinked grant: exit=%d out=%s", obs.ExitCode, out.String())
+	}
+}
