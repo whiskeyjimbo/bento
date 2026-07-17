@@ -935,14 +935,16 @@ func TestProfileReadsSymlinkedGrant(t *testing.T) {
 	}
 }
 
-// A grant that resolves into a process's own procfs directory must be refused
+// A grant that resolves into a host process's procfs directory must be refused
 // with a bento error naming the grant as written. /etc/mtab and /dev/fd are host
 // symlinks through /proc/self, which resolves to this bento's pid - a path the
 // sandbox's own pid namespace does not have, so bwrap aborted the whole run.
+// /proc/1 is the other half: the sandbox has a pid 1 of its own, so the grant
+// bound the host's init over it and the run read the host's systemd.
 func TestProcessPathGrantIsRefused(t *testing.T) {
 	requireSandbox(t)
 
-	for _, path := range []string{"/proc/self", "/etc/mtab", "/dev/fd"} {
+	for _, path := range []string{"/proc/self", "/etc/mtab", "/dev/fd", "/proc/1"} {
 		t.Run(path, func(t *testing.T) {
 			if _, err := os.Lstat(path); err != nil {
 				t.Skipf("%s does not exist on this host", path)
@@ -958,7 +960,7 @@ func TestProcessPathGrantIsRefused(t *testing.T) {
 			if err == nil {
 				t.Fatalf("grant %s was accepted; want a refusal", path)
 			}
-			if !strings.Contains(err.Error(), "process's own directory in /proc") {
+			if !strings.Contains(err.Error(), "host process's directory in /proc") {
 				t.Fatalf("grant %s: got %v, want a refusal naming the procfs process directory", path, err)
 			}
 			if !strings.Contains(err.Error(), path) {
@@ -1039,6 +1041,39 @@ func TestSymlinkChainGrantReachesTargetUnderBroaderGrant(t *testing.T) {
 		_, out := runScript(t, &policy.Policy{Read: []string{home, head}}, "cat "+head+" 2>&1 || true\n")
 		if !strings.Contains(out, "RELCONTENT") {
 			t.Errorf("relative chain unreadable at the granted name: %q", out)
+		}
+	})
+
+	// The link is reached through a symlinked parent directory, so the directory it
+	// is read in is not the one its path spells. A relative target resolved by
+	// lexical cleaning lands somewhere the kernel never looks, and the chain stays
+	// broken.
+	t.Run("relative target under a symlinked parent", func(t *testing.T) {
+		base := t.TempDir()
+		for _, d := range []string{"home", "other/dir", "nowhere", "store"} {
+			if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(base, "store", "real"), []byte("PARENTCHAIN"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range [][2]string{
+			{filepath.Join(base, "store", "real"), filepath.Join(base, "nowhere", "mid2")},
+			{filepath.Join(base, "nowhere", "mid2"), filepath.Join(base, "other", "mid")},
+			{"../mid", filepath.Join(base, "other", "dir", "head")},
+			{filepath.Join(base, "other", "dir"), filepath.Join(base, "home", "dirlink")},
+		} {
+			if err := os.Symlink(l[0], l[1]); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		head := filepath.Join(base, "home", "dirlink", "head")
+		p := &policy.Policy{Read: []string{filepath.Join(base, "home"), filepath.Join(base, "other"), head}}
+		_, out := runScript(t, p, "cat "+head+" 2>&1 || true\n")
+		if !strings.Contains(out, "PARENTCHAIN") {
+			t.Errorf("chain through a symlinked parent unreadable: %q", out)
 		}
 	})
 

@@ -608,13 +608,18 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 	return nil
 }
 
-// checkGrantNotProcess refuses a grant that resolves into a process's directory
-// in procfs. /etc/mtab and /dev/fd are the paths that reach one: they are host
-// symlinks through /proc/self, which resolves here to the pid of *this* bento.
-// That pid means nothing in the sandbox, which unshares its pid namespace and
-// mounts a procfs of its own, so bwrap cannot create the mount point and aborts
-// the whole run. Refusing says which grant did it and why; grants are reported
-// as written, since the resolved pid path is not what anyone typed.
+// checkGrantNotProcess refuses a grant that resolves into a host process's
+// directory in procfs. /etc/mtab and /dev/fd are how one is reached by accident:
+// they are host symlinks through /proc/self, which resolves here to the pid of
+// *this* bento.
+//
+// The sandbox unshares its pid namespace and mounts a procfs of its own, so a
+// host pid means one of two things there, both wrong. Usually the pid is absent -
+// bwrap cannot create the mount point and aborts the whole run. But where the
+// number happens to exist in the sandbox too (pid 1 is the launcher), the bind
+// lands on it and the run reads the *host's* process instead: `read: /proc/1`
+// served the host's init. Refusing covers both; grants are reported as written,
+// since the resolved pid path is not what anyone typed.
 //
 // Only a resolved path that exists is refused: the grants bind with --ro-bind-try,
 // which skips a source that is not there, so those abort nothing. That is what
@@ -632,7 +637,7 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 			return err
 		}
 		if isProcessPath(real) && sb.exists(real) {
-			return fmt.Errorf("linux: grant %q resolves to %q, a process's own directory in /proc, which does not exist in the sandbox's pid namespace; remove the grant - /proc is always mounted", g, real)
+			return fmt.Errorf("linux: grant %q resolves to %q, a host process's directory in /proc; the sandbox has a pid namespace and a /proc of its own, where that pid is a different process or none at all; remove the grant - /proc is always mounted", g, real)
 		}
 	}
 	return nil
@@ -788,8 +793,12 @@ func missingHop(abs, real string, filled []string) string {
 			// Filled and not a symlink: the mount already carries the real thing.
 			return ""
 		}
+		// A relative target resolves from the directory the kernel *reads the link
+		// in*, which is not the one the path spells when a parent is itself a
+		// symlink - so resolve the parent before joining, rather than letting Join
+		// clean ".." lexically and wander off.
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(cur), target)
+			target = filepath.Join(resolveExisting(filepath.Dir(cur), 0), target)
 		}
 		// Resolve the target's parent so it lands where the kernel would, but keep
 		// its own name literal - the next link's location is wanted here, not the
