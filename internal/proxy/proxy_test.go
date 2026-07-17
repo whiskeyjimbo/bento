@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // fakeUpstream is a canned server the proxy "dials" instead of the real network:

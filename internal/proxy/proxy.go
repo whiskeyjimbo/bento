@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // Decision is the outcome of an allowlist check, reported to the observer.

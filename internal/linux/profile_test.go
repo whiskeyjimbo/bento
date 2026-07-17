@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
-	"github.com/whiskeyjimbo/bento-v2/internal/profile"
+	"github.com/whiskeyjimbo/bento-v2/profile"
 )
 
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {

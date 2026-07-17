@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // Lookup reads a variable from the host environment. It is a seam so env

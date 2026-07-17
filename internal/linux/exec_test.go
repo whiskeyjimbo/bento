@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // These prove the exec-block filter actually stops subprocesses inside a real

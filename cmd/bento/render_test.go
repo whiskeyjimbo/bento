@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 func TestIsLoopbackHost(t *testing.T) {

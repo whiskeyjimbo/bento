@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // testSandbox compiles argv against a hypothetical filesystem, so the

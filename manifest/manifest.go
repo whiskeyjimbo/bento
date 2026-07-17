@@ -12,7 +12,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the

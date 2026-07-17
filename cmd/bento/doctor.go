@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/backend"
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
 )
 
 func newDoctorCmd() *cobra.Command {

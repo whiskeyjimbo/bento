@@ -6,8 +6,8 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // The JSON shapes below are the machine-readable contract for agents and CI.

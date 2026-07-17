@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/profile"
+	"github.com/whiskeyjimbo/bento-v2/profile"
 )
 
 func TestClampBroadWrites(t *testing.T) {

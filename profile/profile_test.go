@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 func TestSynthesizeDropsInterpreterTree(t *testing.T) {

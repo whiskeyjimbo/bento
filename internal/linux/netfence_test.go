@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // The egress design rests on one claim: a sandbox with no network namespace of

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // These tests exercise the whole egress path: a real sandbox, the re-exec'd

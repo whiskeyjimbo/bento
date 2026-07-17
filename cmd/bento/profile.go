@@ -8,11 +8,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/backend"
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/manifest"
-	"github.com/whiskeyjimbo/bento-v2/internal/policy"
-	"github.com/whiskeyjimbo/bento-v2/internal/profile"
+	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/manifest"
+	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento-v2/profile"
 )
 
 func newProfileCmd() *cobra.Command {

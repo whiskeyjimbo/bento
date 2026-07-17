@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/manifest"
+	"github.com/whiskeyjimbo/bento-v2/manifest"
 )
 
 func newApproveCmd() *cobra.Command {

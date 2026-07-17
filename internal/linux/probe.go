@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/enforce"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )

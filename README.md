@@ -130,19 +130,19 @@ bubblewrap's confinement contingent on it.
 bento is layered behind one seam so a platform backend can be swapped without touching the
 core.
 
-- `internal/enforce` - the `Enforcer` interface (`Probe` + `Run`) and the degradation
+- `enforce` - the `Enforcer` interface (`Probe` + `Run`) and the degradation
   reporting (`Report`, tiers, states, admission). A backend answers with what it actually
   enforced; no backend type appears in the core's signatures.
-- `internal/policy` - the `Policy` domain model, validation, host:port matching, and the
+- `policy` - the `Policy` domain model, validation, host:port matching, and the
   approval `Fingerprint` (platform-independent).
 - `internal/denylist` - the mandatory deny-list as platform-independent data; each backend
   decides how to enforce a rule.
-- `internal/manifest` - manifest load/marshal and provenance.
+- `manifest` - manifest load/marshal and provenance.
 - `internal/proxy` - the egress allowlist CONNECT proxy, shared across platforms.
 - `internal/linux` - the bubblewrap backend, with `internal/launcher` (the in-sandbox
   stage), `internal/observe` (the ptrace profiler), `internal/seccomp`, and
   `internal/landlock`.
-- `internal/backend` - selects the platform backend; `internal/profile` synthesizes a
+- `backend` - selects the platform backend; `profile` synthesizes a
   manifest from an observed run.
 
 The full design and rationale, including the macOS plan and the security model, live in
