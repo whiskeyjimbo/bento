@@ -98,13 +98,22 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	}
 	args := baseFlags()
 
+	reads, writes, err := resolveGrants(p)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
+		return nil, err
+	}
+	if err := checkWriteNotAboveShield(sb, writes); err != nil {
+		return nil, err
+	}
+
 	// Grants are bound at their resolved targets, so a grant that names a symlink
 	// (~/.bashrc -> /nix/store/...) would leave the granted name itself absent.
-	// Recreate it as a symlink, ahead of every bind: bwrap refuses --symlink onto
-	// an existing destination, and going first means the root tmpfs is still bare,
-	// so a broader grant that also covers the name simply overmounts this with the
-	// host's own entry rather than colliding.
-	symlinks, err := grantSymlinks(p)
+	// Recreate it as a symlink, before the binds: bwrap refuses --symlink onto a
+	// destination that already exists.
+	symlinks, err := grantSymlinks(sb, p, reads, writes)
 	if err != nil {
 		return nil, err
 	}
@@ -119,16 +128,6 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// the outside, so nothing bypasses the proxy.
 	args = append(args, "--unshare-net")
 
-	reads, writes, err := resolveGrants(p)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
-		return nil, err
-	}
-	if err := checkWriteNotAboveShield(sb, writes); err != nil {
-		return nil, err
-	}
 	for _, path := range reads {
 		if path == "/" {
 			// Binding the host root onto the sandbox root would make the root
@@ -245,9 +244,20 @@ const nixStore = "/nix/store"
 
 func systemMounts(sb sandbox) []string {
 	var args []string
+	for _, p := range systemMountPaths(sb) {
+		args = append(args, "--ro-bind", p, p)
+	}
+	return args
+}
+
+// systemMountPaths lists what systemMounts binds, each at its own path. Kept
+// apart from the argv so grantSymlinks can ask what these mounts already put in
+// the sandbox without re-deriving the list and drifting out of step.
+func systemMountPaths(sb sandbox) []string {
+	var paths []string
 	for _, p := range systemReadPaths {
 		if sb.exists(p) {
-			args = append(args, "--ro-bind", p, p)
+			paths = append(paths, p)
 		}
 	}
 
@@ -256,15 +266,15 @@ func systemMounts(sb sandbox) []string {
 	// store instead: it is immutable and world-readable package content, so it
 	// carries no user data to protect.
 	if strings.HasPrefix(sb.interpreter, nixStore+"/") && sb.exists(nixStore) {
-		return append(args, "--ro-bind", nixStore, nixStore)
+		return append(paths, nixStore)
 	}
 
 	// Otherwise the interpreter may still live outside the system paths (pyenv,
 	// mise). Bind its install prefix so its stdlib and shared objects resolve.
 	if prefix := interpreterPrefix(sb.interpreter); prefix != "" && sb.exists(prefix) {
-		args = append(args, "--ro-bind", prefix, prefix)
+		paths = append(paths, prefix)
 	}
-	return args
+	return paths
 }
 
 // interpreterPrefix returns the install root of an interpreter that lives
@@ -635,7 +645,32 @@ func resolveGrants(p *policy.Policy) (reads, writes []string, err error) {
 // Binding the target at the granted name instead would alias the same content to
 // a second name the shields do not cover, which is a hole - hence a symlink, not
 // a bind.
-func grantSymlinks(p *policy.Policy) ([]string, error) {
+//
+// Only names that no mount would otherwise fill are recreated. A name already
+// inside some mount needs nothing: the mount carries the host's own entry there.
+// Recreating it anyway is worse than redundant - bwrap refuses a --symlink onto
+// an existing destination, and resolves a later bind's destination *through* the
+// link, so `read: /bin` on a usrmerge host (/bin -> usr/bin, and /bin bound by
+// systemMounts) would abort the run rather than being bound as before.
+func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]string, error) {
+	// Every path whose contents the sandbox already has, so a link is only made
+	// where nothing else creates the name. The bind mounts carry the host's own
+	// entries; --dev and --proc bring entries of their own (/dev/stdout is one of
+	// them). Grants are bound at their resolved targets, which is what covers a
+	// symlink granted alongside a broader path that already contains it. Note
+	// --tmpfs /tmp is deliberately absent: it mounts empty, so a name under it
+	// exists only if made here.
+	filled := []string{"/dev", "/proc"}
+	filled = append(filled, systemMountPaths(sb)...)
+	filled = append(filled, reads...)
+	filled = append(filled, writes...)
+	filled = append(filled, sb.entrypoint)
+	for _, r := range reads {
+		if r == "/" {
+			filled = append(filled, sb.rootDirs()...)
+		}
+	}
+
 	var links [][2]string
 	seen := map[string]bool{}
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
@@ -647,7 +682,7 @@ func grantSymlinks(p *policy.Policy) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if real == abs || seen[abs] {
+		if real == abs || seen[abs] || coveredBy(abs, filled) {
 			continue
 		}
 		seen[abs] = true
@@ -659,22 +694,26 @@ func grantSymlinks(p *policy.Policy) ([]string, error) {
 	var made []string
 	for _, l := range links {
 		// A symlink whose name sits under one already made would have to be created
-		// through that link, into a read-only target; the parent link already leads
-		// to the right place, so the name resolves without this one.
-		nested := false
-		for _, m := range made {
-			if under(l[1], m) {
-				nested = true
-				break
-			}
-		}
-		if nested {
+		// through that link, into a target not mounted yet; the parent link already
+		// leads to the right place, so the name resolves without this one. Sorting
+		// above is what puts a parent link before the names beneath it.
+		if coveredBy(l[1], made) {
 			continue
 		}
 		made = append(made, l[1])
 		args = append(args, "--symlink", l[0], l[1])
 	}
 	return args, nil
+}
+
+// coveredBy reports whether path is one of roots or sits inside one.
+func coveredBy(path string, roots []string) bool {
+	for _, r := range roots {
+		if path == r || under(path, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAll(paths []string) ([]string, error) {

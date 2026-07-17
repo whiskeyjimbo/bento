@@ -848,3 +848,28 @@ func TestNestedSymlinkGrantsDoNotAbort(t *testing.T) {
 		t.Errorf("nested symlink grant unreadable at the granted name: %q", out)
 	}
 }
+
+// A grant naming a path that some mount already fills must not be turned into a
+// recreated symlink. On a usrmerge host /bin is a symlink to usr/bin and is also
+// bound unconditionally by systemMounts; recreating it would both collide with
+// that bind and make bwrap resolve the bind's destination through the link, which
+// aborted the run. /dev/stdout is the same shape against --dev.
+func TestGrantOnMountedSymlinkPathStillRuns(t *testing.T) {
+	requireSandbox(t)
+
+	for _, path := range []string{"/bin", "/sbin", "/lib", "/lib64", "/dev/stdout"} {
+		t.Run(path, func(t *testing.T) {
+			fi, err := os.Lstat(path)
+			if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+				t.Skipf("%s is not a symlink on this host", path)
+			}
+			code, out := runScript(t, &policy.Policy{Read: []string{path}}, "echo ok\n")
+			if strings.Contains(out, "bwrap:") {
+				t.Fatalf("read grant on %s aborted bwrap: %s", path, out)
+			}
+			if code != 0 || !strings.Contains(out, "ok") {
+				t.Fatalf("read grant on %s: exit=%d out=%q", path, code, out)
+			}
+		})
+	}
+}
