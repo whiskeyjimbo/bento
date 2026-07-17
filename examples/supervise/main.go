@@ -87,6 +87,20 @@ func run(scriptArg string) int {
 	interp := guessInterpreter(script)
 	name := filepath.Base(script)
 
+	// The permission store is this wrapper's memory of past answers. Loading it lets
+	// the run auto-apply known decisions and prompt only for the unknown; the app is
+	// keyed by the SHA of its entrypoint bytes, so changed code re-prompts.
+	s, err := loadStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		return 1
+	}
+	key, err := appKey(script)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		return 1
+	}
+
 	// Prompts read the controlling terminal, kept separate from the target's own
 	// stdin. Fall back to stdin when there is no tty, so the demo is still drivable
 	// through a pipe or pty.
@@ -97,16 +111,22 @@ func run(scriptArg string) int {
 	}
 	p := newPrompter(termIn, os.Stderr)
 
-	// Act 1: trial run under observation, then approve what it wants.
+	// Act 1: trial run under observation, then approve what it wants. The store dir
+	// is shielded from the permissive trial (bv2-16h): the trial grants Read:["/"],
+	// so without this the untrusted target could read the store during profiling.
 	fmt.Fprintf(os.Stderr, "\n== trial run: watching %s (permissive, nothing leaves the host) ==\n", name)
 	obs, err := backend.Profile(context.Background(), permissivePolicy(script, interp),
-		enforce.Process{Stdout: io.Discard, Stderr: io.Discard}, backend.ProfileOptions{})
+		enforce.Process{Stdout: io.Discard, Stderr: io.Discard},
+		backend.ProfileOptions{DenyPaths: []string{s.dir}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
 		return 1
 	}
 	proposal := profile.Synthesize(script, interp, obs)
-	approved := approve(p, script, interp, proposal)
+	approved := approve(p, s, key, script, interp, proposal)
+	// Record identity for a faithful future manifest export.
+	s.app(key).Entrypoint = script
+	s.app(key).Interpreter = interp
 
 	// Drop anything typed past the approval prompts, so a stray keystroke during
 	// Act 1 cannot silently answer the first live gate prompt in Act 2 (both phases
@@ -128,13 +148,19 @@ func run(scriptArg string) int {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 1
 	}
-	sup := &supervisor{p: p, name: name, session: make(map[string]bool)}
+	sup := &supervisor{p: p, s: s, key: key, name: name, session: make(map[string]bool)}
 	res, err := enforce.Run(context.Background(), e, approved,
 		enforce.Process{Stdout: os.Stdout, Stderr: os.Stderr, Env: env},
 		enforce.Options{NetworkGate: sup.gate})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 1
+	}
+
+	// Persist the run's decisions so the next run of this app prompts only for what
+	// is new.
+	if err := s.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: saving permission store: %v\n", err)
 	}
 
 	// Summary: what the live gate let out beyond the manifest, and any shortfall.
@@ -165,50 +191,119 @@ func permissivePolicy(script, interp string) *policy.Policy {
 	}
 }
 
-// approve walks the synthesized proposal and asks the human which parts to keep,
-// building the policy the enforced run is held to. Synthesize has already dropped
-// the noise (the interpreter's runtime, /proc, /dev, the script itself), so these
-// are the accesses that describe what this script needs.
-func approve(p *prompter, script, interp string, proposal *policy.Policy) *policy.Policy {
+// approve walks the synthesized proposal and builds the policy the enforced run is
+// held to. For each access it consults the permission store: a remembered decision
+// applies silently, an unknown one prompts and (for y/n) is remembered. A grant
+// that would expose the store is refused outright. Synthesize has already dropped
+// the noise (the interpreter's runtime, /proc, /dev, the script itself).
+func approve(p *prompter, s *store, key, script, interp string, proposal *policy.Policy) *policy.Policy {
 	final := &policy.Policy{Entrypoint: script, Interpreter: interp, Exec: policy.ExecNone}
 	all := false
-	keep := func(kind, item string) bool {
+
+	// consider decides one item. path is the real path for a filesystem access (used
+	// for the store-covers refusal), empty for exec/network. remembered/persist are
+	// the store hooks for this item's kind.
+	consider := func(kind, display, path string, remembered func() (decision, bool), persist func(decision)) bool {
+		if path != "" && coversStore(path, s.dir) {
+			fmt.Fprintf(p.out, "  %-6s %-34s refused (would expose the permission store)\n", kind, display)
+			return false
+		}
+		if d, ok := remembered(); ok {
+			fmt.Fprintf(p.out, "  %-6s %-34s %s (remembered)\n", kind, display, d)
+			return d == allow
+		}
 		if all {
-			fmt.Fprintf(p.out, "  %-6s %-34s allow (A)\n", kind, item)
+			fmt.Fprintf(p.out, "  %-6s %-34s allow (A)\n", kind, display)
 			return true
 		}
-		switch p.ask(context.Background(), fmt.Sprintf("  %-6s %-34s [y/n/A] ", kind, item)) {
+		switch p.ask(context.Background(), fmt.Sprintf("  %-6s %-34s [y]es/[n]o/[o]nce/[A]ll ", kind, display)) {
 		case choiceAll:
 			all = true
 			return true
 		case choiceAllow:
+			persist(allow)
 			return true
-		default:
+		case choiceOnce:
+			return true
+		case choiceDeny:
+			persist(deny)
+			return false
+		default: // deny once
 			return false
 		}
 	}
 
 	for _, r := range trimScratch(proposal.Read) {
-		if keep("read", pretty(r)) {
+		if consider("read", pretty(r), r,
+			func() (decision, bool) { return s.decidePath(key, "read", r) },
+			func(d decision) { s.rememberPath(key, "read", r, d) }) {
 			final.Read = append(final.Read, r)
 		}
 	}
 	for _, w := range trimScratch(proposal.Write) {
-		if keep("write", pretty(w)) {
+		if consider("write", pretty(w), w,
+			func() (decision, bool) { return s.decidePath(key, "write", w) },
+			func(d decision) { s.rememberPath(key, "write", w, d) }) {
 			final.Write = append(final.Write, w)
 		}
 	}
 	if proposal.Exec == policy.ExecAll {
-		if keep("exec", "run subprocesses") {
+		remembered := func() (decision, bool) {
+			if a := s.Apps[key]; a != nil && a.Exec != "" {
+				if a.Exec == string(policy.ExecAll) {
+					return allow, true
+				}
+				return deny, true
+			}
+			return "", false
+		}
+		persist := func(d decision) {
+			if d == allow {
+				s.app(key).Exec = string(policy.ExecAll)
+			} else {
+				s.app(key).Exec = string(policy.ExecNone)
+			}
+		}
+		if consider("exec", "run subprocesses", "", remembered, persist) {
 			final.Exec = policy.ExecAll
 		}
 	}
 	for _, h := range proposal.Network {
-		if keep("reach", h.Host+":"+h.Port) {
+		host, port := h.Host, h.Port
+		if consider("reach", strconv.Quote(host)+":"+port, "",
+			func() (decision, bool) { return s.decideNetwork(key, host, port) },
+			func(d decision) { s.rememberNetwork(key, host, port, d, false) }) {
 			final.Network = append(final.Network, h)
 		}
 	}
+
+	warnDenyUnderAllow(p, s, key, final)
 	return final
+}
+
+// warnDenyUnderAllow flags a stored filesystem deny that lies under an allowed
+// grant: bento has no per-path deny, so the enforced run cannot honor it (the
+// covering grant binds the whole tree). Better to say so than to imply enforcement.
+func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy) {
+	a := s.Apps[key]
+	if a == nil {
+		return
+	}
+	check := func(grants []string, denies map[string]decision, kind string) {
+		for path, d := range denies {
+			if d != deny {
+				continue
+			}
+			for _, g := range grants {
+				if path != g && underComponent(path, g) {
+					fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
+						kind, pretty(path), pretty(g))
+				}
+			}
+		}
+	}
+	check(final.Read, a.Read, "read")
+	check(final.Write, a.Write, "write")
 }
 
 // supervisor is the live network gate: bento consults it for every undeclared
@@ -217,6 +312,8 @@ func approve(p *prompter, script, interp string, proposal *policy.Policy) *polic
 // per-connection prompt.
 type supervisor struct {
 	p    *prompter
+	s    *store
+	key  string
 	name string
 
 	mu      sync.Mutex      // serializes prompts and guards session (handlers are concurrent)
@@ -224,20 +321,33 @@ type supervisor struct {
 }
 
 func (s *supervisor) gate(ctx context.Context, host, port string) bool {
-	dest := net.JoinHostPort(host, port)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dest := net.JoinHostPort(host, port)
 	if admitted, asked := s.session[dest]; asked {
+		return admitted
+	}
+	// A remembered decision (deny-wins across global + per-app) applies with no
+	// prompt; a stored deny is printed so a silent block is never a mystery.
+	if d, ok := s.s.decideNetwork(s.key, host, port); ok {
+		if d == deny {
+			fmt.Fprintf(s.p.out, "\n[gate] %s reaching %s port %s - denied by the permission store\n", s.name, strconv.Quote(host), port)
+		}
+		admitted := d == allow
+		s.session[dest] = admitted
 		return admitted
 	}
 	// host is attacker-controlled (the sandboxed target chose it), so quote it to
 	// neutralize terminal escapes before showing it to a human.
-	c := s.p.ask(ctx, fmt.Sprintf("\n[gate] %s is reaching %s port %s now - allow? [y/n/A] ", s.name, strconv.Quote(host), port))
-	admitted := c != choiceDeny
-	s.session[dest] = admitted
-	if c == choiceAll {
-		fmt.Fprintf(s.p.out, "  (would persist %s to the manifest)\n", dest)
+	c := s.p.ask(ctx, fmt.Sprintf("\n[gate] %s is reaching %s port %s now - allow? [y]es/[n]o/[o]nce ", s.name, strconv.Quote(host), port))
+	switch c {
+	case choiceAllow:
+		s.s.rememberNetwork(s.key, host, port, allow, false)
+	case choiceDeny:
+		s.s.rememberNetwork(s.key, host, port, deny, false)
 	}
+	admitted := c == choiceAllow || c == choiceOnce || c == choiceAll
+	s.session[dest] = admitted
 	return admitted
 }
 
@@ -253,9 +363,11 @@ type prompter struct {
 type choice int
 
 const (
-	choiceDeny choice = iota
-	choiceAllow
-	choiceAll
+	choiceDenyOnce choice = iota // blank / unrecognized: deny this run, do not remember
+	choiceAllow                  // y: allow, and remember for this app
+	choiceOnce                   // o: allow this run only, do not remember
+	choiceDeny                   // n: deny, and remember for this app
+	choiceAll                    // A: allow all remaining this run (not remembered)
 )
 
 func newPrompter(in io.Reader, out io.Writer) *prompter {
@@ -297,18 +409,22 @@ func (p *prompter) ask(ctx context.Context, prompt string) choice {
 	select {
 	case <-ctx.Done():
 		fmt.Fprintln(p.out, "(run ended)")
-		return choiceDeny
+		return choiceDenyOnce // teardown, not a human choice: do not persist a deny
 	case line, ok := <-p.lines:
 		if !ok {
-			return choiceDeny
+			return choiceDenyOnce
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
 			return choiceAllow
+		case "o", "once":
+			return choiceOnce
+		case "n", "no":
+			return choiceDeny
 		case "a", "all":
 			return choiceAll
 		default:
-			return choiceDeny
+			return choiceDenyOnce
 		}
 	}
 }

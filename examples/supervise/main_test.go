@@ -31,7 +31,7 @@ func TestApproveKeepsAnswers(t *testing.T) {
 	answers := "y\nn\ny\ny\ny\nn\n"
 	p := newPrompter(strings.NewReader(answers), &strings.Builder{})
 
-	got := approve(p, "/script.sh", "sh", proposal)
+	got := approve(p, newTestStore(), "k", "/script.sh", "sh", proposal)
 
 	if len(got.Read) != 1 || got.Read[0] != "/data.csv" {
 		t.Errorf("Read = %v, want just /data.csv (secret.txt denied)", got.Read)
@@ -56,7 +56,7 @@ func TestApproveAllAcceptsRest(t *testing.T) {
 	}
 	// One "A" on the first read, then no more input: everything else is auto-kept.
 	p := newPrompter(strings.NewReader("A\n"), &strings.Builder{})
-	got := approve(p, "/s", "sh", proposal)
+	got := approve(p, newTestStore(), "k", "/s", "sh", proposal)
 
 	if len(got.Read) != 3 {
 		t.Errorf("Read = %v, want all three kept after A", got.Read)
@@ -92,7 +92,7 @@ func TestGateRemembersPerHost(t *testing.T) {
 	var out strings.Builder
 	// example.com=y, then ads.example=n. Repeats must not consume more input.
 	p := newPrompter(strings.NewReader("y\nn\n"), &out)
-	s := &supervisor{p: p, name: "agent.sh", session: make(map[string]bool)}
+	s := &supervisor{p: p, s: newTestStore(), key: "k", name: "agent.sh", session: make(map[string]bool)}
 	ctx := context.Background()
 
 	if !s.gate(ctx, "example.com", "443") {
