@@ -902,16 +902,36 @@ func TestInterpreterPrefixUnderHomeIsShielded(t *testing.T) {
 	}
 }
 
-// A Nix interpreter binds the store, not a home prefix, so nothing in $HOME is
-// exposed and the home shields stay unneeded (binding them would ask bwrap for a
-// mount point under a parent no mount created).
-func TestNixInterpreterExposesNoHomeShields(t *testing.T) {
-	sb := testSandbox("/nix/store", "/nix/store/abc/bin/python3", "/home/u/.ssh/id_rsa", "/work")
-	sb.interpreter = "/nix/store/abc/bin/python3"
-	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
-
-	if has(args, "--tmpfs", "/home/u/.ssh") {
-		t.Errorf("a Nix interpreter exposes no home content; ~/.ssh needs no shield: %v", args)
+// mountedInterpreterPrefix is what tells the deny-list which prefix the sandbox
+// actually exposes, so it must answer for exactly the mount systemMounts makes: a
+// Nix interpreter binds the whole store and no prefix, a system interpreter binds
+// nothing extra, and a prefix the host does not have is never mounted. Claiming a
+// prefix that is not mounted would shield paths whose mount point no mount creates,
+// which aborts the run.
+func TestMountedInterpreterPrefix(t *testing.T) {
+	cases := []struct {
+		name        string
+		interpreter string
+		existing    []string
+		want        string
+	}{
+		{"home wrapper", "/home/u/bin/python3", []string{"/home/u", "/home/u/bin/python3"}, "/home/u"},
+		{"pyenv", "/home/u/.pyenv/versions/3.12/bin/py", []string{"/home/u/.pyenv/versions/3.12"}, "/home/u/.pyenv/versions/3.12"},
+		{"nix binds the store, not the package prefix", "/nix/store/abc/bin/python3", []string{"/nix/store", "/nix/store/abc"}, ""},
+		{"system interpreter", "/usr/bin/python3", []string{"/usr"}, ""},
+		{"prefix absent from the host", "/opt/py/bin/python3", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox(tc.existing...)
+			sb.interpreter = tc.interpreter
+			if got := mountedInterpreterPrefix(sb); got != tc.want {
+				t.Errorf("mountedInterpreterPrefix(%q) = %q, want %q", tc.interpreter, got, tc.want)
+			}
+			if got := containsStr(systemMountPaths(sb), tc.want); tc.want != "" && !got {
+				t.Errorf("systemMountPaths does not bind the prefix %q it reports: %v", tc.want, systemMountPaths(sb))
+			}
+		})
 	}
 }
 
