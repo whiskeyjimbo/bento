@@ -879,6 +879,42 @@ func TestInterpreterPrefix(t *testing.T) {
 	}
 }
 
+// An interpreter under ~/bin (a hand-written wrapper, a pip --user runtime) makes
+// the prefix mount bind $HOME read-only. The deny-list must still shield the
+// credential directories inside it: the mount exposes them just as a read grant
+// would, and skipping the shield as "not exposed by any grant" would put ~/.ssh in
+// the sandbox of a policy that granted only /work.
+func TestInterpreterPrefixUnderHomeIsShielded(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/bin/python3", "/home/u/.ssh", "/home/u/.ssh/id_rsa", "/work")
+	sb.interpreter = "/home/u/bin/python3"
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
+
+	if !has(args, "--ro-bind", "/home/u") {
+		t.Fatalf("the interpreter prefix should be bound; got %v", args)
+	}
+	if !has(args, "--tmpfs", "/home/u/.ssh") {
+		t.Errorf("~/.ssh must be shielded when the interpreter prefix mount exposes $HOME; got %v", args)
+	}
+	// The prefix is exposed read-only, so it must not turn a shield into a
+	// writable-path shield or otherwise be treated as a grant.
+	if has(args, "--bind", "/home/u") || has(args, "--bind-try", "/home/u") {
+		t.Errorf("the interpreter prefix must never be bound writable; got %v", args)
+	}
+}
+
+// A Nix interpreter binds the store, not a home prefix, so nothing in $HOME is
+// exposed and the home shields stay unneeded (binding them would ask bwrap for a
+// mount point under a parent no mount created).
+func TestNixInterpreterExposesNoHomeShields(t *testing.T) {
+	sb := testSandbox("/nix/store", "/nix/store/abc/bin/python3", "/home/u/.ssh/id_rsa", "/work")
+	sb.interpreter = "/nix/store/abc/bin/python3"
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
+
+	if has(args, "--tmpfs", "/home/u/.ssh") {
+		t.Errorf("a Nix interpreter exposes no home content; ~/.ssh needs no shield: %v", args)
+	}
+}
+
 func TestResolveFollowsSymlinkedGrant(t *testing.T) {
 	// A grant that does not exist resolves to its absolute form rather than
 	// failing: write targets are routinely created by the script itself.

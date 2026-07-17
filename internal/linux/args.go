@@ -177,7 +177,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	}
 
 	// The deny-list goes after the grants so it always wins.
-	args = append(args, denyArgs(sb, append(append([]string{}, reads...), writes...), writes)...)
+	args = append(args, denyArgs(sb, exposedPaths(sb, reads, writes), writes)...)
 
 	// The entrypoint is bound read-only last so a write grant covering its
 	// directory cannot leave the script itself writable mid-run.
@@ -292,7 +292,38 @@ func systemMountPaths(sb sandbox) []string {
 
 	// Otherwise the interpreter may still live outside the system paths (pyenv,
 	// mise). Bind its install prefix so its stdlib and shared objects resolve.
-	if prefix := interpreterPrefix(sb.interpreter); prefix != "" && sb.exists(prefix) {
+	if prefix := mountedInterpreterPrefix(sb); prefix != "" {
+		paths = append(paths, prefix)
+	}
+	return paths
+}
+
+// mountedInterpreterPrefix returns the interpreter install prefix systemMounts
+// binds, or "" when none is (a system or Nix interpreter, or a prefix absent from
+// the host). Kept apart from systemMountPaths so exposedPaths can ask for exactly
+// this mount - the one that can expose user data - without re-deriving it.
+func mountedInterpreterPrefix(sb sandbox) string {
+	if strings.HasPrefix(sb.interpreter, nixStore+"/") && sb.exists(nixStore) {
+		return ""
+	}
+	prefix := interpreterPrefix(sb.interpreter)
+	if prefix == "" || !sb.exists(prefix) {
+		return ""
+	}
+	return prefix
+}
+
+// exposedPaths lists everything the compiled sandbox exposes host content at, so
+// the deny-list can shield what falls inside. That is the policy's grants plus the
+// interpreter prefix mount: an interpreter under ~/bin or ~/.local/bin makes the
+// prefix a credential-bearing home subtree, and without it here the shields for
+// ~/.ssh and friends are skipped as "not exposed by any grant". The remaining
+// mounts (systemReadPaths, the Nix store) are immutable package content with no
+// user data. Reachability only - the prefix is bound read-only and must never be
+// passed as a write.
+func exposedPaths(sb sandbox, reads, writes []string) []string {
+	paths := append(append([]string{}, reads...), writes...)
+	if prefix := mountedInterpreterPrefix(sb); prefix != "" {
 		paths = append(paths, prefix)
 	}
 	return paths

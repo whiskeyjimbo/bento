@@ -69,7 +69,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
 	// best-effort.
 	if reads, writes, err := resolveGrants(p); err == nil {
-		defer removeCreatedShieldDirs(createdShieldDirs(sb, append(append([]string{}, reads...), writes...), writes))
+		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes))
 	}
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
