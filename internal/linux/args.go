@@ -740,11 +740,15 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		if err != nil {
 			return nil, err
 		}
-		if real == abs || seen[abs] || coveredBy(abs, filled) {
+		if real == abs {
 			continue
 		}
-		seen[abs] = true
-		links = append(links, [2]string{real, abs})
+		hop := missingHop(abs, real, filled)
+		if hop == "" || seen[hop] {
+			continue
+		}
+		seen[hop] = true
+		links = append(links, [2]string{real, hop})
 	}
 	sort.Slice(links, func(i, j int) bool { return links[i][1] < links[j][1] })
 
@@ -762,6 +766,42 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		args = append(args, "--symlink", l[0], l[1])
 	}
 	return args, nil
+}
+
+// missingHop returns the name to recreate so that following abs inside the
+// sandbox reaches real, or "" when nothing needs recreating.
+//
+// Usually that is abs itself. But a name a mount already fills is the host's own
+// symlink, which points at the next link in the chain rather than at real - and
+// that next name can be one no mount fills, breaking the walk in the middle
+// (~/link -> /elsewhere/mid -> real, with only ~ and real bound). So each filled
+// name is followed the way the kernel will follow it, until one is missing: that
+// is the name worth making, and pointing it at real short-circuits the rest.
+func missingHop(abs, real string, filled []string) string {
+	cur := abs
+	for i := 0; i < maxSymlinkDepth; i++ {
+		if !coveredBy(cur, filled) {
+			return cur
+		}
+		target, err := os.Readlink(cur)
+		if err != nil {
+			// Filled and not a symlink: the mount already carries the real thing.
+			return ""
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(cur), target)
+		}
+		// Resolve the target's parent so it lands where the kernel would, but keep
+		// its own name literal - the next link's location is wanted here, not the
+		// thing it points at.
+		next := filepath.Join(resolveExisting(filepath.Dir(target), 0), filepath.Base(target))
+		if next == real {
+			// The chain reaches the bound target on its own.
+			return ""
+		}
+		cur = next
+	}
+	return "" // a symlink loop; resolve leaves these alone too
 }
 
 // coveredBy reports whether path is one of roots or sits inside one.

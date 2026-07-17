@@ -983,3 +983,124 @@ func TestNonProcessProcfsGrantsStillRun(t *testing.T) {
 		})
 	}
 }
+
+// A grant naming a symlink chain must reach its target even when a broader grant
+// also covers the head. The head is then the host's own link, which points at the
+// next link rather than at the resolved target, so the walk breaks in the middle
+// unless that middle name is recreated too.
+func TestSymlinkChainGrantReachesTargetUnderBroaderGrant(t *testing.T) {
+	requireSandbox(t)
+
+	t.Run("absolute targets", func(t *testing.T) {
+		home, other := t.TempDir(), t.TempDir()
+		t.Setenv("HOME", home)
+		target := filepath.Join(other, "real")
+		if err := os.WriteFile(target, []byte("CHAINCONTENT"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mid := filepath.Join(other, "mid")
+		if err := os.Symlink(target, mid); err != nil {
+			t.Fatal(err)
+		}
+		head := filepath.Join(home, "head")
+		if err := os.Symlink(mid, head); err != nil {
+			t.Fatal(err)
+		}
+
+		_, out := runScript(t, &policy.Policy{Read: []string{home, head}}, "cat "+head+" 2>&1 || true\n")
+		if !strings.Contains(out, "CHAINCONTENT") {
+			t.Errorf("chain grant unreadable at the granted name: %q", out)
+		}
+	})
+
+	// Relative targets resolve from the link's own directory, so the recreated name
+	// has to land where the kernel will actually look, not where lexical cleaning
+	// of ".." would put it.
+	t.Run("relative targets", func(t *testing.T) {
+		base := t.TempDir()
+		home, store := filepath.Join(base, "home"), filepath.Join(base, "store")
+		for _, d := range []string{home, store} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("HOME", home)
+		if err := os.WriteFile(filepath.Join(store, "real"), []byte("RELCONTENT"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("real", filepath.Join(store, "mid")); err != nil {
+			t.Fatal(err)
+		}
+		head := filepath.Join(home, "head")
+		if err := os.Symlink("../store/mid", head); err != nil {
+			t.Fatal(err)
+		}
+
+		_, out := runScript(t, &policy.Policy{Read: []string{home, head}}, "cat "+head+" 2>&1 || true\n")
+		if !strings.Contains(out, "RELCONTENT") {
+			t.Errorf("relative chain unreadable at the granted name: %q", out)
+		}
+	})
+
+	// Every hop already inside the broader grant: the host's own links connect the
+	// whole way, so nothing is recreated and it must still work.
+	t.Run("every hop covered", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		target := filepath.Join(home, "real")
+		if err := os.WriteFile(target, []byte("COVEREDCONTENT"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mid := filepath.Join(home, "mid")
+		if err := os.Symlink(target, mid); err != nil {
+			t.Fatal(err)
+		}
+		head := filepath.Join(home, "head")
+		if err := os.Symlink(mid, head); err != nil {
+			t.Fatal(err)
+		}
+
+		_, out := runScript(t, &policy.Policy{Read: []string{home, head}}, "cat "+head+" 2>&1 || true\n")
+		if !strings.Contains(out, "COVEREDCONTENT") {
+			t.Errorf("fully covered chain unreadable: %q", out)
+		}
+	})
+}
+
+// Recreating a chain's middle name must not become a way past the deny-list: when
+// that name lives inside a shielded directory the shield is mounted over it, so
+// the chain breaks there rather than the credential becoming reachable.
+func TestSymlinkChainHopUnderShieldStaysShielded(t *testing.T) {
+	requireSandbox(t)
+
+	home, other := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_rsa"), []byte("PRIVATEKEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(other, "real")
+	if err := os.WriteFile(target, []byte("SHIELDPROBE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(home, ".ssh", "mid")
+	if err := os.Symlink(target, mid); err != nil {
+		t.Fatal(err)
+	}
+	head := filepath.Join(other, "head")
+	if err := os.Symlink(mid, head); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{other, head}}
+	_, out := runScript(t, p, "cat "+filepath.Join(home, ".ssh", "id_rsa")+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("a chain hop under a shield aborted bwrap: %s", out)
+	}
+	if strings.Contains(out, "PRIVATEKEY") {
+		t.Fatalf("the deny-list was bypassed via a recreated chain hop: %q", out)
+	}
+}
