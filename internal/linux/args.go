@@ -292,41 +292,40 @@ func systemMountPaths(sb sandbox) []string {
 
 	// Otherwise the interpreter may still live outside the system paths (pyenv,
 	// mise). Bind its install prefix so its stdlib and shared objects resolve.
-	if prefix := mountedInterpreterPrefix(sb); prefix != "" {
+	prefix := interpreterPrefix(sb.interpreter)
+	if prefix == "" {
+		return paths
+	}
+	if prefix == sb.home || under(sb.home, prefix) {
+		// A ~/bin/python3 wrapper puts the prefix at the home directory itself, which
+		// would bind every file in it into a sandbox whose policy granted none of them.
+		// Naming the interpreter authorizes the interpreter, not the tree it happens to
+		// sit in, so bind just the file - the same way the entrypoint is bound without a
+		// grant. A wrapper script's real interpreter lives in the system paths, and a
+		// single-file runtime links against system libraries, so both still run; a
+		// runtime whose stdlib really is in ~/lib needs an explicit read grant for it.
+		if sb.exists(sb.interpreter) {
+			paths = append(paths, sb.interpreter)
+		}
+		return paths
+	}
+	if sb.exists(prefix) {
 		paths = append(paths, prefix)
 	}
 	return paths
-}
-
-// mountedInterpreterPrefix returns the interpreter install prefix systemMounts
-// binds, or "" when none is (a system or Nix interpreter, or a prefix absent from
-// the host). Kept apart from systemMountPaths so exposedPaths can ask for exactly
-// this mount - the one that can expose user data - without re-deriving it.
-func mountedInterpreterPrefix(sb sandbox) string {
-	if strings.HasPrefix(sb.interpreter, nixStore+"/") && sb.exists(nixStore) {
-		return ""
-	}
-	prefix := interpreterPrefix(sb.interpreter)
-	if prefix == "" || !sb.exists(prefix) {
-		return ""
-	}
-	return prefix
 }
 
 // exposedPaths lists everything the compiled sandbox exposes host content at, so
-// the deny-list can shield what falls inside. That is the policy's grants plus the
-// interpreter prefix mount: an interpreter under ~/bin or ~/.local/bin makes the
-// prefix a credential-bearing home subtree, and without it here the shields for
-// ~/.ssh and friends are skipped as "not exposed by any grant". The remaining
-// mounts (systemReadPaths, the Nix store) are immutable package content with no
-// user data. Reachability only - the prefix is bound read-only and must never be
-// passed as a write.
+// the deny-list can shield whatever falls inside: the policy's grants plus every
+// system mount. The mounts belong here because they are not all fixed system
+// paths - the interpreter prefix can be a home subtree (~/.local for a pip --user
+// runtime), which is what would otherwise leave ~/.local/share/gh readable to a
+// policy that granted only /work - and a caller-supplied deny
+// (ProfileOptions.DenyPaths) can name a path under any of them. Reachability only:
+// these are all bound read-only and must never reach the writes set.
 func exposedPaths(sb sandbox, reads, writes []string) []string {
 	paths := append(append([]string{}, reads...), writes...)
-	if prefix := mountedInterpreterPrefix(sb); prefix != "" {
-		paths = append(paths, prefix)
-	}
-	return paths
+	return append(paths, systemMountPaths(sb)...)
 }
 
 // interpreterPrefix returns the install root of an interpreter that lives

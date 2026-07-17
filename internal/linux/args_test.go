@@ -879,57 +879,88 @@ func TestInterpreterPrefix(t *testing.T) {
 	}
 }
 
-// An interpreter under ~/bin (a hand-written wrapper, a pip --user runtime) makes
-// the prefix mount bind $HOME read-only. The deny-list must still shield the
-// credential directories inside it: the mount exposes them just as a read grant
-// would, and skipping the shield as "not exposed by any grant" would put ~/.ssh in
-// the sandbox of a policy that granted only /work.
-func TestInterpreterPrefixUnderHomeIsShielded(t *testing.T) {
-	sb := testSandbox("/home/u", "/home/u/bin/python3", "/home/u/.ssh", "/home/u/.ssh/id_rsa", "/work")
-	sb.interpreter = "/home/u/bin/python3"
+// A pip --user runtime at ~/.local/bin/python3 makes the prefix mount bind
+// ~/.local read-only. The deny-list must still shield the credential directories
+// inside it: the mount exposes them just as a read grant would, and skipping the
+// shield as "not exposed by any grant" would put the GitHub CLI's tokens in the
+// sandbox of a policy that granted only /work.
+func TestInterpreterPrefixExposingHomeSubtreeIsShielded(t *testing.T) {
+	sb := testSandbox("/home/u/.local", "/home/u/.local/bin/python3",
+		"/home/u/.local/share/gh", "/home/u/.local/share/gh/hosts.yml", "/work")
+	sb.interpreter = "/home/u/.local/bin/python3"
 	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
 
-	if !has(args, "--ro-bind", "/home/u") {
+	if !has(args, "--ro-bind", "/home/u/.local") {
 		t.Fatalf("the interpreter prefix should be bound; got %v", args)
 	}
-	if !has(args, "--tmpfs", "/home/u/.ssh") {
-		t.Errorf("~/.ssh must be shielded when the interpreter prefix mount exposes $HOME; got %v", args)
+	if !has(args, "--tmpfs", "/home/u/.local/share/gh") {
+		t.Errorf("~/.local/share/gh must be shielded when the prefix mount exposes ~/.local; got %v", args)
 	}
-	// The prefix is exposed read-only, so it must not turn a shield into a
-	// writable-path shield or otherwise be treated as a grant.
-	if has(args, "--bind", "/home/u") || has(args, "--bind-try", "/home/u") {
+	// The prefix is exposed read-only, so it must not be treated as a grant.
+	if has(args, "--bind", "/home/u/.local") || has(args, "--bind-try", "/home/u/.local") {
 		t.Errorf("the interpreter prefix must never be bound writable; got %v", args)
 	}
 }
 
-// mountedInterpreterPrefix is what tells the deny-list which prefix the sandbox
-// actually exposes, so it must answer for exactly the mount systemMounts makes: a
-// Nix interpreter binds the whole store and no prefix, a system interpreter binds
-// nothing extra, and a prefix the host does not have is never mounted. Claiming a
-// prefix that is not mounted would shield paths whose mount point no mount creates,
-// which aborts the run.
-func TestMountedInterpreterPrefix(t *testing.T) {
+// An interpreter directly under the home directory (a hand-written ~/bin/python3
+// wrapper) would make the prefix the whole of $HOME. Binding that would hand a
+// policy that granted only /work every file in the home directory - the shields
+// cover the deny-list, but nothing covers ~/.bash_history or another project's
+// .env. Only the interpreter itself is bound.
+func TestInterpreterUnderHomeBindsOnlyItself(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/bin", "/home/u/bin/python3", "/home/u/notes.txt", "/work")
+	sb.interpreter = "/home/u/bin/python3"
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
+
+	if has(args, "--ro-bind", "/home/u") {
+		t.Errorf("$HOME must never be bound as an interpreter prefix; got %v", args)
+	}
+	if !has(args, "--ro-bind", "/home/u/bin/python3") {
+		t.Errorf("the interpreter itself must be bound so the run can exec it; got %v", args)
+	}
+}
+
+// An extra deny (a supervising embedder shielding its own state) can name a path
+// under a system mount, which no grant reaches. The mount exposes it, so it needs
+// a shield: reachability must follow the mounts, not just the grants.
+func TestExtraDenyUnderSystemMountIsShielded(t *testing.T) {
+	sb := testSandbox("/usr", "/usr/share/secret", "/work")
+	sb.extraDeny = []denylist.Rule{{Path: "/usr/share/secret", Deny: denylist.DenyAll, Dir: true}}
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
+
+	if !has(args, "--tmpfs", "/usr/share/secret") {
+		t.Errorf("an extra deny under a system mount must be shielded; got %v", args)
+	}
+}
+
+// What systemMountPaths binds for an interpreter is what exposedPaths hands the
+// deny-list, so each layout must bind exactly what the interpreter needs and no
+// user data beyond it.
+func TestSystemMountPathsForInterpreter(t *testing.T) {
 	cases := []struct {
 		name        string
 		interpreter string
 		existing    []string
-		want        string
+		want        string // the interpreter-driven mount, "" for none beyond the system paths
+		unwanted    string
 	}{
-		{"home wrapper", "/home/u/bin/python3", []string{"/home/u", "/home/u/bin/python3"}, "/home/u"},
-		{"pyenv", "/home/u/.pyenv/versions/3.12/bin/py", []string{"/home/u/.pyenv/versions/3.12"}, "/home/u/.pyenv/versions/3.12"},
-		{"nix binds the store, not the package prefix", "/nix/store/abc/bin/python3", []string{"/nix/store", "/nix/store/abc"}, ""},
-		{"system interpreter", "/usr/bin/python3", []string{"/usr"}, ""},
-		{"prefix absent from the host", "/opt/py/bin/python3", nil, ""},
+		{"pip --user prefix", "/home/u/.local/bin/python3", []string{"/home/u/.local"}, "/home/u/.local", ""},
+		{"pyenv", "/home/u/.pyenv/versions/3.12/bin/py", []string{"/home/u/.pyenv/versions/3.12"}, "/home/u/.pyenv/versions/3.12", ""},
+		{"home wrapper binds the file, never $HOME", "/home/u/bin/python3", []string{"/home/u", "/home/u/bin/python3"}, "/home/u/bin/python3", "/home/u"},
+		{"nix binds the store, not the package prefix", "/nix/store/abc/bin/python3", []string{"/nix/store", "/nix/store/abc"}, "/nix/store", "/nix/store/abc"},
+		{"system interpreter", "/usr/bin/python3", []string{"/usr"}, "", ""},
+		{"prefix absent from the host", "/opt/py/bin/python3", nil, "", "/opt/py"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sb := testSandbox(tc.existing...)
 			sb.interpreter = tc.interpreter
-			if got := mountedInterpreterPrefix(sb); got != tc.want {
-				t.Errorf("mountedInterpreterPrefix(%q) = %q, want %q", tc.interpreter, got, tc.want)
+			got := systemMountPaths(sb)
+			if tc.want != "" && !containsStr(got, tc.want) {
+				t.Errorf("systemMountPaths(%q) = %v, want it to bind %q", tc.interpreter, got, tc.want)
 			}
-			if got := containsStr(systemMountPaths(sb), tc.want); tc.want != "" && !got {
-				t.Errorf("systemMountPaths does not bind the prefix %q it reports: %v", tc.want, systemMountPaths(sb))
+			if tc.unwanted != "" && containsStr(got, tc.unwanted) {
+				t.Errorf("systemMountPaths(%q) = %v, must not bind %q", tc.interpreter, got, tc.unwanted)
 			}
 		})
 	}
