@@ -643,7 +643,10 @@ func grantSymlinks(p *policy.Policy) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("linux: %q: %w", g, err)
 		}
-		real := resolveExisting(abs, 0)
+		real, err := resolve(abs)
+		if err != nil {
+			return nil, err
+		}
 		if real == abs || seen[abs] {
 			continue
 		}

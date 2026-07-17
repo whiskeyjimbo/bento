@@ -726,6 +726,11 @@ func TestSymlinkedGrantDoesNotAliasPastShield(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_rsa"), []byte("PRIVATEKEY"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Read through the same symlink, so a link that simply does not work cannot
+	// masquerade as the shield holding.
+	if err := os.WriteFile(filepath.Join(home, "notes.txt"), []byte("PLAINNOTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// A grant naming a symlink to $HOME: the shielded ~/.ssh sits under its target.
 	link := filepath.Join(t.TempDir(), "homelink")
 	if err := os.Symlink(home, link); err != nil {
@@ -733,13 +738,47 @@ func TestSymlinkedGrantDoesNotAliasPastShield(t *testing.T) {
 	}
 
 	p := &policy.Policy{Read: []string{link}}
-	_, out := runScript(t, p, "cat "+filepath.Join(link, ".ssh", "id_rsa")+" 2>&1 || true\n")
+	_, out := runScript(t, p,
+		"cat "+filepath.Join(link, "notes.txt")+" 2>&1 || true\n"+
+			"cat "+filepath.Join(link, ".ssh", "id_rsa")+" 2>&1 || true\n")
 
 	if strings.Contains(out, "bwrap:") {
 		t.Fatalf("a symlinked grant aborted bwrap: %s", out)
 	}
+	if !strings.Contains(out, "PLAINNOTES") {
+		t.Fatalf("granted symlink did not reach unshielded content, so the shield assertion below proves nothing: %q", out)
+	}
 	if strings.Contains(out, "PRIVATEKEY") {
 		t.Fatalf("the deny-list was bypassed by reading through a granted symlink: %q", out)
+	}
+}
+
+// A write grant naming a symlink to a directory must be writable at the granted
+// name, and the write must land on the host at the symlink's target.
+func TestSymlinkedWriteGrantReachesHostTarget(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	target := filepath.Join(data, "store")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(data, "out")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Write: []string{link}}
+	if code, out := runScript(t, p, "echo WROTE > "+filepath.Join(link, "result.txt")+"\n"); code != 0 {
+		t.Fatalf("write through a granted symlink failed: exit=%d out=%s", code, out)
+	}
+
+	got, err := os.ReadFile(filepath.Join(target, "result.txt"))
+	if err != nil {
+		t.Fatalf("write through a granted symlink did not reach the host target: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "WROTE" {
+		t.Fatalf("file = %q, want WROTE", got)
 	}
 }
 
@@ -771,5 +810,41 @@ func TestSymlinkGrantOverlappingBroaderGrantDoesNotAbort(t *testing.T) {
 	}
 	if !strings.Contains(out, "RCCONTENT") {
 		t.Errorf("granted symlink unreadable under an overlapping grant: %q", out)
+	}
+}
+
+// Granting a symlink and a second symlink nested under it must not abort the
+// run: the recreated parent link already leads to the target, so the nested name
+// resolves through it - while trying to recreate the nested link as well would
+// have to create it through the parent link, whose target is not yet mounted.
+func TestNestedSymlinkGrantsDoNotAbort(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(data, "store", "cfg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(data, "store", "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "store", "gh", "config"), []byte("GHCONFIG"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(data, "store", "gh"), filepath.Join(data, "store", "cfg", "gh")); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(data, ".config")
+	if err := os.Symlink(filepath.Join(data, "store", "cfg"), config); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{config, filepath.Join(config, "gh")}}
+	_, out := runScript(t, p, "cat "+filepath.Join(config, "gh", "config")+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("nested symlink grants aborted bwrap: %s", out)
+	}
+	if !strings.Contains(out, "GHCONFIG") {
+		t.Errorf("nested symlink grant unreadable at the granted name: %q", out)
 	}
 }
