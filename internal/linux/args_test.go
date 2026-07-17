@@ -920,6 +920,30 @@ func TestInterpreterUnderHomeBindsOnlyItself(t *testing.T) {
 	}
 }
 
+// On a host where the home directory is reached through a symlink (/home ->
+// var/home on Silverblue, or a relocated home) the interpreter resolves to the real
+// tree while os.UserHomeDir still reports the linked name. The floor must compare
+// the two on the same footing, or it misses and binds the whole home tree.
+func TestInterpreterUnderSymlinkedHomeBindsOnlyItself(t *testing.T) {
+	sb := testSandbox("/var/home/u", "/var/home/u/bin", "/var/home/u/bin/python3", "/work")
+	sb.home = "/home/u"
+	sb.interpreter = "/var/home/u/bin/python3"
+	sb.resolve = func(p string) string {
+		if p == "/home/u" || under(p, "/home/u") {
+			return filepath.Join("/var", p)
+		}
+		return p
+	}
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
+
+	if has(args, "--ro-bind", "/var/home/u") {
+		t.Errorf("a symlinked $HOME must never be bound as an interpreter prefix; got %v", args)
+	}
+	if !has(args, "--ro-bind", "/var/home/u/bin/python3") {
+		t.Errorf("the interpreter itself must be bound so the run can exec it; got %v", args)
+	}
+}
+
 // An extra deny (a supervising embedder shielding its own state) can name a path
 // under a system mount, which no grant reaches. The mount exposes it, so it needs
 // a shield: reachability must follow the mounts, not just the grants.

@@ -296,7 +296,13 @@ func systemMountPaths(sb sandbox) []string {
 	if prefix == "" {
 		return paths
 	}
-	if prefix == sb.home || under(sb.home, prefix) {
+	// The prefix comes from the symlink-resolved interpreter, so the home it is
+	// compared against must be resolved too: on a host where $HOME reaches the real
+	// tree through a link (/home -> var/home, or a relocated home), the raw
+	// os.UserHomeDir value names a different path than the prefix and the floor below
+	// would miss it, binding the whole home tree after all.
+	home := sb.resolve(sb.home)
+	if prefix == home || under(home, prefix) {
 		// A ~/bin/python3 wrapper puts the prefix at the home directory itself, which
 		// would bind every file in it into a sandbox whose policy granted none of them.
 		// Naming the interpreter authorizes the interpreter, not the tree it happens to
