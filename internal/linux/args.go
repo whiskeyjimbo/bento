@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
+	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -199,12 +199,13 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
 	if useLauncher {
-		launch := []string{sandboxBentoPath, "__launch", "--exec", string(execMode)}
+		socket := ""
 		if sb.proxySocket != "" {
-			launch = append(launch, "--socket", sandboxProxySocket)
+			socket = sandboxProxySocket
 		}
+		observeFD := 0
 		if sb.observe {
-			launch = append(launch, "--observe-fd", strconv.Itoa(observeReportFD))
+			observeFD = observeReportFD
 		}
 		// The launcher's Landlock backstop confines writes to exactly the paths
 		// passed here: the runtime scratch mounts plus the write grants. With the
@@ -213,14 +214,18 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		// (Both layers are still stricter on the deny-list shields, by design - a
 		// shield denies the write and that is the intent.) Deriving both from this
 		// one place keeps them in sync.
-		for _, w := range append(append([]string{}, sandboxWritableMounts...), writes...) {
-			launch = append(launch, "--rw", w)
+		cfg := launcher.Config{
+			Socket:      socket,
+			Block:       execMode != policy.ExecAll,
+			StrictBlock: execMode == policy.ExecNoneStrict,
+			Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
+			ObserveFD:   observeFD,
+			Target:      command(p, sb),
 		}
-		launch = append(launch, "--")
-		args = append(args, launch...)
+		args = append(args, sandboxBentoPath)
+		return append(args, launcher.EncodeLaunch(cfg)...), nil
 	}
-	args = append(args, command(p, sb)...)
-	return args, nil
+	return append(args, command(p, sb)...), nil
 }
 
 // sandboxWritableMounts are the paths baseFlags makes writable for every run

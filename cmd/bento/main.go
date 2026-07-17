@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/whiskeyjimbo/bento-v2/backend"
 )
 
 // bentoFailed is the exit code when bento itself could not run the target - a
@@ -22,6 +24,11 @@ type exitError struct{ code int }
 func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 func main() {
+	// The linux backend confines a target by re-executing this binary inside the
+	// sandbox as a hidden launch/bridge stage. Dispatch those before any flag
+	// parsing; a normal invocation falls through and returns here.
+	backend.DispatchReexec()
+
 	err := newRootCmd().Execute()
 	if err == nil {
 		return

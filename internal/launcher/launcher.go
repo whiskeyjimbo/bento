@@ -213,7 +213,7 @@ func installExecFilter(strict bool) error {
 // would kill an in-process bridge. As a child it survives until the pid namespace
 // is torn down at the end of the run.
 func startBridge(socket string) error {
-	cmd := exec.Command("/proc/self/exe", "__bridge", socket)
+	cmd := exec.Command("/proc/self/exe", SentinelBridge, socket)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launcher: starting egress bridge: %w", err)
@@ -286,9 +286,9 @@ func waitExitCode(ws syscall.WaitStatus) int {
 	return ws.ExitStatus()
 }
 
-// BridgeMain is the `bento __bridge <socket>` child: it forwards every loopback
-// connection on proxyAddr to the host-side proxy socket until the process is
-// torn down with the sandbox.
+// BridgeMain is the bridge child (re-exec sentinel SentinelBridge): it forwards
+// every loopback connection on proxyAddr to the host-side proxy socket until the
+// process is torn down with the sandbox.
 func BridgeMain(socket string) error {
 	l, err := net.Listen("tcp", proxyAddr)
 	if err != nil {

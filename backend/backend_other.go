@@ -25,3 +25,8 @@ func New() (enforce.Enforcer, error) {
 func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool) (profile.Observation, error) {
 	return profile.Observation{}, fmt.Errorf("bento: profiling is not supported on %s", runtime.GOOS)
 }
+
+// DispatchReexec is a no-op off Linux: only the Linux backend re-execs, so its
+// sentinels can never legitimately appear here. It deliberately does not import
+// the launcher package, which does not build off Linux.
+func DispatchReexec() {}
