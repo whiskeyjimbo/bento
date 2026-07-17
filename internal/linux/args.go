@@ -97,6 +97,19 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		return nil, fmt.Errorf("linux: no entrypoint")
 	}
 	args := baseFlags()
+
+	// Grants are bound at their resolved targets, so a grant that names a symlink
+	// (~/.bashrc -> /nix/store/...) would leave the granted name itself absent.
+	// Recreate it as a symlink, ahead of every bind: bwrap refuses --symlink onto
+	// an existing destination, and going first means the root tmpfs is still bare,
+	// so a broader grant that also covers the name simply overmounts this with the
+	// host's own entry rather than colliding.
+	symlinks, err := grantSymlinks(p)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, symlinks...)
+
 	args = append(args, systemMounts(sb)...)
 
 	// The network namespace is always unshared: it is the egress fence. With no
@@ -611,6 +624,54 @@ func resolveGrants(p *policy.Policy) (reads, writes []string, err error) {
 		return nil, nil, err
 	}
 	return reads, writes, nil
+}
+
+// grantSymlinks recreates, inside the sandbox, every granted path that is a
+// symlink on the host, pointing at the same target the host's symlink does.
+//
+// The grant itself is bound at its resolved target, which is what keeps the
+// deny-list honest: shields mount on real paths, and reaching content through a
+// symlink still lands on the real path underneath, so a shield there still wins.
+// Binding the target at the granted name instead would alias the same content to
+// a second name the shields do not cover, which is a hole - hence a symlink, not
+// a bind.
+func grantSymlinks(p *policy.Policy) ([]string, error) {
+	var links [][2]string
+	seen := map[string]bool{}
+	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
+		abs, err := filepath.Abs(g)
+		if err != nil {
+			return nil, fmt.Errorf("linux: %q: %w", g, err)
+		}
+		real := resolveExisting(abs, 0)
+		if real == abs || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		links = append(links, [2]string{real, abs})
+	}
+	sort.Slice(links, func(i, j int) bool { return links[i][1] < links[j][1] })
+
+	var args []string
+	var made []string
+	for _, l := range links {
+		// A symlink whose name sits under one already made would have to be created
+		// through that link, into a read-only target; the parent link already leads
+		// to the right place, so the name resolves without this one.
+		nested := false
+		for _, m := range made {
+			if under(l[1], m) {
+				nested = true
+				break
+			}
+		}
+		if nested {
+			continue
+		}
+		made = append(made, l[1])
+		args = append(args, "--symlink", l[0], l[1])
+	}
+	return args, nil
 }
 
 func resolveAll(paths []string) ([]string, error) {

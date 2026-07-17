@@ -681,3 +681,95 @@ func TestProfileLeavesNoHostArtifact(t *testing.T) {
 		t.Errorf("profiling left a host artifact at %s", hooks)
 	}
 }
+
+// A read grant naming a symlink must be readable at the name that was granted.
+// Grants are bound at their resolved target, so without recreating the symlink
+// the granted name itself is absent and a script reading the standard path it
+// was given fails - the home-manager / stow dotfile layout.
+func TestSymlinkedReadGrantIsReadableAtGrantedName(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	store := filepath.Join(data, "store")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(store, "bashrc")
+	if err := os.WriteFile(target, []byte("RCCONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(data, ".bashrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{link}}
+	_, out := runScript(t, p, "cat "+link+" 2>&1 || true\n")
+
+	if !strings.Contains(out, "RCCONTENT") {
+		t.Errorf("granted symlink %s was not readable at the granted name: %q", link, out)
+	}
+}
+
+// Recreating a granted symlink must not become a way around the deny-list. The
+// symlink points at the resolved target, so a read through it lands on the real
+// path where the shield is mounted. Binding the target at the granted name
+// instead would alias the content to a second name no shield covers.
+func TestSymlinkedGrantDoesNotAliasPastShield(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_rsa"), []byte("PRIVATEKEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A grant naming a symlink to $HOME: the shielded ~/.ssh sits under its target.
+	link := filepath.Join(t.TempDir(), "homelink")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{link}}
+	_, out := runScript(t, p, "cat "+filepath.Join(link, ".ssh", "id_rsa")+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("a symlinked grant aborted bwrap: %s", out)
+	}
+	if strings.Contains(out, "PRIVATEKEY") {
+		t.Fatalf("the deny-list was bypassed by reading through a granted symlink: %q", out)
+	}
+}
+
+// Granting both a symlink and a broader path that already contains it must not
+// abort the run: bwrap refuses --symlink onto an existing destination, so the
+// recreated link has to be emitted before any bind that could materialize it.
+func TestSymlinkGrantOverlappingBroaderGrantDoesNotAbort(t *testing.T) {
+	requireSandbox(t)
+
+	data := t.TempDir()
+	store := filepath.Join(data, "store")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(store, "bashrc")
+	if err := os.WriteFile(target, []byte("RCCONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(data, ".bashrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Read: []string{data, link}}
+	_, out := runScript(t, p, "cat "+link+" 2>&1 || true\n")
+
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("overlapping symlink and directory grants aborted bwrap: %s", out)
+	}
+	if !strings.Contains(out, "RCCONTENT") {
+		t.Errorf("granted symlink unreadable under an overlapping grant: %q", out)
+	}
+}
