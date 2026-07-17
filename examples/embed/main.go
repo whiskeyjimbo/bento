@@ -38,11 +38,46 @@ func main() {
 	// free of environment or other side-effect dependencies.
 	backend.DispatchReexec()
 
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: embed <manifest.yaml>")
+	args := os.Args[1:]
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		usage(os.Stdout)
+		os.Exit(0)
+	}
+	if len(args) != 1 {
+		usage(os.Stderr)
 		os.Exit(2)
 	}
-	os.Exit(run(os.Args[1]))
+	os.Exit(run(args[0]))
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `embed - run a script under bento's sandbox, in-process via the public API
+
+Usage:
+  embed <manifest.yaml>
+  embed -h | --help
+
+It loads the manifest, runs the target it describes under the sandbox, reports any
+enforcement shortfall, surfaces any egress the network gate admitted beyond the
+manifest, and passes the target's exit code through.
+
+Network gate (interactive supervision):
+  On a controlling terminal, egress to a host the manifest did not declare prompts
+  you to allow it, and the answer is remembered for the rest of the run. With no
+  terminal and no pre-approval, undeclared egress is denied - the declarative box.
+
+Environment:
+  BENTO_GATE_ALLOW   comma-separated hosts or host:port admitted without a prompt
+                     (e.g. "example.com,10.0.0.5:443"), so the gate runs unattended.
+
+Try it (from this directory):
+  go build -o embed .
+  ./embed demo/reach.yaml                                # denied: example.com is undeclared
+  BENTO_GATE_ALLOW=example.com ./embed demo/reach.yaml   # admitted, then surfaced
+  ./embed demo/reach.yaml                                # in a terminal: prompts you
+
+See README.md for the full walkthrough.
+`)
 }
 
 func run(manifestPath string) int {
