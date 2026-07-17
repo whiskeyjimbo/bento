@@ -3,14 +3,26 @@
 // takes a manifest path, runs the script it describes under the sandbox, prints
 // any enforcement shortfall from the structured Result, and passes the target's
 // exit code through.
+//
+// It also demonstrates the interactive supervision seam: a NetworkGate that
+// prompts a human to admit egress the manifest did not declare, remembering the
+// answer for the run - the model an editor agent uses. bento supplies the seam
+// and the honesty accounting (Result.GateAdmitted); the prompt, the session
+// memory, and the persist decision are the wrapper's, and they live in the
+// supervisor type below.
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/whiskeyjimbo/bento-v2/backend"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
@@ -65,16 +77,29 @@ func run(manifestPath string) int {
 		return 2
 	}
 
+	// The network gate turns the declarative box into a supervised one. This example
+	// prompts a human on the controlling terminal (/dev/tty, kept separate from the
+	// target's own stdin) and remembers each answer for the run; BENTO_GATE_ALLOW
+	// pre-approves hosts so the example also runs unattended. With neither a terminal
+	// nor a pre-approval the gate stays nil - the declarative default, denying any
+	// undeclared egress exactly as the box does.
+	preApproved := parseAllow(os.Getenv("BENTO_GATE_ALLOW"))
+	// Prompt on the controlling terminal, not the target's stdin. os.OpenFile
+	// returns a nil *os.File on failure; assign it into the io.Reader only when
+	// real, so newSupervisor sees a true nil (a typed-nil *os.File in an interface
+	// is non-nil and would be read as a live but broken reader).
+	var promptIn io.Reader
+	if tty, _ := os.OpenFile("/dev/tty", os.O_RDWR, 0); tty != nil {
+		defer tty.Close()
+		promptIn = tty
+	}
+	var gate enforce.NetworkGate
+	if len(preApproved) > 0 || promptIn != nil {
+		gate = newSupervisor(preApproved, promptIn, os.Stderr).gate
+	}
+
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
-	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{
-		// The network gate is the seam a supervising wrapper uses to admit an egress
-		// host the manifest did not declare - where a real CLI would prompt a human,
-		// this example consults an env allowlist so it stays non-interactive. Unset
-		// (no BENTO_GATE_ALLOW) leaves gate nil, the declarative default of denying
-		// anything undeclared. host and port are attacker-controlled; a real wrapper
-		// sanitizes before displaying them.
-		NetworkGate: envGate(os.Getenv("BENTO_GATE_ALLOW")),
-	})
+	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{NetworkGate: gate})
 
 	var refusal *enforce.Refusal
 	switch {
@@ -102,21 +127,93 @@ func run(manifestPath string) int {
 	return res.ExitCode
 }
 
-// envGate builds a NetworkGate from a comma-separated allowlist of "host" or
-// "host:port" entries. An empty spec returns nil - the declarative default - so
-// an unconfigured embedder denies undeclared egress exactly as the box does.
-func envGate(spec string) enforce.NetworkGate {
-	spec = strings.TrimSpace(spec)
-	if spec == "" {
-		return nil
-	}
+// parseAllow reads a comma-separated allowlist of "host" or "host:port" entries
+// (from BENTO_GATE_ALLOW) into a set the supervisor admits without prompting.
+func parseAllow(spec string) map[string]bool {
 	allow := make(map[string]bool)
 	for _, e := range strings.Split(spec, ",") {
 		if e = strings.TrimSpace(e); e != "" {
 			allow[e] = true
 		}
 	}
-	return func(_ context.Context, host, port string) bool {
-		return allow[host] || allow[host+":"+port]
+	return allow
+}
+
+// supervisor is the interactive layer a wrapper such as tack-cli builds on top of
+// bento's NetworkGate. bento consults the gate for every undeclared egress host
+// and stays stateless about the answer; the supervisor adds the two things that
+// make it feel like an editor agent's prompt: it asks a human, and it remembers
+// the answer for the rest of the run, so the same host is asked once. "Allow for
+// this session" is exactly this cache; "always allow" would be persisting the
+// host into the manifest via bento's approve/fingerprint path, after which the
+// gate is never consulted for it again.
+type supervisor struct {
+	// preApproved is admitted without a prompt - the out-of-band "already decided"
+	// set (here BENTO_GATE_ALLOW), which also lets this example run unattended.
+	preApproved map[string]bool
+	out         io.Writer
+
+	// mu serializes prompts and guards session: bento runs one handler goroutine
+	// per connection, so several undeclared hosts can reach the gate at once, and
+	// asking one human two questions at the same time is nonsense. Holding mu across
+	// the prompt is the "serialize concurrent prompts" the seam leaves to the caller.
+	mu      sync.Mutex
+	session map[string]bool // dest -> admitted, remembered for the run
+	// lines carries one human answer at a time from a single reader that owns the
+	// terminal, so prompts never race on it. Closed when there is no terminal.
+	lines <-chan string
+}
+
+func newSupervisor(preApproved map[string]bool, in io.Reader, out io.Writer) *supervisor {
+	lines := make(chan string)
+	if in == nil {
+		// No terminal to prompt on: a non-pre-approved host is denied.
+		close(lines)
+	} else {
+		go func() {
+			// One reader owns the terminal for the whole run. It leaks when the run
+			// ends blocked in Read, which is fine: the process is about to exit.
+			r := bufio.NewReader(in)
+			for {
+				line, err := r.ReadString('\n')
+				if err != nil {
+					close(lines)
+					return
+				}
+				lines <- line
+			}
+		}()
+	}
+	return &supervisor{preApproved: preApproved, out: out, session: make(map[string]bool), lines: lines}
+}
+
+// gate is the enforce.NetworkGate bento calls per undeclared host.
+func (s *supervisor) gate(ctx context.Context, host, port string) bool {
+	dest := net.JoinHostPort(host, port)
+	if s.preApproved[host] || s.preApproved[dest] {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if admitted, asked := s.session[dest]; asked {
+		return admitted // answered earlier this run; do not ask again
+	}
+	admitted := s.ask(ctx, host, port)
+	s.session[dest] = admitted
+	return admitted
+}
+
+// ask prompts for one undeclared host and returns false if the run ends first: a
+// prompt that ignored ctx would pin a proxy handler slot and stall teardown. host
+// is attacker-controlled (the sandboxed target chose it), so it is quoted to
+// neutralize terminal escapes and look-alikes before it is shown to a human.
+func (s *supervisor) ask(ctx context.Context, host, port string) bool {
+	fmt.Fprintf(s.out, "bento: allow egress to %s port %s? [y/N] ", strconv.Quote(host), port)
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(s.out, "(run ended)")
+		return false
+	case line, ok := <-s.lines:
+		return ok && strings.EqualFold(strings.TrimSpace(line), "y")
 	}
 }
