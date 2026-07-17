@@ -64,7 +64,7 @@ func DispatchReexec() {
 			reexecFail(fmt.Errorf("%s takes exactly one socket argument", launcher.SentinelBridge))
 		}
 		if err := launcher.BridgeMain(os.Args[2]); err != nil {
-			reexecFail(err)
+			reexecFail(fmt.Errorf("bridge: %w", err))
 		}
 		os.Exit(0)
 	}

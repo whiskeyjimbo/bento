@@ -14,4 +14,7 @@ fi
 
 GOWORK=off go build -o /dev/null .
 GOWORK=off go vet ./...
-echo "OK: example builds against bento's public API only"
+# Runs TestMain, exercising the DispatchReexec-from-TestMain pattern this example
+# exists to demonstrate.
+GOWORK=off go test ./...
+echo "OK: example builds and tests against bento's public API only"

@@ -45,6 +45,9 @@ func EncodeLaunch(cfg Config) []string {
 // this runs inside the sandbox where the flag package's default output would land
 // on the target's stderr.
 func DecodeLaunch(args []string) (Config, error) {
+	if len(args) == 0 || args[0] != SentinelLaunch {
+		return Config{}, fmt.Errorf("launcher: not a launch invocation")
+	}
 	fs := flag.NewFlagSet(SentinelLaunch, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
@@ -76,7 +79,8 @@ func DecodeLaunch(args []string) (Config, error) {
 
 // The exec mode is carried on the wire as a string so the codec stays free of the
 // policy package (which would pull a domain import into the launcher). The mapping
-// to Config's bools is lossless in both directions.
+// round-trips every valid Config (StrictBlock implies Block, per Config's doc);
+// the out-of-contract {Block:false, StrictBlock:true} is not represented.
 func execModeString(cfg Config) string {
 	switch {
 	case !cfg.Block:
