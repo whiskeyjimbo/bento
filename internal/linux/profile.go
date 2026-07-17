@@ -12,9 +12,9 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
+	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/profile"
-	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
 )
 
 // Profile runs p under observation and reports what the target did. p should be
@@ -25,7 +25,7 @@ import (
 // bare IPs. By default the proxy records those hosts but refuses to forward the
 // traffic, so profiling untrusted code cannot exfiltrate; allowNetwork forwards
 // it for a faithful run of code whose later behavior depends on the response.
-func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool) (profile.Observation, error) {
+func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths []string) (profile.Observation, error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
 	}
@@ -35,8 +35,10 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	}
 
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
-	// presence is signalled here.
-	sb, cleanup, err := newSandbox(p, e.selfPath, false)
+	// presence is signalled here. denyPaths shield caller-owned state (e.g. a
+	// supervising wrapper's permission store) from the permissive Read:["/"] trial;
+	// they are set on the sandbox before the shield-cleanup defer below reads it.
+	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths)
 	if err != nil {
 		return profile.Observation{}, err
 	}

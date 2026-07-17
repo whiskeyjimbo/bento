@@ -144,7 +144,7 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
 
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", true)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", true, nil)
 	if err != nil {
 		t.Fatalf("newSandbox: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 	}
 
 	// The same policy WITHOUT a gate leaves both unset (exec: all needs no launcher).
-	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false)
+	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false, nil)
 	if err != nil {
 		t.Fatalf("newSandbox (ungated): %v", err)
 	}

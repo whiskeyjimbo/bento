@@ -30,6 +30,11 @@ var systemReadPaths = []string{
 type sandbox struct {
 	// home is the host's home directory, which anchors the deny-list.
 	home string
+	// extraDeny are caller-supplied shields applied on top of the built-in deny-list
+	// (a supervising embedder shielding its own state during a profiling trial; see
+	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads
+	// the run's shields goes through homeShields, so these reach all of them.
+	extraDeny []denylist.Rule
 	// emptyFile is a real, empty, read-only file on the host. Binding it over a
 	// path shields that path even when the path does not exist yet: bwrap creates
 	// the mount point and the target becomes an unwritable empty file.
@@ -319,8 +324,18 @@ func interpreterPrefix(interp string) string {
 // directories discovered under it (see gitDirShields). Building it in one place
 // keeps denyArgs and createdShieldDirs enforcing and cleaning up the exact same
 // set - a divergence would either leak a host artifact or leave a path unshielded.
+// homeShields is the deny-list every run applies regardless of grants: the
+// built-in home credential/config shields plus any caller-supplied extra denies.
+// The three places that enforce the always-on shields - shieldRules,
+// checkNotShielded, checkWriteNotAboveShield - all derive from this, so a caller
+// deny can never reach one and miss another (which would leak a host artifact or
+// leave a path unshielded).
+func homeShields(sb sandbox) []denylist.Rule {
+	return append(denylist.Home(sb.home), sb.extraDeny...)
+}
+
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
-	rules := denylist.Home(sb.home)
+	rules := homeShields(sb)
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
@@ -568,7 +583,7 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // one is refused separately by checkWriteNotAboveShield, since it would make the
 // shield's parent writable.
 func checkNotShielded(sb sandbox, grants []string) error {
-	rules := denylist.Home(sb.home)
+	rules := homeShields(sb)
 	for _, g := range grants {
 		for _, r := range rules {
 			if r.Deny != denylist.DenyAll {
@@ -599,7 +614,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 		if w == "/" {
 			continue // rejected with a clearer message by the write-grant loop
 		}
-		for _, r := range denylist.Home(sb.home) {
+		for _, r := range homeShields(sb) {
 			if r.Deny != denylist.DenyAll {
 				continue
 			}

@@ -71,7 +71,8 @@ func newProfileCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
 			}
 			obs, err := backend.Profile(cmd.Context(), permissive,
-				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr}, allowNetwork)
+				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr},
+				backend.ProfileOptions{AllowNetwork: allowNetwork})
 			if err != nil {
 				return err
 			}

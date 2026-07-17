@@ -20,6 +20,7 @@ import (
 	"syscall"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
@@ -50,8 +51,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	// A gate forces the egress stack up even with zero rules: a supervised run with
 	// no manifest network means "prompt on every host", so the proxy must exist for
-	// the gate to be consulted at all.
-	sb, cleanup, err := newSandbox(p, e.selfPath, gate != nil)
+	// the gate to be consulted at all. Enforced runs take no caller deny paths - that
+	// seam is profiling-only (see Profile).
+	sb, cleanup, err := newSandbox(p, e.selfPath, gate != nil, nil)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -181,7 +183,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
-func newSandbox(p *policy.Policy, selfPath string, gated bool) (sandbox, func(), error) {
+func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []string) (sandbox, func(), error) {
 	noop := func() {}
 
 	entrypoint, err := resolve(p.Entrypoint)
@@ -252,7 +254,38 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool) (sandbox, func(),
 	if len(p.Network) > 0 || gated {
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}
+
+	// Caller-supplied deny paths join the built-in deny-list. Built here, after the
+	// resolve/stat seams are set, so the shield-cleanup defer in Profile sees them.
+	if sb.extraDeny, err = buildExtraDeny(denyPaths, sb); err != nil {
+		cleanup()
+		return sandbox{}, noop, err
+	}
 	return sb, cleanup, nil
+}
+
+// buildExtraDeny turns caller-supplied deny paths into DenyAll shield rules. Each
+// must be absolute and must not resolve to the root; a path that does not exist
+// yet (the common first-run case for a wrapper's own store directory) is shielded
+// as a directory, so it never leaves a host file artifact, while an existing
+// regular file is shielded as a file. The rule keeps the unresolved path; the
+// shield machinery resolves it the same way it resolves grants.
+func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
+	var rules []denylist.Rule
+	for _, p := range denyPaths {
+		if !filepath.IsAbs(p) {
+			return nil, fmt.Errorf("linux: deny path %q must be absolute", p)
+		}
+		if sb.resolve(p) == "/" {
+			return nil, fmt.Errorf("linux: deny path %q resolves to the root and cannot be shielded", p)
+		}
+		dir := true
+		if sb.exists(p) && !sb.isDir(p) {
+			dir = false
+		}
+		rules = append(rules, denylist.Rule{Path: p, Deny: denylist.DenyAll, Dir: dir})
+	}
+	return rules, nil
 }
 
 // bentoSelfPath returns the path to the bento binary to bind as the in-sandbox

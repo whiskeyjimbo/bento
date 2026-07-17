@@ -12,9 +12,9 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/profile"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
 // These tests assert that the sandbox actually denies what it claims to. They
@@ -141,7 +141,7 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil)
 	if err != nil {
 		t.Fatalf("Profile with exec:all and no network failed: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestProfileSurfacesExitStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
-		obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false)
+		obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil)
 		if err != nil {
 			t.Fatalf("Profile: %v", err)
 		}
@@ -212,7 +212,7 @@ func TestProfileTargetCannotReachReport(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 
 	var out bytes.Buffer
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
 	if err != nil {
 		t.Fatalf("profile: %v (out: %q)", err, out.String())
 	}
@@ -673,7 +673,7 @@ func TestProfileLeavesNoHostArtifact(t *testing.T) {
 	}
 
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{proj}, Exec: policy.ExecAll}
-	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false); err != nil {
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil); err != nil {
 		t.Fatalf("Profile failed: %v", err)
 	}
 
@@ -926,7 +926,7 @@ func TestProfileReadsSymlinkedGrant(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, link}, Exec: policy.ExecAll}
 
 	var out bytes.Buffer
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
 	if err != nil {
 		t.Fatalf("Profile: %v (output: %s)", err, out.String())
 	}

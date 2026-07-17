@@ -100,7 +100,7 @@ func run(scriptArg string) int {
 	// Act 1: trial run under observation, then approve what it wants.
 	fmt.Fprintf(os.Stderr, "\n== trial run: watching %s (permissive, nothing leaves the host) ==\n", name)
 	obs, err := backend.Profile(context.Background(), permissivePolicy(script, interp),
-		enforce.Process{Stdout: io.Discard, Stderr: io.Discard}, false)
+		enforce.Process{Stdout: io.Discard, Stderr: io.Discard}, backend.ProfileOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
 		return 1

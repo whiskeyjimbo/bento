@@ -22,7 +22,7 @@ func New() (enforce.Enforcer, error) {
 }
 
 // Profile is unavailable off Linux.
-func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool) (profile.Observation, error) {
+func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, opts ProfileOptions) (profile.Observation, error) {
 	return profile.Observation{}, fmt.Errorf("bento: profiling is not supported on %s", runtime.GOOS)
 }
 
