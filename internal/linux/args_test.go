@@ -944,6 +944,37 @@ func TestInterpreterUnderSymlinkedHomeBindsOnlyItself(t *testing.T) {
 	}
 }
 
+// A read grant of "/" binds the host's root children, including /run and its
+// service sockets. connect() to a unix socket succeeds through a read-only bind
+// and is not fenced by the network namespace, so an unshielded /run would turn
+// "read: /" into control of the docker daemon - and thereby host root. The shield
+// is what keeps a read grant read-only in effect as well as in name.
+func TestReadRootShieldsHostRuntimeSockets(t *testing.T) {
+	sb := testSandbox("/run", "/run/docker.sock", "/usr", "/home", "/etc")
+	args := compileOrFail(t, &policy.Policy{Read: []string{"/"}}, sb)
+
+	if !has(args, "--tmpfs", "/run") {
+		t.Errorf("/run must be shielded under a read: / grant; got %v", args)
+	}
+	if i, j := pairIndex(args, "--ro-bind-try", "/run"), pairIndex(args, "--tmpfs", "/run"); i >= 0 && i > j {
+		t.Errorf("the /run bind must come before its shield so the shield wins; got bind at %d, shield at %d", i, j)
+	}
+}
+
+// A grant naming the runtime directory itself cannot be honored - the shield wins -
+// so it is refused rather than silently emptied, per the same rule that refuses a
+// grant inside ~/.ssh.
+func TestGrantOfRuntimeDirIsRefused(t *testing.T) {
+	sb := testSandbox("/run", "/run/docker.sock")
+	_, err := compile(&policy.Policy{Read: []string{"/run/docker.sock"}}, enforce.Process{}, sb)
+	if err == nil {
+		t.Fatalf("a grant of /run/docker.sock must be refused, not silently shielded")
+	}
+	if !strings.Contains(err.Error(), "/run") {
+		t.Errorf("the error should name the shielded path; got %v", err)
+	}
+}
+
 // An extra deny (a supervising embedder shielding its own state) can name a path
 // under a system mount, which no grant reaches. The mount exposes it, so it needs
 // a shield: reachability must follow the mounts, not just the grants.

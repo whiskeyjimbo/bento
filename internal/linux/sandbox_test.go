@@ -1223,3 +1223,34 @@ func TestLoopedGrantIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// A read grant of "/" binds the host's root children, and /run holds the control
+// sockets of the host's services (the docker daemon, the session bus, gpg-agent).
+// A read-only bind does not stop connect() to a unix socket - the kernel refuses
+// writes through a read-only mount only for regular files, directories, and
+// symlinks - and the network namespace does not fence one either, since a
+// path-named socket is scoped by the filesystem. So an exposed /run would make
+// "read: /" a channel to whatever those daemons can do, which for docker is host
+// root. The shield must leave nothing of the host's /run reachable.
+func TestReadRootDoesNotExposeHostRuntime(t *testing.T) {
+	requireSandbox(t)
+
+	entries, err := os.ReadDir("/run")
+	if err != nil {
+		t.Skipf("cannot read the host's /run: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) == 0 {
+		t.Skip("the host's /run is empty, so the shield would pass vacuously")
+	}
+
+	_, out := runScript(t, &policy.Policy{Read: []string{"/"}}, "ls -A /run 2>&1 || true\n")
+	for _, name := range names {
+		if strings.Contains(out, name) {
+			t.Fatalf("the host's /run/%s is reachable under a read: / grant; got %q", name, out)
+		}
+	}
+}

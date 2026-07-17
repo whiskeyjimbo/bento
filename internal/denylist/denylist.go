@@ -209,6 +209,36 @@ func Home(home string) []Rule {
 	return rules
 }
 
+// Runtime returns the mandatory rules for the host's runtime state directory.
+//
+// /run holds the control sockets of the host's services - the docker/podman
+// daemon, the session bus, gpg-agent, the display server - and a unix socket is a
+// read-write channel to whatever is on the other end no matter how the path is
+// mounted: the kernel refuses a write to a read-only bind only for regular files,
+// directories, and symlinks, so connect() on a socket succeeds through a --ro-bind
+// (verified on kernel 6.8). A network namespace does not fence them either, since a
+// path-named socket is scoped by the filesystem rather than by netns. So a policy
+// granting read over /run - which "read: /" does - hands out the docker daemon,
+// which has host networking and can mount the host root: a read grant would confer
+// host root. The whole directory is shielded rather than each known socket, for the
+// same reason credential stores are: naming docker.sock leaves the session bus and
+// the next daemon's socket exposed.
+//
+// Not covered, because a socket is only reachable if some grant exposes its
+// directory and no list of paths can name them all (a documented residual): a
+// service socket outside /run, such as a distribution that puts the MySQL socket in
+// /var/lib/mysql, or one a host process creates during the run. Sockets under $HOME
+// are covered where they sit in a shielded credential store (~/.gnupg, ~/.docker,
+// ~/.git-credential-cache); elsewhere under a granted home directory they are not.
+func Runtime() []Rule {
+	return []Rule{
+		{Path: "/run", Deny: DenyAll, Dir: true},
+		// A symlink to /run on most hosts (resolved before it is shielded, so it
+		// costs nothing there), a real directory on those that predate the merge.
+		{Path: "/var/run", Deny: DenyAll, Dir: true},
+	}
+}
+
 // Workspace returns the rules that apply inside a directory a policy grants
 // write access to. A script with write access to a repository must not be able
 // to install a git hook or an editor task that runs on the host the next time

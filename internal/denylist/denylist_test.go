@@ -129,3 +129,27 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		}
 	}
 }
+
+// The host's runtime directory holds its services' control sockets (the docker
+// daemon, the session bus, gpg-agent). Connecting to one is a read-write channel
+// to that service no matter how the path is mounted - a read-only bind does not
+// stop connect() - so /run must be shielded whole, not left to a read grant.
+func TestRuntimeShieldsHostSockets(t *testing.T) {
+	for _, r := range Runtime() {
+		if r.Deny != DenyAll || !r.Dir {
+			t.Errorf("%s: got Deny=%v Dir=%v, want DenyAll directory", r.Path, r.Deny, r.Dir)
+		}
+	}
+	byPath := make(map[string]bool, len(Runtime()))
+	for _, r := range Runtime() {
+		byPath[r.Path] = true
+	}
+	// /var/run is the pre-usrmerge spelling: a symlink to /run on most hosts, a
+	// real directory on those that predate the merge, where the /run rule alone
+	// would leave every socket reachable under the other name.
+	for _, p := range []string{"/run", "/var/run"} {
+		if !byPath[p] {
+			t.Errorf("%s is not shielded", p)
+		}
+	}
+}

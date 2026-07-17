@@ -46,6 +46,14 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// program that ignores the proxy environment fails closed rather than being
 	// transparently redirected; transparent redirect needs the one-time `bento setup`.
 	// That is an availability nuance for uncooperative clients, not a containment gap.)
+	//
+	// The netns fences IP, not AF_UNIX: a path-named unix socket is scoped by the
+	// filesystem, and connect() to one succeeds even through a read-only bind. A host
+	// daemon reached that way has its own network access, so a socket the mount
+	// namespace exposes is a way out regardless of this layer. That is why the
+	// deny-list shields the host's runtime directory whole (see denylist.Runtime), and
+	// why the residual it documents - a service socket somewhere else that a grant
+	// exposes - is an egress hole as much as a filesystem one.
 	if nsOK {
 		r.Add(enforce.LayerNetwork, enforce.Enforced, "")
 	} else {

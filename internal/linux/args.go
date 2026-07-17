@@ -33,7 +33,7 @@ type sandbox struct {
 	// extraDeny are caller-supplied shields applied on top of the built-in deny-list
 	// (a supervising embedder shielding its own state during a profiling trial; see
 	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads
-	// the run's shields goes through homeShields, so these reach all of them.
+	// the run's shields goes through alwaysShields, so these reach all of them.
 	extraDeny []denylist.Rule
 	// emptyFile is a real, empty, read-only file on the host. Binding it over a
 	// path shields that path even when the path does not exist yet: bwrap creates
@@ -360,18 +360,19 @@ func interpreterPrefix(interp string) string {
 // directories discovered under it (see gitDirShields). Building it in one place
 // keeps denyArgs and createdShieldDirs enforcing and cleaning up the exact same
 // set - a divergence would either leak a host artifact or leave a path unshielded.
-// homeShields is the deny-list every run applies regardless of grants: the
-// built-in home credential/config shields plus any caller-supplied extra denies.
-// The three places that enforce the always-on shields - shieldRules,
-// checkNotShielded, checkWriteNotAboveShield - all derive from this, so a caller
-// deny can never reach one and miss another (which would leak a host artifact or
-// leave a path unshielded).
-func homeShields(sb sandbox) []denylist.Rule {
-	return append(denylist.Home(sb.home), sb.extraDeny...)
+// alwaysShields is the deny-list every run applies regardless of grants: the
+// built-in home credential/config shields, the host's runtime state (its service
+// sockets), plus any caller-supplied extra denies. The three places that enforce
+// the always-on shields - shieldRules, checkNotShielded, checkWriteNotAboveShield -
+// all derive from this, so a caller deny can never reach one and miss another
+// (which would leak a host artifact or leave a path unshielded).
+func alwaysShields(sb sandbox) []denylist.Rule {
+	rules := append(denylist.Home(sb.home), denylist.Runtime()...)
+	return append(rules, sb.extraDeny...)
 }
 
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
-	rules := homeShields(sb)
+	rules := alwaysShields(sb)
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
@@ -494,6 +495,7 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 	rules := shieldRules(sb, writes)
 
 	var args []string
+	seen := map[denylist.Rule]bool{}
 	for _, r := range rules {
 		// Resolve the rule's path the same way grants are resolved, so the shield
 		// decision compares like with like (a symlinked deny path, or a symlinked
@@ -506,6 +508,14 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
 			continue
 		}
+		// Two rules can name the same real path once resolved (/var/run and /run on a
+		// merged host). Shielding it twice stacks a redundant mount rather than being
+		// wrong, but only the identical rule is dropped, so a path shielded two
+		// different ways still gets both and the stricter one still lands.
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
 		if !shieldNeeded(r, sb, grants, writes) {
 			continue
 		}
@@ -619,7 +629,7 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // one is refused separately by checkWriteNotAboveShield, since it would make the
 // shield's parent writable.
 func checkNotShielded(sb sandbox, grants []string) error {
-	rules := homeShields(sb)
+	rules := alwaysShields(sb)
 	for _, g := range grants {
 		for _, r := range rules {
 			if r.Deny != denylist.DenyAll {
@@ -650,7 +660,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 		if w == "/" {
 			continue // rejected with a clearer message by the write-grant loop
 		}
-		for _, r := range homeShields(sb) {
+		for _, r := range alwaysShields(sb) {
 			if r.Deny != denylist.DenyAll {
 				continue
 			}
