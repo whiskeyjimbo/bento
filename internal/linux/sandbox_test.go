@@ -1139,3 +1139,87 @@ func TestSymlinkChainHopUnderShieldStaysShielded(t *testing.T) {
 		t.Fatalf("the deny-list was bypassed via a recreated chain hop: %q", out)
 	}
 }
+
+// A grant that names a symlink loop must be refused by bento, not left to abort
+// bwrap. resolveExisting leaves a loop unresolved on purpose (a shield on one
+// still fails closed), so the grant would be bound at the looping path itself and
+// --ro-bind-try - which tolerates only a missing source, not ELOOP - killed the
+// run with an error naming bwrap instead of the grant. Read and write find this
+// at different points in the run, so both are checked: they must agree.
+func TestLoopedGrantIsRefused(t *testing.T) {
+	requireSandbox(t)
+
+	loop := func(t *testing.T) string {
+		t.Helper()
+		d := t.TempDir()
+		a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
+		if err := os.Symlink(b, a); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(a, b); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	run := func(t *testing.T, p *policy.Policy) error {
+		t.Helper()
+		dir := t.TempDir()
+		script := filepath.Join(dir, "probe.sh")
+		if err := os.WriteFile(script, []byte("echo ok\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p.Entrypoint, p.Interpreter, p.Exec = script, "sh", policy.ExecAll
+		p.Read = append(p.Read, dir)
+		_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+		return err
+	}
+
+	t.Run("read", func(t *testing.T) {
+		a := loop(t)
+		err := run(t, &policy.Policy{Read: []string{a}})
+		if err == nil {
+			t.Fatalf("looped read grant %s was accepted; want a refusal", a)
+		}
+		if !strings.Contains(err.Error(), "loops through itself") || !strings.Contains(err.Error(), a) {
+			t.Fatalf("got %v, want a refusal naming the looping grant %s", err, a)
+		}
+	})
+
+	t.Run("write", func(t *testing.T) {
+		a := loop(t)
+		err := run(t, &policy.Policy{Write: []string{a}})
+		if err == nil {
+			t.Fatalf("looped write grant %s was accepted; want a refusal", a)
+		}
+		if !strings.Contains(err.Error(), "loops through itself") || !strings.Contains(err.Error(), a) {
+			t.Fatalf("got %v, want the same refusal a looping read grant gets: %v", err, err)
+		}
+	})
+
+	// A loop the grant merely contains is not the grant's problem: nothing binds
+	// at the loop, so the run proceeds.
+	t.Run("loop inside a granted directory", func(t *testing.T) {
+		a := loop(t)
+		dir := filepath.Dir(a)
+		if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("REALFILE"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, out := runScript(t, &policy.Policy{Read: []string{dir}}, "cat "+filepath.Join(dir, "real.txt")+" 2>&1 || true\n")
+		if !strings.Contains(out, "REALFILE") {
+			t.Errorf("a loop inside a granted directory broke the grant: %q", out)
+		}
+	})
+
+	// A dangling symlink is not a loop: it names a target that does not exist yet,
+	// which stays supported (the half-populated home-manager / stow layout).
+	t.Run("dangling symlink still granted", func(t *testing.T) {
+		d := t.TempDir()
+		link := filepath.Join(d, "link")
+		if err := os.Symlink(filepath.Join(d, "store", "later"), link); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(t, &policy.Policy{Read: []string{link}}); err != nil {
+			t.Errorf("a dangling symlink grant was refused: %v", err)
+		}
+	})
+}

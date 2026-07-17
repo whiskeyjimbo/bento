@@ -1,11 +1,13 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
@@ -109,6 +111,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		return nil, err
 	}
 	if err := checkGrantNotProcess(sb, p); err != nil {
+		return nil, err
+	}
+	if err := checkGrantNotLooped(p); err != nil {
 		return nil, err
 	}
 
@@ -641,6 +646,31 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 		}
 	}
 	return nil
+}
+
+// checkGrantNotLooped refuses a grant whose symlinks loop. resolveExisting leaves
+// a loop unresolved on purpose - a shield on one still fails closed - but a grant
+// is then bound at the looping path itself, and --ro-bind-try tolerates only a
+// missing source (ENOENT), not ELOOP, so bwrap aborts the run naming itself
+// rather than the grant. A dangling symlink is not a loop and stays supported:
+// it resolves to a target that simply does not exist yet.
+func checkGrantNotLooped(p *policy.Policy) error {
+	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
+		abs, err := filepath.Abs(g)
+		if err != nil {
+			return fmt.Errorf("linux: %q: %w", g, err)
+		}
+		if _, err := os.Stat(abs); errors.Is(err, syscall.ELOOP) {
+			return loopedGrantError(g)
+		}
+	}
+	return nil
+}
+
+// loopedGrantError is shared so a looping read grant and a looping write grant -
+// found at different points in the run - are refused in the same words.
+func loopedGrantError(g string) error {
+	return fmt.Errorf("linux: grant %q loops through itself on the host, so it names nothing that can be bound; fix the link or remove the grant", g)
 }
 
 // isProcessPath reports whether path is a per-process procfs directory or

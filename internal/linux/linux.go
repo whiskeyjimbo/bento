@@ -16,10 +16,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // Enforcer applies policies with bubblewrap.
@@ -155,6 +156,10 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 			if err := os.MkdirAll(w, 0o755); err != nil {
 				return fmt.Errorf("linux: creating write directory %q: %w", w, err)
 			}
+		case errors.Is(err, syscall.ELOOP):
+			// Reached before compile's own check, so refuse it in the same words a
+			// looping read grant gets rather than leaking a bare stat error.
+			return loopedGrantError(w)
 		default:
 			return fmt.Errorf("linux: checking write grant %q: %w", w, err)
 		}
