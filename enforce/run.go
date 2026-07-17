@@ -33,7 +33,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := p.Validate(); err != nil {
 		return Result{}, err
 	}
-	required := e.Probe(ctx).For(requiredLayers(p))
+	required := e.Probe(ctx).forLayers(requiredLayers(p))
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}

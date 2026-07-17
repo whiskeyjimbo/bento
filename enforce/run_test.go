@@ -421,7 +421,7 @@ func TestReportForFiltersToRequestedLayers(t *testing.T) {
 	r.Add(LayerFilesystem, Enforced, "")
 	r.Add(LayerNetwork, Unavailable, "no pasta")
 
-	got := r.For([]Layer{LayerFilesystem})
+	got := r.forLayers([]Layer{LayerFilesystem})
 	if len(got.Layers) != 1 || got.Layers[0].Layer != LayerFilesystem {
 		t.Fatalf("For([filesystem]) = %+v", got.Layers)
 	}

@@ -238,16 +238,17 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.cpu %q must be a percentage (e.g. \"100%%\")", l.CPU)
 	}
 	if l.Memory != "" {
-		if _, err := ParseBytes(l.Memory); err != nil {
+		if _, err := parseBytes(l.Memory); err != nil {
 			return fmt.Errorf("policy: limits.memory: %w", err)
 		}
 	}
 	return nil
 }
 
-// ParseBytes parses a byte quantity with a K/M/G suffix (powers of 1024), or a
-// bare byte count. Backends use it to resolve Limits.Memory for enforcement.
-func ParseBytes(s string) (int64, error) {
+// parseBytes parses a byte quantity with a K/M/G suffix (powers of 1024), or a
+// bare byte count. Validate uses it to reject an unparseable Limits.Memory; the
+// backend passes the original string to systemd, which parses it again.
+func parseBytes(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty size")

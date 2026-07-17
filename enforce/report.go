@@ -148,11 +148,11 @@ func (r Report) Degradations() []LayerStatus {
 	return out
 }
 
-// For returns the subset of the report covering the given layers. Admission
+// forLayers returns the subset of the report covering the given layers. Admission
 // decisions use it to judge a host only on the layers a policy actually needs: a
 // manifest with no network rules must not be blocked by a host that cannot run
 // the egress stack, because it never asked for egress.
-func (r Report) For(layers []Layer) Report {
+func (r Report) forLayers(layers []Layer) Report {
 	want := make(map[Layer]bool, len(layers))
 	for _, l := range layers {
 		want[l] = true

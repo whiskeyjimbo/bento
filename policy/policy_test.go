@@ -97,18 +97,18 @@ func TestLimitsIsZero(t *testing.T) {
 func TestParseBytes(t *testing.T) {
 	cases := map[string]int64{"1024": 1024, "1K": 1 << 10, "128M": 128 << 20, "2G": 2 << 30}
 	for in, want := range cases {
-		got, err := ParseBytes(in)
+		got, err := parseBytes(in)
 		if err != nil {
-			t.Errorf("ParseBytes(%q): %v", in, err)
+			t.Errorf("parseBytes(%q): %v", in, err)
 			continue
 		}
 		if got != want {
-			t.Errorf("ParseBytes(%q) = %d, want %d", in, got, want)
+			t.Errorf("parseBytes(%q) = %d, want %d", in, got, want)
 		}
 	}
 	for _, bad := range []string{"", "lots", "-1", "12X3"} {
-		if _, err := ParseBytes(bad); err == nil {
-			t.Errorf("ParseBytes(%q) should fail", bad)
+		if _, err := parseBytes(bad); err == nil {
+			t.Errorf("parseBytes(%q) should fail", bad)
 		}
 	}
 }
