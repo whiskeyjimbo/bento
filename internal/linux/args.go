@@ -137,11 +137,18 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 
 	args = append(args, systemMounts(sb)...)
 
-	// The network namespace is always unshared: it is the egress fence. With no
-	// rules and no gate that is the whole story (no route out at all). Otherwise the
-	// only reachable peer is the loopback forwarder the re-exec'd bento sets up,
-	// which bridges to the host-side allowlist proxy - the sandbox still has no route
-	// to the outside, so nothing bypasses the proxy.
+	// The network namespace is always unshared: it is the egress fence for IP. With
+	// no rules and no gate there is no route out at all. Otherwise the only reachable
+	// peer is the loopback forwarder the re-exec'd bento sets up, which bridges to the
+	// host-side allowlist proxy - the sandbox still has no IP route to the outside, so
+	// nothing bypasses the proxy that way.
+	//
+	// The fence does not cover AF_UNIX: a path-named socket is scoped by the
+	// filesystem, not the netns, and connect() to one succeeds even through a
+	// read-only bind. A host daemon reached over such a socket has its own network
+	// access, so the mount namespace - not this flag - is what keeps that route shut;
+	// see denylist.Runtime, which shields the host's runtime directory whole, and the
+	// residual it documents.
 	args = append(args, "--unshare-net")
 
 	for _, path := range reads {

@@ -951,13 +951,20 @@ func TestInterpreterUnderSymlinkedHomeBindsOnlyItself(t *testing.T) {
 // is what keeps a read grant read-only in effect as well as in name.
 func TestReadRootShieldsHostRuntimeSockets(t *testing.T) {
 	sb := testSandbox("/run", "/run/docker.sock", "/usr", "/home", "/etc")
+	// The "/" expansion binds the host's root children, which is what puts /run in
+	// the sandbox in the first place; the default fake root omits it.
+	sb.rootDirs = func() []string { return []string{"/usr", "/home", "/etc", "/run"} }
 	args := compileOrFail(t, &policy.Policy{Read: []string{"/"}}, sb)
 
 	if !has(args, "--tmpfs", "/run") {
 		t.Errorf("/run must be shielded under a read: / grant; got %v", args)
 	}
-	if i, j := pairIndex(args, "--ro-bind-try", "/run"), pairIndex(args, "--tmpfs", "/run"); i >= 0 && i > j {
-		t.Errorf("the /run bind must come before its shield so the shield wins; got bind at %d, shield at %d", i, j)
+	bind, shield := pairIndex(args, "--ro-bind-try", "/run"), pairIndex(args, "--tmpfs", "/run")
+	if bind < 0 {
+		t.Fatalf("the / expansion should bind /run, or this test asserts nothing about ordering; got %v", args)
+	}
+	if bind > shield {
+		t.Errorf("the /run bind must come before its shield so the shield wins; got bind at %d, shield at %d", bind, shield)
 	}
 }
 
@@ -970,8 +977,8 @@ func TestGrantOfRuntimeDirIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a grant of /run/docker.sock must be refused, not silently shielded")
 	}
-	if !strings.Contains(err.Error(), "/run") {
-		t.Errorf("the error should name the shielded path; got %v", err)
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("the error should say the grant is inside an always-shielded path; got %v", err)
 	}
 }
 
