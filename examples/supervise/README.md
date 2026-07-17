@@ -3,7 +3,8 @@
 A small wrapper that runs an untrusted script under bento the way an editor agent
 does: discover what the script wants, ask a human to approve it, then run it
 enforced - prompting live for anything it reaches at runtime that you did not
-declare. It uses only bento's public packages (no `internal/` imports), so it also
+declare. It **remembers your answers**, so a second run of the same script is
+silent. It uses only bento's public packages (no `internal/` imports), so it also
 proves the public surface is enough to build a real supervisor.
 
 ## The two models (and why they differ)
@@ -49,17 +50,19 @@ hosts. Nothing is declared up front, so you decide everything.
 
 ### Act 1 - trial run, approve what it wants
 
-The script runs permissively under observation, then you approve each access with
-**[y]es / [n]o / [A]ll** (A approves this and everything after it):
+The script runs permissively under observation, then you approve each access.
+**[y]es** and **[n]o** are remembered for this script; **[o]nce** allows just this
+run without remembering; **[A]ll** allows this and everything after it (for this
+run). Attacker-chosen paths are quoted, since a filename can carry terminal escapes.
 
 ```
 == trial run: watching agent.sh (permissive, nothing leaves the host) ==
-  read   ~/.../vault/data.csv     [y/n/A] y
-  read   ~/.../vault/secret.txt   [y/n/A] n     <- keep the secret out
-  write  ~/.../demo               [y/n/A] y
-  exec   run subprocesses         [y/n/A] y
-  reach  ads.tracker.example:443  [y/n/A] n     <- decline the tracker
-  reach  example.com:443          [y/n/A] y
+  read   "~/.../vault/data.csv"     [y]es/[n]o/[o]nce/[A]ll y
+  read   "~/.../vault/secret.txt"   [y]es/[n]o/[o]nce/[A]ll n   <- keep the secret out
+  write  "~/.../demo"               [y]es/[n]o/[o]nce/[A]ll y
+  exec   run subprocesses           [y]es/[n]o/[o]nce/[A]ll y
+  reach  "ads.tracker.example":443  [y]es/[n]o/[o]nce/[A]ll n   <- decline the tracker
+  reach  "example.com":443          [y]es/[n]o/[o]nce/[A]ll y
 ```
 
 Your answers become the manifest the enforced run is held to. You may also see a
@@ -80,44 +83,79 @@ those is meaningless.
 [agent] reach example.com          -> HTTP 200            <- declared, no prompt
 [agent] reach ads.tracker.example
 
-[gate] agent.sh is reaching "ads.tracker.example" port 443 now - allow? [y/n/A] n
+[gate] agent.sh is reaching "ads.tracker.example" port 443 now - allow? [y]es/[n]o/[o]nce n
                                    -> blocked              <- live gate, denied in real time
 ```
 
 `secret.txt` is denied by the kernel because you never granted it - no prompt, it
 just fails. `ads.tracker.example` was not declared, so the live gate prompts you at
-the moment the script reaches it. Answer `y` or `A` and it is admitted, and the run
-reports it:
+the moment the script reaches it (unless the store already remembers it, in which
+case it applies silently and a remembered *deny* is printed). Answer `y` and it is
+admitted, and the run reports it:
 
 ```
 supervise: the live gate admitted egress beyond the manifest:
   ads.tracker.example:443   (a real wrapper would offer to add this to the manifest)
 ```
 
+## Remembering decisions
+
+Your answers are kept in a permission store at
+`$XDG_CONFIG_HOME/bento-supervise/permissions.json` (default
+`~/.config/bento-supervise/`), so **a second run of the same script is silent** -
+every access shows `(remembered)` and applies without a prompt:
+
+```
+== trial run: watching agent.sh (permissive, nothing leaves the host) ==
+  read   "~/.../vault/data.csv"     allow (remembered)
+  read   "~/.../vault/secret.txt"   deny (remembered)
+  ...
+```
+
+The store is the wrapper's own memory - bento never sees it. A few properties
+worth knowing:
+
+- **Keyed by the script's content hash.** Change the script and it re-prompts;
+  identical code shares the same decisions wherever it lives. This is launcher
+  identity, not behavior identity (a script that `curl | sh`s more code keeps its
+  key), so it is convenience memory, not a security boundary.
+- **The store shields itself from the trial.** The permissive trial grants
+  `Read:["/"]`, so the wrapper passes its own store directory to `backend.Profile`
+  as a deny path - the untrusted script cannot read your saved decisions.
+- **A grant that would expose the store is refused** outright (you cannot approve
+  `read ~/.config` when the store lives under it).
+- **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
+  is printed so a silent block is never a mystery.
+
+Not yet built (tracked as follow-ups): exporting the store to a `bento run`
+manifest, a `perms list|forget|reset` command, and global (cross-script) rules.
+
 ## The honesty loop
 
 `Result.GateAdmitted` is what a run permits beyond its declared manifest, surfaced
-so nothing is laundered into looking declared. A real wrapper collects these and
-offers to persist them into the manifest via bento's `approve`/fingerprint path -
-turning ad-hoc runtime approvals back into attested policy. That is the "always
-allow" of an editor agent:
+so nothing is laundered into looking declared - the store never touches it. The
+model maps onto an editor agent's allow choices:
 
-| Editor agent  | Here                                                       |
-| ------------- | ---------------------------------------------------------- |
-| Allow once    | gate returns true for this connection                      |
-| Allow session | remembered for the run (the gate's session cache)          |
-| Always allow  | persist the host into the manifest (approve/fingerprint)   |
+| Editor agent  | Here                                                            |
+| ------------- | --------------------------------------------------------------- |
+| Allow once    | `[o]nce` - admitted for this run, not remembered                |
+| Allow session | `[y]es` - remembered for this script across runs                |
+| Always allow  | export the store to a bento manifest, then `bento run` (planned) |
 
 ## Code map
 
-- `run()` - the two acts: `backend.Profile` (trial) then `enforce.Run` with a
-  `NetworkGate` (enforced).
-- `approve()` - walks the synthesized proposal and builds the policy from y/n/A.
-- `supervisor.gate` - the live network gate: prompt, session cache, ctx-aware
-  cancellation, hostname sanitization.
-- `prompter` - reads y/n/A from the controlling terminal, ctx-aware so a pending
-  prompt cannot stall run teardown.
-- `main_test.go` - proves approval, allow-all, and the gate's per-host memory.
+- `run()` - the two acts: `backend.Profile` (trial, with the store dir as a deny
+  path) then `enforce.Run` with a `NetworkGate` (enforced), then saves the store.
+- `approve()` - walks the synthesized proposal, consults the store per item
+  (auto-apply remembered / prompt unknown / persist), refuses store-covering grants.
+- `supervisor.gate` - the live network gate: store lookup first, then prompt;
+  session cache, ctx-aware cancellation, hostname quoting.
+- `store.go` - the permission store: XDG location, atomic save under a lockfile,
+  the SHA app key, the deny-wins lattice, host/path key matching.
+- `prompter` - reads the controlling terminal, ctx-aware so a pending prompt cannot
+  stall run teardown.
+- `*_test.go` - the store lattice/longest-prefix, the run-twice-silent loop, the
+  store-covering-grant refusal, path quoting, and the gate's per-host memory.
 
 For the design rationale (why network but not filesystem), see
 `docs/network-gate-seam.md`. For a stripped-down non-interactive embedder, see
