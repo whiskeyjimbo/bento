@@ -108,6 +108,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
 		return nil, err
 	}
+	if err := checkGrantNotProcess(sb, p); err != nil {
+		return nil, err
+	}
 
 	// Grants are bound at their resolved targets, so a grant that names a symlink
 	// (~/.bashrc -> /nix/store/...) would leave the granted name itself absent.
@@ -603,6 +606,51 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 		}
 	}
 	return nil
+}
+
+// checkGrantNotProcess refuses a grant that resolves into a process's directory
+// in procfs. /etc/mtab and /dev/fd are the paths that reach one: they are host
+// symlinks through /proc/self, which resolves here to the pid of *this* bento.
+// That pid means nothing in the sandbox, which unshares its pid namespace and
+// mounts a procfs of its own, so bwrap cannot create the mount point and aborts
+// the whole run. Refusing says which grant did it and why; grants are reported
+// as written, since the resolved pid path is not what anyone typed.
+//
+// Only a resolved path that exists is refused: the grants bind with --ro-bind-try,
+// which skips a source that is not there, so those abort nothing. That is what
+// /dev/stdout relies on when it is a pipe rather than a terminal - it resolves to
+// a /proc/<pid>/fd/pipe:[...] name that does not exist, and the grant is a no-op
+// instead of a run-killer.
+func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
+	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
+		abs, err := filepath.Abs(g)
+		if err != nil {
+			return fmt.Errorf("linux: %q: %w", g, err)
+		}
+		real, err := resolve(abs)
+		if err != nil {
+			return err
+		}
+		if isProcessPath(real) && sb.exists(real) {
+			return fmt.Errorf("linux: grant %q resolves to %q, a process's own directory in /proc, which does not exist in the sandbox's pid namespace; remove the grant - /proc is always mounted", g, real)
+		}
+	}
+	return nil
+}
+
+// isProcessPath reports whether path is a per-process procfs directory or
+// something inside one (/proc/<pid>/...). /proc itself and its system-wide files
+// (/proc/cpuinfo) are not: those bind fine.
+func isProcessPath(path string) bool {
+	rel, err := filepath.Rel("/proc", path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	first, _, _ := strings.Cut(rel, "/")
+	if first == "" {
+		return false
+	}
+	return strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 // reachable reports whether a grant could expose path - either because a grant

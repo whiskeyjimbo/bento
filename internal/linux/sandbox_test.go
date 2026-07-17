@@ -934,3 +934,52 @@ func TestProfileReadsSymlinkedGrant(t *testing.T) {
 		t.Fatalf("profiled run failed to read its symlinked grant: exit=%d out=%s", obs.ExitCode, out.String())
 	}
 }
+
+// A grant that resolves into a process's own procfs directory must be refused
+// with a bento error naming the grant as written. /etc/mtab and /dev/fd are host
+// symlinks through /proc/self, which resolves to this bento's pid - a path the
+// sandbox's own pid namespace does not have, so bwrap aborted the whole run.
+func TestProcessPathGrantIsRefused(t *testing.T) {
+	requireSandbox(t)
+
+	for _, path := range []string{"/proc/self", "/etc/mtab", "/dev/fd"} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := os.Lstat(path); err != nil {
+				t.Skipf("%s does not exist on this host", path)
+			}
+			dir := t.TempDir()
+			script := filepath.Join(dir, "probe.sh")
+			if err := os.WriteFile(script, []byte("echo ok\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, path}, Exec: policy.ExecAll}
+
+			_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{})
+			if err == nil {
+				t.Fatalf("grant %s was accepted; want a refusal", path)
+			}
+			if !strings.Contains(err.Error(), "process's own directory in /proc") {
+				t.Fatalf("grant %s: got %v, want a refusal naming the procfs process directory", path, err)
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("refusal does not name the grant as written (%s): %v", path, err)
+			}
+		})
+	}
+}
+
+// The refusal above must not catch procfs paths that bind fine: /proc itself, its
+// system-wide files, and /dev/stdin (a symlink that resolves through the process's
+// fd on to a real file, so it never lands on a process directory).
+func TestNonProcessProcfsGrantsStillRun(t *testing.T) {
+	requireSandbox(t)
+
+	for _, path := range []string{"/proc", "/proc/cpuinfo", "/dev/stdin"} {
+		t.Run(path, func(t *testing.T) {
+			code, out := runScript(t, &policy.Policy{Read: []string{path}}, "echo ok\n")
+			if code != 0 || !strings.Contains(out, "ok") {
+				t.Fatalf("read grant on %s: exit=%d out=%q", path, code, out)
+			}
+		})
+	}
+}
