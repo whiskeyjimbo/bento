@@ -62,9 +62,13 @@ The script runs permissively under observation, then you approve each access wit
   reach  example.com:443          [y/n/A] y
 ```
 
-Your answers become the manifest the enforced run is held to. (The wrapper trims
-runtime scratch like `/tmp` and `/dev` and tool dotfiles before asking, so you only
-see accesses that describe what the script actually needs.)
+Your answers become the manifest the enforced run is held to. You may also see a
+couple of incidental reads the trial caught - `curl` opening its own TLS config,
+say (`/etc/gnutls/config`, `~/.curlrc`); the exact set depends on your `curl`
+build. Decline them: the request still works without them, and that is the point
+of reviewing what a permissive run actually touched. The wrapper does drop the
+sandbox's own scratch (`/tmp`, `/dev`, `/proc`) before asking, since granting
+those is meaningless.
 
 ### Act 2 - enforced run, live gate for the rest
 

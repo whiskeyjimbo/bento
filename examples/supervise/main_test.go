@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -62,6 +63,26 @@ func TestApproveAllAcceptsRest(t *testing.T) {
 	}
 	if got.Exec != policy.ExecAll || len(got.Network) != 1 {
 		t.Errorf("A must carry past reads to exec and network; got exec=%q net=%v", got.Exec, got.Network)
+	}
+}
+
+// drain discards input typed past the approval prompts, so a stray line from Act 1
+// cannot silently answer the first live gate prompt in Act 2 (both share one
+// terminal reader).
+func TestPrompterDrainDiscardsStaleInput(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	p := newPrompter(pr, io.Discard)
+
+	// A stale line is already waiting, as if typed during Act 1.
+	go func() { io.WriteString(pw, "stale\n") }()
+	p.drain()
+
+	// A fresh answer must now be what ask returns; if drain missed the stale line,
+	// ask would consume "stale" (-> deny) instead of the fresh "y".
+	go func() { io.WriteString(pw, "y\n") }()
+	if got := p.ask(context.Background(), ""); got != choiceAllow {
+		t.Errorf("ask after drain = %v, want allow from the fresh line (stale input must be discarded)", got)
 	}
 }
 

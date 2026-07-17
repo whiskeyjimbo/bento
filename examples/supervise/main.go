@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/backend"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
@@ -106,6 +107,13 @@ func run(scriptArg string) int {
 	}
 	proposal := profile.Synthesize(script, interp, obs)
 	approved := approve(p, script, interp, proposal)
+
+	// Drop anything typed past the approval prompts, so a stray keystroke during
+	// Act 1 cannot silently answer the first live gate prompt in Act 2 (both phases
+	// share one terminal reader). Best-effort: a production tool would flush the
+	// terminal's input buffer (tcflush) to also discard input the OS holds but the
+	// reader has not read yet.
+	p.drain()
 
 	// Act 2: enforced run under exactly what was approved, with a live gate for any
 	// undeclared host the script reaches at runtime.
@@ -268,6 +276,22 @@ func newPrompter(in io.Reader, out io.Writer) *prompter {
 	return &prompter{out: out, lines: lines}
 }
 
+// drain discards lines the reader has already read past the last consumed answer,
+// so input typed during one phase does not leak into the next. It waits briefly
+// for a read-ahead line to surface, then returns once the input is quiet.
+func (p *prompter) drain() {
+	for {
+		select {
+		case _, ok := <-p.lines:
+			if !ok {
+				return // reader closed (EOF): nothing more can arrive
+			}
+		case <-time.After(20 * time.Millisecond):
+			return
+		}
+	}
+}
+
 func (p *prompter) ask(ctx context.Context, prompt string) choice {
 	fmt.Fprint(p.out, prompt)
 	select {
@@ -289,29 +313,23 @@ func (p *prompter) ask(ctx context.Context, prompt string) choice {
 	}
 }
 
-// trimScratch drops runtime scratch and tool-config paths a supervising wrapper
-// should not bother a human with: the sandbox already provides /tmp, /dev, /proc
-// as writable scratch, and a program's own dotfiles and /etc config are its
-// business, not the manifest's. Profiling's writes are dir-granular, so a write to
-// /tmp/x is observed as "/tmp", which slips past the profiler's own /tmp/ prefix
-// filter - this catches that leftover. It keeps the accesses that describe what
-// the target actually needs.
+// trimScratch drops paths the sandbox already provides for free, so a human is
+// never asked to grant them: /tmp, /dev, /proc, /sys, /run are mounted as scratch
+// in every sandbox, and /nix is bound read-only when a Nix interpreter needs it.
+// Granting them is meaningless, and approving the /tmp or /dev that profiling's
+// dir-granular writes leave in the proposal actively breaks the run. Everything
+// else is kept: it is deliberately narrow, because dropping a path here means the
+// enforced run will DENY it, so it must never hide something the script needs.
 func trimScratch(paths []string) []string {
-	scratch := []string{"/tmp", "/dev", "/proc", "/sys", "/run", "/nix", "/etc"}
-	home, _ := os.UserHomeDir()
+	provided := []string{"/tmp", "/dev", "/proc", "/sys", "/run", "/nix"}
 	var out []string
 	for _, p := range paths {
 		skip := false
-		for _, s := range scratch {
+		for _, s := range provided {
 			if p == s || strings.HasPrefix(p, s+"/") {
 				skip = true
 				break
 			}
-		}
-		// A dotfile sitting directly in the home directory (~/.curlrc, ~/.netrc) is
-		// tool config, not application data.
-		if home != "" && filepath.Dir(p) == home && strings.HasPrefix(filepath.Base(p), ".") {
-			skip = true
 		}
 		if !skip {
 			out = append(out, p)
