@@ -115,10 +115,11 @@ func filesystemLayer(nsOK bool, nsReason string, landlockAvail bool) (enforce.St
 			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially " +
 			"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of " +
 			"an allowed tree, and any granted /proc is the host's), no PID namespace (the target can see and " +
-			"signal same-user processes, and inject into them where ptrace is unrestricted), and no network " +
-			"namespace (IP egress is blocked by seccomp, but a unix socket to a host daemon - including an " +
-			"abstract-namespace one no grant is needed to reach - is not fenced as a netns would). It confines " +
-			"filesystem read/write/exec, nothing more (" + nsReason + ")"
+			"signal same-user processes, inject into them where ptrace is unrestricted, and leave a background " +
+			"process running after the run - there is no namespace to tear one down), and no network namespace " +
+			"(seccomp blocks IP egress but not netlink interface enumeration, nor a unix socket to a host " +
+			"daemon, including an abstract-namespace one no grant is needed to reach). It confines filesystem " +
+			"read/write/exec, nothing more (" + nsReason + ")"
 	default:
 		return enforce.Unavailable, nsReason +
 			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
