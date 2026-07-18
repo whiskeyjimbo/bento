@@ -59,6 +59,16 @@ func DispatchReexec() {
 			reexecFail(err)
 		}
 		os.Exit(code)
+	case launcher.SentinelLaunchDegraded:
+		cfg, err := launcher.DecodeLaunchDegraded(os.Args[1:])
+		if err != nil {
+			reexecFail(err)
+		}
+		code, err := launcher.RunDegraded(cfg)
+		if err != nil {
+			reexecFail(err)
+		}
+		os.Exit(code)
 	case launcher.SentinelBridge:
 		if len(os.Args) != 3 {
 			reexecFail(fmt.Errorf("%s takes exactly one socket argument", launcher.SentinelBridge))

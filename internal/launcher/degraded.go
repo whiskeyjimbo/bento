@@ -1,0 +1,160 @@
+package launcher
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
+)
+
+// SentinelLaunchDegraded marks the no-bwrap launch stage: bento re-exec'd as a
+// DIRECT child (not inside bubblewrap) to run a target under Landlock-only
+// filesystem confinement plus the seccomp exec- and egress-blocks. It is the
+// execution half of the degraded tier (design 6.2), entered only under
+// --allow-degraded on a userns-blocked host.
+const SentinelLaunchDegraded = "__bento_launch_degraded"
+
+// DegradedConfig describes a no-bwrap run. Unlike Config it carries a Readable set:
+// with a mount namespace the bwrap binds decide what is visible, but here Landlock
+// is the only fence, so the read set must be named explicitly.
+type DegradedConfig struct {
+	// Readable are paths the target may read. A directory is granted read+execute
+	// recursively; a file is granted read only, so a granted read file does not leak
+	// its siblings.
+	Readable []string
+	// Writable are paths the target may read and write.
+	Writable []string
+	// ExecPaths are individual files granted read+execute - the interpreter and the
+	// entrypoint, which a plain read-file rule would leave non-executable.
+	ExecPaths []string
+	// Block installs the exec-block seccomp filter (policy exec none/none-strict).
+	Block bool
+	// StrictBlock additionally blocks fork/vfork/process-clone where the architecture
+	// supports it. Only meaningful with Block.
+	StrictBlock bool
+	// Scratch is a fresh writable directory (already in Writable) exported as TMPDIR,
+	// so a target that writes temp files has a granted place for them instead of the
+	// host /tmp, which the read/write set deliberately excludes.
+	Scratch string
+	// Target is the absolute command to run: interpreter, entrypoint, and args.
+	Target []string
+}
+
+// RunDegraded is the no-bwrap execution stage. Every confinement here is the ONLY
+// one of its kind - there is no mount namespace behind it - so each failure is
+// fatal: the target is never run half-confined. Order mirrors the bwrap launcher
+// (seccomp before the target is reached, Landlock last), minus the egress bridge,
+// which the degraded tier does not run: a no-network manifest gets a seccomp egress
+// block instead, closing the socket even for a proxy-ignoring static binary.
+func RunDegraded(cfg DegradedConfig) (int, error) {
+	if len(cfg.Target) == 0 {
+		return 0, fmt.Errorf("launcher: no target command")
+	}
+	// Landlock is the whole filesystem guarantee here; without it there is nothing to
+	// fall back on, so refuse rather than run the target with the host FS exposed.
+	if !landlock.Available() {
+		return 0, fmt.Errorf("launcher: refusing to run - the degraded tier needs Landlock and this kernel has none")
+	}
+	if !seccomp.EgressSupported() {
+		return 0, fmt.Errorf("launcher: refusing to run - the degraded tier needs the seccomp egress block, unavailable on this architecture")
+	}
+
+	if err := dropInheritedFDs(); err != nil {
+		return 0, err
+	}
+	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
+	}
+
+	env := os.Environ()
+	if cfg.Scratch != "" {
+		env = append(env, "TMPDIR="+cfg.Scratch, "TMP="+cfg.Scratch, "TEMP="+cfg.Scratch)
+	}
+
+	if cfg.Block {
+		if err := installExecFilter(cfg.StrictBlock); err != nil {
+			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
+		}
+	}
+	// The degraded tier only ever runs a no-network manifest (a network manifest
+	// requires LayerNetwork, which is Unavailable without a netns, so it refuses at
+	// admission). So egress is always blocked here, giving even a static binary a real
+	// no-egress guarantee in place of the netns.
+	if err := seccomp.BlockEgress(); err != nil {
+		return 0, fmt.Errorf("launcher: refusing to run - could not install the egress filter: %w", err)
+	}
+
+	// Landlock last, so the setup above (which does not touch confined paths) is not
+	// itself restricted. A failure is fatal - this is the primary FS confinement.
+	if err := landlock.RestrictDegraded(cfg.Readable, cfg.Writable, cfg.ExecPaths); err != nil {
+		return 0, fmt.Errorf("launcher: refusing to run - could not apply the Landlock confinement: %w", err)
+	}
+
+	if cfg.Block {
+		return 0, seccomp.Exec(cfg.Target, env)
+	}
+	return superviseTarget(cfg.Target, env)
+}
+
+// EncodeLaunchDegraded renders the direct-child launch invocation for cfg. The
+// caller prepends argv[0] (the bento binary path). It is the encode half of the wire
+// contract DecodeLaunchDegraded parses; the two must change together.
+func EncodeLaunchDegraded(cfg DegradedConfig) []string {
+	args := []string{SentinelLaunchDegraded, "--exec", execModeString(Config{Block: cfg.Block, StrictBlock: cfg.StrictBlock})}
+	if cfg.Scratch != "" {
+		args = append(args, "--scratch", cfg.Scratch)
+	}
+	for _, p := range cfg.Readable {
+		args = append(args, "--ro", p)
+	}
+	for _, p := range cfg.Writable {
+		args = append(args, "--rw", p)
+	}
+	for _, p := range cfg.ExecPaths {
+		args = append(args, "--x", p)
+	}
+	args = append(args, "--")
+	return append(args, cfg.Target...)
+}
+
+// DecodeLaunchDegraded parses a degraded-launch invocation back into a
+// DegradedConfig. Errors are returned, not printed: this runs where the flag
+// package's default output would land on the target's stderr.
+func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
+	if len(args) == 0 || args[0] != SentinelLaunchDegraded {
+		return DegradedConfig{}, fmt.Errorf("launcher: not a degraded-launch invocation")
+	}
+	fs := flag.NewFlagSet(SentinelLaunchDegraded, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		execMode          string
+		scratch           string
+		read, write, exec stringList
+	)
+	fs.StringVar(&execMode, "exec", "none", "")
+	fs.StringVar(&scratch, "scratch", "", "")
+	fs.Var(&read, "ro", "")
+	fs.Var(&write, "rw", "")
+	fs.Var(&exec, "x", "")
+	if err := fs.Parse(args[1:]); err != nil {
+		return DegradedConfig{}, fmt.Errorf("launcher: parsing degraded-launch invocation: %w", err)
+	}
+	block, strict, err := parseExecMode(execMode)
+	if err != nil {
+		return DegradedConfig{}, err
+	}
+	return DegradedConfig{
+		Readable:    read,
+		Writable:    write,
+		ExecPaths:   exec,
+		Block:       block,
+		StrictBlock: strict,
+		Scratch:     scratch,
+		Target:      fs.Args(),
+	}, nil
+}

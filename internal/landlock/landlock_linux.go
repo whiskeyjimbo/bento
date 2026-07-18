@@ -52,6 +52,56 @@ func RestrictTo(read, write []string) error {
 	return nil
 }
 
+// RestrictDegraded is the PRIMARY filesystem confinement for the no-bwrap degraded
+// tier: with no mount namespace the whole host filesystem is visible, so this
+// ruleset is the only thing standing between the target and every path it is not
+// granted. Unlike RestrictTo (a best-effort backstop behind bwrap), a failure to
+// apply this is fatal to the caller - it must refuse to run the target rather than
+// leave it unconfined.
+//
+// read paths get read access (directories also get execute and are recursive; a
+// file gets read only, so granting a read file does not leak its siblings). write
+// paths get read-write. exec paths get read+execute on the individual file - the
+// entrypoint when it is its own interpreter (a compiled binary), which a read file
+// rule would leave non-executable. Missing paths are skipped, as in RestrictTo.
+//
+// It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
+// ABI. That is acceptable here because every right used (read/write/execute path
+// access) exists in ABI v1, the floor the probe already gates the tier on; there is
+// no newer right whose silent loss would weaken the stated guarantee.
+func RestrictDegraded(read, write, exec []string) error {
+	var rules []ll.Rule
+	classify := func(paths []string, dirRule, fileRule func(...string) ll.FSRule) {
+		var dirs, files []string
+		for _, p := range paths {
+			fi, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			if fi.IsDir() {
+				dirs = append(dirs, p)
+			} else {
+				files = append(files, p)
+			}
+		}
+		if len(dirs) > 0 {
+			rules = append(rules, dirRule(dirs...))
+		}
+		if len(files) > 0 {
+			rules = append(rules, fileRule(files...))
+		}
+	}
+	classify(read, ll.RODirs, ll.ROFiles)
+	classify(write, ll.RWDirs, ll.RWFiles)
+	if e := existing(exec); len(e) > 0 {
+		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
+	}
+	if err := ll.V9.BestEffort().RestrictPaths(rules...); err != nil {
+		return fmt.Errorf("landlock: applying degraded ruleset: %w", err)
+	}
+	return nil
+}
+
 func existing(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
