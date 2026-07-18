@@ -25,18 +25,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// unprivileged user namespace here; probe that once and report both layers
 	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
 	nsOK, nsReason := usableNamespaces(ctx)
-	if nsOK {
-		// The filesystem layer is enforced by bwrap. Landlock, when present, is a
-		// second independent kernel backstop behind it; note whether it is active so
-		// its presence is not silently assumed.
-		detail := "Landlock backstop active"
-		if !landlock.Available() {
-			detail = "no Landlock backstop on this kernel; bwrap alone confines"
-		}
-		r.Add(enforce.LayerFilesystem, enforce.Enforced, detail)
-	} else {
-		r.Add(enforce.LayerFilesystem, enforce.Unavailable, nsReason)
-	}
+	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available())
+	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
 	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
@@ -97,6 +87,37 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	return r
+}
+
+// filesystemLayer decides the filesystem-confinement state from namespace and
+// Landlock availability, the two independent capabilities it rests on:
+//
+//   - userns OK: bwrap gives full confinement (fresh rootfs, mount namespace, the
+//     deny-list binds); Landlock, when present, is a second kernel backstop behind it.
+//   - userns blocked but Landlock present: the Landlock-only degraded tier - path
+//     read/write/exec rules and nothing else. No mount namespace means no rootfs, no
+//     hidden /proc, and critically no deny-list binds, so it is materially weaker
+//     than the full sandbox, not the same thing by another mechanism (design 6.2).
+//   - neither: nothing confines the filesystem, so the layer is unavailable and a
+//     run refuses outright rather than offering a degraded mode that enforces nothing.
+//
+// The network layer is deliberately NOT three-stated the same way: without a user
+// namespace there is no netns to fence egress, so it stays Unavailable, which is
+// what makes a network manifest refuse even under --allow-degraded.
+func filesystemLayer(nsOK bool, nsReason string, landlockAvail bool) (enforce.State, string) {
+	switch {
+	case nsOK && landlockAvail:
+		return enforce.Enforced, "Landlock backstop active"
+	case nsOK:
+		return enforce.Enforced, "no Landlock backstop on this kernel; bwrap alone confines"
+	case landlockAvail:
+		return enforce.Degraded, "unprivileged user namespaces are blocked, so bubblewrap cannot run; " +
+			"confinement falls back to Landlock path rules alone - no mount namespace, so the deny-list, " +
+			"rootfs isolation, and /proc hiding do not apply (" + nsReason + ")"
+	default:
+		return enforce.Unavailable, nsReason +
+			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
+	}
 }
 
 // usableNamespaces reports whether bwrap is installed and can create here the

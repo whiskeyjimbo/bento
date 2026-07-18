@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 	"github.com/whiskeyjimbo/bento-v2/policy"
@@ -568,19 +569,29 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 		states[l.Layer] = l.State
 	}
 
-	// Filesystem and network confinement both need bwrap's user namespace; a host
-	// that cannot create one must report both unavailable, not claim network is
-	// enforced while bwrap cannot even run (the overclaim this replaced).
+	// Network confinement needs bwrap's user namespace strictly: no userns, no netns
+	// to fence egress into, so it is Unavailable - never Degraded, the guardrail that
+	// keeps a network manifest refusing even under --allow-degraded.
 	nsOK, _ := usableNamespaces(context.Background())
-	wantNS := enforce.Unavailable
+	wantNet := enforce.Unavailable
 	if nsOK {
-		wantNS = enforce.Enforced
+		wantNet = enforce.Enforced
 	}
-	if states[enforce.LayerFilesystem] != wantNS {
-		t.Errorf("filesystem state = %v, want %v", states[enforce.LayerFilesystem], wantNS)
+	if states[enforce.LayerNetwork] != wantNet {
+		t.Errorf("network state = %v, want %v (must track namespace availability, not be unconditionally enforced)", states[enforce.LayerNetwork], wantNet)
 	}
-	if states[enforce.LayerNetwork] != wantNS {
-		t.Errorf("network state = %v, want %v (must track namespace availability, not be unconditionally enforced)", states[enforce.LayerNetwork], wantNS)
+
+	// Filesystem is three-stated: bwrap when userns works, else the Landlock-only
+	// degraded tier when the kernel has Landlock, else no confinement at all.
+	wantFS := enforce.Unavailable
+	switch {
+	case nsOK:
+		wantFS = enforce.Enforced
+	case landlock.Available():
+		wantFS = enforce.Degraded
+	}
+	if states[enforce.LayerFilesystem] != wantFS {
+		t.Errorf("filesystem state = %v, want %v", states[enforce.LayerFilesystem], wantFS)
 	}
 
 	wantExec := enforce.Unavailable
