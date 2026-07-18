@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func find(res Result, path string) (Access, bool) {
@@ -103,6 +104,91 @@ func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
 	// (or an unreaped zombie) is still around.
 	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
 		t.Fatalf("tracee still present after killAndReap: kill(pid, 0) = %v, want ESRCH", err)
+	}
+}
+
+// On the loop's defensive wait-error return, a descendant tracee already attached
+// (via the trace-fork options) must be killed and reaped, not left behind under a
+// tracer that may never exit. That return is effectively unreachable in normal
+// operation, so the wait is forced to error here - right after a descendant's stop
+// is seen - and the descendant is asserted gone (not a live tracee, not a zombie).
+func TestTraceReapsDescendantOnLoopWaitError(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+
+	var root, descendant int
+	armed := false
+	orig := waitTracee
+	waitTracee = func(pid int, ws *syscall.WaitStatus, flags int, ru *syscall.Rusage) (int, error) {
+		if armed {
+			return 0, syscall.EIO
+		}
+		w, werr := syscall.Wait4(pid, ws, flags, ru)
+		if werr != nil {
+			return w, werr
+		}
+		switch {
+		case root == 0:
+			root = w // the first stop is the root; its child does not exist yet
+		case w != root && ws.Stopped():
+			descendant = w // a live descendant is now attached
+			armed = true   // ...error on the next wait, with it still tracked
+		}
+		return w, werr
+	}
+	defer func() { waitTracee = orig }()
+
+	// Fork one long-lived child so exactly one descendant is attached and stays alive
+	// (30s) past the forced error - its pid is stable and cannot be recycled into a
+	// false "still present". `wait` keeps root blocked rather than exiting first.
+	script := "sleep 30 &\nwait\n"
+	if _, err := Trace([]string{sh, "-c", script}, os.Environ(), nil, nil, nil); err == nil {
+		t.Fatal("Trace should have returned the forced wait error")
+	}
+	if descendant == 0 {
+		t.Skip("no descendant was attached before the forced error; nothing to assert")
+	}
+	// The descendant must not survive as a live tracee. It was SIGKILL'd, so it is
+	// dead; whether this tracer or init reaps the corpse is a race, so poll until the
+	// pid is fully gone (ESRCH) rather than catch a transient zombie. Before the fix
+	// the descendant is never killed, stays TASK_TRACED, and this never reaches ESRCH.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := syscall.Kill(descendant, 0); err == syscall.ESRCH {
+			break
+		} else if !traceeAliveStopped(descendant) {
+			// Killed and reaped-pending (zombie): dead, not leaked.
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("descendant %d still alive and TASK_TRACED after the failed trace; it was not killed", descendant)
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// traceeAliveStopped reports whether pid is a live process in a stopped/traced or
+// runnable state (the leak), as opposed to a zombie ('Z') or gone. The process
+// state is the third space-separated field of /proc/<pid>/stat, after the
+// parenthesized comm (which can itself contain spaces/parens).
+func traceeAliveStopped(pid int) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false // gone
+	}
+	s := string(b)
+	close := strings.LastIndexByte(s, ')')
+	if close < 0 || close+2 >= len(s) {
+		return false
+	}
+	switch s[close+2] {
+	case 'Z', 'X', 'x':
+		return false // dead
+	default:
+		return true // R, S, D, t, T: still alive
 	}
 }
 

@@ -77,16 +77,31 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	}
 	root := cmd.Process.Pid
 
+	// Every tracee the loop has seen and not yet reaped: root, plus any descendant
+	// auto-attached via PTRACE_O_TRACECLONE/FORK/VFORK. The cleanup guard reaps all of
+	// them, because a descendant attached mid-trace is left TASK_TRACED-forever on an
+	// early error return - killing root does not reach it (there is no shared process
+	// group, and PTRACE_O_EXITKILL fires only when this tracer exits, which for a
+	// library embedder may be never).
+	tracees := map[int]bool{root: true}
+
 	// The child comes up ptrace-stopped and every error path below returns while it
-	// is still suspended. Kill and reap it on any such early return, so a failed
-	// trace leaks no TASK_TRACED process: PTRACE_O_EXITKILL only fires when this
-	// tracer exits, which for a library embedder's process may be never. Reaping
-	// stays on the locked thread (this defer runs before UnlockOSThread), as ptrace
-	// requires. The happy path clears this after the loop has already reaped root.
+	// is still suspended. Kill and reap every live tracee on any such early return, so
+	// a failed trace leaks no TASK_TRACED process. Reaping stays on the locked thread
+	// (this defer runs before UnlockOSThread), as ptrace requires. The happy path
+	// clears this after the loop has already reaped root.
+	//
+	// Every tracee is killed and reaped. A descendant reparented to init after root
+	// dies may be collected by init rather than here, but it is dead either way - the
+	// leak this guards is a descendant left alive and TASK_TRACED, and the SIGKILL ends
+	// that regardless of who reaps the corpse.
 	succeeded := false
 	defer func() {
-		if !succeeded {
-			killAndReap(root)
+		if succeeded {
+			return
+		}
+		for pid := range tracees {
+			killAndReap(pid)
 		}
 	}()
 
@@ -122,17 +137,21 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	}
 
 	for {
-		wpid, err := syscall.Wait4(-1, &ws, 0, nil)
+		wpid, err := waitTracee(-1, &ws, 0, nil)
 		if err == syscall.EINTR {
 			continue
 		}
 		if err != nil {
 			// This wait almost never errors (EINTR is retried above; ECHILD cannot
 			// happen while root is unreaped), so it is effectively a defensive exit.
-			// The cleanup guard reaps root; any descendant tracees already attached
-			// here are left to PTRACE_O_EXITKILL rather than individually reaped.
+			// The cleanup guard reaps root and every descendant tracked below.
 			return Result{}, fmt.Errorf("observe: wait: %w", err)
 		}
+
+		// Any pid the tracer waits on is an attached tracee: root, or a descendant
+		// auto-attached by the trace-clone/fork options. Track it so the cleanup guard
+		// reaps it on an early return; drop it again when it ends.
+		tracees[wpid] = true
 
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):
@@ -148,7 +167,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			sort.Slice(res.Accesses, func(i, j int) bool { return res.Accesses[i].Path < res.Accesses[j].Path })
 			return res, nil
 		case ws.Exited() || ws.Signaled():
-			// A subprocess ended; nothing to resume.
+			// A subprocess ended and is reaped; drop it so the guard does not wait on a
+			// freed pid, and nothing to resume.
+			delete(tracees, wpid)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones; recording on both
@@ -174,6 +195,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		}
 	}
 }
+
+// waitTracee is the loop's wait syscall, indirected through a var so a test can
+// force the loop's defensive error return - otherwise effectively unreachable (EINTR
+// is retried, ECHILD cannot occur while root is unreaped) - and check that a
+// descendant attached by then is reaped, not leaked.
+var waitTracee = syscall.Wait4
 
 // killAndReap SIGKILLs a tracee and waits for its death, so a trace that returns
 // before the target completes leaves no suspended TASK_TRACED process behind. A
