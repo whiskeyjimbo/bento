@@ -204,7 +204,10 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 		fmt.Fprintf(w, "        (amd64). Where it is unavailable, run and doctor report the exec-strict\n")
 		fmt.Fprintf(w, "        layer degraded and --strict refuses it.\n")
 	default:
-		fmt.Fprintf(w, "exec:         blocked (no subprocesses)\n")
+		fmt.Fprintf(w, "exec:         blocked on the standard exec path (execve)\n")
+		fmt.Fprintf(w, "  note: execve covers effectively every real subprocess (fork+exec, os/exec,\n")
+		fmt.Fprintf(w, "        system). execveat stays open by construction - the launcher needs it -\n")
+		fmt.Fprintf(w, "        so a program written to spawn through execveat is not stopped.\n")
 	}
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
