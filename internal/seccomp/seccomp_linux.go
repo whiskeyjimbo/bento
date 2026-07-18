@@ -67,7 +67,7 @@ func BlockExec() error {
 // permits it), move_pages (with a NULL nodes
 // argument it reports another process's page residency) and get_robust_list (leaks
 // another process's robust-futex head pointer, an ASLR disclosure). Neither the Go
-// runtime nor bento calls either - glibc registers robust lists with set_robust_list,
+// runtime nor bento calls any of these - glibc registers robust lists with set_robust_list,
 // not get - so denying them with EPERM costs nothing here.
 //
 // It is for the degraded tier only: the bwrap tier's PID namespace already
