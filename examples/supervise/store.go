@@ -253,6 +253,38 @@ func normalizeHost(h string) string {
 
 func netKey(host, port string) string { return normalizeHost(host) + ":" + port }
 
+// splitNetKey reverses netKey. The key always ends in ":port" (netKey builds it),
+// so the host is everything before the last colon - correct for an IPv6 literal too.
+func splitNetKey(k string) (host, port string) {
+	if i := strings.LastIndex(k, ":"); i >= 0 {
+		return k[:i], k[i+1:]
+	}
+	return k, ""
+}
+
+// denyUnderAllow names a filesystem deny that lies under an allowed grant of the
+// same kind. bento has no per-path deny, so the covering grant binds the whole
+// tree: the enforced run cannot honor the sub-deny, and a manifest (a pure
+// allowlist) cannot express it at all.
+type denyUnderAllow struct{ kind, deny, allow string }
+
+// deniesUnderAllows returns each stored deny that a broader allow would cover, so
+// one caller can warn about it and another (export) can refuse it.
+func deniesUnderAllows(grants []string, stored map[string]decision, kind string) []denyUnderAllow {
+	var out []denyUnderAllow
+	for path, d := range stored {
+		if d != deny {
+			continue
+		}
+		for _, g := range grants {
+			if path != g && underComponent(path, g) {
+				out = append(out, denyUnderAllow{kind, path, g})
+			}
+		}
+	}
+	return out
+}
+
 // decideNetwork returns the remembered decision for a host:port, or false if
 // unknown (prompt). Deny wins across the global and per-app layers.
 func (s *store) decideNetwork(key, host, port string) (decision, bool) {

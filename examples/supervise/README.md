@@ -149,8 +149,31 @@ since a key can be a name the sandboxed target chose.
 the script re-prompts for everything. Global rules are the finer-grained layer, so
 `forget global` can drop a single `host:port` rule (that is the footgun to clear).
 
-Not yet built (tracked as follow-ups): exporting the store to a `bento run`
-manifest, and global (cross-script) read/write/exec rules.
+### Graduating to an attested manifest
+
+`export` turns an app's remembered approvals into a bento manifest, so the same
+script can run under plain `bento run` once you attest it:
+
+```sh
+supervise perms export <handle>            # writes <script>.manifest.yaml
+bento approve <script>.manifest.yaml       # a deliberate human attestation
+bento run <script>                         # now runs declared, no wrapper
+```
+
+Export writes the *effective* policy: a host a global rule denies never reaches the
+allowlist, and it refuses outright if a deny is nested under an allowed dir - a
+manifest is a pure allowlist and cannot express that. Like `bento profile` it leaves
+the provenance unattested; graduating store memory into a declared policy is honest,
+but `bento approve` is the separate step that attests it.
+
+`import` runs the loop backwards, seeding an app's approvals from an existing
+manifest. It hashes the entrypoint's *current* bytes and asks you to confirm, since
+bento's fingerprint attests the policy, not the code - the file may not be what the
+manifest was written for. A remembered deny is kept (only `forget` clears a deny),
+and a wildcard or port-range rule is skipped, since the store holds only literal
+`host:port` keys; those stay runtime prompts.
+
+Not yet built (tracked as follow-ups): global (cross-script) read/write/exec rules.
 
 ## The honesty loop
 
@@ -162,7 +185,7 @@ model maps onto an editor agent's allow choices:
 | ------------- | --------------------------------------------------------------- |
 | Allow once    | `[o]nce` - admitted for this run, not remembered                |
 | Allow session | `[y]es` - remembered for this script across runs                |
-| Always allow  | export the store to a bento manifest, then `bento run` (planned) |
+| Always allow  | `perms export` to a bento manifest, `bento approve`, then `bento run` |
 
 ## Code map
 

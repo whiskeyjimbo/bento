@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/whiskeyjimbo/bento-v2/manifest"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -35,6 +38,10 @@ func perms(args []string, in io.Reader, out io.Writer) int {
 		return forgetPerms(s, args[1:], out)
 	case "reset":
 		return resetPerms(s, in, out)
+	case "export":
+		return exportPerms(s, args[1:], out)
+	case "import":
+		return importPerms(s, args[1:], in, out)
 	default:
 		permsUsage(out)
 		return 2
@@ -49,6 +56,8 @@ Usage:
   supervise perms forget app <handle>      forget one app's decisions (handle from list)
   supervise perms forget global [host:port]  forget one global rule, or all of them
   supervise perms reset                    clear the entire store (asks to confirm)
+  supervise perms export <handle> [-o f]   write an app's approvals as a bento manifest
+  supervise perms import <manifest.yaml>   seed an app's approvals from a manifest
 `)
 }
 
@@ -180,6 +189,203 @@ func resetPerms(s *store, in io.Reader, out io.Writer) int {
 	}
 	fmt.Fprintln(out, "cleared the permission store")
 	return 0
+}
+
+// exportPerms graduates an app's remembered approvals into a bento manifest, so
+// the same script can run under plain `bento run` once a human attests it with
+// `bento approve`. It exports the EFFECTIVE decision (a globally-denied host never
+// leaks into the allowlist) and refuses a deny nested under an allowed dir, which a
+// pure-allowlist manifest cannot express. Like `bento profile` it leaves the
+// provenance unattested: graduating store memory into a declared policy is honest,
+// but the attestation is a separate deliberate step.
+func exportPerms(s *store, args []string, out io.Writer) int {
+	handle, outPath := "", ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-o":
+			if i+1 >= len(args) {
+				permsUsage(out)
+				return 2
+			}
+			i++
+			outPath = args[i]
+		default:
+			if handle != "" {
+				permsUsage(out)
+				return 2
+			}
+			handle = args[i]
+		}
+	}
+	if handle == "" {
+		permsUsage(out)
+		return 2
+	}
+	key, err := s.resolveAppPrefix(handle)
+	if err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	a := s.Apps[key]
+
+	// A deny under an allowed dir cannot survive the round-trip: the manifest grants
+	// the dir and would re-expose the denied child. Refuse rather than silently
+	// over-grant (drop the deny) or under-grant (drop the allow).
+	offending := append(
+		deniesUnderAllows(allowedPaths(a.Read), a.Read, "read"),
+		deniesUnderAllows(allowedPaths(a.Write), a.Write, "write")...)
+	if len(offending) > 0 {
+		for _, c := range offending {
+			fmt.Fprintf(out, "supervise: cannot export: %s %s is denied but lies under the allowed %s; a manifest is a pure allowlist and cannot express the sub-deny. forget one of them first.\n",
+				c.kind, quotePath(c.deny), quotePath(c.allow))
+		}
+		return 1
+	}
+
+	pol := &policy.Policy{
+		Entrypoint:  a.Entrypoint,
+		Interpreter: a.Interpreter,
+		Read:        allowedPaths(a.Read),
+		Write:       allowedPaths(a.Write),
+		Exec:        policy.ExecNone,
+	}
+	if a.Exec == string(policy.ExecAll) {
+		pol.Exec = policy.ExecAll
+	}
+	for _, k := range sortedKeys(a.Network) {
+		if eff, ok := resolveLattice(s.Global.Network[k], a.Network[k]); !ok || eff != allow {
+			continue // effective deny (or unknown): keep it out of the allowlist
+		}
+		host, port := splitNetKey(k)
+		pol.Network = append(pol.Network, policy.NetworkRule{Host: host, Port: port})
+	}
+
+	if err := pol.Validate(); err != nil {
+		fmt.Fprintf(out, "supervise: exported policy is invalid: %v\n", err)
+		return 1
+	}
+	data, err := manifest.Marshal(pol, manifest.Provenance{
+		GeneratedBy: "bento-supervise",
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	if outPath == "" {
+		outPath = a.Entrypoint + ".manifest.yaml"
+	}
+	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	// The descriptive path is prettied for reading; the runnable command uses the
+	// raw path, since a ~-shortened path does not expand inside the shell.
+	fmt.Fprintf(out, "wrote %s - review it, then run: bento approve %s\n", quotePath(outPath), outPath)
+	return 0
+}
+
+// importPerms seeds the store for an app from an existing manifest, so a declared
+// policy becomes the wrapper's remembered answers. It keys the app by the CURRENT
+// bytes of the manifest's entrypoint and requires explicit consent: bento's
+// fingerprint attests the policy, not the code, so the file on disk may not be what
+// the manifest was written for. A pre-existing deny is kept (only `forget` clears a
+// deny), and a wildcard/range network rule is skipped - the store holds only
+// literal host:port keys, so those are left to prompt at runtime.
+func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
+	if len(args) != 1 {
+		permsUsage(out)
+		return 2
+	}
+	f, err := os.Open(args[0])
+	if err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	defer f.Close()
+	pol, err := manifest.Load(f)
+	if err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	key, err := appKey(pol.Entrypoint)
+	if err != nil {
+		fmt.Fprintf(out, "supervise: cannot hash the manifest's entrypoint: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(out, "seed the store from %s for %s (hashing its current bytes)?\n", quotePath(args[0]), quotePath(pol.Entrypoint))
+	fmt.Fprint(out, "bento's fingerprint attests the policy, not the code, so confirm the file is what you expect. [y/N] ")
+	if !confirmed(in) {
+		fmt.Fprintln(out, "cancelled")
+		return 0
+	}
+
+	a := s.app(key)
+	a.Entrypoint = pol.Entrypoint
+	a.Interpreter = pol.Interpreter
+	for _, p := range pol.Read {
+		seedPath(s, key, "read", p, out)
+	}
+	for _, p := range pol.Write {
+		seedPath(s, key, "write", p, out)
+	}
+	if pol.Exec == policy.ExecAll {
+		// ExecNone is a recorded human deny, not an unset default, so keep it: only
+		// forget clears a deny, the same rule the path and network loops honor.
+		if a.Exec == string(policy.ExecNone) {
+			fmt.Fprintln(out, "  kept the existing exec deny - forget it first if you want the manifest's allow")
+		} else {
+			a.Exec = string(policy.ExecAll)
+		}
+	}
+	for _, r := range pol.Network {
+		if isWildcardRule(r) {
+			fmt.Fprintf(out, "  skipped %s:%s - a wildcard/range rule has no literal store key; it stays a runtime prompt\n", strconv.Quote(r.Host), r.Port)
+			continue
+		}
+		k := netKey(r.Host, r.Port)
+		if s.Global.Network[k] == deny || a.Network[k] == deny {
+			fmt.Fprintf(out, "  kept the existing deny for %s - forget it first if you want the manifest's allow\n", quoteNetKey(k))
+			continue
+		}
+		s.rememberNetwork(key, r.Host, r.Port, allow, false)
+	}
+	if err := s.save(); err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "seeded app %s from the manifest\n", shortKey(key))
+	return 0
+}
+
+// seedPath records a manifest path as an allow, unless a deny is already stored for
+// it: only `forget` clears a deny, so import must never flip one to allow.
+func seedPath(s *store, key, kind, path string, out io.Writer) {
+	if d, ok := s.decidePath(key, kind, path); ok && d == deny {
+		fmt.Fprintf(out, "  kept the existing %s deny covering %s - forget it first if you want the manifest's allow\n", kind, quotePath(path))
+		return
+	}
+	s.rememberPath(key, kind, path, allow)
+}
+
+// allowedPaths returns the paths a store map allows, sorted for a stable manifest.
+func allowedPaths(m map[string]decision) []string {
+	var out []string
+	for p, d := range m {
+		if d == allow {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isWildcardRule reports whether a network rule cannot become a literal store key:
+// "*" or a ".suffix" host, or a "*"/range port. Those stay runtime prompts.
+func isWildcardRule(r policy.NetworkRule) bool {
+	return r.Host == "*" || strings.HasPrefix(r.Host, ".") ||
+		r.Port == "*" || strings.Contains(r.Port, "-")
 }
 
 // confirmed reads one line and reports whether it is an explicit yes; anything

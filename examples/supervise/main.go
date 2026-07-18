@@ -293,21 +293,12 @@ func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy)
 	if a == nil {
 		return
 	}
-	check := func(grants []string, denies map[string]decision, kind string) {
-		for path, d := range denies {
-			if d != deny {
-				continue
-			}
-			for _, g := range grants {
-				if path != g && underComponent(path, g) {
-					fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
-						kind, quotePath(path), quotePath(g))
-				}
-			}
-		}
+	for _, c := range append(
+		deniesUnderAllows(final.Read, a.Read, "read"),
+		deniesUnderAllows(final.Write, a.Write, "write")...) {
+		fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
+			c.kind, quotePath(c.deny), quotePath(c.allow))
 	}
-	check(final.Read, a.Read, "read")
-	check(final.Write, a.Write, "write")
 }
 
 // supervisor is the live network gate: bento consults it for every undeclared
