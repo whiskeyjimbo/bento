@@ -204,7 +204,7 @@ func TestConcurrencyIsCapped(t *testing.T) {
 
 	// Fill every slot with a held-open tunnel.
 	held := make([]net.Conn, 0, maxConcurrent)
-	for i := 0; i < maxConcurrent; i++ {
+	for range maxConcurrent {
 		c := dialProxy()
 		fmt.Fprintf(c, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")
 		held = append(held, c)
@@ -278,7 +278,7 @@ func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
 	const chunks = 15
 	const spacing = 20 * time.Millisecond
 	go func() {
-		for i := 0; i < chunks; i++ {
+		for range chunks {
 			if _, err := io.WriteString(sandbox, "x"); err != nil {
 				return
 			}

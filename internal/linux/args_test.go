@@ -3,6 +3,7 @@ package linux
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,11 +55,11 @@ func testSandbox(existing ...string) sandbox {
 				}
 				isDir = true
 				rest := e[len(prefix):]
-				i := strings.IndexByte(rest, '/')
-				if i < 0 {
+				before, _, ok := strings.Cut(rest, "/")
+				if !ok {
 					continue // a leaf directly under p is a file, not a subdirectory
 				}
-				if name := rest[:i]; !seen[name] {
+				if name := before; !seen[name] {
 					seen[name] = true
 					names = append(names, name)
 				}
@@ -216,12 +217,7 @@ func TestCreatedShieldDirsExcludesFileShields(t *testing.T) {
 }
 
 func containsStr(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, s)
 }
 
 func TestNoNetworkRulesUnsharesNetwork(t *testing.T) {

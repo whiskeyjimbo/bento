@@ -894,7 +894,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 // is the name worth making, and pointing it at real short-circuits the rest.
 func missingHop(abs, real string, filled []string) string {
 	cur := abs
-	for i := 0; i < maxSymlinkDepth; i++ {
+	for range maxSymlinkDepth {
 		if !coveredBy(cur, filled) {
 			return cur
 		}

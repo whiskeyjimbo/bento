@@ -136,7 +136,7 @@ func TestBridgeOneWayTransferNotIdleTimedOut(t *testing.T) {
 	// cannot spuriously trip the timeout.
 	const chunks = 15
 	const spacing = 20 * time.Millisecond
-	for i := 0; i < chunks; i++ {
+	for i := range chunks {
 		if _, err := io.WriteString(c, "x"); err != nil {
 			t.Fatalf("write %d: a busy one-way transfer was torn down by the idle timeout: %v", i, err)
 		}

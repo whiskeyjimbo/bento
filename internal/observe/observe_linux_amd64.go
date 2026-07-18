@@ -334,7 +334,7 @@ func readString(pid int, addr uintptr) string {
 
 	var buf [4096]byte
 	n, _ := mem.ReadAt(buf[:], int64(addr))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if buf[i] == 0 {
 			return string(buf[:i])
 		}

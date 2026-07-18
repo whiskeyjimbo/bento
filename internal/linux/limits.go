@@ -198,7 +198,7 @@ func measureDelegatedControllers() (map[string]bool, bool) {
 		return nil, false
 	}
 	set := make(map[string]bool)
-	for _, c := range strings.Fields(string(out)) {
+	for c := range strings.FieldsSeq(string(out)) {
 		set[c] = true
 	}
 	return set, true

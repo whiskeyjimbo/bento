@@ -256,7 +256,7 @@ func TestTraceReapsBackgroundedDescendantOnCleanExit(t *testing.T) {
 
 func parseChildPID(t *testing.T, out string) int {
 	t.Helper()
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "CHILD="); ok {
 			pid, err := strconv.Atoi(v)
 			if err != nil {
