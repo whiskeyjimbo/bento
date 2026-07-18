@@ -105,6 +105,11 @@ func run(scriptArg string) int {
 		return 1
 	}
 
+	// Surface any disagreement between a committed manifest and the store up front,
+	// before the trial, so the user sees that `bento run` would enforce something
+	// different from what supervise remembers.
+	warnManifestDrift(os.Stderr, s, key, script)
+
 	// Prompts read the controlling terminal, kept separate from the target's own
 	// stdin. Fall back to stdin when there is no tty, so the demo is still drivable
 	// through a pipe or pty.

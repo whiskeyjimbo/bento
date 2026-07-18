@@ -183,6 +183,19 @@ manifest was written for. A remembered deny is kept (only `forget` clears a deny
 and a wildcard or port-range rule is skipped, since the store holds only literal
 `host:port` keys; those stay runtime prompts.
 
+### Drift between the store and a manifest
+
+When a `<script>.manifest.yaml` exists next to a script you `supervise run`, the
+wrapper warns up front about any place the manifest and the store disagree - so you
+notice that plain `bento run` would enforce something different from what supervise
+remembers. It walks the store's own allow/deny decisions and flags each the manifest
+resolves the other way, naming the direction (`bento run` more permissive, or
+supervise more permissive). A manifest entry the store has no opinion on is *not*
+drift: supervise would prompt for it, which is not silent. Network rules are matched
+through the manifest's wildcards and ranges, so a concrete host the manifest covers
+via `.example` is not a false alarm. Only fields both sides express are compared;
+`args`, `env`, and `limits` are the store's blind spots.
+
 ## The honesty loop
 
 `Result.GateAdmitted` is what a run permits beyond its declared manifest, surfaced
