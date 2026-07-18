@@ -984,13 +984,14 @@ func TestProcessPathGrantIsRefused(t *testing.T) {
 	}
 }
 
-// The refusal above must not catch procfs paths that bind fine: /proc itself, its
-// system-wide files, and /dev/stdin (a symlink that resolves through the process's
-// fd on to a real file, so it never lands on a process directory).
+// The refusal above must not catch procfs paths that bind fine: system-wide files
+// under /proc and /dev/stdin (a symlink that resolves through the process's fd on to
+// a real file, so it never lands on a process directory). A grant of the whole /proc
+// is a separate case, refused by checkGrantNotManagedMount.
 func TestNonProcessProcfsGrantsStillRun(t *testing.T) {
 	requireSandbox(t)
 
-	for _, path := range []string{"/proc", "/proc/cpuinfo", "/dev/stdin"} {
+	for _, path := range []string{"/proc/cpuinfo", "/dev/stdin"} {
 		t.Run(path, func(t *testing.T) {
 			code, out := runScript(t, &policy.Policy{Read: []string{path}}, "echo ok\n")
 			if code != 0 || !strings.Contains(out, "ok") {

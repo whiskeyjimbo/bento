@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -119,6 +120,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		return nil, err
 	}
 	if err := checkGrantNotProcess(sb, p); err != nil {
+		return nil, err
+	}
+	if err := checkGrantNotManagedMount(p); err != nil {
 		return nil, err
 	}
 	if err := checkGrantNotLooped(p); err != nil {
@@ -265,6 +269,17 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 // these plus the grants; keep this list and baseFlags' writable mounts in step,
 // or Landlock will deny a write bwrap permits.
 var sandboxWritableMounts = []string{"/tmp", "/dev", "/proc"}
+
+// baseFlagsPseudoFS are the pseudo-filesystems baseFlags mounts fresh for every
+// sandbox: a hardened procfs, a minimal devtmpfs, and a tmpfs, plus the fresh
+// tmpfs (/dev/shm) and devpts (/dev/pts) that bwrap's --dev sets up implicitly
+// underneath /dev. A grant naming one of these whole would --ro-bind the host's
+// version over the sandbox's (bwrap applies mounts in argv order, last wins),
+// re-exposing host /proc/<pid>/environ, the full host device set, or other
+// processes' shared-memory or temp files. hostRootDirs excludes the top-level
+// entries from a read:/ expansion for exactly this reason; a direct grant of any
+// is refused by checkGrantNotManagedMount.
+var baseFlagsPseudoFS = []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"}
 
 func baseFlags() []string {
 	return []string{
@@ -728,6 +743,32 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 	return nil
 }
 
+// checkGrantNotManagedMount refuses a grant that resolves to a pseudo-filesystem
+// baseFlags mounts fresh (/proc, /dev, /tmp). Bound whole, the host's version
+// overmounts the sandbox's hardened one - the last mount in argv order wins - so a
+// read:/proc grant would serve host /proc/<pid>/environ (routinely API tokens and
+// DB passwords) of same-uid host processes, read:/dev the full host device set, and
+// a /tmp grant other processes' temp files. A specific path inside one still binds
+// fine; only the whole root is refused.
+func checkGrantNotManagedMount(p *policy.Policy) error {
+	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
+		abs, err := filepath.Abs(g)
+		if err != nil {
+			return fmt.Errorf("linux: %q: %w", g, err)
+		}
+		real, err := resolve(abs)
+		if err != nil {
+			return err
+		}
+		for _, m := range baseFlagsPseudoFS {
+			if real == m {
+				return fmt.Errorf("linux: grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", g, real, m, m)
+			}
+		}
+	}
+	return nil
+}
+
 // checkGrantNotLooped refuses a grant whose symlinks loop. resolveExisting leaves
 // a loop unresolved on purpose - a shield on one still fails closed - but a grant
 // is then bound at the looping path itself, and --ro-bind-try tolerates only a
@@ -1101,8 +1142,7 @@ func hostRootDirs() []string {
 	}
 	var out []string
 	for _, e := range entries {
-		switch e.Name() {
-		case "proc", "dev", "tmp":
+		if slices.Contains(baseFlagsPseudoFS, "/"+e.Name()) {
 			continue
 		}
 		out = append(out, "/"+e.Name())

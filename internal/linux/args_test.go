@@ -712,6 +712,27 @@ func TestRootReadGrantExpandsToChildren(t *testing.T) {
 	}
 }
 
+// A grant of a pseudo-filesystem baseFlags mounts fresh (/proc, /dev, /tmp) must be
+// refused: bound whole it would overmount the sandbox's hardened version with the
+// host's. A specific path inside one still binds.
+func TestManagedMountGrantRefused(t *testing.T) {
+	for _, managed := range []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"} {
+		for _, p := range []*policy.Policy{
+			{Entrypoint: "/work/run.py", Read: []string{managed}},
+			{Entrypoint: "/work/run.py", Write: []string{managed}},
+		} {
+			if _, err := compile(p, enforce.Process{}, testSandbox()); err == nil {
+				t.Errorf("grant of %s should be refused, not overmount the sandbox's own", managed)
+			}
+		}
+	}
+
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/proc/cpuinfo"}}
+	if _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
+		t.Errorf("a specific path inside /proc should still bind: %v", err)
+	}
+}
+
 // A grant inside an always-shielded directory cannot be honored, so it must be a
 // hard error rather than silently vanishing behind the shield.
 func TestGrantInsideShieldedPathIsRejected(t *testing.T) {
