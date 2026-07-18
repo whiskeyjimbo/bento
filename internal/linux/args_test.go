@@ -184,6 +184,18 @@ func pairIndex(args []string, flag, target string) int {
 
 func has(args []string, flag, target string) bool { return pairIndex(args, flag, target) >= 0 }
 
+// lastPairIndex returns the index of the last occurrence of `flag target`, for
+// asserting that a re-bind of a path wins over an earlier bind of the same path.
+func lastPairIndex(args []string, flag, target string) int {
+	last := -1
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == target {
+			last = i
+		}
+	}
+	return last
+}
+
 // The post-run cleanup targets only DIRECTORY shield mount points: os.Remove on a
 // directory is empty-only (rmdir), so it can never delete host data, whereas an
 // os.Remove of a FILE is unconditional and would race a host-side atomic save over
@@ -917,6 +929,48 @@ func TestInterpreterUnderHomeBindsOnlyItself(t *testing.T) {
 	}
 	if !has(args, "--ro-bind", "/home/u/bin/python3") {
 		t.Errorf("the interpreter itself must be bound so the run can exec it; got %v", args)
+	}
+}
+
+// A write grant covering the interpreter's directory (write: ~/bin over a
+// ~/bin/python3 wrapper) would overmount the interpreter's read-only bind with a
+// read-write one - letting the target rewrite the binary it is running, host
+// persistence. The interpreter must be re-bound read-only after the write grant, so
+// the shield wins by argv order, just as the entrypoint is.
+func TestWriteGrantDoesNotLeaveInterpreterWritable(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/bin", "/home/u/bin/python3", "/work")
+	sb.interpreter = "/home/u/bin/python3"
+	args := compileOrFail(t, &policy.Policy{Write: []string{"/home/u/bin"}}, sb)
+
+	rw := pairIndex(args, "--bind-try", "/home/u/bin")
+	ro := lastPairIndex(args, "--ro-bind", "/home/u/bin/python3")
+	if rw < 0 {
+		t.Fatalf("the write grant should bind /home/u/bin read-write; got %v", args)
+	}
+	if ro < 0 {
+		t.Fatalf("the interpreter must be re-bound read-only; got %v", args)
+	}
+	if ro < rw {
+		t.Errorf("the interpreter re-bind (at %d) must come after the write grant (at %d) so it wins", ro, rw)
+	}
+}
+
+// The re-bind protects the interpreter binary for a version-managed runtime too,
+// where the whole install prefix is bound and a write grant over it (write: ~/.pyenv)
+// would otherwise make the binary itself writable.
+func TestWriteGrantDoesNotLeavePyenvInterpreterWritable(t *testing.T) {
+	interp := "/home/u/.pyenv/versions/3.12/bin/python3"
+	sb := testSandbox("/home/u/.pyenv", "/home/u/.pyenv/versions/3.12", interp, "/work")
+	sb.interpreter = interp
+	args := compileOrFail(t, &policy.Policy{Write: []string{"/home/u/.pyenv"}}, sb)
+
+	rw := pairIndex(args, "--bind-try", "/home/u/.pyenv")
+	ro := lastPairIndex(args, "--ro-bind", interp)
+	if rw < 0 || ro < 0 {
+		t.Fatalf("want both a write bind of the prefix and a read-only re-bind of the interpreter; got %v", args)
+	}
+	if ro < rw {
+		t.Errorf("the interpreter re-bind (at %d) must come after the write grant (at %d)", ro, rw)
 	}
 }
 

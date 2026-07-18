@@ -190,6 +190,20 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// directory cannot leave the script itself writable mid-run.
 	args = append(args, "--ro-bind", sb.entrypoint, sb.entrypoint)
 
+	// The interpreter binary gets the same treatment for the same reason: it is bound
+	// earlier by systemMounts (as the whole install prefix, or - for an interpreter at
+	// or under $HOME - as just the file), and a write grant covering that directory
+	// (write: ~/bin, write: ~/.pyenv) would otherwise overmount it read-write, letting
+	// the target rewrite the binary it is currently executing - host persistence the
+	// grant did not intend. Re-binding it read-only last shields exactly the running
+	// binary; other files under a write-granted directory stay writable, as the grant
+	// asks. Only the binary is covered, not every shared object the runtime loads: a
+	// write grant over a runtime tree still authorizes writing those, a documented
+	// residual of granting write there.
+	if sb.interpreter != "" && sb.exists(sb.interpreter) {
+		args = append(args, "--ro-bind", sb.interpreter, sb.interpreter)
+	}
+
 	// Every run goes through the in-sandbox launcher stage. It hosts the setup that
 	// must happen inside the sandbox (the egress bridge, the exec-block filter, the
 	// profiling observer), but it runs even when none of those is needed: it is the
