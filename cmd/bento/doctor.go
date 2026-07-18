@@ -29,16 +29,28 @@ func newDoctorCmd() *cobra.Command {
 			}
 			report := e.Probe(cmd.Context())
 
+			// A core shortfall means runs are refused by default, so doctor exits
+			// non-zero for it (in both render modes) - the one place a CI wrapper can
+			// gate on host readiness without parsing output. Hardening gaps let runs
+			// proceed, so they stay exit 0.
+			shortfall := len(coreShortfall(report)) > 0
+
 			if asJSON {
-				return writeJSON(os.Stdout, toReportJSON(report))
+				if err := writeJSON(os.Stdout, toReportJSON(report)); err != nil {
+					return err
+				}
+				if shortfall {
+					return &exitError{code: doctorCoreShortfall}
+				}
+				return nil
 			}
 
 			writeReportTable(os.Stdout, report)
 			fmt.Println()
-			if core := coreShortfall(report); len(core) > 0 {
+			if shortfall {
 				fmt.Println("A core guarantee is not fully enforced here. Runs that need it are refused by")
 				fmt.Println("default; --allow-degraded opts into a weaker sandbox, knowingly.")
-				return nil
+				return &exitError{code: doctorCoreShortfall}
 			}
 			if report.HasDegradation() {
 				fmt.Println("Core guarantees hold on this host. Some hardening layers are unavailable -")

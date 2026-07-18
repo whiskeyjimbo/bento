@@ -16,6 +16,12 @@ import (
 // docker use for "the command could not be executed".
 const bentoFailed = 125
 
+// doctorCoreShortfall is doctor's exit code when a core guarantee is not fully
+// enforced on this host (runs that need it are refused by default). Distinct from
+// bentoFailed and from a target's own code so a CI wrapper can gate on host
+// readiness. A hardening-only gap, where runs still proceed, stays exit 0.
+const doctorCoreShortfall = 3
+
 // exitError carries a target's exit code up to main so all deferred cleanup runs
 // before the process exits. Returning it instead of calling os.Exit inside a
 // command keeps the frontend from bypassing the sandbox's own teardown.
