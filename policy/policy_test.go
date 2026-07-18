@@ -62,6 +62,12 @@ func TestValidateRejects(t *testing.T) {
 		{"negative pids", func(p *Policy) { p.Limits = Limits{PIDs: -1} }, "pids must not be negative"},
 		{"cpu without percent", func(p *Policy) { p.Limits = Limits{CPU: "100"} }, "must be a percentage"},
 		{"unparseable memory", func(p *Policy) { p.Limits = Limits{Memory: "lots"} }, "limits.memory"},
+		{"escape in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/true\x1b]0;PWNED\x07" }, "control character"},
+		{"escape in interpreter", func(p *Policy) { p.Interpreter = "python3\x1b[31m" }, "control character"},
+		{"escape in arg", func(p *Policy) { p.Args = []string{"--flag\x07"} }, "control character"},
+		{"escape in read path", func(p *Policy) { p.Read = []string{"/data\nfoo"} }, "control character"},
+		{"escape in write path", func(p *Policy) { p.Write = []string{"/out\x1b"} }, "control character"},
+		{"c1 control in path", func(p *Policy) { p.Read = []string{"/data\u009b31m"} }, "control character"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

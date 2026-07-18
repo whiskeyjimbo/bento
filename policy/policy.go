@@ -94,6 +94,19 @@ func (p *Policy) Validate() error {
 	if p.Entrypoint == "" {
 		return fmt.Errorf("policy: entrypoint is required")
 	}
+	// The path and argument fields are echoed verbatim by the frontends - the
+	// validate summary, error messages naming a bad path - so a control character in
+	// one is a terminal-injection channel from an untrusted manifest (ESC/OSC window
+	// spoofing, hidden text). No legitimate path or argument carries one. Rejecting
+	// here, at the single gate every construction path passes through, closes it for
+	// the CLI and Go embedders alike; the host field is already guarded separately.
+	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
+	fields = append(append(fields, p.Read...), p.Write...)
+	for _, f := range fields {
+		if i := strings.IndexFunc(f, isControl); i >= 0 {
+			return fmt.Errorf("policy: value %q contains a control character (0x%02x), which is not allowed in a path or argument", f, f[i])
+		}
+	}
 	for _, name := range p.Env {
 		if !envNameRe.MatchString(name) {
 			return fmt.Errorf("policy: invalid env name %q: must match [A-Za-z_][A-Za-z0-9_]* (env is an allowlist of variable names, not values)", name)
@@ -111,6 +124,15 @@ func (p *Policy) Validate() error {
 		}
 	}
 	return p.Limits.validate()
+}
+
+// isControl reports whether r is a C0 control, DEL, or a C1 control. These never
+// appear in a legitimate path or argument, and each is a way for untrusted manifest
+// content to reprogram the terminal it is later printed to (ESC begins every 7-bit
+// ANSI/OSC sequence; U+009B and U+009D are the 8-bit CSI and OSC that some terminals
+// honor directly).
+func isControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 func (m ExecMode) validate() error {
