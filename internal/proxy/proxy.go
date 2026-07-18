@@ -226,9 +226,18 @@ func classifyIP(ip net.IP) ipClass {
 		return ipPrivate
 	}
 	if v4 := ip.To4(); v4 != nil {
+		switch {
+		// Never a valid egress destination, so denied even when a rule names the
+		// literal: this-network 0.0.0.0/8 (IsUnspecified catches only 0.0.0.0
+		// itself), RFC 2544 benchmarking 198.18.0.0/15, and reserved 240.0.0.0/4
+		// (which subsumes the 255.255.255.255 limited broadcast).
+		case v4[0] == 0,
+			v4[0] == 198 && v4[1]&0xfe == 18,
+			v4[0]&0xf0 == 240:
+			return ipHostReserved
 		// CGNAT 100.64.0.0/10 (RFC 6598) is not covered by IsPrivate but names
 		// carrier/infrastructure space just the same.
-		if v4[0] == 100 && v4[1]&0xc0 == 64 {
+		case v4[0] == 100 && v4[1]&0xc0 == 64:
 			return ipPrivate
 		}
 		return ipPublic

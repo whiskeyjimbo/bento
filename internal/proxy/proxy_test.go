@@ -369,8 +369,13 @@ func TestClassifyIP(t *testing.T) {
 			"127.0.0.1", "::1", "::ffff:127.0.0.1", // loopback
 			"169.254.169.254", "fe80::1", // link-local (incl. cloud metadata)
 			"0.0.0.0", "::", // unspecified
+			"0.1.2.3",            // this-network 0.0.0.0/8 beyond 0.0.0.0 itself
+			"198.18.0.1", "198.19.255.255", // RFC 2544 benchmarking 198.18.0.0/15
+			"240.0.0.1", "255.255.255.254", // reserved 240.0.0.0/4
+			"255.255.255.255",    // limited broadcast (within 240/4)
 			"64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254 (metadata)
 			"64:ff9b::7f00:1",    // NAT64 of 127.0.0.1
+			"64:ff9b::c612:1",    // NAT64 of 198.18.0.1 (benchmarking)
 		},
 		// Reachable only via an explicit IP-literal rule.
 		ipPrivate: {
