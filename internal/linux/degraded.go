@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
@@ -98,17 +100,47 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	cmd := exec.CommandContext(ctx, self, launcher.EncodeLaunchDegraded(cfg)...)
 	cmd.Env = envSlice(proc.Env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
+	// Run the launcher in its own process group so a descendant it leaves behind can be
+	// swept on teardown. Without a PID namespace this is the only sweep available, and
+	// it is best-effort - a descendant that calls setsid() escapes the group and
+	// survives, which the degraded report discloses. The default ctx-cancel kill hits
+	// only the launcher pid, so Cancel is overridden to kill the whole group too.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd.Process) }
+	// A descendant the target backgrounds inherits the stdout/stderr pipes and, with no
+	// PID namespace, is not torn down when the target exits - so cmd.Wait would block
+	// on the open pipes until that descendant dies. WaitDelay bounds that: once the
+	// target exits, Wait waits this long for the pipes, then closes them and returns so
+	// the group sweep below can reap the straggler.
+	cmd.WaitDelay = 2 * time.Second
 
-	switch err := cmd.Run(); {
-	case err == nil:
-		return enforce.Result{ExitCode: 0, Report: report}, nil
-	case isExitError(err):
-		var ee *exec.ExitError
-		errors.As(err, &ee)
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report}, nil
+	err = cmd.Run()
+	killProcessGroup(cmd.Process)
+	switch {
+	case cmd.ProcessState == nil:
+		// The launcher never started or exec failed - a genuine setup failure.
+		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
+		// The target ran to completion; its exit code is authoritative even when a
+		// leaked descendant held the pipes past WaitDelay.
+		return enforce.Result{ExitCode: cmd.ProcessState.ExitCode(), Report: report}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
+}
+
+// killProcessGroup SIGKILLs every process still in the launcher's group. The
+// negative pid targets the group (the launcher is its leader via Setpgid). ESRCH -
+// the group is already empty, the common case where the target left nothing behind -
+// is expected and ignored.
+func killProcessGroup(p *os.Process) error {
+	if p == nil {
+		return nil
+	}
+	if err := syscall.Kill(-p.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+		return err
+	}
+	return nil
 }
 
 // degradedSystemPaths are the host paths every degraded run needs regardless of the

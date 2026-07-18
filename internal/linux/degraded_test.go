@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
@@ -103,6 +106,57 @@ func TestDegradedExecAllSupervisesChild(t *testing.T) {
 	}
 	if res.ExitCode != 0 || !strings.Contains(out.String(), "parent-ran") {
 		t.Errorf("supervised child did not run cleanly: exit=%d output:\n%s", res.ExitCode, out.String())
+	}
+}
+
+// A process the target backgrounds and leaves running must be swept when the run
+// ends: with no PID namespace to tear down, the enforcer runs the launcher in its
+// own process group and SIGKILLs the group on teardown. The target records the
+// background pid; after the run it must be dead.
+func TestDegradedSweepsLeakedProcessGroup(t *testing.T) {
+	requireDegraded(t)
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not available")
+	}
+	if resolved, err := filepath.EvalSymlinks(sleepBin); err == nil {
+		sleepBin = resolved // the real binary, which the read set (systemReadPaths / /nix) covers
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	script := filepath.Join(dir, "s.sh")
+	// Background a long sleep, record its pid, and exit - the sleep outlives the script.
+	if err := os.WriteFile(script, []byte(`"$SLEEP" 300 & echo $! > "$PIDFILE"; echo backgrounded`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Write: []string{dir}, Exec: policy.ExecAll}
+	var out strings.Builder
+	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SLEEP": sleepBin, "PIDFILE": pidFile}}
+	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc); err != nil {
+		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
+	}
+
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("no background pid recorded (did the run reach the script?): %v\noutput:\n%s", err, out.String())
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("bad pid %q: %v", data, err)
+	}
+	// The sweep SIGKILLs the group; the leaked sleep should die and be reaped shortly.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return // gone
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backgrounded pid %d survived the run; the process-group sweep did not reach it", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
