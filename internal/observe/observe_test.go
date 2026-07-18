@@ -256,6 +256,30 @@ func parseChildPID(t *testing.T, out string) int {
 	return 0
 }
 
+// PTRACE_O_TRACECLONE traces thread creation (CLONE_THREAD) as well as new
+// processes, so the fork-event tracking adds thread TIDs to the tracee set. Reaping
+// those on cleanup must not hang: a multithreaded target - here with daemon threads
+// still sleeping when the process exits, so their TIDs are live in the set at
+// cleanup - must let Trace return promptly, not block in killAndReap on a thread.
+func TestTraceMultithreadedTargetDoesNotHang(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script := "import threading, time\n" +
+		"[threading.Thread(target=lambda: time.sleep(30), daemon=True).start() for _ in range(8)]\n"
+	done := make(chan struct{})
+	go func() {
+		Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Trace hung on a multithreaded target - killAndReap blocked on a thread TID?")
+	}
+}
+
 // A path opened relative to a real directory descriptor (openat with a dirfd,
 // not AT_FDCWD) must be anchored at that directory, not left bare - otherwise the
 // profiler would anchor it at the working directory and grant the wrong path.
