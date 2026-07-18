@@ -65,8 +65,10 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 // killAndReap is the cleanup Trace defers on an early error; it must fully remove
 // a ptrace-stopped child rather than leave a TASK_TRACED process (or an unreaped
 // zombie) behind. This exercises the helper directly against a real child driven
-// into that suspended state - Trace has no seam to inject a mid-setup failure, so
-// the wiring of the deferred guard itself is covered by review, not this test.
+// into that suspended state. The pre-resume setup paths (initial wait, set-options,
+// resume) still have no failure seam and are covered by review; the loop-wait path,
+// which the guard's descendant handling depends on, is driven end-to-end via the
+// waitTracee seam in TestTraceReapsDescendantOnLoopWaitError.
 func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
