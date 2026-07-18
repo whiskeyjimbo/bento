@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -192,6 +193,67 @@ func traceeAliveStopped(pid int) bool {
 	default:
 		return true // R, S, D, t, T: still alive
 	}
+}
+
+// When root exits cleanly, a descendant it left running (a backgrounded process)
+// must not stay attached and TASK_TRACED under a tracer that may never exit. The
+// trace returns normally, and the descendant must be gone - the same guarantee the
+// error path gives, on the more common clean-exit path.
+func TestTraceReapsBackgroundedDescendantOnCleanExit(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	// Fork a long-lived child, print its pid, then exit 0 - root completes while the
+	// child is still alive. The 30s sleep keeps the pid stable (no recycling) so a
+	// leak is observable, and lets the trace's own kill be what ends it.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "bg.sh")
+	if err := os.WriteFile(script, []byte("sleep 30 &\necho CHILD=$!\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	res, err := Trace([]string{sh, script}, os.Environ(), nil, &out, &out)
+	if err != nil {
+		t.Fatalf("Trace: %v (output: %s)", err, out.String())
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("root should have exited 0; got %d (output: %s)", res.ExitCode, out.String())
+	}
+
+	child := parseChildPID(t, out.String())
+	// The child was SIGKILL'd on the clean exit, so it is dead; whether this tracer or
+	// init reaps the corpse is a race, so poll until the pid is fully gone or a zombie
+	// (dead), never a live tracee. Before the fix it stays alive+TASK_TRACED for the
+	// full sleep and this never reaches "dead".
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := syscall.Kill(child, 0); err == syscall.ESRCH {
+			break // gone
+		} else if !traceeAliveStopped(child) {
+			break // zombie: dead, not leaked
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("backgrounded child %d survived root's clean exit as a live tracee; it was not reaped", child)
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func parseChildPID(t *testing.T, out string) int {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "CHILD="); ok {
+			pid, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("parsing child pid from %q: %v", v, err)
+			}
+			return pid
+		}
+	}
+	t.Fatalf("did not find CHILD=<pid> in trace output: %q", out)
+	return 0
 }
 
 // A path opened relative to a real directory descriptor (openat with a dirfd,

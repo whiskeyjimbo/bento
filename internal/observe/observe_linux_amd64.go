@@ -149,16 +149,24 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		}
 
 		// Any pid the tracer waits on is an attached tracee: root, or a descendant
-		// auto-attached by the trace-clone/fork options. Track it so the cleanup guard
-		// reaps it on an early return; drop it again when it ends.
+		// auto-attached by the trace-clone/fork options. Track it so it is reaped when
+		// the trace ends - on the error guard or on the clean exit below; drop it again
+		// when it ends on its own.
 		tracees[wpid] = true
 
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):
-			// The wait above already reaped root, so the cleanup guard must not also
-			// wait on it; mark success before touching res so nothing between here
-			// and the return can leave the guard waiting on a freed pid.
+			// Root has exited and the wait above already reaped it. Mark success so the
+			// cleanup guard does not run (and does not wait on the freed root pid), then
+			// reap any descendant still attached: a process the script backgrounded and
+			// left running would otherwise stay TASK_TRACED under a tracer that may never
+			// exit - the same leak the error guard prevents. A normal script's children
+			// have already exited and been dropped, so this reaps an empty remainder.
 			succeeded = true
+			delete(tracees, root)
+			for pid := range tracees {
+				killAndReap(pid)
+			}
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {
 				res.Signaled = true
@@ -177,6 +185,18 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			inspect(wpid, record, &res)
 			syscall.PtraceSyscall(wpid, 0)
 		default:
+			// A fork/clone/vfork event reports the new child's pid here, before that
+			// child's own first stop is dequeued - and the parent stays stopped at this
+			// event until resumed below. Track the child now so it is reaped even if the
+			// parent runs on and exits before its stop is seen; otherwise a child forked
+			// just before root exits would slip past the cleanup untracked.
+			switch ws.TrapCause() {
+			case syscall.PTRACE_EVENT_FORK, syscall.PTRACE_EVENT_VFORK, syscall.PTRACE_EVENT_CLONE:
+				if child, err := syscall.PtraceGetEventMsg(wpid); err == nil {
+					tracees[int(child)] = true
+				}
+			}
+
 			// A group-stop, a ptrace event (a new child), or a genuine
 			// signal-delivery-stop. Forward a real signal so the tracee actually
 			// receives it: suppressing a synchronous fault (SIGSEGV/SIGILL/...) would
