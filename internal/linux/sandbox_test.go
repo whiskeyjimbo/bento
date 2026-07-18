@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/observe"
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
@@ -127,10 +129,10 @@ func TestWriteGrantPersistsToHost(t *testing.T) {
 	}
 }
 
-// Profiling always runs through the launcher, so the bento binary must be bound
-// even for exec:all + no network - the one case where the policy alone would not
-// require the launcher and newSandbox leaves bentoPath unset. Without the fix this
-// emitted an empty bind source for /bento and bwrap aborted.
+// Profiling runs the target under the launcher's observer, so the bento binary
+// must be bound and actually reached even for exec:all + no network. A broken
+// /bento bind would abort bwrap; Profile swallows the exit error, so this asserts
+// the target ran by checking it observed file accesses.
 func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	requireSandbox(t)
 
@@ -1252,5 +1254,47 @@ func TestReadRootDoesNotExposeHostRuntime(t *testing.T) {
 		if strings.Contains(out, name) {
 			t.Fatalf("the host's /run/%s is reachable under a read: / grant; got %q", name, out)
 		}
+	}
+}
+
+// A file descriptor bento's parent leaked without O_CLOEXEC - an editor, a CI
+// runner, a server embedding bento - passes through bwrap into the sandbox. The
+// mount namespace and the deny-list revoke paths, but neither closes an open
+// descriptor, so an ungranted host file would be readable through /proc/self/fd.
+// The launcher drops every inherited descriptor before the target runs; this
+// asserts the leak is closed on both the exec: all path (which used to run the
+// target directly, with no launcher at all) and the exec: none path.
+func TestInheritedFdDoesNotLeakIntoSandbox(t *testing.T) {
+	requireSandbox(t)
+
+	for _, mode := range []policy.ExecMode{policy.ExecAll, policy.ExecNone} {
+		t.Run(string(mode), func(t *testing.T) {
+			secret := filepath.Join(t.TempDir(), "secret.key")
+			if err := os.WriteFile(secret, []byte("SECRET_XYZZY\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			// Clear close-on-exec so this descriptor is inherited across the exec into
+			// bwrap, mimicking a parent that opened it with `exec 3< secret.key`.
+			flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
+				t.Fatal(err)
+			}
+
+			// readlink never blocks; scanning the targets is enough to prove the host
+			// file is out of reach without risking a read of a pipe or stdin.
+			src := "for fd in /proc/self/fd/*; do readlink $fd; done\n"
+			_, out := runScript(t, &policy.Policy{Exec: mode}, src)
+			if strings.Contains(out, "secret.key") {
+				t.Errorf("an inherited host descriptor leaked into the sandbox:\n%s", out)
+			}
+		})
 	}
 }

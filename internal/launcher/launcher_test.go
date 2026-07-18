@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The bridge is the in-sandbox hop between the target's loopback proxy port and
@@ -202,5 +205,41 @@ func TestBridgeDoesNotTruncateOnClientHalfClose(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "LATE-PAYLOAD") {
 		t.Fatalf("client half-close truncated an in-flight upstream response; got %q", got)
+	}
+}
+
+// dropInheritedFDs must mark an inherited descriptor close-on-exec (so it is
+// dropped at the exec into the target) while leaving it usable in this process (so
+// the launcher's own runtime descriptors keep working). An open file stands in for
+// a descriptor bento's parent leaked without O_CLOEXEC.
+func TestDropInheritedFDsMarksCloexec(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "leaked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	// Start without close-on-exec, as an inherited descriptor would be.
+	flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := dropInheritedFDs(); err != nil {
+		t.Fatalf("dropInheritedFDs: %v", err)
+	}
+
+	got, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got&unix.FD_CLOEXEC == 0 {
+		t.Errorf("an inherited descriptor was not marked close-on-exec: flags=%#x", got)
+	}
+	// Still usable in-process: marking does not close.
+	if _, err := f.WriteString("x"); err != nil {
+		t.Errorf("descriptor unusable after marking close-on-exec: %v", err)
 	}
 }

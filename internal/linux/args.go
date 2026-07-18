@@ -190,23 +190,21 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// directory cannot leave the script itself writable mid-run.
 	args = append(args, "--ro-bind", sb.entrypoint, sb.entrypoint)
 
-	// The in-sandbox launcher stage runs whenever the sandbox needs setup that
-	// must happen inside it: the egress bridge and/or the exec-block filter. When
-	// neither is needed (exec: all and no network), the target runs directly.
+	// Every run goes through the in-sandbox launcher stage. It hosts the setup that
+	// must happen inside the sandbox (the egress bridge, the exec-block filter, the
+	// profiling observer), but it runs even when none of those is needed: it is the
+	// one process bento controls between bwrap and the target, so it is where every
+	// file descriptor bento's parent leaked without O_CLOEXEC is dropped before the
+	// target can reach it. Running the target directly would let such a descriptor
+	// bypass the mount namespace and the deny-list entirely.
 	execMode := p.Exec
 	if execMode == "" {
 		execMode = policy.ExecNone
 	}
-	// Profiling always runs through the launcher (it hosts the observer); so does
-	// egress or exec-blocking. Only a plain exec:all, no-network, non-profiling
-	// run skips the launcher and executes the target directly.
-	useLauncher := sb.proxySocket != "" || sb.observe || execMode != policy.ExecAll
 
-	if useLauncher {
-		args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
-		if sb.proxySocket != "" {
-			args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
-		}
+	args = append(args, "--ro-bind", sb.bentoPath, sandboxBentoPath)
+	if sb.proxySocket != "" {
+		args = append(args, "--bind", sb.proxySocket, sandboxProxySocket)
 	}
 
 	// With every mount point now created, remount the sandbox root read-only. bwrap
@@ -221,34 +219,31 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	args = append(args, envArgs(proc)...)
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
-	if useLauncher {
-		socket := ""
-		if sb.proxySocket != "" {
-			socket = sandboxProxySocket
-		}
-		observeFD := 0
-		if sb.observe {
-			observeFD = observeReportFD
-		}
-		// The launcher's Landlock backstop confines writes to exactly the paths
-		// passed here: the runtime scratch mounts plus the write grants. With the
-		// root remounted read-only above, those are the only paths bwrap leaves
-		// writable, so Landlock never denies a granted write bwrap would allow.
-		// (Both layers are still stricter on the deny-list shields, by design - a
-		// shield denies the write and that is the intent.) Deriving both from this
-		// one place keeps them in sync.
-		cfg := launcher.Config{
-			Socket:      socket,
-			Block:       execMode != policy.ExecAll,
-			StrictBlock: execMode == policy.ExecNoneStrict,
-			Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
-			ObserveFD:   observeFD,
-			Target:      command(p, sb),
-		}
-		args = append(args, sandboxBentoPath)
-		return append(args, launcher.EncodeLaunch(cfg)...), nil
+	socket := ""
+	if sb.proxySocket != "" {
+		socket = sandboxProxySocket
 	}
-	return append(args, command(p, sb)...), nil
+	observeFD := 0
+	if sb.observe {
+		observeFD = observeReportFD
+	}
+	// The launcher's Landlock backstop confines writes to exactly the paths
+	// passed here: the runtime scratch mounts plus the write grants. With the
+	// root remounted read-only above, those are the only paths bwrap leaves
+	// writable, so Landlock never denies a granted write bwrap would allow.
+	// (Both layers are still stricter on the deny-list shields, by design - a
+	// shield denies the write and that is the intent.) Deriving both from this
+	// one place keeps them in sync.
+	cfg := launcher.Config{
+		Socket:      socket,
+		Block:       execMode != policy.ExecAll,
+		StrictBlock: execMode == policy.ExecNoneStrict,
+		Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
+		ObserveFD:   observeFD,
+		Target:      command(p, sb),
+	}
+	args = append(args, sandboxBentoPath)
+	return append(args, launcher.EncodeLaunch(cfg)...), nil
 }
 
 // sandboxWritableMounts are the paths baseFlags makes writable for every run

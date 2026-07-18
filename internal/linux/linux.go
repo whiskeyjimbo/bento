@@ -235,21 +235,15 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		listDir:     hostListDir,
 	}
 
-	// The in-sandbox launcher (the bento binary) is bound whenever egress,
-	// exec-blocking, or a supervising gate is in play; the proxy socket whenever
-	// egress or a gate is. gated must appear in BOTH conditions: it forces the
-	// proxy socket up for a no-rules supervised run, and useLauncher then keys off
-	// the socket, so an unset bentoPath would emit a broken --ro-bind "" /bento in
-	// the gate + no-rules + exec:all shape.
-	execMode := p.Exec
-	if execMode == "" {
-		execMode = policy.ExecNone
-	}
-	if len(p.Network) > 0 || execMode != policy.ExecAll || gated {
-		if sb.bentoPath, err = bentoSelfPath(selfPath); err != nil {
-			cleanup()
-			return sandbox{}, noop, err
-		}
+	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
+	// one process bento controls between bwrap and the target, so it is where every
+	// inherited file descriptor is dropped before the target sees it (a descriptor
+	// bento's parent leaked without O_CLOEXEC would otherwise bypass the mount
+	// namespace and the deny-list entirely). So bentoPath is always bound. The proxy
+	// socket is separate: it is set up only for egress or a supervising gate.
+	if sb.bentoPath, err = bentoSelfPath(selfPath); err != nil {
+		cleanup()
+		return sandbox{}, noop, err
 	}
 	if len(p.Network) > 0 || gated {
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")

@@ -130,12 +130,10 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	}
 }
 
-// newSandbox with a gate present must build a valid sandbox even for the one
-// shape the policy alone would leave the launcher out of: gate + no network
-// rules + exec: all. The gate forces the proxy socket up, useLauncher then keys
-// off the socket, so bentoPath must be set too - an unset one emits a broken
-// --ro-bind "" /bento. gated must therefore appear in both newSandbox
-// conditions; this guards the pairing directly, without a real sandbox.
+// A gate with no network rules must still bring the proxy socket up, so a
+// gate + no rules + exec: all sandbox funnels egress through it. bentoPath is set
+// on every sandbox now (the launcher always runs), so this guards the gate→socket
+// pairing specifically, without a real sandbox.
 func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "p.sh")
@@ -156,13 +154,17 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 		t.Error("bentoPath must be set alongside the gated proxy socket, or --ro-bind emits an empty source")
 	}
 
-	// The same policy WITHOUT a gate leaves both unset (exec: all needs no launcher).
+	// The same policy WITHOUT a gate needs no proxy socket, but the launcher still
+	// runs on every sandbox (it drops inherited descriptors), so bentoPath stays set.
 	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false, nil)
 	if err != nil {
 		t.Fatalf("newSandbox (ungated): %v", err)
 	}
 	defer cleanupNo()
-	if sbNo.proxySocket != "" || sbNo.bentoPath != "" {
-		t.Errorf("ungated exec:all + no rules should leave the launcher out; got socket=%q bento=%q", sbNo.proxySocket, sbNo.bentoPath)
+	if sbNo.proxySocket != "" {
+		t.Errorf("ungated exec:all + no rules needs no proxy socket; got %q", sbNo.proxySocket)
+	}
+	if sbNo.bentoPath == "" {
+		t.Error("bentoPath must be set on every sandbox: the launcher always runs")
 	}
 }

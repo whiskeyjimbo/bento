@@ -74,17 +74,28 @@ func Run(cfg Config) (int, error) {
 		return 0, fmt.Errorf("launcher: no target command")
 	}
 
-	if cfg.ObserveFD > 0 {
-		// The observation report is written through this inherited descriptor, never
-		// through a path in the target's mount. Mark it close-on-exec now - before the
-		// bridge child starts and before the target is exec'd under the observer - so
-		// neither the bridge, the target, nor any grandchild *inherits* a handle to the
-		// report. This does not make forgery impossible (a descendant can reopen the fd
-		// by path via /proc/<launcher>/fd - see runObserve), only harder. The launcher
-		// itself still writes it; close-on-exec only drops the descriptor across exec.
-		if _, err := unix.FcntlInt(uintptr(cfg.ObserveFD), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
-			return 0, fmt.Errorf("launcher: securing the observation channel: %w", err)
-		}
+	// Drop every descriptor bento's parent leaked into this process before anything
+	// downstream can inherit it. A file descriptor the host process held open without
+	// O_CLOEXEC - an editor, a CI runner, a server embedding bento - passes straight
+	// through bwrap to here; the mount namespace, the deny-list, and Landlock all
+	// revoke paths, but none of them closes an already-open descriptor, so such a
+	// handle is an ungranted read (or write) channel out of the sandbox. This is the
+	// one process bento controls between bwrap and the target, so it is where they are
+	// dropped, before startBridge re-execs and before the target is reached.
+	//
+	// CLOEXEC-mark rather than close: the launcher's own Go runtime holds descriptors
+	// above 2 (netpoll's epoll, for one), and closing those out from under it would
+	// break the launcher itself. Marking them drops them only at the coming exec into
+	// the target - the launcher keeps working, and nothing survives into the target.
+	// 0/1/2 are the target's own stdio and are left alone; ObserveFD (the profiling
+	// report, fd 3) is marked too, which is exactly what the profiler needs - the
+	// launcher writes the report in-process after the traced target exits (marking
+	// only drops it across exec), while the target and every grandchild are denied an
+	// inherited handle to it. A descendant can still reopen it by path via
+	// /proc/<launcher>/fd, which runObserve addresses; this only closes the inherited
+	// route.
+	if err := dropInheritedFDs(); err != nil {
+		return 0, err
 	}
 
 	env := os.Environ()
@@ -193,6 +204,23 @@ func runObserve(cfg Config, env []string) (int, error) {
 		return 0, fmt.Errorf("launcher: observing target: %w", traceErr)
 	}
 	return res.ExitCode, nil
+}
+
+// firstInheritableFD is the lowest descriptor dropInheritedFDs marks close-on-exec.
+// 0/1/2 are the target's stdio and are always kept.
+const firstInheritableFD = 3
+
+// dropInheritedFDs marks every descriptor from firstInheritableFD up close-on-exec,
+// so nothing bento's parent leaked survives the exec into the target. close_range
+// with CLOSE_RANGE_CLOEXEC marks in one syscall without closing, so the launcher's
+// own runtime descriptors keep working until the exec drops them. It needs Linux
+// 5.11; on older kernels it fails rather than leaving descriptors to leak, matching
+// the launcher's fail-closed stance on the exec filter.
+func dropInheritedFDs() error {
+	if err := unix.CloseRange(firstInheritableFD, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
+		return fmt.Errorf("launcher: dropping inherited file descriptors: %w", err)
+	}
+	return nil
 }
 
 // installExecFilter installs the strongest exec-block filter the policy asks for
