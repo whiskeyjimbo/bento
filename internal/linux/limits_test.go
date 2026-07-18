@@ -182,3 +182,45 @@ func TestCpuDelegationStateFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// The delegation measurement must agree with reality: a controller it reports as
+// delegated must actually bind a limit, and one it omits must not. This guards the
+// subtle regression where reading a BARE probe scope's controllers under-reports cpu
+// (systemd enables cpu only when a CPUQuota is requested), which would wrongly refuse
+// a cpu limit this host can enforce. Ground truth = does the controller's cgroup
+// interface file appear in a scope that requests that controller's limit.
+func TestMeasuredDelegationMatchesActualBinding(t *testing.T) {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		t.Skip("systemd-run not available")
+	}
+	ctrls, known := measureDelegatedControllers()
+	if !known {
+		t.Skip("no usable systemd user manager on this host")
+	}
+
+	binds := func(prop, iface string) bool {
+		// Create a scope requesting the limit and check its own cgroup for the
+		// controller's interface file - present only if the controller actually bound.
+		script := "test -e /sys/fs/cgroup$(grep '^0::' /proc/self/cgroup | cut -d: -f3)/" + iface + " && echo BOUND || echo absent"
+		out, err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect",
+			"-p", prop, "--", "sh", "-c", script).Output()
+		if err != nil {
+			t.Fatalf("probe scope for %s: %v", prop, err)
+		}
+		return strings.Contains(string(out), "BOUND")
+	}
+
+	for _, tc := range []struct {
+		ctrl  string
+		prop  string
+		iface string
+	}{
+		{"memory", "MemoryMax=64M", "memory.max"},
+		{"pids", "TasksMax=64", "pids.max"},
+		{"cpu", "CPUQuota=100%", "cpu.max"},
+	} {
+		if got := binds(tc.prop, tc.iface); ctrls[tc.ctrl] != got {
+			t.Errorf("measured %s delegated=%v, but the limit actually binds=%v", tc.ctrl, ctrls[tc.ctrl], got)
+		}
+	}
+}

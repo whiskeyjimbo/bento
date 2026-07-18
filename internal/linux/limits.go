@@ -3,7 +3,6 @@ package linux
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -145,27 +144,56 @@ func cpuDelegationState(ctrls map[string]bool, known bool) (enforce.State, strin
 // admission refuses a requested cpu limit rather than running it unenforced.
 const cpuUndelegatedReason = "the cpu controller is not delegated to your systemd user manager, so a requested cpu limit cannot be enforced (a one-time admin step: Delegate=cpu on user@.service)"
 
-// delegatedControllers reads the cgroup-v2 controllers systemd has delegated to
-// this user's manager. It is a var so a test can construct the unknown-delegation
-// host (an unreadable path) the fail-closed decision hinges on, which reads a fixed
-// host path and so cannot otherwise be reached in-package.
-var delegatedControllers = readDelegatedControllers
+// delegatedControllers reports which cgroup controllers a transient scope actually
+// gets, so the fail-closed decision knows whether a limit will bind. It is a var so
+// a test can construct the unknown-delegation host the decision hinges on, which the
+// real, systemd-dependent implementation cannot otherwise reach in-package. The
+// result is process-stable, so it is measured once.
+var delegatedControllers = sync.OnceValues(measureDelegatedControllers)
 
-// readDelegatedControllers reads the delegated controllers under which
-// `systemd-run --user --scope` creates scopes. A controller absent here is accepted
-// but not enforced; an unreadable path returns known=false, which fails closed.
-func readDelegatedControllers() (map[string]bool, bool) {
-	uid := os.Getuid()
-	path := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/cgroup.controllers", uid, uid)
-	b, err := os.ReadFile(path)
+// measureDelegatedControllers creates a throwaway scope that REQUESTS every
+// controller's limit and reads that scope's own cgroup.controllers, so it measures
+// delegation at the exact cgroup a real limited scope will live in.
+//
+// This is more faithful than reading a fixed host path (the user manager's
+// user@.service cgroup): that path is wrong on a containerized, nested, or hybrid
+// systemd layout, where it is unreadable and the whole limits layer then falsely
+// reports unavailable. It is also more faithful than reading a *bare* scope's
+// controllers - systemd enables a controller on a scope only when something needs
+// it, so a bare scope omits cpu even where a CPUQuota would bind; requesting the
+// limits makes systemd enable exactly the controllers it can, and the ones it cannot
+// (undelegated) are silently absent - which is the very fact this measures.
+//
+// known is false only when the probe scope could not be created or read at all
+// (no systemd user manager, or the read failed): that is the fail-closed signal.
+func measureDelegatedControllers() (map[string]bool, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// grep the v2 line (0::) so the path is correct on a hybrid v1/v2 host too, then
+	// read that cgroup's controllers - the set systemd actually enabled on the scope.
+	const readControllers = `cat /sys/fs/cgroup$(grep '^0::' /proc/self/cgroup | cut -d: -f3)/cgroup.controllers`
+	args := []string{
+		"--user", "--scope", "--quiet", "--collect",
+		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
+		"--", shBinary(), "-c", readControllers,
+	}
+	out, err := exec.CommandContext(ctx, "systemd-run", args...).Output()
 	if err != nil {
 		return nil, false
 	}
 	set := make(map[string]bool)
-	for _, c := range strings.Fields(string(b)) {
+	for _, c := range strings.Fields(string(out)) {
 		set[c] = true
 	}
 	return set, true
+}
+
+func shBinary() string {
+	if p, err := exec.LookPath("sh"); err == nil {
+		return p
+	}
+	return "/bin/sh"
 }
 
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's
