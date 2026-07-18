@@ -27,8 +27,10 @@ func newRunCmd() *cobra.Command {
 		Use:   "run <manifest>",
 		Short: "Run a script under the permissions its manifest declares",
 		Long: "run enforces the manifest's policy and executes the script.\n\n" +
-			"The script's exit code is passed through. If bento itself could not run the\n" +
-			"script - a bad manifest, or a guarantee this host cannot enforce - it exits 2.",
+			"The script's exit code is passed through untouched. If bento itself could not\n" +
+			"run the script - a bad manifest, or a guarantee this host cannot enforce - it\n" +
+			"exits 125, following the convention env(1) and docker use for \"the command\n" +
+			"could not be executed\", so it is distinct from any code the script itself returns.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			overrides, err := parseEnvFlags(envFlags)
