@@ -80,9 +80,32 @@ func TestSynthesizeDropsRelativePaths(t *testing.T) {
 	}
 }
 
+// bv2-2wy: a script that reads a credential store and also writes a file directly
+// in $HOME must not have the read hidden. Synthesize must keep the read (rather than
+// dropping it under the $HOME-level write dir), so the profiler's shield clamp can
+// surface it before the broad write is itself dropped.
+func TestSynthesizeKeepsReadCoveredByBroadWrite(t *testing.T) {
+	obs := Observation{
+		Reads:  []string{"/home/u/.ssh/id_rsa"},
+		Writes: []string{"/home/u/results.csv"}, // -> writeDir /home/u, which covers the read
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	found := false
+	for _, r := range p.Read {
+		if r == "/home/u/.ssh/id_rsa" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("read = %v, want the ~/.ssh read preserved so the shield clamp can surface it", p.Read)
+	}
+}
+
 func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
-	// A write to a file grants its directory, and a read at or below that
-	// directory is already covered, so it is not listed again.
+	// A write to a file grants its directory. Synthesize itself no longer dedups the
+	// reads it covers (the caller applies DropCovered after clamping shielded/broad
+	// writes, so a read near a soon-dropped broad write stays visible); DropCovered
+	// applied to a surviving narrow write still removes the covered reads.
 	obs := Observation{
 		Reads:  []string{"/data/shared.txt", "/data/nested/in.txt"},
 		Writes: []string{"/data/out.txt"},
@@ -91,8 +114,8 @@ func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
 	if !reflect.DeepEqual(p.Write, []string{"/data"}) {
 		t.Fatalf("write = %v, want the directory /data", p.Write)
 	}
-	if len(p.Read) != 0 {
-		t.Fatalf("read = %v, want empty (all reads are under the writable /data)", p.Read)
+	if len(DropCovered(p.Read, p.Write)) != 0 {
+		t.Fatalf("DropCovered = %v, want empty (all reads are under the writable /data)", DropCovered(p.Read, p.Write))
 	}
 }
 

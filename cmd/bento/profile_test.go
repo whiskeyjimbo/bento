@@ -6,8 +6,35 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/profile"
 )
+
+// bv2-2wy regression: the clamp order is load-bearing - DropCovered must run LAST,
+// after the broad-write clamp, so a read under a write that gets dropped as too broad
+// is NOT swallowed by that write but surfaces as its own read grant. This fails if
+// DropCovered is reordered ahead of clampBroadWrites (the shape of the original bug).
+func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
+	p := &policy.Policy{
+		Read:  []string{"/srv/app/config", "/etc/thing/data"},
+		Write: []string{"/srv/app", "/etc"}, // /srv/app is narrow (kept); /etc is top-level (dropped)
+	}
+	_, broad := clampProposal(p)
+
+	if !slices.Contains(broad, "/etc") {
+		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broad)
+	}
+	// The read under the KEPT narrow write is deduped away...
+	if slices.Contains(p.Read, "/srv/app/config") {
+		t.Errorf("a read under the surviving narrow write /srv/app must be deduped, got Read=%v", p.Read)
+	}
+	// ...but the read under the DROPPED broad /etc write survives (DropCovered ran
+	// after the broad clamp, so /etc no longer covers it). If DropCovered ran first,
+	// /etc would have swallowed it and it would be silently gone - the bug.
+	if !slices.Contains(p.Read, "/etc/thing/data") {
+		t.Errorf("a read under a dropped broad write must survive as its own grant, got Read=%v", p.Read)
+	}
+}
 
 func TestClampBroadWrites(t *testing.T) {
 	home, _ := os.UserHomeDir()

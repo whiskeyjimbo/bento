@@ -100,9 +100,11 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	if obs.Execed {
 		p.Exec = policy.ExecAll
 	}
-	// A write grant is readable too, so a read at or below a granted write
-	// directory is already covered; drop it rather than list it twice.
-	p.Read = dropCovered(p.Read, p.Write)
+	// Deduping a read that a write grant already covers (DropCovered) is deliberately
+	// NOT done here: the caller applies it only after clamping the shielded and
+	// over-broad write grants, so a read of a credential store the script also wrote
+	// near (e.g. ~/.ssh under a $HOME-level write) is surfaced to the reviewer rather
+	// than silently swallowed by a broad write that is itself about to be dropped.
 
 	seen := map[string]bool{}
 	for _, h := range obs.Hosts {
@@ -184,9 +186,9 @@ func cleanPaths(paths []string, canon func(string) string, skip func(string) boo
 	return out
 }
 
-// dropCovered removes any read path that is at or below one of the write
+// DropCovered removes any read path that is at or below one of the write
 // directories, since a write grant is readable too.
-func dropCovered(reads, writeDirs []string) []string {
+func DropCovered(reads, writeDirs []string) []string {
 	var out []string
 	for _, r := range reads {
 		covered := false

@@ -88,29 +88,12 @@ func newProfileCmd() *cobra.Command {
 
 			proposed := profile.Synthesize(script, interpreter, obs)
 
-			// The profiling trial shields the mandatory credential stores (~/.ssh and
-			// friends), but the observer records the script's attempted access anyway, so
-			// the proposal can name a path inside one - which the run then refuses
-			// (checkNotShielded), a manifest bento would write and then reject. Drop such
-			// grants here with a note, keeping the observation visible. A grant that only
-			// *contains* a shield (read: ~ with ~/.ssh inside it) is legitimate and kept.
-			if r, w, dropped := clampShieldedGrants(proposed.Read, proposed.Write); len(dropped) > 0 {
-				proposed.Read, proposed.Write = r, w
-				for _, d := range dropped {
-					fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a mandatory shielded path bento never grants; the script's attempt was recorded but cannot be honored.\n", d)
-				}
+			shielded, broad := clampProposal(proposed)
+			for _, d := range shielded {
+				fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a mandatory shielded path bento never grants; the script's attempt was recorded but cannot be honored.\n", d)
 			}
-
-			// A write to a file directly in a broad directory (the home directory, a
-			// top-level system directory, or the root) collapses to a grant of that
-			// whole directory, since write grants are directory-granular. Refuse to
-			// propose such a grant automatically - it would expose far more than the
-			// script needs - and tell the user to add a narrower one by hand.
-			if kept, dropped := clampBroadWrites(proposed.Write); len(dropped) > 0 {
-				proposed.Write = kept
-				for _, d := range dropped {
-					fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
-				}
+			for _, d := range broad {
+				fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
 			}
 
 			// Merge into an existing manifest rather than overwriting it, so a second
@@ -209,6 +192,19 @@ func underDir(parent, child string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// clampProposal filters a synthesized proposal for review, in an order that is
+// load-bearing (bv2-2wy): drop grants inside a mandatory shield, then drop over-broad
+// write grants, and ONLY THEN dedup reads a surviving write already covers. Deduping
+// last is what keeps a read near a credential store (~/.ssh under a $HOME-level
+// write) from being swallowed by a broad write before the shield clamp can surface
+// it. It mutates p and returns the shielded and over-broad paths to warn about.
+func clampProposal(p *policy.Policy) (shielded, broad []string) {
+	p.Read, p.Write, shielded = clampShieldedGrants(p.Read, p.Write)
+	p.Write, broad = clampBroadWrites(p.Write)
+	p.Read = profile.DropCovered(p.Read, p.Write)
+	return shielded, broad
 }
 
 func clampBroadWrites(writes []string) (kept, dropped []string) {
