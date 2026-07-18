@@ -46,11 +46,13 @@ func BlockExec() error {
 
 // BlockProcessReach installs a filter denying the syscalls that reach into another
 // process's memory, execution, or descriptors: ptrace (attach/inject),
-// process_vm_readv / process_vm_writev (cross-process memory), kcmp (compare and
-// leak process state), and pidfd_getfd (steal a descriptor another process holds - a
-// socket to egress through, or a handle to a Landlock-denied path). It is for the
-// degraded tier only: the bwrap tier's PID namespace already isolates every process
-// from the target, so nothing outside the sandbox is reachable there.
+// process_vm_readv / process_vm_writev (cross-process memory read/write),
+// process_madvise (evict/manipulate another process's pages via a pidfd), kcmp
+// (compare and leak process state), and pidfd_getfd (steal a descriptor another
+// process holds - a socket to egress through, or a handle to a Landlock-denied
+// path). It is for the degraded tier only: the bwrap tier's PID namespace already
+// isolates every process from the target, so nothing outside the sandbox is
+// reachable there.
 //
 // It blocks pidfd_getfd but deliberately NOT pidfd_open or pidfd_send_signal: Go's
 // os/exec manages a child with those two plus waitid, which the launcher's exec:all
@@ -66,7 +68,7 @@ func BlockProcessReach() error {
 			DefaultAction: seccomp.ActionAllow,
 			Syscalls: []seccomp.SyscallGroup{
 				{Action: seccomp.ActionErrno, Names: []string{
-					"ptrace", "process_vm_readv", "process_vm_writev", "kcmp", "pidfd_getfd",
+					"ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "kcmp", "pidfd_getfd",
 				}},
 			},
 		},

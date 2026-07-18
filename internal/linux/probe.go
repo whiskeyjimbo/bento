@@ -115,10 +115,11 @@ func filesystemLayer(nsOK bool, nsReason string, landlockAvail bool) (enforce.St
 			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially " +
 			"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of " +
 			"an allowed tree, and any granted /proc is the host's), no PID namespace (the target shares the " +
-			"host process table - it can see and signal same-user processes, though seccomp blocks the " +
-			"cross-process memory and ptrace injection that would otherwise let it take one over - and it can " +
-			"leave a background process running after the run, since there is no namespace to tear one down), " +
-			"and no network namespace " +
+			"host process table, so it can see and signal same-user processes - though seccomp blocks the " +
+			"cross-process memory read/write and ptrace injection that would let it take one over - and a " +
+			"background process it leaves is swept only best-effort by killing the run's process group, which " +
+			"a setsid() escapes and which also stops a target that reads an interactive terminal), and no " +
+			"network namespace " +
 			"(seccomp blocks IP egress but not netlink interface enumeration, nor a unix socket to a host " +
 			"daemon, including an abstract-namespace one no grant is needed to reach). It confines filesystem " +
 			"read/write/exec, nothing more (" + nsReason + ")"

@@ -48,6 +48,11 @@ func TestBlockProcessReachHelper(t *testing.T) {
 		fmt.Println("PIDFD_GETFD_NOT_EPERM", errno)
 		os.Exit(5)
 	}
+	// process_madvise (cross-process page eviction) must be EPERM too.
+	if _, _, errno := unix.Syscall6(unix.SYS_PROCESS_MADVISE, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("PROCESS_MADVISE_NOT_EPERM", errno)
+		os.Exit(7)
+	}
 	// pidfd_open must STILL work: Go's child management depends on it, so it must not
 	// be caught by the block.
 	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(os.Getpid()), 0, 0)
