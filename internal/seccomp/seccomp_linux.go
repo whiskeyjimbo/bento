@@ -37,6 +37,9 @@ const tsyncFlags = seccomp.FilterFlagTSync | seccomp.FilterFlag(unix.SECCOMP_FIL
 // threads are covered and the filter survives the coming execveat. The syscall
 // numbers and architecture gate are handled by the library per GOARCH.
 func BlockExec() error {
+	if err := blockForeignArch(); err != nil {
+		return err
+	}
 	filter := seccomp.Filter{
 		NoNewPrivs: true,
 		Flag:       tsyncFlags,
@@ -76,6 +79,9 @@ func BlockExec() error {
 // /proc/<pid>/fd/<n> - are FILE accesses, already denied because /proc is not in the
 // degraded Landlock read set. seccomp and Landlock split the work.
 func BlockProcessReach() error {
+	if err := blockForeignArch(); err != nil {
+		return err
+	}
 	filter := seccomp.Filter{
 		NoNewPrivs: true,
 		Flag:       tsyncFlags,
