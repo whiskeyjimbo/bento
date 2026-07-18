@@ -119,6 +119,12 @@ func Run(cfg Config) (int, error) {
 		if err := startBridge(cfg.Socket); err != nil {
 			return 0, err
 		}
+		// Drop any inherited proxy variables first: glibc getenv returns the first
+		// occurrence, so an HTTP_PROXY leaked from the host env would otherwise win over
+		// bento's, pointing the target's egress at a host-chosen proxy instead of the
+		// in-sandbox bridge. Fail-closed today (empty netns), but the intercept model
+		// requires bento's values to be authoritative.
+		env = dropEnv(env, "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")
 		env = append(env, proxyEnv()...)
 	}
 

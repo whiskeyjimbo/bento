@@ -533,3 +533,17 @@ func TestStateOfWorstOfDuplicates(t *testing.T) {
 		t.Errorf("StateOf of a missing layer = %v, want Unavailable (fail-safe)", got)
 	}
 }
+
+// A probe that omits a required CORE layer entirely must refuse the run: the missing
+// layer is treated as Unavailable, not silently read as enforced (bv2-ey0 #4).
+func TestMissingRequiredCoreLayerRefused(t *testing.T) {
+	var r Report
+	r.Add(LayerNetwork, Enforced, "") // LayerFilesystem deliberately absent
+	f := &fakeEnforcer{probe: r}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err == nil {
+		t.Fatal("a run whose required filesystem layer is unreported must be refused")
+	}
+	if f.ran {
+		t.Error("the enforcer must not run when a required core layer is unreported")
+	}
+}

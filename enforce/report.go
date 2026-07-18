@@ -165,10 +165,24 @@ func (r Report) forLayers(layers []Layer) Report {
 	for _, l := range layers {
 		want[l] = true
 	}
+	present := make(map[Layer]bool, len(layers))
 	var out Report
 	for _, l := range r.Layers {
 		if want[l.Layer] {
 			out.Layers = append(out.Layers, l)
+			present[l.Layer] = true
+		}
+	}
+	// A required layer the probe did not report is recorded as Unavailable, not left
+	// absent: admission scans the returned layers, so a missing entry would otherwise
+	// read as "no shortfall" and admit a run whose required guarantee was never
+	// actually evaluated. Fail-safe for a probe that forgets a layer. LayerLimitsCPU
+	// is exempt: it is a refinement the probe deliberately omits when there is no
+	// scope, and its absence is already subsumed by LayerLimits (synthesized here if
+	// itself missing) - synthesizing it too would duplicate the limits refusal.
+	for _, l := range layers {
+		if !present[l] && l != LayerLimitsCPU {
+			out.Layers = append(out.Layers, LayerStatus{Layer: l, State: Unavailable, Reason: "not reported by the host probe"})
 		}
 	}
 	return out
