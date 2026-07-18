@@ -57,6 +57,14 @@ type Proxy struct {
 	// Profiling uses it to learn a script's intended destinations without letting
 	// the script's data leave the host.
 	refuse bool
+
+	// discoverAAAA looks up ipv4only.arpa's AAAA records for RFC 7050 NAT64
+	// discovery; nil disables it. Set once before Serve, then read-only. See nat64.go.
+	discoverAAAA func(ctx context.Context) ([]net.IP, error)
+
+	// nat64 holds the NAT64 prefixes discovered at Serve start. Populated once,
+	// before any handler runs, so concurrent classify reads need no lock.
+	nat64 []nat64Prefix
 }
 
 // Option configures a Proxy.
@@ -95,6 +103,14 @@ func WithObserver(observe func(d Decision, host, port string)) Option {
 // and ctx cancellation is how it sheds that load.
 func WithGatekeeper(gate func(ctx context.Context, host, port string) bool) Option {
 	return func(p *Proxy) { p.gate = gate }
+}
+
+// WithNAT64Discovery enables RFC 7050 NAT64 prefix discovery via lookup, called
+// once at Serve start. It lets the egress guard decode a synthesized RFC1918
+// target that would otherwise pass as a public IPv6. Production uses
+// DefaultNAT64Lookup; tests inject a fake to stay hermetic.
+func WithNAT64Discovery(lookup func(ctx context.Context) ([]net.IP, error)) Option {
+	return func(p *Proxy) { p.discoverAAAA = lookup }
 }
 
 // WithoutEgress makes the proxy record every CONNECT and then refuse it, without
@@ -170,7 +186,7 @@ func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.Ra
 		// refuse it rather than dial an address the guard could not vet.
 		return &blockedUpstreamError{addr: address}
 	}
-	switch classifyIP(ip) {
+	switch p.classify(ip) {
 	case ipHostReserved:
 		// Loopback, link-local (incl. cloud metadata), and unspecified name the host
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
@@ -285,6 +301,12 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	// including when Accept returns an error while the caller's ctx is still live.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Learn the host's NAT64 prefix once, before any connection is handled, so
+	// classify reads p.nat64 without a lock. Bounded so a slow or dead resolver
+	// delays run start by at most this, then falls back to the well-known baseline.
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, nat64DiscoveryTimeout)
+	p.discoverNAT64(discoverCtx)
+	discoverCancel()
 	go func() {
 		<-ctx.Done()
 		l.Close()
