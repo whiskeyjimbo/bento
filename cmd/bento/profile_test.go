@@ -46,3 +46,37 @@ func TestPartialRunWarning(t *testing.T) {
 		t.Errorf("signaled warning = %q, want it to name signal 9 and not the exit code", w)
 	}
 }
+
+func TestClampShieldedGrants(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home directory on this host")
+	}
+	ssh := home + "/.ssh/id_rsa"     // a file inside a DenyAll shield
+	sshDir := home + "/.ssh"         // the shield directory itself
+	ordinary := "/srv/app/config"    // no shield involved
+	underHome := home + "/project"   // under home but not a shield
+
+	reads := []string{ssh, sshDir, home, ordinary, underHome}
+	writes := []string{home + "/.gnupg/x", ordinary}
+
+	keptR, keptW, dropped := clampShieldedGrants(reads, writes)
+
+	// A grant AT or INSIDE a shield is dropped; the run refuses it.
+	for _, d := range []string{ssh, sshDir, home + "/.gnupg/x"} {
+		if !slices.Contains(dropped, d) {
+			t.Errorf("%q is at/inside a DenyAll shield and must be dropped; dropped=%v", d, dropped)
+		}
+	}
+	// The load-bearing property: a read that only CONTAINS a shield (read: ~) is
+	// legitimate and kept - the run allows it, so dropping it would strip a valid grant.
+	if !slices.Contains(keptR, home) {
+		t.Errorf("read of the home directory %q must be KEPT (it merely contains shields); keptReads=%v", home, keptR)
+	}
+	if !slices.Contains(keptR, ordinary) || !slices.Contains(keptR, underHome) {
+		t.Errorf("ordinary reads must be kept; keptReads=%v", keptR)
+	}
+	if !slices.Contains(keptW, ordinary) {
+		t.Errorf("ordinary write must be kept; keptWrites=%v", keptW)
+	}
+}

@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/whiskeyjimbo/bento-v2/backend"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/manifest"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/profile"
@@ -86,6 +88,19 @@ func newProfileCmd() *cobra.Command {
 
 			proposed := profile.Synthesize(script, interpreter, obs)
 
+			// The profiling trial shields the mandatory credential stores (~/.ssh and
+			// friends), but the observer records the script's attempted access anyway, so
+			// the proposal can name a path inside one - which the run then refuses
+			// (checkNotShielded), a manifest bento would write and then reject. Drop such
+			// grants here with a note, keeping the observation visible. A grant that only
+			// *contains* a shield (read: ~ with ~/.ssh inside it) is legitimate and kept.
+			if r, w, dropped := clampShieldedGrants(proposed.Read, proposed.Write); len(dropped) > 0 {
+				proposed.Read, proposed.Write = r, w
+				for _, d := range dropped {
+					fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a mandatory shielded path bento never grants; the script's attempt was recorded but cannot be honored.\n", d)
+				}
+			}
+
 			// A write to a file directly in a broad directory (the home directory, a
 			// top-level system directory, or the root) collapses to a grant of that
 			// whole directory, since write grants are directory-granular. Refuse to
@@ -147,6 +162,55 @@ func partialRunWarning(obs profile.Observation) string {
 // root, a top-level directory (a direct child of "/", such as /etc or /home), or
 // the user's home directory itself - granting write to any of those exposes far
 // more than a profiled script needs.
+// clampShieldedGrants drops read and write grants that fall at or inside a mandatory
+// DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). The run refuses such a grant
+// (checkNotShielded), so proposing one produces a manifest bento then rejects; the
+// profiler can name one because it records an attempted access even though the trial's
+// shield blocked it. This is a proposal-quality filter, not a security check - the
+// run-time refusal is the backstop, so a path it misses (a symlink twist) simply hits
+// that refusal as before. A grant that merely CONTAINS a shield (read: ~ with ~/.ssh
+// shielded inside it) is legitimate and kept - only a grant at or under a shield goes.
+func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped []string) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return reads, writes, nil
+	}
+	var shields []string
+	for _, r := range denylist.Home(home) {
+		if r.Deny == denylist.DenyAll {
+			shields = append(shields, r.Path)
+		}
+	}
+	inShield := func(g string) bool {
+		for _, s := range shields {
+			if g == s || underDir(s, g) {
+				return true
+			}
+		}
+		return false
+	}
+	filter := func(grants []string) (kept []string) {
+		for _, g := range grants {
+			if inShield(g) {
+				dropped = append(dropped, g)
+			} else {
+				kept = append(kept, g)
+			}
+		}
+		return kept
+	}
+	return filter(reads), filter(writes), dropped
+}
+
+// underDir reports whether child is inside parent (parent contains child).
+func underDir(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func clampBroadWrites(writes []string) (kept, dropped []string) {
 	home, _ := os.UserHomeDir()
 	for _, w := range writes {
