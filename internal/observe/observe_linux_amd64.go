@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Access is one file the program opened.
@@ -277,6 +279,53 @@ func inspect(pid int, record func(string, bool), res *Result) {
 		// but allows execveat, so a program that spawns via execveat runs fine under
 		// exec: none and does not need exec: all.
 		res.Execed = true
+	default:
+		inspectMutating(pid, &regs, record)
+	}
+}
+
+// inspectMutating decodes the path-modifying syscalls - the ones that create,
+// remove, rename, or truncate a directory entry and so need write access to the
+// containing directory. Each is recorded as a write on the affected path(s); the
+// synthesizer collapses that to a directory grant, exactly like an O_WRONLY open.
+// Without these, a target that saves via the atomic write-temp-then-rename pattern
+// profiles as touching only the random temp name (missing the real output), and a
+// truncate profiles as touching nothing (a read-only-granted file can be zeroed).
+//
+// amd64 arg registers are Rdi, Rsi, Rdx, R10, R8. Read at the syscall stop, so a
+// failed attempt is still recorded (matching the open cases) - the script's intent
+// is what the manifest must grant.
+func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool)) {
+	at := func(dirfd int32, pathReg uint64, write bool) {
+		record(resolveAt(pid, dirfd, readString(pid, uintptr(pathReg))), write)
+	}
+	switch regs.Orig_rax {
+	// rename removes the source and creates the destination: both directories need
+	// write. renameat/renameat2 carry a dirfd for each (dest path is the 4th arg).
+	case unix.SYS_RENAME:
+		at(atFdCwd, regs.Rdi, true)
+		at(atFdCwd, regs.Rsi, true)
+	case unix.SYS_RENAMEAT, unix.SYS_RENAMEAT2:
+		at(int32(regs.Rdi), regs.Rsi, true)
+		at(int32(regs.Rdx), regs.R10, true)
+	// Single-path creates/removes/truncates/metadata-writes.
+	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_CHMOD:
+		at(atFdCwd, regs.Rdi, true)
+	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_FCHMODAT:
+		at(int32(regs.Rdi), regs.Rsi, true)
+	// A hardlink reads the existing source and creates a new name (a write).
+	case unix.SYS_LINK:
+		at(atFdCwd, regs.Rdi, false)
+		at(atFdCwd, regs.Rsi, true)
+	case unix.SYS_LINKAT:
+		at(int32(regs.Rdi), regs.Rsi, false)
+		at(int32(regs.Rdx), regs.R10, true)
+	// A symlink only creates the link; its target is an uninterpreted string, not a
+	// path the syscall touches, so only the link path is recorded.
+	case unix.SYS_SYMLINK:
+		at(atFdCwd, regs.Rsi, true)
+	case unix.SYS_SYMLINKAT: // symlinkat(target, newdirfd, linkpath)
+		at(int32(regs.Rsi), regs.Rdx, true)
 	}
 }
 

@@ -569,3 +569,46 @@ func TestTraceDeliversSignalToHandler(t *testing.T) {
 		t.Errorf("exit code = %d, want 7 (the target's SIGTERM handler must run)", res.ExitCode)
 	}
 }
+
+// The profiler must record the path-modifying syscalls (bv2-n73): a target that
+// saves via atomic write-temp-then-rename, truncates, mkdir/unlinks, or symlinks
+// needs write access to the affected directories, and the old profiler saw none of
+// it. Drives the real ptrace observer over a target doing each and asserts the
+// destinations now appear as writes.
+func TestTraceRecordsMutatingSyscalls(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	script := fmt.Sprintf(`
+import os
+d = %q
+open(d+'/tmp','w').close()
+os.rename(d+'/tmp', d+'/out')
+open(d+'/trunc','w').close()
+os.truncate(d+'/trunc', 0)
+os.mkdir(d+'/newdir')
+open(d+'/gone','w').close()
+os.unlink(d+'/gone')
+os.symlink('/nowhere', d+'/link')
+`, dir)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	isWrite := func(path string) bool {
+		for _, a := range res.Accesses {
+			if a.Path == path && a.Write {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{dir + "/out", dir + "/trunc", dir + "/newdir", dir + "/gone", dir + "/link"} {
+		if !isWrite(want) {
+			t.Errorf("no write access recorded for %q (mutating syscall missed); accesses: %v", want, res.Accesses)
+		}
+	}
+}
