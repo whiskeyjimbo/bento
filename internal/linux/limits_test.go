@@ -82,7 +82,7 @@ func TestMemoryLimitEnforced(t *testing.T) {
 		var out strings.Builder
 		// A non-zero exit is expected under the limit, so the error is not fatal
 		// here - the assertion is on whether the allocation completed.
-		sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil)
+		sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false)
 		return out.String()
 	}
 

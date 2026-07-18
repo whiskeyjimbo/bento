@@ -96,7 +96,7 @@ func runForkProbe(t *testing.T, p *policy.Policy, bin string) string {
 	p.Entrypoint = bin
 	p.Read = append(p.Read, filepath.Dir(bin))
 	var out strings.Builder
-	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil); err != nil {
+	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false); err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
 	return out.String()

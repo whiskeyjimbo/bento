@@ -26,7 +26,15 @@ type Enforcer interface {
 	//
 	// gate, when non-nil, admits an egress host the manifest does not declare; nil
 	// keeps the declarative default of denying anything undeclared.
-	Run(ctx context.Context, p *policy.Policy, proc Process, gate NetworkGate) (Result, error)
+	//
+	// degraded tells the backend the core filesystem layer can only be partially
+	// enforced (the probe reported it Degraded, e.g. bubblewrap cannot run because
+	// user namespaces are blocked) and the run was admitted anyway under
+	// --allow-degraded. The backend must then confine with its reduced-confinement
+	// tier rather than assume its full mechanism is available. Run never decides this
+	// itself: the refuse-versus-degrade choice lives in enforce.Run, so a backend can
+	// never silently downgrade.
+	Run(ctx context.Context, p *policy.Policy, proc Process, gate NetworkGate, degraded bool) (Result, error)
 }
 
 // NetworkGate decides an egress host the manifest's allowlist does not permit.

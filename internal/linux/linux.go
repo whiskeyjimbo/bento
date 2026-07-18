@@ -42,7 +42,14 @@ var _ enforce.Enforcer = (*Enforcer)(nil)
 // inside it. A non-zero exit from the target is returned in the Result; err is
 // reserved for a failure to build or start the sandbox, so a script that merely
 // fails is never confused with a sandbox that did not hold.
-func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, gate enforce.NetworkGate) (enforce.Result, error) {
+func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, gate enforce.NetworkGate, degraded bool) (enforce.Result, error) {
+	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
+	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
+	// after admitting the run under --allow-degraded, so this never silently downgrades.
+	if degraded {
+		return e.runDegraded(ctx, p, proc)
+	}
+
 	report := e.Probe(ctx)
 
 	bwrap, err := exec.LookPath("bwrap")

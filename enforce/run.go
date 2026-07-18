@@ -43,7 +43,13 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
-	res, err := e.Run(ctx, p, proc, opts.NetworkGate)
+	// A Degraded filesystem layer that reached here was admitted under
+	// --allow-degraded (default and strict both refuse it); the backend cannot run
+	// its full mechanism, so tell it to take its reduced-confinement tier. Selecting
+	// on the probed state, not on the flag, keeps the decision tied to what the host
+	// can actually do.
+	degraded := required.StateOf(LayerFilesystem) == Degraded
+	res, err := e.Run(ctx, p, proc, opts.NetworkGate, degraded)
 
 	// Report exactly what was judged. Start from the pre-run probe (already filtered
 	// to the required layers - warning about egress a no-network policy never asked

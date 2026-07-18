@@ -20,13 +20,17 @@ type fakeEnforcer struct {
 	// gateNil records whether a nil gate arrived.
 	gotGate bool
 	gateNil bool
+	// gotDegraded records the degraded flag enforce.Run passed, so a test can assert
+	// the reduced-confinement tier is selected only when the probe reports it.
+	gotDegraded bool
 }
 
 func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
 
-func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, gate NetworkGate) (Result, error) {
+func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, gate NetworkGate, degraded bool) (Result, error) {
 	f.ran = true
 	f.gateNil = gate == nil
+	f.gotDegraded = degraded
 	if gate != nil {
 		f.gotGate = gate(ctx, "example.com", "443")
 	}
@@ -366,6 +370,20 @@ func TestDegradedCoreRefusesByDefaultAndRunsWhenAllowed(t *testing.T) {
 	}
 	if !f.ran {
 		t.Error("--allow-degraded refused a degraded core layer")
+	}
+	// And the backend is told to use its reduced-confinement tier, so it does not try
+	// its full mechanism (bwrap) that the Degraded state says cannot run.
+	if !f.gotDegraded {
+		t.Error("--allow-degraded on a degraded core layer must pass degraded=true to the backend")
+	}
+
+	// A fully-enforced host runs with degraded=false: the backend uses its full tier.
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+		t.Fatalf("a fully-enforced run should proceed: %v", err)
+	}
+	if f.gotDegraded {
+		t.Error("a fully-enforced run must pass degraded=false")
 	}
 }
 

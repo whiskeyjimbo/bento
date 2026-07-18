@@ -29,7 +29,7 @@ func runGated(t *testing.T, p *policy.Policy, script string, gate enforce.Networ
 	p.Read = append(p.Read, dir)
 
 	var buf strings.Builder
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &buf, Stderr: &buf}, gate)
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &buf, Stderr: &buf}, gate, false)
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, buf.String())
 	}
