@@ -89,6 +89,7 @@ func TestValidateRejects(t *testing.T) {
 		{"zero-width joiner in path", func(p *Policy) { p.Write = []string{"/out/a\u200db"} }, "zero-width or invisible"},
 		{"bom in entrypoint", func(p *Policy) { p.Entrypoint = "\ufeff/bin/run" }, "zero-width or invisible"},
 		{"word joiner in arg", func(p *Policy) { p.Args = []string{"--x\u2060y"} }, "zero-width or invisible"},
+		{"emoji ZWJ sequence rejected (deliberate tradeoff)", func(p *Policy) { p.Read = []string{"/data/\U0001F468\u200D\U0001F469.png"} }, "zero-width or invisible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
