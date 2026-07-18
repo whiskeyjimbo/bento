@@ -257,10 +257,38 @@ func installExecFilter(strict bool) error {
 // would kill an in-process bridge. As a child it survives until the pid namespace
 // is torn down at the end of the run.
 func startBridge(socket string) error {
+	// A readiness pipe: the bridge writes one byte after it is non-dumpable and
+	// listening, and this call blocks until then, so the launcher only execveat's the
+	// target once the bridge can no longer be ptrace-hijacked (its dumpable startup
+	// window is over) and its listener is up. The write end is passed to the bridge as
+	// an extra file (fd bridgeReadyFD); the launcher drops its own write end so the
+	// bridge is the sole writer, and a bridge that dies before signaling closes the
+	// pipe - the read then returns EOF and the run is refused rather than started with
+	// an attackable or absent bridge.
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("launcher: bridge readiness pipe: %w", err)
+	}
+	defer r.Close()
 	cmd := exec.Command("/proc/self/exe", SentinelBridge, socket)
 	cmd.Stderr = os.Stderr
+	cmd.ExtraFiles = []*os.File{w}
 	if err := cmd.Start(); err != nil {
+		w.Close()
 		return fmt.Errorf("launcher: starting egress bridge: %w", err)
+	}
+	w.Close()
+	return awaitBridgeReady(r)
+}
+
+// awaitBridgeReady blocks until the bridge writes its readiness byte, or returns an
+// error if the pipe closes first (the bridge died before signaling). EOF is the
+// liveness signal - the launcher is the sole holder of the read end and dropped the
+// write end, so the only remaining writer is the bridge; its death closes the pipe.
+func awaitBridgeReady(r *os.File) error {
+	var b [1]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return fmt.Errorf("launcher: egress bridge did not come up: %w", err)
 	}
 	return nil
 }
@@ -350,6 +378,14 @@ func BridgeMain(socket string) error {
 		return fmt.Errorf("bridge: cannot listen on %s inside the sandbox: %w", proxyAddr, err)
 	}
 	defer l.Close()
+	// Signal the launcher that the bridge is now both non-dumpable and listening, so
+	// it may safely execveat the target (see startBridge). fd bridgeReadyFD is the
+	// write end of the readiness pipe, passed via ExtraFiles.
+	ready := os.NewFile(bridgeReadyFD, "bridge-ready")
+	if _, err := ready.Write([]byte{1}); err != nil {
+		return fmt.Errorf("bridge: signaling readiness: %w", err)
+	}
+	ready.Close()
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -358,6 +394,10 @@ func BridgeMain(socket string) error {
 		go bridgeConn(c, socket)
 	}
 }
+
+// bridgeReadyFD is the descriptor the launcher passes the bridge (via ExtraFiles, so
+// it lands at fd 3) as the write end of the readiness pipe.
+const bridgeReadyFD = 3
 
 // bridgeConn forwards one loopback connection to the host-side proxy socket in
 // both directions, half-closing each side when its source is done so a
