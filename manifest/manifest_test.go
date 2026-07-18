@@ -129,3 +129,55 @@ func TestMarshalRoundTrip(t *testing.T) {
 		t.Errorf("provenance changed across round trip: %+v vs %+v", doc2.Provenance, doc.Provenance)
 	}
 }
+
+// A manifest is untrusted input, so a parse error must never carry the offending
+// source line's control bytes to the terminal: goccy annotates errors by echoing
+// that line, and a hostile manifest can plant ANSI/OSC escapes in it (title
+// spoofing, hidden text). The error text must be free of ESC and BEL while still
+// naming the problem.
+func TestParseErrorStripsTerminalEscapes(t *testing.T) {
+	src := "entrypoint: /bin/true\n" +
+		"bogus: \"\x1b[31mINJECTED\x1b[0m\x1b]0;PWNED\x07\"\n"
+	_, err := Load(strings.NewReader(src))
+	if err == nil {
+		t.Fatal("an unknown field must be rejected")
+	}
+	for _, b := range []byte(err.Error()) {
+		if b == 0x1b || b == 0x07 || (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+			t.Fatalf("parse error carries a control byte %#x to the terminal:\n%q", b, err.Error())
+		}
+	}
+	// The error must still be useful.
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("sanitized error dropped the field name that identifies the problem: %q", err.Error())
+	}
+}
+
+// A binary mistaken for a manifest (`bento run ./some-binary`) must fail with a
+// clear "not a manifest" error, not a YAML decoder error that dumps the binary -
+// which was also a delivery vector for the escape injection above.
+func TestParseRejectsNonUTF8(t *testing.T) {
+	bin := string([]byte{0x7f, 'E', 'L', 'F', 0x00, 0x01, 0xff, 0xfe, 0x1b, '[', '3', '1', 'm'})
+	_, err := Load(strings.NewReader(bin))
+	if err == nil {
+		t.Fatal("a non-UTF-8 input must be rejected")
+	}
+	if !strings.Contains(err.Error(), "UTF-8") {
+		t.Errorf("error should name the cause; got %q", err.Error())
+	}
+	if strings.ContainsRune(err.Error(), 0x1b) {
+		t.Errorf("error echoed a raw escape byte from the binary: %q", err.Error())
+	}
+}
+
+// The size cap turns a huge mistyped file into a clear error rather than streaming
+// it through the decoder.
+func TestParseRejectsOversizeInput(t *testing.T) {
+	_, err := Load(strings.NewReader(strings.Repeat("a: 1\n", (maxManifestBytes/5)+100)))
+	if err == nil {
+		t.Fatal("an input over the size cap must be rejected")
+	}
+	if !strings.Contains(err.Error(), "not a manifest") {
+		t.Errorf("error should say it is not a manifest; got %q", err.Error())
+	}
+}

@@ -7,13 +7,22 @@
 package manifest
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
 
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
+
+// maxManifestBytes caps how much of the input Parse reads. A manifest is a small
+// YAML file; the cap keeps a mistyped `bento run ./some-huge-binary` from streaming
+// megabytes through the decoder (and, before the UTF-8 check below existed, onto the
+// terminal). Generous by three orders of magnitude over any real manifest.
+const maxManifestBytes = 1 << 20
 
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the
 // domain carries no serialization concerns.
@@ -83,13 +92,35 @@ func (r *networkRule) UnmarshalYAML(unmarshal func(any) error) error {
 }
 
 // Parse parses a YAML manifest into a validated policy and its provenance.
+//
+// The manifest is untrusted input - the whole point of bento is running scripts
+// under manifests it did not write - so the input is guarded before it reaches the
+// decoder, and the decoder's error is sanitized before it is returned. goccy/go-yaml
+// annotates a parse error by echoing the offending source line; that line is
+// attacker-controlled, so passing it through verbatim would let a hostile manifest
+// (or a binary mistaken for one) write raw escape sequences to the operator's
+// terminal. See sanitizeControl.
 func Parse(r io.Reader) (*Document, error) {
 	if r == nil {
 		return nil, fmt.Errorf("manifest: nil reader")
 	}
+	data, err := io.ReadAll(io.LimitReader(r, maxManifestBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("manifest: reading input: %w", err)
+	}
+	if len(data) > maxManifestBytes {
+		return nil, fmt.Errorf("manifest: input is larger than %d bytes, which is not a manifest", maxManifestBytes)
+	}
+	// A manifest is text. Rejecting non-UTF-8 up front turns `bento run ./a-binary`
+	// into a clear error instead of feeding raw bytes to the YAML decoder (whose error
+	// would then echo those bytes back). This does not catch a text manifest that
+	// embeds escape sequences - that is what sanitizing the decoder error covers.
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("manifest: input is not valid UTF-8 text, so it is not a manifest")
+	}
 	var m manifest
-	if err := yaml.NewDecoder(r, yaml.DisallowUnknownField()).Decode(&m); err != nil && err != io.EOF {
-		return nil, fmt.Errorf("manifest: %w", err)
+	if err := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField()).Decode(&m); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
 	}
 	p := m.toPolicy()
 	if err := p.Validate(); err != nil {
@@ -100,6 +131,24 @@ func Parse(r io.Reader) (*Document, error) {
 		prov = *m.Provenance
 	}
 	return &Document{Policy: p, Provenance: prov}, nil
+}
+
+// sanitizeControl drops the control characters an untrusted manifest could smuggle
+// into a decoder error that is printed to a terminal: ESC (the lead byte of every
+// ANSI/OSC sequence), BEL, carriage return, and the other C0 controls and DEL. Tab
+// and newline are kept - the decoder's line/caret annotation is laid out with them,
+// and neither reprograms a terminal. The input is already known to be valid UTF-8,
+// so the multi-byte C1 range cannot appear as raw control bytes.
+func sanitizeControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Load parses a YAML manifest and returns just its validated policy.
