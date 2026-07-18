@@ -53,6 +53,18 @@ func TestBlockProcessReachHelper(t *testing.T) {
 		fmt.Println("PROCESS_MADVISE_NOT_EPERM", errno)
 		os.Exit(7)
 	}
+	// move_pages (a NULL-nodes page-residency oracle) must be EPERM, not the EFAULT/
+	// EINVAL an unfiltered zero-arg call would give - proving the filter fired.
+	if _, _, errno := unix.Syscall6(unix.SYS_MOVE_PAGES, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("MOVE_PAGES_NOT_EPERM", errno)
+		os.Exit(8)
+	}
+	// get_robust_list (robust-futex head-pointer disclosure) must be EPERM, not the
+	// EFAULT an unfiltered null-pointer call would give.
+	if _, _, errno := unix.Syscall(unix.SYS_GET_ROBUST_LIST, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("GET_ROBUST_LIST_NOT_EPERM", errno)
+		os.Exit(9)
+	}
 	// pidfd_open must STILL work: Go's child management depends on it, so it must not
 	// be caught by the block.
 	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(os.Getpid()), 0, 0)
