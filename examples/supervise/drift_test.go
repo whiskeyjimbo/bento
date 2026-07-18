@@ -44,6 +44,39 @@ func TestDriftSilentWhenStoreMatchesManifest(t *testing.T) {
 	}
 }
 
+// Export must produce a self-contained manifest even when the app relies on a
+// GLOBAL network allow, so a fresh export never drift-warns against itself. This is
+// the populated-store analog of the agree test, and it guards the export path/network
+// symmetry (paths already fold the global layer in).
+func TestDriftSilentAfterExportingGlobalAllow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _ := loadStore()
+	script := dir + "/agent.sh"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key, err := appKey(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.app(key).Entrypoint = script
+	s.rememberNetwork(key, "cdn.example", "443", allow, true) // global allow, no per-app entry
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	var eout strings.Builder
+	if rc := exportPerms(s, []string{shortKey(key), "-o", script + ".manifest.yaml"}, &eout); rc != 0 {
+		t.Fatalf("export rc=%d out=%q", rc, eout.String())
+	}
+	var out strings.Builder
+	warnManifestDrift(&out, s, key, script)
+	if out.Len() != 0 {
+		t.Errorf("a just-exported manifest must not drift; got %q", out.String())
+	}
+}
+
 // A fresh store with a manifest present must not warn: a manifest entry the store
 // has no opinion on prompts under supervise (not silent), so it is not drift. This
 // is the case a symmetric set-diff would wrongly flag on every first run.

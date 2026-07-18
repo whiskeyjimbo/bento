@@ -282,11 +282,15 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	if eff, ok := s.decideExec(key); ok && eff == allow {
 		pol.Exec = policy.ExecAll
 	}
-	for _, k := range sortedKeys(a.Network) {
-		if eff, ok := resolveLattice(s.Global.Network[k], a.Network[k]); !ok || eff != allow {
+	// Include global network allows too, not just the app's own - the same way the
+	// path fields fold the global layer in via effectivePaths. A manifest has no
+	// global concept, so a host the app reaches only through a global allow must be
+	// baked in, or the exported manifest is not self-contained and drift-warns at once.
+	for _, k := range storeNetKeys(s, key) {
+		host, port := splitNetKey(k)
+		if eff, ok := s.decideNetwork(key, host, port); !ok || eff != allow {
 			continue // effective deny (or unknown): keep it out of the allowlist
 		}
-		host, port := splitNetKey(k)
 		pol.Network = append(pol.Network, policy.NetworkRule{Host: host, Port: port})
 	}
 
