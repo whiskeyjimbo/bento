@@ -25,7 +25,11 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// unprivileged user namespace here; probe that once and report both layers
 	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
 	nsOK, nsReason := usableNamespaces(ctx)
-	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available())
+	// The reduced-confinement tier stands in for the missing netns and PID namespace
+	// with a seccomp egress and cross-process block, so its viability - not just
+	// Landlock's - decides whether a degraded run is offered.
+	degradedFencesOK := seccomp.Supported() && seccomp.EgressSupported()
+	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -104,12 +108,22 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(nsOK bool, nsReason string, landlockAvail bool) (enforce.State, string) {
+func filesystemLayer(nsOK bool, nsReason string, landlockAvail, degradedFencesOK bool) (enforce.State, string) {
 	switch {
 	case nsOK && landlockAvail:
 		return enforce.Enforced, "Landlock backstop active"
 	case nsOK:
 		return enforce.Enforced, "no Landlock backstop on this kernel; bwrap alone confines"
+	case landlockAvail && !degradedFencesOK:
+		// Landlock confines the filesystem, but the reduced-confinement tier also
+		// substitutes a seccomp egress block and cross-process block for the netns and
+		// PID namespace it lacks - and those need an amd64 kernel with seccomp BPF.
+		// Without them the tier cannot run at all, so report it unavailable rather than
+		// offer a --allow-degraded that would only refuse at launch.
+		return enforce.Unavailable, nsReason +
+			"; and the reduced-confinement fallback needs a seccomp egress and cross-process " +
+			"block (an amd64 kernel with seccomp BPF) to stand in for the missing namespaces, " +
+			"unavailable here"
 	case landlockAvail:
 		return enforce.Degraded, "unprivileged user namespaces are blocked, so bubblewrap cannot run; " +
 			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially " +
