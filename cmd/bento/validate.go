@@ -48,22 +48,12 @@ func newValidateCmd() *cobra.Command {
 	return cmd
 }
 
-// loadManifest reads and validates a manifest. Relative paths inside it are
-// resolved against the manifest's own directory, so a manifest means the same
-// thing regardless of where bento is invoked from.
-func loadManifest(path string) (*policy.Policy, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	p, err := manifest.Load(f)
-	if err != nil {
-		return nil, err
-	}
-
-	base := filepath.Dir(path)
+// resolveManifestPaths rewrites a policy's relative paths against the manifest's
+// own directory, so a manifest means the same thing regardless of where bento is
+// invoked from. It must run AFTER the approval fingerprint is checked: the
+// fingerprint attests the manifest as written, so resolving first would change it.
+func resolveManifestPaths(p *policy.Policy, manifestPath string) {
+	base := filepath.Dir(manifestPath)
 	p.Entrypoint = resolveAgainst(base, p.Entrypoint)
 	for i, r := range p.Read {
 		p.Read[i] = resolveAgainst(base, r)
@@ -71,7 +61,6 @@ func loadManifest(path string) (*policy.Policy, error) {
 	for i, w := range p.Write {
 		p.Write[i] = resolveAgainst(base, w)
 	}
-	return p, nil
 }
 
 func resolveAgainst(base, path string) string {

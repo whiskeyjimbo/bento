@@ -37,10 +37,9 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := loadManifest(args[0])
-			if err != nil {
-				return err
-			}
+			// Parse the manifest once: the same bytes are approval-checked and executed,
+			// so a swap between two opens cannot run a different policy than the one
+			// approved.
 			doc, err := loadDocument(args[0])
 			if err != nil {
 				return err
@@ -48,6 +47,10 @@ func newRunCmd() *cobra.Command {
 			if err := requireApproval(doc, allowUnapproved); err != nil {
 				return err
 			}
+			// Resolve paths for execution only after the fingerprint check above, which
+			// must see the manifest as written.
+			p := doc.Policy
+			resolveManifestPaths(p, args[0])
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
 			if err != nil {
 				return err
