@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -42,13 +44,13 @@ func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
 	}
 }
 
-func TestSynthesizeAbsolutizesRelativePaths(t *testing.T) {
-	// The script runs with its directory as the working directory, so a relative
-	// path it opened must be anchored there or the manifest would mean something
-	// else at run time. A write becomes a grant of its directory.
+func TestSynthesizeKeepsAbsolutePathsAndDirGranularWrites(t *testing.T) {
+	// The observer anchors a relative open at the process's real working directory
+	// (see resolveAt), so observations reaching Synthesize are absolute. An absolute
+	// read is kept as observed; an absolute write becomes a grant of its directory.
 	obs := Observation{
-		Reads:  []string{"input.txt"},
-		Writes: []string{"out/result.txt"},
+		Reads:  []string{"/work/input.txt"},
+		Writes: []string{"/work/out/result.txt"},
 	}
 	p := Synthesize("/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/work/input.txt"}) {
@@ -56,6 +58,25 @@ func TestSynthesizeAbsolutizesRelativePaths(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Write, []string{"/work/out"}) {
 		t.Fatalf("write = %v, want the directory /work/out", p.Write)
+	}
+}
+
+// A path that is still relative at Synthesize has no anchor it can trust - the
+// observer emits absolute paths, so a relative one is a gap, not a workspace-
+// relative file. Anchoring it at a guessed base (the run's starting directory) is
+// exactly the mis-anchoring that produced grants naming files the run never opened,
+// so it is dropped rather than turned into fiction.
+func TestSynthesizeDropsRelativePaths(t *testing.T) {
+	obs := Observation{
+		Reads:  []string{"input.txt", "/work/real.txt"},
+		Writes: []string{"out/result.txt"},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{"/work/real.txt"}) {
+		t.Errorf("read = %v, want only the absolute /work/real.txt (the relative one dropped)", p.Read)
+	}
+	if len(p.Write) != 0 {
+		t.Errorf("write = %v, want the relative write dropped", p.Write)
 	}
 }
 
@@ -97,5 +118,35 @@ func TestSynthesizeDedupesHostsAndSorts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Network, want) {
 		t.Fatalf("network = %v, want deduped and sorted %v", p.Network, want)
+	}
+}
+
+// A host symlink into procfs (/etc/mtab -> /proc/self/mounts on many distros,
+// /dev/fd -> /proc/self/fd) has a script-owned looking name but resolves into /proc,
+// and a grant of it is refused at run time (the sandbox has its own pid namespace
+// and procfs). The filter must follow the symlink. resolvesIntoProc is what skip
+// leans on for the case isSystemPath's prefix list cannot see. (The real /etc/mtab
+// is under no system prefix; the temp symlink stands in for it, and is exercised
+// directly here because t.TempDir lives under /tmp, which isSystemPath drops first.)
+func TestResolvesIntoProc(t *testing.T) {
+	dir := t.TempDir()
+	mtab := filepath.Join(dir, "mtab")
+	if err := os.Symlink("/proc/self/mounts", mtab); err != nil {
+		t.Fatal(err)
+	}
+	if !resolvesIntoProc(mtab) {
+		t.Errorf("a symlink to /proc/self/mounts must resolve into procfs")
+	}
+	ordinary := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(ordinary, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resolvesIntoProc(ordinary) {
+		t.Errorf("an ordinary file must not resolve into procfs")
+	}
+	// A path that does not exist (a write target not yet created) must not be
+	// misclassified - EvalSymlinks errors, and the other filters handle it.
+	if resolvesIntoProc(filepath.Join(dir, "missing")) {
+		t.Errorf("a nonexistent path must not resolve into procfs")
 	}
 }

@@ -175,19 +175,66 @@ os.close(fd)
 	}
 }
 
-func TestResolveAtPassthroughAndDrop(t *testing.T) {
-	// An absolute path, a working-directory-relative path, and an empty path are
-	// returned unchanged; the profiler anchors the AT_FDCWD case itself.
-	if got := resolveAt(0, atFdCwd, "rel/x"); got != "rel/x" {
-		t.Errorf("AT_FDCWD: got %q, want the path unchanged", got)
-	}
+func TestResolveAtAnchorsAndDrops(t *testing.T) {
+	// An absolute path and an empty path are returned unchanged.
 	if got := resolveAt(0, 5, "/abs/x"); got != "/abs/x" {
 		t.Errorf("absolute: got %q, want it unchanged", got)
 	}
-	// A descriptor that is not a live directory (here, a nonexistent fd) must drop
-	// to empty rather than pass the bare relative path through to be mis-anchored.
+	if got := resolveAt(0, atFdCwd, ""); got != "" {
+		t.Errorf("empty: got %q, want it unchanged", got)
+	}
+	// An AT_FDCWD relative path is anchored at the process's working directory, read
+	// from /proc/<pid>/cwd. Using this test process's own pid, the anchor is the
+	// test's cwd - so the result is that cwd joined with the relative path, never the
+	// bare relative path (which downstream would mis-anchor).
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveAt(os.Getpid(), atFdCwd, "rel/x"); got != filepath.Join(cwd, "rel/x") {
+		t.Errorf("AT_FDCWD: got %q, want it anchored at %q", got, filepath.Join(cwd, "rel/x"))
+	}
+	// A pid whose /proc/<pid>/cwd cannot be read, and a descriptor that is not a live
+	// directory, both drop to empty rather than pass the bare relative path through.
+	if got := resolveAt(0, atFdCwd, "rel/x"); got != "" {
+		t.Errorf("unreadable cwd: got %q, want dropped to empty", got)
+	}
 	if got := resolveAt(os.Getpid(), 0x7fffffff, "rel/x"); got != "" {
 		t.Errorf("unresolvable dirfd: got %q, want dropped to empty", got)
+	}
+}
+
+// A relative path opened after a chdir must be anchored at the directory the run
+// was in when it opened the file, not at the run's starting directory. Before the
+// fix the observer returned the bare relative name and the profiler anchored it at
+// the entrypoint's directory, naming a file the script never touched.
+func TestTraceAnchorsRelativeOpenAfterChdir(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	sub := filepath.Join(t.TempDir(), "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "after_cd.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// chdir into sub, then open a relative path - it must be anchored at sub.
+	script := fmt.Sprintf("import os\nos.chdir(%q)\nos.close(os.open('after_cd.txt', os.O_RDONLY))\n", sub)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	want := filepath.Join(sub, "after_cd.txt")
+	if _, ok := find(res, want); !ok {
+		t.Errorf("relative open after chdir was not anchored at the new cwd (want %q); accesses: %v", want, res.Accesses)
+	}
+	for _, a := range res.Accesses {
+		if a.Path == "after_cd.txt" {
+			t.Errorf("relative open recorded bare-relative, not anchored: %q", a.Path)
+		}
 	}
 }
 

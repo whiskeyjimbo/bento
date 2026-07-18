@@ -213,9 +213,14 @@ func inspect(pid int, record func(string, bool), res *Result) {
 		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
 		record(path, openHowWrite(pid, uintptr(regs.Rdx)))
 	case sysOpen:
-		record(readString(pid, uintptr(regs.Rdi)), regs.Rsi&writeFlags != 0)
+		// open/creat take no dirfd; a relative path is anchored at the working
+		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
+		// a relative open after a chdir would be mis-anchored.
+		path := resolveAt(pid, atFdCwd, readString(pid, uintptr(regs.Rdi)))
+		record(path, regs.Rsi&writeFlags != 0)
 	case sysCreat:
-		record(readString(pid, uintptr(regs.Rdi)), true)
+		path := resolveAt(pid, atFdCwd, readString(pid, uintptr(regs.Rdi)))
+		record(path, true)
 	case sysExecve:
 		// Only execve is counted: the enforcement exec-block filter blocks execve
 		// but allows execveat, so a program that spawns via execveat runs fine under
@@ -224,20 +229,28 @@ func inspect(pid int, record func(string, bool), res *Result) {
 	}
 }
 
-// resolveAt anchors an openat pathname. An absolute path, or one opened relative
-// to the working directory (AT_FDCWD), is returned unchanged - the profiler
-// anchors the latter at the run's working directory. A path opened relative to a
-// real directory descriptor is joined onto that descriptor's directory, read from
-// /proc/<pid>/fd, so it is not mis-anchored at the working directory instead.
+// resolveAt anchors a relative openat/open pathname at the directory it was opened
+// against, so the observation names the file the run actually touched. An absolute
+// path is returned unchanged. A relative path is joined onto the directory the
+// syscall resolves it against: the process's working directory for AT_FDCWD, or the
+// directory a real descriptor names otherwise. Both are read from /proc at the
+// syscall-entry stop, so a chdir the run has already done is reflected - anchoring a
+// path opened after `cd /etc` at /etc, not at the run's starting directory (which
+// would name a file the script never opened).
+//
+// The anchor is dropped rather than guessed when /proc gives no live directory: a
+// descriptor that is not one readlinks to a non-path ("socket:[N]", "anon_inode:…")
+// or a deleted directory ("… (deleted)"). Passing the bare relative path through
+// would wrongly anchor it at the profiler's own cwd downstream - the bug being fixed.
 func resolveAt(pid int, dirfd int32, path string) string {
-	if path == "" || strings.HasPrefix(path, "/") || dirfd == atFdCwd {
+	if path == "" || strings.HasPrefix(path, "/") {
 		return path
 	}
-	dir, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd))
-	// Drop rather than mis-anchor: a descriptor that is not a live directory
-	// readlinks to a non-path ("socket:[N]", "anon_inode:...") or a deleted
-	// directory ("/path (deleted)"), and passing the bare relative path through
-	// would wrongly anchor it at the working directory - the bug being fixed.
+	link := fmt.Sprintf("/proc/%d/cwd", pid)
+	if dirfd != atFdCwd {
+		link = fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd)
+	}
+	dir, err := os.Readlink(link)
 	if err != nil || !strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, " (deleted)") {
 		return ""
 	}

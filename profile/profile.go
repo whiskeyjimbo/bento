@@ -61,20 +61,22 @@ var systemPrefixes = []string{
 // *this* script needs. Exec is proposed as `all` only if the script actually
 // spawned a subprocess; otherwise the default deny stands.
 func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy {
-	// The script runs with its own directory as the working directory, so a
-	// relative path it opened is anchored there; make it absolute or the proposed
-	// manifest would grant a path that means something different at run time.
-	base := filepath.Dir(entrypoint)
-	abs := func(p string) string {
-		if p == "" || filepath.IsAbs(p) {
-			return p
+	// The observer emits absolute paths - it anchors a relative open at the process's
+	// real working directory - so a path that is still relative here has no anchor we
+	// can trust. Guessing one (the run's starting directory) produced grants that named
+	// files the run never touched, so a relative path is dropped instead of turned into
+	// fiction.
+	canon := func(p string) string {
+		if !filepath.IsAbs(p) {
+			return ""
 		}
-		return filepath.Join(base, p)
+		return filepath.Clean(p)
 	}
 
 	runtime := runtimeTree(obs.Interpreter)
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || isSystemPath(p) ||
+			resolvesIntoProc(p) ||
 			(runtime != "" && strings.HasPrefix(p, runtime+"/"))
 	}
 
@@ -82,16 +84,16 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	// writable in a rename-safe way), so an observed write to a file becomes a
 	// grant of its directory.
 	writeDir := func(p string) string {
-		if p == "" {
+		if !filepath.IsAbs(p) {
 			return ""
 		}
-		return filepath.Dir(abs(p))
+		return filepath.Dir(p)
 	}
 
 	p := &policy.Policy{
 		Entrypoint:  entrypoint,
 		Interpreter: interpreter,
-		Read:        cleanPaths(obs.Reads, abs, skip),
+		Read:        cleanPaths(obs.Reads, canon, skip),
 		Write:       cleanPaths(obs.Writes, writeDir, skip),
 		Exec:        policy.ExecNone,
 	}
@@ -124,6 +126,24 @@ func isSystemPath(p string) bool {
 		}
 	}
 	return false
+}
+
+// resolvesIntoProc reports whether p, once its symlinks are followed, lands in
+// procfs. The observed name can look script-owned while pointing into /proc:
+// /etc/mtab and /dev/fd are host symlinks to /proc/self/mounts and /proc/self/fd,
+// and /proc/self resolves on to /proc/<pid>. A grant of such a path is refused at
+// run time (the sandbox has its own pid namespace and procfs), so proposing it
+// yields a manifest bento rejects. Resolving here catches it while cleanPaths still
+// emits the observed name for the honorable cases. This runs on the host after a
+// real profiling run, so following the symlink is against the same filesystem the
+// grant would be resolved against. A path that does not resolve (a write target not
+// yet created) is left for the other filters.
+func resolvesIntoProc(p string) bool {
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return false
+	}
+	return resolved == "/proc" || strings.HasPrefix(resolved, "/proc/")
 }
 
 // runtimeTree returns the install root of the interpreter (…/bin/python3 → …),
