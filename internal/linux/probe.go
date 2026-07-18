@@ -87,11 +87,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		// (memory/pids delegated) while systemd-run silently ignores a CPUQuota
 		// because the cpu controller is not delegated. Report it so admission can
 		// refuse a requested cpu limit this host cannot actually enforce.
-		if ctrls, known := delegatedControllers(); known && !ctrls["cpu"] {
-			r.Add(enforce.LayerLimitsCPU, enforce.Unavailable, cpuUndelegatedReason)
-		} else {
-			r.Add(enforce.LayerLimitsCPU, enforce.Enforced, "")
-		}
+		state, reason := cpuDelegationState(delegatedControllers())
+		r.Add(enforce.LayerLimitsCPU, state, reason)
 	} else {
 		// No scope at all: the cpu gap is subsumed by the whole limits layer being
 		// unavailable, which already refuses a cpu-limit policy. Emitting a separate

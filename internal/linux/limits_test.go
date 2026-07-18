@@ -105,3 +105,57 @@ func TestDelegatedControllers(t *testing.T) {
 		t.Errorf("expected memory and pids delegated, got %v", ctrls)
 	}
 }
+
+// The delegation reading gates whether bento claims resource limits are enforced.
+// The decision must FAIL CLOSED: an unreadable delegated set (known=false) cannot
+// confirm the caps bind, so it must report unavailable, never enforced - the
+// fail-open bug was known=false taking the enforced/ok branch, letting a target run
+// unbounded under a report that said the limit held.
+func TestHostControllersDelegatedFailsClosed(t *testing.T) {
+	cases := []struct {
+		name   string
+		ctrls  map[string]bool
+		known  bool
+		wantOK bool
+	}{
+		{"unknown fails closed", nil, false, false},
+		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, true},
+		{"memory missing", map[string]bool{"pids": true}, true, false},
+		{"pids missing", map[string]bool{"memory": true}, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, reason := hostControllersDelegated(tc.ctrls, tc.known)
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok && reason == "" {
+				t.Error("a not-ok result must carry a reason a user can act on")
+			}
+		})
+	}
+}
+
+func TestCpuDelegationStateFailsClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		ctrls map[string]bool
+		known bool
+		want  enforce.State
+	}{
+		{"unknown fails closed", nil, false, enforce.Unavailable},
+		{"cpu delegated", map[string]bool{"cpu": true}, true, enforce.Enforced},
+		{"cpu undelegated", map[string]bool{"memory": true}, true, enforce.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state, reason := cpuDelegationState(tc.ctrls, tc.known)
+			if state != tc.want {
+				t.Errorf("state = %v, want %v", state, tc.want)
+			}
+			if state != enforce.Enforced && reason == "" {
+				t.Error("a non-enforced state must carry a reason")
+			}
+		})
+	}
+}

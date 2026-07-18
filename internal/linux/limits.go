@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -54,13 +55,33 @@ func canCreateScope() (bool, string) {
 		// a Delegate=cpu drop-in, is reported separately by the probe as its own
 		// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
 		// unenforced) without gating scope creation on cpu delegation.
-		if ctrls, known := delegatedControllers(); known && (!ctrls["memory"] || !ctrls["pids"]) {
-			scopeReason = "the memory/pids controllers are not delegated to your systemd user manager, so resource limits cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
+		if ok, reason := hostControllersDelegated(delegatedControllers()); !ok {
+			scopeReason = reason
 			return
 		}
 		scopeOK = true
 	})
 	return scopeOK, scopeReason
+}
+
+// hostControllersDelegated reports whether the memory and pids controllers - the
+// host-safety caps - are confirmed delegated, and why not otherwise.
+//
+// Unknown fails CLOSED. When the delegated set could not be read (known is false),
+// bento cannot confirm the caps will bind, so it reports them unavailable rather
+// than claim an enforcement it cannot verify. Returning ok there was the fail-open
+// bug: systemd-run accepts a MemoryMax for an undelegated controller without
+// enforcing it, so the target would run unbounded under a report saying the limit
+// held. Reporting unavailable instead lets admission refuse a requested memory/pids
+// limit (or proceed under --allow-degraded), which is the loud-degradation contract.
+func hostControllersDelegated(ctrls map[string]bool, known bool) (bool, string) {
+	if !known {
+		return false, "could not read which cgroup controllers your systemd user manager delegates, so resource limits cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); they are reported unavailable rather than claimed enforced"
+	}
+	if !ctrls["memory"] || !ctrls["pids"] {
+		return false, "the memory/pids controllers are not delegated to your systemd user manager, so resource limits cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
+	}
+	return true, ""
 }
 
 // preflightLimits verifies the exact requested limits can be applied, by creating
@@ -100,6 +121,21 @@ func trueBinary() string {
 		return p
 	}
 	return "/bin/true"
+}
+
+// cpuDelegationState maps the delegated-controllers reading to the LayerLimitsCPU
+// state. Like hostControllersDelegated, unknown fails CLOSED: an unreadable
+// delegated set cannot confirm a cpu limit will bind, so it is Unavailable, not
+// Enforced - previously known==false took the Enforced branch and admission then
+// admitted a cpu limit the host silently ignored.
+func cpuDelegationState(ctrls map[string]bool, known bool) (enforce.State, string) {
+	if !known {
+		return enforce.Unavailable, "could not read which cgroup controllers your systemd user manager delegates, so a requested cpu limit cannot be confirmed to bind (a non-standard, containerized, or hybrid-cgroup layout)"
+	}
+	if !ctrls["cpu"] {
+		return enforce.Unavailable, cpuUndelegatedReason
+	}
+	return enforce.Enforced, ""
 }
 
 // cpuUndelegatedReason explains why a requested cpu limit cannot be enforced.
