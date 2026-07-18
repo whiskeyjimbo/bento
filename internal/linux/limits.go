@@ -164,6 +164,14 @@ var delegatedControllers = sync.OnceValues(measureDelegatedControllers)
 // limits makes systemd enable exactly the controllers it can, and the ones it cannot
 // (undelegated) are silently absent - which is the very fact this measures.
 //
+// Bundling all three properties into one scope is safe on a partially-delegated host
+// (the common cpu-not-delegated default): systemd-run accepts a property for an
+// undelegated controller without erroring the scope - the same behavior that made the
+// original fail-open bug possible - so requesting CPUQuota where cpu is undelegated
+// still yields a running scope whose controllers report memory and pids. A cpu quirk
+// cannot sink the host-safety reading (verified: requesting an undelegated
+// controller's property exits 0 and merely omits it from the read).
+//
 // known is false only when the probe scope could not be created or read at all
 // (no systemd user manager, or the read failed): that is the fail-closed signal.
 func measureDelegatedControllers() (map[string]bool, bool) {

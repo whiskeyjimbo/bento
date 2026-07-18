@@ -97,7 +97,7 @@ func TestMemoryLimitEnforced(t *testing.T) {
 func TestDelegatedControllers(t *testing.T) {
 	ctrls, ok := delegatedControllers()
 	if !ok {
-		t.Skip("cannot read delegated controllers on this host")
+		t.Skip("could not create a probe scope to measure delegation on this host")
 	}
 	// A systemd user session delegates at least memory and pids by default; those
 	// are the host-safety controllers the probe's LayerLimits capability depends on.
