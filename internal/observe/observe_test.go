@@ -63,14 +63,14 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 	}
 }
 
-// killAndReap is the cleanup Trace defers on an early error; it must fully remove
-// a ptrace-stopped child rather than leave a TASK_TRACED process (or an unreaped
-// zombie) behind. This exercises the helper directly against a real child driven
+// reapTracees is the cleanup Trace runs on an early error and on clean exit; it must
+// fully remove a ptrace-stopped tracee rather than leave a TASK_TRACED process (or an
+// unreaped zombie) behind. This exercises it directly against a real child driven
 // into that suspended state. The pre-resume setup paths (initial wait, set-options,
 // resume) still have no failure seam and are covered by review; the loop-wait path,
 // which the guard's descendant handling depends on, is driven end-to-end via the
 // waitTracee seam in TestTraceReapsDescendantOnLoopWaitError.
-func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
+func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("sh not available")
@@ -86,7 +86,7 @@ func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
 		t.Fatalf("starting tracee: %v", err)
 	}
 	pid := cmd.Process.Pid
-	// If an assertion below fails before killAndReap runs (or it misbehaves), do not
+	// If an assertion below fails before reapTracees runs (or it misbehaves), do not
 	// leave the stopped child pinned for its whole sleep.
 	defer func() {
 		syscall.Kill(pid, syscall.SIGKILL)
@@ -101,12 +101,12 @@ func TestKillAndReapRemovesStoppedTracee(t *testing.T) {
 		t.Fatalf("initial wait: %v", err)
 	}
 
-	killAndReap(pid)
+	reapTracees(map[int]bool{pid: true})
 
 	// A signal-0 probe to a reaped pid reports ESRCH; anything else means the child
 	// (or an unreaped zombie) is still around.
 	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
-		t.Fatalf("tracee still present after killAndReap: kill(pid, 0) = %v, want ESRCH", err)
+		t.Fatalf("tracee still present after reapTracees: kill(pid, 0) = %v, want ESRCH", err)
 	}
 }
 
@@ -212,16 +212,29 @@ func TestTraceReapsBackgroundedDescendantOnCleanExit(t *testing.T) {
 	if err := os.WriteFile(script, []byte("sleep 30 &\necho CHILD=$!\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var out strings.Builder
-	res, err := Trace([]string{sh, script}, os.Environ(), nil, &out, &out)
+	// Capture stdout via a real file, not an in-memory writer: Trace does not call
+	// cmd.Wait (it does its own ptrace waiting), so os/exec's copy goroutine for a
+	// non-file writer is never joined and reading it after Trace returns would race it.
+	// An *os.File is passed to the child directly, with no such goroutine.
+	outPath := filepath.Join(dir, "out.txt")
+	outFile, err := os.Create(outPath)
 	if err != nil {
-		t.Fatalf("Trace: %v (output: %s)", err, out.String())
+		t.Fatal(err)
+	}
+	defer outFile.Close()
+	res, err := Trace([]string{sh, script}, os.Environ(), nil, outFile, outFile)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
 	}
 	if res.ExitCode != 0 {
-		t.Fatalf("root should have exited 0; got %d (output: %s)", res.ExitCode, out.String())
+		t.Fatalf("root should have exited 0; got %d", res.ExitCode)
+	}
+	outBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	child := parseChildPID(t, out.String())
+	child := parseChildPID(t, string(outBytes))
 	// The child was SIGKILL'd on the clean exit, so it is dead; whether this tracer or
 	// init reaps the corpse is a race, so poll until the pid is fully gone or a zombie
 	// (dead), never a live tracee. Before the fix it stays alive+TASK_TRACED for the
@@ -256,27 +269,38 @@ func parseChildPID(t *testing.T, out string) int {
 	return 0
 }
 
-// PTRACE_O_TRACECLONE traces thread creation (CLONE_THREAD) as well as new
-// processes, so the fork-event tracking adds thread TIDs to the tracee set. Reaping
-// those on cleanup must not hang: a multithreaded target - here with daemon threads
-// still sleeping when the process exits, so their TIDs are live in the set at
-// cleanup - must let Trace return promptly, not block in killAndReap on a thread.
-func TestTraceMultithreadedTargetDoesNotHang(t *testing.T) {
+// A backgrounded MULTITHREADED descendant left alive at root's clean exit is the
+// deadlock case: reaping it means SIGKILLing a thread group whose zombie leader
+// cannot be collected until its sibling threads are (delay_group_leader). A per-pid
+// wait on the leader would block forever whenever it is reaped before its threads;
+// reapTracees drains -1 so the threads are collected first. root (sh) exits while the
+// threaded python child runs, so its leader and thread tids are all live in the
+// tracee set at cleanup - Trace must still return promptly.
+func TestTraceReapsBackgroundedMultithreadedDescendant(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
 	py, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")
 	}
-	script := "import threading, time\n" +
-		"[threading.Thread(target=lambda: time.sleep(30), daemon=True).start() for _ in range(8)]\n"
+	// Background a multithreaded child, then keep root alive briefly (a short sleep,
+	// itself a transient child) so the loop tracks the child's thread tids before root
+	// exits. At root's exit the leader-plus-threads group is live in the tracee set -
+	// the state that deadlocks a per-pid reap of a delayed group leader.
+	child := py + " -c 'import threading,time; [threading.Thread(target=lambda: time.sleep(30), daemon=True).start() for _ in range(6)]; time.sleep(30)'"
+	script := child + " &\nsleep 0.5\nexit 0\n"
+
 	done := make(chan struct{})
 	go func() {
-		Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+		Trace([]string{sh, "-c", script}, os.Environ(), nil, nil, nil)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(20 * time.Second):
-		t.Fatal("Trace hung on a multithreaded target - killAndReap blocked on a thread TID?")
+		t.Fatal("Trace hung reaping a backgrounded multithreaded descendant (per-pid Wait4 on a delayed group leader?)")
 	}
 }
 

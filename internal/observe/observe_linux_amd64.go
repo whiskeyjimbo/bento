@@ -90,18 +90,10 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// a failed trace leaks no TASK_TRACED process. Reaping stays on the locked thread
 	// (this defer runs before UnlockOSThread), as ptrace requires. The happy path
 	// clears this after the loop has already reaped root.
-	//
-	// Every tracee is killed and reaped. A descendant reparented to init after root
-	// dies may be collected by init rather than here, but it is dead either way - the
-	// leak this guards is a descendant left alive and TASK_TRACED, and the SIGKILL ends
-	// that regardless of who reaps the corpse.
 	succeeded := false
 	defer func() {
-		if succeeded {
-			return
-		}
-		for pid := range tracees {
-			killAndReap(pid)
+		if !succeeded {
+			reapTracees(tracees)
 		}
 	}()
 
@@ -164,9 +156,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// have already exited and been dropped, so this reaps an empty remainder.
 			succeeded = true
 			delete(tracees, root)
-			for pid := range tracees {
-				killAndReap(pid)
-			}
+			reapTracees(tracees)
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {
 				res.Signaled = true
@@ -222,23 +212,37 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 // descendant attached by then is reaped, not leaked.
 var waitTracee = syscall.Wait4
 
-// killAndReap SIGKILLs a tracee and waits for its death, so a trace that returns
-// before the target completes leaves no suspended TASK_TRACED process behind. A
-// ptrace-stopped tracee is not exempt from SIGKILL, so this does not hang. The
-// wait loops to retry EINTR and to step past a pending ptrace-stop notification
-// that may be reported before the death.
-func killAndReap(pid int) {
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-	for {
+// reapTracees SIGKILLs every tracee and drains waits until all of them are gone, so
+// a trace that returns before the target completes leaves no suspended TASK_TRACED
+// process behind. A ptrace-stopped tracee is not exempt from SIGKILL, so each one
+// dies.
+//
+// It waits on -1 rather than each pid in turn. A multithreaded descendant's zombie
+// thread-group leader cannot be reaped until its sibling threads are (the kernel's
+// delay_group_leader), so a per-pid Wait4(leader) would block forever whenever the
+// leader is killed before its threads - which map iteration order makes a coin flip.
+// Draining -1 dequeues whichever tracee is ready (threads first), so groups empty and
+// leaders become reapable. It stops once the tracked set is empty rather than at
+// ECHILD, so it never blocks on an embedding process's own unrelated live children;
+// an ECHILD before then means the rest reparented to init (which reaps their corpses)
+// and is a clean stop.
+func reapTracees(tracees map[int]bool) {
+	remaining := make(map[int]bool, len(tracees))
+	for pid := range tracees {
+		remaining[pid] = true
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	for len(remaining) > 0 {
 		var ws syscall.WaitStatus
-		_, err := syscall.Wait4(pid, &ws, 0, nil)
+		wpid, err := syscall.Wait4(-1, &ws, 0, nil)
 		if err == syscall.EINTR {
 			continue
 		}
-		// ECHILD (already reaped) or a terminal status means the tracee is gone; a
-		// non-terminal stop status means the SIGKILL has not landed yet, so wait on.
-		if err != nil || ws.Exited() || ws.Signaled() {
-			return
+		if err != nil {
+			return // ECHILD: no waitable tracee remains; any survivor reparented to init
+		}
+		if ws.Exited() || ws.Signaled() {
+			delete(remaining, wpid)
 		}
 	}
 }
