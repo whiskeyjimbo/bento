@@ -171,6 +171,7 @@ func Home(home string) []Rule {
 	// files cannot be pre-enumerated - a not-yet-created entry is still plantable, the
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
+		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
 		".config/autostart",            // XDG autostart .desktop entries
 		".config/systemd/user",         // systemd user services and timers
 		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
