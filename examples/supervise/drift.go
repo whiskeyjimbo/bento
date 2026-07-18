@@ -37,9 +37,13 @@ func warnManifestDrift(w io.Writer, s *store, key, script string) {
 
 	var drift []string
 	for _, kind := range []string{"read", "write"} {
-		mPaths := m.Read
-		if kind == "write" {
-			mPaths = m.Write
+		// A manifest write grant is read-write (bento binds writes RW), so a read is
+		// covered by a read OR a write grant; a write needs a write grant. Missing this
+		// hides the sharp case: a store read-deny under a manifest write grant, which
+		// `bento run` can read while supervise blocks.
+		mPaths := m.Write
+		if kind == "read" {
+			mPaths = append(append([]string{}, m.Read...), m.Write...)
 		}
 		allows, denies := s.effectivePaths(key, kind)
 		for _, p := range allows {

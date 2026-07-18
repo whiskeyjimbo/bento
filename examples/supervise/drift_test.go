@@ -97,6 +97,32 @@ func TestDriftSilentWhenStoreEmpty(t *testing.T) {
 	}
 }
 
+// A manifest write grant confers read (bento binds writes read-write), so a store
+// read-deny under a manifest write grant IS drift the manifest reads what supervise
+// blocks - and a store read-allow under a write grant is NOT drift.
+func TestDriftFoldsWriteGrantIntoReadCoverage(t *testing.T) {
+	script := t.TempDir() + "/agent.sh"
+	writeManifestAt(t, script, &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{"/data"}})
+
+	// False negative guard: store denies /data/secret, manifest grants /data as write.
+	sDeny := newTestStore()
+	sDeny.rememberPath("k", "read", "/data/secret", deny, false)
+	var denyOut strings.Builder
+	warnManifestDrift(&denyOut, sDeny, "k", script)
+	if !strings.Contains(denyOut.String(), "/data/secret") || !strings.Contains(denyOut.String(), "the manifest allows it, the store denies it") {
+		t.Errorf("a read-deny under a manifest write grant must warn; got %q", denyOut.String())
+	}
+
+	// No false positive: store allows /data for read, manifest grants /data as write.
+	sAllow := newTestStore()
+	sAllow.rememberPath("k", "read", "/data", allow, false)
+	var allowOut strings.Builder
+	warnManifestDrift(&allowOut, sAllow, "k", script)
+	if allowOut.Len() != 0 {
+		t.Errorf("a read-allow under a manifest write grant must not warn; got %q", allowOut.String())
+	}
+}
+
 // A global deny of a host the manifest allows is real drift: `bento run` would let
 // the host through while supervise blocks it. The warning names the direction.
 func TestDriftWarnsGlobalDenyVsManifestAllow(t *testing.T) {
