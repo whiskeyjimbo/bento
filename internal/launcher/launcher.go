@@ -100,15 +100,16 @@ func Run(cfg Config) (int, error) {
 
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
 	// target, but on the supervise path (exec: all) the launcher does not exec - it
-	// stays alive as the sandbox's pid 2 with those descriptors still open. The target
-	// cannot read their content across process boundaries, but it can still learn the
-	// paths behind them by readlink-ing /proc/<launcher>/fd. Making this process
-	// non-dumpable reparents its /proc entry to root, so the target - same uid, but no
-	// longer able to reach the launcher's procfs - can neither reopen those descriptors
-	// nor read their links. This also hardens the profiling report descriptor against
-	// the same reopen (see runObserve), so the guarantee rests on this call rather than
-	// on an unstated kernel reopen barrier. execve resets dumpable, so the exec: none
-	// path (which replaces this process with the target) is unaffected.
+	// stays alive as the sandbox's pid 2 with those descriptors still open. Reopening
+	// one by path through /proc/<launcher>/fd already fails: the descriptor's file
+	// lives on a host mount absent from the sandbox namespace, so the kernel's
+	// cross-namespace reopen check denies it regardless of file mode (this is the same
+	// barrier runObserve relies on for the report descriptor). What that barrier does
+	// NOT stop is a plain readlink of /proc/<launcher>/fd, which still discloses the
+	// host path behind the descriptor. Making this process non-dumpable reparents its
+	// /proc entry to root, closing that path-disclosure channel to the same-uid target.
+	// execve resets dumpable, so the exec: none path (which replaces this process with
+	// the target) is unaffected.
 	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
 		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
 	}
