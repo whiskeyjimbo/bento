@@ -45,6 +45,9 @@ func main() {
 		usage(os.Stdout)
 		os.Exit(0)
 	}
+	if len(args) >= 1 && args[0] == "perms" {
+		os.Exit(perms(args[1:], os.Stdin, os.Stdout))
+	}
 	if len(args) != 2 || args[0] != "run" {
 		usage(os.Stderr)
 		os.Exit(2)
@@ -57,6 +60,7 @@ func usage(w io.Writer) {
 
 Usage:
   supervise run <script>
+  supervise perms list | forget | reset
   supervise -h | --help
 
 It runs the script twice. First a TRIAL pass observes what the script reads,

@@ -86,10 +86,23 @@ func loadStore() (*store, error) {
 	return s, nil
 }
 
-// save writes the store atomically (temp + rename) at mode 0600, serialized by an
-// advisory lock on a SEPARATE lockfile - never the store file, whose inode the
-// rename replaces.
-func (s *store) save() error {
+// save writes the store atomically, folding in any concurrent run's writes so
+// finishing last does not clobber another run's newly-remembered decisions.
+func (s *store) save() error { return s.write(true) }
+
+// overwrite writes the store atomically WITHOUT folding in the on-disk copy, so a
+// deletion (forget/reset) sticks. save's concurrent-merge would otherwise re-read
+// the just-deleted keys off disk and resurrect them, turning the delete into a
+// silent no-op. The tradeoff is the other direction: a run that saves in the window
+// between an edit command's unlocked load and this write is clobbered. That window
+// is acceptable for a manual admin command; not preserving concurrent writes is the
+// price of guaranteeing the delete holds.
+func (s *store) overwrite() error { return s.write(false) }
+
+// write persists the store atomically (temp + rename) at mode 0600, serialized by
+// an advisory lock on a SEPARATE lockfile - never the store file, whose inode the
+// rename replaces. When fold is set it merges a concurrent run's writes first.
+func (s *store) write(fold bool) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
@@ -106,10 +119,12 @@ func (s *store) save() error {
 	// Re-read under the lock and fold in anything a concurrent run wrote, so
 	// finishing last does not clobber another run's newly-remembered decisions (in
 	// particular a deny). This run's own values win on a per-key conflict.
-	if disk, err := os.ReadFile(s.path); err == nil {
-		var d store
-		if json.Unmarshal(disk, &d) == nil {
-			s.fillMissing(&d)
+	if fold {
+		if disk, err := os.ReadFile(s.path); err == nil {
+			var d store
+			if json.Unmarshal(disk, &d) == nil {
+				s.fillMissing(&d)
+			}
 		}
 	}
 
@@ -179,6 +194,42 @@ func appKey(entrypoint string) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// shortKey is the human-typeable handle for an app: the leading hex of its
+// content hash, git-style. list prints it and forget accepts any unambiguous
+// prefix of it.
+func shortKey(key string) string {
+	hex := strings.TrimPrefix(key, "sha256:")
+	if len(hex) > 12 {
+		return hex[:12]
+	}
+	return hex
+}
+
+// resolveAppPrefix maps a hex prefix (as printed by shortKey) to the one app key
+// it identifies. It errors if the prefix matches no app or more than one, so
+// forget never deletes the wrong record on an ambiguous handle.
+func (s *store) resolveAppPrefix(prefix string) (string, error) {
+	prefix = strings.ToLower(strings.TrimPrefix(prefix, "sha256:"))
+	if prefix == "" {
+		return "", fmt.Errorf("empty app handle")
+	}
+	var matched []string
+	for key := range s.Apps {
+		hex := strings.TrimPrefix(key, "sha256:")
+		if strings.HasPrefix(hex, prefix) {
+			matched = append(matched, key)
+		}
+	}
+	switch len(matched) {
+	case 0:
+		return "", fmt.Errorf("no app matches %q", prefix)
+	case 1:
+		return matched[0], nil
+	default:
+		return "", fmt.Errorf("%q is ambiguous (%d apps match); use a longer prefix", prefix, len(matched))
+	}
 }
 
 // resolveLattice applies deny-wins to a (global, app) decision pair.

@@ -127,8 +127,30 @@ worth knowing:
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
   is printed so a silent block is never a mystery.
 
+### Inspecting and editing the store
+
+`perms` reads and edits the store without hand-editing JSON. It is also the escape
+hatch for the deny-wins footgun: a stored deny applies silently to a later run with
+no prompt, so you need a way to see it and clear it.
+
+```sh
+supervise perms list                        # the effective decisions, global rules first
+supervise perms forget app <handle>         # drop one app's decisions (handle from list)
+supervise perms forget global [host:port]   # drop one global rule, or all of them
+supervise perms reset                       # clear the whole store (asks to confirm)
+```
+
+`list` prints the *effective* decision - a network host is resolved through the
+deny-wins lattice, and one blocked by a global rule is marked `(global)` so you
+know it is the global layer to clear, not the app's. Every host and path is quoted,
+since a key can be a name the sandboxed target chose.
+
+`forget app` clears the whole app record, not one path or host inside it; re-running
+the script re-prompts for everything. Global rules are the finer-grained layer, so
+`forget global` can drop a single `host:port` rule (that is the footgun to clear).
+
 Not yet built (tracked as follow-ups): exporting the store to a `bento run`
-manifest, a `perms list|forget|reset` command, and global (cross-script) rules.
+manifest, and global (cross-script) read/write/exec rules.
 
 ## The honesty loop
 
