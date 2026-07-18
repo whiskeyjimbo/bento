@@ -154,3 +154,23 @@ func TestRuntimeShieldsHostSockets(t *testing.T) {
 		}
 	}
 }
+
+// A relocated XDG base moves credential/config stores out from under ~/.config,
+// so the shields must cover the XDG location too (bv2-3qg).
+func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/home/u/cfg")
+	t.Setenv("XDG_DATA_HOME", "/home/u/data")
+	byPath := map[string]bool{}
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = true
+	}
+	// Shielded at BOTH the default and the relocated XDG location.
+	for _, p := range []string{
+		"/home/u/.config/gh", "/home/u/cfg/gh", // gh tokens (config)
+		"/home/u/.local/share/keyrings", "/home/u/data/keyrings", // GNOME keyring (data)
+	} {
+		if !byPath[p] {
+			t.Errorf("expected a shield at %q (XDG relocation), missing", p)
+		}
+	}
+}

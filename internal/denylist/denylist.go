@@ -7,7 +7,11 @@
 // must never expose these.
 package denylist
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // Deny is how completely a rule shields its path.
 type Deny int
@@ -194,18 +198,45 @@ func Home(home string) []Rule {
 		".config/xmonad",               // XDG location for xmonad.hs (0.17+)
 	}
 
+	// A relocated XDG base moves the real credential/config stores out from under the
+	// default ~/.config etc., so a config/data/cache-relative entry is shielded at
+	// BOTH its default location and the XDG one - a tool that honors XDG_CONFIG_HOME
+	// reads from there, a tool that ignores it from the default, and both are covered.
+	xdgBases := []struct{ prefix, env, def string }{
+		{".config/", "XDG_CONFIG_HOME", ".config"},
+		{".local/share/", "XDG_DATA_HOME", ".local/share"},
+		{".cache/", "XDG_CACHE_HOME", ".cache"},
+	}
+	locations := func(entry string) []string {
+		for _, b := range xdgBases {
+			if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
+				out := []string{join(entry)}
+				if base := os.Getenv(b.env); base != "" && filepath.Clean(base) != join(b.def) {
+					out = append(out, filepath.Join(base, rel))
+				}
+				return out
+			}
+		}
+		return []string{join(entry)}
+	}
+
 	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))
+	emit := func(entry string, deny Deny, dir bool) {
+		for _, p := range locations(entry) {
+			rules = append(rules, Rule{Path: p, Deny: deny, Dir: dir})
+		}
+	}
 	for _, d := range dirs {
-		rules = append(rules, Rule{Path: join(d), Deny: DenyAll, Dir: true})
+		emit(d, DenyAll, true)
 	}
 	for _, f := range files {
-		rules = append(rules, Rule{Path: join(f), Deny: DenyAll})
+		emit(f, DenyAll, false)
 	}
 	for _, f := range writeOnly {
-		rules = append(rules, Rule{Path: join(f), Deny: DenyWrite})
+		emit(f, DenyWrite, false)
 	}
 	for _, d := range writeOnlyDirs {
-		rules = append(rules, Rule{Path: join(d), Deny: DenyWrite, Dir: true})
+		emit(d, DenyWrite, true)
 	}
 	return rules
 }
