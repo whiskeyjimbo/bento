@@ -1,0 +1,95 @@
+package linux
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/policy"
+)
+
+// A write grant whose per-workspace shield is redirected by a symlinked directory
+// component must be refused: the shield would bind at the resolved path while the
+// tooling opens the literal name, and the symlink - inside the writable grant - lets
+// the target plant a real hook/task that runs on the host (bv2-1z8). Both an escape
+// out of the grant and a redirect within it leave the literal name unshielded.
+func TestWorkspaceShieldRedirectRefused(t *testing.T) {
+	for name, target := range map[string]string{
+		"escapes the grant":      "/outside/.git",
+		"redirects within grant": "/work/realgit",
+	} {
+		t.Run(name, func(t *testing.T) {
+			sb := testSandbox("/work/.git/hooks") // an entry under /work makes it a workspace dir
+			base := sb.resolve
+			sb.resolve = func(p string) string {
+				if p == "/work/.git" {
+					return target
+				}
+				if strings.HasPrefix(p, "/work/.git/") {
+					return target + strings.TrimPrefix(p, "/work/.git")
+				}
+				return base(p)
+			}
+			p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work"}}
+			if _, err := compile(p, enforce.Process{}, sb); err == nil {
+				t.Fatalf("a write grant whose .git shield is redirected (%s) must be refused", name)
+			}
+		})
+	}
+}
+
+// The redirect check must run against the real resolveExisting, which is identity on
+// a symlink-free path - so a normal project checkout is NOT over-refused (the trap:
+// a check that fired on every clean grant would pass the identity-double tests while
+// breaking production). And a real symlinked .git that escapes the grant IS refused.
+func TestWorkspaceShieldRealFilesystem(t *testing.T) {
+	realSB := func(entrypoint string) sandbox {
+		return sandbox{
+			home:       "/home/does-not-exist",
+			emptyFile:  "/dev/null",
+			bentoPath:  "/dev/null",
+			entrypoint: entrypoint,
+			exists:     hostExists,
+			isDir:      hostIsDir,
+			listDir:    hostListDir,
+			resolve:    hostResolve,
+			rootDirs:   func() []string { return nil },
+		}
+	}
+
+	t.Run("symlink-free project is not over-refused", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		entry := filepath.Join(root, "run.py")
+		if err := os.WriteFile(entry, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := &policy.Policy{Entrypoint: entry, Write: []string{root}}
+		if _, err := compile(p, enforce.Process{}, realSB(entry)); err != nil {
+			t.Fatalf("a real symlink-free project write grant must not be refused: %v", err)
+		}
+	})
+
+	t.Run("real symlinked .git escaping the grant is refused", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(outside, "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		entry := filepath.Join(root, "run.py")
+		if err := os.WriteFile(entry, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := &policy.Policy{Entrypoint: entry, Write: []string{root}}
+		if _, err := compile(p, enforce.Process{}, realSB(entry)); err == nil {
+			t.Fatal("a write grant whose real .git is a symlink escaping the grant must be refused")
+		}
+	})
+}

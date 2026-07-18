@@ -120,6 +120,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
 		return nil, err
 	}
+	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+		return nil, err
+	}
 	if err := checkGrantNotProcess(sb, p); err != nil {
 		return nil, err
 	}
@@ -703,6 +706,37 @@ func checkNotShielded(sb sandbox, grants []string) error {
 // symlink and so protects only its target, not the name in the granted directory.
 // Read grants are not restricted: they cannot write the parent, and shielding a
 // broad read grant is the deny-list's normal use.
+// checkWorkspaceShieldNotRedirected refuses a write grant whose per-workspace shield
+// (a git hooks/config path, an editor-task file) is redirected by a symlinked
+// directory component so the emitted shield lands somewhere other than the literal
+// name. denyArgs binds each shield at its RESOLVED path, but the tooling on the host
+// opens the shield's LITERAL name inside the granted directory; when a symlinked
+// component makes the two differ, the shield protects the wrong path while the
+// symlink - which lives in the writable grant - stays free for the target to delete
+// and replace with a real planted hook/task that runs on the host. This covers both
+// a component escaping the grant (.vscode -> /outside) and one redirecting within it
+// (.vscode -> ./realvscode); either leaves the literal name unshielded. A shield
+// whose path is symlink-free resolves to itself and binds correctly. A .git that is
+// a regular file (a linked-worktree gitfile) resolves to its literal path too, so it
+// is not refused here - it hits bwrap's existing ENOTDIR abort, unchanged.
+//
+// checkWriteNotAboveShield handles the always-shields (HOME, runtime); this handles
+// the grant-relative workspace shields, which it does not cover.
+func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
+	for _, w := range writes {
+		if w == "/" || !sb.isDir(w) {
+			continue
+		}
+		rules := append(denylist.Workspace(w), gitDirShields(sb, w)...)
+		for _, r := range rules {
+			if real := sb.resolve(r.Path); real != r.Path {
+				return fmt.Errorf("linux: write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink or grant a narrower directory", w, r.Path, real)
+			}
+		}
+	}
+	return nil
+}
+
 func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 	for _, w := range writes {
 		if w == "/" {
