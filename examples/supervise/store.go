@@ -307,14 +307,18 @@ func readGrants(read, write []string) []string {
 	return out
 }
 
-// deniesUnderAllows returns each deny that a broader allow would cover, so one
-// caller can warn about it and another (export) can refuse it. Both sets are passed
-// explicitly so export can supply effective, cross-layer decisions.
+// deniesUnderAllows returns each deny that a grant would cover, so one caller can
+// warn about it and another (export) can refuse it. Both sets are passed explicitly
+// so export can supply effective, cross-layer decisions. The match is reflexive: a
+// deny at the exact same path as a grant is covered too - a write-allow and a
+// read-deny on the same path leave that path readable, which the grant/deny sets
+// never collide on within one kind (a path is allow xor deny there) but do across
+// kinds through readGrants.
 func deniesUnderAllows(grants, denies []string, kind string) []denyUnderAllow {
 	var out []denyUnderAllow
 	for _, path := range denies {
 		for _, g := range grants {
-			if path != g && underComponent(path, g) {
+			if underComponent(path, g) {
 				out = append(out, denyUnderAllow{kind, path, g})
 			}
 		}

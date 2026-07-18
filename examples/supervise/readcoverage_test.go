@@ -56,6 +56,31 @@ func TestExportAllowsWriteDenyUnderReadAllow(t *testing.T) {
 	}
 }
 
+// The read-deny can sit at the EXACT same path as the write-allow, not just beneath
+// it: write /data = allow, read /data = deny. The write grant makes /data readable,
+// so the read-deny is still unenforceable and export must refuse - otherwise it
+// emits a manifest that instantly drift-warns against its own store.
+func TestExportRefusesReadDenyAtSamePathAsWriteAllow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _ := loadStore()
+	key := "sha256:cccc"
+	s.app(key).Entrypoint = "/home/u/agent.sh"
+	s.rememberPath(key, "write", "/data", allow, false)
+	s.rememberPath(key, "read", "/data", deny, false)
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.yaml")
+	var out strings.Builder
+	if rc := exportPerms(s, []string{shortKey(key), "-o", outPath}, &out); rc == 0 {
+		t.Errorf("export must refuse a read-deny at the same path as a write-allow; out=%q", out.String())
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Error("a refused export must not write a manifest")
+	}
+}
+
 // The interactive warning has the same coverage rule: a read-deny under an approved
 // write grant is flagged as unenforceable.
 func TestWarnFlagsReadDenyUnderWriteGrant(t *testing.T) {
