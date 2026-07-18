@@ -75,22 +75,47 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		r.Add(enforce.LayerExecStrict, enforce.Enforced, "")
 	}
 
-	if ok, reason := canCreateScope(); ok {
-		r.Add(enforce.LayerLimits, enforce.Enforced, "")
+	scopeOK, scopeReason := canCreateScope()
+	var cpuState enforce.State
+	var cpuReason string
+	if nsOK && scopeOK {
 		// cpu delegation is separate from scope creation: a scope can be created
 		// (memory/pids delegated) while systemd-run silently ignores a CPUQuota
 		// because the cpu controller is not delegated. Report it so admission can
 		// refuse a requested cpu limit this host cannot actually enforce.
-		state, reason := cpuDelegationState(delegatedControllers())
-		r.Add(enforce.LayerLimitsCPU, state, reason)
-	} else {
-		// No scope at all: the cpu gap is subsumed by the whole limits layer being
-		// unavailable, which already refuses a cpu-limit policy. Emitting a separate
-		// LayerLimitsCPU here would only duplicate the refusal with the same reason.
-		r.Add(enforce.LayerLimits, enforce.Unavailable, reason)
+		cpuState, cpuReason = cpuDelegationState(delegatedControllers())
+	}
+	for _, ls := range limitsLayers(nsOK, scopeOK, scopeReason, cpuState, cpuReason) {
+		r.Add(ls.Layer, ls.State, ls.Reason)
 	}
 
 	return r
+}
+
+// limitsLayers decides the resource-limit layers. It gates on nsOK because only the
+// bwrap tier wraps the target in a systemd scope (see wrapWithLimits): the degraded
+// tier runs the target directly and applies no limit, so reporting the layer
+// Enforced there would claim a cap that never holds even though the host could
+// create a scope. (Enforcing limits in the degraded tier is possible but must
+// preserve the process-group sweep; tracked as a separate enhancement.) When the
+// bwrap tier is available, a limit is enforced only if a scope can be created; the
+// cpu sub-layer additionally needs the cpu controller delegated.
+func limitsLayers(nsOK, scopeOK bool, scopeReason string, cpuState enforce.State, cpuReason string) []enforce.LayerStatus {
+	switch {
+	case !nsOK:
+		return []enforce.LayerStatus{{Layer: enforce.LayerLimits, State: enforce.Unavailable,
+			Reason: "the reduced-confinement tier runs the target directly and applies no resource limits"}}
+	case !scopeOK:
+		// No scope at all: the cpu gap is subsumed by the whole limits layer being
+		// unavailable, which already refuses a cpu-limit policy. A separate
+		// LayerLimitsCPU here would only duplicate the refusal with the same reason.
+		return []enforce.LayerStatus{{Layer: enforce.LayerLimits, State: enforce.Unavailable, Reason: scopeReason}}
+	default:
+		return []enforce.LayerStatus{
+			{Layer: enforce.LayerLimits, State: enforce.Enforced},
+			{Layer: enforce.LayerLimitsCPU, State: cpuState, Reason: cpuReason},
+		}
+	}
 }
 
 // filesystemLayer decides the filesystem-confinement state from namespace and
