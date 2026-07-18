@@ -205,9 +205,9 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 	all := false
 
 	// consider decides one item. path is the real path for a filesystem access (used
-	// for the store-covers refusal), empty for exec/network. remembered/persist are
-	// the store hooks for this item's kind.
-	consider := func(kind, display, path string, remembered func() (decision, bool), persist func(decision)) bool {
+	// for the store-covers refusal), empty for exec/network. remembered reports a
+	// stored decision; persist records a new one, per-app or (global) for every app.
+	consider := func(kind, display, path string, remembered func() (decision, bool), persist func(d decision, global bool)) bool {
 		if path != "" && coversStore(path, s.dir) {
 			fmt.Fprintf(p.out, "  %-6s %-34s refused (would expose the permission store)\n", kind, display)
 			return false
@@ -220,17 +220,29 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 			fmt.Fprintf(p.out, "  %-6s %-34s allow (A)\n", kind, display)
 			return true
 		}
-		switch p.ask(context.Background(), fmt.Sprintf("  %-6s %-34s [y]es/[n]o/[o]nce/[A]ll ", kind, display)) {
+		switch p.ask(context.Background(), fmt.Sprintf("  %-6s %-34s [y]es/[n]o/[o]nce/[A]ll/[g]lobal-allow/[G]lobal-deny ", kind, display)) {
 		case choiceAll:
 			all = true
 			return true
 		case choiceAllow:
-			persist(allow)
+			persist(allow, false)
 			return true
 		case choiceOnce:
 			return true
 		case choiceDeny:
-			persist(deny)
+			persist(deny, false)
+			return false
+		case choiceGlobalAllow:
+			if !confirmGlobal(context.Background(), p, allow, display) {
+				return false
+			}
+			persist(allow, true)
+			return true
+		case choiceGlobalDeny:
+			if !confirmGlobal(context.Background(), p, deny, display) {
+				return false
+			}
+			persist(deny, true)
 			return false
 		default: // deny once
 			return false
@@ -240,35 +252,21 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 	for _, r := range trimScratch(proposal.Read) {
 		if consider("read", quotePath(r), r,
 			func() (decision, bool) { return s.decidePath(key, "read", r) },
-			func(d decision) { s.rememberPath(key, "read", r, d) }) {
+			func(d decision, global bool) { s.rememberPath(key, "read", r, d, global) }) {
 			final.Read = append(final.Read, r)
 		}
 	}
 	for _, w := range trimScratch(proposal.Write) {
 		if consider("write", quotePath(w), w,
 			func() (decision, bool) { return s.decidePath(key, "write", w) },
-			func(d decision) { s.rememberPath(key, "write", w, d) }) {
+			func(d decision, global bool) { s.rememberPath(key, "write", w, d, global) }) {
 			final.Write = append(final.Write, w)
 		}
 	}
 	if proposal.Exec == policy.ExecAll {
-		remembered := func() (decision, bool) {
-			if a := s.Apps[key]; a != nil && a.Exec != "" {
-				if a.Exec == string(policy.ExecAll) {
-					return allow, true
-				}
-				return deny, true
-			}
-			return "", false
-		}
-		persist := func(d decision) {
-			if d == allow {
-				s.app(key).Exec = string(policy.ExecAll)
-			} else {
-				s.app(key).Exec = string(policy.ExecNone)
-			}
-		}
-		if consider("exec", "run subprocesses", "", remembered, persist) {
+		if consider("exec", "run subprocesses", "",
+			func() (decision, bool) { return s.decideExec(key) },
+			func(d decision, global bool) { s.rememberExec(key, d, global) }) {
 			final.Exec = policy.ExecAll
 		}
 	}
@@ -276,7 +274,7 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 		host, port := h.Host, h.Port
 		if consider("reach", strconv.Quote(host)+":"+port, "",
 			func() (decision, bool) { return s.decideNetwork(key, host, port) },
-			func(d decision) { s.rememberNetwork(key, host, port, d, false) }) {
+			func(d decision, global bool) { s.rememberNetwork(key, host, port, d, global) }) {
 			final.Network = append(final.Network, h)
 		}
 	}
@@ -294,8 +292,8 @@ func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy)
 		return
 	}
 	for _, c := range append(
-		deniesUnderAllows(final.Read, a.Read, "read"),
-		deniesUnderAllows(final.Write, a.Write, "write")...) {
+		deniesUnderAllows(final.Read, deniedPaths(a.Read), "read"),
+		deniesUnderAllows(final.Write, deniedPaths(a.Write), "write")...) {
 		fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
 			c.kind, quotePath(c.deny), quotePath(c.allow))
 	}
@@ -334,16 +332,41 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 	}
 	// host is attacker-controlled (the sandboxed target chose it), so quote it to
 	// neutralize terminal escapes before showing it to a human.
-	c := s.p.ask(ctx, fmt.Sprintf("\n[gate] %s is reaching %s port %s now - allow? [y]es/[n]o/[o]nce ", s.name, strconv.Quote(host), port))
+	display := strconv.Quote(host) + ":" + port
+	c := s.p.ask(ctx, fmt.Sprintf("\n[gate] %s is reaching %s port %s now - allow? [y]es/[n]o/[o]nce/[g]lobal-allow/[G]lobal-deny ", s.name, strconv.Quote(host), port))
+	admitted := false
 	switch c {
 	case choiceAllow:
 		s.s.rememberNetwork(s.key, host, port, allow, false)
+		admitted = true
+	case choiceOnce, choiceAll:
+		admitted = true
 	case choiceDeny:
 		s.s.rememberNetwork(s.key, host, port, deny, false)
+	case choiceGlobalAllow:
+		if confirmGlobal(ctx, s.p, allow, display) {
+			s.s.rememberNetwork(s.key, host, port, allow, true)
+			admitted = true
+		}
+	case choiceGlobalDeny:
+		if confirmGlobal(ctx, s.p, deny, display) {
+			s.s.rememberNetwork(s.key, host, port, deny, true)
+		}
 	}
-	admitted := c == choiceAllow || c == choiceOnce || c == choiceAll
 	s.session[dest] = admitted
 	return admitted
+}
+
+// confirmGlobal makes the g/G choices safe against a case slip: the shifted pair
+// alone would let a lowercase-habit typo silently allow a host meant to be blocked
+// (or vice versa), so a global rule takes effect only after the human reads back its
+// direction and scope and confirms. Declining leaves nothing persisted.
+func confirmGlobal(ctx context.Context, p *prompter, d decision, display string) bool {
+	verb := "allow"
+	if d == deny {
+		verb = "deny"
+	}
+	return p.ask(ctx, fmt.Sprintf("  confirm: %s %s for EVERY app, surviving code changes? [y/N] ", verb, display)) == choiceAllow
 }
 
 // prompter reads single y/n/A answers from one reader that owns the terminal, so
@@ -358,11 +381,13 @@ type prompter struct {
 type choice int
 
 const (
-	choiceDenyOnce choice = iota // blank / unrecognized: deny this run, do not remember
-	choiceAllow                  // y: allow, and remember for this app
-	choiceOnce                   // o: allow this run only, do not remember
-	choiceDeny                   // n: deny, and remember for this app
-	choiceAll                    // A: allow all remaining this run (not remembered)
+	choiceDenyOnce    choice = iota // blank / unrecognized: deny this run, do not remember
+	choiceAllow                     // y: allow, and remember for this app
+	choiceOnce                      // o: allow this run only, do not remember
+	choiceDeny                      // n: deny, and remember for this app
+	choiceAll                       // A: allow all remaining this run (not remembered)
+	choiceGlobalAllow               // g: allow, and remember for EVERY app (after confirm)
+	choiceGlobalDeny                // G: deny, and remember for EVERY app (after confirm)
 )
 
 func newPrompter(in io.Reader, out io.Writer) *prompter {
@@ -408,6 +433,14 @@ func (p *prompter) ask(ctx context.Context, prompt string) choice {
 	case line, ok := <-p.lines:
 		if !ok {
 			return choiceDenyOnce
+		}
+		// g and G differ only by shift, so match them case-sensitively before folding
+		// case for the rest; a confirm step guards against a slip either way.
+		switch strings.TrimSpace(line) {
+		case "g":
+			return choiceGlobalAllow
+		case "G":
+			return choiceGlobalDeny
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":

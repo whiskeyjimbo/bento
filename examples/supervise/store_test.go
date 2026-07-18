@@ -34,8 +34,8 @@ func TestStoreDecideNetworkDenyWinsAndNormalizes(t *testing.T) {
 // more-specific deny wins over a broader allow.
 func TestStoreDecidePathLongestPrefix(t *testing.T) {
 	s := newTestStore()
-	s.rememberPath("k", "read", "/home/u/proj", allow)
-	s.rememberPath("k", "read", "/home/u/proj/secret", deny)
+	s.rememberPath("k", "read", "/home/u/proj", allow, false)
+	s.rememberPath("k", "read", "/home/u/proj/secret", deny, false)
 
 	if d, ok := s.decidePath("k", "read", "/home/u/proj/data.csv"); !ok || d != allow {
 		t.Errorf("data.csv under an allowed dir = %v,%v; want allow", d, ok)

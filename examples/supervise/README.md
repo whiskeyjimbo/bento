@@ -53,7 +53,12 @@ hosts. Nothing is declared up front, so you decide everything.
 The script runs permissively under observation, then you approve each access.
 **[y]es** and **[n]o** are remembered for this script; **[o]nce** allows just this
 run without remembering; **[A]ll** allows this and everything after it (for this
-run). Attacker-chosen paths are quoted, since a filename can carry terminal escapes.
+run). **[g]lobal-allow** and **[G]lobal-deny** remember the decision for *every*
+script, not just this one - the standing allowlist/denylist (e.g. block a tracker
+everywhere). Because `g` and `G` differ only by shift, a global rule takes effect
+only after a confirm that reads back its direction and scope, so a case slip is
+harmless. Attacker-chosen paths are quoted, since a filename can carry terminal
+escapes.
 
 ```
 == trial run: watching agent.sh (permissive, nothing leaves the host) ==
@@ -126,6 +131,11 @@ worth knowing:
   `read ~/.config` when the store lives under it).
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
   is printed so a silent block is never a mystery.
+- **Two layers, deny-wins across both.** Per-app decisions live under the script's
+  hash; global (`g`/`G`) decisions apply to every app and survive a code change, since
+  a fresh hash still sees them. A broad global deny beats a more-specific per-app
+  allow - the whole point of a standing denylist. `perms list` marks a decision
+  `(global)` when a global deny is why it is blocked, so you clear the right layer.
 
 ### Inspecting and editing the store
 
@@ -172,8 +182,6 @@ bento's fingerprint attests the policy, not the code - the file may not be what 
 manifest was written for. A remembered deny is kept (only `forget` clears a deny),
 and a wildcard or port-range rule is skipped, since the store holds only literal
 `host:port` keys; those stay runtime prompts.
-
-Not yet built (tracked as follow-ups): global (cross-script) read/write/exec rules.
 
 ## The honesty loop
 

@@ -20,7 +20,7 @@ func seedStore(t *testing.T) (dir, appKey string) {
 	a := s.app(appKey)
 	a.Entrypoint = "/home/u/proj/agent.sh"
 	a.Interpreter = "sh"
-	s.rememberPath(appKey, "read", "/home/u/vault/data.csv", allow)
+	s.rememberPath(appKey, "read", "/home/u/vault/data.csv", allow, false)
 	s.rememberNetwork(appKey, "example.com", "443", allow, false)
 	s.rememberNetwork(appKey, "ads.tracker.example", "443", deny, true) // global deny
 	if err := s.save(); err != nil {

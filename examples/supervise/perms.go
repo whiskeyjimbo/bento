@@ -67,11 +67,21 @@ Usage:
 // through the deny-wins lattice.
 func listPerms(s *store, out io.Writer) {
 	fmt.Fprintln(out, "Global rules (apply to every app):")
-	if len(s.Global.Network) == 0 {
+	g := s.Global
+	if len(g.Read) == 0 && len(g.Write) == 0 && g.Exec == "" && len(g.Network) == 0 {
 		fmt.Fprintln(out, "  (none)")
 	} else {
-		for _, k := range sortedKeys(s.Global.Network) {
-			fmt.Fprintf(out, "  reach  %-34s %s\n", quoteNetKey(k), s.Global.Network[k])
+		for _, p := range sortedKeys(g.Read) {
+			fmt.Fprintf(out, "  read   %-34s %s\n", quotePath(p), g.Read[p])
+		}
+		for _, p := range sortedKeys(g.Write) {
+			fmt.Fprintf(out, "  write  %-34s %s\n", quotePath(p), g.Write[p])
+		}
+		if d := execDecision(g.Exec); d != "" {
+			fmt.Fprintf(out, "  exec   %-34s %s\n", "run subprocesses", d)
+		}
+		for _, k := range sortedKeys(g.Network) {
+			fmt.Fprintf(out, "  reach  %-34s %s\n", quoteNetKey(k), g.Network[k])
 		}
 	}
 
@@ -87,30 +97,33 @@ func listPerms(s *store, out io.Writer) {
 			interp = " (" + strconv.Quote(a.Interpreter) + ")"
 		}
 		fmt.Fprintf(out, "  app %s  %s%s\n", shortKey(key), quotePath(a.Entrypoint), interp)
+		// mark tags a line "(global)" when a global DENY is the reason - the footgun -
+		// so the operator clears the global layer, not the app's. It fires for a global
+		// deny over an app allow and over an app deny alike; clearing only the app would
+		// leave the second still blocking.
+		mark := func(globalDenies bool) string {
+			if globalDenies {
+				return " (global)"
+			}
+			return ""
+		}
 		for _, p := range sortedKeys(a.Read) {
-			fmt.Fprintf(out, "    read   %-34s %s\n", quotePath(p), a.Read[p])
+			eff, _ := s.decidePath(key, "read", p)
+			gd, ok := longestPrefixMatch(s.Global.Read, p)
+			fmt.Fprintf(out, "    read   %-34s %s%s\n", quotePath(p), eff, mark(ok && gd == deny))
 		}
 		for _, p := range sortedKeys(a.Write) {
-			fmt.Fprintf(out, "    write  %-34s %s\n", quotePath(p), a.Write[p])
+			eff, _ := s.decidePath(key, "write", p)
+			gd, ok := longestPrefixMatch(s.Global.Write, p)
+			fmt.Fprintf(out, "    write  %-34s %s%s\n", quotePath(p), eff, mark(ok && gd == deny))
 		}
 		if a.Exec != "" {
-			d := allow
-			if a.Exec != string(policy.ExecAll) {
-				d = deny
-			}
-			fmt.Fprintf(out, "    exec   %-34s %s\n", "run subprocesses", d)
+			eff, _ := s.decideExec(key)
+			fmt.Fprintf(out, "    exec   %-34s %s%s\n", "run subprocesses", eff, mark(execDecision(s.Global.Exec) == deny))
 		}
 		for _, k := range sortedKeys(a.Network) {
-			// Show the effective decision, and mark any host a global DENY blocks - the
-			// footgun - so the operator knows to clear the global layer, not the app's.
-			// This covers a global deny over an app allow and over an app deny alike;
-			// clearing only the app leaves the second still blocked.
 			eff, _ := resolveLattice(s.Global.Network[k], a.Network[k])
-			note := ""
-			if s.Global.Network[k] == deny {
-				note = " (global)"
-			}
-			fmt.Fprintf(out, "    reach  %-34s %s%s\n", quoteNetKey(k), eff, note)
+			fmt.Fprintf(out, "    reach  %-34s %s%s\n", quoteNetKey(k), eff, mark(s.Global.Network[k] == deny))
 		}
 	}
 }
@@ -146,11 +159,21 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 		}
 		if len(args) == 2 {
 			k := args[1]
-			if _, ok := s.Global.Network[k]; !ok {
+			removed := false
+			if k == "exec" && s.Global.Exec != "" {
+				s.Global.Exec = ""
+				removed = true
+			}
+			for _, m := range []map[string]decision{s.Global.Network, s.Global.Read, s.Global.Write} {
+				if _, ok := m[k]; ok {
+					delete(m, k)
+					removed = true
+				}
+			}
+			if !removed {
 				fmt.Fprintf(out, "supervise: no global rule %s\n", quoteNetKey(k))
 				return 1
 			}
-			delete(s.Global.Network, k)
 			if err := s.overwrite(); err != nil {
 				fmt.Fprintf(out, "supervise: %v\n", err)
 				return 1
@@ -158,7 +181,7 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 			fmt.Fprintf(out, "forgot global rule %s\n", quoteNetKey(k))
 			return 0
 		}
-		s.Global.Network = nil
+		s.Global = globalPerms{}
 		if err := s.overwrite(); err != nil {
 			fmt.Fprintf(out, "supervise: %v\n", err)
 			return 1
@@ -172,17 +195,18 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 }
 
 func resetPerms(s *store, in io.Reader, out io.Writer) int {
-	if len(s.Apps) == 0 && len(s.Global.Network) == 0 {
+	globals := globalCount(s)
+	if len(s.Apps) == 0 && globals == 0 {
 		fmt.Fprintln(out, "the permission store is already empty")
 		return 0
 	}
-	fmt.Fprintf(out, "clear the entire permission store (%d app(s), %d global rule(s))? [y/N] ", len(s.Apps), len(s.Global.Network))
+	fmt.Fprintf(out, "clear the entire permission store (%d app(s), %d global rule(s))? [y/N] ", len(s.Apps), globals)
 	if !confirmed(in) {
 		fmt.Fprintln(out, "cancelled")
 		return 0
 	}
 	s.Apps = map[string]*appPerms{}
-	s.Global.Network = nil
+	s.Global = globalPerms{}
 	if err := s.overwrite(); err != nil {
 		fmt.Fprintf(out, "supervise: %v\n", err)
 		return 1
@@ -228,12 +252,18 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	}
 	a := s.Apps[key]
 
+	// Export the EFFECTIVE decision, folding the global layer in: a globally-denied
+	// path never reaches the allowlist, and a global deny still counts for the
+	// refusal below.
+	readAllows, readDenies := s.effectivePaths(key, "read")
+	writeAllows, writeDenies := s.effectivePaths(key, "write")
+
 	// A deny under an allowed dir cannot survive the round-trip: the manifest grants
 	// the dir and would re-expose the denied child. Refuse rather than silently
 	// over-grant (drop the deny) or under-grant (drop the allow).
 	offending := append(
-		deniesUnderAllows(allowedPaths(a.Read), a.Read, "read"),
-		deniesUnderAllows(allowedPaths(a.Write), a.Write, "write")...)
+		deniesUnderAllows(readAllows, readDenies, "read"),
+		deniesUnderAllows(writeAllows, writeDenies, "write")...)
 	if len(offending) > 0 {
 		for _, c := range offending {
 			fmt.Fprintf(out, "supervise: cannot export: %s %s is denied but lies under the allowed %s; a manifest is a pure allowlist and cannot express the sub-deny. forget one of them first.\n",
@@ -245,11 +275,11 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	pol := &policy.Policy{
 		Entrypoint:  a.Entrypoint,
 		Interpreter: a.Interpreter,
-		Read:        allowedPaths(a.Read),
-		Write:       allowedPaths(a.Write),
+		Read:        readAllows,
+		Write:       writeAllows,
 		Exec:        policy.ExecNone,
 	}
-	if a.Exec == string(policy.ExecAll) {
+	if eff, ok := s.decideExec(key); ok && eff == allow {
 		pol.Exec = policy.ExecAll
 	}
 	for _, k := range sortedKeys(a.Network) {
@@ -331,9 +361,10 @@ func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
 		seedPath(s, key, "write", p, out)
 	}
 	if pol.Exec == policy.ExecAll {
-		// ExecNone is a recorded human deny, not an unset default, so keep it: only
-		// forget clears a deny, the same rule the path and network loops honor.
-		if a.Exec == string(policy.ExecNone) {
+		// A recorded exec deny (per-app ExecNone or a global exec deny) is not an unset
+		// default, so keep it: only forget clears a deny, the same rule the path and
+		// network loops honor.
+		if eff, ok := s.decideExec(key); ok && eff == deny {
 			fmt.Fprintln(out, "  kept the existing exec deny - forget it first if you want the manifest's allow")
 		} else {
 			a.Exec = string(policy.ExecAll)
@@ -366,7 +397,7 @@ func seedPath(s *store, key, kind, path string, out io.Writer) {
 		fmt.Fprintf(out, "  kept the existing %s deny covering %s - forget it first if you want the manifest's allow\n", kind, quotePath(path))
 		return
 	}
-	s.rememberPath(key, kind, path, allow)
+	s.rememberPath(key, kind, path, allow, false)
 }
 
 // allowedPaths returns the paths a store map allows, sorted for a stable manifest.
@@ -381,11 +412,72 @@ func allowedPaths(m map[string]decision) []string {
 	return out
 }
 
+// deniedPaths returns the paths a store map denies.
+func deniedPaths(m map[string]decision) []string {
+	var out []string
+	for p, d := range m {
+		if d == deny {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// effectivePaths partitions the paths an app is judged on for one kind into the
+// effectively-allowed and effectively-denied sets, folding the global and per-app
+// layers deny-wins. Export uses it so a globally-denied path never reaches the
+// manifest allowlist, while a global deny still counts for the deny-under-allow
+// refusal.
+func (s *store) effectivePaths(key, kind string) (allows, denies []string) {
+	globalM, appM := s.Global.Read, map[string]decision(nil)
+	if kind == "write" {
+		globalM = s.Global.Write
+	}
+	if a := s.Apps[key]; a != nil {
+		appM = a.Read
+		if kind == "write" {
+			appM = a.Write
+		}
+	}
+	seen := map[string]bool{}
+	for _, m := range []map[string]decision{globalM, appM} {
+		for p := range m {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			eff, ok := s.decidePath(key, kind, p)
+			if !ok {
+				continue
+			}
+			if eff == allow {
+				allows = append(allows, p)
+			} else {
+				denies = append(denies, p)
+			}
+		}
+	}
+	sort.Strings(allows)
+	sort.Strings(denies)
+	return
+}
+
 // isWildcardRule reports whether a network rule cannot become a literal store key:
 // "*" or a ".suffix" host, or a "*"/range port. Those stay runtime prompts.
 func isWildcardRule(r policy.NetworkRule) bool {
 	return r.Host == "*" || strings.HasPrefix(r.Host, ".") ||
 		r.Port == "*" || strings.Contains(r.Port, "-")
+}
+
+// globalCount is how many standing rules the store holds across all dimensions,
+// counting the exec field as one when set.
+func globalCount(s *store) int {
+	n := len(s.Global.Read) + len(s.Global.Write) + len(s.Global.Network)
+	if s.Global.Exec != "" {
+		n++
+	}
+	return n
 }
 
 // confirmed reads one line and reports whether it is an explicit yes; anything

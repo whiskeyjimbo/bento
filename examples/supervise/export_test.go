@@ -83,8 +83,8 @@ func TestExportRefusesDenyUnderAllow(t *testing.T) {
 	s, _ := loadStore()
 	key := "sha256:bbbb"
 	s.app(key).Entrypoint = "/home/u/agent.sh"
-	s.rememberPath(key, "read", "/home/u/proj", allow)
-	s.rememberPath(key, "read", "/home/u/proj/secret", deny)
+	s.rememberPath(key, "read", "/home/u/proj", allow, false)
+	s.rememberPath(key, "read", "/home/u/proj/secret", deny, false)
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}

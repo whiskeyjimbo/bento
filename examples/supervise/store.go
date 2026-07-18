@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 // The permission store is the wrapper's persistent memory of human decisions - the
@@ -39,12 +41,20 @@ type appPerms struct {
 	Network     map[string]decision `json:"network,omitempty"`
 }
 
+// globalPerms are decisions that apply to every app, standing above the per-app
+// layer: a global deny is the headline standing-denylist (e.g. block a tracker
+// across every script, surviving code changes, since a fresh app key still sees it).
+type globalPerms struct {
+	Read    map[string]decision `json:"read,omitempty"`
+	Write   map[string]decision `json:"write,omitempty"`
+	Exec    string              `json:"exec,omitempty"`
+	Network map[string]decision `json:"network,omitempty"`
+}
+
 type store struct {
-	Version int `json:"version"`
-	Global  struct {
-		Network map[string]decision `json:"network,omitempty"`
-	} `json:"global"`
-	Apps map[string]*appPerms `json:"apps"`
+	Version int                  `json:"version"`
+	Global  globalPerms          `json:"global"`
+	Apps    map[string]*appPerms `json:"apps"`
 
 	dir  string // the store directory (shielded from the trial; refused as a grant)
 	path string // permissions.json inside dir
@@ -153,7 +163,12 @@ func (s *store) fillMissing(disk *store) {
 			}
 		}
 	}
+	fill(&s.Global.Read, disk.Global.Read)
+	fill(&s.Global.Write, disk.Global.Write)
 	fill(&s.Global.Network, disk.Global.Network)
+	if s.Global.Exec == "" {
+		s.Global.Exec = disk.Global.Exec
+	}
 	for key, da := range disk.Apps {
 		ma := s.Apps[key]
 		if ma == nil {
@@ -268,14 +283,12 @@ func splitNetKey(k string) (host, port string) {
 // allowlist) cannot express it at all.
 type denyUnderAllow struct{ kind, deny, allow string }
 
-// deniesUnderAllows returns each stored deny that a broader allow would cover, so
-// one caller can warn about it and another (export) can refuse it.
-func deniesUnderAllows(grants []string, stored map[string]decision, kind string) []denyUnderAllow {
+// deniesUnderAllows returns each deny that a broader allow would cover, so one
+// caller can warn about it and another (export) can refuse it. Both sets are passed
+// explicitly so export can supply effective, cross-layer decisions.
+func deniesUnderAllows(grants, denies []string, kind string) []denyUnderAllow {
 	var out []denyUnderAllow
-	for path, d := range stored {
-		if d != deny {
-			continue
-		}
+	for _, path := range denies {
 		for _, g := range grants {
 			if path != g && underComponent(path, g) {
 				out = append(out, denyUnderAllow{kind, path, g})
@@ -297,17 +310,33 @@ func (s *store) decideNetwork(key, host, port string) (decision, bool) {
 }
 
 // decidePath returns the remembered decision for a filesystem path, or false if
-// unknown. It matches by longest path-component prefix (an allow of a directory
-// answers a prompt for a file inside it), deny-winning on an equal-length tie.
+// unknown. Each layer is matched by longest path-component prefix (an allow of a
+// directory answers a prompt for a file inside it), deny-winning on an equal-length
+// tie WITHIN a layer; the global and per-app results are then combined deny-wins.
+// The layers are matched separately on purpose: a broad global deny must beat a
+// more-specific per-app allow (the standing denylist), which a union match would
+// invert. The global layer is consulted even when the app is unknown, so a global
+// rule survives a code change that mints a fresh app key.
 func (s *store) decidePath(key, kind, path string) (decision, bool) {
-	a := s.Apps[key]
-	if a == nil {
-		return "", false
-	}
-	m := a.Read
+	globalM, appM := s.Global.Read, map[string]decision(nil)
 	if kind == "write" {
-		m = a.Write
+		globalM = s.Global.Write
 	}
+	if a := s.Apps[key]; a != nil {
+		appM = a.Read
+		if kind == "write" {
+			appM = a.Write
+		}
+	}
+	g, _ := longestPrefixMatch(globalM, path)
+	app, _ := longestPrefixMatch(appM, path)
+	return resolveLattice(g, app)
+}
+
+// longestPrefixMatch returns the decision stored for the longest path-component
+// prefix of path within one layer's map, deny-winning on an equal-length tie. The
+// empty decision with false means no stored path covers it.
+func longestPrefixMatch(m map[string]decision, path string) (decision, bool) {
 	best, bestDec := "", decision("")
 	for stored, d := range m {
 		if !underComponent(path, stored) {
@@ -321,6 +350,30 @@ func (s *store) decidePath(key, kind, path string) (decision, bool) {
 		return "", false
 	}
 	return bestDec, true
+}
+
+// decideExec returns the remembered subprocess-spawning decision, combining the
+// global and per-app layers deny-wins. Unknown (false) means prompt. The global
+// layer applies to an unknown app too.
+func (s *store) decideExec(key string) (decision, bool) {
+	var app decision
+	if a := s.Apps[key]; a != nil {
+		app = execDecision(a.Exec)
+	}
+	return resolveLattice(execDecision(s.Global.Exec), app)
+}
+
+// execDecision maps a stored exec tri-state to a lattice decision: allow for "all",
+// deny for any other non-empty value (none / none-strict), unknown for "".
+func execDecision(e string) decision {
+	switch {
+	case e == "":
+		return ""
+	case e == string(policy.ExecAll):
+		return allow
+	default:
+		return deny
+	}
 }
 
 // underComponent reports whether child is parent or lies beneath it on a path
@@ -350,17 +403,38 @@ func (s *store) rememberNetwork(key, host, port string, d decision, global bool)
 	a.Network[k] = d
 }
 
-// rememberPath records a filesystem decision for an app.
-func (s *store) rememberPath(key, kind, path string, d decision) {
-	a := s.app(key)
-	m := &a.Read
-	if kind == "write" {
-		m = &a.Write
+// rememberPath records a filesystem decision, per-app or (global) for every app.
+func (s *store) rememberPath(key, kind, path string, d decision, global bool) {
+	m := &s.Global.Read
+	if global {
+		if kind == "write" {
+			m = &s.Global.Write
+		}
+	} else {
+		a := s.app(key)
+		m = &a.Read
+		if kind == "write" {
+			m = &a.Write
+		}
 	}
 	if *m == nil {
 		*m = map[string]decision{}
 	}
 	(*m)[path] = d
+}
+
+// rememberExec records a subprocess-spawning decision, per-app or (global) for
+// every app, storing bento's tri-state verbatim.
+func (s *store) rememberExec(key string, d decision, global bool) {
+	mode := string(policy.ExecAll)
+	if d == deny {
+		mode = string(policy.ExecNone)
+	}
+	if global {
+		s.Global.Exec = mode
+		return
+	}
+	s.app(key).Exec = mode
 }
 
 // app returns the per-app record, creating it if absent.
