@@ -149,4 +149,33 @@ func TestResolvesIntoProc(t *testing.T) {
 	if resolvesIntoProc(filepath.Join(dir, "missing")) {
 		t.Errorf("a nonexistent path must not resolve into procfs")
 	}
+	// A symlink to exactly /proc (no trailing component) must resolve into procfs too.
+	procRoot := filepath.Join(dir, "procroot")
+	if err := os.Symlink("/proc", procRoot); err != nil {
+		t.Fatal(err)
+	}
+	if !resolvesIntoProc(procRoot) {
+		t.Errorf("a symlink to /proc itself must resolve into procfs")
+	}
+}
+
+// The defect-1 scenario as a real distro presents it: /etc/mtab is a host symlink
+// into procfs, and its name is under no system prefix, so only resolvesIntoProc -
+// wired into skip - keeps it out of the proposal. Uses the host's real /etc/mtab so
+// the whole skip path is exercised, not just the helper (t.TempDir lives under /tmp,
+// which isSystemPath would drop first, masking the wiring).
+func TestSynthesizeDropsMtabViaSkipWiring(t *testing.T) {
+	if !resolvesIntoProc("/etc/mtab") {
+		t.Skip("this host's /etc/mtab is not a symlink into procfs")
+	}
+	obs := Observation{Reads: []string{"/etc/mtab", "/srv/app/config.yaml"}}
+	p := Synthesize("/srv/app/run.py", "python3", obs)
+	for _, r := range p.Read {
+		if r == "/etc/mtab" {
+			t.Errorf("/etc/mtab was proposed as a grant; skip is not wired to resolvesIntoProc: %v", p.Read)
+		}
+	}
+	if !reflect.DeepEqual(p.Read, []string{"/srv/app/config.yaml"}) {
+		t.Errorf("read = %v, want only the ordinary file kept", p.Read)
+	}
 }

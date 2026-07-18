@@ -140,6 +140,55 @@ func TestTraceResolvesOpenatDirfd(t *testing.T) {
 	}
 }
 
+// The legacy open(2) syscall (no dirfd) must be anchored at the working directory
+// too, or a relative open after a chdir is mis-anchored - and a musl/static binary
+// on x86_64 issues raw open(2), not openat, so this is a real path, not a museum
+// piece. python normally uses openat, so the raw syscall is issued via ctypes.
+func TestTraceAnchorsRawOpenAfterChdir(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("raw SYS_open probe is amd64-specific")
+	}
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	sub := filepath.Join(t.TempDir(), "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "raw.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// chdir into sub, then issue a raw open(2) (SYS_open = 2 on x86_64) for a
+	// relative name. It must be anchored at sub, not left bare.
+	script := fmt.Sprintf(`import ctypes, os
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+os.chdir(%q)
+fd = libc.syscall(ctypes.c_long(2), b"raw.txt", ctypes.c_int(os.O_RDONLY))
+if fd < 0:
+    raise SystemExit("raw open unsupported")
+os.close(fd)
+`, sub)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Skipf("raw SYS_open not usable on this host (exit %d)", res.ExitCode)
+	}
+	want := filepath.Join(sub, "raw.txt")
+	if _, ok := find(res, want); !ok {
+		t.Errorf("raw open(2) after chdir was not anchored at the new cwd (want %q); accesses: %v", want, res.Accesses)
+	}
+	for _, a := range res.Accesses {
+		if a.Path == "raw.txt" {
+			t.Errorf("raw open(2) recorded bare-relative, not anchored: %q", a.Path)
+		}
+	}
+}
+
 // openat2 (syscall 437) must be decoded like openat, or a program that uses it
 // (Rust std, systemd tools) profiles as touching nothing.
 func TestTraceDecodesOpenat2(t *testing.T) {
