@@ -85,6 +85,10 @@ func TestValidateRejects(t *testing.T) {
 		{"bidi override in read path", func(p *Policy) { p.Read = []string{"/data/\u202egpj.exe"} }, "bidirectional formatting character"},
 		{"bidi isolate in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/\u2066run\u2069" }, "bidirectional formatting character"},
 		{"bidi override in arg", func(p *Policy) { p.Args = []string{"--out=\u202dsafe"} }, "bidirectional formatting character"},
+		{"zero-width space hides a segment", func(p *Policy) { p.Read = []string{"/data/\u200bsecret"} }, "zero-width or invisible"},
+		{"zero-width joiner in path", func(p *Policy) { p.Write = []string{"/out/a\u200db"} }, "zero-width or invisible"},
+		{"bom in entrypoint", func(p *Policy) { p.Entrypoint = "\ufeff/bin/run" }, "zero-width or invisible"},
+		{"word joiner in arg", func(p *Policy) { p.Args = []string{"--x\u2060y"} }, "zero-width or invisible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

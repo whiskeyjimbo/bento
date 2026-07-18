@@ -99,8 +99,9 @@ func (p *Policy) Validate() error {
 	// validate summary, error messages naming a bad path - so a deceiving character in
 	// one lets an untrusted manifest mislead the operator reading it: a control
 	// character reprograms the terminal (ESC/OSC window spoofing, hidden text), a bidi
-	// override reorders the display so a value reads as something other than what it
-	// grants. No legitimate path or argument carries either. Rejecting here, at the
+	// override reorders the display, and a zero-width character hides a segment - each
+	// so a value reads as something other than what it grants. No legitimate path or
+	// argument carries any of them. Rejecting here, at the
 	// single gate every construction path passes through, closes it for the CLI and Go
 	// embedders alike; the host field is already guarded separately.
 	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
@@ -131,20 +132,25 @@ func (p *Policy) Validate() error {
 }
 
 // unsafeInField reports whether r must not appear in a path or argument field: a
-// control character, or a bidirectional formatting character. Both are ways an
-// untrusted manifest deceives an operator reading the value - a control character
-// reprograms the terminal, a bidi override reorders how the rest of the field is
-// displayed - so a path renders as something other than what it grants.
+// control character, a bidirectional formatting character, or a zero-width/invisible
+// one. Each is a way an untrusted manifest deceives an operator reading the value - a
+// control character reprograms the terminal, a bidi override reorders the display, an
+// invisible character hides a segment or makes two different paths render identically
+// - so a path shows as something other than what it grants.
 func unsafeInField(r rune) bool {
-	return isControl(r) || isBidiOverride(r)
+	return isControl(r) || isBidiOverride(r) || isInvisible(r)
 }
 
 // unsafeKind names the class of an unsafeInField rune for the error message.
 func unsafeKind(r rune) string {
-	if isBidiOverride(r) {
+	switch {
+	case isBidiOverride(r):
 		return "a bidirectional formatting character"
+	case isInvisible(r):
+		return "a zero-width or invisible character"
+	default:
+		return "a control character"
 	}
-	return "a control character"
 }
 
 // isControl reports whether r is a C0 control, DEL, or a C1 control. These never
@@ -165,6 +171,18 @@ func isControl(r rune) bool {
 // so rejecting these does not reject real RTL filenames.
 func isBidiOverride(r rune) bool {
 	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// isInvisible reports whether r is a zero-width or otherwise invisible formatting
+// character that renders as nothing: the zero-width space/joiners (U+200B-U+200D),
+// the word joiner (U+2060), and the byte-order mark / zero-width no-break space
+// (U+FEFF). In a path they are a spoof - hiding a segment, or making two distinct
+// grants look identical. A path/argument never needs one (the joiners have text-
+// shaping uses in prose and emoji, not in a file path), so rejecting them is safe;
+// the failure is loud, and a file whose name truly needs one can be granted by its
+// parent directory.
+func isInvisible(r rune) bool {
+	return (r >= 0x200B && r <= 0x200D) || r == 0x2060 || r == 0xFEFF
 }
 
 func (m ExecMode) validate() error {
