@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -138,14 +139,21 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 }
 
 type policyJSON struct {
-	Entrypoint  string   `json:"entrypoint"`
-	Interpreter string   `json:"interpreter,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Env         []string `json:"env,omitempty"`
-	Read        []string `json:"read,omitempty"`
-	Write       []string `json:"write,omitempty"`
-	Network     []string `json:"network"`
-	Exec        string   `json:"exec"`
+	Entrypoint  string      `json:"entrypoint"`
+	Interpreter string      `json:"interpreter,omitempty"`
+	Args        []string    `json:"args,omitempty"`
+	Env         []string    `json:"env,omitempty"`
+	Read        []string    `json:"read,omitempty"`
+	Write       []string    `json:"write,omitempty"`
+	Network     []string    `json:"network"`
+	Exec        string      `json:"exec"`
+	Limits      *limitsJSON `json:"limits,omitempty"`
+}
+
+type limitsJSON struct {
+	Memory string `json:"memory,omitempty"`
+	CPU    string `json:"cpu,omitempty"`
+	PIDs   int    `json:"pids,omitempty"`
 }
 
 func toPolicyJSON(p *policy.Policy) policyJSON {
@@ -161,6 +169,9 @@ func toPolicyJSON(p *policy.Policy) policyJSON {
 	}
 	for _, r := range p.Network {
 		out.Network = append(out.Network, r.Host+":"+r.Port)
+	}
+	if !p.Limits.IsZero() {
+		out.Limits = &limitsJSON{Memory: p.Limits.Memory, CPU: p.Limits.CPU, PIDs: p.Limits.PIDs}
 	}
 	return out
 }
@@ -208,6 +219,20 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 		fmt.Fprintf(w, "  note: execve covers effectively every real subprocess (fork+exec, os/exec,\n")
 		fmt.Fprintf(w, "        system). execveat stays open by construction - the launcher needs it -\n")
 		fmt.Fprintf(w, "        so a program written to spawn through execveat is not stopped.\n")
+	}
+
+	if !p.Limits.IsZero() {
+		var parts []string
+		if p.Limits.Memory != "" {
+			parts = append(parts, "memory "+p.Limits.Memory)
+		}
+		if p.Limits.CPU != "" {
+			parts = append(parts, "cpu "+p.Limits.CPU)
+		}
+		if p.Limits.PIDs > 0 {
+			parts = append(parts, fmt.Sprintf("pids %d", p.Limits.PIDs))
+		}
+		fmt.Fprintf(w, "limits:       %s\n", strings.Join(parts, ", "))
 	}
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
