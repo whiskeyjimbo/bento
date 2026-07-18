@@ -10,6 +10,11 @@ func Supported() bool { return false }
 // BlockExec is unavailable off Linux.
 func BlockExec() error { return fmt.Errorf("seccomp: exec-blocking is only available on Linux") }
 
+// BlockProcessReach is unavailable off Linux.
+func BlockProcessReach() error {
+	return fmt.Errorf("seccomp: the cross-process block is only available on Linux")
+}
+
 // EgressSupported reports false: seccomp is Linux-only.
 func EgressSupported() bool { return false }
 

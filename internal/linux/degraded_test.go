@@ -80,6 +80,32 @@ func TestDegradedRunsInterpreterOnGrantedRead(t *testing.T) {
 	}
 }
 
+// An exec:all degraded run exercises the launcher's superviseTarget path (fork the
+// target, reap it) with the cross-process seccomp block installed. It is the guard
+// that the block refuses only pidfd_getfd, not the whole pidfd family - Go's child
+// management uses pidfd_open/pidfd_send_signal, so over-blocking would break the
+// launcher here and the exec:none tests (which execveat) would not catch it.
+func TestDegradedExecAllSupervisesChild(t *testing.T) {
+	requireDegraded(t)
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("echo parent-ran; exit 0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Exec: policy.ExecAll}
+	var out strings.Builder
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	if err != nil {
+		t.Fatalf("exec:all degraded run failed (cross-process block may over-restrict pidfd): %v\noutput:\n%s", err, out.String())
+	}
+	if res.ExitCode != 0 || !strings.Contains(out.String(), "parent-ran") {
+		t.Errorf("supervised child did not run cleanly: exit=%d output:\n%s", res.ExitCode, out.String())
+	}
+}
+
 func requireDegraded(t *testing.T) {
 	t.Helper()
 	if !landlock.Available() {

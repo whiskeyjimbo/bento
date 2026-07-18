@@ -88,6 +88,13 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if err := seccomp.BlockEgress(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the egress filter: %w", err)
 	}
+	// With no PID namespace the target shares the host's process table, so block the
+	// syscalls that reach into another process (ptrace inject, cross-process memory,
+	// pidfd fd-theft) - a same-user process the target injects into or steals a socket
+	// fd from would otherwise defeat both the Landlock and the egress confinement.
+	if err := seccomp.BlockProcessReach(); err != nil {
+		return 0, fmt.Errorf("launcher: refusing to run - could not install the cross-process block: %w", err)
+	}
 
 	// Landlock last, so the setup above (which does not touch confined paths) is not
 	// itself restricted. A failure is fatal - this is the primary FS confinement.

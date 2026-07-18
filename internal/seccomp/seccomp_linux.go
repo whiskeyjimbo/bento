@@ -44,6 +44,39 @@ func BlockExec() error {
 	return nil
 }
 
+// BlockProcessReach installs a filter denying the syscalls that reach into another
+// process's memory, execution, or descriptors: ptrace (attach/inject),
+// process_vm_readv / process_vm_writev (cross-process memory), kcmp (compare and
+// leak process state), and pidfd_getfd (steal a descriptor another process holds - a
+// socket to egress through, or a handle to a Landlock-denied path). It is for the
+// degraded tier only: the bwrap tier's PID namespace already isolates every process
+// from the target, so nothing outside the sandbox is reachable there.
+//
+// It blocks pidfd_getfd but deliberately NOT pidfd_open or pidfd_send_signal: Go's
+// os/exec manages a child with those two plus waitid, which the launcher's exec:all
+// supervise path relies on; blocking the whole pidfd family would break bento's own
+// child management. The remaining cross-process reach vectors - /proc/<pid>/mem and
+// /proc/<pid>/fd/<n> - are FILE accesses, already denied because /proc is not in the
+// degraded Landlock read set. seccomp and Landlock split the work.
+func BlockProcessReach() error {
+	filter := seccomp.Filter{
+		NoNewPrivs: true,
+		Flag:       seccomp.FilterFlagTSync,
+		Policy: seccomp.Policy{
+			DefaultAction: seccomp.ActionAllow,
+			Syscalls: []seccomp.SyscallGroup{
+				{Action: seccomp.ActionErrno, Names: []string{
+					"ptrace", "process_vm_readv", "process_vm_writev", "kcmp", "pidfd_getfd",
+				}},
+			},
+		},
+	}
+	if err := seccomp.LoadFilter(filter); err != nil {
+		return fmt.Errorf("seccomp: installing the cross-process block: %w", err)
+	}
+	return nil
+}
+
 // Exec replaces the current process with argv via execveat(2). The exec-block
 // filter permits execveat (it denies only execve), so this transition succeeds
 // while the target's later execve attempts do not. argv[0] must be an absolute
