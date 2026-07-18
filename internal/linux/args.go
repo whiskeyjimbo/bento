@@ -305,6 +305,20 @@ func baseFlags() []string {
 	return []string{
 		"--die-with-parent", "--new-session",
 		"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
+		// Drop the whole capability bounding set. The read-only shields (DenyWrite
+		// credentials, the re-bound entrypoint/interpreter) are plain --ro-bind mounts;
+		// nothing in bento's own layers stops the target from calling
+		// mount(MS_REMOUNT|MS_BIND) to clear their read-only flag - the exec filter
+		// blocks only execve/execveat, Landlock has no mount hook, and the cross-process
+		// block is degraded-tier only. What stops that remount is the target having no
+		// CAP_SYS_ADMIN plus the kernel's mount-lock on the read-only bind. Unprivileged
+		// bwrap already yields an empty bounding set, but requesting it explicitly makes
+		// the reliance bento's own (robust to a setuid bwrap or a stray --cap-add) rather
+		// than an unstated bwrap default. bento's launcher needs no capability inside the
+		// sandbox (seccomp/Landlock/prctl all work with none). The nested-userns remount
+		// path is a separate vector the kernel mount-lock denies; cap-drop does not affect
+		// it.
+		"--cap-drop", "ALL",
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
