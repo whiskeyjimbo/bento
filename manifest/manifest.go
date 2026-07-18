@@ -135,16 +135,19 @@ func Parse(r io.Reader) (*Document, error) {
 
 // sanitizeControl drops the control characters an untrusted manifest could smuggle
 // into a decoder error that is printed to a terminal: ESC (the lead byte of every
-// ANSI/OSC sequence), BEL, carriage return, and the other C0 controls and DEL. Tab
-// and newline are kept - the decoder's line/caret annotation is laid out with them,
-// and neither reprograms a terminal. The input is already known to be valid UTF-8,
-// so the multi-byte C1 range cannot appear as raw control bytes.
+// 7-bit ANSI/OSC sequence), BEL, carriage return, the other C0 controls and DEL,
+// and the C1 range U+0080-U+009F. The C1 codes matter because the input is UTF-8
+// text, so a manifest can carry U+009B (CSI) or U+009D (OSC) directly - a terminal
+// honoring 8-bit controls acts on those with no ESC at all, which a C0-only filter
+// would let straight through (verified: goccy echoes a literal U+009B in its
+// annotation). Tab and newline are kept - the decoder lays out its line/caret
+// annotation with them, and neither reprograms a terminal.
 func sanitizeControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
 			return r
 		}
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
 			return -1
 		}
 		return r

@@ -136,15 +136,21 @@ func TestMarshalRoundTrip(t *testing.T) {
 // spoofing, hidden text). The error text must be free of ESC and BEL while still
 // naming the problem.
 func TestParseErrorStripsTerminalEscapes(t *testing.T) {
+	// 7-bit ESC/OSC/BEL, and U+009B (CSI) / U+009D (OSC) as 8-bit C1 controls, which
+	// a UTF-8 manifest can carry directly and a terminal honoring 8-bit controls acts
+	// on without any ESC.
 	src := "entrypoint: /bin/true\n" +
-		"bogus: \"\x1b[31mINJECTED\x1b[0m\x1b]0;PWNED\x07\"\n"
+		"bogus: \"\x1b[31mINJECTED\x1b[0m\x1b]0;PWNED\x07\u009b31m\u009d0;C1\"\n"
 	_, err := Load(strings.NewReader(src))
 	if err == nil {
 		t.Fatal("an unknown field must be rejected")
 	}
-	for _, b := range []byte(err.Error()) {
-		if b == 0x1b || b == 0x07 || (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
-			t.Fatalf("parse error carries a control byte %#x to the terminal:\n%q", b, err.Error())
+	for _, r := range err.Error() {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Fatalf("parse error carries control rune %#x to the terminal:\n%q", r, err.Error())
 		}
 	}
 	// The error must still be useful.
