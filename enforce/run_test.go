@@ -518,3 +518,18 @@ func TestReportSetReplacesOrAdds(t *testing.T) {
 		t.Errorf("Set should add a missing layer; got %+v", r.Layers)
 	}
 }
+
+// StateOf must return the most severe state among duplicate layer entries, agreeing
+// with shortfall/Degradations - else a first-match Enforced could mask a governing
+// Degraded/Unavailable duplicate (bv2-ad8). A missing layer is Unavailable.
+func TestStateOfWorstOfDuplicates(t *testing.T) {
+	var r Report
+	r.Add(LayerFilesystem, Enforced, "")
+	r.Add(LayerFilesystem, Degraded, "userns blocked")
+	if got := r.StateOf(LayerFilesystem); got != Degraded {
+		t.Errorf("StateOf with [Enforced, Degraded] duplicates = %v, want Degraded (worst)", got)
+	}
+	if got := r.StateOf(LayerNetwork); got != Unavailable {
+		t.Errorf("StateOf of a missing layer = %v, want Unavailable (fail-safe)", got)
+	}
+}

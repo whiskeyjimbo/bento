@@ -104,6 +104,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
 		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
+		"/home/u/.config/containers",        // podman/skopeo exec-redirect knobs
 		"/home/u/.config/autostart",
 		"/home/u/.config/systemd/user",
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish

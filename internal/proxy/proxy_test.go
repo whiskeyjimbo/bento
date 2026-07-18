@@ -376,6 +376,8 @@ func TestClassifyIP(t *testing.T) {
 			"64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254 (metadata)
 			"64:ff9b::7f00:1",    // NAT64 of 127.0.0.1
 			"64:ff9b::c612:1",    // NAT64 of 198.18.0.1 (benchmarking)
+			"ff05::1", "ff0e::1", // site-local and global multicast
+			"::a9fe:a9fe",        // IPv4-compatible ::169.254.169.254 (metadata)
 		},
 		// Reachable only via an explicit IP-literal rule.
 		ipPrivate: {
@@ -383,6 +385,7 @@ func TestClassifyIP(t *testing.T) {
 			"100.64.0.1", "100.127.255.255", // CGNAT
 			"64:ff9b::a00:5",    // NAT64 of 10.0.0.5
 			"2002:0a00:0005::1", // 6to4 embedding 10.0.0.5
+			"::0a00:0005",       // IPv4-compatible ::10.0.0.5
 		},
 		// Governed by the allowlist alone.
 		ipPublic: {

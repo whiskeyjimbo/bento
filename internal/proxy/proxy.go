@@ -234,8 +234,8 @@ const (
 // IPv4 that To4 does not surface, so a synthesized address (DNS64/NAT64 is the
 // live case on IPv6-only subnets) is classified by its embedded IPv4.
 func classifyIP(ip net.IP) ipClass {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() ||
+		ip.IsUnspecified() {
 		return ipHostReserved
 	}
 	if ip.IsPrivate() {
@@ -280,6 +280,12 @@ func embeddedIPv4(ip net.IP) net.IP {
 	}
 	// NAT64 well-known prefix 64:ff9b::/96 carries the IPv4 in the last 4 bytes.
 	if bytes.Equal(ip16[:12], []byte{0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}) {
+		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
+	}
+	// Deprecated IPv4-compatible ::a.b.c.d (all-zero high 96 bits) also carries a v4
+	// in the last 4 bytes. ::1 and :: reach classifyIP's loopback/unspecified checks
+	// before this, so a value here is a real embedded address, not those.
+	if bytes.Equal(ip16[:12], make([]byte, 12)) {
 		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 	}
 	return nil

@@ -62,7 +62,9 @@ func BlockExec() error {
 // process_madvise (evict/manipulate another process's pages via a pidfd), kcmp
 // (compare and leak process state), and pidfd_getfd (steal a descriptor another
 // process holds - a socket to egress through, or a handle to a Landlock-denied
-// path). It also denies two cross-process oracles: move_pages (with a NULL nodes
+// path). It also denies three cross-process oracles: perf_event_open (samples
+// another process's instruction pointers, defeating ASLR when perf_event_paranoid
+// permits it), move_pages (with a NULL nodes
 // argument it reports another process's page residency) and get_robust_list (leaks
 // another process's robust-futex head pointer, an ASLR disclosure). Neither the Go
 // runtime nor bento calls either - glibc registers robust lists with set_robust_list,
@@ -90,7 +92,7 @@ func BlockProcessReach() error {
 			Syscalls: []seccomp.SyscallGroup{
 				{Action: seccomp.ActionErrno, Names: []string{
 					"ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "kcmp", "pidfd_getfd",
-					"move_pages", "get_robust_list",
+					"move_pages", "get_robust_list", "perf_event_open",
 				}},
 			},
 		},

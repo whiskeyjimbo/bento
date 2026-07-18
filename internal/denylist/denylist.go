@@ -176,6 +176,7 @@ func Home(home string) []Rule {
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
 		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
+		".config/containers",           // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
 		".config/autostart",            // XDG autostart .desktop entries
 		".config/systemd/user",         // systemd user services and timers
 		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)

@@ -75,6 +75,8 @@ func TestValidateRejects(t *testing.T) {
 		{"inverted range", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "900-100"}} }, "inverted"},
 		{"negative pids", func(p *Policy) { p.Limits = Limits{PIDs: -1} }, "pids must not be negative"},
 		{"cpu without percent", func(p *Policy) { p.Limits = Limits{CPU: "100"} }, "must be a percentage"},
+		{"cpu non-numeric", func(p *Policy) { p.Limits = Limits{CPU: "abc%"} }, "not a number"},
+		{"cpu control char", func(p *Policy) { p.Limits = Limits{CPU: "50\n%"} }, "not a number"},
 		{"unparseable memory", func(p *Policy) { p.Limits = Limits{Memory: "lots"} }, "limits.memory"},
 		{"escape in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/true\x1b]0;PWNED\x07" }, "control character"},
 		{"escape in interpreter", func(p *Policy) { p.Interpreter = "python3\x1b[31m" }, "control character"},

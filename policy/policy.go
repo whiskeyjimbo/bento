@@ -310,8 +310,14 @@ func (l Limits) validate() error {
 	if l.PIDs < 0 {
 		return fmt.Errorf("policy: limits.pids must not be negative")
 	}
-	if l.CPU != "" && !strings.HasSuffix(l.CPU, "%") {
-		return fmt.Errorf("policy: limits.cpu %q must be a percentage (e.g. \"100%%\")", l.CPU)
+	if l.CPU != "" {
+		num, ok := strings.CutSuffix(l.CPU, "%")
+		if !ok {
+			return fmt.Errorf("policy: limits.cpu %q must be a percentage (e.g. \"100%%\")", l.CPU)
+		}
+		if _, err := strconv.ParseFloat(num, 64); err != nil {
+			return fmt.Errorf("policy: limits.cpu %q must be a numeric percentage (e.g. \"100%%\"); %q is not a number", l.CPU, num)
+		}
 	}
 	if l.Memory != "" {
 		if _, err := parseBytes(l.Memory); err != nil {

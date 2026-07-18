@@ -60,10 +60,11 @@ func RestrictTo(read, write []string) error {
 // leave it unconfined.
 //
 // read paths get read access (directories also get execute and are recursive; a
-// file gets read only, so granting a read file does not leak its siblings). write
-// paths get read-write. exec paths get read+execute on the individual file - the
-// entrypoint when it is its own interpreter (a compiled binary), which a read file
-// rule would leave non-executable. Missing paths are skipped, as in RestrictTo.
+// file gets read and execute - go-landlock's read-file right includes execute - but
+// not directory reads, so a read file does not leak its siblings). write paths get
+// read-write. exec paths get read+execute on the individual file, the entrypoint
+// when it is its own compiled-binary interpreter; that right overlaps the read-file
+// right above and is kept explicit. Missing paths are skipped, as in RestrictTo.
 //
 // It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
 // ABI. That is acceptable here because every right used (read/write/execute path

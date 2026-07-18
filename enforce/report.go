@@ -119,12 +119,20 @@ func (r *Report) Set(layer Layer, state State, reason string) {
 // StateOf returns the recorded state of a layer. A layer the report does not
 // mention is not enforced, so it reports Unavailable.
 func (r Report) StateOf(layer Layer) State {
+	// Return the most severe state among any duplicate entries, so this agrees with
+	// shortfall/Degradations (which scan every matching layer): a first-match here
+	// could report Enforced while a later duplicate Degraded/Unavailable entry is the
+	// one that governs admission. A missing layer is Unavailable, the fail-safe.
+	state, found := Enforced, false
 	for _, l := range r.Layers {
-		if l.Layer == layer {
-			return l.State
+		if l.Layer == layer && (!found || l.State > state) {
+			state, found = l.State, true
 		}
 	}
-	return Unavailable
+	if !found {
+		return Unavailable
+	}
+	return state
 }
 
 // HasDegradation reports whether any layer is not fully enforced.

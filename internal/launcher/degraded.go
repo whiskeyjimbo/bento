@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -73,6 +74,10 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 
 	env := os.Environ()
 	if cfg.Scratch != "" {
+		// Drop any inherited TMPDIR/TMP/TEMP before appending the scratch override:
+		// glibc getenv returns the first occurrence, so a policy-declared TMPDIR would
+		// otherwise win and send temp files outside the granted scratch directory.
+		env = dropEnv(env, "TMPDIR", "TMP", "TEMP")
 		env = append(env, "TMPDIR="+cfg.Scratch, "TMP="+cfg.Scratch, "TEMP="+cfg.Scratch)
 	}
 
@@ -164,4 +169,22 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 		Scratch:     scratch,
 		Target:      fs.Args(),
 	}, nil
+}
+
+// dropEnv returns env with every VAR=... entry for the named variables removed, so
+// a caller can append an authoritative value without losing to an inherited
+// first-duplicate under glibc getenv semantics.
+func dropEnv(env []string, names ...string) []string {
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[n] = true
+	}
+	out := env[:0:0]
+	for _, e := range env {
+		if k, _, ok := strings.Cut(e, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
