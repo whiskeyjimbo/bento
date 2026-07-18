@@ -22,7 +22,7 @@ func TestAllows(t *testing.T) {
 		{"sub.example.com", "8080", true}, // suffix + range
 		{"sub.example.com", "9001", false},
 		{"api.uppercase.dev", "443", true}, // uppercase suffix-wildcard rule still matches
-		{"example.com", "8080", false}, // suffix must NOT match the apex
+		{"example.com", "8080", false},     // suffix must NOT match the apex
 		{"evil-example.com", "8080", false},
 		{"10.0.0.1", "5432", true},   // IP + any port
 		{"anything.net", "22", true}, // any host + literal port

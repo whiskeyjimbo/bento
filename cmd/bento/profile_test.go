@@ -52,11 +52,11 @@ func TestClampShieldedGrants(t *testing.T) {
 	if home == "" {
 		t.Skip("no home directory on this host")
 	}
-	ssh := home + "/.ssh/id_rsa"     // a file inside a DenyAll shield directory
-	sshDir := home + "/.ssh"         // the shield directory itself
-	netrc := home + "/.netrc"        // a DenyAll shield that is itself a FILE
-	ordinary := "/srv/app/config"    // no shield involved
-	underHome := home + "/project"   // under home but not a shield
+	ssh := home + "/.ssh/id_rsa"   // a file inside a DenyAll shield directory
+	sshDir := home + "/.ssh"       // the shield directory itself
+	netrc := home + "/.netrc"      // a DenyAll shield that is itself a FILE
+	ordinary := "/srv/app/config"  // no shield involved
+	underHome := home + "/project" // under home but not a shield
 
 	reads := []string{ssh, sshDir, netrc, home, ordinary, underHome}
 	writes := []string{home + "/.gnupg/x", ordinary}
