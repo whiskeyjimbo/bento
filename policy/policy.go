@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Policy is the permission declaration for a single script or binary.
@@ -104,7 +105,8 @@ func (p *Policy) Validate() error {
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
 		if i := strings.IndexFunc(f, isControl); i >= 0 {
-			return fmt.Errorf("policy: value %q contains a control character (0x%02x), which is not allowed in a path or argument", f, f[i])
+			r, _ := utf8.DecodeRuneInString(f[i:])
+			return fmt.Errorf("policy: value %q contains a control character (U+%04X), which is not allowed in a path or argument", f, r)
 		}
 	}
 	for _, name := range p.Env {
