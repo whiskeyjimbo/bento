@@ -23,6 +23,15 @@ import (
 // Supported reports whether this kernel supports seccomp BPF filters.
 func Supported() bool { return seccomp.Supported() }
 
+// tsyncFlags is TSYNC with ESRCH: without ESRCH a partial thread-sync returns the
+// offending TID in the syscall's r1 with errno 0, and the library's LoadFilter
+// checks only errno - so it would report success while installing no filter. ESRCH
+// turns that partial sync into an ESRCH errno the library does surface, so a
+// failed install is refused instead of silently proceeding unfiltered. The
+// hand-rolled sibling filters (strict, egress) check r1 directly for the same
+// reason; the library-backed ones can only reach r1 through this flag.
+const tsyncFlags = seccomp.FilterFlagTSync | seccomp.FilterFlag(unix.SECCOMP_FILTER_FLAG_TSYNC_ESRCH)
+
 // BlockExec installs the exec-blocking filter for this process and all its
 // threads. It sets no-new-privs and uses TSYNC, so the Go runtime's background
 // threads are covered and the filter survives the coming execveat. The syscall
@@ -30,7 +39,7 @@ func Supported() bool { return seccomp.Supported() }
 func BlockExec() error {
 	filter := seccomp.Filter{
 		NoNewPrivs: true,
-		Flag:       seccomp.FilterFlagTSync,
+		Flag:       tsyncFlags,
 		Policy: seccomp.Policy{
 			DefaultAction: seccomp.ActionAllow,
 			Syscalls: []seccomp.SyscallGroup{
@@ -63,7 +72,7 @@ func BlockExec() error {
 func BlockProcessReach() error {
 	filter := seccomp.Filter{
 		NoNewPrivs: true,
-		Flag:       seccomp.FilterFlagTSync,
+		Flag:       tsyncFlags,
 		Policy: seccomp.Policy{
 			DefaultAction: seccomp.ActionAllow,
 			Syscalls: []seccomp.SyscallGroup{
