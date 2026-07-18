@@ -128,7 +128,7 @@ func (s *store) write(fold bool) error {
 
 	// Re-read under the lock and fold in anything a concurrent run wrote, so
 	// finishing last does not clobber another run's newly-remembered decisions (in
-	// particular a deny). This run's own values win on a per-key conflict.
+	// particular a deny, which wins a per-key conflict; otherwise this run's value wins).
 	if fold {
 		if disk, err := os.ReadFile(s.path); err == nil {
 			var d store
@@ -149,16 +149,18 @@ func (s *store) write(fold bool) error {
 	return os.Rename(tmp, s.path)
 }
 
-// fillMissing copies entries present on disk but absent in s, so a concurrent
-// run's writes survive this run's save. This run's values win where both have a
-// key; disk-only keys (another run's additions) are preserved.
+// fillMissing folds entries from a concurrent run's on-disk store into s, so its
+// writes survive this run's save. A deny wins on a per-key conflict, matching the
+// store's deny-wins model: a concurrent deny must not be clobbered by this run's
+// allow for the same key. Otherwise this run's value wins, and disk-only keys
+// (another run's additions) are preserved.
 func (s *store) fillMissing(disk *store) {
 	fill := func(dst *map[string]decision, src map[string]decision) {
 		for k, v := range src {
 			if *dst == nil {
 				*dst = map[string]decision{}
 			}
-			if _, ok := (*dst)[k]; !ok {
+			if cur, ok := (*dst)[k]; !ok || (v == deny && cur != deny) {
 				(*dst)[k] = v
 			}
 		}
@@ -166,9 +168,7 @@ func (s *store) fillMissing(disk *store) {
 	fill(&s.Global.Read, disk.Global.Read)
 	fill(&s.Global.Write, disk.Global.Write)
 	fill(&s.Global.Network, disk.Global.Network)
-	if s.Global.Exec == "" {
-		s.Global.Exec = disk.Global.Exec
-	}
+	s.Global.Exec = mergeExec(s.Global.Exec, disk.Global.Exec)
 	for key, da := range disk.Apps {
 		ma := s.Apps[key]
 		if ma == nil {
@@ -178,9 +178,7 @@ func (s *store) fillMissing(disk *store) {
 		fill(&ma.Read, da.Read)
 		fill(&ma.Write, da.Write)
 		fill(&ma.Network, da.Network)
-		if ma.Exec == "" {
-			ma.Exec = da.Exec
-		}
+		ma.Exec = mergeExec(ma.Exec, da.Exec)
 		if ma.Entrypoint == "" {
 			ma.Entrypoint = da.Entrypoint
 		}
@@ -188,6 +186,19 @@ func (s *store) fillMissing(disk *store) {
 			ma.Interpreter = da.Interpreter
 		}
 	}
+}
+
+// mergeExec folds a disk exec value into this run's, deny-preferring: an unknown
+// (empty) run value takes the disk value, and a disk deny beats this run's non-deny,
+// so a concurrent exec deny survives the merge.
+func mergeExec(mem, disk string) string {
+	if mem == "" {
+		return disk
+	}
+	if execDecision(disk) == deny && execDecision(mem) != deny {
+		return disk
+	}
+	return mem
 }
 
 // appKey identifies an app by the SHA-256 of its entrypoint bytes: same code, same

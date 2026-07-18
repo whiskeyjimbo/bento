@@ -126,6 +126,46 @@ func TestStoreSaveMergesConcurrentWrites(t *testing.T) {
 	}
 }
 
+// On a conflicting key, the concurrent-merge fold is deny-preferring: a deny another
+// run wrote to disk must survive this run's save even when this run holds an allow
+// for the same key, matching the store's deny-wins model.
+func TestStoreSaveDenyWinsConcurrentConflict(t *testing.T) {
+	dir := t.TempDir()
+	mk := func() *store {
+		return &store{Version: 1, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
+	}
+	// a saves first, becoming the on-disk deny for both the host and exec.
+	a := mk()
+	a.rememberNetwork("app", "x.example", "443", deny, false)
+	a.rememberExec("app", deny, false)
+	if err := a.save(); err != nil {
+		t.Fatal(err)
+	}
+	// b loaded empty before a's save and holds an allow for both. Its save must not
+	// overwrite a's disk deny - the discriminating case for the deny-preferring fold.
+	b := mk()
+	b.rememberNetwork("app", "x.example", "443", allow, false)
+	b.rememberExec("app", allow, false)
+	if err := b.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "permissions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final store
+	if err := json.Unmarshal(data, &final); err != nil {
+		t.Fatal(err)
+	}
+	if got := final.Apps["app"].Network["x.example:443"]; got != deny {
+		t.Errorf("network conflict = %v; a concurrent deny must survive this run's allow", got)
+	}
+	if got := final.Apps["app"].Exec; got != "none" {
+		t.Errorf("exec conflict = %q; a concurrent exec deny must survive this run's allow", got)
+	}
+}
+
 // The core loop: approve once with answers, then a second run with NO input
 // auto-applies the remembered decisions (allow silently, deny silently) and never
 // prompts - the "run twice, silent" behavior.
