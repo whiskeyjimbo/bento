@@ -178,9 +178,16 @@ func measureDelegatedControllers() (map[string]bool, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// grep the v2 line (0::) so the path is correct on a hybrid v1/v2 host too, then
-	// read that cgroup's controllers - the set systemd actually enabled on the scope.
-	const readControllers = `cat /sys/fs/cgroup$(grep '^0::' /proc/self/cgroup | cut -d: -f3)/cgroup.controllers`
+	// Read the scope's own cgroup.controllers - the set systemd actually enabled on
+	// the scope. The path is derived from the unified (v2) line of /proc/self/cgroup
+	// (the "0::" line), which is what makes this work on a containerized or nested
+	// systemd where the scope's cgroup is not at a fixed location. Every failure mode
+	// is closed: on a cgroup-v1-only host there is no "0::" line, so the guard exits
+	// nonzero rather than falling back to catting the v2 root's controllers (which
+	// would over-report); on a legacy-hybrid host the v2 hierarchy is mounted under
+	// /sys/fs/cgroup/unified, so the derived path is wrong and the cat fails. Either
+	// way the scope exits nonzero and known is false.
+	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; cat /sys/fs/cgroup$p/cgroup.controllers`
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
