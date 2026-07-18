@@ -113,15 +113,16 @@ func TestDelegatedControllers(t *testing.T) {
 // unbounded under a report that said the limit held.
 func TestHostControllersDelegatedFailsClosed(t *testing.T) {
 	cases := []struct {
-		name   string
-		ctrls  map[string]bool
-		known  bool
-		wantOK bool
+		name       string
+		ctrls      map[string]bool
+		known      bool
+		wantOK     bool
+		wantReason string // a substring that distinguishes the diagnosis
 	}{
-		{"unknown fails closed", nil, false, false},
-		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, true},
-		{"memory missing", map[string]bool{"pids": true}, true, false},
-		{"pids missing", map[string]bool{"memory": true}, true, false},
+		{"unknown fails closed", nil, false, false, "could not read"},
+		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, true, ""},
+		{"memory missing", map[string]bool{"pids": true}, true, false, "not delegated"},
+		{"pids missing", map[string]bool{"memory": true}, true, false, "not delegated"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,10 +130,32 @@ func TestHostControllersDelegatedFailsClosed(t *testing.T) {
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}
-			if !ok && reason == "" {
-				t.Error("a not-ok result must carry a reason a user can act on")
+			// The unknown case must be diagnosed as unreadable, not misdiagnosed as an
+			// undelegated controller (which would tell the user to run a Delegate= step
+			// that does not address an unreadable path).
+			if !strings.Contains(reason, tc.wantReason) {
+				t.Errorf("reason = %q, want it to contain %q", reason, tc.wantReason)
 			}
 		})
+	}
+}
+
+// The seam lets a test build the unknown-delegation host the pure functions cannot
+// be reached through otherwise: with delegation unreadable, Probe must report the
+// cpu limits layer Unavailable, never Enforced (the fail-open bug at the Probe
+// level). Guarded on the host being able to create a scope at all, since the cpu
+// layer is only emitted then.
+func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
+	if ok, _ := canCreateScope(); !ok {
+		t.Skip("no usable systemd scope on this host; the cpu limits layer is not emitted")
+	}
+	orig := delegatedControllers
+	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	defer func() { delegatedControllers = orig }()
+
+	r := New().Probe(context.Background())
+	if got := r.StateOf(enforce.LayerLimitsCPU); got != enforce.Unavailable {
+		t.Errorf("LayerLimitsCPU = %v with delegation unreadable, want Unavailable (fail closed)", got)
 	}
 }
 

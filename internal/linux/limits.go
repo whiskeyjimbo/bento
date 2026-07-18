@@ -146,9 +146,15 @@ func cpuDelegationState(ctrls map[string]bool, known bool) (enforce.State, strin
 const cpuUndelegatedReason = "the cpu controller is not delegated to your systemd user manager, so a requested cpu limit cannot be enforced (a one-time admin step: Delegate=cpu on user@.service)"
 
 // delegatedControllers reads the cgroup-v2 controllers systemd has delegated to
-// this user's manager, under which `systemd-run --user --scope` creates scopes.
-// A controller absent here is accepted but not enforced.
-func delegatedControllers() (map[string]bool, bool) {
+// this user's manager. It is a var so a test can construct the unknown-delegation
+// host (an unreadable path) the fail-closed decision hinges on, which reads a fixed
+// host path and so cannot otherwise be reached in-package.
+var delegatedControllers = readDelegatedControllers
+
+// readDelegatedControllers reads the delegated controllers under which
+// `systemd-run --user --scope` creates scopes. A controller absent here is accepted
+// but not enforced; an unreadable path returns known=false, which fails closed.
+func readDelegatedControllers() (map[string]bool, bool) {
 	uid := os.Getuid()
 	path := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/cgroup.controllers", uid, uid)
 	b, err := os.ReadFile(path)
