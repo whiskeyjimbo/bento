@@ -88,6 +88,23 @@ func TestGateGlobalDenyPersistsAfterConfirm(t *testing.T) {
 	}
 }
 
+// A global standing-deny nested under a freshly-approved broad allow is
+// unenforceable (bento has no per-path deny), so approve must warn about it - the
+// same cross-layer case export refuses, not just per-app sub-denies.
+func TestApproveWarnsGlobalDenyUnderApprovedAllow(t *testing.T) {
+	s := newTestStore()
+	s.rememberPath("", "read", "/home/u/secret", deny, true) // global standing-deny of a child
+	// The trial proposes the parent; the operator approves it with "y".
+	var out strings.Builder
+	proposal := &policy.Policy{Read: []string{"/home/u"}}
+	approve(newPrompter(strings.NewReader("y\n"), &out), s, "k", "/s", "sh", proposal)
+
+	if !strings.Contains(out.String(), "cannot enforce the sub-deny") ||
+		!strings.Contains(out.String(), "/home/u/secret") {
+		t.Errorf("approve must warn a global deny lies under the approved allow; got %q", out.String())
+	}
+}
+
 // list shows the global read/write/exec dimensions, not just network.
 func TestListShowsGlobalReadWriteExec(t *testing.T) {
 	dir := t.TempDir()
@@ -139,5 +156,28 @@ func TestExportExcludesGloballyDeniedPath(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "/home/u/public") {
 		t.Errorf("the cleanly-allowed path is missing:\n%s", yaml)
+	}
+}
+
+// A global deny nested under a per-app allow is unrepresentable in a pure allowlist,
+// so export must refuse it across layers, not just within one.
+func TestExportRefusesGlobalDenyUnderAppAllow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _ := loadStore()
+	key := "sha256:eeee"
+	s.app(key).Entrypoint = "/home/u/agent.sh"
+	s.rememberPath(key, "read", "/home/u/proj", allow, false)     // app allows the dir
+	s.rememberPath("", "read", "/home/u/proj/secret", deny, true) // global denies a child
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	outPath := dir + "/out.yaml"
+	var out strings.Builder
+	if rc := exportPerms(s, []string{shortKey(key), "-o", outPath}, &out); rc == 0 {
+		t.Errorf("export must refuse a global deny under an app allow; out=%q", out.String())
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Error("a refused export must not write a manifest")
 	}
 }

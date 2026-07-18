@@ -285,15 +285,16 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 
 // warnDenyUnderAllow flags a stored filesystem deny that lies under an allowed
 // grant: bento has no per-path deny, so the enforced run cannot honor it (the
-// covering grant binds the whole tree). Better to say so than to imply enforcement.
+// covering grant binds the whole tree). It draws on the effective, cross-layer deny
+// set, so a global standing-deny under a freshly-approved allow is flagged too -
+// the same case export refuses; leaving it silent would undercut the standing
+// denylist exactly where the warning exists to catch it.
 func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy) {
-	a := s.Apps[key]
-	if a == nil {
-		return
-	}
+	_, readDenies := s.effectivePaths(key, "read")
+	_, writeDenies := s.effectivePaths(key, "write")
 	for _, c := range append(
-		deniesUnderAllows(final.Read, deniedPaths(a.Read), "read"),
-		deniesUnderAllows(final.Write, deniedPaths(a.Write), "write")...) {
+		deniesUnderAllows(final.Read, readDenies, "read"),
+		deniesUnderAllows(final.Write, writeDenies, "write")...) {
 		fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
 			c.kind, quotePath(c.deny), quotePath(c.allow))
 	}

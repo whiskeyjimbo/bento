@@ -400,30 +400,6 @@ func seedPath(s *store, key, kind, path string, out io.Writer) {
 	s.rememberPath(key, kind, path, allow, false)
 }
 
-// allowedPaths returns the paths a store map allows, sorted for a stable manifest.
-func allowedPaths(m map[string]decision) []string {
-	var out []string
-	for p, d := range m {
-		if d == allow {
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// deniedPaths returns the paths a store map denies.
-func deniedPaths(m map[string]decision) []string {
-	var out []string
-	for p, d := range m {
-		if d == deny {
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // effectivePaths partitions the paths an app is judged on for one kind into the
 // effectively-allowed and effectively-denied sets, folding the global and per-app
 // layers deny-wins. Export uses it so a globally-denied path never reaches the
