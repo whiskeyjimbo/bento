@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -63,6 +64,14 @@ func TestBlockEgressHelper(t *testing.T) {
 	if _, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != unix.EPERM {
 		fmt.Println("AF_INET6_NOT_EPERM", err)
 		os.Exit(5)
+	}
+	// io_uring_setup must be refused: io_uring can dispatch socket/connect past a
+	// socket()-only filter, so leaving it open would be an egress bypass. The filter
+	// EPERMs it before the kernel reads params, so a zeroed buffer pointer suffices.
+	var params [128]byte
+	if _, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, 1, uintptr(unsafe.Pointer(&params[0])), 0); errno != unix.EPERM {
+		fmt.Println("IO_URING_NOT_EPERM", errno)
+		os.Exit(6)
 	}
 	fmt.Println("EGRESS_OK")
 	os.Exit(0)

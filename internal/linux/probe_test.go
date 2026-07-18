@@ -22,7 +22,7 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	}{
 		{"userns ok, landlock present", true, true, enforce.Enforced, "backstop"},
 		{"userns ok, no landlock", true, false, enforce.Enforced, "bwrap alone"},
-		{"userns blocked, landlock present", false, true, enforce.Degraded, "Landlock path rules alone"},
+		{"userns blocked, landlock present", false, true, enforce.Degraded, "Landlock path rules"},
 		{"userns blocked, no landlock", false, false, enforce.Unavailable, "no filesystem confinement"},
 	}
 	for _, tc := range cases {

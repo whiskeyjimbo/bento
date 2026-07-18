@@ -7,9 +7,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// x86-64 socket(2) number and the address families the egress filter allows.
+// x86-64 syscall numbers and the address families the egress filter allows.
 const (
 	nrSocket = 41
+
+	// io_uring dispatches its operations (including IORING_OP_SOCKET/CONNECT/SEND on
+	// kernel >= 5.19) in kernel worker context, where they are NOT re-filtered against
+	// the submitting task's seccomp policy. So a socket()-only block is not a
+	// chokepoint: a target could open a TCP connection entirely through io_uring. The
+	// bwrap tier is unaffected (its netns fences the resulting socket regardless of how
+	// the fd was made), but here seccomp is the only egress fence, so io_uring's entry
+	// points must be refused too. Exactly the kernels this tier runs on ship the
+	// io_uring socket ops.
+	nrIoUringSetup    = 425
+	nrIoUringEnter    = 426
+	nrIoUringRegister = 427
 
 	afUnix    = 1  // local IPC; path-scoped, cannot reach an IP network
 	afNetlink = 16 // kernel<->user IPC; cannot egress, but runtimes enumerate interfaces with it
@@ -26,14 +38,14 @@ const (
 func EgressSupported() bool { return true }
 
 // egressFilter builds the classic-BPF program that denies IP and raw-link egress.
-// It is an ALLOWLIST on socket()'s domain: only AF_UNIX and AF_NETLINK pass, every
-// other family (AF_INET, AF_INET6, AF_PACKET, AF_XDP, AF_VSOCK, ...) is refused with
-// EPERM. An allowlist is the guarantee: a denylist would miss an address family we
-// did not enumerate, and "no egress" must not depend on remembering every wire
-// family. Blocking creation is the whole chokepoint - with no INET socket, later
-// connect/sendto have nothing to send through. A wrong architecture is killed, as is
-// any x32-ABI syscall (x32 shares the amd64 audit arch but tags its numbers, so an
-// x32 socket() would miss the equality check and slip through).
+// It refuses io_uring's entry points (which would otherwise dispatch socket/connect
+// past this filter) and, for socket(2), is an ALLOWLIST on the domain: only AF_UNIX
+// and AF_NETLINK pass, every other family (AF_INET, AF_INET6, AF_PACKET, AF_XDP,
+// AF_VSOCK, ...) is refused with EPERM. An allowlist is the guarantee: a denylist
+// would miss an address family we did not enumerate, and "no egress" must not depend
+// on remembering every wire family. A wrong architecture is killed, as is any x32-ABI
+// syscall (x32 shares the amd64 audit arch but tags its numbers, so an x32 socket()
+// would miss the equality check and slip through).
 func egressFilter() []unix.SockFilter {
 	ld := func(off uint32) unix.SockFilter {
 		return unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: off}
@@ -56,12 +68,15 @@ func egressFilter() []unix.SockFilter {
 		/*3*/ ld(offNr),
 		/*4*/ jset(x32SyscallBit, 0, 1), // x32 syscall -> kill (idx 5); else continue
 		/*5*/ kill,
-		/*6*/ jeq(nrSocket, 0, 4), // not socket -> allow (idx 11)
-		/*7*/ ld(offArg0Domain),
-		/*8*/ jeq(afUnix, 2, 0), // AF_UNIX -> allow
-		/*9*/ jeq(afNetlink, 1, 0), // AF_NETLINK -> allow
-		/*10*/ eperm,
-		/*11*/ ret(seccompRetAllow),
+		/*6*/ jeq(nrIoUringSetup, 6, 0), // io_uring_setup -> EPERM (idx 13)
+		/*7*/ jeq(nrIoUringEnter, 5, 0), // io_uring_enter -> EPERM
+		/*8*/ jeq(nrIoUringRegister, 4, 0), // io_uring_register -> EPERM
+		/*9*/ jeq(nrSocket, 0, 4), // not socket -> allow (idx 14)
+		/*10*/ ld(offArg0Domain),
+		/*11*/ jeq(afUnix, 2, 0), // AF_UNIX -> allow
+		/*12*/ jeq(afNetlink, 1, 0), // AF_NETLINK -> allow
+		/*13*/ eperm,
+		/*14*/ ret(seccompRetAllow),
 	}
 }
 
