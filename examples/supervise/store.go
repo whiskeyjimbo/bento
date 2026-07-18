@@ -283,6 +283,30 @@ func splitNetKey(k string) (host, port string) {
 // allowlist) cannot express it at all.
 type denyUnderAllow struct{ kind, deny, allow string }
 
+// readGrants is the set of paths readable under a policy: everything granted read,
+// plus everything granted write, since a write grant is read-write (bento binds
+// writes RW). Read coverage is checked against this union so a read-deny under a
+// write-allow is caught; write coverage stays write-only, since a read grant does
+// not confer write. The union is deduplicated so a path granted both read and write
+// is not double-counted.
+func readGrants(read, write []string) []string {
+	seen := make(map[string]bool, len(read)+len(write))
+	out := make([]string, 0, len(read)+len(write))
+	for _, p := range read {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, p := range write {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // deniesUnderAllows returns each deny that a broader allow would cover, so one
 // caller can warn about it and another (export) can refuse it. Both sets are passed
 // explicitly so export can supply effective, cross-layer decisions.

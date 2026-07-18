@@ -262,7 +262,7 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	// the dir and would re-expose the denied child. Refuse rather than silently
 	// over-grant (drop the deny) or under-grant (drop the allow).
 	offending := append(
-		deniesUnderAllows(readAllows, readDenies, "read"),
+		deniesUnderAllows(readGrants(readAllows, writeAllows), readDenies, "read"),
 		deniesUnderAllows(writeAllows, writeDenies, "write")...)
 	if len(offending) > 0 {
 		for _, c := range offending {

@@ -298,7 +298,7 @@ func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy)
 	_, readDenies := s.effectivePaths(key, "read")
 	_, writeDenies := s.effectivePaths(key, "write")
 	for _, c := range append(
-		deniesUnderAllows(final.Read, readDenies, "read"),
+		deniesUnderAllows(readGrants(final.Read, final.Write), readDenies, "read"),
 		deniesUnderAllows(final.Write, writeDenies, "write")...) {
 		fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
 			c.kind, quotePath(c.deny), quotePath(c.allow))
