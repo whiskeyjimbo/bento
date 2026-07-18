@@ -30,6 +30,20 @@ func TestValidateAcceptsWellFormedPolicy(t *testing.T) {
 	}
 }
 
+// A genuine right-to-left path carries directional letters (Arabic, Hebrew), which
+// have inherent direction and are not the explicit bidi format controls the
+// Trojan-Source class rejects, plus other non-ASCII (accents, CJK, emoji). None of
+// these must be refused - the control/bidi gate targets format characters only.
+func TestValidateAcceptsNonASCIIAndRTLPaths(t *testing.T) {
+	p := valid()
+	p.Entrypoint = "/home/u/مشروع/run.py" // "project" in Arabic letters
+	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁"}
+	p.Args = []string{"--name=مرحبا", "--dir=Ελληνικά"}
+	if err := p.Validate(); err != nil {
+		t.Errorf("a policy with legitimate non-ASCII/RTL paths must validate: %v", err)
+	}
+}
+
 func TestValidateEmptyExecModeDefaultsValid(t *testing.T) {
 	p := valid()
 	if err := p.Validate(); err != nil {
@@ -68,6 +82,9 @@ func TestValidateRejects(t *testing.T) {
 		{"escape in read path", func(p *Policy) { p.Read = []string{"/data\nfoo"} }, "control character"},
 		{"escape in write path", func(p *Policy) { p.Write = []string{"/out\x1b"} }, "control character"},
 		{"c1 control in path", func(p *Policy) { p.Read = []string{"/data\u009b31m"} }, "control character"},
+		{"bidi override in read path", func(p *Policy) { p.Read = []string{"/data/\u202egpj.exe"} }, "bidirectional formatting character"},
+		{"bidi isolate in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/\u2066run\u2069" }, "bidirectional formatting character"},
+		{"bidi override in arg", func(p *Policy) { p.Args = []string{"--out=\u202dsafe"} }, "bidirectional formatting character"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

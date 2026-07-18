@@ -96,17 +96,19 @@ func (p *Policy) Validate() error {
 		return fmt.Errorf("policy: entrypoint is required")
 	}
 	// The path and argument fields are echoed verbatim by the frontends - the
-	// validate summary, error messages naming a bad path - so a control character in
-	// one is a terminal-injection channel from an untrusted manifest (ESC/OSC window
-	// spoofing, hidden text). No legitimate path or argument carries one. Rejecting
-	// here, at the single gate every construction path passes through, closes it for
-	// the CLI and Go embedders alike; the host field is already guarded separately.
+	// validate summary, error messages naming a bad path - so a deceiving character in
+	// one lets an untrusted manifest mislead the operator reading it: a control
+	// character reprograms the terminal (ESC/OSC window spoofing, hidden text), a bidi
+	// override reorders the display so a value reads as something other than what it
+	// grants. No legitimate path or argument carries either. Rejecting here, at the
+	// single gate every construction path passes through, closes it for the CLI and Go
+	// embedders alike; the host field is already guarded separately.
 	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
-		if i := strings.IndexFunc(f, isControl); i >= 0 {
+		if i := strings.IndexFunc(f, unsafeInField); i >= 0 {
 			r, _ := utf8.DecodeRuneInString(f[i:])
-			return fmt.Errorf("policy: value %q contains a control character (U+%04X), which is not allowed in a path or argument", f, r)
+			return fmt.Errorf("policy: value %q contains %s (U+%04X), which is not allowed in a path or argument", f, unsafeKind(r), r)
 		}
 	}
 	for _, name := range p.Env {
@@ -128,6 +130,23 @@ func (p *Policy) Validate() error {
 	return p.Limits.validate()
 }
 
+// unsafeInField reports whether r must not appear in a path or argument field: a
+// control character, or a bidirectional formatting character. Both are ways an
+// untrusted manifest deceives an operator reading the value - a control character
+// reprograms the terminal, a bidi override reorders how the rest of the field is
+// displayed - so a path renders as something other than what it grants.
+func unsafeInField(r rune) bool {
+	return isControl(r) || isBidiOverride(r)
+}
+
+// unsafeKind names the class of an unsafeInField rune for the error message.
+func unsafeKind(r rune) string {
+	if isBidiOverride(r) {
+		return "a bidirectional formatting character"
+	}
+	return "a control character"
+}
+
 // isControl reports whether r is a C0 control, DEL, or a C1 control. These never
 // appear in a legitimate path or argument, and each is a way for untrusted manifest
 // content to reprogram the terminal it is later printed to (ESC begins every 7-bit
@@ -135,6 +154,17 @@ func (p *Policy) Validate() error {
 // honor directly).
 func isControl(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// isBidiOverride reports whether r is a Unicode bidirectional embedding, override,
+// or isolate control (U+202A-U+202E, U+2066-U+2069) - the "Trojan Source" class.
+// These reorder how the surrounding text is displayed without changing its bytes, so
+// a value renders as something other than what it grants (a path that reads as
+// "/safe" but resolves to "/evil"). Legitimate right-to-left paths carry directional
+// letters, which have inherent direction and are not these explicit format controls,
+// so rejecting these does not reject real RTL filenames.
+func isBidiOverride(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
 }
 
 func (m ExecMode) validate() error {
