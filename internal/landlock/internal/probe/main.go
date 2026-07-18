@@ -5,6 +5,10 @@
 //
 // Usage: probe <allowed-dir> <inside-path> <outside-path>
 // Prints "inside=OK|DENIED outside=OK|DENIED".
+//
+// Usage: probe available
+// Prints "available=true|false" - so a test can observe Available() in a process
+// whose /sys/kernel/security has been masked, reproducing a container.
 package main
 
 import (
@@ -15,6 +19,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "available" {
+		fmt.Printf("available=%v\n", landlock.Available())
+		return
+	}
 	if len(os.Args) != 4 {
 		fmt.Fprintln(os.Stderr, "usage: probe <allowed-dir> <inside-path> <outside-path>")
 		os.Exit(2)

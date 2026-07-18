@@ -13,9 +13,9 @@ package landlock
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
+	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
 // Restrict makes the whole visible filesystem read-and-execute only, except the
@@ -64,15 +64,16 @@ func existing(paths []string) []string {
 
 // Available reports whether this kernel exposes the Landlock LSM, so the
 // filesystem backstop is actually in effect rather than silently absent.
+//
+// It asks the kernel directly, via the Landlock ABI-version syscall, rather than
+// parsing /sys/kernel/security/lsm. That parse gave a false negative wherever
+// securityfs is not mounted or /sys is restricted - common in containers - and
+// reported "no backstop" while the syscalls, which BestEffort applies independently
+// of any /sys read, actually worked. The syscall returns the ABI version (>= 1) when
+// Landlock is usable, and errors (ENOSYS when the kernel lacks it, EOPNOTSUPP when it
+// is compiled but disabled), so it reflects real usability with no filesystem
+// dependency.
 func Available() bool {
-	b, err := os.ReadFile("/sys/kernel/security/lsm")
-	if err != nil {
-		return false
-	}
-	for _, lsm := range strings.Split(strings.TrimSpace(string(b)), ",") {
-		if lsm == "landlock" {
-			return true
-		}
-	}
-	return false
+	v, err := llsys.LandlockGetABIVersion()
+	return err == nil && v >= 1
 }
