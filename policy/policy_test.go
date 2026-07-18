@@ -90,6 +90,8 @@ func TestValidateRejects(t *testing.T) {
 		{"bom in entrypoint", func(p *Policy) { p.Entrypoint = "\ufeff/bin/run" }, "zero-width or invisible"},
 		{"word joiner in arg", func(p *Policy) { p.Args = []string{"--x\u2060y"} }, "zero-width or invisible"},
 		{"emoji ZWJ sequence rejected (deliberate tradeoff)", func(p *Policy) { p.Read = []string{"/data/\U0001F468\u200D\U0001F469.png"} }, "zero-width or invisible"},
+		{"soft hyphen in path", func(p *Policy) { p.Read = []string{"/data/se\u00adcret"} }, "zero-width or invisible"},
+		{"invisible math operator in arg", func(p *Policy) { p.Args = []string{"--x\u2061y"} }, "zero-width or invisible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

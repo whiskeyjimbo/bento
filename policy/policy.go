@@ -174,16 +174,19 @@ func isBidiOverride(r rune) bool {
 }
 
 // isInvisible reports whether r is a zero-width or otherwise invisible formatting
-// character that renders as nothing: the zero-width space/joiners (U+200B-U+200D),
-// the word joiner (U+2060), and the byte-order mark / zero-width no-break space
-// (U+FEFF). In a path they are a spoof - hiding a segment, or making two distinct
-// grants look identical. The joiners (U+200C/U+200D) do have legitimate text-shaping
-// uses - Persian/Indic rendering, emoji ZWJ sequences - so a real filename can carry
-// one, but a manifest is a reviewed security boundary where an invisible character is
-// a red flag worth refusing loudly: a file whose name truly needs one can be granted
-// through its parent directory.
+// character that renders as nothing: the soft hyphen (U+00AD, invisible unless a line
+// wraps on it), the zero-width space/joiners (U+200B-U+200D), the word joiner
+// (U+2060), the invisible math operators (U+2061-U+2064), and the byte-order mark /
+// zero-width no-break space (U+FEFF). In a path they are a spoof - hiding a segment,
+// or making two distinct grants look identical. The joiners (U+200C/U+200D) do have
+// legitimate text-shaping uses - Persian/Indic rendering, emoji ZWJ sequences - so a
+// real filename can carry one, but a manifest is a reviewed security boundary where an
+// invisible character is a red flag worth refusing loudly: a file whose name truly
+// needs one can be granted through its parent directory.
 func isInvisible(r rune) bool {
-	return (r >= 0x200B && r <= 0x200D) || r == 0x2060 || r == 0xFEFF
+	return r == 0x00AD ||
+		(r >= 0x200B && r <= 0x200D) || r == 0x2060 || (r >= 0x2061 && r <= 0x2064) ||
+		r == 0xFEFF
 }
 
 func (m ExecMode) validate() error {
