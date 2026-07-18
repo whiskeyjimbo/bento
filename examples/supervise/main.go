@@ -119,11 +119,12 @@ func run(scriptArg string) int {
 		termIn = tty
 	}
 	p := newPrompter(termIn, os.Stderr)
+	t := p.t // one theme, detected on os.Stderr, shared by the banners below
 
 	// Act 1: trial run under observation, then approve what it wants. The store dir
 	// is shielded from the permissive trial (bv2-16h): the trial grants Read:["/"],
 	// so without this the untrusted target could read the store during profiling.
-	fmt.Fprintf(os.Stderr, "\n== trial run: watching %s (permissive, nothing leaves the host) ==\n", name)
+	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(permissive - nothing leaves the host)"))
 	obs, err := backend.Profile(context.Background(), permissivePolicy(script, interp),
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard},
 		backend.ProfileOptions{DenyPaths: []string{s.dir}})
@@ -146,7 +147,7 @@ func run(scriptArg string) int {
 
 	// Act 2: enforced run under exactly what was approved, with a live gate for any
 	// undeclared host the script reaches at runtime.
-	fmt.Fprintf(os.Stderr, "\n== enforced run: %s under your approvals ==\n", name)
+	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("enforced run · "+name), t.dim("(a live gate prompts for any undeclared host)"))
 	e, err := backend.New()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
@@ -174,12 +175,12 @@ func run(scriptArg string) int {
 
 	// Summary: what the live gate let out beyond the manifest, and any shortfall.
 	for _, d := range res.Report.Degradations() {
-		fmt.Fprintf(os.Stderr, "supervise: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
+		fmt.Fprintf(os.Stderr, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, d.Reason)
 	}
 	if len(res.GateAdmitted) > 0 {
-		fmt.Fprintln(os.Stderr, "\nsupervise: the live gate admitted egress beyond the manifest:")
+		fmt.Fprintf(os.Stderr, "\n%s\n", t.warn("the live gate admitted egress beyond the manifest:"))
 		for _, hp := range res.GateAdmitted {
-			fmt.Fprintf(os.Stderr, "  %s:%s   (a real wrapper would offer to add this to the manifest)\n", hp.Host, hp.Port)
+			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(hp.Host+":"+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
 	return res.ExitCode
@@ -209,23 +210,31 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 	final := &policy.Policy{Entrypoint: script, Interpreter: interp, Exec: policy.ExecNone}
 	all := false
 
+	fmt.Fprintln(p.out, p.t.dim("  approve what the trial touched  ·  y allow · n deny · o once · A all · g/G every app"))
+
 	// consider decides one item. path is the real path for a filesystem access (used
 	// for the store-covers refusal), empty for exec/network. remembered reports a
 	// stored decision; persist records a new one, per-app or (global) for every app.
 	consider := func(kind, display, path string, remembered func() (decision, bool), persist func(d decision, global bool)) bool {
 		if path != "" && coversStore(path, s.dir) {
-			fmt.Fprintf(p.out, "  %-6s %-34s refused (would expose the permission store)\n", kind, display)
+			p.row(p.t.markDeny(), kind, display, p.t.dim("refused - would expose the permission store"))
 			return false
 		}
 		if d, ok := remembered(); ok {
-			fmt.Fprintf(p.out, "  %-6s %-34s %s (remembered)\n", kind, display, d)
+			mark, word := p.t.markAllow(), "allowed"
+			if d == deny {
+				mark, word = p.t.markDeny(), "denied"
+			}
+			p.row(mark, kind, display, p.t.dim(word+" (remembered)"))
 			return d == allow
 		}
 		if all {
-			fmt.Fprintf(p.out, "  %-6s %-34s allow (A)\n", kind, display)
+			p.row(p.t.markAllow(), kind, display, p.t.dim("allowed (all)"))
 			return true
 		}
-		switch p.ask(context.Background(), fmt.Sprintf("  %-6s %-34s [y]es/[n]o/[o]nce/[A]ll/[g]lobal-allow/[G]lobal-deny ", kind, display)) {
+		keys := p.t.dim("[y]es [n]o [o]nce [A]ll [g/G]lobal")
+		prompt := fmt.Sprintf("    %s %s %s %s ", p.t.kindLabel(pad(kind, 5)), pad(display, 38), keys, p.t.caret())
+		switch p.ask(context.Background(), prompt) {
 		case choiceAll:
 			all = true
 			return true
@@ -330,7 +339,8 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 	// prompt; a stored deny is printed so a silent block is never a mystery.
 	if d, ok := s.s.decideNetwork(s.key, host, port); ok {
 		if d == deny {
-			fmt.Fprintf(s.p.out, "\n[gate] %s reaching %s port %s - denied by the permission store\n", s.name, strconv.Quote(host), port)
+			fmt.Fprintf(s.p.out, "\n  %s %s reaching %s port %s - denied by the permission store\n",
+				s.p.t.markDeny(), s.name, s.p.t.bold(strconv.Quote(host)), port)
 		}
 		admitted := d == allow
 		s.session[dest] = admitted
@@ -339,7 +349,9 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 	// host is attacker-controlled (the sandboxed target chose it), so quote it to
 	// neutralize terminal escapes before showing it to a human.
 	display := strconv.Quote(host) + ":" + port
-	c := s.p.ask(ctx, fmt.Sprintf("\n[gate] %s is reaching %s port %s now - allow? [y]es/[n]o/[o]nce/[g]lobal-allow/[G]lobal-deny ", s.name, strconv.Quote(host), port))
+	c := s.p.ask(ctx, fmt.Sprintf("\n  %s %s is reaching %s port %s now\n      allow? %s %s ",
+		s.p.t.warn("net"), s.name, s.p.t.bold(strconv.Quote(host)), port,
+		s.p.t.dim("[y]es [n]o [o]nce [g/G]lobal"), s.p.t.caret()))
 	admitted := false
 	switch c {
 	case choiceAllow:
@@ -368,11 +380,12 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 // (or vice versa), so a global rule takes effect only after the human reads back its
 // direction and scope and confirms. Declining leaves nothing persisted.
 func confirmGlobal(ctx context.Context, p *prompter, d decision, display string) bool {
-	verb := "allow"
+	verb := p.t.allow("allow")
 	if d == deny {
-		verb = "deny"
+		verb = p.t.deny("deny")
 	}
-	return p.ask(ctx, fmt.Sprintf("  confirm: %s %s for EVERY app, surviving code changes? [y/N] ", verb, display)) == choiceAllow
+	return p.ask(ctx, fmt.Sprintf("  %s %s %s for EVERY app, surviving code changes? [y/N] %s ",
+		p.t.warn("confirm:"), verb, display, p.t.caret())) == choiceAllow
 }
 
 // prompter reads single y/n/A answers from one reader that owns the terminal, so
@@ -381,7 +394,15 @@ func confirmGlobal(ctx context.Context, p *prompter, d decision, display string)
 // slot and stall teardown.
 type prompter struct {
 	out   io.Writer
+	t     theme
 	lines <-chan string
+}
+
+// row prints one aligned decision line: a status mark, the colored access kind, the
+// access target, and a trailing note. mark is a rendered glyph (or a blank column,
+// so a prompt line that has no verdict yet still lines up under the verdicts).
+func (p *prompter) row(mark, kind, display, tail string) {
+	fmt.Fprintf(p.out, "  %s %s %s %s\n", mark, p.t.kindLabel(pad(kind, 5)), pad(display, 38), tail)
 }
 
 type choice int
@@ -411,7 +432,7 @@ func newPrompter(in io.Reader, out io.Writer) *prompter {
 			lines <- line
 		}
 	}()
-	return &prompter{out: out, lines: lines}
+	return &prompter{out: out, t: newTheme(out), lines: lines}
 }
 
 // drain discards lines the reader has already read past the last consumed answer,

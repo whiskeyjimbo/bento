@@ -58,16 +58,18 @@ script, not just this one - the standing allowlist/denylist (e.g. block a tracke
 everywhere). Because `g` and `G` differ only by shift, a global rule takes effect
 only after a confirm that reads back its direction and scope, so a case slip is
 harmless. Attacker-chosen paths are quoted, since a filename can carry terminal
-escapes.
+escapes. Output is colorized on a terminal (the access kind, a `✓`/`✗` verdict);
+set `NO_COLOR` or pipe it and it falls back to plain text.
 
 ```
-== trial run: watching agent.sh (permissive, nothing leaves the host) ==
-  read   "~/.../vault/data.csv"     [y]es/[n]o/[o]nce/[A]ll y
-  read   "~/.../vault/secret.txt"   [y]es/[n]o/[o]nce/[A]ll n   <- keep the secret out
-  write  "~/.../demo"               [y]es/[n]o/[o]nce/[A]ll y
-  exec   run subprocesses           [y]es/[n]o/[o]nce/[A]ll y
-  reach  "ads.tracker.example":443  [y]es/[n]o/[o]nce/[A]ll n   <- decline the tracker
-  reach  "example.com":443          [y]es/[n]o/[o]nce/[A]ll y
+trial run · agent.sh  (permissive - nothing leaves the host)
+  approve what the trial touched  ·  y allow · n deny · o once · A all · g/G every app
+    read  "~/.../vault/data.csv"    [y]es [n]o [o]nce [A]ll [g/G]lobal › y
+    read  "~/.../vault/secret.txt"  [y]es [n]o [o]nce [A]ll [g/G]lobal › n   <- keep the secret out
+    write "~/.../demo"              [y]es [n]o [o]nce [A]ll [g/G]lobal › y
+    exec  run subprocesses          [y]es [n]o [o]nce [A]ll [g/G]lobal › y
+    reach "ads.tracker.example":443 [y]es [n]o [o]nce [A]ll [g/G]lobal › n   <- decline the tracker
+    reach "example.com":443         [y]es [n]o [o]nce [A]ll [g/G]lobal › y
 ```
 
 Your answers become the manifest the enforced run is held to. You may also see a
@@ -81,14 +83,15 @@ those is meaningless.
 ### Act 2 - enforced run, live gate for the rest
 
 ```
-== enforced run: agent.sh under your approvals ==
+enforced run · agent.sh  (a live gate prompts for any undeclared host)
 [agent] read  vault/data.csv       -> ok
 [agent] read  vault/secret.txt     -> DENIED (kernel)     <- refused inside the kernel
 [agent] write out.log              -> ok
 [agent] reach example.com          -> HTTP 200            <- declared, no prompt
 [agent] reach ads.tracker.example
 
-[gate] agent.sh is reaching "ads.tracker.example" port 443 now - allow? [y]es/[n]o/[o]nce n
+  net agent.sh is reaching "ads.tracker.example" port 443 now
+      allow? [y]es [n]o [o]nce [g/G]lobal › n
                                    -> blocked              <- live gate, denied in real time
 ```
 
@@ -111,9 +114,9 @@ Your answers are kept in a permission store at
 every access shows `(remembered)` and applies without a prompt:
 
 ```
-== trial run: watching agent.sh (permissive, nothing leaves the host) ==
-  read   "~/.../vault/data.csv"     allow (remembered)
-  read   "~/.../vault/secret.txt"   deny (remembered)
+trial run · agent.sh  (permissive - nothing leaves the host)
+  ✓ read  "~/.../vault/data.csv"    allowed (remembered)
+  ✗ read  "~/.../vault/secret.txt"  denied (remembered)
   ...
 ```
 
