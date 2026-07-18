@@ -49,7 +49,7 @@ var systemPrefixes = []string{
 	"/etc/ld.so", "/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/alternatives",
 	"/etc/nsswitch.conf", "/etc/passwd", "/etc/group", "/etc/resolv.conf", "/etc/hosts",
 	"/etc/localtime",
-	"/proc/", "/sys/", "/dev/", "/run/", "/nix/store/",
+	"/proc/", "/sys/", "/dev/", "/run/", "/var/run/", "/nix/store/",
 	// The sandbox's /tmp is a private tmpfs; anything a run writes there is
 	// ephemeral and randomly named, so it is scratch, never a manifest grant.
 	"/tmp/",
@@ -122,6 +122,14 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 func isSystemPath(p string) bool {
 	for _, pre := range systemPrefixes {
 		if strings.HasPrefix(p, pre) {
+			return true
+		}
+		// A directory-prefix entry ("/run/") must also match the bare directory
+		// ("/run") itself, which is what writeDir yields for an observed write to a
+		// file directly inside it (write to /run/app.pid -> the grant /run). Without
+		// this the profiler proposes a grant of the shielded directory that the run
+		// then refuses.
+		if len(pre) > 1 && pre[len(pre)-1] == '/' && p == pre[:len(pre)-1] {
 			return true
 		}
 	}

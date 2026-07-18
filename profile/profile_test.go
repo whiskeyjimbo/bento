@@ -179,3 +179,40 @@ func TestSynthesizeDropsMtabViaSkipWiring(t *testing.T) {
 		t.Errorf("read = %v, want only the ordinary file kept", p.Read)
 	}
 }
+
+// The runtime directories are always-shielded at run time (denylist.Runtime), so a
+// grant naming them is refused - the profiler must not propose one. It observes an
+// attempted access even though the shield blocked it (the observer records the path
+// from the syscall, not the result), so both a read under /run and a write to a file
+// directly in /run (which collapses to a grant of /run itself) must be dropped, as
+// must /var/run, the pre-usrmerge spelling.
+func TestSynthesizeDropsRuntimeDirGrants(t *testing.T) {
+	obs := Observation{
+		Reads:  []string{"/run/docker.sock", "/var/run/nscd/socket", "/data/keep.txt"},
+		Writes: []string{"/run/app.pid", "/var/run/app/lock"},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{"/data/keep.txt"}) {
+		t.Errorf("read = %v, want only the non-runtime path kept", p.Read)
+	}
+	if len(p.Write) != 0 {
+		t.Errorf("write = %v, want the runtime-dir writes dropped (a grant of /run is refused at run time)", p.Write)
+	}
+}
+
+// The bare-directory match is general: a write to a file directly inside any
+// directory-prefix system path collapses (via writeDir) to the bare directory, which
+// must still be recognized as a system path.
+func TestIsSystemPathMatchesBareDirectory(t *testing.T) {
+	for _, p := range []string{"/run", "/var/run", "/proc", "/sys", "/dev", "/tmp", "/nix/store"} {
+		if !isSystemPath(p) {
+			t.Errorf("isSystemPath(%q) = false, want true (bare directory of a prefix entry)", p)
+		}
+	}
+	// A path that merely shares a name prefix must not match (no false positive).
+	for _, p := range []string{"/running", "/tmpfoo", "/devices"} {
+		if isSystemPath(p) {
+			t.Errorf("isSystemPath(%q) = true, want false (not a system path)", p)
+		}
+	}
+}
