@@ -12,6 +12,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -83,12 +84,13 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		execPaths = append(execPaths, interp)
 	}
 	sysReads, sysWrites := degradedSystemPaths()
+	block, strictBlock := execBlockFlags(p.Exec, seccomp.Supported())
 	cfg := launcher.DegradedConfig{
 		Readable:    concat(sysReads, reads),
 		Writable:    concat(sysWrites, writes, []string{scratch}),
 		ExecPaths:   execPaths,
-		Block:       p.Exec != policy.ExecAll,
-		StrictBlock: p.Exec == policy.ExecNoneStrict,
+		Block:       block,
+		StrictBlock: strictBlock,
 		Scratch:     scratch,
 		Target:      degradedTarget(interp, entrypoint, p.Args),
 	}

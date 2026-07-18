@@ -13,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
+	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -252,16 +253,32 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// (Both layers are still stricter on the deny-list shields, by design - a
 	// shield denies the write and that is the intent.) Deriving both from this
 	// one place keeps them in sync.
+	block, strictBlock := execBlockFlags(execMode, seccomp.Supported())
 	cfg := launcher.Config{
 		Socket:      socket,
-		Block:       execMode != policy.ExecAll,
-		StrictBlock: execMode == policy.ExecNoneStrict,
+		Block:       block,
+		StrictBlock: strictBlock,
 		Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
 		ObserveFD:   observeFD,
 		Target:      command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)
 	return append(args, launcher.EncodeLaunch(cfg)...), nil
+}
+
+// execBlockFlags reports the launcher's exec-block flags for execMode, gated on
+// whether the kernel supports seccomp. The exec-block is a hardening layer
+// (TierHardening): where seccomp BPF is absent the probe reports
+// LayerExec=Unavailable and admission proceeds with a warning, so the launcher
+// must run the target without the filter rather than hard-refuse to install one it
+// cannot. Off amd64 none-strict still installs (installExecFilter degrades it to
+// the execve-only block), so only the no-seccomp case drops the block. StrictBlock
+// always implies Block.
+func execBlockFlags(execMode policy.ExecMode, seccompOK bool) (block, strict bool) {
+	if execMode == policy.ExecAll || !seccompOK {
+		return false, false
+	}
+	return true, execMode == policy.ExecNoneStrict
 }
 
 // sandboxWritableMounts are the paths baseFlags makes writable for every run

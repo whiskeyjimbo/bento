@@ -712,6 +712,30 @@ func TestRootReadGrantExpandsToChildren(t *testing.T) {
 	}
 }
 
+// The exec-block is a hardening layer: on a host without seccomp the launcher must
+// run the target without the filter (matching the LayerExec=Unavailable warning),
+// never hard-refuse to install one it cannot. StrictBlock always implies Block.
+func TestExecBlockFlagsGatedOnSeccomp(t *testing.T) {
+	for _, mode := range []policy.ExecMode{policy.ExecNone, policy.ExecNoneStrict, policy.ExecAll} {
+		if b, s := execBlockFlags(mode, false); b || s {
+			t.Errorf("execBlockFlags(%q, seccomp=false) = %v,%v; want false,false - a hardening gap proceeds unblocked", mode, b, s)
+		}
+	}
+	cases := []struct {
+		mode          policy.ExecMode
+		block, strict bool
+	}{
+		{policy.ExecNone, true, false},
+		{policy.ExecNoneStrict, true, true},
+		{policy.ExecAll, false, false},
+	}
+	for _, c := range cases {
+		if b, s := execBlockFlags(c.mode, true); b != c.block || s != c.strict {
+			t.Errorf("execBlockFlags(%q, seccomp=true) = %v,%v; want %v,%v", c.mode, b, s, c.block, c.strict)
+		}
+	}
+}
+
 // A grant of a pseudo-filesystem baseFlags mounts fresh (/proc, /dev, /tmp) must be
 // refused: bound whole it would overmount the sandbox's hardened version with the
 // host's. A specific path inside one still binds.
