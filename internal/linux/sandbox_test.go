@@ -3,6 +3,7 @@ package linux
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1257,44 +1258,98 @@ func TestReadRootDoesNotExposeHostRuntime(t *testing.T) {
 	}
 }
 
+// leakInheritedFd opens a host secret and clears close-on-exec so the descriptor is
+// inherited across the exec into bwrap, mimicking a parent that opened it with
+// `exec N< secret.key`. It returns the descriptor number, which the target then
+// tries to reach.
+func leakInheritedFd(t *testing.T) (dir string, fd int) {
+	t.Helper()
+	dir = t.TempDir()
+	secret := filepath.Join(dir, "secret.key")
+	if err := os.WriteFile(secret, []byte("SECRET_XYZZY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	return dir, int(f.Fd())
+}
+
+// runExec runs src under the given exec mode, without runScript's forced exec: all,
+// so the exec: none path (where the launcher execveats the target) is genuinely
+// exercised. The script must use only shell builtins under exec: none, where the
+// seccomp filter blocks spawning any helper.
+func runExec(t *testing.T, mode policy.ExecMode, readDir, src string) string {
+	t.Helper()
+	scriptDir := t.TempDir()
+	script := filepath.Join(scriptDir, "probe.sh")
+	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{
+		Entrypoint:  script,
+		Interpreter: "sh",
+		Read:        []string{scriptDir, readDir},
+		Exec:        mode,
+	}
+	var out bytes.Buffer
+	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil); err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, out.String())
+	}
+	return out.String()
+}
+
 // A file descriptor bento's parent leaked without O_CLOEXEC - an editor, a CI
 // runner, a server embedding bento - passes through bwrap into the sandbox. The
 // mount namespace and the deny-list revoke paths, but neither closes an open
-// descriptor, so an ungranted host file would be readable through /proc/self/fd.
-// The launcher drops every inherited descriptor before the target runs; this
-// asserts the leak is closed on both the exec: all path (which used to run the
-// target directly, with no launcher at all) and the exec: none path.
-func TestInheritedFdDoesNotLeakIntoSandbox(t *testing.T) {
+// descriptor, so its content would be an ungranted read channel out of the sandbox.
+// The launcher drops every inherited descriptor before the target runs. This reads
+// THROUGH the descriptor with a dup redirect (a shell builtin, so it works even
+// under exec: none where subprocesses are blocked) - the actual exploit, not merely
+// whether the path is visible - on both the exec: all path (which used to run the
+// target directly, with no launcher) and the exec: none path.
+func TestInheritedFdContentUnreadable(t *testing.T) {
 	requireSandbox(t)
 
 	for _, mode := range []policy.ExecMode{policy.ExecAll, policy.ExecNone} {
 		t.Run(string(mode), func(t *testing.T) {
-			secret := filepath.Join(t.TempDir(), "secret.key")
-			if err := os.WriteFile(secret, []byte("SECRET_XYZZY\n"), 0o600); err != nil {
-				t.Fatal(err)
+			dir, fd := leakInheritedFd(t)
+			src := fmt.Sprintf("if read line <&%d 2>/dev/null; then echo \"LEAK:$line\"; else echo clean; fi\n", fd)
+			out := runExec(t, mode, dir, src)
+			if strings.Contains(out, "LEAK:") {
+				t.Errorf("read an inherited host descriptor's content inside the sandbox: %q", out)
 			}
-			f, err := os.Open(secret)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer f.Close()
-			// Clear close-on-exec so this descriptor is inherited across the exec into
-			// bwrap, mimicking a parent that opened it with `exec 3< secret.key`.
-			flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
-				t.Fatal(err)
-			}
-
-			// readlink never blocks; scanning the targets is enough to prove the host
-			// file is out of reach without risking a read of a pipe or stdin.
-			src := "for fd in /proc/self/fd/*; do readlink $fd; done\n"
-			_, out := runScript(t, &policy.Policy{Exec: mode}, src)
-			if strings.Contains(out, "secret.key") {
-				t.Errorf("an inherited host descriptor leaked into the sandbox:\n%s", out)
+			if !strings.Contains(out, "clean") {
+				t.Errorf("probe did not run as expected: %q", out)
 			}
 		})
+	}
+}
+
+// On the exec: all path the launcher survives as the sandbox's pid 2 holding the
+// leaked descriptor open (close-on-exec only drops it at an exec, and supervise does
+// not exec). The kernel blocks the target from reading its content across the
+// process boundary, but the path behind the descriptor is still disclosed by a
+// readlink of the launcher's procfs unless the launcher is non-dumpable. This
+// asserts the target cannot learn the host path that way.
+func TestSupervisorFdPathNotDisclosed(t *testing.T) {
+	requireSandbox(t)
+
+	dir, fd := leakInheritedFd(t)
+	// The target is a direct child of the launcher under supervise, so $PPID is the
+	// launcher. readlink is a subprocess, which exec: all permits.
+	src := fmt.Sprintf("readlink /proc/$PPID/fd/%d 2>/dev/null || echo clean\n", fd)
+	out := runExec(t, policy.ExecAll, dir, src)
+	if strings.Contains(out, "secret.key") {
+		t.Errorf("the launcher disclosed a leaked descriptor's host path to the target: %q", out)
 	}
 }

@@ -98,6 +98,21 @@ func Run(cfg Config) (int, error) {
 		return 0, err
 	}
 
+	// Marking the leaked descriptors close-on-exec drops them at the exec into the
+	// target, but on the supervise path (exec: all) the launcher does not exec - it
+	// stays alive as the sandbox's pid 2 with those descriptors still open. The target
+	// cannot read their content across process boundaries, but it can still learn the
+	// paths behind them by readlink-ing /proc/<launcher>/fd. Making this process
+	// non-dumpable reparents its /proc entry to root, so the target - same uid, but no
+	// longer able to reach the launcher's procfs - can neither reopen those descriptors
+	// nor read their links. This also hardens the profiling report descriptor against
+	// the same reopen (see runObserve), so the guarantee rests on this call rather than
+	// on an unstated kernel reopen barrier. execve resets dumpable, so the exec: none
+	// path (which replaces this process with the target) is unaffected.
+	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
+	}
+
 	env := os.Environ()
 	if cfg.Socket != "" {
 		if err := startBridge(cfg.Socket); err != nil {
