@@ -334,6 +334,17 @@ func waitExitCode(ws syscall.WaitStatus) int {
 // every loopback connection on proxyAddr to the host-side proxy socket until the
 // process is torn down with the sandbox.
 func BridgeMain(socket string) error {
+	// The bridge is a separate process the launcher forks before it execveat's the
+	// target; after that transition the bridge is a child of the target and shares
+	// its PID namespace, unconfined by the exec-block filter and the Landlock backstop
+	// (which the launcher applies only to itself). Its own exec reset dumpable to 1,
+	// so mark it non-dumpable: without this, an untrusted target could PTRACE_ATTACH
+	// the bridge (a descendant, permitted under yama ptrace_scope<=1) and inject an
+	// execve, spawning a subprocess in violation of exec: none. Non-dumpable denies
+	// the attach to any non-root, non-CAP_SYS_PTRACE tracer regardless of yama scope.
+	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		return fmt.Errorf("bridge: making the bridge non-dumpable: %w", errno)
+	}
 	l, err := net.Listen("tcp", proxyAddr)
 	if err != nil {
 		return fmt.Errorf("bridge: cannot listen on %s inside the sandbox: %w", proxyAddr, err)
