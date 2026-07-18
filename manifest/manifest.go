@@ -119,8 +119,19 @@ func Parse(r io.Reader) (*Document, error) {
 		return nil, fmt.Errorf("manifest: input is not valid UTF-8 text, so it is not a manifest")
 	}
 	var m manifest
-	if err := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField()).Decode(&m); err != nil && err != io.EOF {
+	dec := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField())
+	if err := dec.Decode(&m); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
+	}
+	// A manifest is a single policy document. A YAML stream with a second document
+	// (after a "---") would otherwise be parsed with only the first governing and the
+	// rest silently dropped - reject it so a second, ignored policy cannot hide.
+	var extra manifest
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
+		}
+		return nil, fmt.Errorf("manifest: contains more than one YAML document; a manifest must be a single policy")
 	}
 	p := m.toPolicy()
 	if err := p.Validate(); err != nil {

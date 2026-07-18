@@ -116,7 +116,11 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		p.Network = append(p.Network, policy.NetworkRule{Host: h.Host, Port: h.Port})
 	}
 	sort.Slice(p.Network, func(i, j int) bool {
-		return p.Network[i].Host+p.Network[i].Port < p.Network[j].Host+p.Network[j].Port
+		// Sort on the same host:port key the dedup above uses. Concatenating host and
+		// port with no separator would collide {a.example,443} with {a.example4,43}, and
+		// sort.Slice is unstable, so observation order could flip the two - changing the
+		// serialized manifest and invalidating a prior approval.
+		return p.Network[i].Host+":"+p.Network[i].Port < p.Network[j].Host+":"+p.Network[j].Port
 	})
 	return p
 }
