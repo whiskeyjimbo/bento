@@ -50,26 +50,23 @@ hosts. Nothing is declared up front, so you decide everything.
 
 ### Act 1 - trial run, approve what it wants
 
-The script runs permissively under observation, then you approve each access.
-**[y]es** and **[n]o** are remembered for this script; **[o]nce** allows just this
-run without remembering; **[A]ll** allows this and everything after it (for this
-run). **[g]lobal-allow** and **[G]lobal-deny** remember the decision for *every*
-script, not just this one - the standing allowlist/denylist (e.g. block a tracker
-everywhere). Because `g` and `G` differ only by shift, a global rule takes effect
-only after a confirm that reads back its direction and scope, so a case slip is
-harmless. Attacker-chosen paths are quoted, since a filename can carry terminal
-escapes. Output is colorized on a terminal (the access kind, a `✓`/`✗` verdict);
-set `NO_COLOR` or pipe it and it falls back to plain text.
+The script runs permissively under observation, then you approve each access with
+three keys: **[y]es** allows it and remembers that for this script, **[n]o** denies
+and remembers, **[o]nce** allows just this run without remembering. That is the whole
+per-access choice - a standing rule for *every* script is a deliberate `perms global`
+act (below), never a keystroke away from a routine yes. Attacker-chosen paths are
+quoted, since a filename can carry terminal escapes. Output is colorized on a terminal
+(the access kind, a `✓`/`✗` verdict); set `NO_COLOR` or pipe it for plain text.
 
 ```
 trial run · agent.sh  (permissive - nothing leaves the host)
-  approve what the trial touched  ·  y allow · n deny · o once · A all · g/G every app
-    read  "~/.../vault/data.csv"    [y]es [n]o [o]nce [A]ll [g/G]lobal › y
-    read  "~/.../vault/secret.txt"  [y]es [n]o [o]nce [A]ll [g/G]lobal › n   <- keep the secret out
-    write "~/.../demo"              [y]es [n]o [o]nce [A]ll [g/G]lobal › y
-    exec  run subprocesses          [y]es [n]o [o]nce [A]ll [g/G]lobal › y
-    reach "ads.tracker.example":443 [y]es [n]o [o]nce [A]ll [g/G]lobal › n   <- decline the tracker
-    reach "example.com":443         [y]es [n]o [o]nce [A]ll [g/G]lobal › y
+  approve what the trial touched  ·  y allow (this script) · n deny · o once
+    read  "~/.../vault/data.csv"    [y]es [n]o [o]nce › y
+    read  "~/.../vault/secret.txt"  [y]es [n]o [o]nce › n   <- keep the secret out
+    write "~/.../demo"              [y]es [n]o [o]nce › y
+    exec  run subprocesses          [y]es [n]o [o]nce › y
+    reach "ads.tracker.example":443 [y]es [n]o [o]nce › n   <- decline the tracker
+    reach "example.com":443         [y]es [n]o [o]nce › y
 ```
 
 Your answers become the manifest the enforced run is held to. You may also see a
@@ -91,7 +88,7 @@ enforced run · agent.sh  (a live gate prompts for any undeclared host)
 [agent] reach ads.tracker.example
 
   net agent.sh is reaching "ads.tracker.example" port 443 now
-      allow? [y]es [n]o [o]nce [g/G]lobal › n
+      allow? [y]es [n]o [o]nce [B]lock-everywhere › n
                                    -> blocked              <- live gate, denied in real time
 ```
 
@@ -135,10 +132,12 @@ worth knowing:
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
   is printed so a silent block is never a mystery.
 - **Two layers, deny-wins across both.** Per-app decisions live under the script's
-  hash; global (`g`/`G`) decisions apply to every app and survive a code change, since
-  a fresh hash still sees them. A broad global deny beats a more-specific per-app
-  allow - the whole point of a standing denylist. `perms list` marks a decision
-  `(global)` when a global deny is why it is blocked, so you clear the right layer.
+  hash; global decisions apply to every app and survive a code change, since a fresh
+  hash still sees them. Global rules are set deliberately - `perms global ...`, or
+  `[B]lock-everywhere` at the live gate - not from the routine approval prompt. A broad
+  global deny beats a more-specific per-app allow, the whole point of a standing
+  denylist. `perms list` marks a decision `(global)` when a global deny is why it is
+  blocked, so you clear the right layer.
 
 ### Inspecting and editing the store
 
@@ -148,6 +147,8 @@ no prompt, so you need a way to see it and clear it.
 
 ```sh
 supervise perms list                        # the effective decisions, global rules first
+supervise perms global deny net ads.x:443   # set a standing rule for every script
+supervise perms global allow read /etc/hosts
 supervise perms forget app <handle>         # drop one app's decisions (handle from list)
 supervise perms forget global [host:port]   # drop one global rule, or all of them
 supervise perms reset                       # clear the whole store (asks to confirm)

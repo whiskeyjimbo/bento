@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,8 @@ func perms(args []string, in io.Reader, out io.Writer) int {
 		return exportPerms(s, args[1:], out)
 	case "import":
 		return importPerms(s, args[1:], in, out)
+	case "global":
+		return globalPermsCmd(s, args[1:], out)
 	default:
 		permsUsage(out)
 		return 2
@@ -58,6 +61,8 @@ Usage:
   supervise perms reset                    clear the entire store (asks to confirm)
   supervise perms export <handle> [-o f]   write an app's approvals as a bento manifest
   supervise perms import <manifest.yaml>   seed an app's approvals from a manifest
+  supervise perms global allow|deny <net host:port | read|write path | exec>
+                                           set a standing rule for every script
 `)
 }
 
@@ -192,6 +197,73 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 		permsUsage(out)
 		return 2
 	}
+}
+
+// globalPermsCmd sets a standing rule that applies to every script. It is the
+// deliberate way to establish a cross-script allow or deny, kept out of the routine
+// approval prompt so "for every app" is never one keystroke away from a per-script
+// yes. The live gate still offers a network block-everywhere in the moment; this
+// command covers the rest (a global allow, or a read/write/exec rule).
+func globalPermsCmd(s *store, args []string, out io.Writer) int {
+	if len(args) < 2 {
+		permsUsage(out)
+		return 2
+	}
+	var d decision
+	switch args[0] {
+	case "allow":
+		d = allow
+	case "deny":
+		d = deny
+	default:
+		permsUsage(out)
+		return 2
+	}
+	var target string
+	switch args[1] {
+	case "net":
+		if len(args) != 3 {
+			permsUsage(out)
+			return 2
+		}
+		host, port := splitNetKey(args[2])
+		if host == "" || port == "" {
+			fmt.Fprintln(out, "supervise: a net rule needs host:port")
+			return 1
+		}
+		s.rememberNetwork("", host, port, d, true)
+		target = "reach " + quoteNetKey(netKey(host, port))
+	case "read", "write":
+		if len(args) != 3 {
+			permsUsage(out)
+			return 2
+		}
+		if !filepath.IsAbs(args[2]) {
+			fmt.Fprintf(out, "supervise: %s path must be absolute\n", args[1])
+			return 1
+		}
+		s.rememberPath("", args[1], args[2], d, true)
+		target = args[1] + " " + quotePath(args[2])
+	case "exec":
+		if len(args) != 2 {
+			permsUsage(out)
+			return 2
+		}
+		s.rememberExec("", d, true)
+		target = "exec"
+	default:
+		permsUsage(out)
+		return 2
+	}
+	// A deliberate edit uses the non-folding write so it sticks, the same as forget
+	// and reset - the concurrent-merge deny-preference must not override an explicit
+	// `global allow` the operator just typed.
+	if err := s.overwrite(); err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "set global %s %s\n", d, target)
+	return 0
 }
 
 func resetPerms(s *store, in io.Reader, out io.Writer) int {

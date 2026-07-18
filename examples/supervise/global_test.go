@@ -42,49 +42,62 @@ func TestGlobalDenyBeatsMoreSpecificAppAllow(t *testing.T) {
 	}
 }
 
-// The g choice remembers a decision for every app, but only after the confirm the
-// case-slip guard requires.
-func TestApproveGlobalAllowPersistsAfterConfirm(t *testing.T) {
+// The live gate's [B]lock-everywhere answer records a standing global deny for the
+// host and blocks the connection now. It is the one cross-script action reachable
+// interactively - the standing denylist for a tracker seen in the moment.
+func TestGateBlockEverywhere(t *testing.T) {
 	s := newTestStore()
-	proposal := &policy.Policy{Network: []policy.NetworkRule{{Host: "cdn.example", Port: "443"}}}
-	// "g" picks global-allow; the confirm reads "y".
-	final := approve(newPrompter(strings.NewReader("g\ny\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
-
-	if s.Global.Network["cdn.example:443"] != allow {
-		t.Errorf("global allow was not persisted: %+v", s.Global.Network)
-	}
-	if len(final.Network) != 1 {
-		t.Errorf("the item should be admitted this run: %+v", final.Network)
-	}
-}
-
-// Declining the confirm (the case-slip escape) persists nothing and denies the item
-// this run - so a lowercase-habit typo of G->g, or cold feet, is harmless.
-func TestApproveGlobalConfirmDeclinePersistsNothing(t *testing.T) {
-	s := newTestStore()
-	proposal := &policy.Policy{Network: []policy.NetworkRule{{Host: "cdn.example", Port: "443"}}}
-	// "G" picks global-deny; the confirm reads "n" - abort.
-	final := approve(newPrompter(strings.NewReader("G\nn\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
-
-	if len(s.Global.Network) != 0 {
-		t.Errorf("a declined confirm must persist nothing: %+v", s.Global.Network)
-	}
-	if len(final.Network) != 0 {
-		t.Errorf("the item must be denied this run: %+v", final.Network)
-	}
-}
-
-// The gate offers g/G too; a confirmed global deny persists and blocks the
-// connection in real time.
-func TestGateGlobalDenyPersistsAfterConfirm(t *testing.T) {
-	s := newTestStore()
-	sup := &supervisor{p: newPrompter(strings.NewReader("G\ny\n"), &strings.Builder{}), s: s, key: "k", name: "agent", session: map[string]bool{}}
+	sup := &supervisor{p: newPrompter(strings.NewReader("b\n"), &strings.Builder{}), s: s, key: "k", name: "agent", session: map[string]bool{}}
 
 	if admitted := sup.gate(t.Context(), "ads.example", "443"); admitted {
-		t.Error("a confirmed global deny must block the connection")
+		t.Error("block-everywhere must block the connection now")
 	}
 	if s.Global.Network["ads.example:443"] != deny {
-		t.Errorf("the gate did not persist the global deny: %+v", s.Global.Network)
+		t.Errorf("the gate did not persist the standing global deny: %+v", s.Global.Network)
+	}
+}
+
+// The trial approval prompt no longer offers a cross-script choice: a "g" or "G" is
+// just an unrecognized answer, denying this run and persisting nothing global, so a
+// standing rule is never a keystroke away from a routine yes.
+func TestApproveHasNoGlobalKey(t *testing.T) {
+	s := newTestStore()
+	proposal := &policy.Policy{Network: []policy.NetworkRule{{Host: "cdn.example", Port: "443"}}}
+	final := approve(newPrompter(strings.NewReader("g\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
+
+	if len(s.Global.Network) != 0 {
+		t.Errorf("the trial prompt must not set a global rule: %+v", s.Global.Network)
+	}
+	if len(final.Network) != 0 {
+		t.Errorf("an unrecognized answer must deny this run: %+v", final.Network)
+	}
+}
+
+// `perms global allow|deny` is the deliberate way to set a standing rule, and it
+// takes effect (a non-folding write) even over a pre-existing conflicting decision.
+func TestGlobalPermsCommandSetsStandingRule(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	var out strings.Builder
+	if rc := perms([]string{"global", "deny", "net", "tracker.example:443"}, strings.NewReader(""), &out); rc != 0 {
+		t.Fatalf("perms global deny net rc=%d out=%q", rc, out.String())
+	}
+	if rc := perms([]string{"global", "allow", "read", "/etc/hosts"}, strings.NewReader(""), &out); rc != 0 {
+		t.Fatalf("perms global allow read rc=%d out=%q", rc, out.String())
+	}
+	reloaded, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Global.Network["tracker.example:443"] != deny {
+		t.Errorf("global net deny not persisted: %+v", reloaded.Global.Network)
+	}
+	if reloaded.Global.Read["/etc/hosts"] != allow {
+		t.Errorf("global read allow not persisted: %+v", reloaded.Global.Read)
+	}
+	// A relative path is rejected.
+	if rc := perms([]string{"global", "allow", "read", "relative/path"}, strings.NewReader(""), &out); rc == 0 {
+		t.Error("a relative path must be rejected")
 	}
 }
 

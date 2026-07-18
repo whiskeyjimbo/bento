@@ -47,25 +47,6 @@ func TestApproveKeepsAnswers(t *testing.T) {
 	}
 }
 
-// "A" (all) approves the item and everything after it without another prompt.
-func TestApproveAllAcceptsRest(t *testing.T) {
-	proposal := &policy.Policy{
-		Read:    []string{"/a", "/b", "/c"},
-		Network: []policy.NetworkRule{{Host: "h", Port: "1"}},
-		Exec:    policy.ExecAll,
-	}
-	// One "A" on the first read, then no more input: everything else is auto-kept.
-	p := newPrompter(strings.NewReader("A\n"), &strings.Builder{})
-	got := approve(p, newTestStore(), "k", "/s", "sh", proposal)
-
-	if len(got.Read) != 3 {
-		t.Errorf("Read = %v, want all three kept after A", got.Read)
-	}
-	if got.Exec != policy.ExecAll || len(got.Network) != 1 {
-		t.Errorf("A must carry past reads to exec and network; got exec=%q net=%v", got.Exec, got.Network)
-	}
-}
-
 // drain discards input typed past the approval prompts, so a stray line from Act 1
 // cannot silently answer the first live gate prompt in Act 2 (both share one
 // terminal reader).
@@ -87,7 +68,7 @@ func TestPrompterDrainDiscardsStaleInput(t *testing.T) {
 }
 
 // The live gate prompts once per host and remembers the answer for the run, and a
-// denial (n or anything not y/A) blocks the connection.
+// denial (n or anything not y/o) blocks the connection.
 func TestGateRemembersPerHost(t *testing.T) {
 	var out strings.Builder
 	// example.com=y, then ads.example=n. Repeats must not consume more input.
