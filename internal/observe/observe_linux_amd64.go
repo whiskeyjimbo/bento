@@ -265,13 +265,9 @@ func inspect(pid int, record func(string, bool), res *Result) {
 		// program using it must not profile as touching nothing.
 		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
 		path := readString(pid, uintptr(regs.Rsi))
-		// RESOLVE_IN_ROOT/RESOLVE_BENEATH resolve an absolute path relative to the dirfd,
-		// not the real root - so /etc/hosts opened under a dirfd is <dirfd>/etc/hosts.
-		// Anchor it at the dirfd rather than recording the misleading real-root name.
-		if resolve&(unix.RESOLVE_IN_ROOT|unix.RESOLVE_BENEATH) != 0 {
-			path = strings.TrimPrefix(path, "/")
+		if anchored, rec := openat2Path(resolve, path); rec {
+			record(resolveAt(pid, int32(regs.Rdi), anchored), ok && flags&uint64(writeFlags) != 0)
 		}
-		record(resolveAt(pid, int32(regs.Rdi), path), ok && flags&uint64(writeFlags) != 0)
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
 		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
@@ -333,6 +329,30 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		at(atFdCwd, regs.Rsi, true)
 	case unix.SYS_SYMLINKAT: // symlinkat(target, newdirfd, linkpath)
 		at(int32(regs.Rsi), regs.Rdx, true)
+	}
+}
+
+// openat2Path maps an openat2 pathname and its RESOLVE_* flags to the path that must
+// be anchored at the dirfd, and whether the open touches anything worth recording.
+//
+// Under RESOLVE_IN_ROOT the dirfd is the root: an absolute path is re-rooted there and
+// a ".." that would climb above it is clamped, exactly as the kernel resolves it.
+// Clean("/"+path) reproduces that clamp - it collapses extra leading slashes
+// ("//etc/x") and drops any ".." above the root ("/../../etc/x") - before the result is
+// made relative for the dirfd anchor. A bare TrimPrefix does neither and would leak the
+// real host path the run never opened.
+//
+// Under RESOLVE_BENEATH an absolute path is rejected by the kernel with EXDEV, so the
+// open touches nothing and recording it would fabricate an access; a relative path
+// resolves within the dirfd like an ordinary relative open.
+func openat2Path(resolve uint64, path string) (anchored string, record bool) {
+	switch {
+	case resolve&unix.RESOLVE_IN_ROOT != 0:
+		return strings.TrimPrefix(filepath.Clean("/"+path), "/"), true
+	case resolve&unix.RESOLVE_BENEATH != 0 && strings.HasPrefix(path, "/"):
+		return "", false
+	default:
+		return path, true
 	}
 }
 
