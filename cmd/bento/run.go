@@ -124,11 +124,15 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-// requireApproval refuses to run a manifest whose approval is not current, so an
-// unapproved or tampered manifest cannot escalate permissions at run time the way
-// it could when only `validate --strict` checked the fingerprint. --allow-unapproved
-// opts out for the profile-then-run inner loop, where a manifest is run before a
-// human has stamped it.
+// requireApproval refuses to run a manifest whose approval is not current. The stamp
+// attests that the permissions have not changed since it was written, so a manifest
+// edited after approval (permissions widened) is caught here, not only by `validate
+// --strict`. It is drift detection, not authentication: the unkeyed stamp lives in
+// the manifest and does not record who wrote it, so a manifest carrying a stamp you
+// did not make yourself - a downloaded one stamped by its author - is "approved" only
+// in that its permissions match its own stamp; review it before trusting it.
+// --allow-unapproved opts out for the profile-then-run inner loop, where a manifest
+// is run before a human has stamped it.
 func requireApproval(doc *manifest.Document, allow bool) error {
 	if allow {
 		return nil

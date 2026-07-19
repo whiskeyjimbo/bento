@@ -32,8 +32,9 @@ func TestCheckApproval(t *testing.T) {
 	}
 }
 
-// run refuses an unapproved or stale manifest by default, so a tampered manifest
-// cannot escalate permissions at run time; --allow-unapproved opts out.
+// run refuses a manifest whose approval is not current by default, so a manifest
+// edited after approval (drift) is caught at run time, not only by validate;
+// --allow-unapproved opts out.
 func TestRequireApproval(t *testing.T) {
 	current := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	approved := &manifest.Document{Policy: current, Provenance: manifest.Provenance{Approves: current.Fingerprint()}}

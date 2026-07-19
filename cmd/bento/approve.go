@@ -19,6 +19,10 @@ func newApproveCmd() *cobra.Command {
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
 			"permissions, not the script's contents - it attests the policy, not the code.\n\n" +
+			"Approval is local drift detection, not a signature: the stamp is unkeyed and\n" +
+			"lives in the manifest, so it attests only that the permissions match what was\n" +
+			"stamped, not who stamped them. Review a manifest you got from elsewhere before\n" +
+			"approving it - a shipped stamp is its author's, not your review.\n\n" +
 			"The manifest is rewritten in canonical form (it is machine-owned); review the\n" +
 			"diff as you would any change.",
 		Args: cobra.ExactArgs(1),
