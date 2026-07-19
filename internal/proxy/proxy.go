@@ -488,6 +488,15 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	if host == "" {
 		return "", "", nil, fmt.Errorf("empty target host")
 	}
+	// A hostname, IP literal, or port never carries a control byte. One here is a
+	// target crafted to smuggle a terminal escape into a host-side render of the egress
+	// log: host and port flow into report() (the run's admitted-hosts list) and the 403
+	// body. Refuse it rather than carry the escape through.
+	for _, s := range []string{host, port} {
+		if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			return "", "", nil, fmt.Errorf("target contains a control character")
+		}
+	}
 	// Drain the remaining request headers up to the blank line.
 	for {
 		h, err := br.ReadString('\n')

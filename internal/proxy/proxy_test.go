@@ -66,6 +66,24 @@ func connect(t *testing.T, c net.Conn, target string) (status string, br *bufio.
 	return strings.TrimSpace(line), br
 }
 
+// A CONNECT target carrying a control byte is a crafted attempt to inject a terminal
+// escape into the host-side egress log (the host flows into report() and the 403 body).
+// readConnect must refuse it rather than pass the escape through.
+func TestReadConnectRejectsControlCharTarget(t *testing.T) {
+	for _, target := range []string{"ex\x1bample.com:443", "example.com:4\x0043", "host\x07:443"} {
+		client, server := net.Pipe()
+		go func() {
+			fmt.Fprintf(client, "CONNECT %s HTTP/1.1\r\n\r\n", target)
+		}()
+		_, _, _, err := readConnect(server)
+		client.Close()
+		server.Close()
+		if err == nil || !strings.Contains(err.Error(), "control character") {
+			t.Errorf("target %q: expected a control-character rejection; got %v", target, err)
+		}
+	}
+}
+
 func TestAllowedHostTunnels(t *testing.T) {
 	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
 	dialProxy, stop := startProxy(t, p)
