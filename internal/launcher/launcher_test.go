@@ -14,6 +14,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// superviseTarget must refuse a relative target[0]: exec.Command would otherwise do a
+// $PATH lookup and run a different binary than the manifest named, diverging from the
+// Block path (seccomp.Exec) which requires an absolute argv[0].
+func TestSuperviseTargetRejectsRelative(t *testing.T) {
+	if _, err := superviseTarget([]string{"true"}, nil); err == nil {
+		t.Error("superviseTarget ran a relative target[0] instead of refusing it")
+	}
+	if _, err := superviseTarget(nil, nil); err == nil {
+		t.Error("superviseTarget ran an empty target instead of refusing it")
+	}
+}
+
 // The bridge is the in-sandbox hop between the target's loopback proxy port and
 // the host-side proxy socket. These tests exercise it directly with a fake unix
 // "proxy" and a plain TCP client - no sandbox needed - so its byte-plumbing is

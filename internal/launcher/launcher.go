@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -335,6 +336,13 @@ func proxyEnv() []string {
 // init, which reaps it. The whole pid namespace is torn down at the end of the
 // run regardless.
 func superviseTarget(target, env []string) (int, error) {
+	// exec.Command does a $PATH lookup when target[0] has no slash, resolving against
+	// the target's own (policy-supplied) PATH - a different binary than intended. The
+	// Block path (seccomp.Exec via execveat) requires an absolute argv[0]; enforce the
+	// same invariant here so the two exec modes cannot diverge on a relative target.
+	if len(target) == 0 || !filepath.IsAbs(target[0]) {
+		return 0, fmt.Errorf("launcher: target command must be an absolute path, got %q", target)
+	}
 	cmd := exec.Command(target[0], target[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = env
