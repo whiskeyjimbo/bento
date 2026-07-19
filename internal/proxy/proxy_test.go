@@ -396,6 +396,7 @@ func TestClassifyIP(t *testing.T) {
 			"64:ff9b::c612:1",    // NAT64 of 198.18.0.1 (benchmarking)
 			"ff05::1", "ff0e::1", // site-local and global multicast
 			"::a9fe:a9fe",        // IPv4-compatible ::169.254.169.254 (metadata)
+			"fec0::1", "feff::1", // deprecated IPv6 site-local fec0::/10 (RFC 3879)
 		},
 		// Reachable only via an explicit IP-literal rule.
 		ipPrivate: {

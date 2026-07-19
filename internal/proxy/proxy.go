@@ -230,12 +230,22 @@ const (
 	ipPrivate
 )
 
+// isIPv6SiteLocal reports whether ip is in the deprecated IPv6 site-local range
+// fec0::/10 (RFC 3879). net.IP has no predicate for it - IsPrivate matches only ULA
+// fc00::/7 and IsLinkLocalUnicast only fe80::/10 - so an address in it would classify
+// as public. It is deprecated and unrouted on modern networks, but a host that still
+// routes it could otherwise be reached through a permitted hostname resolving there.
+func isIPv6SiteLocal(ip net.IP) bool {
+	ip16 := ip.To16()
+	return ip16 != nil && ip.To4() == nil && ip16[0] == 0xfe && ip16[1]&0xc0 == 0xc0
+}
+
 // classifyIP groups ip for the egress guard. An IPv6 transition address embeds an
 // IPv4 that To4 does not surface, so a synthesized address (DNS64/NAT64 is the
 // live case on IPv6-only subnets) is classified by its embedded IPv4.
 func classifyIP(ip net.IP) ipClass {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() ||
-		ip.IsUnspecified() {
+		ip.IsUnspecified() || isIPv6SiteLocal(ip) {
 		return ipHostReserved
 	}
 	if ip.IsPrivate() {
