@@ -44,7 +44,9 @@ func errnoRet(e unix.Errno) uint32 { return seccompRetErrnoBase | uint32(uint16(
 // execve, fork, and vfork with EPERM; forces clone3 to ENOSYS so glibc falls back
 // to clone (which BPF can inspect); and permits clone only when CLONE_THREAD is
 // set, so threads work while a new process is refused with EPERM. Everything else
-// is allowed. A wrong architecture is killed, as is any x32-ABI syscall: x32 shares
+// is allowed - including execveat, so this stops subprocess *creation*, not a target
+// replacing itself in place (the same soft-block caveat BlockExec carries). A wrong
+// architecture is killed, as is any x32-ABI syscall: x32 shares
 // the amd64 audit arch but tags its syscall numbers, so without this an x32 execve
 // or clone would miss the equality checks and slip through.
 func strictFilter() []unix.SockFilter {

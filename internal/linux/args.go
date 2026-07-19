@@ -569,8 +569,11 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 		}
 		// Two rules can name the same real path once resolved (/var/run and /run on a
 		// merged host). Shielding it twice stacks a redundant mount rather than being
-		// wrong, but only the identical rule is dropped, so a path shielded two
-		// different ways still gets both and the stricter one still lands.
+		// wrong; only the identical rule is dropped. If a path is ever shielded two
+		// different ways (DenyWrite and DenyAll), both land and bwrap's last-wins means
+		// the stricter one must be emitted last to win - today every builtin shield is
+		// DenyAll, so no such pair collides, but a future DenyWrite must preserve that
+		// ordering or add per-path strictest-wins dedup here.
 		if seen[r] {
 			continue
 		}
