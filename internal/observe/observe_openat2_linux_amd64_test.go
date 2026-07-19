@@ -39,3 +39,20 @@ func TestOpenat2Path(t *testing.T) {
 		})
 	}
 }
+
+// When the open_how read fails (ok=false) the real RESOLVE_* flags are unknown. Falling
+// back to the zero value would let an absolute path be recorded as a real-root host path
+// the run may never have opened (bv2-3lh); RESOLVE_IN_ROOT instead anchors it at the
+// dirfd. A successful read is passed through untouched.
+func TestOpenat2ResolveFailSafe(t *testing.T) {
+	if got := openat2Resolve(0, false); got != unix.RESOLVE_IN_ROOT {
+		t.Errorf("openat2Resolve(0, false) = %#x; want RESOLVE_IN_ROOT (%#x)", got, unix.RESOLVE_IN_ROOT)
+	}
+	if got := openat2Resolve(unix.RESOLVE_BENEATH, true); got != unix.RESOLVE_BENEATH {
+		t.Errorf("openat2Resolve passes a good read through: got %#x; want %#x", got, unix.RESOLVE_BENEATH)
+	}
+	// The fail-safe resolve must anchor an absolute path at the dirfd, not at real root.
+	if anchored, rec := openat2Path(openat2Resolve(0, false), "/etc/hosts"); !rec || anchored != "etc/hosts" {
+		t.Errorf("fail-safe openat2 of /etc/hosts = (%q, %v); want (%q, true)", anchored, rec, "etc/hosts")
+	}
+}

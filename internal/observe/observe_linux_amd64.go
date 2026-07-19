@@ -265,7 +265,7 @@ func inspect(pid int, record func(string, bool), res *Result) {
 		// program using it must not profile as touching nothing.
 		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
 		path := readString(pid, uintptr(regs.Rsi))
-		if anchored, rec := openat2Path(resolve, path); rec {
+		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec {
 			record(resolveAt(pid, int32(regs.Rdi), anchored), ok && flags&uint64(writeFlags) != 0)
 		}
 	case sysOpen:
@@ -311,10 +311,12 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	case unix.SYS_RENAMEAT, unix.SYS_RENAMEAT2:
 		at(int32(regs.Rdi), regs.Rsi, true)
 		at(int32(regs.Rdx), regs.R10, true)
-	// Single-path creates/removes/truncates/metadata-writes.
-	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_CHMOD:
+	// Single-path creates/removes/truncates/metadata-writes. mknod/mknodat create a
+	// FIFO, socket, or device node - a directory write like mkdir, so the manifest must
+	// grant it or enforcement fails the run closed.
+	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_CHMOD, unix.SYS_MKNOD:
 		at(atFdCwd, regs.Rdi, true)
-	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_FCHMODAT:
+	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_FCHMODAT, unix.SYS_MKNODAT:
 		at(int32(regs.Rdi), regs.Rsi, true)
 	// A hardlink reads the existing source and creates a new name (a write).
 	case unix.SYS_LINK:
@@ -329,7 +331,57 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		at(atFdCwd, regs.Rsi, true)
 	case unix.SYS_SYMLINKAT: // symlinkat(target, newdirfd, linkpath)
 		at(int32(regs.Rsi), regs.Rdx, true)
+	// bind(2) on an AF_UNIX pathname socket creates a socket file - a directory write.
+	// The path is inside the sockaddr, not a register, and is bounded by addrlen rather
+	// than NUL-terminated, so it needs its own read. Abstract and unnamed sockets make
+	// no filesystem entry and are skipped by unixBindPath.
+	case unix.SYS_BIND:
+		if path := unixBindPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
+			record(resolveAt(pid, atFdCwd, path), true)
+		}
 	}
+}
+
+// unixBindPath returns the filesystem path a bind(2) would create, or "" when the call
+// makes no directory entry. It reads addrlen bytes of the sockaddr from the traced
+// process and hands them to unixSockaddrPath for the parse.
+func unixBindPath(pid int, addr uintptr, addrlen uint64) string {
+	// sockaddr_un is a 2-byte family plus up to 108 bytes of sun_path; a larger addrlen
+	// is rejected by the kernel (EINVAL), so it names no file.
+	if addrlen <= 2 || addrlen > 110 {
+		return ""
+	}
+	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
+	if err != nil {
+		return ""
+	}
+	defer mem.Close()
+
+	buf := make([]byte, addrlen)
+	n, _ := mem.ReadAt(buf, int64(addr))
+	return unixSockaddrPath(buf[:max(n, 0)])
+}
+
+// unixSockaddrPath extracts the bound filesystem path from a raw sockaddr, or "" when
+// the address makes no directory entry: a non-AF_UNIX family, an abstract socket
+// (sun_path[0] == 0, which lives in an abstract namespace rather than the filesystem),
+// or an unnamed/autobind address (no path bytes). sun_path is bounded by the buffer
+// length, not a NUL, because the kernel accepts an unterminated address; the scan stops
+// at the first NUL or the end.
+func unixSockaddrPath(buf []byte) string {
+	if len(buf) <= 2 || binary.LittleEndian.Uint16(buf[0:2]) != unix.AF_UNIX {
+		return ""
+	}
+	path := buf[2:]
+	if path[0] == 0 { // abstract namespace: no filesystem entry
+		return ""
+	}
+	for i, b := range path {
+		if b == 0 {
+			return string(path[:i])
+		}
+	}
+	return string(path)
 }
 
 // openat2Path maps an openat2 pathname and its RESOLVE_* flags to the path that must
@@ -354,6 +406,19 @@ func openat2Path(resolve uint64, path string) (anchored string, record bool) {
 	default:
 		return path, true
 	}
+}
+
+// openat2Resolve picks the RESOLVE_* flags an openat2 is attributed by. When the open_how
+// read failed (ok is false) the real flags are unknown, so it falls back to RESOLVE_IN_ROOT
+// rather than the zero value: that anchors an absolute path at the dirfd (the run's root)
+// instead of recording it as a real-root host path the run may never have opened. The two
+// errors are not symmetric - under-attribution fails the run closed and is fixed by adding
+// a grant, over-attribution silently widens the manifest - so the conservative anchor wins.
+func openat2Resolve(resolve uint64, ok bool) uint64 {
+	if !ok {
+		return unix.RESOLVE_IN_ROOT
+	}
+	return resolve
 }
 
 // resolveAt anchors a relative openat/open pathname at the directory it was opened
@@ -386,8 +451,8 @@ func resolveAt(pid int, dirfd int32, path string) string {
 
 // openHow reads the openat2 open_how struct at addr: flags at offset 0 and resolve
 // at offset 16 (mode, at offset 8, is not needed). ok is false if the read fails, in
-// which case the caller treats the open as a non-write with default (real-root)
-// resolution - the fail-safe for an unreadable /proc/<pid>/mem.
+// which case the caller (via openat2Resolve) treats the open as a non-write anchored
+// at the dirfd - the fail-safe for an unreadable /proc/<pid>/mem.
 func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
