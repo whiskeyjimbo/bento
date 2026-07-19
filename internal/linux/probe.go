@@ -76,7 +76,12 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	scopeOK, scopeReason := canCreateScope()
-	var cpuState enforce.State
+	// Default Unavailable, not the zero value (Enforced): cpuState is measured only when
+	// a scope is creatable, and a host whose cpu delegation was never measured must not
+	// report the cpu limit as enforced - admission would then admit an unenforceable
+	// CPUQuota. Today limitsLayers reads this only on the same nsOK && scopeOK path, so
+	// the default is belt-and-suspenders against that coupling drifting.
+	cpuState := enforce.Unavailable
 	var cpuReason string
 	if nsOK && scopeOK {
 		// cpu delegation is separate from scope creation: a scope can be created
