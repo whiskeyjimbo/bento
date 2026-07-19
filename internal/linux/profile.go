@@ -63,6 +63,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		mu    sync.Mutex
 		hosts []profile.HostPort
 	)
+	var stopProxy func()
+	// Safety net for early error returns; the happy path stops it explicitly below.
+	defer func() {
+		if stopProxy != nil {
+			stopProxy()
+		}
+	}()
 	if sb.proxySocket != "" {
 		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(host, port string) {
 			mu.Lock()
@@ -72,7 +79,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if err != nil {
 			return profile.Observation{}, err
 		}
-		defer stop()
+		stopProxy = stop
 	}
 
 	args, err := compile(p, proc, sb)
@@ -95,6 +102,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	obs, err := parseObservations(reportPath)
 	if err != nil {
 		return profile.Observation{}, err
+	}
+	// Stop the recording proxy before reading hosts, so a destination the target reached
+	// during teardown is recorded before the snapshot, not lost to the still-running
+	// handler. Run stops its proxy before reading its report for the same reason.
+	if stopProxy != nil {
+		stopProxy()
+		stopProxy = nil
 	}
 	mu.Lock()
 	obs.Hosts = hosts
