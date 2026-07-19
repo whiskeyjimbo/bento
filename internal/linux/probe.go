@@ -190,17 +190,16 @@ func usableNamespaces(ctx context.Context) (bool, string) {
 // canUnshare reports whether an unprivileged user namespace can be created here,
 // by asking bwrap to create one.
 func canUnshare(ctx context.Context, bwrap string) error {
-	// Exercise the same namespace and capability flags the real run uses (baseFlags),
-	// not a subset: a host that permits user+net namespaces but rejects one of the
-	// others - most plausibly --unshare-cgroup on a pre-4.6 kernel, or --cap-drop on
-	// an old bwrap - would otherwise pass this probe, report the filesystem layer
-	// Enforced, and then fail at launch with a bwrap exit code indistinguishable from
-	// the target's. Probing the full set surfaces that at admission instead. --bind /
-	// / makes /bin/true reachable for the check.
-	cmd := exec.CommandContext(ctx, bwrap,
-		"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
-		"--unshare-net", "--cap-drop", "ALL",
-		"--bind", "/", "/", "/bin/true")
+	// Exercise the same namespace and capability flags the real run uses (namespaceFlags),
+	// not a hand-copied subset: a host that permits user+net namespaces but rejects one of
+	// the others - most plausibly --unshare-cgroup on a pre-4.6 kernel, or --cap-drop on an
+	// old bwrap - would otherwise pass this probe, report the filesystem layer Enforced, and
+	// then fail at launch with a bwrap exit code indistinguishable from the target's. Probing
+	// the shared set surfaces that at admission instead. --unshare-net is probed too (the run
+	// adds it for the network layer); --bind / / makes /bin/true reachable for the check.
+	args := append([]string{}, namespaceFlags...)
+	args = append(args, "--unshare-net", "--bind", "/", "/", "/bin/true")
+	cmd := exec.CommandContext(ctx, bwrap, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return &usernsError{output: string(out), err: err}

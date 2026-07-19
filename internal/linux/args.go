@@ -286,28 +286,37 @@ var sandboxWritableMounts = []string{"/tmp", "/dev", "/proc"}
 // is refused by checkGrantNotManagedMount.
 var baseFlagsPseudoFS = []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"}
 
+// namespaceFlags are the namespace unshares and the capability-bounding-set drop that
+// the real run (baseFlags) and the pre-run probe (canUnshare) MUST exercise identically.
+// A host that permits some of these but rejects one - most plausibly --unshare-cgroup on
+// a pre-4.6 kernel, or --cap-drop on an old bwrap - would otherwise pass a probe built
+// from a hand-copied subset, report the filesystem layer Enforced, then fail at launch.
+// Sharing one list keeps the probe a guaranteed superset of the run's namespace flags
+// rather than a parallel list that drifts.
+//
+// The --cap-drop drops the whole capability bounding set. The read-only shields (DenyWrite
+// credentials, the re-bound entrypoint/interpreter) are plain --ro-bind mounts; nothing in
+// bento's own layers stops the target from calling mount(MS_REMOUNT|MS_BIND) to clear their
+// read-only flag - the exec filter blocks only execve/execveat, Landlock has no mount hook,
+// and the cross-process block is degraded-tier only. What stops that remount is the target
+// having no CAP_SYS_ADMIN plus the kernel's mount-lock on the read-only bind. Unprivileged
+// bwrap already yields an empty bounding set, but requesting it explicitly makes the reliance
+// bento's own (robust to a setuid bwrap or a stray --cap-add) rather than an unstated bwrap
+// default. bento's launcher needs no capability inside the sandbox (seccomp/Landlock/prctl
+// all work with none). The nested-userns remount path is a separate vector the kernel
+// mount-lock denies; cap-drop does not affect it.
+var namespaceFlags = []string{
+	"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
+	"--cap-drop", "ALL",
+}
+
 func baseFlags() []string {
-	return []string{
-		"--die-with-parent", "--new-session",
-		"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
-		// Drop the whole capability bounding set. The read-only shields (DenyWrite
-		// credentials, the re-bound entrypoint/interpreter) are plain --ro-bind mounts;
-		// nothing in bento's own layers stops the target from calling
-		// mount(MS_REMOUNT|MS_BIND) to clear their read-only flag - the exec filter
-		// blocks only execve/execveat, Landlock has no mount hook, and the cross-process
-		// block is degraded-tier only. What stops that remount is the target having no
-		// CAP_SYS_ADMIN plus the kernel's mount-lock on the read-only bind. Unprivileged
-		// bwrap already yields an empty bounding set, but requesting it explicitly makes
-		// the reliance bento's own (robust to a setuid bwrap or a stray --cap-add) rather
-		// than an unstated bwrap default. bento's launcher needs no capability inside the
-		// sandbox (seccomp/Landlock/prctl all work with none). The nested-userns remount
-		// path is a separate vector the kernel mount-lock denies; cap-drop does not affect
-		// it.
-		"--cap-drop", "ALL",
+	flags := append([]string{"--die-with-parent", "--new-session"}, namespaceFlags...)
+	return append(flags,
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
-	}
+	)
 }
 
 // nixStore holds Nix-provided packages, each in its own immutable directory.
