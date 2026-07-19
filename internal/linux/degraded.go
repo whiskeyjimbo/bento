@@ -99,7 +99,22 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	cmd := exec.CommandContext(ctx, self, launcher.EncodeLaunchDegraded(cfg)...)
+	exe, cargs := self, launcher.EncodeLaunchDegraded(cfg)
+	if !p.Limits.IsZero() {
+		if ok, _ := canCreateScope(); ok {
+			// A systemd scope's cgroup applies the memory/pids/cpu caps to the launcher
+			// and its descendants. --scope keeps them in the caller's process group, so
+			// the teardown sweep below still reaches a leaked descendant (verified by
+			// TestScopeDoesNotBreakProcessGroupSweep) - and a cgroup, unlike the pgroup
+			// sweep, a setsid() child cannot escape. Preflight so a scope-creation
+			// failure surfaces as a clear error rather than the target's exit code.
+			if err := preflightLimits(p.Limits); err != nil {
+				return enforce.Result{}, fmt.Errorf("linux: %w", err)
+			}
+			exe, cargs = wrapWithLimits(self, cargs, p.Limits)
+		}
+	}
+	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Env = envSlice(proc.Env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// Run the launcher in its own process group so a descendant it leaves behind can be

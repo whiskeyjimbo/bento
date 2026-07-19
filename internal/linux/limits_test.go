@@ -143,13 +143,10 @@ func TestHostControllersDelegatedFailsClosed(t *testing.T) {
 // The seam lets a test build the unknown-delegation host the pure functions cannot
 // be reached through otherwise: with delegation unreadable, Probe must report the
 // cpu limits layer Unavailable, never Enforced (the fail-open bug at the Probe
-// level). The cpu layer is emitted only by the bwrap tier with a creatable scope,
-// so guard on both: the degraded tier (nsOK false) reports LayerLimits Unavailable
-// and no cpu sub-layer at all.
+// level). The cpu layer is emitted only when a scope can be created, so guard on it.
 func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
-	nsOK, _ := usableNamespaces(context.Background())
-	if ok, _ := canCreateScope(); !nsOK || !ok {
-		t.Skip("no bwrap tier with a usable systemd scope on this host; the cpu limits layer is not emitted")
+	if ok, _ := canCreateScope(); !ok {
+		t.Skip("no usable systemd scope on this host; the cpu limits layer is not emitted")
 	}
 	orig := delegatedControllers
 	delegatedControllers = func() (map[string]bool, bool) { return nil, false }

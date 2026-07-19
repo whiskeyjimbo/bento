@@ -42,27 +42,20 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	}
 }
 
-// The degraded tier runs the target directly and applies no resource limit, so a
-// limit-bearing manifest on that tier must never see LayerLimits=Enforced (which
-// would report a memory/pids/cpu cap that does not actually hold - the fail-open).
-func TestLimitsLayersDegradedTierNeverEnforced(t *testing.T) {
-	// nsOK=false is the degraded tier; even with a creatable scope and delegated cpu,
-	// limits are not applied there.
-	got := limitsLayers(false, true, "", enforce.Enforced, "")
-	if len(got) != 1 || got[0].Layer != enforce.LayerLimits || got[0].State != enforce.Unavailable {
-		t.Fatalf("degraded tier: got %+v, want a single LayerLimits=Unavailable", got)
-	}
-
-	// bwrap tier with a scope: limits enforced, cpu sub-layer carried through.
-	ok := limitsLayers(true, true, "", enforce.Degraded, "cpu controller not delegated")
+// Both tiers wrap the target in a systemd scope, so a limit is enforced whenever a
+// scope can be created and Unavailable when it cannot - independent of which tier
+// runs. (Reporting Enforced without a scope would be the fail-open.)
+func TestLimitsLayers(t *testing.T) {
+	// A creatable scope: limits enforced, cpu sub-layer carried through.
+	ok := limitsLayers(true, "", enforce.Degraded, "cpu controller not delegated")
 	if len(ok) != 2 || ok[0].State != enforce.Enforced || ok[1].Layer != enforce.LayerLimitsCPU || ok[1].State != enforce.Degraded {
-		t.Fatalf("bwrap+scope: got %+v, want LayerLimits=Enforced + LayerLimitsCPU=Degraded", ok)
+		t.Fatalf("scope: got %+v, want LayerLimits=Enforced + LayerLimitsCPU=Degraded", ok)
 	}
 
-	// bwrap tier without a scope: limits unavailable.
-	no := limitsLayers(true, false, "no scope here", enforce.Enforced, "")
-	if len(no) != 1 || no[0].State != enforce.Unavailable || no[0].Reason != "no scope here" {
-		t.Fatalf("bwrap+noscope: got %+v, want LayerLimits=Unavailable carrying the scope reason", no)
+	// No scope: a single LayerLimits=Unavailable carrying the reason, no cpu sub-layer.
+	no := limitsLayers(false, "no scope here", enforce.Enforced, "")
+	if len(no) != 1 || no[0].Layer != enforce.LayerLimits || no[0].State != enforce.Unavailable || no[0].Reason != "no scope here" {
+		t.Fatalf("no scope: got %+v, want a single LayerLimits=Unavailable with the scope reason", no)
 	}
 }
 
