@@ -167,6 +167,15 @@ func Run(cfg Config) (int, error) {
 // target opened, and whether it exec'd, to the inherited report descriptor for
 // the host to read.
 func runObserve(cfg Config, env []string) (int, error) {
+	// Block io_uring before forking the tracee (which inherits the process-wide filter
+	// and keeps it across its exec): file I/O dispatched through a ring runs in a kernel
+	// worker thread and produces no ptrace syscall stop, so it would be silently absent
+	// from the synthesized manifest. Forcing the target onto synchronous syscalls keeps
+	// the observation complete. Fatal on error - a manifest that cannot be trusted to be
+	// complete is worse than a failed profile.
+	if err := seccomp.BlockIoUring(); err != nil {
+		return 0, fmt.Errorf("launcher: securing complete observation: %w", err)
+	}
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
 	// The report is written here, after Trace returns, through the close-on-exec
