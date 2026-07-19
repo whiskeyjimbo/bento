@@ -114,22 +114,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
-		return nil, err
-	}
-	if err := checkWriteNotAboveShield(sb, writes); err != nil {
-		return nil, err
-	}
-	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
-		return nil, err
-	}
-	if err := checkGrantNotProcess(sb, p); err != nil {
-		return nil, err
-	}
-	if err := checkGrantNotManagedMount(p); err != nil {
-		return nil, err
-	}
-	if err := checkGrantNotLooped(p); err != nil {
+	if err := checkGrants(sb, p, reads, writes); err != nil {
 		return nil, err
 	}
 
@@ -684,6 +669,32 @@ func shield(r denylist.Rule, sb sandbox) []string {
 		}
 		return []string{"--ro-bind", sb.emptyFile, r.Path}
 	}
+}
+
+// checkGrants runs every grant-safety check that must hold before a policy's reads
+// and writes are honored, whatever tier enforces them. The full (bwrap) tier and the
+// degraded (Landlock-only) tier share it: a grant that names a credential shield, a
+// host process, a managed pseudo-filesystem, or a symlink loop is refused the same way
+// in both, so --allow-degraded can never accept a manifest the full tier hard-refuses.
+// reads and writes are the resolved grants; p carries the unresolved paths the process
+// and managed-mount checks re-resolve for their own diagnostics.
+func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
+	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
+		return err
+	}
+	if err := checkWriteNotAboveShield(sb, writes); err != nil {
+		return err
+	}
+	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+		return err
+	}
+	if err := checkGrantNotProcess(sb, p); err != nil {
+		return err
+	}
+	if err := checkGrantNotManagedMount(p); err != nil {
+		return err
+	}
+	return checkGrantNotLooped(p)
 }
 
 // checkNotShielded rejects a grant that falls inside a fully-shielded location

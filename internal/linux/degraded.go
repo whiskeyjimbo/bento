@@ -31,33 +31,32 @@ import (
 func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process) (enforce.Result, error) {
 	report := e.Probe(ctx)
 
-	entrypoint, err := resolve(p.Entrypoint)
+	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
+	// seams) along with the entrypoint and interpreter. gated is false: the degraded
+	// tier is only reached for a no-network manifest, so there is no proxy socket.
+	sb, cleanup, err := newSandbox(p, e.selfPath, false, nil)
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	if _, err := os.Stat(entrypoint); err != nil {
-		return enforce.Result{}, fmt.Errorf("linux: entrypoint %q: %w", p.Entrypoint, err)
-	}
-	var interp string
-	if p.Interpreter != "" {
-		found, err := exec.LookPath(p.Interpreter)
-		if err != nil {
-			return enforce.Result{}, fmt.Errorf("linux: interpreter %q not found: %w", p.Interpreter, err)
-		}
-		if interp, err = resolve(found); err != nil {
-			return enforce.Result{}, err
-		}
-	}
+	defer cleanup()
 
 	reads, writes, err := resolveGrants(p)
 	if err != nil {
 		return enforce.Result{}, err
 	}
+	// The degraded tier shares the full tier's grant-safety checks. Without them
+	// --allow-degraded would accept a manifest the full tier hard-refuses - write: ~
+	// above the ~/.ssh shield, read: /proc onto the host process table - and here
+	// there is no mount namespace or deny-list to catch it afterward. Run them before
+	// the MkdirAll below so a to-be-refused grant leaves no host directory artifact.
+	if err := checkGrants(sb, p, reads, writes); err != nil {
+		return enforce.Result{}, err
+	}
 	// A write grant is a directory the target writes into; create a missing one so
-	// Landlock has a path to grant (RWDirs skips a path that does not exist). There is
-	// no deny-list here: Landlock cannot carve a shielded subpath out of an allowed
-	// tree, so the credential shielding the bwrap tier provides does not apply - the
-	// documented cost of the degraded tier, not an oversight.
+	// Landlock has a path to grant (RWDirs skips a path that does not exist). Landlock
+	// cannot carve a shielded subpath out of an allowed tree, so a read grant that
+	// contains a credential dir still exposes it - the documented cost of the degraded
+	// tier, and the reason a broad read here is weaker than under bwrap.
 	for _, w := range writes {
 		if _, err := os.Stat(w); errors.Is(err, os.ErrNotExist) {
 			if err := os.MkdirAll(w, 0o755); err != nil {
@@ -79,9 +78,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		return enforce.Result{}, fmt.Errorf("linux: creating scratch directory: %w", err)
 	}
 
-	execPaths := []string{entrypoint}
-	if interp != "" {
-		execPaths = append(execPaths, interp)
+	execPaths := []string{sb.entrypoint}
+	if sb.interpreter != "" {
+		execPaths = append(execPaths, sb.interpreter)
 	}
 	sysReads, sysWrites := degradedSystemPaths()
 	block, strictBlock := execBlockFlags(p.Exec, seccomp.Supported())
@@ -92,14 +91,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		Block:       block,
 		StrictBlock: strictBlock,
 		Scratch:     scratch,
-		Target:      degradedTarget(interp, entrypoint, p.Args),
+		Target:      degradedTarget(sb.interpreter, sb.entrypoint, p.Args),
 	}
 
-	self, err := bentoSelfPath(e.selfPath)
-	if err != nil {
-		return enforce.Result{}, err
-	}
-	cmd := exec.CommandContext(ctx, self, launcher.EncodeLaunchDegraded(cfg)...)
+	cmd := exec.CommandContext(ctx, sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)...)
 	cmd.Env = envSlice(proc.Env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// Run the launcher in its own process group so a descendant it leaves behind can be

@@ -160,6 +160,47 @@ func TestDegradedSweepsLeakedProcessGroup(t *testing.T) {
 	}
 }
 
+// The degraded tier must apply the same grant-safety checks as the full tier: a write
+// grant that contains the ~/.ssh credential shield is refused, not silently accepted.
+// Without a mount namespace or deny-list here, accepting it would hand the whole home -
+// including ~/.ssh - to Landlock read-write, an escape the full tier hard-refuses via
+// checkWriteNotAboveShield. The check fires before any exec, so no real kernel is
+// needed and no host directory is created for the refused grant.
+func TestDegradedRefusesWriteAboveShield(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Write: []string{home}, Exec: policy.ExecNone}
+	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{})
+	if err == nil || !strings.Contains(err.Error(), "always-shielded") {
+		t.Fatalf("degraded tier must refuse a write grant above the ~/.ssh shield; got err=%v", err)
+	}
+}
+
+// A grant onto a whole managed pseudo-filesystem is refused in the degraded tier too.
+// With no pid namespace and no fresh /proc, a read: /proc grant would serve the host's
+// process table (environ of same-uid processes: tokens, DB passwords), so the full
+// tier's checkGrantNotManagedMount refusal must hold here as well.
+func TestDegradedRefusesManagedMountGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Read: []string{"/proc"}, Exec: policy.ExecNone}
+	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{})
+	if err == nil || !strings.Contains(err.Error(), "pseudo-filesystem") {
+		t.Fatalf("degraded tier must refuse a whole-/proc grant; got err=%v", err)
+	}
+}
+
 func requireDegraded(t *testing.T) {
 	t.Helper()
 	if !landlock.Available() {
