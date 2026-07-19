@@ -609,7 +609,24 @@ if libc.syscall(259, -100, (d+'/fifoat').encode(), S_IFIFO | 0o644, 0) != 0:
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.bind(d+'/sock')
 s.close()
+# Metadata writes, driven raw by syscall number so glibc routing does not send them
+# through a different case (os.chmod routes via fchmodat/fchmodat2 on modern glibc,
+# which is why SYS_CHMOD would otherwise stay untested). The target files are created
+# by the test BEFORE tracing, so the only write these paths can record comes from the
+# metadata syscall itself, not a write-open. Recording is at syscall-entry, so a no-op
+# (-1,-1 chown) still records.
+libc.syscall(90, (d+'/m_chmod').encode(), 0o600)               # chmod: AT_FDCWD/Rdi group
+libc.syscall(92, (d+'/m_chown').encode(), -1, -1)             # chown: AT_FDCWD/Rdi group
+libc.syscall(280, -100, (d+'/m_utime').encode(), 0, 0)       # utimensat: dirfd/Rsi group
 `, dir)
+
+	// Pre-create the metadata targets outside the traced process so their only recorded
+	// write is the metadata syscall, not the file creation.
+	for _, name := range []string{"/m_chmod", "/m_chown", "/m_utime"} {
+		if err := os.WriteFile(dir+name, nil, 0o644); err != nil {
+			t.Fatalf("pre-create %s: %v", name, err)
+		}
+	}
 
 	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
 	if err != nil {
@@ -623,7 +640,7 @@ s.close()
 		}
 		return false
 	}
-	for _, want := range []string{dir + "/out", dir + "/trunc", dir + "/newdir", dir + "/gone", dir + "/link", dir + "/rat_dst", dir + "/fifo", dir + "/fifoat", dir + "/sock"} {
+	for _, want := range []string{dir + "/out", dir + "/trunc", dir + "/newdir", dir + "/gone", dir + "/link", dir + "/rat_dst", dir + "/fifo", dir + "/fifoat", dir + "/sock", dir + "/m_chmod", dir + "/m_chown", dir + "/m_utime"} {
 		if !isWrite(want) {
 			t.Errorf("no write access recorded for %q (mutating syscall missed); accesses: %v", want, res.Accesses)
 		}

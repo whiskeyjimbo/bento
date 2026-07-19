@@ -54,6 +54,11 @@ const (
 // A real dirfd instead anchors a relative path at that descriptor's directory.
 const atFdCwd = -100
 
+// sysFchmodat2 is the fchmodat2(2) syscall number (Linux 6.6+), not yet in x/sys/unix.
+// It is the dirfd-relative chmod glibc's fchmodat routes through, so a target changing
+// mode via it must have its path recorded as a write like the other metadata writes.
+const sysFchmodat2 = 452
+
 // Open flags that mean the open requested write access.
 const writeFlags = syscall.O_WRONLY | syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC | syscall.O_APPEND
 
@@ -313,10 +318,15 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		at(int32(regs.Rdx), regs.R10, true)
 	// Single-path creates/removes/truncates/metadata-writes. mknod/mknodat create a
 	// FIFO, socket, or device node - a directory write like mkdir, so the manifest must
-	// grant it or enforcement fails the run closed.
-	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_CHMOD, unix.SYS_MKNOD:
+	// grant it or enforcement fails the run closed. The metadata writes (chmod/chown/
+	// utime/xattr) all fail EROFS on a read-only bind, so each needs its path recorded
+	// as a write; recording chmod but not its siblings would leave a silent under-grant.
+	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_MKNOD,
+		unix.SYS_CHMOD, unix.SYS_CHOWN, unix.SYS_LCHOWN, unix.SYS_UTIME, unix.SYS_UTIMES,
+		unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR:
 		at(atFdCwd, regs.Rdi, true)
-	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_FCHMODAT, unix.SYS_MKNODAT:
+	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_MKNODAT,
+		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT:
 		at(int32(regs.Rdi), regs.Rsi, true)
 	// A hardlink reads the existing source and creates a new name (a write).
 	case unix.SYS_LINK:
