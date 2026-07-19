@@ -249,6 +249,32 @@ func Home(home string) []Rule {
 	for _, d := range writeOnlyDirs {
 		emit(d, DenyWrite, true)
 	}
+
+	// A tool-specific env var can move a whole credential directory off its default
+	// path, the same way an XDG base does. When one is set to an absolute location that
+	// differs from the default (already shielded above), the shield follows to the
+	// target too. A relative value is dropped: the shield is an absolute bwrap bind, so
+	// a relative target cannot be shielded at the place the tool would actually read it.
+	//
+	// Only whole-directory relocations are honored. Two documented residuals are not, for
+	// the same reason Runtime() leaves sockets outside /run uncovered: KUBECONFIG is a
+	// colon-separated list of individual files (and ~/.kube is already shielded whole),
+	// and AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE name individual files under the
+	// already-shielded ~/.aws. Relocating those leaves the file exposed under a broad
+	// read grant.
+	dirEnvs := []struct{ env, def string }{
+		{"GNUPGHOME", ".gnupg"},
+		{"PASSWORD_STORE_DIR", ".password-store"},
+		{"DOCKER_CONFIG", ".docker"},
+		{"CLOUDSDK_CONFIG", ".config/gcloud"},
+		{"GH_CONFIG_DIR", ".config/gh"},
+		{"AZURE_CONFIG_DIR", ".azure"},
+	}
+	for _, de := range dirEnvs {
+		if base := os.Getenv(de.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(de.def) {
+			rules = append(rules, Rule{Path: filepath.Clean(base), Deny: DenyAll, Dir: true})
+		}
+	}
 	return rules
 }
 

@@ -222,3 +222,42 @@ func TestHomeIgnoresRelativeXDGBase(t *testing.T) {
 		}
 	}
 }
+
+// A tool-specific env var (GNUPGHOME etc.) moves a whole credential store off its default
+// path; the shield must follow to the absolute target while the default stays shielded.
+// A relative value is ignored, like a relative XDG base (bv2-ovj).
+func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/secrets/gnupg")
+	t.Setenv("DOCKER_CONFIG", "/secrets/docker")
+	t.Setenv("CLOUDSDK_CONFIG", "/secrets/gcloud")
+	t.Setenv("GH_CONFIG_DIR", "/secrets/gh")
+	t.Setenv("AZURE_CONFIG_DIR", "/secrets/azure")
+	t.Setenv("PASSWORD_STORE_DIR", "relpass") // relative: must not shield
+
+	byPath := map[string]bool{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative relocation env leaked a non-absolute shield path %q", r.Path)
+		}
+		byPath[r.Path] = true
+	}
+	// Absolute relocations shielded at the target, defaults still shielded.
+	for _, p := range []string{
+		"/secrets/gnupg", "/home/u/.gnupg",
+		"/secrets/docker", "/home/u/.docker",
+		"/secrets/gcloud", "/home/u/.config/gcloud",
+		"/secrets/gh", "/home/u/.config/gh",
+		"/secrets/azure", "/home/u/.azure",
+	} {
+		if !byPath[p] {
+			t.Errorf("expected a shield at %q (credential relocation), missing", p)
+		}
+	}
+	// The relative PASSWORD_STORE_DIR is dropped; only the default remains.
+	if byPath["relpass"] {
+		t.Error("a relative PASSWORD_STORE_DIR must not produce a shield")
+	}
+	if !byPath["/home/u/.password-store"] {
+		t.Error("the default password store must stay shielded")
+	}
+}
