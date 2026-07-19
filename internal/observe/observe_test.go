@@ -583,8 +583,12 @@ func TestTraceRecordsMutatingSyscalls(t *testing.T) {
 	dir := t.TempDir()
 	// The ctypes renameat2 call exercises the newdirfd/newpath registers (Rdx, R10)
 	// directly, which glibc's plain os.rename does not reach.
+	// The mknod/mknodat/bind syscalls are driven raw (libc.syscall by number, and a real
+	// AF_UNIX bind) so each directory-writing case fires distinctly: glibc's mknod wrapper
+	// routes through mknodat on modern versions, which would leave SYS_MKNOD untested. A
+	// FIFO node (S_IFIFO) and a pathname socket are unprivileged, unlike a device node.
 	script := fmt.Sprintf(`
-import os, ctypes
+import os, ctypes, socket
 d = %q
 open(d+'/tmp','w').close()
 os.rename(d+'/tmp', d+'/out')
@@ -597,6 +601,14 @@ os.symlink('/nowhere', d+'/link')
 libc = ctypes.CDLL(None, use_errno=True)
 open(d+'/rat_src','w').close()
 libc.renameat2(-100, (d+'/rat_src').encode(), -100, (d+'/rat_dst').encode(), 0)
+S_IFIFO = 0o010000
+if libc.syscall(133, (d+'/fifo').encode(), S_IFIFO | 0o644, 0) != 0:
+    raise SystemExit('mknod failed')
+if libc.syscall(259, -100, (d+'/fifoat').encode(), S_IFIFO | 0o644, 0) != 0:
+    raise SystemExit('mknodat failed')
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(d+'/sock')
+s.close()
 `, dir)
 
 	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
@@ -611,7 +623,7 @@ libc.renameat2(-100, (d+'/rat_src').encode(), -100, (d+'/rat_dst').encode(), 0)
 		}
 		return false
 	}
-	for _, want := range []string{dir + "/out", dir + "/trunc", dir + "/newdir", dir + "/gone", dir + "/link", dir + "/rat_dst"} {
+	for _, want := range []string{dir + "/out", dir + "/trunc", dir + "/newdir", dir + "/gone", dir + "/link", dir + "/rat_dst", dir + "/fifo", dir + "/fifoat", dir + "/sock"} {
 		if !isWrite(want) {
 			t.Errorf("no write access recorded for %q (mutating syscall missed); accesses: %v", want, res.Accesses)
 		}
