@@ -23,7 +23,17 @@ const (
 	nrIoUringEnter    = 426
 	nrIoUringRegister = 427
 
-	afUnix    = 1  // local IPC; path-scoped, cannot reach an IP network
+	// AF_UNIX is allowed for local IPC: it cannot reach an IP network, which is what
+	// this filter fences. It is not fully contained, though - the degraded tier shares
+	// the host network namespace, and an abstract-namespace socket (leading-NUL address)
+	// is scoped to that netns, not the filesystem, so a target can connect to a host
+	// service's abstract socket (X11, D-Bus, systemd-resolved) that Landlock, which only
+	// governs pathname sockets, does not cover. Blocking it wholesale would break the
+	// local IPC ordinary programs rely on (syslog, nscd, session D-Bus), and classic BPF
+	// cannot tell abstract from pathname at socket(2) - the family is all it sees. So
+	// this is a known residual of the no-netns tier, alongside SCM_RIGHTS fd-passing over
+	// an allowed AF_UNIX socket, not an IP-egress hole.
+	afUnix    = 1
 	afNetlink = 16 // kernel<->user IPC; cannot egress, but runtimes enumerate interfaces with it
 
 	// Offset into struct seccomp_data of socket()'s first argument (domain). args

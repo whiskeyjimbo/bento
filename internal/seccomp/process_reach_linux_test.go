@@ -65,6 +65,27 @@ func TestBlockProcessReachHelper(t *testing.T) {
 		fmt.Println("GET_ROBUST_LIST_NOT_EPERM", errno)
 		os.Exit(9)
 	}
+	// process_vm_readv / process_vm_writev (cross-process memory read/write) must be
+	// EPERM, not the ESRCH/EFAULT an unfiltered zero-arg call would give.
+	if _, _, errno := unix.Syscall6(unix.SYS_PROCESS_VM_READV, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("PROCESS_VM_READV_NOT_EPERM", errno)
+		os.Exit(10)
+	}
+	if _, _, errno := unix.Syscall6(unix.SYS_PROCESS_VM_WRITEV, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("PROCESS_VM_WRITEV_NOT_EPERM", errno)
+		os.Exit(11)
+	}
+	// kcmp (a same-process/same-fd comparison oracle) must be EPERM.
+	if _, _, errno := unix.Syscall6(unix.SYS_KCMP, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("KCMP_NOT_EPERM", errno)
+		os.Exit(12)
+	}
+	// perf_event_open (samples another process's instruction pointers) must be EPERM,
+	// not the EFAULT an unfiltered null-attr call would give.
+	if _, _, errno := unix.Syscall6(unix.SYS_PERF_EVENT_OPEN, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+		fmt.Println("PERF_EVENT_OPEN_NOT_EPERM", errno)
+		os.Exit(13)
+	}
 	// pidfd_open must STILL work: Go's child management depends on it, so it must not
 	// be caught by the block.
 	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(os.Getpid()), 0, 0)
