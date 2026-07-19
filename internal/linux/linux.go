@@ -335,8 +335,9 @@ func writeEmptyFile(path string) error {
 func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func(), count func() int, admitted func() []enforce.HostPort, err error) {
 	c := &egressCollector{}
 	// Discover the host's NAT64 prefix so a synthesized RFC1918 target cannot reach
-	// the LAN through a permitted public hostname (RFC 7050). Real egress only; the
-	// profiling path uses startProxyWith directly and never dials upstream.
+	// the LAN through a permitted public hostname (RFC 7050). The profiling path
+	// applies the same discovery in its forwarding (allowNetwork) mode, where it too
+	// dials upstream.
 	opts := []proxy.Option{proxy.WithNAT64Discovery(proxy.DefaultNAT64Lookup)}
 	if gate != nil {
 		opts = append(opts, proxy.WithGatekeeper(gate))

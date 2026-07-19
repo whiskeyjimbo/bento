@@ -110,7 +110,14 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 // Either way the host is recorded, so the proposed manifest is the same.
 func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(host, port string)) (func(), error) {
 	var opts []proxy.Option
-	if !allowNetwork {
+	if allowNetwork {
+		// Forwarding mode dials upstream, so it needs the same SSRF hardening as the
+		// real-egress proxy: without NAT64 discovery, guardUpstream decodes only the
+		// well-known Pref64 and a custom-prefix AAAA embedding an RFC1918 address would
+		// be dialed - and the profiling policy's allowlist is *:*, so the hostname check
+		// does not backstop it.
+		opts = append(opts, proxy.WithNAT64Discovery(proxy.DefaultNAT64Lookup))
+	} else {
 		opts = append(opts, proxy.WithoutEgress())
 	}
 	stop, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
