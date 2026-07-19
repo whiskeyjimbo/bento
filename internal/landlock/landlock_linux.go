@@ -144,13 +144,25 @@ func Available() bool {
 	return effectiveABI() >= 1
 }
 
+// signalScopeErratum is the errata bit go-landlock checks: when it is clear the
+// kernel's ABI ≥ 6 has an unfixed signal-scoping bug, so go-landlock enforces only v5.
+const signalScopeErratum = 0x2
+
 // effectiveABI is the Landlock ABI this build will actually enforce: the kernel's
 // version, or 0 when the kernel lacks Landlock or reports a version below the floor
 // go-landlock requires (raised to 8 by the landlocktsync build tag). It mirrors
-// go-landlock's DetectedABIVersion so Available and RestrictDegraded cannot diverge -
-// the raw syscall alone would accept a version BestEffort turns into a silent no-op.
+// go-landlock's DetectedABIVersion - including its errata downgrade of an ABI ≥ 6 with
+// the signal-scoping fix absent to v5 - so Available and RestrictDegraded gate on the
+// same version BestEffort enforces; the raw syscall alone would accept a version
+// BestEffort then turns into a silent no-op.
 func effectiveABI() int {
 	v, err := llsys.LandlockGetABIVersion()
+	if err == nil && v >= 6 {
+		// A failed errata read is treated as "not fixed", matching go-landlock.
+		if errata, eerr := llsys.LandlockGetErrata(); eerr != nil || errata&signalScopeErratum == 0 {
+			v = 5
+		}
+	}
 	return flooredABI(v, err)
 }
 
