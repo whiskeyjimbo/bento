@@ -260,11 +260,18 @@ func inspect(pid int, record func(string, bool), res *Result) {
 		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
 		record(path, regs.Rdx&writeFlags != 0)
 	case sysOpenat2:
-		// openat2(dirfd, path, struct open_how *how, size): the flags are the first
-		// u64 of *how, not a register. Increasingly used (Rust std, systemd tools),
-		// so a program using it must not profile as touching nothing.
-		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
-		record(path, openHowWrite(pid, uintptr(regs.Rdx)))
+		// openat2(dirfd, path, struct open_how *how, size): flags and resolve are fields
+		// of *how, not registers. Increasingly used (Rust std, systemd tools), so a
+		// program using it must not profile as touching nothing.
+		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
+		path := readString(pid, uintptr(regs.Rsi))
+		// RESOLVE_IN_ROOT/RESOLVE_BENEATH resolve an absolute path relative to the dirfd,
+		// not the real root - so /etc/hosts opened under a dirfd is <dirfd>/etc/hosts.
+		// Anchor it at the dirfd rather than recording the misleading real-root name.
+		if resolve&(unix.RESOLVE_IN_ROOT|unix.RESOLVE_BENEATH) != 0 {
+			path = strings.TrimPrefix(path, "/")
+		}
+		record(resolveAt(pid, int32(regs.Rdi), path), ok && flags&uint64(writeFlags) != 0)
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
 		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
@@ -357,20 +364,22 @@ func resolveAt(pid int, dirfd int32, path string) string {
 	return filepath.Join(dir, path)
 }
 
-// openHowWrite reads open_how.flags - the first u64 of the struct openat2 points
-// at - and reports whether the open requested write access.
-func openHowWrite(pid int, addr uintptr) bool {
+// openHow reads the openat2 open_how struct at addr: flags at offset 0 and resolve
+// at offset 16 (mode, at offset 8, is not needed). ok is false if the read fails, in
+// which case the caller treats the open as a non-write with default (real-root)
+// resolution - the fail-safe for an unreadable /proc/<pid>/mem.
+func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
-		return false
+		return 0, 0, false
 	}
 	defer mem.Close()
 
-	var buf [8]byte
-	if n, _ := mem.ReadAt(buf[:], int64(addr)); n < 8 {
-		return false
+	var buf [24]byte
+	if n, _ := mem.ReadAt(buf[:], int64(addr)); n < 24 {
+		return 0, 0, false
 	}
-	return binary.LittleEndian.Uint64(buf[:])&uint64(writeFlags) != 0
+	return binary.LittleEndian.Uint64(buf[0:8]), binary.LittleEndian.Uint64(buf[16:24]), true
 }
 
 // readString reads a NUL-terminated string from the traced process's memory.

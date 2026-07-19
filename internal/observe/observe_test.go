@@ -617,3 +617,54 @@ libc.renameat2(-100, (d+'/rat_src').encode(), -100, (d+'/rat_dst').encode(), 0)
 		}
 	}
 }
+
+// openat2 with RESOLVE_IN_ROOT resolves an absolute path relative to the dirfd, not
+// the real root, so the profiler must record it anchored at the dirfd - recording
+// the bare "/etc/hosts" would name a host path the run never opened (bv2-2yi).
+func TestTraceOpenat2ResolveInRoot(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "etc", "hosts"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// openat2(dirfd=<dir>, "/etc/hosts", {resolve: RESOLVE_IN_ROOT}) -> <dir>/etc/hosts.
+	script := fmt.Sprintf(`
+import ctypes, os
+class how(ctypes.Structure):
+    _fields_ = [("flags", ctypes.c_uint64), ("mode", ctypes.c_uint64), ("resolve", ctypes.c_uint64)]
+d = %q
+dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+h = how(0, 0, 0x10)  # RESOLVE_IN_ROOT
+libc = ctypes.CDLL(None, use_errno=True)
+rc = libc.syscall(437, dfd, b"/etc/hosts", ctypes.byref(h), ctypes.sizeof(h))
+if rc < 0:
+    raise SystemExit("openat2 failed")
+`, dir)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	want := filepath.Join(dir, "etc", "hosts")
+	var anchored, misattributed bool
+	for _, a := range res.Accesses {
+		if a.Path == want {
+			anchored = true
+		}
+		if a.Path == "/etc/hosts" {
+			misattributed = true
+		}
+	}
+	if misattributed {
+		t.Errorf("recorded /etc/hosts (real-root mis-attribution); accesses: %v", res.Accesses)
+	}
+	if !anchored {
+		t.Errorf("RESOLVE_IN_ROOT open not anchored at the dirfd; want %q; accesses: %v", want, res.Accesses)
+	}
+}
