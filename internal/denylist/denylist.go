@@ -49,28 +49,30 @@ func Home(home string) []Rule {
 	join := func(p string) string { return filepath.Join(home, p) }
 
 	dirs := []string{
-		".ssh",             // private keys, authorized_keys
-		".aws",             // credentials, config
-		".config/gcloud",   // application-default credentials, tokens
-		".azure",           // access tokens
-		".kube",            // cluster credentials
-		".docker",          // registry auth
-		".gnupg",           // secret keyrings
-		".password-store",  // pass(1)
-		".terraform.d",     // credentials.tfrc.json
-		".config/gh",       // GitHub CLI tokens
-		".local/share/gh",  // GitHub CLI tokens
-		".config/rclone",   // remote storage tokens
-		".oci",             // Oracle Cloud keys
-		".config/doctl",    // DigitalOcean tokens
-		".config/op",       // 1Password CLI
-		".config/keybase",  // Keybase keys and tokens
-		".pki",             // NSS certificate/key databases
-		".local/share/pki", // XDG location for the same
-		".minisign",        // minisign secret keys
-		".config/mutt",     // XDG mutt config (imap_pass, exec knobs)
-		".config/msmtp",    // XDG msmtp config
-		".mutt",            // ~/.mutt/muttrc and sourced files
+		".ssh",              // private keys, authorized_keys
+		".aws",              // credentials, config
+		".config/gcloud",    // application-default credentials, tokens
+		".azure",            // access tokens
+		".kube",             // cluster credentials
+		".docker",           // registry auth
+		".gnupg",            // secret keyrings
+		".password-store",   // pass(1)
+		".terraform.d",      // credentials.tfrc.json
+		".config/gh",        // GitHub CLI tokens
+		".local/share/gh",   // GitHub CLI tokens
+		".config/rclone",    // remote storage tokens
+		".oci",              // Oracle Cloud keys
+		".config/doctl",     // DigitalOcean tokens
+		".config/op",        // 1Password CLI
+		".config/keybase",   // Keybase keys and tokens
+		".pki",              // NSS certificate/key databases
+		".local/share/pki",  // XDG location for the same
+		".minisign",         // minisign secret keys
+		".config/mutt",      // XDG mutt config (imap_pass, exec knobs)
+		".config/msmtp",     // XDG msmtp config
+		".mutt",             // ~/.mutt/muttrc and sourced files
+		".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
+		".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 
 		// OS secret stores: the master keyring behind saved passwords and tokens.
 		".local/share/keyrings",    // GNOME Keyring
@@ -80,6 +82,10 @@ func Home(home string) []Rule {
 		".kde4/share/apps/kwallet", // KDE Wallet (legacy KDE4 path)
 		".git-credential-cache",    // git credential-cache helper socket dir
 		".cache/git/credential",    // modern git credential-cache socket location
+
+		// Mail clients: saved IMAP/SMTP passwords in the profile store.
+		".thunderbird",      // Thunderbird
+		".config/evolution", // GNOME Evolution
 
 		// Browser profiles: cookies, session tokens, and saved-password databases.
 		".mozilla",               // Firefox
@@ -276,14 +282,20 @@ func Runtime() []Rule {
 // write access to. A script with write access to a repository must not be able
 // to install a git hook or an editor task that runs on the host the next time
 // the user opens the project.
+//
+// The editor config directories are shielded whole, not file-by-file: .vscode holds
+// settings.json (git.path, go.alternateTools, python.defaultInterpreterPath - each
+// names a binary the editor runs) alongside tasks.json and launch.json, and .idea holds
+// runConfigurations/*.xml and *.iml beside workspace.xml. Naming individual files leaves
+// their siblings plantable, the same reason .git/hooks is a directory shield. Writes are
+// denied but reads stay allowed, so a build that consults the config still works.
 func Workspace(dir string) []Rule {
 	join := func(p string) string { return filepath.Join(dir, p) }
 	return []Rule{
 		{Path: join(".git/hooks"), Deny: DenyWrite, Dir: true},
 		{Path: join(".git/config"), Deny: DenyWrite},
 		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
-		{Path: join(".vscode/tasks.json"), Deny: DenyWrite},
-		{Path: join(".vscode/launch.json"), Deny: DenyWrite},
-		{Path: join(".idea/workspace.xml"), Deny: DenyWrite},
+		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
+		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
 	}
 }

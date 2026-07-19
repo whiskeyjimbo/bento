@@ -209,7 +209,7 @@ func TestCreatedShieldDirsExcludesFileShields(t *testing.T) {
 	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
 		t.Errorf("the .git/hooks directory shield should be scheduled for cleanup; got %v", dirs)
 	}
-	for _, f := range []string{"/home/u/proj/.git/config", "/home/u/proj/.vscode/tasks.json"} {
+	for _, f := range []string{"/home/u/proj/.git/config", "/home/u/proj/.git/config.worktree"} {
 		if containsStr(dirs, f) {
 			t.Errorf("file shield %s must not be scheduled for cleanup (os.Remove would delete a real file)", f)
 		}
@@ -283,15 +283,15 @@ func TestUnbornWorkspaceDirIsShielded(t *testing.T) {
 // Likewise an unborn shell profile: a script must not be able to create ~/.bashrc
 // and gain persistence.
 // The unborn write-denied FILE shield (an empty read-only file) likewise now lives
-// under a workspace grant: an editor-tasks file that does not exist yet must be
-// shielded against creation.
+// under a workspace grant: a git config that does not exist yet must be shielded
+// against creation.
 func TestUnbornWorkspaceFileIsShielded(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
 	args := compileOrFail(t, p, testSandbox("/home/u/proj/src"))
 
 	found := false
 	for j := 0; j+2 < len(args); j++ {
-		if args[j] == "--ro-bind" && args[j+1] == "/tmp/shield" && args[j+2] == "/home/u/proj/.vscode/tasks.json" {
+		if args[j] == "--ro-bind" && args[j+1] == "/tmp/shield" && args[j+2] == "/home/u/proj/.git/config" {
 			found = true
 		}
 	}

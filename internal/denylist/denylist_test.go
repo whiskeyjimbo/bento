@@ -25,6 +25,10 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.git-credential-cache", // git credential cache
 		"/home/u/.mutt",                 // mutt config (imap_pass) hidden
 		"/home/u/.config/mutt",          // XDG mutt config
+		"/home/u/.subversion/auth",      // SVN plaintext passwords
+		"/home/u/.config/openstack",     // OpenStack clouds.yaml/secure.yaml
+		"/home/u/.thunderbird",          // Thunderbird saved mail passwords
+		"/home/u/.config/evolution",     // Evolution saved mail passwords
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -103,8 +107,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// Login-persistence directories: readable, but no new entry may be created,
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
-		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
-		"/home/u/.config/containers",        // podman/skopeo exec-redirect knobs
+		"/home/u/.bashrc.d",          // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
+		"/home/u/.config/containers", // podman/skopeo exec-redirect knobs
 		"/home/u/.config/autostart",
 		"/home/u/.config/systemd/user",
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
@@ -128,6 +132,34 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		}
 		if r.Deny != DenyWrite || !r.Dir {
 			t.Errorf("%s: got Deny=%v Dir=%v, want DenyWrite directory", p, r.Deny, r.Dir)
+		}
+	}
+}
+
+// A write grant to a repository must not let a script plant an editor config that
+// runs a host binary the next time the project is opened. The editor dirs are shielded
+// whole (DenyWrite directories) so no individual file - .vscode/settings.json,
+// .idea/runConfigurations/*.xml - is left plantable by enumeration.
+func TestWorkspaceShieldsEditorConfigDirs(t *testing.T) {
+	byPath := make(map[string]Rule)
+	for _, r := range Workspace("/w") {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{"/w/.vscode", "/w/.idea"} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s: got Deny=%v Dir=%v, want DenyWrite directory", p, r.Deny, r.Dir)
+		}
+	}
+	// The old per-file entries must be gone: a bare settings.json shield would mean the
+	// directory itself is writable and its siblings plantable.
+	for _, p := range []string{"/w/.vscode/tasks.json", "/w/.vscode/settings.json", "/w/.idea/workspace.xml"} {
+		if _, ok := byPath[p]; ok {
+			t.Errorf("%s is shielded as an individual file; the whole dir must be shielded instead", p)
 		}
 	}
 }
