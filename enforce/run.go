@@ -114,6 +114,11 @@ func (o Options) admit(r Report) error {
 		if short := r.shortfall(TierCore, Unavailable); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be enforced at all on this host", Short: short}
 		}
+		// A requested-but-unenforceable resource limit is deliberately not re-checked
+		// here: --allow-degraded waives it along with the confinement layers, so an
+		// untrusted target may run without its memory/pid cap and could exhaust host
+		// resources. The default branch refuses exactly that; the flag accepts the risk,
+		// which is its purpose - the operator has taken on the reduced guarantees.
 	default:
 		// Core guarantees hold on every supported platform, so falling short of
 		// one means silently substituting a weaker sandbox. Refuse instead, and
