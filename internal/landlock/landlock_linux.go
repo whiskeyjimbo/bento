@@ -11,12 +11,17 @@
 package landlock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
+
+// errUnavailableABI is returned by RestrictDegraded when the effective Landlock ABI is
+// below the usable floor, so the degraded tier refuses rather than run unconfined.
+var errUnavailableABI = errors.New("landlock: kernel ABI unavailable, refusing to run the degraded tier unconfined")
 
 // Restrict makes the whole visible filesystem read-and-execute only, except the
 // given writable paths. It is applied inside the sandbox after the mount
@@ -71,6 +76,13 @@ func RestrictTo(read, write []string) error {
 // access) exists in ABI v1, the floor the probe already gates the tier on; there is
 // no newer right whose silent loss would weaken the stated guarantee.
 func RestrictDegraded(read, write, exec []string) error {
+	// BestEffort silently restricts nothing when it detects ABI 0 (an empty ruleset
+	// returns success), which for this tier - where Landlock is the only filesystem
+	// guarantee - is a fail-open. Refuse up front on the same effective ABI the gate
+	// uses, so a run never reaches the target believing it is confined when it is not.
+	if effectiveABI() < 1 {
+		return errUnavailableABI
+	}
 	var rules []ll.Rule
 	classify := func(paths []string, dirRule, fileRule func(...string) ll.FSRule) {
 		var dirs, files []string
@@ -124,7 +136,29 @@ func existing(paths []string) []string {
 // Landlock is usable, and errors (ENOSYS when the kernel lacks it, EOPNOTSUPP when it
 // is compiled but disabled), so it reflects real usability with no filesystem
 // dependency.
+//
+// It reports the EFFECTIVE ABI, floored the same way BestEffort's own detection floors
+// it, not the raw kernel version: a raw version this build would silently downgrade to
+// a no-op must read as unavailable here, or the gate and the enforcement disagree.
 func Available() bool {
+	return effectiveABI() >= 1
+}
+
+// effectiveABI is the Landlock ABI this build will actually enforce: the kernel's
+// version, or 0 when the kernel lacks Landlock or reports a version below the floor
+// go-landlock requires (raised to 8 by the landlocktsync build tag). It mirrors
+// go-landlock's DetectedABIVersion so Available and RestrictDegraded cannot diverge -
+// the raw syscall alone would accept a version BestEffort turns into a silent no-op.
+func effectiveABI() int {
 	v, err := llsys.LandlockGetABIVersion()
-	return err == nil && v >= 1
+	return flooredABI(v, err)
+}
+
+// flooredABI applies the go-landlock minimum-ABI floor to a raw ABI-version result,
+// returning 0 (unavailable) on a syscall error or a version below the floor.
+func flooredABI(v int, err error) int {
+	if err != nil || v < minRequiredABI() {
+		return 0
+	}
+	return v
 }
