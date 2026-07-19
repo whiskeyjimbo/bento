@@ -14,3 +14,6 @@ func RestrictDegraded(read, write, exec []string) error { return nil }
 
 // Available reports false: Landlock is Linux-only.
 func Available() bool { return false }
+
+// TruncateRestricted reports false: Landlock is Linux-only.
+func TruncateRestricted() bool { return false }

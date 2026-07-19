@@ -29,7 +29,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccomp.Supported() && seccomp.EgressSupported()
-	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available(), degradedFencesOK)
+	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available(), landlock.TruncateRestricted(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -138,7 +138,7 @@ func limitsLayers(nsOK, scopeOK bool, scopeReason string, cpuState enforce.State
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(nsOK bool, nsReason string, landlockAvail, degradedFencesOK bool) (enforce.State, string) {
+func filesystemLayer(nsOK bool, nsReason string, landlockAvail, truncateRestricted, degradedFencesOK bool) (enforce.State, string) {
 	switch {
 	case nsOK && landlockAvail:
 		return enforce.Enforced, "Landlock backstop active"
@@ -166,11 +166,23 @@ func filesystemLayer(nsOK bool, nsReason string, landlockAvail, degradedFencesOK
 			"network namespace " +
 			"(seccomp blocks IP egress but not netlink interface enumeration, nor a unix socket to a host " +
 			"daemon, including an abstract-namespace one no grant is needed to reach). It confines filesystem " +
-			"read/write/exec, nothing more (" + nsReason + ")"
+			"read/write/exec, nothing more (" + nsReason + ")" + truncateResidual(truncateRestricted)
 	default:
 		return enforce.Unavailable, nsReason +
 			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
 	}
+}
+
+// truncateResidual is the degraded-tier disclosure clause for a kernel whose Landlock
+// ABI (< 3) cannot restrict truncate: a read-granted file can still be zeroed, since
+// Landlock leaves an unhandled right unrestricted and this tier has no mount namespace
+// behind it. It is empty when truncate is restricted.
+func truncateResidual(truncateRestricted bool) string {
+	if truncateRestricted {
+		return ""
+	}
+	return ". Additionally this kernel's Landlock ABI is below 3, which cannot restrict truncate, so a " +
+		"read-only granted file can still be truncated (zeroed) - an integrity gap this tier cannot close"
 }
 
 // usableNamespaces reports whether bwrap is installed and can create here the

@@ -100,6 +100,14 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if err := seccomp.BlockProcessReach(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the cross-process block: %w", err)
 	}
+	// The target inherits the parent's controlling terminal on stdin (this tier execs
+	// it directly, with no bwrap --new-session to detach it), so block the ioctls that
+	// forge terminal input - otherwise the target could push a command line into the
+	// shell that reads after the sandbox exits. Landlock's ioctl_dev right would also
+	// cover this, but only at ABI 5 (kernel 6.10+), newer than this tier's kernels.
+	if err := seccomp.BlockTerminalInjection(); err != nil {
+		return 0, fmt.Errorf("launcher: refusing to run - could not install the terminal-injection block: %w", err)
+	}
 
 	// Landlock last, so the setup above (which does not touch confined paths) is not
 	// itself restricted. A failure is fatal - this is the primary FS confinement.

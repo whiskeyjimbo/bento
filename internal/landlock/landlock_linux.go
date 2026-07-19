@@ -72,9 +72,16 @@ func RestrictTo(read, write []string) error {
 // right above and is kept explicit. Missing paths are skipped, as in RestrictTo.
 //
 // It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
-// ABI. That is acceptable here because every right used (read/write/execute path
-// access) exists in ABI v1, the floor the probe already gates the tier on; there is
-// no newer right whose silent loss would weaken the stated guarantee.
+// ABI. That downgrade has a sharp edge: V9 declares it HANDLES the full access-right
+// set, and BestEffort strips handled_access_fs down to the kernel's ABI - and a right
+// absent from handled_access_fs is not restricted at all. So on a kernel below ABI 3
+// (5.13-6.1) truncate is unhandled and a read-granted file can still be truncated
+// (zeroed), and below ABI 5 (pre-6.10) the ioctl_dev right is unhandled. The read/
+// write/execute access this tier grants all exists at the v1 floor, so path access is
+// confined as intended; the residual is the newer rights BestEffort silently drops.
+// The terminal-injection ioctls that make the ioctl_dev gap an escape are blocked
+// separately by seccomp (BlockTerminalInjection); the truncate residual is disclosed
+// in the degraded run report so the operator sees it on an old kernel.
 func RestrictDegraded(read, write, exec []string) error {
 	// BestEffort silently restricts nothing when it detects ABI 0 (an empty ruleset
 	// returns success), which for this tier - where Landlock is the only filesystem
@@ -142,6 +149,15 @@ func existing(paths []string) []string {
 // a no-op must read as unavailable here, or the gate and the enforcement disagree.
 func Available() bool {
 	return effectiveABI() >= 1
+}
+
+// TruncateRestricted reports whether this kernel's Landlock ABI (>= 3) can restrict
+// truncate(2). Below it, truncate is absent from handled_access_fs and therefore
+// unrestricted, so a read-only path rule does not stop the target from zeroing the
+// file. The degraded tier - which has no mount namespace behind Landlock - discloses
+// this in its run report so an operator on an old kernel sees the residual.
+func TruncateRestricted() bool {
+	return effectiveABI() >= 3
 }
 
 // signalScopeErratum is the errata bit go-landlock checks: when it is clear the
