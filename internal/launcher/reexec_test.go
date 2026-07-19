@@ -86,3 +86,16 @@ func TestDecodeLaunchRejectsUnknownExecMode(t *testing.T) {
 		t.Fatal("expected an error for an unknown exec mode")
 	}
 }
+
+// {Block:false, StrictBlock:true} is out of contract (StrictBlock is meaningful only
+// with Block). It has no wire representation, and falling through to "all" would arm
+// no filter at all - the weakest outcome for a config that asked for a strict block -
+// so encoding it must fail loudly.
+func TestExecModeStringPanicsOnStrictWithoutBlock(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected a panic for StrictBlock without Block")
+		}
+	}()
+	execModeString(Config{Block: false, StrictBlock: true})
+}

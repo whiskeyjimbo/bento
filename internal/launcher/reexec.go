@@ -79,9 +79,14 @@ func DecodeLaunch(args []string) (Config, error) {
 
 // The exec mode is carried on the wire as a string so the codec stays free of the
 // policy package (which would pull a domain import into the launcher). The mapping
-// round-trips every valid Config (StrictBlock implies Block, per Config's doc);
-// the out-of-contract {Block:false, StrictBlock:true} is not represented.
+// round-trips every valid Config (StrictBlock implies Block, per Config's doc). The
+// out-of-contract {Block:false, StrictBlock:true} has no representation and would
+// otherwise fall through to "all" - the weakest outcome for a config that named a
+// strict block - so it panics rather than silently disarm the filter.
 func execModeString(cfg Config) string {
+	if !cfg.Block && cfg.StrictBlock {
+		panic("launcher: StrictBlock set without Block; no exec mode encodes it")
+	}
 	switch {
 	case !cfg.Block:
 		return "all"
