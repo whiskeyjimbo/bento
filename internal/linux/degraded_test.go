@@ -17,6 +17,24 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
+// A signal-killed target must surface as 128+signal, matching the bwrap and supervise
+// paths: the degraded exec:none path reads cmd.ProcessState.ExitCode() directly, which
+// is -1 for a signal and would otherwise reach the caller as 255. exitCodeOf does the
+// mapping; verify it against a real signaled process.
+func TestExitCodeOfMapsSignalToConvention(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "kill -TERM $$")
+	_ = cmd.Run() // exits via SIGTERM; ProcessState is set regardless of the error
+	if got := exitCodeOf(cmd.ProcessState); got != 128+int(syscall.SIGTERM) {
+		t.Errorf("signaled target: exitCodeOf = %d, want %d", got, 128+int(syscall.SIGTERM))
+	}
+
+	ok := exec.Command("sh", "-c", "exit 42")
+	_ = ok.Run()
+	if got := exitCodeOf(ok.ProcessState); got != 42 {
+		t.Errorf("normal exit: exitCodeOf = %d, want 42", got)
+	}
+}
+
 // The degraded (no-bwrap) tier must actually confine: a granted read works, an
 // ungranted read is denied by Landlock, and an IP socket is refused by the seccomp
 // egress block. The probe is a static (CGO-free) Go binary run as its own entrypoint

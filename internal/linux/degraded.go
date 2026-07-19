@@ -120,10 +120,21 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
-		return enforce.Result{ExitCode: cmd.ProcessState.ExitCode(), Report: report}, nil
+		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
+}
+
+// exitCodeOf maps a finished process's status to a conventional exit code: a
+// signal-killed target reports 128+signal, matching the bwrap and supervise paths
+// (and what a shell returns). os.ProcessState.ExitCode returns -1 for a signal, which
+// would otherwise surface to the caller as 255.
+func exitCodeOf(st *os.ProcessState) int {
+	if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return st.ExitCode()
 }
 
 // killProcessGroup SIGKILLs every process still in the launcher's group. The
