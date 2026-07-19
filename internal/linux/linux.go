@@ -217,6 +217,13 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	if err != nil {
 		return sandbox{}, noop, fmt.Errorf("linux: resolving home directory: %w", err)
 	}
+	// os.UserHomeDir returns $HOME verbatim, which a caller can set to a relative path.
+	// The credential shields join onto it (denylist.Home), so a relative home yields
+	// relative Rule.Path values that bwrap would apply at the wrong (or no) location,
+	// silently leaving the real credential dirs exposed. Refuse it rather than shield air.
+	if !filepath.IsAbs(home) {
+		return sandbox{}, noop, fmt.Errorf("linux: home directory %q is not absolute", home)
+	}
 
 	dir, err := os.MkdirTemp("", "bento-run-")
 	if err != nil {

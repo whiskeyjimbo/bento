@@ -155,7 +155,10 @@ func partialRunWarning(obs profile.Observation) string {
 // shielded inside it) is legitimate and kept - only a grant at or under a shield goes.
 func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped []string) {
 	home, _ := os.UserHomeDir()
-	if home == "" {
+	// A relative home yields relative shield paths that never match the absolute grants
+	// below, silently keeping a grant this filter meant to drop. Treat it like an unset
+	// home and skip the clamp; the run-time refusal is the backstop either way.
+	if home == "" || !filepath.IsAbs(home) {
 		return reads, writes, nil
 	}
 	var shields []string

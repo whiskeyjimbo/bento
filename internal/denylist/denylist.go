@@ -218,7 +218,11 @@ func Home(home string) []Rule {
 		for _, b := range xdgBases {
 			if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
 				out := []string{join(entry)}
-				if base := os.Getenv(b.env); base != "" && filepath.Clean(base) != join(b.def) {
+				// A relative XDG base is invalid per the spec and ignored by conforming
+				// tools, which fall back to the default location - already shielded via
+				// join(entry). Emitting a relative Rule.Path here would shield nothing at
+				// the intended place, so drop it and rely on the default shield.
+				if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
 					out = append(out, filepath.Join(base, rel))
 				}
 				return out

@@ -1,6 +1,9 @@
 package denylist
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // The deny-list is a security invariant: dropping an entry silently re-exposes a
 // credential store. This guards the high-value stores that are easy to forget -
@@ -204,6 +207,18 @@ func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	} {
 		if !byPath[p] {
 			t.Errorf("expected a shield at %q (XDG relocation), missing", p)
+		}
+	}
+}
+
+// A relative XDG base is invalid per the spec and ignored by conforming tools. Emitting
+// a relative Rule.Path would shield nothing at the intended location while looking like
+// coverage, so the base is dropped and only the (absolute) default location is shielded.
+func TestHomeIgnoresRelativeXDGBase(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "relcfg")
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative XDG base leaked a non-absolute shield path %q", r.Path)
 		}
 	}
 }

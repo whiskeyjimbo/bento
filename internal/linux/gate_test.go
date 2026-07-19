@@ -168,3 +168,21 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 		t.Error("bentoPath must be set on every sandbox: the launcher always runs")
 	}
 }
+
+// $HOME can be set to a relative path. The credential shields join onto it, so a
+// relative home would produce relative (non-enforcing) Rule.Path values that bwrap
+// applies at the wrong place, silently leaving the real stores exposed. newSandbox
+// must refuse it rather than shield air.
+func TestNewSandboxRefusesRelativeHome(t *testing.T) {
+	t.Setenv("HOME", "relhome")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
+	_, _, err := newSandbox(p, "bento-placeholder", false, nil)
+	if err == nil || !strings.Contains(err.Error(), "not absolute") {
+		t.Fatalf("newSandbox with a relative HOME: err = %v, want it to reject a non-absolute home", err)
+	}
+}
