@@ -25,6 +25,44 @@ func find(res Result, path string) (Access, bool) {
 // The observer must see the files a program opens (distinguishing read from
 // write) and notice when it spawns a subprocess. It runs a real shell script and
 // checks the observations against what the script did.
+// connect(2) to an AF_UNIX pathname socket must be recorded as a READ on the socket
+// path, so a host service the target reaches (an agent, a session bus, docker.sock)
+// shows up on the consent surface. Recording is at syscall entry, so a connect to a
+// nonexistent socket is still captured.
+func TestTraceRecordsUnixConnect(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "svc.sock")
+	script := fmt.Sprintf(`
+import socket
+c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    c.connect(%q)
+except OSError:
+    pass
+c.close()
+`, target)
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	found := false
+	for _, a := range res.Accesses {
+		if a.Path == target {
+			found = true
+			if a.Write {
+				t.Errorf("connect target recorded as a write, want a read: %+v", a)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no access recorded for connect target %q; accesses: %v", target, res.Accesses)
+	}
+}
+
 func TestTraceObservesOpensAndExec(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")

@@ -344,18 +344,31 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// bind(2) on an AF_UNIX pathname socket creates a socket file - a directory write.
 	// The path is inside the sockaddr, not a register, and is bounded by addrlen rather
 	// than NUL-terminated, so it needs its own read. Abstract and unnamed sockets make
-	// no filesystem entry and are skipped by unixBindPath.
+	// no filesystem entry and are skipped by sockaddrUnixPath.
 	case unix.SYS_BIND:
-		if path := unixBindPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
+		if path := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
 			record(resolveAt(pid, atFdCwd, path), true)
+		}
+	// connect(2) to an AF_UNIX pathname socket needs that socket present in the sandbox;
+	// a read-only bind is enough (connect succeeds through it - netns does not fence a
+	// path socket), so record it as a READ on the socket path. This surfaces a host
+	// service the target reaches - the SSH/gpg agent, a session bus, docker.sock - on the
+	// profiling consent surface, where the user grants (or refuses) that specific socket.
+	// It is discovery only: a missed connect leaves the socket ungranted, so the run
+	// denies it. connect and bind share the (sockfd, addr, addrlen) shape. Abstract
+	// sockets make no filesystem entry and are netns-fenced in this tier, so they are
+	// skipped - nothing to grant.
+	case unix.SYS_CONNECT:
+		if path := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
+			record(resolveAt(pid, atFdCwd, path), false)
 		}
 	}
 }
 
-// unixBindPath returns the filesystem path a bind(2) would create, or "" when the call
-// makes no directory entry. It reads addrlen bytes of the sockaddr from the traced
-// process and hands them to unixSockaddrPath for the parse.
-func unixBindPath(pid int, addr uintptr, addrlen uint64) string {
+// sockaddrUnixPath returns the filesystem path an AF_UNIX bind(2) or connect(2) names,
+// or "" when the address makes no filesystem entry. It reads addrlen bytes of the
+// sockaddr from the traced process and hands them to unixSockaddrPath for the parse.
+func sockaddrUnixPath(pid int, addr uintptr, addrlen uint64) string {
 	// sockaddr_un is a 2-byte family plus up to 108 bytes of sun_path; a larger addrlen
 	// is rejected by the kernel (EINVAL), so it names no file.
 	if addrlen <= 2 || addrlen > 110 {
