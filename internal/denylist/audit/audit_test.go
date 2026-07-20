@@ -37,6 +37,53 @@ rmenv GITHUB_TOKEN
 	}
 }
 
+// A commented-out directive or a mid-section note between a section header and its
+// entries must not be mistaken for the section. firejail's X11-autostart block carries
+// both, and the old last-comment-wins attribution pulled the entries under a disabled
+// "# blacklist ${HOME}/.xpra" - out of bento's exec threat model - so .xinitrc and
+// friends were only counted, never gated. The header, not the last comment, governs;
+// and an intra-section blank line must not orphan the entries after it. Built from
+// firejail syntax inline (not a vendored profile) so it exercises the real parser.
+func TestParseFirejailAttributesSectionToHeaderNotLastComment(t *testing.T) {
+	const content = `# Top secret
+blacklist ${HOME}/.ssh
+
+blacklist ${HOME}/.gnupg
+
+# X11 session autostart
+blacklist ${HOME}/.config/autostart
+# disabled upstream, breaks nested X:
+# blacklist ${HOME}/.xpra
+#?HAS_X11: blacklist ${HOME}/.ICEauthority
+blacklist ${HOME}/.xinitrc
+blacklist ${HOME}/.config/i3
+`
+	byPath := map[string]Candidate{}
+	for _, c := range ParseFirejail(content, "/HOME", "/run/user/1000") {
+		byPath[c.Path] = c
+	}
+
+	for _, p := range []string{"/HOME/.config/autostart", "/HOME/.xinitrc", "/HOME/.config/i3"} {
+		c, ok := byPath[p]
+		if !ok {
+			t.Fatalf("%s was not parsed: %+v", p, byPath)
+		}
+		if c.Section != "X11 session autostart" {
+			t.Errorf("%s attributed to section %q, want the header \"X11 session autostart\"", p, c.Section)
+		}
+		if !inScopeSection(c.Section) {
+			t.Errorf("%s (section %q) must classify in-scope - it is a host-exec vector", p, c.Section)
+		}
+	}
+	// The intra-section blank between .ssh and .gnupg must not orphan .gnupg out of the
+	// secret section it belongs to.
+	for _, p := range []string{"/HOME/.ssh", "/HOME/.gnupg"} {
+		if c := byPath[p]; c.Section != "Top secret" {
+			t.Errorf("%s attributed to %q, want \"Top secret\"", p, c.Section)
+		}
+	}
+}
+
 func TestDiffCoverageAndClass(t *testing.T) {
 	rules := []denylist.Rule{
 		{Path: "/HOME/.ssh", Deny: denylist.DenyAll, Dir: true},

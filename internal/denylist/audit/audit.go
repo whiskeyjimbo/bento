@@ -78,15 +78,27 @@ type Gap struct {
 func ParseFirejail(content, home, runUser string) []Candidate {
 	var out []Candidate
 	var section string
+	headerCaptured := false
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
+			// A blank line opens a new block: the next header comment replaces the
+			// section. The prior section is kept until then, so an intra-section blank
+			// (firejail spaces related entries) does not orphan the entries after it.
+			headerCaptured = false
 			continue
 		}
 		if after, ok := strings.CutPrefix(line, "#"); ok {
-			// The most recent comment is the current section; approximate but firejail
-			// groups its entries under a header comment, so the last one wins.
-			section = strings.TrimSpace(after)
+			// Only the first comment of a block is its section header. A later comment -
+			// a mid-section note or a directive firejail disabled by prefixing '#' -
+			// must not reattribute the entries below it: the old last-comment-wins rule
+			// let a commented-out "# blacklist ${HOME}/.xpra" pull the X11-autostart
+			// entries out of bento's exec scope, where they were counted, never gated.
+			text := strings.TrimSpace(after)
+			if !headerCaptured && !isCommentedDirective(text) {
+				section = text
+				headerCaptured = true
+			}
 			continue
 		}
 		fields := strings.Fields(line)
@@ -110,6 +122,30 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Section: section, Raw: line})
 	}
 	return out
+}
+
+// firejailDirectives are the leading keywords of firejail profile directives. A
+// comment whose first token is one of these is a directive firejail disabled by
+// prefixing '#', not a section header: it must not become the section the entries
+// below it are attributed to. A real header is prose ("Top secret", "History files"),
+// so its first token is not a lowercase directive keyword.
+var firejailDirectives = map[string]bool{
+	"blacklist": true, "read-only": true, "read-write": true, "noblacklist": true,
+	"whitelist": true, "nowhitelist": true, "include": true, "mkdir": true,
+	"mkfile": true, "rmenv": true,
+}
+
+// isCommentedDirective reports whether a comment's body is a commented-out firejail
+// directive rather than a section header.
+func isCommentedDirective(comment string) bool {
+	fields := strings.Fields(comment)
+	// firejail gates a directive on a build condition with a leading "?COND:" token
+	// (e.g. "?HAS_X11: blacklist ${HOME}/.ICEauthority"); look past it to the directive
+	// keyword so a commented-out conditional is not mistaken for a section header.
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "?") && strings.HasSuffix(fields[0], ":") {
+		fields = fields[1:]
+	}
+	return len(fields) > 0 && firejailDirectives[fields[0]]
 }
 
 // expand resolves the firejail variables bento cares about and reports whether the
