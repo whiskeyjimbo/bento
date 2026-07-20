@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,8 +105,9 @@ func newProfileCmd() *cobra.Command {
 
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
-			if existing, err := loadDocument(out); err == nil {
-				proposed = mergePolicies(existing.Policy, proposed)
+			proposed, err = mergeExisting(out, proposed)
+			if err != nil {
+				return err
 			}
 
 			doc := manifest.Provenance{
@@ -330,6 +333,24 @@ func guessInterpreter(path string) string {
 		return "ruby"
 	default:
 		return ""
+	}
+}
+
+// mergeExisting folds proposed into an existing manifest at path so re-profiling
+// widens rather than replaces it. A path that does not exist is the first run, so
+// proposed is returned unchanged. Any other load error means a file is present at
+// --out that cannot be parsed; overwriting it would silently discard whatever grants
+// it held - contradicting the merge-not-overwrite contract the help text promises -
+// so it is refused rather than clobbered.
+func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, error) {
+	existing, err := loadDocument(path)
+	switch {
+	case err == nil:
+		return mergePolicies(existing.Policy, proposed), nil
+	case errors.Is(err, fs.ErrNotExist):
+		return proposed, nil
+	default:
+		return nil, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
 	}
 }
 

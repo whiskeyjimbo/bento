@@ -96,6 +96,10 @@ func newRunCmd() *cobra.Command {
 			}
 
 			if asJSON {
+				// The script already ran and its exit code is the result. If writing the
+				// JSON envelope fails (a redirected stdout that is full or gone), reporting
+				// that as bentoFailed would overwrite the real exit code with 125 - a lie
+				// that bento could not run the script. Warn and still pass the code through.
 				if err := writeJSON(os.Stdout, struct {
 					ExitCode          int        `json:"exit_code"`
 					Stdout            string     `json:"stdout"`
@@ -104,7 +108,7 @@ func newRunCmd() *cobra.Command {
 					ShieldedGrants    []string   `json:"shielded_grants,omitempty"`
 					Report            reportJSON `json:"report"`
 				}{res.ExitCode, out.String(), errOut.String(), res.EgressConnections, res.ShieldedGrants, toReportJSON(res.Report)}); err != nil {
-					return err
+					fmt.Fprintf(os.Stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 				}
 			} else {
 				writeShieldedGrantWarning(os.Stderr, res)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento-v2/manifest"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 	"github.com/whiskeyjimbo/bento-v2/profile"
 )
@@ -163,6 +164,51 @@ func TestPartialRunWarning(t *testing.T) {
 	w := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, ExitCode: 137})
 	if !strings.Contains(w, "signal 9") || strings.Contains(w, "exited with code") {
 		t.Errorf("signaled warning = %q, want it to name signal 9 and not the exit code", w)
+	}
+}
+
+// mergeExisting must distinguish a missing --out (first run, write fresh) from a file
+// that exists but cannot be parsed. Overwriting an unparseable manifest would silently
+// discard whatever grants it held, contradicting the merge-not-overwrite contract, so
+// a corrupt existing file is refused rather than clobbered.
+func TestMergeExisting(t *testing.T) {
+	dir := t.TempDir()
+	proposed := &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/in.txt"}}
+
+	// Missing file: the first run returns the proposal unchanged, ready to write.
+	got, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
+	if err != nil {
+		t.Fatalf("missing --out should not error (first run); got %v", err)
+	}
+	if got != proposed {
+		t.Errorf("missing --out should return the proposal unchanged")
+	}
+
+	// Corrupt file: refuse, so the prior file's grants are not silently overwritten.
+	corrupt := filepath.Join(dir, "corrupt.yaml")
+	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeExisting(corrupt, proposed); err == nil {
+		t.Errorf("a corrupt existing manifest must be refused, not overwritten")
+	}
+
+	// Valid file: its grants are merged into the proposal.
+	valid := filepath.Join(dir, "valid.yaml")
+	base := &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/prior.txt"}}
+	data, err := manifest.Marshal(base, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(valid, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := mergeExisting(valid, proposed)
+	if err != nil {
+		t.Fatalf("a valid existing manifest should merge; got %v", err)
+	}
+	if !slices.Contains(merged.Read, "/w/prior.txt") || !slices.Contains(merged.Read, "/w/in.txt") {
+		t.Errorf("merge should union prior and proposed reads; got %v", merged.Read)
 	}
 }
 
