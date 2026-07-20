@@ -102,6 +102,9 @@ func newProfileCmd() *cobra.Command {
 			for _, d := range broadWrites {
 				fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
 			}
+			for _, d := range foreignHomeShields(append(append([]string{}, proposed.Read...), proposed.Write...)) {
+				fmt.Fprintf(os.Stderr, "[bento] proposing %q - it reaches shielded credential or persistence paths in a home directory profiling did not shield; the enforced run only shields the home it executes as, so these would be exposed. Confirm the script needs it before approving.\n", d)
+			}
 
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
@@ -266,6 +269,68 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 		return kept
 	}
 	return filter(reads), filter(writes), dropped
+}
+
+// foreignHomeShields returns the proposed grants that reach a shielded path under a home
+// directory other than the profiler's own. clampShieldedGrants drops grants inside the
+// PROFILER's home shields, but a script that reaches a protected path under a different
+// home - profiled under sudo (HOME=/root) touching /home/u/.ssh, or with HOME unset so
+// the clamp is skipped - is not clamped and lands in the proposal. It is reported, not
+// dropped: a home-shaped heuristic strong enough to drop on would also gut legitimate
+// cross-home data grants (/home/u/project/data), so the reviewer decides.
+//
+// The match against denylist.Home(root) tests containment in EITHER direction: a grant
+// at or under a shield (write: ~/.ssh/id_rsa), and - the case that matters most - a grant
+// that ENCLOSES a shield (write: ~, which Synthesize produces by collapsing a file write
+// to its directory, sweeping in ~/.ssh). For the profiler's own home clampShieldedGrants
+// can safely keep an enclosing grant because the enforced run re-shields the interior;
+// for a foreign home it cannot, since the run shields only the home it executes as, so
+// both directions must warn. Both shield classes count - a foreign DenyWrite persistence
+// path (~/.config/systemd/user) is unshielded at run time just like a DenyAll credential.
+// A data path enclosing no shield still stays quiet.
+func foreignHomeShields(grants []string) []string {
+	self, _ := os.UserHomeDir()
+	selves := map[string]bool{}
+	if filepath.IsAbs(self) {
+		selves[self] = true
+		if resolved, err := filepath.EvalSymlinks(self); err == nil {
+			selves[resolved] = true
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, g := range grants {
+		root, ok := homeRoot(g)
+		if !ok || selves[root] || seen[g] {
+			continue
+		}
+		for _, r := range denylist.Home(root) {
+			if g == r.Path || underDir(r.Path, g) || underDir(g, r.Path) {
+				seen[g] = true
+				out = append(out, g)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// homeRoot reports the per-user home directory a path lives under, when the path sits
+// beneath a conventional home root (/root, /home/<user>, /Users/<user>). It is a
+// heuristic used only to warn, never to drop, so a home in an unconventional location
+// (a container image or Silverblue's /var/home) simply yields no warning rather than a
+// wrong one.
+func homeRoot(path string) (string, bool) {
+	// A cleaned absolute path splits to ["", "home", "u", ...] - segs[0] is empty.
+	segs := strings.Split(filepath.Clean(path), "/")
+	switch {
+	case len(segs) >= 2 && segs[1] == "root":
+		return "/root", true
+	case len(segs) >= 3 && (segs[1] == "home" || segs[1] == "Users"):
+		return "/" + segs[1] + "/" + segs[2], true
+	default:
+		return "", false
+	}
 }
 
 // underDir reports whether child is inside parent (parent contains child).

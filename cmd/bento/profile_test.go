@@ -69,6 +69,59 @@ func TestClampProposalDropsBroadReads(t *testing.T) {
 	}
 }
 
+// A credential path under a home OTHER than the profiler's (sudo: HOME=/root, script
+// reads /home/u/.ssh) is not caught by clampShieldedGrants, which builds shields from
+// the profiler's home only. The user chose to warn, not drop: the path SURVIVES the
+// proposal (dropping on a home-shaped guess would gut legitimate cross-home data grants)
+// and is instead surfaced by foreignHomeShields. An ordinary data path under the foreign
+// home, the profiler's own credential path, and an unconventional home location must not
+// warn.
+func TestForeignHomeShieldsWarnsButKeeps(t *testing.T) {
+	t.Setenv("HOME", "/root")
+
+	foreignSSH := "/home/realuser/.ssh"
+	p := &policy.Policy{
+		Read: []string{foreignSSH, "/home/realuser/project/data", "/root/.ssh", "/srv/app"},
+	}
+	clampProposal(p)
+
+	// Warn, don't drop: the foreign credential grant is still in the proposal.
+	if !slices.Contains(p.Read, foreignSSH) {
+		t.Errorf("a credential path under a foreign home must SURVIVE the proposal (warn, not drop); Read=%v", p.Read)
+	}
+
+	// The same path arriving as both a read and a write must warn once, not twice.
+	warned := foreignHomeShields([]string{foreignSSH, "/home/realuser/project/data", "/root/.ssh", "/srv/app", foreignSSH})
+	if !slices.Equal(warned, []string{foreignSSH}) {
+		t.Errorf("foreignHomeShields = %v, want exactly [%q] (deduped, only the credential shield under a foreign home)", warned, foreignSSH)
+	}
+
+	// A grant that ENCLOSES a foreign shield must warn too: Synthesize collapses a file
+	// write to its directory, so a script writing /home/realuser/notes.txt proposes
+	// write: /home/realuser - which sweeps in ~/.ssh yet is neither at nor under it. The
+	// enforced run shields only the home it runs as, so a foreign home stays exposed.
+	for _, g := range []string{"/home/realuser", "/home/realuser/.config"} {
+		if len(foreignHomeShields([]string{g})) == 0 {
+			t.Errorf("%q encloses foreign credential shields and must warn", g)
+		}
+	}
+	// A foreign DenyWrite persistence path (unshielded at run time) must warn, not just
+	// DenyAll credentials.
+	if len(foreignHomeShields([]string{"/home/realuser/.config/systemd/user"})) == 0 {
+		t.Error("a foreign persistence path (~/.config/systemd/user) must warn")
+	}
+	// The profiler's own home path is clamped away by clampProposal, so it is never a
+	// foreign warning; assert directly too in case the clamp changes.
+	if slices.Contains(foreignHomeShields([]string{"/root/.ssh", "/var/home/u/.ssh"}), "/root/.ssh") {
+		t.Error("the profiler's own credential path must not warn as foreign")
+	}
+	// Documented blind spot: an unconventional home root (/var/home) is not recognized,
+	// so it yields no warning rather than a wrong one.
+	if len(foreignHomeShields([]string{"/var/home/u/.ssh"})) != 0 {
+		t.Error("/var/home is not a recognized home root; it must not warn")
+	}
+}
+
 func TestClampBroadWrites(t *testing.T) {
 	home, _ := os.UserHomeDir()
 
