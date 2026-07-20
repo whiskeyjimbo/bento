@@ -16,8 +16,8 @@ Two properties define bento:
 
 - **Isolation.** The script runs in a sandbox that can only see and touch what the manifest
   grants. Everything else is denied by default, and a mandatory deny-list shields
-  credentials, SSH keys, and shell profiles no matter what a broad grant would otherwise
-  expose.
+  credentials, SSH keys, cloud and CLI tokens, OS keyrings, crypto vaults, shell history,
+  and startup/exec configs no matter what a broad grant would otherwise expose.
 - **Declarative permissions.** The policy lives in a manifest, not in code. There is no
   runtime prompting: bento either runs within the declared permissions or refuses. That is
   what makes it usable unattended (CI, agents, Go embedders), where no human is present to
@@ -52,9 +52,14 @@ The manifest is tool-owned: you generate it by profiling, review it, approve it,
 #    Profiling runs the script; do it on code you would run unsandboxed. Egress is
 #    recorded but not forwarded by default, so the script's data stays on the host.
 bento profile ./fetch.py            # writes ./fetch.py.manifest.yaml
+#   --interpreter python3           # override the interpreter guessed from the extension
+#   --out ./fetch.yaml              # write the manifest somewhere other than <script>.manifest.yaml
+#   --allow-network                 # forward egress for a faithful run of network-dependent code
 
 # 2. Review the proposed permissions.
 bento validate ./fetch.py.manifest.yaml
+#   --strict                        # exit non-zero on a stale/missing approval (CI gate)
+#   --json                          # emit the parsed policy as JSON
 
 # 3. Approve it (stamps an approval fingerprint over the policy fields).
 bento approve ./fetch.py.manifest.yaml
@@ -62,9 +67,14 @@ bento approve ./fetch.py.manifest.yaml
 # 4. Run the script under the approved manifest. run refuses an unapproved or stale
 #    manifest by default (pass --allow-unapproved to run one anyway).
 bento run ./fetch.py.manifest.yaml
+#   --strict                        # refuse unless every guarantee the policy needs is fully enforced
+#   --allow-degraded                # run even when a core guarantee is only partially enforced
+#   --env NAME=VALUE                # supply a value for an allowlisted env var (repeatable)
+#   --json                          # emit a machine-readable result envelope instead of the streams
 
 # At any time: what can this host actually enforce?
 bento doctor
+#   --json                          # emit the enforcement matrix as JSON
 ```
 
 ## The manifest
@@ -102,8 +112,16 @@ is refused, and a granted directory that does not exist yet is created before th
 A write grant that *contains* a shielded credential path is also refused: `write: ~`
 (above `~/.ssh`) or `write: ~/.cargo` (above `~/.cargo/credentials`) would make the
 shield's parent writable, so bento refuses it and asks you to grant a narrower directory.
-A *read* grant over the same tree is fine - the deny-list still shields the credentials
-inside it.
+A broad *read* grant over the same tree is fine - the deny-list keeps carving out the
+credentials inside it.
+
+A program that legitimately needs a shielded path (a deploy tool that reads `~/.ssh`) can
+opt in by naming the shield's exact path in `read:`. That is honored as a deliberate,
+caveat-emptor exception: the shield is skipped, the real content binds read-only, and the
+exposure is surfaced in the run output (and `--json`). The opt-in is read-only and applies
+only to bento's built-in credential shields: a *write* grant of a shield stays refused (the
+key-planting vector), an embedder's own `denyPaths` stay shielded, and a broad enclosing
+grant keeps carving rather than exposing the shield.
 
 ## What is enforced
 
