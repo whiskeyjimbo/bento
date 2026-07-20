@@ -79,6 +79,15 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	return res, err
 }
 
+// BaselineLayers returns the layers every policy requires regardless of its contents -
+// the guarantees a host must provide to run anything at all. A frontend that gates on
+// host readiness (doctor) uses it so its gate stays in sync with what admission
+// actually requires: a host short only on a conditionally-required layer still runs the
+// manifests that never asked for it, so failing it wholesale would be a false verdict.
+func BaselineLayers() []Layer {
+	return requiredLayers(&policy.Policy{Exec: policy.ExecAll})
+}
+
 // requiredLayers returns the layers a policy actually depends on.
 //
 // A policy with no network rules denies all egress, which namespace isolation

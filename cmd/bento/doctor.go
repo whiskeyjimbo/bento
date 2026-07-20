@@ -29,11 +29,12 @@ func newDoctorCmd() *cobra.Command {
 			}
 			report := e.Probe(cmd.Context())
 
-			// A core shortfall means runs are refused by default, so doctor exits
-			// non-zero for it (in both render modes) - the one place a CI wrapper can
-			// gate on host readiness without parsing output. Hardening gaps let runs
-			// proceed, so they stay exit 0.
-			shortfall := len(coreShortfall(report)) > 0
+			// doctor exits non-zero only for a shortfall in a guarantee EVERY run needs,
+			// so a CI wrapper can gate on baseline host readiness without parsing output.
+			// A conditionally-required core layer (network egress control) and the
+			// hardening layers let runs proceed - a run that actually needs one is refused
+			// at run time - so they are reported but stay exit 0.
+			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
 				if err := writeJSON(os.Stdout, toReportJSON(report)); err != nil {
@@ -48,13 +49,15 @@ func newDoctorCmd() *cobra.Command {
 			writeReportTable(os.Stdout, report)
 			fmt.Println()
 			if shortfall {
-				fmt.Println("A core guarantee is not fully enforced here. Runs that need it are refused by")
-				fmt.Println("default; --allow-degraded opts into a weaker sandbox, knowingly.")
+				fmt.Println("A core guarantee every run needs is not fully enforced here. Runs are refused")
+				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")
 				return &exitError{code: doctorCoreShortfall}
 			}
 			if report.HasDegradation() {
-				fmt.Println("Core guarantees hold on this host. Some hardening layers are unavailable -")
-				fmt.Println("runs proceed and report the gap; --strict refuses instead.")
+				fmt.Println("Baseline confinement holds on this host, so manifests run by default. Some")
+				fmt.Println("layers below fall short; whether a run is affected depends on what its manifest")
+				fmt.Println("needs. Egress control and a requested resource limit are refused by default when")
+				fmt.Println("needed; other hardening gaps run with the gap reported. --strict refuses any.")
 				return nil
 			}
 			fmt.Println("This host enforces every layer.")
@@ -66,10 +69,20 @@ func newDoctorCmd() *cobra.Command {
 	return cmd
 }
 
-func coreShortfall(r enforce.Report) []enforce.LayerStatus {
+// gatedShortfall returns the shortfalls doctor fails its exit code on: the guarantees
+// every manifest needs regardless of its contents. It derives that set from
+// enforce.BaselineLayers rather than naming a layer here, so the gate cannot drift from
+// what admission actually requires - a conditionally-required layer like network egress
+// (needed only by a manifest that declares egress) is reported in the table but does
+// not gate, because a host without it still runs every manifest that never asked for it.
+func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
+	gate := make(map[enforce.Layer]bool)
+	for _, l := range enforce.BaselineLayers() {
+		gate[l] = true
+	}
 	var out []enforce.LayerStatus
 	for _, l := range r.Degradations() {
-		if l.Layer.Tier() == enforce.TierCore {
+		if gate[l.Layer] {
 			out = append(out, l)
 		}
 	}

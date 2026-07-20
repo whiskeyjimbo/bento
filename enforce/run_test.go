@@ -552,6 +552,17 @@ func TestRunRejectsNilEnforcer(t *testing.T) {
 	}
 }
 
+// BaselineLayers is the set every policy requires no matter what it declares. Only
+// filesystem confinement is unconditional; network, exec, and limits are each pulled in
+// by a policy that asks for them, so none of them appear in the baseline. A frontend
+// gates host readiness on this, so a drift here would change what doctor fails on.
+func TestBaselineLayersIsFilesystemOnly(t *testing.T) {
+	got := BaselineLayers()
+	if len(got) != 1 || got[0] != LayerFilesystem {
+		t.Errorf("BaselineLayers() = %v, want just [filesystem]", got)
+	}
+}
+
 func TestLayerTiers(t *testing.T) {
 	for layer, want := range map[Layer]Tier{
 		LayerFilesystem: TierCore,
