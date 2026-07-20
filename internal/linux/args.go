@@ -190,7 +190,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 
 	// The deny-list goes after the grants so it always wins - except for a shield the
 	// policy explicitly opts into (yz3.2), which denyArgs skips so the grant above binds.
-	_, optIns := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	_, optIns := explicitShieldOptIns(sb, p.Read)
 	args = append(args, denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)...)
 
 	// The entrypoint is bound read-only last so a write grant covering its
@@ -712,7 +712,7 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // reads and writes are the resolved grants; p carries the unresolved paths the process
 // and managed-mount checks re-resolve for their own diagnostics.
 func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
-	_, optInShields := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	_, optInShields := explicitShieldOptIns(sb, p.Read)
 	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...), optInShields); err != nil {
 		return err
 	}
@@ -749,39 +749,49 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// symlinked shield's real target (write: /data/keys with ~/.ssh ->
 			// /data/keys) is still caught, not silently honored.
 			rp := sb.resolve(r.Path)
-			// A grant that names the shielded path itself is a deliberate, warned opt-in
-			// (a program that legitimately reads ~/.ssh via an explicit grant, no source
-			// change): honor it - denyArgs skips the shield so the real content binds, and
-			// Run warns. optInShields carries the shields whose LITERAL deny-list path the
-			// policy named (see explicitShieldOptIns); naming a symlink's resolved target
-			// instead is NOT an opt-in and stays refused, so the shield cannot be
-			// side-stepped by spelling out where it points. A grant strictly inside a
-			// shield is likewise refused - the shield covers the whole directory and
-			// cannot be partly lifted - so opting one file in means granting the shield
-			// directory itself.
+			// A READ grant that names the shielded path itself is a deliberate, warned
+			// opt-in (a program that legitimately reads ~/.ssh, no source change): honor it
+			// - denyArgs skips the shield so the real content binds read-only, and Run
+			// warns. optInShields carries the built-in shields whose LITERAL deny-list path
+			// a READ named (see explicitShieldOptIns); a write grant, or a read of a
+			// symlink's resolved target, is NOT an opt-in and stays refused, so the shield
+			// cannot be written through or side-stepped by spelling out where it points. A
+			// grant strictly inside a shield is likewise refused - the shield covers the
+			// whole directory and cannot be partly lifted - so opting one file in means
+			// reading the shield directory itself.
 			if under(g, rp) && !slices.Contains(optInShields, rp) {
-				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; grant %q itself to opt in (it is then exposed, with a warning), or remove it", g, r.Path, r.Path)
+				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
 			}
 		}
 	}
 	return nil
 }
 
-// explicitShieldOptIns finds the always-on DenyAll shields the policy opts into by
-// granting them - the caveat-emptor escape yz3.2 adds. A shield is opted in only when a
-// grant names its LITERAL deny-list path (~/.ssh); a grant that merely resolves to the
-// same place (a symlink's target) is the side-step the shield must still refuse, so the
-// match is on the unresolved grant string. literalGrants are the policy's own absolute,
-// un-symlink-resolved reads and writes - never the systemMount union, whose entries the
-// user did not grant. It returns each matched shield's literal path (for the operator-
-// facing warning) and its resolved path (which checkNotShielded and denyArgs key off,
-// since grants and shields are compared resolved). Both sorted.
-func explicitShieldOptIns(sb sandbox, literalGrants []string) (literal, resolved []string) {
-	for _, r := range alwaysShields(sb) {
+// explicitShieldOptIns finds the built-in DenyAll shields the policy opts into by
+// READING them - the caveat-emptor escape yz3.2 adds (a program that legitimately reads
+// ~/.ssh, exposed read-only with a warning). Deliberate scope:
+//
+//   - Read grants only. A WRITE grant to a credential store is the key-planting threat
+//     the deny-list exists to stop, so it is never an opt-in and stays refused; passing
+//     literalReads (not writes) is what enforces that.
+//   - A shield is opted in only when a read names its LITERAL deny-list path (~/.ssh); a
+//     read that merely resolves to the same place (a symlink's target) is a side-step the
+//     shield still refuses, so the match is on the unresolved grant string.
+//   - Built-in Home/Runtime shields only, never sb.extraDeny: a caller-supplied deny (a
+//     supervising embedder shielding its own control store from an untrusted target) is a
+//     different trust domain the profiled policy must not be able to lift.
+//
+// literalReads are the policy's own absolute, un-symlink-resolved read paths. It returns
+// each matched shield's literal path (for the operator-facing warning) and its resolved
+// path (which checkNotShielded and denyArgs key off, since grants and shields are
+// compared resolved). Both sorted.
+func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved []string) {
+	builtin := append(denylist.Home(sb.home), denylist.Runtime()...)
+	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {
 			continue
 		}
-		if slices.Contains(literalGrants, r.Path) {
+		if slices.Contains(literalReads, r.Path) {
 			literal = append(literal, r.Path)
 			resolved = append(resolved, sb.resolve(r.Path))
 		}

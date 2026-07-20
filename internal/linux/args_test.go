@@ -304,6 +304,27 @@ func TestExplicitShieldGrantWinsUnderBroadGrant(t *testing.T) {
 	}
 }
 
+// The opt-in is READ-only: a WRITE grant of a credential shield is the key-planting
+// threat the deny-list exists to stop, so it stays refused even when named exactly.
+func TestWriteGrantOfShieldIsRefused(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.ssh"}}
+	if _, err := compile(p, enforce.Process{}, testSandbox("/home/u/.ssh")); err == nil {
+		t.Error("a write grant of ~/.ssh must be refused - write opt-in is never honored")
+	}
+}
+
+// The opt-in covers only the built-in credential shields, never a caller's extraDeny (a
+// supervising embedder's own control store). Granting an extraDeny path by name must NOT
+// lift its shield; the grant stays refused, as before yz3.2.
+func TestExtraDenyIsNotOptInable(t *testing.T) {
+	sb := testSandbox("/home/u/proj/store")
+	sb.extraDeny = []denylist.Rule{{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true}}
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/proj/store"}}
+	if _, err := compile(p, enforce.Process{}, sb); err == nil {
+		t.Error("a caller extraDeny path must stay refused - it is not an opt-in-able built-in shield")
+	}
+}
+
 // yz3.2 must NOT widen the broad-grant carve: read: ~ without an explicit ~/.ssh grant
 // still shields ~/.ssh. This is the regression guard that the opt-in skip did not leak
 // into enclosing grants.

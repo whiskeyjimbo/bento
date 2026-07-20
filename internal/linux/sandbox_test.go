@@ -606,6 +606,40 @@ func TestRunHonorsExplicitShieldGrant(t *testing.T) {
 	}
 }
 
+// yz3.2 regression (the write-opt-in hole): granting WRITE to a shield by its literal
+// name, when that name is a symlink to a real store, must be refused - not honored as an
+// opt-in - or a run could plant keys in the real ~/.ssh. checkWriteNotAboveShield's
+// literal-vs-resolved compare misses this, so scoping the opt-in to read grants is the
+// guard, and this proves it holds end-to-end.
+func TestWriteGrantOfSymlinkedShieldNameIsRefused(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	keys := filepath.Join(t.TempDir(), "keystore")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(keys, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{filepath.Join(home, ".ssh")}}
+
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	if err == nil {
+		t.Fatal("write to a symlinked ~/.ssh must be refused - a write opt-in would plant keys in the real store")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want the shield-conflict message", err)
+	}
+}
+
 // A grant that names the resolved target of a symlinked shield (~/.ssh -> a real
 // key store, then write to that store) must still be refused: the deny rule and
 // the grant are compared after both are symlink-resolved, so the shield cannot be

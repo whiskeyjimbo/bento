@@ -76,7 +76,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
 	// best-effort.
 	if reads, writes, err := resolveGrants(p); err == nil {
-		_, optIns := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+		_, optIns := explicitShieldOptIns(sb, p.Read)
 		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
 	}
 
@@ -107,7 +107,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// Surface any always-shielded credential store the policy explicitly opted back into
 	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
 	// path. The shields still protect every path not opted into.
-	optedIn, _ := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	optedIn, _ := explicitShieldOptIns(sb, p.Read)
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
@@ -165,7 +165,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	if err != nil {
 		return err
 	}
-	_, optInShields := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	_, optInShields := explicitShieldOptIns(sb, p.Read)
 	if err := checkNotShielded(sb, writes, optInShields); err != nil {
 		return err
 	}

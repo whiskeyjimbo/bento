@@ -56,7 +56,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
-	optedIn, _ := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	optedIn, _ := explicitShieldOptIns(sb, p.Read)
 	// A write grant is a directory the target writes into; create a missing one so
 	// Landlock has a path to grant (RWDirs skips a path that does not exist). Landlock
 	// cannot carve a shielded subpath out of an allowed tree, so a read grant that
