@@ -8,7 +8,9 @@
 package profile
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -41,19 +43,34 @@ type Observation struct {
 	Signal   int
 }
 
-// systemPrefixes are paths every program touches to load its runtime and libs.
-// They are the interpreter's business, not the script's, so they never belong in
-// a manifest and are dropped from the proposal.
-var systemPrefixes = []string{
-	"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/",
-	"/etc/ld.so", "/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/alternatives",
-	"/etc/nsswitch.conf", "/etc/passwd", "/etc/group", "/etc/resolv.conf", "/etc/hosts",
-	"/etc/localtime",
-	"/proc/", "/sys/", "/dev/", "/run/", "/var/run/", "/nix/store/",
+// systemDirs are the runtime and OS directory trees every program touches to load
+// its libs and config. Any path at or under one is the interpreter's business, not
+// the script's, so it never belongs in a manifest. Matched as the directory itself
+// or anything beneath it - a sibling that merely shares a name stem (/etc/sslkeys vs
+// /etc/ssl) is a distinct path the reviewer must still see.
+var systemDirs = []string{
+	"/usr", "/bin", "/sbin", "/lib", "/lib64",
+	"/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/alternatives",
+	"/proc", "/sys", "/dev", "/run", "/var/run", "/nix/store",
 	// The sandbox's /tmp is a private tmpfs; anything a run writes there is
 	// ephemeral and randomly named, so it is scratch, never a manifest grant.
-	"/tmp/",
+	"/tmp",
 }
+
+// systemFiles are the exact /etc files a program reads to resolve users, hosts, and
+// time. Matched by equality, not prefix: a neighbor like /etc/passwd.bak or
+// /etc/hosts.allow is a different file (often a credential-adjacent one) the reviewer
+// must see, so it must not be swallowed by a prefix match on the runtime name.
+var systemFiles = []string{
+	"/etc/nsswitch.conf", "/etc/passwd", "/etc/group", "/etc/resolv.conf",
+	"/etc/hosts", "/etc/localtime",
+}
+
+// ldSoPrefix matches the dynamic-linker config family: /etc/ld.so.cache,
+// /etc/ld.so.conf, and /etc/ld.so.conf.d/ are files and a directory sharing the
+// /etc/ld.so stem rather than living under an /etc/ld.so/ directory. A bare prefix is
+// correct here precisely because no unrelated /etc/ld.so* path exists to over-match.
+const ldSoPrefix = "/etc/ld.so"
 
 // Synthesize assembles a proposed policy from observations. It drops the paths
 // every program touches (the interpreter's runtime, /proc, /dev) and the script
@@ -157,16 +174,18 @@ func isSystemWriteDir(dir string) bool {
 }
 
 func isSystemPath(p string) bool {
-	for _, pre := range systemPrefixes {
-		if strings.HasPrefix(p, pre) {
-			return true
-		}
-		// A directory-prefix entry ("/run/") must also match the bare directory
-		// ("/run") itself, which is what writeDir yields for an observed write to a
-		// file directly inside it (write to /run/app.pid -> the grant /run). Without
-		// this the profiler proposes a grant of the shielded directory that the run
-		// then refuses.
-		if len(pre) > 1 && pre[len(pre)-1] == '/' && p == pre[:len(pre)-1] {
+	if strings.HasPrefix(p, ldSoPrefix) {
+		return true
+	}
+	if slices.Contains(systemFiles, p) {
+		return true
+	}
+	for _, dir := range systemDirs {
+		// The bare directory itself matches (a write to /run/app.pid collapses via
+		// writeDir to the grant /run, which must be recognized as system too);
+		// otherwise only paths strictly beneath it, so /etc/sslkeys is not caught by
+		// /etc/ssl.
+		if p == dir || strings.HasPrefix(p, dir+"/") {
 			return true
 		}
 	}
@@ -193,16 +212,52 @@ func resolvesIntoProc(p string) bool {
 
 // runtimeTree returns the install root of the interpreter (…/bin/python3 → …),
 // so the whole runtime it loads can be dropped from the proposal in one prefix.
-// A system interpreter is already covered by systemPrefixes and returns "".
+// A system interpreter is already covered by isSystemPath and returns "".
 func runtimeTree(interp string) string {
 	if interp == "" || isSystemPath(interp) {
 		return ""
 	}
 	dir := filepath.Dir(interp)
+	tree := dir
 	if filepath.Base(dir) == "bin" {
-		return filepath.Dir(dir)
+		tree = filepath.Dir(dir)
 	}
-	return dir
+	// Every check here is a one-way ratchet toward "not a runtime tree": being too
+	// conservative only leaves the interpreter's stdlib in the proposal as noise, while
+	// being too aggressive silently drops the credential reads (~/.ssh/id_rsa,
+	// ~/.local/share/keyrings) the reviewer must see. So reject any tree broad enough to
+	// enclose a user's credential stores - the root, a top-level dir, or a home-shaped
+	// tree (a home directory itself or a shallow child of one like ~/.local under
+	// pipx/pip --user, or ~/miniconda3). The home-shape test is structural, not keyed on
+	// the profiler's own $HOME, so it holds under sudo, an unset HOME, or a symlinked
+	// home; the $HOME match is a cheap supplement for a home outside the usual
+	// containers (matched empty/relative-home is skipped, as in clampShieldedGrants).
+	if tree == "/" || filepath.Dir(tree) == "/" || isHomeShapedTree(tree) {
+		return ""
+	}
+	if home, _ := os.UserHomeDir(); home != "" && filepath.IsAbs(home) && tree == filepath.Clean(home) {
+		return ""
+	}
+	return tree
+}
+
+// homeContainers are the directories user home directories sit directly under. A tree
+// that is a home ($container/user) or a shallow child of one ($container/user/x) can
+// enclose that user's credential stores, so it is too broad to prefix-drop.
+var homeContainers = []string{"/home", "/var/home", "/Users"}
+
+// isHomeShapedTree reports whether tree looks like a user's home directory or a shallow
+// child of one, without consulting $HOME - so it catches an interpreter under another
+// user's home (sudo) or a symlinked home that a $HOME comparison would miss. /root is a
+// home in its own right.
+func isHomeShapedTree(tree string) bool {
+	parent := filepath.Dir(tree)
+	if tree == "/root" || parent == "/root" {
+		return true
+	}
+	// tree is a home itself (parent is a container) or a direct child of one (the
+	// container is the grandparent).
+	return slices.Contains(homeContainers, parent) || slices.Contains(homeContainers, filepath.Dir(parent))
 }
 
 // cleanPaths canonicalizes, filters, de-duplicates, and sorts observed paths.

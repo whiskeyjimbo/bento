@@ -243,6 +243,85 @@ func TestSynthesizeDropsRuntimeDirGrants(t *testing.T) {
 	}
 }
 
+// runtimeTree returns a genuine install root so its whole tree can be dropped, but
+// must refuse a tree broad enough to enclose the user's credential stores - the
+// filesystem root, a top-level dir, a home dir, or a shallow child of a home (~/.local
+// for pipx/pip --user, ~/miniconda3). Prefixing such a tree out of the proposal would
+// silently swallow the reads (~/.ssh/id_rsa, ~/.local/share/keyrings) the reviewer
+// must see. The home-shape test is structural, not keyed on the profiler's own $HOME.
+func TestRuntimeTreeRejectsBroadTrees(t *testing.T) {
+	keep := map[string]string{
+		"/opt/py/bin/python3":           "/opt/py",
+		"/home/u/proj/.venv/bin/python": "/home/u/proj/.venv",
+		"/home/u/.local/share/mise/installs/python/3.14/bin/python3.14": "/home/u/.local/share/mise/installs/python/3.14",
+	}
+	for interp, want := range keep {
+		if got := runtimeTree(interp); got != want {
+			t.Errorf("runtimeTree(%q) = %q, want %q (a genuine install root)", interp, got, want)
+		}
+	}
+	for _, interp := range []string{
+		"/python", "/opt/python",
+		"/home/u/bin/python", "/home/u/.local/bin/python", "/home/u/miniconda3/bin/python",
+		"/root/bin/python", "/root/.local/bin/python",
+		"/Users/u/bin/python", "/var/home/u/bin/python",
+	} {
+		if got := runtimeTree(interp); got != "" {
+			t.Errorf("runtimeTree(%q) = %q, want empty (too broad to prefix-drop)", interp, got)
+		}
+	}
+}
+
+// A version manager can put the interpreter shim directly under $HOME (~/bin/python),
+// so the computed runtime tree is the home dir itself. Dropping every read under it
+// would silently swallow ~/.ssh/id_rsa before the reviewer or the shield clamp sees
+// it, so the home dir must not be used as a runtime prefix.
+func TestSynthesizeDoesNotDropHomeAsRuntimeTree(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !filepath.IsAbs(home) {
+		t.Skip("no usable home directory to exercise the home-tree guard")
+	}
+	secret := filepath.Join(home, ".ssh", "id_rsa")
+	obs := Observation{
+		Interpreter: filepath.Join(home, "bin", "python"),
+		Reads:       []string{secret, filepath.Join(home, "project", "input.txt")},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	found := false
+	for _, r := range p.Read {
+		if r == secret {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("read = %v, want %q surfaced (home must not be dropped as a runtime tree)", p.Read, secret)
+	}
+}
+
+// The /etc runtime entries are exact files or directories, not free prefixes: a
+// neighbor sharing a name stem (/etc/passwd.bak, /etc/hosts.allow) or a sibling
+// directory (/etc/sslkeys, distinct from /etc/ssl) is a path the reviewer must see,
+// not runtime noise to drop.
+func TestIsSystemPathDoesNotOvermatchEtcSiblings(t *testing.T) {
+	for _, p := range []string{
+		"/etc/passwd.bak", "/etc/passwd-", "/etc/hosts.allow", "/etc/hosts.deny",
+		"/etc/group-", "/etc/sslkeys/priv", "/etc/pki-backup/key",
+	} {
+		if isSystemPath(p) {
+			t.Errorf("isSystemPath(%q) = true, want false (an /etc sibling must surface)", p)
+		}
+	}
+	for _, p := range []string{
+		"/etc/passwd", "/etc/hosts", "/etc/resolv.conf", "/etc/localtime",
+		"/etc/ssl", "/etc/ssl/certs/ca.pem", "/etc/pki/tls/cert.pem",
+		"/etc/ld.so.cache", "/etc/ld.so.conf.d/x.conf",
+	} {
+		if !isSystemPath(p) {
+			t.Errorf("isSystemPath(%q) = false, want true (a genuine runtime entry)", p)
+		}
+	}
+}
+
 // The bare-directory match is general: a write to a file directly inside any
 // directory-prefix system path collapses (via writeDir) to the bare directory, which
 // must still be recognized as a system path.
