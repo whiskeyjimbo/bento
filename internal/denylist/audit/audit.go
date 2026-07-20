@@ -11,6 +11,7 @@ package audit
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
@@ -27,8 +28,36 @@ type Candidate struct {
 	// express (it shields directories instead). A glob candidate needs a human to
 	// decide the covering directory shield, so it is reported separately.
 	Glob bool
+	// Section is the firejail section-header comment the directive fell under, used
+	// to separate bento's secret/exec threat model from firejail's broader privacy
+	// and other-app scope.
+	Section string
 	// Raw is the original firejail line, for the report.
 	Raw string
+}
+
+// inScopeSection reports whether a firejail section is within bento's host-exec /
+// secret-read threat model - as opposed to firejail's broader privacy, other-app,
+// and system-hardening scope, which bento's empty-root default already covers and
+// deliberately does not enumerate. Matching is by substring on the distinctive words
+// of the secret and exec sections; an unrecognised section is out of scope, so a
+// firejail reorganization can only make the audit quieter, never silently in-scope.
+func inScopeSection(section string) bool {
+	s := strings.ToLower(section)
+	for _, kw := range []string{
+		// secret / credential sections
+		"top secret", "cloud provider", "ssh-agent", "remote access", "pass utility",
+		"mail directories", "dm-crypt", "luks", "veracrypt", "truecrypt", "zulucrypt",
+		"intrusion detection", "history files",
+		// host-exec sections (a plant that runs on the host later)
+		"arbitrary command execution", "startup files", "autostart", "session manager",
+		"systemd", "openrc", "desktop entries", "terminal emulator", "ipc socket",
+	} {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // Gap is a firejail candidate bento does not fully cover.
@@ -48,9 +77,16 @@ type Gap struct {
 // threat model, which its empty-root default already covers.
 func ParseFirejail(content, home, runUser string) []Candidate {
 	var out []Candidate
+	var section string
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		if after, ok := strings.CutPrefix(line, "#"); ok {
+			// The most recent comment is the current section; approximate but firejail
+			// groups its entries under a header comment, so the last one wins.
+			section = strings.TrimSpace(after)
 			continue
 		}
 		fields := strings.Fields(line)
@@ -71,7 +107,7 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		if !ok {
 			continue
 		}
-		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Raw: line})
+		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Section: section, Raw: line})
 	}
 	return out
 }
@@ -113,6 +149,28 @@ func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 		}
 	}
 	return gaps
+}
+
+// SplitByScope partitions gaps into the ones inside bento's secret/exec threat model
+// (returned sorted by section, ready to list) and a count-by-section of the rest -
+// firejail's privacy/other-app/system scope, which bento does not enumerate. The
+// out-of-scope set is summarized rather than dropped so it stays accountable.
+func SplitByScope(gaps []Gap) (inScope []Gap, outBySection map[string]int) {
+	outBySection = map[string]int{}
+	for _, g := range gaps {
+		if inScopeSection(g.Section) {
+			inScope = append(inScope, g)
+		} else {
+			outBySection[g.Section]++
+		}
+	}
+	sort.SliceStable(inScope, func(i, j int) bool {
+		if inScope[i].Section != inScope[j].Section {
+			return inScope[i].Section < inScope[j].Section
+		}
+		return inScope[i].Path < inScope[j].Path
+	})
+	return inScope, outBySection
 }
 
 // cover finds a rule that shields path, returning it and true. An exact match wins;

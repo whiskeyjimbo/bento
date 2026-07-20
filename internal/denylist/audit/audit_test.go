@@ -69,6 +69,30 @@ func TestDiffCoverageAndClass(t *testing.T) {
 	}
 }
 
+func TestSplitByScopeUsesFirejailSections(t *testing.T) {
+	gaps := []Gap{
+		{Candidate: Candidate{Path: "/HOME/.aws", Section: "top secret"}},
+		{Candidate: Candidate{Path: "/HOME/.config/autostart-scripts", Section: "X11 session autostart"}},
+		{Candidate: Candidate{Path: "/HOME/.mozilla", Section: "gnome"}},                 // out: other-app
+		{Candidate: Candidate{Path: "/HOME/.local/share/Trash", Section: "var"}},         // out
+		{Candidate: Candidate{Path: "/HOME/.cargo/credentials", Section: "top secret"}},  // in
+	}
+	inScope, out := SplitByScope(gaps)
+	if len(inScope) != 3 {
+		t.Fatalf("in-scope = %d, want 3: %+v", len(inScope), inScope)
+	}
+	// Sorted by section then path: "X11 session autostart" < "top secret".
+	if inScope[0].Section != "X11 session autostart" {
+		t.Errorf("first in-scope section = %q, want X11 autostart", inScope[0].Section)
+	}
+	if out["gnome"] != 1 || out["var"] != 1 {
+		t.Errorf("out-of-scope counts wrong: %+v", out)
+	}
+	if _, isIn := out["top secret"]; isIn {
+		t.Error("a secret section must not be counted out-of-scope")
+	}
+}
+
 // The parser and diff must run against bento's real shield list without panicking,
 // and cover a path the list is known to shield (so a refactor that empties Home()
 // does not silently make the audit pass by finding nothing to compare).

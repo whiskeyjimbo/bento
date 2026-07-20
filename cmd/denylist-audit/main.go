@@ -37,13 +37,21 @@ func main() {
 	candidates := audit.ParseFirejail(content, home, runUser)
 	rules := append(denylist.Home(home), denylist.Runtime()...)
 	gaps := audit.Diff(candidates, rules)
-	if len(gaps) == 0 {
-		fmt.Println("no gaps: every scoped firejail shield is covered")
+
+	inScope, outBySection := audit.SplitByScope(gaps)
+	if len(inScope) == 0 {
+		fmt.Println("no in-scope gaps: every secret/exec firejail shield is covered")
+		reportOutOfScope(outBySection)
 		return
 	}
 
-	fmt.Printf("%d firejail-shielded path(s) bento does not fully cover:\n\n", len(gaps))
-	for _, g := range gaps {
+	fmt.Printf("%d in-scope firejail-shielded path(s) bento does not fully cover:\n\n", len(inScope))
+	section := ""
+	for _, g := range inScope {
+		if g.Section != section {
+			section = g.Section
+			fmt.Printf("[%s]\n", section)
+		}
 		note := "missing"
 		if g.Weaker {
 			note = "present but DenyWrite; firejail blacklists (candidate DenyAll)"
@@ -51,9 +59,27 @@ func main() {
 		if g.Glob {
 			note += "; glob - shield the covering directory"
 		}
-		fmt.Printf("  %-40s %s\n      (%s)\n", g.Path, note, g.Raw)
+		fmt.Printf("  %-42s %s\n", g.Path, note)
 	}
+	reportOutOfScope(outBySection)
 	os.Exit(1)
+}
+
+// reportOutOfScope summarizes the firejail sections bento deliberately does not
+// cover (privacy, other-app, system hardening), so they are accounted for, not
+// silently dropped, but do not bury the in-scope gaps.
+func reportOutOfScope(bySection map[string]int) {
+	if len(bySection) == 0 {
+		return
+	}
+	total := 0
+	for _, n := range bySection {
+		total += n
+	}
+	fmt.Printf("\n%d out-of-scope gap(s) skipped (firejail's privacy/other-app/system scope), by section:\n", total)
+	for s, n := range bySection {
+		fmt.Printf("  %3d  %s\n", n, s)
+	}
 }
 
 func fetch(url string) (string, error) {
