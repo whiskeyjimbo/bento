@@ -342,13 +342,6 @@ func Home(home string) []Rule {
 	// differs from the default (already shielded above), the shield follows to the
 	// target too. A relative value is dropped: the shield is an absolute bwrap bind, so
 	// a relative target cannot be shielded at the place the tool would actually read it.
-	//
-	// Only whole-directory relocations are honored. Two documented residuals are not, for
-	// the same reason Runtime() leaves sockets outside /run uncovered: KUBECONFIG is a
-	// colon-separated list of individual files (and ~/.kube is already shielded whole),
-	// and AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE name individual files under the
-	// already-shielded ~/.aws. Relocating those leaves the file exposed under a broad
-	// read grant.
 	dirEnvs := []struct{ env, def string }{
 		{"GNUPGHOME", ".gnupg"},
 		{"PASSWORD_STORE_DIR", ".password-store"},
@@ -360,6 +353,26 @@ func Home(home string) []Rule {
 	for _, de := range dirEnvs {
 		if base := os.Getenv(de.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(de.def) {
 			rules = append(rules, Rule{Path: filepath.Clean(base), Deny: DenyAll, Dir: true})
+		}
+	}
+
+	// Some tools relocate individual credential files rather than a whole directory.
+	// The default files sit inside a directory already shielded above (~/.kube, ~/.aws),
+	// but the env can point the file anywhere, and a relocated target lands outside every
+	// shield - exposed under a broad read grant at enforce time. Shield the target file
+	// itself. KUBECONFIG is a colon-separated search list; each entry is a separate file.
+	// Relative and empty entries are dropped for the same reason as a relative directory
+	// relocation: an absolute bind cannot cover a path the shield cannot name.
+	fileEnvs := []string{
+		"KUBECONFIG",
+		"AWS_SHARED_CREDENTIALS_FILE",
+		"AWS_CONFIG_FILE",
+	}
+	for _, env := range fileEnvs {
+		for _, p := range filepath.SplitList(os.Getenv(env)) {
+			if p != "" && filepath.IsAbs(p) {
+				rules = append(rules, Rule{Path: filepath.Clean(p), Deny: DenyAll})
+			}
 		}
 	}
 	return rules

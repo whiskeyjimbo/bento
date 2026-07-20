@@ -261,3 +261,39 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 		t.Error("the default password store must stay shielded")
 	}
 }
+
+// KUBECONFIG (a colon-separated list of files) and the AWS_*_FILE envs relocate individual
+// credential files off ~/.kube / ~/.aws. Each absolute target must be shielded at its own
+// path; relative and empty entries are ignored, like a relative directory relocation.
+func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/secrets/kube.yaml:relkube:/secrets/kube2.yaml")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/secrets/aws-creds")
+	t.Setenv("AWS_CONFIG_FILE", "relaws") // relative: must not shield
+
+	byPath := map[string]bool{}
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative file relocation leaked a non-absolute shield path %q", r.Path)
+		}
+		byPath[r.Path] = true
+		byRule[r.Path] = r
+	}
+	for _, p := range []string{"/secrets/kube.yaml", "/secrets/kube2.yaml", "/secrets/aws-creds"} {
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a shield at %q (file relocation), missing", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Dir {
+			t.Errorf("shield at %q must be a DenyAll file rule, got %+v", p, r)
+		}
+	}
+	if byPath["relkube"] || byPath["relaws"] {
+		t.Error("a relative file relocation must not produce a shield")
+	}
+	// The default directories stay shielded regardless.
+	if !byPath["/home/u/.kube"] || !byPath["/home/u/.aws"] {
+		t.Error("default ~/.kube and ~/.aws must stay shielded")
+	}
+}
