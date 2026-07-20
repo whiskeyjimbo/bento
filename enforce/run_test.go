@@ -233,6 +233,52 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	}
 }
 
+// A probe that reports the limits layer Enforced but OMITS the cpu-limits layer for
+// a cpu-requesting policy must still refuse: the absent cpu layer is synthesized
+// Unavailable, since systemd-run silently ignores an undelegated CPUQuota and a
+// probe regression that drops the layer must not admit an uncapped run. The limits
+// layer being Enforced means it cannot itself carry the refusal.
+func TestCPULimitLayerOmittedByProbeRefused(t *testing.T) {
+	cpuLimited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{CPU: "50%"}}
+
+	var probe Report
+	probe.Add(LayerFilesystem, Enforced, "")
+	probe.Add(LayerLimits, Enforced, "") // limits-cpu deliberately omitted
+	f := &fakeEnforcer{probe: probe}
+
+	_, err := Run(context.Background(), f, cpuLimited, Process{}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("a probe that omits the cpu-limits layer for a cpu policy must refuse; got %v", err)
+	}
+	if f.ran {
+		t.Error("a run whose cpu-limits layer was unreported must not reach the enforcer")
+	}
+	if !hasLayer(refusal.Short, LayerLimitsCPU) {
+		t.Errorf("refusal should name the limits-cpu layer; short = %+v", refusal.Short)
+	}
+}
+
+// Run-time refinement may only worsen a layer, never improve it: a backend that
+// reports a required layer better than the probe must not overwrite a degradation
+// the admission relied on. Probe says filesystem Degraded (admitted under
+// --allow-degraded); a backend claiming Enforced would make the returned report
+// assert a guarantee the run never had.
+func TestRunRefinementOnlyWorsens(t *testing.T) {
+	probe := fullyEnforced()
+	probe.Set(LayerFilesystem, Degraded, "userns blocked; Landlock-only")
+	better := fullyEnforced() // filesystem Enforced - a backend contradicting the probe
+	f := &fakeEnforcer{probe: probe, result: Result{Report: better}}
+
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := res.Report.StateOf(LayerFilesystem); got != Degraded {
+		t.Errorf("filesystem state = %v, want degraded (a backend must not mask a probed degradation)", got)
+	}
+}
+
 // A degradation the backend discovers during Run - such as a requested cgroup
 // controller that is not delegated - must reach Result.Report, not be silently
 // overwritten by the pre-run probe.

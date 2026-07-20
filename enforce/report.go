@@ -176,14 +176,21 @@ func (r Report) forLayers(layers []Layer) Report {
 	// A required layer the probe did not report is recorded as Unavailable, not left
 	// absent: admission scans the returned layers, so a missing entry would otherwise
 	// read as "no shortfall" and admit a run whose required guarantee was never
-	// actually evaluated. Fail-safe for a probe that forgets a layer. LayerLimitsCPU
-	// is exempt: it is a refinement the probe deliberately omits when there is no
-	// scope, and its absence is already subsumed by LayerLimits (synthesized here if
-	// itself missing) - synthesizing it too would duplicate the limits refusal.
+	// actually evaluated. Fail-safe for a probe that forgets a layer.
 	for _, l := range layers {
-		if !present[l] && l != LayerLimitsCPU {
-			out.Layers = append(out.Layers, LayerStatus{Layer: l, State: Unavailable, Reason: "not reported by the host probe"})
+		if present[l] {
+			continue
 		}
+		// LayerLimitsCPU's absence is subsumed by LayerLimits only while LayerLimits is
+		// itself not Enforced - then LayerLimits already carries the refusal and a
+		// synthesized cpu line would just duplicate it. But if the probe reports
+		// LayerLimits=Enforced and merely drops the cpu refinement (a probe regression),
+		// nothing else refuses, and admitting the run would run it under an unenforced
+		// CPUQuota that systemd-run silently ignores. So synthesize it there.
+		if l == LayerLimitsCPU && r.StateOf(LayerLimits) != Enforced {
+			continue
+		}
+		out.Layers = append(out.Layers, LayerStatus{Layer: l, State: Unavailable, Reason: "not reported by the host probe"})
 	}
 	return out
 }

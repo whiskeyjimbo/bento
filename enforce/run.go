@@ -59,13 +59,19 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// controller is not delegated - and that must reach the caller rather than being
 	// overwritten by the pre-run probe. Overlaying only the required layers keeps a
 	// partial or empty backend report from dropping a layer the probe already judged.
+	//
+	// The overlay only ever worsens a layer: a run-time report is a refinement, and a
+	// backend claiming a layer is better than the probe judged - e.g. Enforced over a
+	// filesystem the probe called Degraded and that was admitted under
+	// --allow-degraded - would mask a degradation the admission relied on, making the
+	// returned report assert a guarantee the run never had.
 	wanted := requiredLayers(p)
 	want := make(map[Layer]bool, len(wanted))
 	for _, l := range wanted {
 		want[l] = true
 	}
 	for _, l := range res.Report.Layers {
-		if want[l.Layer] {
+		if want[l.Layer] && l.State > required.StateOf(l.Layer) {
 			required.Set(l.Layer, l.State, l.Reason)
 		}
 	}
