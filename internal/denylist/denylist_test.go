@@ -113,12 +113,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.bashrc.d",          // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
 		"/home/u/.config/containers", // podman/skopeo exec-redirect knobs
 		"/home/u/.config/autostart",
-		"/home/u/.config/systemd/user",
+		"/home/u/.config/systemd", // whole --user tree (covers the former .config/systemd/user)
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
 		"/home/u/.config/nushell",           // nushell config and autoloads
 		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
 		"/home/u/.config/nvim",              // neovim config tree
-		"/home/u/.local/share/nvim/site",    // nvim packpath auto-source
+		"/home/u/.local/share/nvim",         // whole nvim data tree (covers the former /site)
 		"/home/u/.emacs.d",                  // emacs init and site-lisp
 		"/home/u/.config/environment.d",     // systemd user-session env
 		"/home/u/.local/share/direnv/allow", // direnv authorization records

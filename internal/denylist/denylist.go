@@ -109,14 +109,14 @@ func Home(home string) []Rule {
 
 		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
 		// default-deny a program that legitimately needs its own history opts in per-path.
-		".adobe",                            // Flash local storage (LSO)
-		".macromedia",                       // Flash local storage (legacy)
-		".ne",                               // ne editor state, incl. history
-		".cache/xfce4/clipman",              // clipboard history
-		".kde/share/apps/klipper",           // clipboard history
-		".kde4/share/apps/klipper",          // clipboard history (KDE4)
-		".local/share/klipper",              // clipboard history (KDE5+)
-		".local/share/ibus-typing-booster",  // learned typing history
+		".adobe",                           // Flash local storage (LSO)
+		".macromedia",                      // Flash local storage (legacy)
+		".ne",                              // ne editor state, incl. history
+		".cache/xfce4/clipman",             // clipboard history
+		".kde/share/apps/klipper",          // clipboard history
+		".kde4/share/apps/klipper",         // clipboard history (KDE4)
+		".local/share/klipper",             // clipboard history (KDE5+)
+		".local/share/ibus-typing-booster", // learned typing history
 
 		// Mutt maildirs: message bodies. Only the dot-named spools - a bare ~/mail or
 		// ~/Mail is too likely an ordinary user directory to shield under a broad grant.
@@ -172,6 +172,18 @@ func Home(home string) []Rule {
 		".ammonite/history",
 		".local/share/fish/fish_history",
 		".viminfo", // holds registers and search history, which can carry yanked secrets
+		// The named instances of firejail's ${HOME}/.*_history glob, which a concrete-path
+		// shield cannot express. Database-client histories are the sharpest: a password
+		// typed into a SQL/redis session lands here in the clear.
+		".bash_history",
+		".zsh_history",
+		".mysql_history",
+		".psql_history",
+		".sqlite_history",
+		".node_repl_history",
+		".rediscli_history",
+		".irb_history",
+		".scala_history",
 	}
 	// Modifying any of these grants persistence or code execution on the host the
 	// next time the user opens a shell or runs git. Reads stay allowed: git
@@ -226,6 +238,27 @@ func Home(home string) []Rule {
 		".Rprofile",            // R sources it at startup
 		".Renviron",            // can set R_PROFILE_USER to a writable file; creating it is the attack
 		".mcp.json",
+
+		// Additional shell startup files: read when the matching shell starts or a login
+		// session opens; a planted or modified line runs on the host next time.
+		".cshrc",       // csh/tcsh rc
+		".tcshrc",      // tcsh rc
+		".kshrc",       // ksh rc
+		".mkshrc",      // mksh rc
+		".login",       // csh login shell
+		".logout",      // csh logout
+		".zshrc.local", // sourced by ~/.zshrc on several distros
+		".forward",     // a leading "|command" line runs on local mail delivery
+
+		// Tool configs that name or run a command on a routine action.
+		".caffrc",                // caff/gpg options
+		".config/ncmpcpp/config", // execute_on_song_change runs a shell command
+		".pythonrc.py",           // sourced at interactive python startup (PYTHONSTARTUP convention)
+		".config/mimeapps.list",  // default-application map; redirects an open to a planted .desktop
+		".config/user-dirs.dirs", // sourced by xdg-user-dirs-update; a shell-injection line runs
+		"_vimrc",                 // vim reads the underscore-named rc variants too
+		"_gvimrc",
+		"_exrc",
 	}
 
 	// Directories whose contents run on the host at the next login, shell start, or
@@ -238,14 +271,16 @@ func Home(home string) []Rule {
 		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
 		".config/containers",           // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
 		".config/autostart",            // XDG autostart .desktop entries
-		".config/systemd/user",         // systemd user services and timers
+		".config/systemd",              // systemd --user units/timers (whole tree: user/ and drop-ins)
+		".local/share/systemd",         // systemd --user timer/service state
 		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
 		".config/plasma-workspace/env", // KDE login shell scripts
 		".config/fish",                 // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
 		".config/nushell",              // config.nu/env.nu and autoloads
 		".vim",                         // plugin/, autoload/, after/plugin/ are auto-sourced
 		".config/nvim",                 // init.{vim,lua}, lua/, plugin/, after/
-		".local/share/nvim/site",       // packpath: site/pack/*/start/*/plugin/ auto-sourced
+		".local/share/nvim",            // whole data tree: packpath plugins auto-source; also holds shada. DenyWrite (not DenyAll) so nvim itself can still run sandboxed
+		".local/state/nvim",            // shada/undo/log state; block tampering, keep readable
 		".emacs.d",                     // init.el and site-lisp
 		".config/emacs",                // XDG location for the same
 		".config/gdb",                  // gdb 11+ reads gdbinit/gdbearlyinit here
@@ -257,6 +292,15 @@ func Home(home string) []Rule {
 		".config/mpv",                  // scripts/*.lua autoloaded on launch
 		".xmonad",                      // xmonad.hs is compiled and executed
 		".config/xmonad",               // XDG location for xmonad.hs (0.17+)
+		".oh-my-zsh",                   // framework: plugins/ and themes/ are sourced on shell start
+		".antigen",                     // zsh antigen-managed plugins, sourced on shell start
+		".zfunc",                       // autoloaded zsh functions (planting one hijacks a command)
+		".zsh.d",                       // sourced zsh config fragments
+		".config/nsxiv/exec",           // nsxiv key-handler scripts run on keypress
+		".config/pkcs11",               // pkcs11 module configs load shared objects (code)
+		".local/share/applications",    // .desktop entries whose Exec= runs on launch
+		".config/menus",                // XDG menu definitions pointing at .desktop entries
+		".gnome/apps",                  // legacy GNOME menu entries
 	}
 
 	// A relocated XDG base moves the real credential/config stores out from under the
