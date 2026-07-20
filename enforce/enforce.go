@@ -82,6 +82,13 @@ type Result struct {
 	// gate is set, so the count and this list keep the run honest about egress it
 	// permitted beyond the declared policy.
 	GateAdmitted []HostPort
+	// ShieldedGrants lists the always-shielded credential paths (~/.ssh, ~/.gnupg, the
+	// runtime dir, ...) the policy explicitly granted, so the backend honored the grant
+	// over its built-in shield. These are a deliberate caveat-emptor opt-in: exposing a
+	// credential store to the sandboxed program. Sorted, empty for the common run that
+	// opts into none. A frontend surfaces each as a loud warning so the exposure is
+	// never silent - the backend does not refuse it, the operator chose it.
+	ShieldedGrants []string
 }
 
 // HostPort is one egress destination admitted at runtime by a NetworkGate rather

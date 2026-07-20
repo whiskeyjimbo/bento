@@ -78,6 +78,21 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] fails to connect. Programs that honor HTTP_PROXY (curl, requests, pip, npm) work.")
 }
 
+// writeShieldedGrantWarning tells the user that the policy granted a path bento would
+// otherwise shield as a credential store, so the backend honored the grant and exposed
+// it to the script. This is a deliberate opt-in bento does not refuse, so the notice is
+// the only thing that keeps the exposure from being silent.
+func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
+	if len(res.ShieldedGrants) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields as")
+	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
+	for _, g := range res.ShieldedGrants {
+		fmt.Fprintf(w, "[bento]   %s\n", g)
+	}
+}
+
 // writeDegradations tells the user, before their script's own output, exactly
 // which guarantees this host is not delivering. Nothing that weakens a requested
 // guarantee is ever silent - that was the failure this tool exists to prevent.

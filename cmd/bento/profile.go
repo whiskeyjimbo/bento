@@ -92,7 +92,7 @@ func newProfileCmd() *cobra.Command {
 
 			shielded, broadReads, broadWrites := clampProposal(proposed)
 			for _, d := range shielded {
-				fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a mandatory shielded path bento never grants; the script's attempt was recorded but cannot be honored.\n", d)
+				fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
 			}
 			for _, d := range broadReads {
 				fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
@@ -207,13 +207,15 @@ func partialRunWarning(obs profile.Observation) string {
 }
 
 // clampShieldedGrants drops read and write grants that fall at or inside a mandatory
-// DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). The run refuses such a grant
-// (checkNotShielded), so proposing one produces a manifest bento then rejects; the
-// profiler can name one because the observer records the attempted open even though
-// default-deny never mounted the path. This is a proposal-quality filter, not a security check - the
-// run-time refusal is the backstop, so a path it misses (a symlink twist) simply hits
-// that refusal as before. A grant that merely CONTAINS a shield (read: ~ with ~/.ssh
-// shielded inside it) is legitimate and kept - only a grant at or under a shield goes.
+// DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). These are credential stores, so
+// the profiler never proposes them automatically - the observer records the attempt (the
+// consent surface) even though default-deny never mounted the path, and the user opts in
+// by hand if the program genuinely needs it. A grant that names the shield exactly is
+// honorable at run time (an explicit, warned opt-in); a grant strictly inside one is
+// refused there. Either way it is dropped from the auto-proposal, so this is a proposal-
+// quality filter, not a security check. A grant that merely CONTAINS a shield (read: ~
+// with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
+// shield goes.
 func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped []string) {
 	home, _ := os.UserHomeDir()
 	// A relative home yields relative shield paths that never match the absolute grants

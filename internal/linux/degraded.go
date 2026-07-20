@@ -52,6 +52,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if err := checkGrants(sb, p, reads, writes); err != nil {
 		return enforce.Result{}, err
 	}
+	// Report the same explicit shield opt-ins the full tier does, named by their literal
+	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
+	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
+	// consistent with the full tier's.
+	optedIn, _ := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
 	// A write grant is a directory the target writes into; create a missing one so
 	// Landlock has a path to grant (RWDirs skips a path that does not exist). Landlock
 	// cannot carve a shielded subpath out of an allowed tree, so a read grant that
@@ -120,7 +125,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
-		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report}, nil
+		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report, ShieldedGrants: optedIn}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

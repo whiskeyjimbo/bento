@@ -49,7 +49,8 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// Remove directory shield mount points bwrap creates on the host, as Run does -
 	// profiling applies the same deny-list shields, so it leaves the same artifacts.
 	if reads, writes, err := resolveGrants(p); err == nil {
-		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes))
+		_, optIns := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
 	}
 
 	report, err := os.CreateTemp("", "bento-observe-")

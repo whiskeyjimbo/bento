@@ -97,7 +97,7 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 	sb := testSandbox() // empty fake fs: the deny dir does not exist yet
 	sb.extraDeny = []denylist.Rule{{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true}}
 
-	dirs := createdShieldDirs(sb, []string{"/home/u/proj"}, []string{"/home/u/proj"})
+	dirs := createdShieldDirs(sb, []string{"/home/u/proj"}, []string{"/home/u/proj"}, nil)
 	found := false
 	for _, d := range dirs {
 		if d == "/home/u/proj/store" {

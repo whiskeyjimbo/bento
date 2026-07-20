@@ -188,8 +188,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		args = append(args, "--bind-try", path, path)
 	}
 
-	// The deny-list goes after the grants so it always wins.
-	args = append(args, denyArgs(sb, exposedPaths(sb, reads, writes), writes)...)
+	// The deny-list goes after the grants so it always wins - except for a shield the
+	// policy explicitly opts into (yz3.2), which denyArgs skips so the grant above binds.
+	_, optIns := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	args = append(args, denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)...)
 
 	// The entrypoint is bound read-only last so a write grant covering its
 	// directory cannot leave the script itself writable mid-run.
@@ -562,7 +564,7 @@ const maxGitdirDepth = 64
 // A rule whose path no grant reaches is skipped: it is already invisible under
 // deny-by-default, and binding over it would force bwrap to create a mount point
 // it has no parent for.
-func denyArgs(sb sandbox, grants, writes []string) []string {
+func denyArgs(sb sandbox, grants, writes, optIns []string) []string {
 	rules := shieldRules(sb, writes)
 
 	var args []string
@@ -590,7 +592,7 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 			continue
 		}
 		seen[r] = true
-		if !shieldNeeded(r, sb, grants, writes) {
+		if !shieldNeeded(r, sb, grants, writes, optIns) {
 			continue
 		}
 		args = append(args, shield(r, sb)...)
@@ -610,12 +612,12 @@ func denyArgs(sb sandbox, grants, writes []string) []string {
 // os.Remove of a file is unconditional, so cleaning one would race a host-side
 // atomic save (write-temp then rename) over that path and could delete a real file.
 // The rule selection mirrors denyArgs exactly.
-func createdShieldDirs(sb sandbox, grants, writes []string) []string {
+func createdShieldDirs(sb sandbox, grants, writes, optIns []string) []string {
 	rules := shieldRules(sb, writes)
 	var dirs []string
 	for _, r := range rules {
 		r.Path = sb.resolve(r.Path)
-		if r.Path == "/" || !r.Dir || !shieldNeeded(r, sb, grants, writes) {
+		if r.Path == "/" || !r.Dir || !shieldNeeded(r, sb, grants, writes, optIns) {
 			continue
 		}
 		if !sb.exists(r.Path) {
@@ -641,7 +643,14 @@ func removeCreatedShieldDirs(dirs []string) {
 // grants expose. Beyond protecting the path, this avoids asking bwrap to bind a
 // shield over a path whose parent is read-only - which it cannot do - for paths
 // that are not actually a threat there.
-func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes []string) bool {
+func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) bool {
+	// An exact opt-in grant (yz3.2) wins over the shield: skip it so the grant binds
+	// the real content instead of being overmounted. r.Path is already resolved by the
+	// caller, matching the resolved paths in optIns. Only DenyAll shields are opt-in-able
+	// (checkNotShielded only ever refused those); a DenyWrite shield is untouched.
+	if r.Deny == denylist.DenyAll && slices.Contains(optIns, r.Path) {
+		return false
+	}
 	if !reachable(r.Path, grants) {
 		return false // not exposed by any grant; already invisible
 	}
@@ -703,7 +712,8 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // reads and writes are the resolved grants; p carries the unresolved paths the process
 // and managed-mount checks re-resolve for their own diagnostics.
 func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
-	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...)); err != nil {
+	_, optInShields := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...), optInShields); err != nil {
 		return err
 	}
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
@@ -728,7 +738,7 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 // and common (read: ~ with ~/.ssh shielded inside it); a WRITE grant that contains
 // one is refused separately by checkWriteNotAboveShield, since it would make the
 // shield's parent writable.
-func checkNotShielded(sb sandbox, grants []string) error {
+func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 	rules := alwaysShields(sb)
 	for _, g := range grants {
 		for _, r := range rules {
@@ -739,12 +749,46 @@ func checkNotShielded(sb sandbox, grants []string) error {
 			// symlinked shield's real target (write: /data/keys with ~/.ssh ->
 			// /data/keys) is still caught, not silently honored.
 			rp := sb.resolve(r.Path)
-			if g == rp || under(g, rp) {
-				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; remove it", g, r.Path)
+			// A grant that names the shielded path itself is a deliberate, warned opt-in
+			// (a program that legitimately reads ~/.ssh via an explicit grant, no source
+			// change): honor it - denyArgs skips the shield so the real content binds, and
+			// Run warns. optInShields carries the shields whose LITERAL deny-list path the
+			// policy named (see explicitShieldOptIns); naming a symlink's resolved target
+			// instead is NOT an opt-in and stays refused, so the shield cannot be
+			// side-stepped by spelling out where it points. A grant strictly inside a
+			// shield is likewise refused - the shield covers the whole directory and
+			// cannot be partly lifted - so opting one file in means granting the shield
+			// directory itself.
+			if under(g, rp) && !slices.Contains(optInShields, rp) {
+				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; grant %q itself to opt in (it is then exposed, with a warning), or remove it", g, r.Path, r.Path)
 			}
 		}
 	}
 	return nil
+}
+
+// explicitShieldOptIns finds the always-on DenyAll shields the policy opts into by
+// granting them - the caveat-emptor escape yz3.2 adds. A shield is opted in only when a
+// grant names its LITERAL deny-list path (~/.ssh); a grant that merely resolves to the
+// same place (a symlink's target) is the side-step the shield must still refuse, so the
+// match is on the unresolved grant string. literalGrants are the policy's own absolute,
+// un-symlink-resolved reads and writes - never the systemMount union, whose entries the
+// user did not grant. It returns each matched shield's literal path (for the operator-
+// facing warning) and its resolved path (which checkNotShielded and denyArgs key off,
+// since grants and shields are compared resolved). Both sorted.
+func explicitShieldOptIns(sb sandbox, literalGrants []string) (literal, resolved []string) {
+	for _, r := range alwaysShields(sb) {
+		if r.Deny != denylist.DenyAll {
+			continue
+		}
+		if slices.Contains(literalGrants, r.Path) {
+			literal = append(literal, r.Path)
+			resolved = append(resolved, sb.resolve(r.Path))
+		}
+	}
+	sort.Strings(literal)
+	sort.Strings(resolved)
+	return literal, resolved
 }
 
 // checkWriteNotAboveShield refuses a write grant that contains a DenyAll home

@@ -51,3 +51,25 @@ func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 		})
 	}
 }
+
+// yz3.2: the warning names each opted-in credential path loudly, and stays silent when
+// the policy opted into none (the common run).
+func TestWriteShieldedGrantWarning(t *testing.T) {
+	var b bytes.Buffer
+	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []string{"/home/u/.ssh", "/run"}})
+	out := b.String()
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("the notice must be loud; got %q", out)
+	}
+	for _, p := range []string{"/home/u/.ssh", "/run"} {
+		if !strings.Contains(out, p) {
+			t.Errorf("the notice must name each opted-in path; %q missing from %q", p, out)
+		}
+	}
+
+	var empty bytes.Buffer
+	writeShieldedGrantWarning(&empty, enforce.Result{})
+	if empty.Len() != 0 {
+		t.Errorf("a run that opted into no shields must print nothing; got %q", empty.String())
+	}
+}

@@ -204,7 +204,7 @@ func lastPairIndex(args []string, flag, target string) int {
 func TestCreatedShieldDirsExcludesFileShields(t *testing.T) {
 	sb := testSandbox("/home/u/proj/src") // an entry under proj makes it a workspace dir
 	grants := []string{"/home/u/proj"}
-	dirs := createdShieldDirs(sb, grants, grants)
+	dirs := createdShieldDirs(sb, grants, grants, nil)
 
 	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
 		t.Errorf("the .git/hooks directory shield should be scheduled for cleanup; got %v", dirs)
@@ -261,6 +261,58 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 	}
 	if shield < grant {
 		t.Error("deny-list is applied before the grant, so the grant would win and re-expose ~/.ssh")
+	}
+}
+
+// yz3.2: a grant that names a credential shield EXACTLY is a deliberate opt-in. It is
+// honored rather than refused (compileOrFail would fail on a refusal), and the shield is
+// skipped so the grant binds the real content instead of being overmounted empty.
+func TestExplicitShieldGrantIsHonored(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh"}}
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+
+	if !has(args, "--ro-bind-try", "/home/u/.ssh") {
+		t.Error("an explicit grant of ~/.ssh must be bound")
+	}
+	if has(args, "--tmpfs", "/home/u/.ssh") {
+		t.Error("the ~/.ssh shield must be skipped for an explicit opt-in, else it overmounts the grant")
+	}
+}
+
+// The opt-in covers the runtime-dir shields too (the docker.sock / gpg-agent case): an
+// explicit grant of /run is honored and its shield skipped.
+func TestExplicitRuntimeShieldGrantIsHonored(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/run"}}
+	args := compileOrFail(t, p, testSandbox("/run"))
+
+	if !has(args, "--ro-bind-try", "/run") {
+		t.Error("an explicit grant of the runtime dir must be bound")
+	}
+	if has(args, "--tmpfs", "/run") {
+		t.Error("the /run shield must be skipped for an explicit opt-in")
+	}
+}
+
+// The opt-in wins even when a broad grant also covers the shield: the user asked for the
+// whole shielded directory, so it is exposed via either grant and the carve is skipped.
+func TestExplicitShieldGrantWinsUnderBroadGrant(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u", "/home/u/.ssh"}}
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+
+	if has(args, "--tmpfs", "/home/u/.ssh") {
+		t.Error("~/.ssh explicitly granted must not be shielded, even under a broad ~ grant")
+	}
+}
+
+// yz3.2 must NOT widen the broad-grant carve: read: ~ without an explicit ~/.ssh grant
+// still shields ~/.ssh. This is the regression guard that the opt-in skip did not leak
+// into enclosing grants.
+func TestBroadGrantWithoutOptInStillShields(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+
+	if !has(args, "--tmpfs", "/home/u/.ssh") {
+		t.Error("read: ~ without an explicit ~/.ssh opt-in must still shield ~/.ssh")
 	}
 }
 

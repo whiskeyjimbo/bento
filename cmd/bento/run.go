@@ -101,11 +101,13 @@ func newRunCmd() *cobra.Command {
 					Stdout            string     `json:"stdout"`
 					Stderr            string     `json:"stderr"`
 					EgressConnections int        `json:"egress_connections"`
+					ShieldedGrants    []string   `json:"shielded_grants,omitempty"`
 					Report            reportJSON `json:"report"`
-				}{res.ExitCode, out.String(), errOut.String(), res.EgressConnections, toReportJSON(res.Report)}); err != nil {
+				}{res.ExitCode, out.String(), errOut.String(), res.EgressConnections, res.ShieldedGrants, toReportJSON(res.Report)}); err != nil {
 					return err
 				}
 			} else {
+				writeShieldedGrantWarning(os.Stderr, res)
 				writeDegradations(os.Stderr, res.Report)
 				writeEgressHint(os.Stderr, p, res)
 			}

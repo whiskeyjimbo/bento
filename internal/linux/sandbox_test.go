@@ -566,6 +566,46 @@ func TestSymlinkDenyTargetOutsideGrantsNotExposed(t *testing.T) {
 	}
 }
 
+// yz3.2 end-to-end: an explicit grant of ~/.ssh is a deliberate opt-in - the program
+// reads the real key through it (the shield is skipped, not overmounted empty), and Run
+// reports the opt-in in ShieldedGrants so a frontend can warn. Exercises the whole path:
+// checkNotShielded allows it, denyArgs skips the shield, the content binds, the run
+// surfaces the exposure.
+func TestRunHonorsExplicitShieldGrant(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(sshDir, "id_test")
+	if err := os.WriteFile(key, []byte("PRIVATE-KEY-BODY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("cat \""+key+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The script dir plus an explicit exact grant of the ~/.ssh shield - nothing broad.
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, sshDir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false)
+	if err != nil {
+		t.Fatalf("run: %v (output %q)", err, out.String())
+	}
+	if !strings.Contains(out.String(), "PRIVATE-KEY-BODY") {
+		t.Fatalf("an explicit ~/.ssh grant should read the real key through the skipped shield; got %q", out.String())
+	}
+	if !slices.Contains(res.ShieldedGrants, sshDir) {
+		t.Errorf("Run must report the ~/.ssh opt-in in ShieldedGrants so a frontend can warn; got %v", res.ShieldedGrants)
+	}
+}
+
 // A grant that names the resolved target of a symlinked shield (~/.ssh -> a real
 // key store, then write to that store) must still be refused: the deny rule and
 // the grant are compared after both are symlink-resolved, so the shield cannot be

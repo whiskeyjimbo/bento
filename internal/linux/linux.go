@@ -76,7 +76,8 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
 	// best-effort.
 	if reads, writes, err := resolveGrants(p); err == nil {
-		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes))
+		_, optIns := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
 	}
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
@@ -102,6 +103,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
+
+	// Surface any always-shielded credential store the policy explicitly opted back into
+	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
+	// path. The shields still protect every path not opted into.
+	optedIn, _ := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
@@ -130,12 +136,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted()}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted()}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -159,7 +165,8 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	if err != nil {
 		return err
 	}
-	if err := checkNotShielded(sb, writes); err != nil {
+	_, optInShields := explicitShieldOptIns(sb, append(append([]string{}, p.Read...), p.Write...))
+	if err := checkNotShielded(sb, writes, optInShields); err != nil {
 		return err
 	}
 	// Refuse a grant above a credential shield before creating any directory, so a
