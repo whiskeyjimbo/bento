@@ -103,7 +103,6 @@ func Home(home string) []Rule {
 		".fscrypt",                  // fscrypt policies and protectors
 		".local/share/plasma-vault", // KDE Plasma Vault
 		".vaults",                   // generic encrypted vault store
-		".cert",                     // client certificates and private keys
 		".caff",                     // caff (GnuPG) signing material
 		".nyx",                      // nyx Tor controller (control-port password)
 
@@ -117,11 +116,6 @@ func Home(home string) []Rule {
 		".kde4/share/apps/klipper",         // clipboard history (KDE4)
 		".local/share/klipper",             // clipboard history (KDE5+)
 		".local/share/ibus-typing-booster", // learned typing history
-
-		// Mutt maildirs: message bodies. Only the dot-named spools - a bare ~/mail or
-		// ~/Mail is too likely an ordinary user directory to shield under a broad grant.
-		".mail",
-		".Mail",
 	}
 	files := []string{
 		".git-credentials",
@@ -163,9 +157,8 @@ func Home(home string) []Rule {
 		// (not their parent dir) so a sibling config the tool also reads stays available.
 		".lesshst",
 		".histfile",
-		".history",
-		".python-history",
-		".pythonhist",
+		".python_history", // CPython's default readline REPL history (underscore is the real name)
+		".pythonhist",     // bpython history
 		".mupdf.history",
 		".cache/mupdf.history",
 		".mutthistory",
@@ -256,9 +249,6 @@ func Home(home string) []Rule {
 		".pythonrc.py",           // sourced at interactive python startup (PYTHONSTARTUP convention)
 		".config/mimeapps.list",  // default-application map; redirects an open to a planted .desktop
 		".config/user-dirs.dirs", // sourced by xdg-user-dirs-update; a shell-injection line runs
-		"_vimrc",                 // vim reads the underscore-named rc variants too
-		"_gvimrc",
-		"_exrc",
 	}
 
 	// Directories whose contents run on the host at the next login, shell start, or
@@ -279,8 +269,7 @@ func Home(home string) []Rule {
 		".config/nushell",              // config.nu/env.nu and autoloads
 		".vim",                         // plugin/, autoload/, after/plugin/ are auto-sourced
 		".config/nvim",                 // init.{vim,lua}, lua/, plugin/, after/
-		".local/share/nvim",            // whole data tree: packpath plugins auto-source; also holds shada. DenyWrite (not DenyAll) so nvim itself can still run sandboxed
-		".local/state/nvim",            // shada/undo/log state; block tampering, keep readable
+		".local/share/nvim",            // packpath + plugin-manager trees (site/pack, lazy/, mason/) hold auto-sourced Lua; DenyWrite (not DenyAll) keeps nvim readable, at the cost of blocking in-sandbox plugin installs
 		".emacs.d",                     // init.el and site-lisp
 		".config/emacs",                // XDG location for the same
 		".config/gdb",                  // gdb 11+ reads gdbinit/gdbearlyinit here
