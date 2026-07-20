@@ -307,8 +307,11 @@ func isBroadDir(path string) bool {
 	if path == "/" || filepath.Dir(path) == "/" {
 		return true
 	}
+	// Clean the home value: proposal paths are already filepath.Clean'd (Synthesize),
+	// so a $HOME carrying a trailing slash would otherwise never compare equal and the
+	// whole home tree would slip through as a non-broad grant.
 	home, _ := os.UserHomeDir()
-	return home != "" && path == home
+	return home != "" && path == filepath.Clean(home)
 }
 
 // guessInterpreter picks an interpreter from the script's extension. An empty

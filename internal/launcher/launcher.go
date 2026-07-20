@@ -54,7 +54,7 @@ type Config struct {
 	// the bar but is not tamper-proof: a descendant can still reopen it via
 	// /proc/<launcher>/fd during the run, so the report is trustworthy only to the
 	// degree the profiled code is (see runObserve). The profiler
-	// uses it to synthesize a manifest from a permissive run; no seccomp or Landlock is
+	// uses it to synthesize a manifest from an observe-only run; no seccomp or Landlock is
 	// applied, so what the target does is fully observed.
 	ObserveFD int
 	// Target is the absolute command to run: interpreter, script, and args.
@@ -164,7 +164,7 @@ func Run(cfg Config) (int, error) {
 }
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
-// no Landlock - a permissive run so every access is seen) and writes what the
+// no Landlock - enforcement is off so every access is seen) and writes what the
 // target opened, and whether it exec'd, to the inherited report descriptor for
 // the host to read.
 func runObserve(cfg Config, env []string) (int, error) {

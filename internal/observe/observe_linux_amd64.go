@@ -1,7 +1,7 @@
 // Package observe records what a program does - the files it opens and whether
 // it spawns subprocesses - by running it under ptrace. It is the profiler's
-// observation backend: run a script permissively under observe, then synthesize
-// a tight manifest from what it actually touched.
+// observation backend: run a script under observe (default-deny, enforcement off),
+// then synthesize a tight manifest from what it actually touched.
 //
 // This is a profiling tool, not an enforcement layer. It decodes syscalls by
 // their amd64 numbers and register layout; other architectures get a stub.
