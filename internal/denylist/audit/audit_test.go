@@ -84,6 +84,28 @@ blacklist ${HOME}/.config/i3
 	}
 }
 
+// A reference note preceding the real header must not steal the section. firejail
+// sometimes leads a section with a "# see #NNNN" note before the prose header; with
+// plain first-comment-wins the note (out of bento's scope) captured the block and the
+// real in-scope header was skipped, silently un-gating the entries (a wrong-OUT). A
+// later in-scope header upgrades the out-of-scope note; the move is one-way, so it
+// cannot un-gate anything the old rule gated.
+func TestParseFirejailInScopeHeaderUpgradesLeadingNote(t *testing.T) {
+	const content = `# see #3358
+# X11 session autostart
+blacklist ${HOME}/.xinitrc
+blacklist ${HOME}/.config/autostart
+`
+	for _, c := range ParseFirejail(content, "/HOME", "/run/user/1000") {
+		if c.Section != "X11 session autostart" {
+			t.Errorf("%s attributed to %q, want the header \"X11 session autostart\"", c.Path, c.Section)
+		}
+		if !inScopeSection(c.Section) {
+			t.Errorf("%s (section %q) must classify in-scope - it is a host-exec vector", c.Path, c.Section)
+		}
+	}
+}
+
 // inScopeSection matches the distinctive words of bento's secret/exec sections, but a
 // NEGATED header must not fool it: firejail's "Configuration files that do not allow
 // arbitrary command execution but that..." names the exec keyword only to exclude

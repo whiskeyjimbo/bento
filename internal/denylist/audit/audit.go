@@ -99,13 +99,19 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 			continue
 		}
 		if after, ok := strings.CutPrefix(line, "#"); ok {
-			// Only the first comment of a block is its section header. A later comment -
-			// a mid-section note or a directive firejail disabled by prefixing '#' -
-			// must not reattribute the entries below it: the old last-comment-wins rule
-			// let a commented-out "# blacklist ${HOME}/.xpra" pull the X11-autostart
-			// entries out of bento's exec scope, where they were counted, never gated.
+			// The first comment of a block is its section header, with one monotonic
+			// exception: a later in-scope header upgrades an out-of-scope note that
+			// preceded it (firejail sometimes leads a section with a reference note like
+			// "# see #3358" before "# X11 session autostart"). The reclassification only
+			// ever moves a block out-of-scope -> in-scope, never the reverse, so it can
+			// only reduce wrong-OUT (an in-scope entry silently left un-gated) - the
+			// dangerous direction. That is why it does not reintroduce the last-comment-
+			// wins bug, which was itself a wrong-OUT: a commented-out
+			// "# blacklist ${HOME}/.xpra" pulling the X11-autostart entries out of scope.
+			// A commented-out directive is skipped and is never in-scope, so it can never
+			// win here.
 			text := strings.TrimSpace(after)
-			if !headerCaptured && !isCommentedDirective(text) {
+			if !isCommentedDirective(text) && (!headerCaptured || (!inScopeSection(section) && inScopeSection(text))) {
 				section = text
 				headerCaptured = true
 			}
