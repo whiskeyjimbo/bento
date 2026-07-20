@@ -210,8 +210,11 @@ func TestProfileHomeIsEmptyOverlay(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "p.sh")
+	// The overlay must exist, be empty (real dotfiles hidden), and be writable scratch -
+	// a program that drops a dotfile on startup must proceed, not fail on a read-only home.
 	body := "[ -d \"$HOME\" ] && echo HOME_EXISTS\n" +
-		"ls -A \"$HOME\" | grep -q . && echo HOME_NONEMPTY || echo HOME_EMPTY\n"
+		"ls -A \"$HOME\" | grep -q . && echo HOME_NONEMPTY || echo HOME_EMPTY\n" +
+		"echo x > \"$HOME/.startup\" && echo HOME_WRITABLE\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +231,13 @@ func TestProfileHomeIsEmptyOverlay(t *testing.T) {
 	}
 	if !strings.Contains(got, "HOME_EMPTY") || strings.Contains(got, "HOME_NONEMPTY") {
 		t.Errorf("profiling HOME should be empty (real dotfiles hidden); output: %q", got)
+	}
+	if !strings.Contains(got, "HOME_WRITABLE") {
+		t.Errorf("profiling HOME should be writable scratch; output: %q", got)
+	}
+	// The overlay write must stay in the sandbox - the real home must not gain the file.
+	if _, err := os.Stat(filepath.Join(home, ".startup")); !os.IsNotExist(err) {
+		t.Errorf("a write to the overlay HOME leaked to the real home directory (err=%v)", err)
 	}
 }
 

@@ -34,8 +34,9 @@ func newProfileCmd() *cobra.Command {
 			"runs with your real HOME so it probes the real paths (~/.ssh, ~/.aws), but\n" +
 			"those paths are absent in the sandbox, so the attempt is recorded without\n" +
 			"the content ever being exposed. The proposal therefore shows what the\n" +
-			"script WANTS; you grant it explicitly. This is safe to run on code you do\n" +
-			"not trust. Egress is recorded but not forwarded by default, so the script's\n" +
+			"script WANTS; you grant it explicitly. The only host content mounted is the\n" +
+			"script's own directory, so profiling untrusted code reaches nothing else of\n" +
+			"yours. Egress is recorded but not forwarded by default, so the script's\n" +
 			"data stays on the host; --allow-network forwards it for a faithful run of\n" +
 			"network-dependent code. Review the proposed manifest, then `bento approve`\n" +
 			"it.\n\n" +
@@ -89,11 +90,14 @@ func newProfileCmd() *cobra.Command {
 			// paths to the same names profiling recorded and granted.
 			proposed.Env = sortedKeys(env)
 
-			shielded, broad := clampProposal(proposed)
+			shielded, broadReads, broadWrites := clampProposal(proposed)
 			for _, d := range shielded {
 				fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a mandatory shielded path bento never grants; the script's attempt was recorded but cannot be honored.\n", d)
 			}
-			for _, d := range broad {
+			for _, d := range broadReads {
+				fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
+			}
+			for _, d := range broadWrites {
 				fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
 			}
 
@@ -256,23 +260,39 @@ func underDir(parent, child string) bool {
 
 // clampProposal filters a synthesized proposal for review, in an order that is
 // load-bearing (bv2-2wy): drop grants inside a mandatory shield, then drop over-broad
-// write grants, and ONLY THEN dedup reads a surviving write already covers. Deduping
-// last is what keeps a read near a credential store (~/.ssh under a $HOME-level
-// write) from being swallowed by a broad write before the shield clamp can surface
-// it. It mutates p and returns the shielded and over-broad paths to warn about.
-func clampProposal(p *policy.Policy) (shielded, broad []string) {
+// read and write grants, and ONLY THEN dedup reads a surviving write already covers.
+// Deduping last is what keeps a read near a credential store (~/.ssh under a $HOME-level
+// write) from being swallowed by a broad write before the shield clamp can surface it.
+// The broad-read clamp is the read-side twin of the write clamp: a proposal of read: ~
+// (or read: /) - which a script that lists its home or the root produces - would, once
+// approved, bind the whole tree minus only the enumerated shields, re-exposing every
+// credential the deny-list misses; the specific sub-paths the script read are proposed
+// on their own, so dropping the umbrella loses nothing real. It mutates p and returns
+// the shielded, over-broad read, and over-broad write paths to warn about.
+func clampProposal(p *policy.Policy) (shielded, broadReads, broadWrites []string) {
 	p.Read, p.Write, shielded = clampShieldedGrants(p.Read, p.Write)
-	p.Write, broad = clampBroadWrites(p.Write)
+	p.Write, broadWrites = clampBroadWrites(p.Write)
+	p.Read, broadReads = clampBroadReads(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
-	return shielded, broad
+	return shielded, broadReads, broadWrites
 }
 
 func clampBroadWrites(writes []string) (kept, dropped []string) {
-	for _, w := range writes {
-		if isBroadDir(w) {
-			dropped = append(dropped, w)
+	return partitionBroad(writes)
+}
+
+func clampBroadReads(reads []string) (kept, dropped []string) {
+	return partitionBroad(reads)
+}
+
+// partitionBroad splits grants into those safe to bind whole and those too broad
+// (see isBroadDir), preserving order.
+func partitionBroad(paths []string) (kept, dropped []string) {
+	for _, p := range paths {
+		if isBroadDir(p) {
+			dropped = append(dropped, p)
 		} else {
-			kept = append(kept, w)
+			kept = append(kept, p)
 		}
 	}
 	return kept, dropped

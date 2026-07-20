@@ -20,10 +20,10 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
 		Write: []string{"/srv/app", "/etc"}, // /srv/app is narrow (kept); /etc is top-level (dropped)
 	}
-	_, broad := clampProposal(p)
+	_, _, broadWrites := clampProposal(p)
 
-	if !slices.Contains(broad, "/etc") {
-		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broad)
+	if !slices.Contains(broadWrites, "/etc") {
+		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broadWrites)
 	}
 	// The read under the KEPT narrow write is deduped away...
 	if slices.Contains(p.Read, "/srv/app/config") {
@@ -34,6 +34,37 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 	// /etc would have swallowed it and it would be silently gone - the bug.
 	if !slices.Contains(p.Read, "/etc/thing/data") {
 		t.Errorf("a read under a dropped broad write must survive as its own grant, got Read=%v", p.Read)
+	}
+}
+
+// A broad READ grant (~, /, or a top-level dir) must be dropped from the proposal and
+// surfaced, symmetric to the broad-write clamp. Without this, a script that lists its
+// home or the root produces read: ~ / read: /, which - once approved - binds the whole
+// tree minus only the enumerated shields, re-opening the fail-open bv2-yz3.1 closed. The
+// specific sub-paths the script read must still survive as their own grants.
+func TestClampProposalDropsBroadReads(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home directory on this host")
+	}
+	underHome := home + "/.config/app/config" // a specific path the script really read
+	p := &policy.Policy{Read: []string{home, "/", "/etc", underHome, "/srv/app/data"}}
+
+	_, broadReads, _ := clampProposal(p)
+
+	for _, want := range []string{home, "/", "/etc"} {
+		if !slices.Contains(broadReads, want) {
+			t.Errorf("%q must be surfaced as a too-broad read; broadReads=%v", want, broadReads)
+		}
+		if slices.Contains(p.Read, want) {
+			t.Errorf("%q must be dropped from the proposed reads; Read=%v", want, p.Read)
+		}
+	}
+	// The specific access and an ordinary deep directory survive.
+	for _, keep := range []string{underHome, "/srv/app/data"} {
+		if !slices.Contains(p.Read, keep) {
+			t.Errorf("the specific read %q must survive; Read=%v", keep, p.Read)
+		}
 	}
 }
 
