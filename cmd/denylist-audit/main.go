@@ -33,24 +33,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "denylist-audit: fetching firejail profile: %v\n", err)
 		os.Exit(2)
 	}
+	os.Exit(report(os.Stdout, content, home, runUser))
+}
 
+// report parses the firejail profile, diffs it against bento's deny-list, writes the
+// in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
+// 1 when any in-scope gap remains, 0 when the list already covers them. It is separated
+// from main's network fetch so the gate's decision - the part CI depends on - is testable
+// without touching the network.
+func report(w io.Writer, content, home, runUser string) int {
 	candidates := audit.ParseFirejail(content, home, runUser)
 	rules := append(denylist.Home(home), denylist.Runtime()...)
 	gaps := audit.Diff(candidates, rules)
 
 	inScope, outBySection := audit.SplitByScope(gaps)
 	if len(inScope) == 0 {
-		fmt.Println("no in-scope gaps: every secret/exec firejail shield is covered")
-		reportOutOfScope(outBySection)
-		return
+		fmt.Fprintln(w, "no in-scope gaps: every secret/exec firejail shield is covered")
+		reportOutOfScope(w, outBySection)
+		return 0
 	}
 
-	fmt.Printf("%d in-scope firejail-shielded path(s) bento does not fully cover:\n\n", len(inScope))
+	fmt.Fprintf(w, "%d in-scope firejail-shielded path(s) bento does not fully cover:\n\n", len(inScope))
 	section := ""
 	for _, g := range inScope {
 		if g.Section != section {
 			section = g.Section
-			fmt.Printf("[%s]\n", section)
+			fmt.Fprintf(w, "[%s]\n", section)
 		}
 		note := "missing"
 		if g.Weaker {
@@ -59,16 +67,16 @@ func main() {
 		if g.Glob {
 			note += "; glob - shield the covering directory"
 		}
-		fmt.Printf("  %-42s %s\n", g.Path, note)
+		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}
-	reportOutOfScope(outBySection)
-	os.Exit(1)
+	reportOutOfScope(w, outBySection)
+	return 1
 }
 
 // reportOutOfScope summarizes the firejail sections bento deliberately does not
 // cover (privacy, other-app, system hardening), so they are accounted for, not
 // silently dropped, but do not bury the in-scope gaps.
-func reportOutOfScope(bySection map[string]int) {
+func reportOutOfScope(w io.Writer, bySection map[string]int) {
 	if len(bySection) == 0 {
 		return
 	}
@@ -76,9 +84,9 @@ func reportOutOfScope(bySection map[string]int) {
 	for _, n := range bySection {
 		total += n
 	}
-	fmt.Printf("\n%d out-of-scope gap(s) skipped (firejail's privacy/other-app/system scope), by section:\n", total)
+	fmt.Fprintf(w, "\n%d out-of-scope gap(s) skipped (firejail's privacy/other-app/system scope), by section:\n", total)
 	for s, n := range bySection {
-		fmt.Printf("  %3d  %s\n", n, s)
+		fmt.Fprintf(w, "  %3d  %s\n", n, s)
 	}
 }
 

@@ -163,6 +163,14 @@ The tests run real probes inside real sandboxes and assert that the boundary act
 holds - a policy compiler that produces plausible arguments proves nothing about whether
 the sandbox confines anything.
 
+`scripts/denylist-audit.sh` cross-references bento's credential/exec deny-list against
+firejail's upstream `disable-common.inc` and prints any secret- or exec-scope shield
+bento is missing, so the list stays complete without hand-hunting. It needs network
+access (firejail's data is fetched as a GPL reference, never vendored) and exits non-zero
+when a gap is found, so it can gate CI; a failed fetch is reported and does not fail the
+build. Run it after adding a tool that stores credentials, and classify each flagged path
+into `internal/denylist/denylist.go`.
+
 ## Security notes
 
 - Profiling runs the script under the same default-deny sandbox a real run gets: nothing
