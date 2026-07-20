@@ -373,6 +373,35 @@ func TestUnbornWorkspaceFileIsShielded(t *testing.T) {
 	}
 }
 
+// An env-relocated startup file (GIT_CONFIG_GLOBAL, ZDOTDIR) is the first Home()
+// DenyWrite rule a write grant can actually reach - the home defaults sit under home,
+// where a write grant is refused. Prove the shield is emitted end-to-end so a write
+// grant over the relocation cannot plant a config the host runs, and that the shield
+// (an empty read-only file) follows the grant bind so bwrap's last-wins keeps it.
+func TestRelocatedStartupFileShieldedUnderWriteGrant(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/cfg/gitconfig")
+	t.Setenv("ZDOTDIR", "/cfg/zsh")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/cfg"}}
+	args := compileOrFail(t, p, testSandbox("/cfg/x")) // /cfg exists as a dir so the grant binds it
+
+	dests := shieldDests(args, "/tmp/shield", true)
+	for _, want := range []string{"/cfg/gitconfig", "/cfg/zsh/.zshrc"} {
+		if !slices.Contains(dests, want) {
+			t.Errorf("relocated startup file %q must be shielded under a write grant reaching it; shields=%v", want, dests)
+		}
+	}
+	// The shield must land after the write-grant bind of /cfg.
+	shield := -1
+	for j := 0; j+2 < len(args); j++ {
+		if args[j] == "--ro-bind" && args[j+2] == "/cfg/gitconfig" {
+			shield = j
+		}
+	}
+	if grant := pairIndex(args, "--bind-try", "/cfg"); grant < 0 || grant > shield {
+		t.Errorf("shield at %d must follow the /cfg write-grant bind at %d", shield, grant)
+	}
+}
+
 // A write-denied file that DOES exist stays readable. v1 shadowed these with
 // /dev/null, which also destroyed reads and left git seeing an empty config.
 func TestExistingWriteDeniedFileStaysReadable(t *testing.T) {

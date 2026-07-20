@@ -393,14 +393,37 @@ func Home(home string) []Rule {
 	// a write grant there cannot plant a file the host runs on the next shell or git
 	// call. A relative value is dropped (an absolute bind cannot cover it), as is the
 	// default location (already shielded) and git's /dev/null "no config" idiom.
+	//
+	// A relocation landing at or under a DenyAll rule is skipped: emitting a DenyWrite
+	// there would stack a readable ro-bind after the DenyAll hide, and bwrap's
+	// last-wins ordering would expose the credential the DenyAll rule is hiding (see
+	// the ordering note in the Linux backend's denyArgs).
+	underDenyAll := func(p string) bool {
+		for _, r := range rules {
+			if r.Deny != DenyAll {
+				continue
+			}
+			if p == r.Path || (r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator))) {
+				return true
+			}
+		}
+		return false
+	}
+	addWriteShield := func(p string) {
+		if !underDenyAll(p) {
+			rules = append(rules, Rule{Path: p, Deny: DenyWrite})
+		}
+	}
 	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && filepath.Clean(zdotdir) != home {
-		for _, f := range []string{".zshenv", ".zshrc", ".zprofile", ".zlogin", ".zlogout"} {
-			rules = append(rules, Rule{Path: filepath.Join(zdotdir, f), Deny: DenyWrite})
+		// .zshrc.local is sourced by the widely-copied grml zshrc from ${ZDOTDIR:-$HOME},
+		// so it relocates with the rest of the group (the default is shielded above).
+		for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
+			addWriteShield(filepath.Join(zdotdir, f))
 		}
 	}
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
 		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
-			rules = append(rules, Rule{Path: c, Deny: DenyWrite})
+			addWriteShield(c)
 		}
 	}
 	return rules

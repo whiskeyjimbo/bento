@@ -2,6 +2,7 @@ package denylist
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -318,7 +319,7 @@ func TestHomeShieldsRelocatedStartupFiles(t *testing.T) {
 		byRule[r.Path] = r
 	}
 	// Every zsh startup file relocates as a group under ZDOTDIR.
-	for _, f := range []string{".zshenv", ".zshrc", ".zprofile", ".zlogin", ".zlogout"} {
+	for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
 		p := "/cfg/zsh/" + f
 		r, ok := byRule[p]
 		if !ok {
@@ -344,16 +345,48 @@ func TestHomeShieldsRelocatedStartupFiles(t *testing.T) {
 }
 
 // GIT_CONFIG_GLOBAL=/dev/null is git's idiom for "no global config" and names no
-// plantable file; a relative or default-restating value must not add a shield either.
+// plantable file; a relative value, the default location, or ZDOTDIR=$HOME must not
+// add a shield either.
 func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
-	t.Setenv("ZDOTDIR", "relzsh")                 // relative: cannot bind
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")    // disables global config; nothing to plant
+	t.Setenv("ZDOTDIR", "/home/u")             // the default: block skipped, no relocated rules
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null") // disables global config; nothing to plant
 	for _, r := range Home("/home/u") {
-		if r.Path == "relzsh/.zshrc" || r.Path == "/dev/null" {
+		if r.Path == "/dev/null" {
 			t.Errorf("unexpected shield at %q for a non-plantable relocation", r.Path)
 		}
 		if !filepath.IsAbs(r.Path) {
-			t.Errorf("relative startup relocation leaked a non-absolute shield path %q", r.Path)
+			t.Errorf("startup relocation leaked a non-absolute shield path %q", r.Path)
 		}
+	}
+	// A relative ZDOTDIR cannot be bound and must be dropped.
+	t.Setenv("ZDOTDIR", "relzsh")
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative ZDOTDIR leaked a non-absolute shield path %q", r.Path)
+		}
+	}
+}
+
+// A relocation that lands at or under a DenyAll credential path must NOT get a
+// DenyWrite shield: stacked after the DenyAll hide, its readable ro-bind would
+// expose the credential under bwrap's last-wins ordering.
+func TestHomeStartupRelocationSkipsDenyAllCollision(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.netrc")   // a DenyAll file
+	t.Setenv("ZDOTDIR", "/home/u/.ssh")               // under a DenyAll dir
+	for _, r := range Home("/home/u") {
+		if r.Deny == DenyWrite && (r.Path == "/home/u/.netrc" || strings.HasPrefix(r.Path, "/home/u/.ssh/")) {
+			t.Errorf("DenyWrite shield at %q collides with a DenyAll rule and would expose it", r.Path)
+		}
+	}
+	// The DenyAll shields themselves must still be present.
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		byRule[r.Path] = r
+	}
+	if r := byRule["/home/u/.netrc"]; r.Deny != DenyAll {
+		t.Errorf("~/.netrc must stay DenyAll, got %+v", r)
+	}
+	if r := byRule["/home/u/.ssh"]; r.Deny != DenyAll || !r.Dir {
+		t.Errorf("~/.ssh must stay a DenyAll dir, got %+v", r)
 	}
 }
