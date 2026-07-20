@@ -227,10 +227,24 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	if home == "" || !filepath.IsAbs(home) {
 		return reads, writes, nil
 	}
+	// Build shields against both the home as configured and its symlink-resolved form.
+	// A symlinked home (Fedora Silverblue's /home -> /var/home) means an observed
+	// credential path can arrive resolved (/var/home/u/.ssh, anchored at a resolved cwd)
+	// while $HOME is the unresolved /home/u, or the reverse; shielding against both
+	// forms drops the grant either way. It only ever adds matches, so a grant is never
+	// wrongly kept. A home that does not resolve (nonexistent) falls back to raw.
+	homes := []string{home}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
+		homes = append(homes, resolved)
+	}
+	seenShield := map[string]bool{}
 	var shields []string
-	for _, r := range denylist.Home(home) {
-		if r.Deny == denylist.DenyAll {
-			shields = append(shields, r.Path)
+	for _, h := range homes {
+		for _, r := range denylist.Home(h) {
+			if r.Deny == denylist.DenyAll && !seenShield[r.Path] {
+				seenShield[r.Path] = true
+				shields = append(shields, r.Path)
+			}
 		}
 	}
 	inShield := func(g string) bool {

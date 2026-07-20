@@ -53,11 +53,21 @@ func inScopeSection(section string) bool {
 		"arbitrary command execution", "startup files", "autostart", "session manager",
 		"systemd", "openrc", "desktop entries", "terminal emulator", "ipc socket",
 	} {
-		if strings.Contains(s, kw) {
+		if strings.Contains(s, kw) && !negatedKeyword(s, kw) {
 			return true
 		}
 	}
 	return false
+}
+
+// negatedKeyword reports whether the section names kw only to exclude it. firejail has
+// a header "Configuration files that do not allow arbitrary command execution but
+// that..." which contains the exec keyword yet is deliberately out of the exec threat
+// model, so a bare substring match on it is a false positive. Suppression is scoped to
+// that keyword: a section that negates it while also matching another in-scope keyword
+// still classifies in-scope.
+func negatedKeyword(s, kw string) bool {
+	return kw == "arbitrary command execution" && strings.Contains(s, "not allow "+kw)
 }
 
 // Gap is a firejail candidate bento does not fully cover.

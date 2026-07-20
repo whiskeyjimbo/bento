@@ -37,7 +37,7 @@ func newDoctorCmd() *cobra.Command {
 			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
-				if err := writeJSON(os.Stdout, toReportJSON(report)); err != nil {
+				if err := writeJSON(os.Stdout, toDoctorJSON(report)); err != nil {
 					return err
 				}
 				if shortfall {
@@ -87,4 +87,11 @@ func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 		}
 	}
 	return out
+}
+
+// toDoctorJSON builds the doctor JSON output. Ready derives from the same
+// gatedShortfall as the exit code, so the field a JSON consumer reads and the process
+// status a shell caller reads can never disagree.
+func toDoctorJSON(r enforce.Report) doctorJSON {
+	return doctorJSON{reportJSON: toReportJSON(r), Ready: len(gatedShortfall(r)) == 0}
 }

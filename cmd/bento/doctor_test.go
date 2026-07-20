@@ -37,3 +37,25 @@ func TestGatedShortfallExcludesConditionalNetwork(t *testing.T) {
 		t.Errorf("a hardening gap must not gate; got %+v", got)
 	}
 }
+
+// doctor's JSON readiness field mirrors the exit gate, not fully_enforced: a host
+// short only on a conditionally-required layer (network) is ready (exit 0) even though
+// not every layer is enforced. A baseline (filesystem) shortfall is not ready.
+func TestDoctorJSONReadyMirrorsGate(t *testing.T) {
+	var netOnly enforce.Report
+	netOnly.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	netOnly.Add(enforce.LayerNetwork, enforce.Unavailable, "no egress stack")
+	dj := toDoctorJSON(netOnly)
+	if !dj.Ready {
+		t.Error("a network-only shortfall must still be ready (exit 0)")
+	}
+	if dj.FullyEnforced {
+		t.Error("fully_enforced must be false when any layer fell short")
+	}
+
+	var fsShort enforce.Report
+	fsShort.Add(enforce.LayerFilesystem, enforce.Degraded, "landlock-only")
+	if toDoctorJSON(fsShort).Ready {
+		t.Error("a filesystem shortfall must not be ready")
+	}
+}

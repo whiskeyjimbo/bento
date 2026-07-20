@@ -167,6 +167,28 @@ func TestPartialRunWarning(t *testing.T) {
 	}
 }
 
+// On a symlinked home (Fedora Silverblue's /home -> /var/home), an observed credential
+// path can arrive symlink-resolved (anchored at a resolved cwd) while $HOME is the
+// unresolved form. The shield clamp must drop the grant in either form, so it builds
+// shields against both the home as configured and its resolved target.
+func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+
+	resolvedSSH := filepath.Join(real, ".ssh", "id_rsa") // observed via the resolved home
+	linkSSH := filepath.Join(link, ".ssh", "id_rsa")     // observed via $HOME as configured
+	_, _, dropped := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	for _, p := range []string{resolvedSSH, linkSSH} {
+		if !slices.Contains(dropped, p) {
+			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
+		}
+	}
+}
+
 // mergeExisting must distinguish a missing --out (first run, write fresh) from a file
 // that exists but cannot be parsed. Overwriting an unparseable manifest would silently
 // discard whatever grants it held, contradicting the merge-not-overwrite contract, so

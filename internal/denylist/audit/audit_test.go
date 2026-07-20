@@ -84,6 +84,34 @@ blacklist ${HOME}/.config/i3
 	}
 }
 
+// inScopeSection matches the distinctive words of bento's secret/exec sections, but a
+// NEGATED header must not fool it: firejail's "Configuration files that do not allow
+// arbitrary command execution but that..." names the exec keyword only to exclude
+// itself. Suppression is scoped to that keyword, so a section that negates it while
+// also matching another in-scope keyword still classifies in-scope.
+func TestInScopeSectionRejectsNegatedHeaders(t *testing.T) {
+	for _, s := range []string{
+		"Arbitrary command execution",
+		"Top secret",
+		"X11 session autostart",
+		"systemd",
+		"systemd units that do not allow arbitrary command execution", // another keyword still counts
+	} {
+		if !inScopeSection(s) {
+			t.Errorf("inScopeSection(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{
+		"Configuration files that do not allow arbitrary command execution but that could otherwise be exploited",
+		"gnome",
+		"var",
+	} {
+		if inScopeSection(s) {
+			t.Errorf("inScopeSection(%q) = true, want false", s)
+		}
+	}
+}
+
 func TestDiffCoverageAndClass(t *testing.T) {
 	rules := []denylist.Rule{
 		{Path: "/HOME/.ssh", Deny: denylist.DenyAll, Dir: true},

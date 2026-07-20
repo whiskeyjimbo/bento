@@ -24,9 +24,23 @@ type layerJSON struct {
 
 type reportJSON struct {
 	Layers []layerJSON `json:"layers"`
-	// FullyEnforced is false when any layer fell short, so a caller can gate on
-	// one field instead of interpreting the matrix.
+	// FullyEnforced is true only when every layer in this report is enforced. It is not
+	// the host-readiness gate: a host can run a manifest whose layers all hold while a
+	// different layer here falls short, so a CI caller gates on doctor's exit code or
+	// doctorJSON.Ready, not on this.
 	FullyEnforced bool `json:"fully_enforced"`
+}
+
+// doctorJSON is the doctor command's machine-readable output: the full host report
+// plus a readiness bool that mirrors doctor's exit code, so a CI consumer can gate on
+// one field rather than the process status or the matrix.
+type doctorJSON struct {
+	reportJSON
+	// Ready is true when every guarantee a manifest needs regardless of its contents is
+	// enforced here - the same condition as exit 0. It can be true while FullyEnforced
+	// is false: a host missing only a conditionally-required (network egress) or
+	// hardening layer still runs every manifest that does not need that layer.
+	Ready bool `json:"ready"`
 }
 
 func toReportJSON(r enforce.Report) reportJSON {
