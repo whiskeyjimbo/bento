@@ -93,6 +93,35 @@ func Home(home string) []Rule {
 		".config/chromium",       // Chromium
 		".config/BraveSoftware",  // Brave
 		".config/microsoft-edge", // Edge
+
+		// Crypto containers and encrypted-home stores: headers, config, and keys.
+		".TrueCrypt",
+		".VeraCrypt",
+		".zuluCrypt",
+		".Private",                  // ecryptfs private directory
+		".ecryptfs",                 // ecryptfs config and wrapped passphrase
+		".fscrypt",                  // fscrypt policies and protectors
+		".local/share/plasma-vault", // KDE Plasma Vault
+		".vaults",                   // generic encrypted vault store
+		".cert",                     // client certificates and private keys
+		".caff",                     // caff (GnuPG) signing material
+		".nyx",                      // nyx Tor controller (control-port password)
+
+		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
+		// default-deny a program that legitimately needs its own history opts in per-path.
+		".adobe",                            // Flash local storage (LSO)
+		".macromedia",                       // Flash local storage (legacy)
+		".ne",                               // ne editor state, incl. history
+		".cache/xfce4/clipman",              // clipboard history
+		".kde/share/apps/klipper",           // clipboard history
+		".kde4/share/apps/klipper",          // clipboard history (KDE4)
+		".local/share/klipper",              // clipboard history (KDE5+)
+		".local/share/ibus-typing-booster",  // learned typing history
+
+		// Mutt maildirs: message bodies. Only the dot-named spools - a bare ~/mail or
+		// ~/Mail is too likely an ordinary user directory to shield under a broad grant.
+		".mail",
+		".Mail",
 	}
 	files := []string{
 		".git-credentials",
@@ -118,6 +147,31 @@ func Home(home string) []Rule {
 		".msmtprc",    // SMTP passwords (msmtp enforces 600 and refuses a readable one)
 		".muttrc",     // often holds plaintext imap_pass
 		".yarnrc.yml", // yarn 2+ stores npmAuthToken here (like .npmrc)
+
+		// Remote-login trust: writable would grant persistence, and the contents name
+		// trusted hosts/users; sshd treats these as security-sensitive.
+		".rhosts",
+		".shosts",
+
+		// Credential files various tools read by default.
+		".fetchmailrc",       // fetchmail account password
+		".davfs2/secrets",    // davfs2 mount credentials
+		".cargo/credentials", // legacy cargo registry token (pre-credentials.toml)
+		".passwd-s3fs",       // s3fs password file
+
+		// Shell and REPL history: command lines and pasted secrets. Shielded as files
+		// (not their parent dir) so a sibling config the tool also reads stays available.
+		".lesshst",
+		".histfile",
+		".history",
+		".python-history",
+		".pythonhist",
+		".mupdf.history",
+		".cache/mupdf.history",
+		".mutthistory",
+		".ammonite/history",
+		".local/share/fish/fish_history",
+		".viminfo", // holds registers and search history, which can carry yanked secrets
 	}
 	// Modifying any of these grants persistence or code execution on the host the
 	// next time the user opens a shell or runs git. Reads stay allowed: git
