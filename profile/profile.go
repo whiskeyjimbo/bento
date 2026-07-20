@@ -1,6 +1,6 @@
 // Package profile turns what a script was observed doing into a proposed policy.
 //
-// A profiling run executes the script permissively under observation; this
+// A profiling run executes the script under a default-deny sandbox with observation; this
 // package filters the raw observations down to the paths and hosts a human would
 // actually put in a manifest, and assembles a Policy from them. The result is a
 // proposal to review, not a final manifest - profiling sees only the code paths

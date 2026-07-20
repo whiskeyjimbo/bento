@@ -91,7 +91,7 @@ func reexecFail(err error) {
 // Profile runs p under observation and reports what the target did. Linux-only.
 // opts.AllowNetwork false records intended egress without forwarding it, so
 // profiling untrusted code cannot exfiltrate; opts.DenyPaths shields caller-owned
-// paths from the permissive trial (see ProfileOptions).
+// paths from the profiling run (see ProfileOptions).
 func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, opts ProfileOptions) (profile.Observation, error) {
 	return linux.New().Profile(ctx, p, proc, opts.AllowNetwork, opts.DenyPaths)
 }

@@ -110,6 +110,18 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	}
 	args := baseFlags()
 
+	// A profiling run uses the real HOME so the target probes its real credential
+	// paths, but default-deny leaves home unmounted - so the directory itself would
+	// be absent and a program that stats or writes $HOME on startup would bail before
+	// exercising anything. An empty tmpfs gives HOME an existing, writable scratch
+	// root (like the base /tmp) while every path under it stays absent until a grant
+	// binds real content over it, so existence-check and write-to-home programs
+	// proceed and the manifest is fuller, still with nothing sensitive exposed. It
+	// goes before the grants and system mounts so those overmount it where they apply.
+	if home := observeHomeTmpfs(proc, sb); home != "" {
+		args = append(args, "--tmpfs", home)
+	}
+
 	reads, writes, err := resolveGrants(p)
 	if err != nil {
 		return nil, err
@@ -1163,6 +1175,23 @@ func envArgs(proc enforce.Process) []string {
 		args = append(args, "--setenv", "HOME", "/tmp")
 	}
 	return args
+}
+
+// observeHomeTmpfs returns the HOME path to cover with an empty tmpfs during a
+// profiling run, or "" when none should be added. Only for profiling (sb.observe):
+// an enforced run's HOME is either the base /tmp or built from the grants, and must
+// not be shadowed by an empty overlay. Skips "/" (the tmpfs would swallow the whole
+// root) and "/tmp" (already the base tmpfs). The path must be absolute; a relative
+// HOME is not a mountable target and envArgs would pass it through unchanged.
+func observeHomeTmpfs(proc enforce.Process, sb sandbox) string {
+	if !sb.observe {
+		return ""
+	}
+	home := proc.Env["HOME"]
+	if !filepath.IsAbs(home) || home == "/" || home == "/tmp" {
+		return ""
+	}
+	return filepath.Clean(home)
 }
 
 func command(p *policy.Policy, sb sandbox) []string {

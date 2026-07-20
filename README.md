@@ -165,9 +165,11 @@ the sandbox confines anything.
 
 ## Security notes
 
-- Profiling executes the script with broad read access. Only profile code you would run
-  unsandboxed. A built-in set of sensitive paths stays shielded even then, but that set is
-  not exhaustive, so treat the proposed manifest as a proposal to review, not a guarantee.
+- Profiling runs the script under the same default-deny sandbox a real run gets: nothing
+  under your home is mounted, so a probe of `~/.ssh` is recorded but never exposed. The
+  proposal shows what the script *wants*; you grant it explicitly. Because nothing sensitive
+  is bound, one run can under-report - grant what it shows and profile again to converge -
+  so treat the proposed manifest as a proposal to review, not a guarantee.
 - The approval fingerprint attests the *policy*, not the code. Re-approve after changing
   permissions; changing the script does not invalidate an approval.
 - Known residual gaps are tracked in the issue tracker and documented in `docs/design.md`

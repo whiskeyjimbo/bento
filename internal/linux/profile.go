@@ -17,10 +17,12 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/profile"
 )
 
-// Profile runs p under observation and reports what the target did. p should be
-// permissive (broad reads, exec allowed) so the run exercises the script's real
-// behavior; the caller synthesizes a tight policy from the result. The filesystem
-// accesses come from the in-sandbox ptrace observer; the outbound hosts come from
+// Profile runs p under observation and reports what the target did. p is default-deny
+// like a real run - nothing under $HOME is mounted - with exec and network open so the
+// run exercises its real code paths; the observer records even the target's attempts to
+// open ungranted paths, so the caller synthesizes from what the program WANTED (the
+// consent surface) with no credential ever exposed. The filesystem accesses come from
+// the in-sandbox ptrace observer; the outbound hosts come from
 // the egress proxy, which sees hostnames the target would otherwise resolve to
 // bare IPs. By default the proxy records those hosts but refuses to forward the
 // traffic, so profiling untrusted code cannot exfiltrate; allowNetwork forwards
@@ -36,7 +38,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
 	// presence is signalled here. denyPaths shield caller-owned state (e.g. a
-	// supervising wrapper's permission store) from the permissive Read:["/"] trial;
+	// supervising wrapper's permission store) even behind a grant that would cover it;
 	// they are set on the sandbox before the shield-cleanup defer below reads it.
 	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths)
 	if err != nil {

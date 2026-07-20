@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -57,6 +58,66 @@ func TestClampBroadWrites(t *testing.T) {
 	}
 	if home != "" && !slices.Contains(dropped, home) {
 		t.Errorf("the home directory %q should be dropped as too broad", home)
+	}
+}
+
+// The profiling policy must be default-deny: never Read:["/"], which is the
+// fail-open trial bv2-yz3.1 removed. Only the script's own directory is granted; a
+// grant of "/" would re-expose every credential the deny-list does not enumerate.
+func TestDiscoveryPolicyIsDefaultDeny(t *testing.T) {
+	p := discoveryPolicy("/home/u/tool/run.sh", "sh", []string{"--flag"})
+
+	if slices.Contains(p.Read, "/") {
+		t.Fatalf("discovery policy must not grant Read:[\"/\"] (fail-open); Read=%v", p.Read)
+	}
+	if !slices.Equal(p.Read, []string{"/home/u/tool"}) {
+		t.Errorf("discovery Read = %v, want just the script directory", p.Read)
+	}
+	if !slices.Equal(p.Write, []string{"/home/u/tool"}) {
+		t.Errorf("discovery Write = %v, want just the script directory", p.Write)
+	}
+	if p.Exec != policy.ExecAll {
+		t.Errorf("discovery Exec = %v, want ExecAll so the run exercises real code paths", p.Exec)
+	}
+	if !slices.Equal(p.Args, []string{"--flag"}) {
+		t.Errorf("discovery Args = %v, want the passed-through args", p.Args)
+	}
+}
+
+// A script that sits directly in $HOME must not make the discovery run grant the home
+// directory: that would bind the whole home tree and re-expose the credentials beside
+// the script, defeating default-deny. The run still proceeds (entrypoint bound
+// regardless) with no directory grant.
+func TestDiscoveryPolicyDoesNotGrantBroadScriptDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := discoveryPolicy(filepath.Join(home, "deploy.sh"), "sh", nil)
+
+	if len(p.Read) != 0 || len(p.Write) != 0 {
+		t.Errorf("a script directly in $HOME must not grant the home dir; Read=%v Write=%v", p.Read, p.Write)
+	}
+}
+
+// discoveryEnv passes only variables actually set on the host, and never the ones
+// deliberately omitted (PWD, XDG_RUNTIME_DIR). The names it returns become the
+// manifest's env allowlist, so the enforced run rebuilds the same $HOME-relative paths.
+func TestDiscoveryEnv(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	t.Setenv("XDG_CONFIG_HOME", "/home/u/.config")
+	t.Setenv("USER", "")                          // set but empty: treated as unset
+	t.Setenv("PWD", "/somewhere")                 // deliberately omitted
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000") // omitted: always-shielded target
+
+	env := discoveryEnv()
+
+	if env["HOME"] != "/home/u" || env["XDG_CONFIG_HOME"] != "/home/u/.config" {
+		t.Errorf("discoveryEnv dropped a set variable: %v", env)
+	}
+	for _, absent := range []string{"USER", "PWD", "XDG_RUNTIME_DIR"} {
+		if _, ok := env[absent]; ok {
+			t.Errorf("discoveryEnv should not carry %q; got %v", absent, env)
+		}
 	}
 }
 

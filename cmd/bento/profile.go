@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,18 +27,22 @@ func newProfileCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "profile <script> [-- args...]",
 		Short: "Run a script under observation and propose a manifest",
-		Long: "profile runs the script permissively while observing what it opens and where\n" +
-			"it connects, then writes a proposed manifest tightened to just that.\n\n" +
-			"WARNING: profiling executes the script with broad read access so it runs\n" +
-			"its real code paths. Only profile code you would run unsandboxed, in a\n" +
-			"context you trust. A built-in set of sensitive paths (SSH keys, cloud and\n" +
-			"VCS credentials) stays shielded, but that list is not exhaustive - assume\n" +
-			"the script can read anything else. Egress is recorded but not forwarded by\n" +
-			"default, so the script's data stays on the host; --allow-network forwards it\n" +
-			"for a faithful run of network-dependent code. Review the proposed manifest,\n" +
-			"then `bento approve` it.\n\n" +
-			"The proposal reflects only the code paths this run exercised; profile again\n" +
-			"with different inputs to widen it (grants are merged, not overwritten).",
+		Long: "profile runs the script under the same default-deny sandbox a real run\n" +
+			"gets, recording every file it tries to open and every host it reaches, then\n" +
+			"writes a proposed manifest of exactly that.\n\n" +
+			"Nothing under your home directory is mounted during profiling: the script\n" +
+			"runs with your real HOME so it probes the real paths (~/.ssh, ~/.aws), but\n" +
+			"those paths are absent in the sandbox, so the attempt is recorded without\n" +
+			"the content ever being exposed. The proposal therefore shows what the\n" +
+			"script WANTS; you grant it explicitly. This is safe to run on code you do\n" +
+			"not trust. Egress is recorded but not forwarded by default, so the script's\n" +
+			"data stays on the host; --allow-network forwards it for a faithful run of\n" +
+			"network-dependent code. Review the proposed manifest, then `bento approve`\n" +
+			"it.\n\n" +
+			"Because nothing sensitive is mounted, a script that reads a credential to\n" +
+			"decide what to do next takes its error branch and never exercises the paths\n" +
+			"beyond it, so one run can under-report. Grant what the proposal shows and\n" +
+			"profile again to converge; grants are merged, not overwritten.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := filepath.Abs(args[0])
@@ -51,29 +56,22 @@ func newProfileCmd() *cobra.Command {
 				out = args[0] + ".manifest.yaml"
 			}
 
-			// A permissive policy so the run exercises the script's real behavior;
-			// the deny-list still shields the known-sensitive paths. Write is granted
-			// only to the script's own directory: the sandbox already provides a
-			// private writable /tmp, so granting host /tmp is both unnecessary and
-			// unsafe (it would overmount the private tmpfs with the real one). Writes
-			// elsewhere still fail during the run but are observed as intent.
-			permissive := &policy.Policy{
-				Entrypoint:  script,
-				Interpreter: interpreter,
-				Args:        args[1:],
-				Read:        []string{"/"},
-				Write:       []string{filepath.Dir(script)},
-				Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
-				Exec:        policy.ExecAll,
-			}
+			discovery := discoveryPolicy(script, interpreter, args[1:])
+
+			// Run with the real HOME (and the config-anchor vars derived from it) so a
+			// $HOME-relative probe names the real host path, which the observer records
+			// even though default-deny leaves that path unmounted. The same names go
+			// into the proposed manifest's env allowlist below so the enforced run
+			// rebuilds the identical paths; if they diverge the grant would not match.
+			env := discoveryEnv()
 
 			if allowNetwork {
-				fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively (egress allowed)...\n", args[0])
+				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress allowed)...\n", args[0])
 			} else {
-				fmt.Fprintf(os.Stderr, "[bento] profiling %s permissively (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
+				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
 			}
-			obs, err := backend.Profile(cmd.Context(), permissive,
-				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr},
+			obs, err := backend.Profile(cmd.Context(), discovery,
+				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: env},
 				backend.ProfileOptions{AllowNetwork: allowNetwork})
 			if err != nil {
 				return err
@@ -87,6 +85,9 @@ func newProfileCmd() *cobra.Command {
 			}
 
 			proposed := profile.Synthesize(script, interpreter, obs)
+			// Allowlist the discovery env so the enforced run rebuilds $HOME-relative
+			// paths to the same names profiling recorded and granted.
+			proposed.Env = sortedKeys(env)
 
 			shielded, broad := clampProposal(proposed)
 			for _, d := range shielded {
@@ -125,6 +126,67 @@ func newProfileCmd() *cobra.Command {
 	return cmd
 }
 
+// discoveryPolicy is the policy a profiling run executes under. It is default-deny,
+// the same as a real run: nothing under $HOME is mounted, so the target probes its
+// real credential paths and the observer records them without the content ever being
+// exposed - the recorded attempts are the consent surface. Only the script's own
+// directory is granted (read for sibling config, write for scratch output the sandbox
+// does not already provide via its private /tmp); every other access is recorded as
+// intent, not honored. Exec and network are left open so the run exercises its real
+// code paths; egress is recorded, and forwarded only under --allow-network.
+func discoveryPolicy(script, interpreter string, args []string) *policy.Policy {
+	p := &policy.Policy{
+		Entrypoint:  script,
+		Interpreter: interpreter,
+		Args:        args,
+		Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
+		Exec:        policy.ExecAll,
+	}
+	// Grant the script's own directory unless it is broad (the home directory or a
+	// top-level dir): binding a broad directory during discovery would re-expose the
+	// credentials that live beside the script, defeating the default-deny the run
+	// relies on. A broad-dir script still runs - the entrypoint is bound regardless -
+	// with its sibling reads recorded as intent, not honored.
+	if dir := filepath.Dir(script); !isBroadDir(dir) {
+		p.Read = []string{dir}
+		p.Write = []string{dir}
+	}
+	return p
+}
+
+// discoveryEnvNames are the variables that anchor $HOME-relative paths. Profiling
+// passes their host values to the target so it names real paths, and records the
+// names in the proposed manifest so the enforced run resolves the same paths. Omitted
+// deliberately: PWD (the run is chdir'd to the script's directory, so a host PWD would
+// mislead) and XDG_RUNTIME_DIR (it points into the always-shielded runtime directory,
+// which no grant can honor).
+var discoveryEnvNames = []string{
+	"HOME", "USER", "LOGNAME",
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+}
+
+// discoveryEnv reads the discovery variables that are actually set on the host. An
+// unset variable is left out rather than passed empty, so the manifest's env allowlist
+// names only variables the run will really see.
+func discoveryEnv() map[string]string {
+	env := make(map[string]string)
+	for _, name := range discoveryEnvNames {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			env[name] = v
+		}
+	}
+	return env
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // partialRunWarning returns a warning when the profiled run may not have finished -
 // killed by a signal (crash, OOM, timeout) or exited nonzero - so its observations,
 // and the manifest synthesized from them, can be silently over-tight. It returns ""
@@ -140,16 +202,11 @@ func partialRunWarning(obs profile.Observation) string {
 	}
 }
 
-// clampBroadWrites splits proposed write directories into those safe to grant
-// automatically and those too broad to. A directory is too broad if it is the
-// root, a top-level directory (a direct child of "/", such as /etc or /home), or
-// the user's home directory itself - granting write to any of those exposes far
-// more than a profiled script needs.
 // clampShieldedGrants drops read and write grants that fall at or inside a mandatory
 // DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). The run refuses such a grant
 // (checkNotShielded), so proposing one produces a manifest bento then rejects; the
-// profiler can name one because it records an attempted access even though the trial's
-// shield blocked it. This is a proposal-quality filter, not a security check - the
+// profiler can name one because the observer records the attempted open even though
+// default-deny never mounted the path. This is a proposal-quality filter, not a security check - the
 // run-time refusal is the backstop, so a path it misses (a symlink twist) simply hits
 // that refusal as before. A grant that merely CONTAINS a shield (read: ~ with ~/.ssh
 // shielded inside it) is legitimate and kept - only a grant at or under a shield goes.
@@ -211,16 +268,27 @@ func clampProposal(p *policy.Policy) (shielded, broad []string) {
 }
 
 func clampBroadWrites(writes []string) (kept, dropped []string) {
-	home, _ := os.UserHomeDir()
 	for _, w := range writes {
-		switch {
-		case w == "/", filepath.Dir(w) == "/", home != "" && w == home:
+		if isBroadDir(w) {
 			dropped = append(dropped, w)
-		default:
+		} else {
 			kept = append(kept, w)
 		}
 	}
 	return kept, dropped
+}
+
+// isBroadDir reports whether path is too broad to bind as a whole: the root, a
+// top-level directory (a direct child of "/", such as /etc or /home), or the user's
+// home directory itself. Binding any of these exposes far more than a profiled script
+// needs - as an automatic write grant (clampBroadWrites) or as the discovery run's own
+// script-directory grant (discoveryPolicy).
+func isBroadDir(path string) bool {
+	if path == "/" || filepath.Dir(path) == "/" {
+		return true
+	}
+	home, _ := os.UserHomeDir()
+	return home != "" && path == home
 }
 
 // guessInterpreter picks an interpreter from the script's extension. An empty
@@ -247,7 +315,7 @@ func mergePolicies(base, add *policy.Policy) *policy.Policy {
 		Entrypoint:  base.Entrypoint,
 		Interpreter: base.Interpreter,
 		Args:        base.Args,
-		Env:         base.Env,
+		Env:         union(base.Env, add.Env),
 		Read:        union(base.Read, add.Read),
 		Write:       union(base.Write, add.Write),
 		Exec:        base.Exec,

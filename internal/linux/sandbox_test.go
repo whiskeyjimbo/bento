@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -155,6 +156,129 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	// interpreter always opens its runtime files.
 	if len(obs.Reads) == 0 {
 		t.Fatal("no file accesses observed - the target did not run (empty /bento bind?)")
+	}
+}
+
+// Profiling runs under the same default-deny as a real run: an ungranted $HOME path
+// is never mounted, so the target's read attempt is recorded (the consent surface)
+// while the content stays hidden. This is the keystone that lets profiling drop the
+// old Read:["/"] trial, which leaked any credential the deny-list did not enumerate.
+// Both halves must hold at once - the path IS recorded, the secret is NOT in output.
+func TestProfileDefaultDenyRecordsHomePathWithoutExposure(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	const secret = "SUPER-SECRET-TOKEN-do-not-leak"
+	token := filepath.Join(home, ".mytoken")
+	if err := os.WriteFile(token, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	// Print the token to stdout: under default-deny the file is unmounted and cat
+	// finds nothing; were home mounted, the secret would surface here.
+	if err := os.WriteFile(script, []byte("cat \"$HOME/.mytoken\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A real run's policy: only the script's own directory is granted, nothing under home.
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
+		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out}, false, nil)
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("the token content leaked into the target's output - home was mounted; got %q", out.String())
+	}
+	if !slices.Contains(obs.Reads, token) {
+		t.Errorf("the attempted read of %q was not recorded; Reads=%v", token, obs.Reads)
+	}
+}
+
+// The profiling home is an empty tmpfs, not absent: a program that stats $HOME or
+// writes a dotfile on startup proceeds (fuller manifest) instead of bailing at an
+// absent home, while the overlay reveals none of the real home's contents.
+func TestProfileHomeIsEmptyOverlay(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".realrc"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	body := "[ -d \"$HOME\" ] && echo HOME_EXISTS\n" +
+		"ls -A \"$HOME\" | grep -q . && echo HOME_NONEMPTY || echo HOME_EMPTY\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p,
+		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out, Stderr: &out}, false, nil); err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "HOME_EXISTS") {
+		t.Errorf("profiling HOME should exist as an empty overlay; output: %q", got)
+	}
+	if !strings.Contains(got, "HOME_EMPTY") || strings.Contains(got, "HOME_NONEMPTY") {
+		t.Errorf("profiling HOME should be empty (real dotfiles hidden); output: %q", got)
+	}
+}
+
+// Round-trip: a non-shielded home path that profiling records can be granted and then
+// actually read at enforce time, as long as the same HOME is carried through both
+// phases (env consistency - the recorded path is the literal $HOME expansion). A
+// non-shielded path is used deliberately: a deny-list shield cannot be granted until
+// the checkNotShielded softening (bv2-yz3.2).
+func TestProfileThenEnforceHomePathRoundTrip(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".myapp", "config") // under home, not a deny-list shield
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("APPDATA-123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("cat \"$HOME/.myapp/config\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"HOME": home}
+
+	// Phase 1: profile under default-deny. The path is recorded; the content is hidden.
+	var pout bytes.Buffer
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
+		enforce.Process{Env: env, Stdout: &pout}, false, nil)
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if !slices.Contains(obs.Reads, cfg) {
+		t.Fatalf("profiling did not record %q; Reads=%v", cfg, obs.Reads)
+	}
+	if strings.Contains(pout.String(), "APPDATA-123") {
+		t.Fatalf("content leaked during profiling: %q", pout.String())
+	}
+
+	// Phase 2: grant the discovered path and enforce with the same HOME. The read now
+	// succeeds - the path profiling named is exactly the one the grant covers.
+	var rout bytes.Buffer
+	enforced := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, cfg}, Exec: policy.ExecAll}
+	if _, err := sandboxEnforcer(t).Run(context.Background(), enforced,
+		enforce.Process{Env: env, Stdout: &rout, Stderr: &rout}, nil, false); err != nil {
+		t.Fatalf("enforced run: %v (output: %s)", err, rout.String())
+	}
+	if !strings.Contains(rout.String(), "APPDATA-123") {
+		t.Fatalf("the granted home path did not read back at enforce time; output: %q", rout.String())
 	}
 }
 
