@@ -385,6 +385,24 @@ func Home(home string) []Rule {
 			rules = append(rules, Rule{Path: p, Deny: DenyAll})
 		}
 	}
+
+	// A startup file relocated by an env var is a persistence-planting target the
+	// default DenyWrite shields above miss: ZDOTDIR points zsh at a different
+	// directory for its whole startup group, and GIT_CONFIG_GLOBAL at a different
+	// file git reads instead of ~/.gitconfig. Follow the shield to the relocation so
+	// a write grant there cannot plant a file the host runs on the next shell or git
+	// call. A relative value is dropped (an absolute bind cannot cover it), as is the
+	// default location (already shielded) and git's /dev/null "no config" idiom.
+	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && filepath.Clean(zdotdir) != home {
+		for _, f := range []string{".zshenv", ".zshrc", ".zprofile", ".zlogin", ".zlogout"} {
+			rules = append(rules, Rule{Path: filepath.Join(zdotdir, f), Deny: DenyWrite})
+		}
+	}
+	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
+		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
+			rules = append(rules, Rule{Path: c, Deny: DenyWrite})
+		}
+	}
 	return rules
 }
 

@@ -304,3 +304,56 @@ func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
 		t.Error("default ~/.kube and ~/.aws must stay shielded")
 	}
 }
+
+// ZDOTDIR relocates zsh's startup files off $HOME, and GIT_CONFIG_GLOBAL points git
+// at a different global config file. The persistence shields (DenyWrite: readable,
+// not plantable) must follow, or a write grant over the relocated path could plant a
+// startup file the host runs on the next shell or git invocation.
+func TestHomeShieldsRelocatedStartupFiles(t *testing.T) {
+	t.Setenv("ZDOTDIR", "/cfg/zsh")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/cfg/gitconfig")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		byRule[r.Path] = r
+	}
+	// Every zsh startup file relocates as a group under ZDOTDIR.
+	for _, f := range []string{".zshenv", ".zshrc", ".zprofile", ".zlogin", ".zlogout"} {
+		p := "/cfg/zsh/" + f
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a shield at %q (ZDOTDIR relocation), missing", p)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("shield at %q must be a DenyWrite file rule, got %+v", p, r)
+		}
+	}
+	if r, ok := byRule["/cfg/gitconfig"]; !ok {
+		t.Error("expected a DenyWrite shield at the GIT_CONFIG_GLOBAL target, missing")
+	} else if r.Deny != DenyWrite || r.Dir {
+		t.Errorf("GIT_CONFIG_GLOBAL shield must be a DenyWrite file rule, got %+v", r)
+	}
+	// The defaults stay shielded regardless of the relocation.
+	if _, ok := byRule["/home/u/.zshrc"]; !ok {
+		t.Error("default ~/.zshrc must stay shielded")
+	}
+	if _, ok := byRule["/home/u/.gitconfig"]; !ok {
+		t.Error("default ~/.gitconfig must stay shielded")
+	}
+}
+
+// GIT_CONFIG_GLOBAL=/dev/null is git's idiom for "no global config" and names no
+// plantable file; a relative or default-restating value must not add a shield either.
+func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
+	t.Setenv("ZDOTDIR", "relzsh")                 // relative: cannot bind
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")    // disables global config; nothing to plant
+	for _, r := range Home("/home/u") {
+		if r.Path == "relzsh/.zshrc" || r.Path == "/dev/null" {
+			t.Errorf("unexpected shield at %q for a non-plantable relocation", r.Path)
+		}
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative startup relocation leaked a non-absolute shield path %q", r.Path)
+		}
+	}
+}
