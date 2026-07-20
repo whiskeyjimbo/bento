@@ -42,6 +42,21 @@ func TestAllowsEmptyRulesDeniesEverything(t *testing.T) {
 	}
 }
 
+func TestAllowsRejectsUnicodeFoldedHost(t *testing.T) {
+	// U+212A KELVIN SIGN folds to ASCII 'k' under Unicode-aware lowercasing. The
+	// rule host is ASCII and the proxy dials the target's raw bytes, so a name that
+	// matches only after Unicode folding must be denied: otherwise the name checked
+	// against the rule differs from the name actually dialed.
+	rules := []NetworkRule{{Host: "bank.example.com", Port: "443"}}
+	if Allows(rules, "banK.example.com", "443") {
+		t.Error("a host matching only via Unicode case-folding must be denied")
+	}
+	// The ASCII form still matches, case-insensitively.
+	if !Allows(rules, "BANK.example.com", "443") {
+		t.Error("ASCII case-insensitive match must still hold")
+	}
+}
+
 func TestMatchPortRangeBoundsInclusive(t *testing.T) {
 	if !matchPort("8000-9000", "8000") || !matchPort("8000-9000", "9000") {
 		t.Error("range bounds must be inclusive")

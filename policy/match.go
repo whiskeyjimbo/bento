@@ -29,8 +29,27 @@ func PortMatches(pattern, port string) bool { return matchPort(pattern, port) }
 
 // normalizeHost lowercases and strips a trailing dot (the DNS root label), so
 // "API.Example.Com." and "api.example.com" compare equal.
+//
+// Folding is ASCII-only, deliberately not strings.ToLower: Unicode case-folding
+// maps codepoints like U+212A (KELVIN SIGN) onto ASCII 'k', which would let a
+// target host containing that codepoint match an ASCII-only rule while the proxy
+// dials the raw bytes - the name checked and the name dialed would differ. Rule
+// hosts are ASCII (isHostname), so a non-ASCII target simply fails to match, which
+// is the safe result.
 func normalizeHost(host string) string {
-	return strings.TrimSuffix(strings.ToLower(host), ".")
+	return strings.TrimSuffix(asciiLower(host), ".")
+}
+
+// asciiLower lowercases only A-Z, leaving every other byte untouched. Operating
+// per-byte is safe for UTF-8: no continuation or lead byte falls in the A-Z range.
+func asciiLower(host string) string {
+	b := []byte(host)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // matchHost applies one rule's host pattern to a connect target.

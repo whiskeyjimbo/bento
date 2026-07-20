@@ -51,6 +51,45 @@ func TestForgetAppSurvivesReload(t *testing.T) {
 	}
 }
 
+// A run loads the store, parks at a prompt for the length of a human decision, then
+// saves last. If a `perms forget` deletes an app on disk during that window, the
+// parked run's save must not resurrect it: save persists only what the run itself
+// changed, leaving keys it merely read as disk now has them. A run's genuinely new
+// decision must still land.
+func TestConcurrentForgetSurvivesParkedRunSave(t *testing.T) {
+	_, appKey := seedStore(t)
+
+	// The parked run loads the store, capturing the app's allow decisions it will
+	// only read, and makes one new decision of its own.
+	parked, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked.rememberNetwork("", "api.new.example", "443", allow, true)
+
+	// Meanwhile an operator forgets the app; the deletion lands on disk.
+	var out strings.Builder
+	if rc := perms([]string{"forget", "app", shortKey(appKey)}, strings.NewReader(""), &out); rc != 0 {
+		t.Fatalf("forget rc=%d: %s", rc, out.String())
+	}
+
+	// The parked run now saves last.
+	if err := parked.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Apps[appKey]; ok {
+		t.Error("a concurrent forget was resurrected by the parked run's save()")
+	}
+	if reloaded.Global.Network["api.new.example:443"] != allow {
+		t.Error("the parked run's own new decision was lost by save()")
+	}
+}
+
 // The escape hatch for the deny-wins footgun: clearing a global deny that would
 // silently block a host for every app.
 func TestForgetGlobalRule(t *testing.T) {

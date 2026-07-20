@@ -12,7 +12,7 @@ type ProfileOptions struct {
 	// Read the caller's policy sets, so a supervising embedder uses this to keep its
 	// own control state (e.g. a permission store) shielded regardless of how broad
 	// that policy's reads are. Each path is shielded as an
-	// empty directory (or an empty read-only file if it exists as a regular file);
+	// empty directory (or an empty read-only file if it exists as a non-directory);
 	// a relative path, or one resolving to "/", is refused. The shield hides the
 	// path's contents, not its existence, and the attempted access is still observed
 	// - so the caller must still refuse a grant that later covers these paths.

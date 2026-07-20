@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 
@@ -58,6 +59,45 @@ type store struct {
 
 	dir  string // the store directory (shielded from the trial; refused as a grant)
 	path string // permissions.json inside dir
+
+	// base is a deep copy of the decisions as loaded, so save can persist only what
+	// THIS process changed rather than its whole snapshot. Without it, a run that
+	// loads the store, parks at a prompt, and saves last would rewrite every key it
+	// merely read - resurrecting one a concurrent `perms forget`/`reset` deleted in
+	// the meantime, silently undoing the revoke. Nil for a store never loaded (a
+	// fresh empty one), where every entry is by definition new.
+	base *store
+}
+
+// clone deep-copies the persisted decisions (not the dir/path/base bookkeeping), so
+// a snapshot survives later mutation of the original.
+func (s *store) clone() *store {
+	cp := &store{Version: s.Version, Apps: map[string]*appPerms{}}
+	cp.Global = globalPerms{
+		Read:    cloneDecisions(s.Global.Read),
+		Write:   cloneDecisions(s.Global.Write),
+		Network: cloneDecisions(s.Global.Network),
+		Exec:    s.Global.Exec,
+	}
+	for k, a := range s.Apps {
+		ac := *a
+		ac.Read = cloneDecisions(a.Read)
+		ac.Write = cloneDecisions(a.Write)
+		ac.Network = cloneDecisions(a.Network)
+		cp.Apps[k] = &ac
+	}
+	return cp
+}
+
+func cloneDecisions(m map[string]decision) map[string]decision {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]decision, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // storeDir resolves the store directory, honoring XDG_CONFIG_HOME.
@@ -93,26 +133,29 @@ func loadStore() (*store, error) {
 	if s.Apps == nil {
 		s.Apps = map[string]*appPerms{}
 	}
+	s.base = s.clone()
 	return s, nil
 }
 
-// save writes the store atomically, folding in any concurrent run's writes so
-// finishing last does not clobber another run's newly-remembered decisions.
+// save persists the decisions this run changed, applied onto the current on-disk
+// store under the lock. It deliberately does NOT write back the whole in-memory
+// snapshot: a key the run only read must survive a concurrent `perms forget`/`reset`
+// that deleted it while the run was parked at a prompt. Only entries this run added
+// or changed (relative to what it loaded) are reapplied, so concurrent additions and
+// deletions both stand.
 func (s *store) save() error { return s.write(true) }
 
-// overwrite writes the store atomically WITHOUT folding in the on-disk copy, so a
-// deletion (forget/reset) sticks. save's concurrent-merge would otherwise re-read
-// the just-deleted keys off disk and resurrect them, turning the delete into a
-// silent no-op. The tradeoff is the other direction: a run that saves in the window
-// between an edit command's unlocked load and this write is clobbered. That window
-// is acceptable for a manual admin command; not preserving concurrent writes is the
-// price of guaranteeing the delete holds.
+// overwrite writes the store atomically WITHOUT reconciling with the on-disk copy,
+// so a deletion (forget/reset) sticks. The tradeoff is the other direction: a run
+// that saves in the window between an edit command's unlocked load and this write is
+// clobbered. That window is acceptable for a manual admin command.
 func (s *store) overwrite() error { return s.write(false) }
 
 // write persists the store atomically (temp + rename) at mode 0600, serialized by
 // an advisory lock on a SEPARATE lockfile - never the store file, whose inode the
-// rename replaces. When fold is set it merges a concurrent run's writes first.
-func (s *store) write(fold bool) error {
+// rename replaces. When merge is set it writes this run's changes onto the current
+// on-disk store; otherwise it writes the in-memory store wholesale.
+func (s *store) write(merge bool) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
@@ -126,19 +169,21 @@ func (s *store) write(fold bool) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
-	// Re-read under the lock and fold in anything a concurrent run wrote, so
-	// finishing last does not clobber another run's newly-remembered decisions (in
-	// particular a deny, which wins a per-key conflict; otherwise this run's value wins).
-	if fold {
+	target := s
+	if merge {
+		// Re-read the current store under the lock and apply only what this run changed,
+		// so finishing last preserves both a concurrent run's additions and a concurrent
+		// edit command's deletions. A key this run merely read is left as disk has it.
+		target = &store{Version: s.Version, Apps: map[string]*appPerms{}}
 		if disk, err := os.ReadFile(s.path); err == nil {
-			var d store
-			if json.Unmarshal(disk, &d) == nil {
-				s.fillMissing(&d)
+			if json.Unmarshal(disk, target) == nil && target.Apps == nil {
+				target.Apps = map[string]*appPerms{}
 			}
 		}
+		target.mergeChanges(s, s.base)
 	}
 
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(target, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -149,42 +194,69 @@ func (s *store) write(fold bool) error {
 	return os.Rename(tmp, s.path)
 }
 
-// fillMissing folds entries from a concurrent run's on-disk store into s, so its
-// writes survive this run's save. A deny wins on a per-key conflict, matching the
-// store's deny-wins model: a concurrent deny must not be clobbered by this run's
-// allow for the same key. Otherwise this run's value wins, and disk-only keys
-// (another run's additions) are preserved.
-func (s *store) fillMissing(disk *store) {
-	fill := func(dst *map[string]decision, src map[string]decision) {
-		for k, v := range src {
-			if *dst == nil {
-				*dst = map[string]decision{}
-			}
-			if cur, ok := (*dst)[k]; !ok || (v == deny && cur != deny) {
-				(*dst)[k] = v
-			}
-		}
+// mergeChanges applies onto the on-disk store (the receiver) the decisions mem
+// changed since it loaded (mem vs base). Disk stays authoritative for everything
+// else, so a concurrent run's additions and a concurrent forget/reset's deletions
+// both survive; a concurrent deny still wins a per-key conflict. A nil base (a store
+// never loaded from disk) treats every entry as new.
+func (disk *store) mergeChanges(mem, base *store) {
+	if base == nil {
+		base = &store{}
 	}
-	fill(&s.Global.Read, disk.Global.Read)
-	fill(&s.Global.Write, disk.Global.Write)
-	fill(&s.Global.Network, disk.Global.Network)
-	s.Global.Exec = mergeExec(s.Global.Exec, disk.Global.Exec)
-	for key, da := range disk.Apps {
-		ma := s.Apps[key]
-		if ma == nil {
-			s.Apps[key] = da
+	mergeDecisionChanges(&disk.Global.Read, mem.Global.Read, base.Global.Read)
+	mergeDecisionChanges(&disk.Global.Write, mem.Global.Write, base.Global.Write)
+	mergeDecisionChanges(&disk.Global.Network, mem.Global.Network, base.Global.Network)
+	if mem.Global.Exec != base.Global.Exec {
+		disk.Global.Exec = mergeExec(mem.Global.Exec, disk.Global.Exec)
+	}
+	for key, ma := range mem.Apps {
+		ba := base.Apps[key]
+		// An app this run did not touch is left exactly as disk has it - including
+		// absent, if a concurrent forget deleted it. Only a real change this run made
+		// may (re)create the disk entry, so an untouched app is never resurrected.
+		if ba != nil && reflect.DeepEqual(*ma, *ba) {
 			continue
 		}
-		fill(&ma.Read, da.Read)
-		fill(&ma.Write, da.Write)
-		fill(&ma.Network, da.Network)
-		ma.Exec = mergeExec(ma.Exec, da.Exec)
-		if ma.Entrypoint == "" {
-			ma.Entrypoint = da.Entrypoint
+		da := disk.Apps[key]
+		if da == nil {
+			da = &appPerms{}
+			disk.Apps[key] = da
 		}
-		if ma.Interpreter == "" {
-			ma.Interpreter = da.Interpreter
+		var baseApp appPerms
+		if ba != nil {
+			baseApp = *ba
 		}
+		mergeDecisionChanges(&da.Read, ma.Read, baseApp.Read)
+		mergeDecisionChanges(&da.Write, ma.Write, baseApp.Write)
+		mergeDecisionChanges(&da.Network, ma.Network, baseApp.Network)
+		if ma.Exec != baseApp.Exec {
+			da.Exec = mergeExec(ma.Exec, da.Exec)
+		}
+		if ma.Entrypoint != "" {
+			da.Entrypoint = ma.Entrypoint
+		}
+		if ma.Interpreter != "" {
+			da.Interpreter = ma.Interpreter
+		}
+	}
+}
+
+// mergeDecisionChanges writes onto dst the entries of mem this run added or changed
+// since load (those differing from base). An entry unchanged since load is left
+// alone, so a concurrent delete is not undone. A concurrent deny already on dst wins
+// over this run's non-deny, matching the store's deny-wins model.
+func mergeDecisionChanges(dst *map[string]decision, mem, base map[string]decision) {
+	for k, v := range mem {
+		if bv, ok := base[k]; ok && bv == v {
+			continue
+		}
+		if *dst == nil {
+			*dst = map[string]decision{}
+		}
+		if cur, ok := (*dst)[k]; ok && cur == deny && v != deny {
+			continue
+		}
+		(*dst)[k] = v
 	}
 }
 

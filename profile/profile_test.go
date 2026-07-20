@@ -119,6 +119,26 @@ func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
 	}
 }
 
+func TestSynthesizeDropsSystemWriteGrants(t *testing.T) {
+	// A write collapses to its parent directory. A target need only attempt a write
+	// to a system config tree for the observer to record it, so Synthesize must not
+	// propose a writable /etc/cron.d (and friends): approved, it is root code
+	// execution. Neither isSystemPath (a hand-list of specific /etc files) nor the
+	// caller's top-level-dir clamp catches these second-level directories.
+	obs := Observation{
+		Writes: []string{
+			"/etc/cron.d/evil",
+			"/etc/sudoers.d/x",
+			"/etc/systemd/system/y.service",
+			"/etc/profile.d/z.sh",
+		},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	if len(p.Write) != 0 {
+		t.Fatalf("write = %v, want none (writable system config dirs must not be proposed)", p.Write)
+	}
+}
+
 func TestSynthesizeExecOnlyWhenObserved(t *testing.T) {
 	if got := Synthesize("/work/run.py", "", Observation{}).Exec; got != policy.ExecNone {
 		t.Errorf("exec = %q, want none when nothing was spawned", got)

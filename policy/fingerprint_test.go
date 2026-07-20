@@ -24,13 +24,22 @@ func TestFingerprintChangesWithPermissions(t *testing.T) {
 	base := &Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	fp := base.Fingerprint()
 
+	// Every field that defines what the sandbox permits must move the fingerprint:
+	// approval attests the fingerprint, so a sandbox-affecting field left out of the
+	// hash would let permissions change under an approval that still reads as current.
+	// This covers all nine Policy fields, including each Limits sub-field.
 	cases := map[string]func(*Policy){
-		"added read":    func(p *Policy) { p.Read = append(p.Read, "/more") },
-		"added network": func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "443"}} },
-		"changed exec":  func(p *Policy) { p.Exec = ExecAll },
-		"added write":   func(p *Policy) { p.Write = []string{"/out"} },
-		"added limit":   func(p *Policy) { p.Limits = Limits{Memory: "1M"} },
-		"changed entry": func(p *Policy) { p.Entrypoint = "./y" },
+		"changed entry":       func(p *Policy) { p.Entrypoint = "./y" },
+		"changed interpreter": func(p *Policy) { p.Interpreter = "python3" },
+		"added arg":           func(p *Policy) { p.Args = []string{"--flag"} },
+		"added env":           func(p *Policy) { p.Env = []string{"PATH"} },
+		"added read":          func(p *Policy) { p.Read = append(p.Read, "/more") },
+		"added write":         func(p *Policy) { p.Write = []string{"/out"} },
+		"added network":       func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "443"}} },
+		"changed exec":        func(p *Policy) { p.Exec = ExecAll },
+		"added limit memory":  func(p *Policy) { p.Limits = Limits{Memory: "1M"} },
+		"added limit cpu":     func(p *Policy) { p.Limits = Limits{CPU: "50%"} },
+		"added limit pids":    func(p *Policy) { p.Limits = Limits{PIDs: 128} },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {

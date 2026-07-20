@@ -93,9 +93,11 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	}
 }
 
-// writeDegradations tells the user, before their script's own output, exactly
-// which guarantees this host is not delivering. Nothing that weakens a requested
-// guarantee is ever silent - that was the failure this tool exists to prevent.
+// writeDegradations tells the user exactly which guarantees this host is not
+// delivering. In a non-JSON run the target's own streams are live during the run, so
+// this prints after the script's output; a pre-run refusal is what --strict and
+// doctor are for. Nothing that weakens a requested guarantee is ever silent - that
+// was the failure this tool exists to prevent.
 func writeDegradations(w io.Writer, r enforce.Report) {
 	short := r.Degradations()
 	if len(short) == 0 {

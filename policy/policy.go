@@ -13,6 +13,7 @@ package policy
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -107,9 +108,8 @@ func (p *Policy) Validate() error {
 	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
-		if i := strings.IndexFunc(f, unsafeInField); i >= 0 {
-			r, _ := utf8.DecodeRuneInString(f[i:])
-			return fmt.Errorf("policy: value %q contains %s (U+%04X), which is not allowed in a path or argument", f, unsafeKind(r), r)
+		if r, ok := FirstUnsafeRune(f); ok {
+			return fmt.Errorf("policy: value %q contains %s (U+%04X), which is not allowed in a path or argument", f, UnsafeRuneKind(r), r)
 		}
 	}
 	for _, name := range p.Env {
@@ -130,6 +130,23 @@ func (p *Policy) Validate() error {
 	}
 	return p.Limits.validate()
 }
+
+// FirstUnsafeRune returns the first character in s that must not appear in a value
+// a frontend echoes to the operator - a control character, a bidi override, or a
+// zero-width/invisible one - and true, or (0, false) when s is clean. It backs both
+// the path/argument screen here and the manifest provenance screen, so every field
+// an untrusted manifest can populate is held to the same rule.
+func FirstUnsafeRune(s string) (rune, bool) {
+	if i := strings.IndexFunc(s, unsafeInField); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(s[i:])
+		return r, true
+	}
+	return 0, false
+}
+
+// UnsafeRuneKind names the class of a rune FirstUnsafeRune reported, for an error
+// message.
+func UnsafeRuneKind(r rune) string { return unsafeKind(r) }
 
 // unsafeInField reports whether r must not appear in a path or argument field: a
 // control character, a bidirectional formatting character, or a zero-width/invisible
@@ -315,8 +332,15 @@ func (l Limits) validate() error {
 		if !ok {
 			return fmt.Errorf("policy: limits.cpu %q must be a percentage (e.g. \"100%%\")", l.CPU)
 		}
-		if _, err := strconv.ParseFloat(num, 64); err != nil {
+		pct, err := strconv.ParseFloat(num, 64)
+		if err != nil {
 			return fmt.Errorf("policy: limits.cpu %q must be a numeric percentage (e.g. \"100%%\"); %q is not a number", l.CPU, num)
+		}
+		// ParseFloat accepts NaN, Inf, and negatives; a garbage quota forwarded to
+		// systemd may be silently ignored, running the target with no cpu cap at all.
+		// Reject them here so the value the backend receives is always a real bound.
+		if math.IsNaN(pct) || math.IsInf(pct, 0) || pct < 0 {
+			return fmt.Errorf("policy: limits.cpu %q must be a non-negative, finite percentage", l.CPU)
 		}
 	}
 	if l.Memory != "" {

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
@@ -33,7 +34,24 @@ func main() {
 		fmt.Fprintf(os.Stderr, "denylist-audit: fetching firejail profile: %v\n", err)
 		os.Exit(2)
 	}
+	// A 200 response is not proof the body is the profile: an upstream rename, a
+	// reformat to include-only files, or a CDN error page all return 200 with content
+	// that parses to zero candidates - which report() would then read as "everything
+	// covered" and exit 0, a false pass on a CI safety gate. Refuse to trust an empty
+	// diff unless the content still carries a directive the profile has always had.
+	if !looksLikeFirejailProfile(content) {
+		fmt.Fprintln(os.Stderr, "denylist-audit: fetched content does not look like firejail's disable-common.inc; refusing to report a pass")
+		os.Exit(2)
+	}
 	os.Exit(report(os.Stdout, content, home, runUser))
+}
+
+// looksLikeFirejailProfile reports whether content is plausibly firejail's
+// disable-common.inc. ${HOME}/.ssh is one of the oldest, most stable shields in that
+// file; if even it is absent, the fetch did not return the profile and the audit
+// cannot conclude anything.
+func looksLikeFirejailProfile(content string) bool {
+	return strings.Contains(content, "${HOME}/.ssh")
 }
 
 // report parses the firejail profile, diffs it against bento's deny-list, writes the
@@ -100,9 +118,17 @@ func fetch(url string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected status %s", resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Read one byte past the cap so a body that hit it is detected rather than
+	// silently truncated: a truncated profile would drop its tail sections from the
+	// comparison and could hide gaps there. The real profile is ~20KB, so hitting 1MB
+	// means the content is not what we expect.
+	const maxBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxBytes {
+		return "", fmt.Errorf("firejail profile exceeds %d bytes, which is not expected; refusing to audit a truncated file", maxBytes)
 	}
 	return string(body), nil
 }

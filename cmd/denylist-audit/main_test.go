@@ -33,6 +33,27 @@ func TestReportPassesWhenShieldCovered(t *testing.T) {
 	}
 }
 
+// A 200 response whose body is not the firejail profile (an error page, an upstream
+// rename or reformat) parses to zero candidates, which report() would read as
+// "everything covered". The content check must reject it so the gate fails closed
+// rather than reporting a false pass.
+func TestLooksLikeFirejailProfile(t *testing.T) {
+	real := "# Home\nblacklist ${HOME}/.ssh\nblacklist ${HOME}/.gnupg\n"
+	if !looksLikeFirejailProfile(real) {
+		t.Error("the real profile must be recognized")
+	}
+	for name, content := range map[string]string{
+		"empty":            "",
+		"html error page":  "<html><body>404 Not Found</body></html>",
+		"include-only":     "# moved\ninclude disable-home.inc\n",
+		"unrelated 200":    "just some other text file\n",
+	} {
+		if looksLikeFirejailProfile(content) {
+			t.Errorf("%s: must not be accepted as the firejail profile", name)
+		}
+	}
+}
+
 // An out-of-scope section (firejail's privacy/system scope, which bento's empty-root
 // default already covers) is summarized, not treated as a gate failure.
 func TestReportIgnoresOutOfScopeSection(t *testing.T) {

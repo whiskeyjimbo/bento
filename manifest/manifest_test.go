@@ -159,6 +159,34 @@ func TestParseErrorStripsTerminalEscapes(t *testing.T) {
 	}
 }
 
+// Provenance is returned to the caller and echoed by frontends, so a deceiving
+// character there must be rejected like one in a path field - a hostile manifest
+// carries hostile provenance. Unlike the decoder-error path (which is sanitized),
+// these strings would otherwise reach the caller verbatim.
+func TestParseRejectsUnsafeProvenance(t *testing.T) {
+	cases := map[string]string{
+		"escape in generated-by": "entrypoint: ./x\nprovenance:\n  generated-by: \"tool\x1b]0;PWNED\x07\"\n",
+		"bidi in generated-at":   "entrypoint: ./x\nprovenance:\n  generated-at: \"2026‮-01\"\n",
+		"zero-width in approves": "entrypoint: ./x\nprovenance:\n  approves: \"abc​def\"\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(src))
+			if err == nil {
+				t.Fatal("expected unsafe provenance to be rejected, got nil")
+			}
+			if !strings.Contains(err.Error(), "provenance") {
+				t.Errorf("error should name the provenance field: %q", err)
+			}
+			for _, r := range err.Error() {
+				if r != '\n' && r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+					t.Fatalf("rejection error itself carries a control rune %#x: %q", r, err.Error())
+				}
+			}
+		})
+	}
+}
+
 // A binary mistaken for a manifest (`bento run ./some-binary`) must fail with a
 // clear "not a manifest" error, not a YAML decoder error that dumps the binary -
 // which was also a delivery vector for the escape injection above.

@@ -14,6 +14,7 @@ import (
 type fakeEnforcer struct {
 	probe  Report
 	result Result
+	err    error
 	ran    bool
 	// Func values are not comparable, so the fake proves what enforce.Run
 	// forwarded by invoking the gate it received: gotGate is that gate's return,
@@ -34,7 +35,7 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, gat
 	if gate != nil {
 		f.gotGate = gate(ctx, "example.com", "443")
 	}
-	return f.result, nil
+	return f.result, f.err
 }
 
 // validPolicy is the minimal policy that passes validation: no network, no
@@ -107,6 +108,57 @@ func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	f = &fakeEnforcer{probe: fullyEnforced()}
 	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true}); err != nil {
 		t.Fatalf("plain none under --strict should pass; got %v", err)
+	}
+}
+
+// A policy that declares egress requires the network layer, and the probe reports
+// that layer only as Enforced or Unavailable (a namespace either fences egress or
+// it does not - there is no partial). So a host that cannot fence egress must
+// refuse a network-requiring policy under every posture, including --allow-degraded:
+// reduced confinement is not no confinement, and admitting a run whose egress fence
+// is gone would silently let an untrusted target reach the network.
+func TestNetworkPolicyRefusedWhenEgressUnavailable(t *testing.T) {
+	netPolicy := &policy.Policy{
+		Entrypoint: "./x",
+		Network:    []policy.NetworkRule{{Host: "a.com", Port: "443"}},
+	}
+	probe := func() Report {
+		p := fullyEnforced()
+		p.Set(LayerNetwork, Unavailable, "no network namespace on this host")
+		return p
+	}
+	for _, opts := range []Options{{}, {AllowDegraded: true}, {Strict: true}} {
+		f := &fakeEnforcer{probe: probe()}
+		_, err := Run(context.Background(), f, netPolicy, Process{}, opts)
+		var refusal *Refusal
+		if !errors.As(err, &refusal) {
+			t.Fatalf("opts %+v: want refusal when egress cannot be fenced, got %v", opts, err)
+		}
+		if !hasLayer(refusal.Short, LayerNetwork) {
+			t.Errorf("opts %+v: refusal must name the network layer, got %v", opts, refusal.Short)
+		}
+		if f.ran {
+			t.Errorf("opts %+v: a refused run must not reach the enforcer", opts)
+		}
+	}
+}
+
+// enforce.Run reserves err for a failure to set up or run the sandbox itself. When
+// the backend returns such an error, Run must propagate it unchanged and must not
+// panic or fabricate an Enforced report from a zero-value result - the report
+// overlay runs even on the error path.
+func TestRunPropagatesEnforcerError(t *testing.T) {
+	wantErr := errors.New("bwrap: failed to set up sandbox")
+	f := &fakeEnforcer{probe: fullyEnforced(), err: wantErr}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want the backend error propagated", err)
+	}
+	// The overlay still runs the required-layer report off the probe, so a caller
+	// inspecting the report after an error sees the probed truth, not a fabricated
+	// all-enforced report nor a panic on the zero-value backend report.
+	if res.Report.StateOf(LayerFilesystem) != Enforced {
+		t.Errorf("filesystem state = %v, want the probed Enforced even on the error path", res.Report.StateOf(LayerFilesystem))
 	}
 }
 
@@ -521,7 +573,7 @@ func TestReportSetReplacesOrAdds(t *testing.T) {
 
 // StateOf must return the most severe state among duplicate layer entries, agreeing
 // with shortfall/Degradations - else a first-match Enforced could mask a governing
-// Degraded/Unavailable duplicate (bv2-ad8). A missing layer is Unavailable.
+// Degraded/Unavailable duplicate. A missing layer is Unavailable.
 func TestStateOfWorstOfDuplicates(t *testing.T) {
 	var r Report
 	r.Add(LayerFilesystem, Enforced, "")
@@ -535,7 +587,7 @@ func TestStateOfWorstOfDuplicates(t *testing.T) {
 }
 
 // A probe that omits a required CORE layer entirely must refuse the run: the missing
-// layer is treated as Unavailable, not silently read as enforced (bv2-ey0 #4).
+// layer is treated as Unavailable, not silently read as enforced.
 func TestMissingRequiredCoreLayerRefused(t *testing.T) {
 	var r Report
 	r.Add(LayerNetwork, Enforced, "") // LayerFilesystem deliberately absent

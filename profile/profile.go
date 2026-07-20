@@ -90,11 +90,23 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		return filepath.Dir(p)
 	}
 
+	// A write collapses to a directory grant, so an observed write anywhere under a
+	// system config tree would propose a writable system directory: a target that
+	// merely attempts a write to /etc/cron.d seeds a writable /etc/cron.d grant that
+	// becomes root code execution if a reviewer approves it. The observer records the
+	// attempted path even when default-deny blocked the write, so trying is enough.
+	// isSystemPath's /etc coverage is a hand-list of specific runtime files, not a
+	// directory prefix, so it misses these subdirectories; floor writes to them here.
+	// Reads under /etc still surface unchanged - the reviewer needs to see them.
+	writeSkip := func(dir string) bool {
+		return skip(dir) || isSystemWriteDir(dir)
+	}
+
 	p := &policy.Policy{
 		Entrypoint:  entrypoint,
 		Interpreter: interpreter,
 		Read:        cleanPaths(obs.Reads, canon, skip),
-		Write:       cleanPaths(obs.Writes, writeDir, skip),
+		Write:       cleanPaths(obs.Writes, writeDir, writeSkip),
 		Exec:        policy.ExecNone,
 	}
 	if obs.Execed {
@@ -123,6 +135,25 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		return p.Network[i].Host+":"+p.Network[i].Port < p.Network[j].Host+":"+p.Network[j].Port
 	})
 	return p
+}
+
+// systemWriteRoots are trees under which a proposed writable-directory grant is a
+// privilege-escalation vector rather than a legitimate need: /etc/cron.d,
+// /etc/sudoers.d, /etc/systemd/system, /etc/profile.d and the like all run code as
+// root or another user. Only writes are floored here; reads under these trees are
+// still proposed so the reviewer sees them.
+var systemWriteRoots = []string{"/etc/"}
+
+// isSystemWriteDir reports whether a collapsed write-grant directory lands in a
+// system config tree. It matches the tree ("/etc/cron.d") and the bare root
+// ("/etc") itself.
+func isSystemWriteDir(dir string) bool {
+	for _, root := range systemWriteRoots {
+		if strings.HasPrefix(dir, root) || dir == root[:len(root)-1] {
+			return true
+		}
+	}
+	return false
 }
 
 func isSystemPath(p string) bool {

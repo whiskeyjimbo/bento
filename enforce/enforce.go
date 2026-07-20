@@ -59,7 +59,10 @@ type Process struct {
 	// Env are the resolved environment values handed to the target. The policy
 	// declares which NAMES may pass through; resolving those names against the
 	// host, and merging any values supplied at invocation, is the core's job -
-	// a backend applies this map and makes no decisions about it.
+	// a backend applies this map and makes no decisions about it. Callers MUST build
+	// this via ResolveEnv, which is what enforces the policy's allowlist: Run does not
+	// re-check the keys, so a map assembled by any other path (e.g. from os.Environ)
+	// would leak host variables the manifest never declared straight into the sandbox.
 	Env map[string]string
 }
 

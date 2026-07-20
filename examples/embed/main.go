@@ -1,7 +1,8 @@
 // Command embed hosts bento's enforcement backend in-process, using only bento's
 // public packages - backend, enforce, manifest - and nothing under internal/. It
 // takes a manifest path, runs the script it describes under the sandbox, prints
-// any enforcement shortfall from the structured Result, and passes the target's
+// what the structured Result reports - any enforcement shortfall and any shielded
+// credential path the manifest exposed to the target - and passes the target's
 // exit code through.
 //
 // It also demonstrates the interactive supervision seam: a NetworkGate that
@@ -134,6 +135,10 @@ func run(manifestPath string) int {
 	}
 
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
+	// The zero-value Options refuses only on a core-tier shortfall; a hardening gap
+	// (e.g. exec-block unavailable, so the target can spawn subprocesses) is reported
+	// but the run proceeds. An embedder confining genuinely untrusted code wants
+	// Strict: true, which refuses unless every layer, hardening included, is enforced.
 	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{NetworkGate: gate})
 
 	var refusal *enforce.Refusal
@@ -158,6 +163,13 @@ func run(manifestPath string) int {
 	// declared, attested policy.
 	for _, hp := range res.GateAdmitted {
 		fmt.Fprintf(os.Stderr, "embed: gate admitted undeclared egress to %s:%s\n", hp.Host, hp.Port)
+	}
+	// ShieldedGrants are always-shielded credential stores the manifest explicitly
+	// granted, so the backend exposed them to the target. The backend does not refuse
+	// this - the operator chose it - so the frontend must surface it loudly, or the
+	// exposure is silent.
+	for _, path := range res.ShieldedGrants {
+		fmt.Fprintf(os.Stderr, "embed: WARNING: exposed shielded credential path to the target: %s\n", path)
 	}
 	return res.ExitCode
 }
