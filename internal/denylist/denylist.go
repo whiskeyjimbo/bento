@@ -362,17 +362,27 @@ func Home(home string) []Rule {
 	// shield - exposed under a broad read grant at enforce time. Shield the target file
 	// itself. KUBECONFIG is a colon-separated search list; each entry is a separate file.
 	// Relative and empty entries are dropped for the same reason as a relative directory
-	// relocation: an absolute bind cannot cover a path the shield cannot name.
-	fileEnvs := []string{
-		"KUBECONFIG",
-		"AWS_SHARED_CREDENTIALS_FILE",
-		"AWS_CONFIG_FILE",
+	// relocation: an absolute bind cannot cover a path the shield cannot name. A target at
+	// or under its default store (a common redundant restatement, e.g. KUBECONFIG=~/.kube/
+	// config) is dropped too: the whole-directory shield already covers it, and emitting an
+	// interior file rule would blank the file out from under a `read: ~/.kube` opt-in that
+	// matches only the directory.
+	fileEnvs := []struct{ env, store string }{
+		{"KUBECONFIG", ".kube"},
+		{"AWS_SHARED_CREDENTIALS_FILE", ".aws"},
+		{"AWS_CONFIG_FILE", ".aws"},
 	}
-	for _, env := range fileEnvs {
-		for _, p := range filepath.SplitList(os.Getenv(env)) {
-			if p != "" && filepath.IsAbs(p) {
-				rules = append(rules, Rule{Path: filepath.Clean(p), Deny: DenyAll})
+	for _, fe := range fileEnvs {
+		store := join(fe.store)
+		for _, p := range filepath.SplitList(os.Getenv(fe.env)) {
+			if p == "" || !filepath.IsAbs(p) {
+				continue
 			}
+			p = filepath.Clean(p)
+			if p == store || strings.HasPrefix(p, store+string(filepath.Separator)) {
+				continue
+			}
+			rules = append(rules, Rule{Path: p, Deny: DenyAll})
 		}
 	}
 	return rules

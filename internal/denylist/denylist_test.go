@@ -266,7 +266,9 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 // credential files off ~/.kube / ~/.aws. Each absolute target must be shielded at its own
 // path; relative and empty entries are ignored, like a relative directory relocation.
 func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
-	t.Setenv("KUBECONFIG", "/secrets/kube.yaml:relkube:/secrets/kube2.yaml")
+	// The first KUBECONFIG entry restates the default under the already-shielded ~/.kube,
+	// so it must be dropped; only the relocated entries get their own file shield.
+	t.Setenv("KUBECONFIG", "/home/u/.kube/config:/secrets/kube.yaml:relkube:/secrets/kube2.yaml")
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/secrets/aws-creds")
 	t.Setenv("AWS_CONFIG_FILE", "relaws") // relative: must not shield
 
@@ -291,6 +293,11 @@ func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
 	}
 	if byPath["relkube"] || byPath["relaws"] {
 		t.Error("a relative file relocation must not produce a shield")
+	}
+	// A restatement of the default under the shielded store must not get an interior
+	// file rule: it would blank the file out from under a read:~/.kube opt-in.
+	if byPath["/home/u/.kube/config"] {
+		t.Error("a KUBECONFIG entry under the shielded ~/.kube must not add an interior file rule")
 	}
 	// The default directories stay shielded regardless.
 	if !byPath["/home/u/.kube"] || !byPath["/home/u/.aws"] {
