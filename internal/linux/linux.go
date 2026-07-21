@@ -109,6 +109,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// path. The shields still protect every path not opted into.
 	optedIn, _ := explicitShieldOptIns(sb, p.Read)
 
+	// A shield hides a credential's path, not its inode: flag any engaged credential that
+	// carries an extra hardlink so a grant exposing another name for the same file is not
+	// a silent leak. Computed once from the engaged shields and carried on every result.
+	hardlinked := hardlinkedShields(sb, shields)
+
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
 	// already been admitted (refused by default, or permitted under
@@ -136,12 +141,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, HardlinkedShields: hardlinked}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, HardlinkedShields: hardlinked}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -245,15 +250,16 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	}
 
 	sb := sandbox{
-		home:        home,
-		emptyFile:   empty,
-		entrypoint:  entrypoint,
-		interpreter: interp,
-		exists:      hostExists,
-		isDir:       hostIsDir,
-		rootDirs:    hostRootDirs,
-		resolve:     hostResolve,
-		listDir:     hostListDir,
+		home:            home,
+		emptyFile:       empty,
+		entrypoint:      entrypoint,
+		interpreter:     interp,
+		exists:          hostExists,
+		isDir:           hostIsDir,
+		rootDirs:        hostRootDirs,
+		resolve:         hostResolve,
+		listDir:         hostListDir,
+		hardlinkedUnder: hostHardlinkedUnder,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
