@@ -43,6 +43,10 @@ func baseDiscovery() *policy.Policy {
 	return &policy.Policy{Entrypoint: "/x", Read: []string{"/scriptdir"}}
 }
 
+// noRisky is the predicate for tests whose paths never reach a foreign-home shield, so
+// [a]ll behaves as the plain accept-the-rest shortcut.
+func noRisky(string) bool { return false }
+
 // Accepting the config mounts it next round, so the branching target proceeds and the
 // downstream path is revealed and accepted too - convergence widens the manifest past
 // the boot path, which is the whole point of the loop.
@@ -50,7 +54,7 @@ func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 	// One prompt per new path: config in round 1, data in round 2. Round 3 sees both
 	// granted and nothing new, so it converges without prompting.
 	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
-	final, err := converge(baseDiscovery(), branchingRound, prompt, io.Discard)
+	final, err := converge(baseDiscovery(), branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -64,10 +68,26 @@ func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 // path the user did not accept - a credential a profiled adversary probed - must never
 // have its real content mounted, so it can never surface downstream accesses.
 func TestConvergeDeclineNeverMountsOrReveals(t *testing.T) {
-	prompt := newGrantPrompter(strings.NewReader("n\n"), io.Discard)
-	final, err := converge(baseDiscovery(), branchingRound, prompt, io.Discard)
+	// Capture the discovery policy each round actually mounts, so we test mounting
+	// directly rather than inferring it from the final grant set.
+	var mounted [][]string
+	capturing := func(d *policy.Policy) (*policy.Policy, error) {
+		mounted = append(mounted, append([]string{}, d.Read...))
+		return branchingRound(d)
+	}
+	// "n" declines the config; the trailing "y" is a tripwire - correct converge never
+	// mounts the declined config, so the branching target never reveals dataPath and the
+	// "y" is never consumed. A broken converge that mounts a declined path would reveal
+	// dataPath, prompt it, and the "y" would accept it, failing the assertions below.
+	prompt := newGrantPrompter(strings.NewReader("n\ny\n"), io.Discard)
+	final, err := converge(baseDiscovery(), capturing, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
+	}
+	for i, reads := range mounted {
+		if hasPath(reads, cfgPath) {
+			t.Errorf("round %d mounted the declined config %q; discovery.Read=%v", i+1, cfgPath, reads)
+		}
 	}
 	if hasPath(final.Read, cfgPath) {
 		t.Errorf("a declined path must not be granted; got Read=%v", final.Read)
@@ -86,7 +106,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 		prompts++
 		return grantAll, nil
 	}
-	final, err := converge(baseDiscovery(), branchingRound, counting, io.Discard)
+	final, err := converge(baseDiscovery(), branchingRound, counting, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -103,7 +123,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 func TestConvergeQuitKeepsAcceptedSoFar(t *testing.T) {
 	// A round-1 prompt: quit before accepting anything.
 	prompt := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
-	final, err := converge(baseDiscovery(), branchingRound, prompt, io.Discard)
+	final, err := converge(baseDiscovery(), branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -122,7 +142,7 @@ func TestConvergeNoAttemptsConvergesImmediately(t *testing.T) {
 		t.Fatalf("must not prompt when there is nothing to grant (%s %s)", kind, path)
 		return grantNo, nil
 	}
-	final, err := converge(baseDiscovery(), empty, fail, io.Discard)
+	final, err := converge(baseDiscovery(), empty, fail, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -152,6 +172,46 @@ func TestGrantPrompterParsing(t *testing.T) {
 	}
 }
 
+// [a]ll must NOT silently accept a foreign-home-shielded path (a credential store the
+// enforced run will not re-shield): those always prompt, even after [a]ll, so a
+// content-branching target cannot smuggle one in on a later round under a single earlier
+// keystroke. This is the regression guard for the [a]ll bypass.
+func TestConvergeAllStillPromptsRiskyPaths(t *testing.T) {
+	const cred = "/home/other/.ssh/id_rsa"
+	// Round 1 shows an innocuous path; once granted, round 2 reveals the foreign cred.
+	round := func(d *policy.Policy) (*policy.Policy, error) {
+		granted := map[string]bool{}
+		for _, r := range d.Read {
+			granted[r] = true
+		}
+		prop := &policy.Policy{Entrypoint: "/x", Read: []string{"/innocuous"}}
+		if granted["/innocuous"] {
+			prop.Read = append(prop.Read, cred)
+		}
+		return prop, nil
+	}
+	risky := func(p string) bool { return p == cred }
+
+	askedCred := 0
+	prompt := func(kind, path string) (grantChoice, error) {
+		if path == cred {
+			askedCred++
+			return grantNo, nil // the reviewer declines the smuggled credential
+		}
+		return grantAll, nil // [a]ll on the innocuous path
+	}
+	final, err := converge(baseDiscovery(), round, prompt, risky, io.Discard)
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if askedCred != 1 {
+		t.Errorf("a foreign-home cred must still prompt under [a]ll; prompted %d times", askedCred)
+	}
+	if hasPath(final.Read, cred) {
+		t.Errorf("the declined foreign cred must not be granted; got Read=%v", final.Read)
+	}
+}
+
 // A tool that touches a genuinely new path every round never converges; with [a]ll set
 // the loop must still terminate at the round cap rather than spin forever.
 func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
@@ -162,7 +222,7 @@ func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
 		return &policy.Policy{Entrypoint: "/x", Read: []string{"/p/" + string(rune('a'+rounds%26)) + string(rune('0'+rounds))}}, nil
 	}
 	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
-	if _, err := converge(baseDiscovery(), everNew, acceptAll, io.Discard); err != nil {
+	if _, err := converge(baseDiscovery(), everNew, acceptAll, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if rounds > maxConvergeRounds+1 {
@@ -185,7 +245,7 @@ func TestConvergeDoesNotReaskDeclined(t *testing.T) {
 		}
 		return grantNo, nil // decline /b
 	}
-	final, err := converge(baseDiscovery(), twoPaths, prompt, io.Discard)
+	final, err := converge(baseDiscovery(), twoPaths, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}

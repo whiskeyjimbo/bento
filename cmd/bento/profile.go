@@ -95,7 +95,7 @@ func newProfileCmd() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
 				round := func(d *policy.Policy) (*policy.Policy, error) { return profileRound(cfg, d) }
-				proposed, err = converge(base, round, newGrantPrompter(tty, os.Stderr), os.Stderr)
+				proposed, err = converge(base, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
 				// one default-deny pass and write. A content-branching target under-reports;
@@ -210,9 +210,11 @@ const maxConvergeRounds = 25
 // discovery policy carrying the accepted grants and returns the clamped proposal.
 // prompt asks about one newly-attempted path; declining it (or anything but yes/all)
 // leaves it recorded-only and never mounts it - the consent that keeps real content off
-// a path the user did not approve. It returns the final proposal with reads/writes
-// narrowed to exactly the accepted set.
-func converge(base *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), out io.Writer) (*policy.Policy, error) {
+// a path the user did not approve. risky reports a path that would be exposed at enforce
+// time (a foreign-home shield the run will not re-shield); those always prompt, never
+// auto-accepted under [a]ll. It returns the final proposal with reads/writes narrowed to
+// exactly the accepted set.
+func converge(base *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
 	declined := map[string]bool{} // key() -> asked and refused, so it is not re-asked
@@ -257,7 +259,12 @@ loop:
 		}
 		fmt.Fprintf(out, "[bento] round %d: the target attempted %d new path(s):\n", r, len(items))
 		for _, it := range items {
-			if acceptAll {
+			// [a]ll grants the rest without asking - but never silently for a path that
+			// reaches a credential/persistence shield in a home the enforced run will not
+			// re-shield (a foreign home, e.g. profiling under sudo). Those are exactly the
+			// paths the reviewer must decide on per-path, and a content-branching target
+			// chooses which round reveals them, so they always prompt even under [a]ll.
+			if acceptAll && !risky(it.path) {
 				accept(it)
 				continue
 			}
@@ -283,6 +290,14 @@ loop:
 	final.Read = sortedBoolKeys(acceptedR)
 	final.Write = sortedBoolKeys(acceptedW)
 	return final, nil
+}
+
+// foreignShielded reports whether granting path would expose a credential or
+// persistence store in a home directory the enforced run will not re-shield - the
+// foreign-home case clampShieldedGrants cannot drop (it clamps only the profiler's own
+// home). Such a path is never auto-accepted under [a]ll; the reviewer decides it.
+func foreignShielded(path string) bool {
+	return len(foreignHomeShields([]string{path})) > 0
 }
 
 // grantItem is one filesystem access the target attempted but has not been granted yet.
