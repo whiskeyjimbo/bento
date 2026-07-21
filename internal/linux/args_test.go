@@ -494,6 +494,17 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	if p2 < 0 || c2 < 0 || c2 < p2 {
 		t.Errorf("read+write: child (idx %d) must follow parent (idx %d), both present", c2, p2)
 	}
+
+	// XDG_DATA_HOME relocation moves both parent and child to the relocated base, keeping
+	// the same nesting - the carve must follow.
+	t.Setenv("XDG_DATA_HOME", "/xdg")
+	sbx := testSandbox("/xdg/nvim", "/xdg/nvim/lazy/plugin.lua", "/xdg/nvim/shada", "/xdg/nvim/shada/main.shada")
+	args3 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
+		Write: []string{"/xdg/nvim/lazy"}}, sbx)
+	p3, c3 := pairIndex(args3, "--ro-bind", "/xdg/nvim"), pairIndex(args3, "--tmpfs", "/xdg/nvim/shada")
+	if p3 < 0 || c3 < 0 || c3 < p3 {
+		t.Errorf("relocated pair: child (idx %d) must follow parent (idx %d), both present", c3, p3)
+	}
 }
 
 // A hidden credential shield binds a PATH, so a hardlink to the same inode elsewhere in
