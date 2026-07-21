@@ -199,6 +199,10 @@ func printProposalWarnings(p *policy.Policy) {
 	}
 }
 
+// maxConvergeRounds bounds the convergence loop so a tool that touches a new path each
+// run cannot spin it forever; typical tools converge in a handful of rounds.
+const maxConvergeRounds = 25
+
 // converge repeats profiling rounds, mounting the grants the user accepts so a
 // content-branching target proceeds past its error branch and reveals the next layer
 // of accesses, until a round surfaces nothing new. round is the profiling seam (the
@@ -224,6 +228,14 @@ func converge(base *policy.Policy, round func(*policy.Policy) (*policy.Policy, e
 	var last *policy.Policy
 loop:
 	for r := 1; ; r++ {
+		// A tool that attempts a genuinely new path every round (a timestamped or
+		// pid-named file) never converges; with [a]ll set it would loop forever mounting
+		// more each round. Cap the rounds and stop loudly rather than spin - the user
+		// grants any remaining paths by hand.
+		if r > maxConvergeRounds {
+			fmt.Fprintf(out, "[bento] stopped after %d rounds without converging - the tool may touch a new path each run; review the manifest and grant any remaining paths by hand.\n", maxConvergeRounds)
+			break
+		}
 		discovery := &policy.Policy{
 			Entrypoint:  base.Entrypoint,
 			Interpreter: base.Interpreter,

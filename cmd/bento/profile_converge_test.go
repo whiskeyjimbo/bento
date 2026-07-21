@@ -152,6 +152,24 @@ func TestGrantPrompterParsing(t *testing.T) {
 	}
 }
 
+// A tool that touches a genuinely new path every round never converges; with [a]ll set
+// the loop must still terminate at the round cap rather than spin forever.
+func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
+	rounds := 0
+	everNew := func(*policy.Policy) (*policy.Policy, error) {
+		rounds++
+		// A new path each round, so newGrants never empties.
+		return &policy.Policy{Entrypoint: "/x", Read: []string{"/p/" + string(rune('a'+rounds%26)) + string(rune('0'+rounds))}}, nil
+	}
+	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
+	if _, err := converge(baseDiscovery(), everNew, acceptAll, io.Discard); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if rounds > maxConvergeRounds+1 {
+		t.Errorf("loop must stop near the round cap; ran %d rounds", rounds)
+	}
+}
+
 // A declined path is remembered so a later round does not re-ask about it, even though
 // the target keeps attempting it every round.
 func TestConvergeDoesNotReaskDeclined(t *testing.T) {
