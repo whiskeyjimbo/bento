@@ -17,7 +17,74 @@ import (
 // inherited-fd forgery (TestInheritedFdContentUnreadable, TestSupervisorFdPathNotDisclosed),
 // read:/ exposure (TestReadRootDoesNotExposeHostRuntime plus the shield_fuzz oracle),
 // and the /run socket shield (denylist TestRuntimeShieldsHostSockets). This file holds
-// the classes that had no coverage.
+// the classes that had no coverage, including the default-deny inversion's keystone at
+// enforce time: a narrow grant must not expose an ungranted sibling, directly or via a
+// path-traversal trick (TestGrantDoesNotExposeUngrantedSibling,
+// TestTraversalCannotEscapeGrantToSibling), each with a positive control.
+
+// Default-deny's keystone at enforce time: granting one path under home must not drag
+// in an ungranted sibling. The inversion (bv2-yz3) rests on a forgotten path failing
+// closed - absent - rather than leaking, so a narrow grant beside a secret must leave
+// the secret unreachable. The positive control grants the whole home and reads the
+// same secret, proving it is real and reachable and that the narrow grant - not a
+// broken read - is what isolates it (.mytoken is not a deny-list shield, so a home
+// grant does expose it; the shield classes are covered separately).
+func TestGrantDoesNotExposeUngrantedSibling(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(home, ".mytoken") // ungranted, non-shielded sibling of the grant
+	if err := os.WriteFile(secret, []byte("SIBLING-SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, out := runScript(t, &policy.Policy{Read: []string{proj}}, "cat "+secret+" 2>&1 || true\n"); strings.Contains(out, "SIBLING-SECRET") {
+		t.Fatalf("a narrow grant of %q exposed the ungranted sibling %q: %q", proj, secret, out)
+	}
+
+	if _, ctrl := runScript(t, &policy.Policy{Read: []string{home}}, "cat "+secret+" 2>&1 || true\n"); !strings.Contains(ctrl, "SIBLING-SECRET") {
+		t.Fatalf("positive control: a home grant should expose the non-shielded sibling, but did not: %q", ctrl)
+	}
+}
+
+// The same isolation must hold against path tricks, not just a direct read: from
+// inside a granted tree, parent traversal, /proc/self/root re-rooting, and a symlink
+// planted in the granted dir that points back out at the sibling must all resolve to
+// nothing. The positive control reads the sibling through /proc/self/root under a home
+// grant, so a green result is a real boundary and not a probe that never reached it.
+func TestTraversalCannotEscapeGrantToSibling(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(home, ".mytoken")
+	if err := os.WriteFile(secret, []byte("SIBLING-SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A write grant so the target can plant the escaping symlink itself, the way an
+	// attacker-controlled script would.
+	link := filepath.Join(proj, "link")
+	body := "cat " + filepath.Join(proj, "..", ".mytoken") + " 2>&1 || true\n" +
+		"cat /proc/self/root" + secret + " 2>&1 || true\n" +
+		"ln -s " + secret + " " + link + " 2>/dev/null; cat " + link + " 2>&1 || true\n"
+	if _, out := runScript(t, &policy.Policy{Write: []string{proj}}, body); strings.Contains(out, "SIBLING-SECRET") {
+		t.Fatalf("a path-traversal trick escaped the grant to the ungranted sibling: %q", out)
+	}
+
+	if _, ctrl := runScript(t, &policy.Policy{Read: []string{home}}, "cat /proc/self/root"+secret+" 2>&1 || true\n"); !strings.Contains(ctrl, "SIBLING-SECRET") {
+		t.Fatalf("positive control: a /proc/self/root read under a home grant should expose the sibling: %q", ctrl)
+	}
+}
 
 // A sandboxed program must not be able to un-shield a credential by hardlinking its
 // path: the credential store is tmpfs'd (DenyAll dir) or overmounted with an empty
