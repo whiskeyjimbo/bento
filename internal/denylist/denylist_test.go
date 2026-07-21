@@ -23,19 +23,21 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.mozilla",
 		"/home/u/.config/google-chrome",
 		"/home/u/.config/rclone",
-		"/home/u/.config/keybase",       // Keybase keys/tokens
-		"/home/u/.pki",                  // NSS cert/key DBs
-		"/home/u/.gnome2/keyrings",      // legacy keyring path
-		"/home/u/.git-credential-cache", // git credential cache
-		"/home/u/.mutt",                 // mutt config (imap_pass) hidden
-		"/home/u/.config/mutt",          // XDG mutt config
-		"/home/u/.subversion/auth",      // SVN plaintext passwords
-		"/home/u/.config/openstack",     // OpenStack clouds.yaml/secure.yaml
-		"/home/u/.thunderbird",          // Thunderbird saved mail passwords
-		"/home/u/.config/evolution",     // Evolution saved mail passwords
-		"/home/u/.cert",                 // 802.1X/VPN client keys (real kind varies by host)
-		"/home/u/.mail",                 // maildir bodies and cached creds
-		"/home/u/.Mail",                 // capitalized maildir variant
+		"/home/u/.config/keybase",         // Keybase keys/tokens
+		"/home/u/.pki",                    // NSS cert/key DBs
+		"/home/u/.gnome2/keyrings",        // legacy keyring path
+		"/home/u/.git-credential-cache",   // git credential cache
+		"/home/u/.mutt",                   // mutt config (imap_pass) hidden
+		"/home/u/.config/mutt",            // XDG mutt config
+		"/home/u/.subversion/auth",        // SVN plaintext passwords
+		"/home/u/.config/openstack",       // OpenStack clouds.yaml/secure.yaml
+		"/home/u/.thunderbird",            // Thunderbird saved mail passwords
+		"/home/u/.config/evolution",       // Evolution saved mail passwords
+		"/home/u/.cert",                   // 802.1X/VPN client keys (real kind varies by host)
+		"/home/u/.mail",                   // maildir bodies and cached creds
+		"/home/u/.Mail",                   // capitalized maildir variant
+		"/home/u/.local/state/nvim/shada", // nvim registers + command/search history (like .viminfo)
+		"/home/u/.local/state/nvim/undo",  // undo files hold full prior contents of edited files
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -203,6 +205,7 @@ func TestRuntimeShieldsHostSockets(t *testing.T) {
 func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/home/u/cfg")
 	t.Setenv("XDG_DATA_HOME", "/home/u/data")
+	t.Setenv("XDG_STATE_HOME", "/home/u/state")
 	byPath := map[string]bool{}
 	for _, r := range Home("/home/u") {
 		byPath[r.Path] = true
@@ -211,6 +214,7 @@ func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	for _, p := range []string{
 		"/home/u/.config/gh", "/home/u/cfg/gh", // gh tokens (config)
 		"/home/u/.local/share/keyrings", "/home/u/data/keyrings", // GNOME keyring (data)
+		"/home/u/.local/state/nvim/shada", "/home/u/state/nvim/shada", // nvim history (state)
 	} {
 		if !byPath[p] {
 			t.Errorf("expected a shield at %q (XDG relocation), missing", p)

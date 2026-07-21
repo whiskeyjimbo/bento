@@ -115,6 +115,8 @@ func Home(home string) []Rule {
 		".adobe",                           // Flash local storage (LSO)
 		".macromedia",                      // Flash local storage (legacy)
 		".ne",                              // ne editor state, incl. history
+		".local/state/nvim/shada",          // nvim registers + command/search history (the .viminfo equivalent)
+		".local/state/nvim/undo",           // persistent undo files hold full prior contents of edited files
 		".cache/xfce4/clipman",             // clipboard history
 		".kde/share/apps/klipper",          // clipboard history
 		".kde4/share/apps/klipper",         // clipboard history (KDE4)
@@ -306,6 +308,7 @@ func Home(home string) []Rule {
 	xdgBases := []struct{ prefix, env, def string }{
 		{".config/", "XDG_CONFIG_HOME", ".config"},
 		{".local/share/", "XDG_DATA_HOME", ".local/share"},
+		{".local/state/", "XDG_STATE_HOME", ".local/state"},
 		{".cache/", "XDG_CACHE_HOME", ".cache"},
 	}
 	locations := func(entry string) []string {
