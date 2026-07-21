@@ -270,8 +270,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 }
 
 // shieldsApplied converts the deny-list rules a run engaged into the operator-facing
-// audit record: one entry per shielded path, sorted, with the kind of shield. All
-// current built-in shields are DenyAll (hidden); a DenyWrite rule reports read-only.
+// audit record: one entry per shielded path, sorted, with the kind of shield. A
+// DenyAll rule (credential stores, ~/.ssh) reports hidden; a DenyWrite rule (shell rc
+// files, git hooks, nvim trees) reports read-only.
 func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 	if len(rules) == 0 {
 		return nil
