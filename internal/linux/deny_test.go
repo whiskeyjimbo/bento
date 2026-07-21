@@ -109,6 +109,50 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 	}
 }
 
+// A DenyAll store nested inside a DenyWrite readable tree (the legacy nvim shada
+// stores under ~/.local/share/nvim, kept readable so plugins load) must stay hidden
+// even when a grant fires the parent's read-only bind. A write grant to a subdir - the
+// plugin-install grant the readable tree exists to permit - makes the parent's ro-bind
+// fire, which binds the whole subtree readable and re-exposes the hidden stores.
+//
+// The write-granted subdir is pre-populated with every workspace shield target
+// (.git/hooks, .vscode, ...) so each becomes a ro-bind of an existing path rather than
+// a tmpfs that would need mkdir inside the now-readonly parent (which aborts the run):
+// this is the shape that reaches the exposure instead of failing closed by accident.
+// With no read grant, the DenyAll child is not independently reachable, so the shield
+// is emitted only because a DenyWrite ancestor's bind would otherwise expose it.
+func TestNestedDenyAllHiddenUnderExposedParent(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nvim := filepath.Join(home, ".local/share/nvim")
+	shada := filepath.Join(nvim, "shada")
+	if err := os.MkdirAll(shada, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "NVIM-SHADA-SECRET"
+	if err := os.WriteFile(filepath.Join(shada, "main.shada"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(nvim, "lazy")
+	for _, d := range []string{filepath.Join(sub, ".git", "hooks"), filepath.Join(sub, ".vscode"), filepath.Join(sub, ".idea")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(sub, ".git", "config"), filepath.Join(sub, ".git", "config.worktree")} {
+		if err := os.WriteFile(f, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+filepath.Join(shada, "main.shada")+" 2>&1 || true\n")
+	if strings.Contains(out, secret) {
+		t.Errorf("the nvim shada store leaked through the parent bind: %q", out)
+	}
+}
+
 // A profiling trial grants Read:["/"], so without a deny path the target reads a
 // caller's own file; passing that file's directory as a DenyPath shields its
 // contents (a tmpfs overmount), so the trial can no longer read it. The store

@@ -459,6 +459,43 @@ func TestLegacyNvimStoresHiddenUnderReadGrantWriteRefused(t *testing.T) {
 	}
 }
 
+// A DenyAll child under a shielded DenyWrite dir must be emitted AFTER the parent bind
+// (bwrap last-wins), and must be emitted even when only the parent is grant-reachable -
+// a write to a sibling subdir fires the parent's ro-bind, which would otherwise re-expose
+// the hidden child. The real-bwrap counterpart is TestNestedDenyAllHiddenUnderExposedParent;
+// this pins the argv the run relies on.
+func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
+	sb := testSandbox(
+		"/home/u/.local/share/nvim",
+		"/home/u/.local/share/nvim/lazy/plugin.lua",
+		"/home/u/.local/share/nvim/shada",
+		"/home/u/.local/share/nvim/shada/main.shada",
+	)
+	const parent = "/home/u/.local/share/nvim"
+	const child = "/home/u/.local/share/nvim/shada"
+
+	// Sibling write only, no read: the child is not independently reachable, yet is
+	// force-emitted because the parent's bind would expose it - and after that bind.
+	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
+		Write: []string{"/home/u/.local/share/nvim/lazy"}}, sb)
+	p, c := pairIndex(args, "--ro-bind", parent), pairIndex(args, "--tmpfs", child)
+	if p < 0 || c < 0 {
+		t.Fatalf("sibling write must shield both parent (ro-bind idx=%d) and force the child (tmpfs idx=%d)", p, c)
+	}
+	if c < p {
+		t.Errorf("child shield (idx %d) must be emitted after the parent bind (idx %d), or the parent re-exposes it", c, p)
+	}
+
+	// Home read + sibling write: the child is reachable and emitted normally, but must
+	// still land after the parent bind.
+	args2 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
+		Read: []string{"/home/u"}, Write: []string{"/home/u/.local/share/nvim/lazy"}}, sb)
+	p2, c2 := pairIndex(args2, "--ro-bind", parent), pairIndex(args2, "--tmpfs", child)
+	if p2 < 0 || c2 < 0 || c2 < p2 {
+		t.Errorf("read+write: child (idx %d) must follow parent (idx %d), both present", c2, p2)
+	}
+}
+
 // A hidden credential shield binds a PATH, so a hardlink to the same inode elsewhere in
 // a granted tree stays readable past the shield. hardlinkedShields walks each engaged
 // hidden shield - including the credential files inside a directory shield - and reports

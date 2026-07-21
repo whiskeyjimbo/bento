@@ -629,38 +629,77 @@ const maxGitdirDepth = 64
 func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist.Rule) {
 	rules := shieldRules(sb, writes)
 
-	var args []string
-	var applied []denylist.Rule
+	// Resolve and dedup first, so ancestry and ordering below compare real paths. A
+	// symlinked deny path, or a symlinked /home component, would otherwise slip past
+	// reachability, and the shield must mount where bwrap can create the mount point
+	// (never at a symlink, which aborts the run). Two rules that resolve to the same
+	// real path (/var/run and /run on a merged host) collapse to one; only the
+	// identical rule is dropped, so a path shielded two different ways keeps both.
 	seen := map[denylist.Rule]bool{}
+	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
-		// Resolve the rule's path the same way grants are resolved, so the shield
-		// decision compares like with like (a symlinked deny path, or a symlinked
-		// /home component, would otherwise slip past reachability) and the shield
-		// mounts where bwrap can actually create the mount point (never at a
-		// symlink, which aborts the run).
 		r.Path = sb.resolve(r.Path)
 		if r.Path == "/" {
 			// A deny dotfile that resolves to the root (a symlink to "/") would
 			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
 			continue
 		}
-		// Two rules can name the same real path once resolved (/var/run and /run on a
-		// merged host). Shielding it twice stacks a redundant mount rather than being
-		// wrong; only the identical rule is dropped. If a path is ever shielded two
-		// different ways (DenyWrite and DenyAll), both land and bwrap's last-wins means
-		// the stricter one must be emitted last to win - today every builtin shield is
-		// DenyAll, so no such pair collides, but a future DenyWrite must preserve that
-		// ordering or add per-path strictest-wins dedup here.
 		if seen[r] {
 			continue
 		}
 		seen[r] = true
-		if !shieldNeeded(r, sb, grants, writes, optIns) {
-			continue
-		}
-		args = append(args, shield(r, sb)...)
-		applied = append(applied, r)
+		resolved = append(resolved, r)
 	}
+
+	// A DenyWrite directory shield binds its real subtree read-only, which re-exposes
+	// any DenyAll path nested inside it: the readable parent bind wins over a hidden
+	// child that landed earlier, or was never emitted because no grant reached it
+	// directly. Collect the DenyWrite dirs whose shield actually fires and binds real
+	// content (an absent one becomes an empty tmpfs and exposes nothing), so a DenyAll
+	// descendant of one is shielded even when only the parent is granted.
+	var exposed []string
+	for _, r := range resolved {
+		if r.Deny == denylist.DenyWrite && r.Dir && sb.exists(r.Path) && shieldNeeded(r, sb, grants, writes, optIns) {
+			exposed = append(exposed, r.Path)
+		}
+	}
+	underExposed := func(p string) bool {
+		for _, d := range exposed {
+			if under(p, d) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Emit DenyWrite shields before DenyAll shields. bwrap mounts are last-wins, so the
+	// stricter DenyAll (hide) must land after any DenyWrite (readable) bind that covers
+	// the same subtree, or the readable parent re-exposes a hidden child. A forced child
+	// must pre-exist: mounting over an existing path inside a read-only parent is a
+	// namespace op, but creating a new mount point there is EROFS and aborts the run
+	// (which is also why an absent DenyAll under an exposed parent needs no shield -
+	// there is nothing to hide).
+	var args []string
+	var applied []denylist.Rule
+	emit := func(want denylist.Deny) {
+		for _, r := range resolved {
+			if r.Deny != want {
+				continue
+			}
+			needed := shieldNeeded(r, sb, grants, writes, optIns)
+			if !needed && r.Deny == denylist.DenyAll && sb.exists(r.Path) &&
+				!slices.Contains(optIns, r.Path) && underExposed(r.Path) {
+				needed = true
+			}
+			if !needed {
+				continue
+			}
+			args = append(args, shield(r, sb)...)
+			applied = append(applied, r)
+		}
+	}
+	emit(denylist.DenyWrite)
+	emit(denylist.DenyAll)
 	return args, applied
 }
 
@@ -675,7 +714,11 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 // the path during the run. File shield mount points are deliberately excluded - an
 // os.Remove of a file is unconditional, so cleaning one would race a host-side
 // atomic save (write-temp then rename) over that path and could delete a real file.
-// The rule selection mirrors denyArgs exactly.
+//
+// This selects the same shieldNeeded rules denyArgs emits, minus the DenyAll children
+// denyArgs force-emits under an exposed DenyWrite ancestor: those are gated on the path
+// already existing, and this returns only nonexistent dirs, so bwrap never creates a
+// mount point for them and there is nothing to clean up.
 func createdShieldDirs(sb sandbox, grants, writes, optIns []string) []string {
 	rules := shieldRules(sb, writes)
 	var dirs []string
