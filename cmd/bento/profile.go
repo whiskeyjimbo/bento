@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -59,51 +62,54 @@ func newProfileCmd() *cobra.Command {
 				out = args[0] + ".manifest.yaml"
 			}
 
-			discovery := discoveryPolicy(script, interpreter, args[1:])
-
 			// Run with the real HOME (and the config-anchor vars derived from it) so a
 			// $HOME-relative probe names the real host path, which the observer records
 			// even though default-deny leaves that path unmounted. The same names go
 			// into the proposed manifest's env allowlist below so the enforced run
 			// rebuilds the identical paths; if they diverge the grant would not match.
+			// One env for every round keeps a recorded path stable pass to pass.
 			env := discoveryEnv()
 
-			if allowNetwork {
-				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress allowed)...\n", args[0])
-			} else {
-				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
+			cfg := profileConfig{
+				ctx: cmd.Context(), script: script, interpreter: interpreter,
+				args: args[1:], env: env, allowNetwork: allowNetwork,
 			}
-			obs, err := backend.Profile(cmd.Context(), discovery,
-				enforce.Process{Stdin: os.Stdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: env},
-				backend.ProfileOptions{AllowNetwork: allowNetwork})
+			base := discoveryPolicy(script, interpreter, args[1:])
+
+			var proposed *policy.Policy
+			if interactiveStdin() {
+				// A content-branching target reads a config to decide what to do next; under
+				// default-deny that read fails and it never attempts the downstream paths, so
+				// one pass under-reports. Loop: mount what the user grants, re-profile so the
+				// target proceeds, until nothing new is attempted. The prompt is the consent
+				// gate - real content is mounted only for a path the user accepts.
+				cfg.targetStdin = nil // the human answers prompts on the tty; the target gets no interactive stdin
+				tty := openTTY()
+				if c, ok := tty.(io.Closer); ok {
+					defer c.Close()
+				}
+				if allowNetwork {
+					if err := confirmNetworkExfil(tty, os.Stderr); err != nil {
+						return err
+					}
+				}
+				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
+				round := func(d *policy.Policy) (*policy.Policy, error) { return profileRound(cfg, d) }
+				proposed, err = converge(base, round, newGrantPrompter(tty, os.Stderr), os.Stderr)
+			} else {
+				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
+				// one default-deny pass and write. A content-branching target under-reports;
+				// the footer says to profile again with grants to widen it.
+				cfg.targetStdin = os.Stdin
+				if allowNetwork {
+					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress allowed)...\n", args[0])
+				} else {
+					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
+				}
+				proposed, err = profileRound(cfg, base)
+			}
 			if err != nil {
 				return err
-			}
-
-			// A run that was signaled or exited nonzero may have stopped before
-			// exercising all its code paths, so the observations - and the manifest
-			// synthesized from them - can be silently over-tight. Warn before writing it.
-			if w := partialRunWarning(obs); w != "" {
-				fmt.Fprintln(os.Stderr, w)
-			}
-
-			proposed := profile.Synthesize(script, interpreter, obs)
-			// Allowlist the discovery env so the enforced run rebuilds $HOME-relative
-			// paths to the same names profiling recorded and granted.
-			proposed.Env = sortedKeys(env)
-
-			shielded, broadReads, broadWrites := clampProposal(proposed)
-			for _, d := range shielded {
-				fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
-			}
-			for _, d := range broadReads {
-				fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
-			}
-			for _, d := range broadWrites {
-				fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
-			}
-			for _, d := range foreignHomeShields(append(append([]string{}, proposed.Read...), proposed.Write...)) {
-				fmt.Fprintf(os.Stderr, "[bento] proposing %q - it reaches shielded credential or persistence paths in a home directory profiling did not shield; the enforced run only shields the home it executes as, so these would be exposed. Confirm the script needs it before approving.\n", d)
 			}
 
 			// Merge into an existing manifest rather than overwriting it, so a second
@@ -134,6 +140,238 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// profileConfig carries the inputs a profiling round needs that do not change between
+// rounds, so the convergence loop can re-run rounds without re-threading them.
+type profileConfig struct {
+	ctx          context.Context
+	script       string
+	interpreter  string
+	args         []string
+	env          map[string]string
+	allowNetwork bool
+	targetStdin  io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
+}
+
+// profileRound runs one profiling pass under discovery and returns the clamped
+// proposal of what the target attempted (reads, writes, exec, network), printing the
+// round's shield and broad-grant warnings. It is the unit the convergence loop repeats
+// with a widening grant set; discovery carries the grants accepted so far, mounted with
+// real content so the target proceeds past accesses it already has.
+func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, error) {
+	obs, err := backend.Profile(cfg.ctx, discovery,
+		enforce.Process{Stdin: cfg.targetStdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: cfg.env},
+		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork})
+	if err != nil {
+		return nil, err
+	}
+	// A run that was signaled or exited nonzero may have stopped before exercising all
+	// its code paths, so the observations - and the manifest synthesized from them - can
+	// be silently over-tight. Warn before proposing it.
+	if w := partialRunWarning(obs); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+	proposed := profile.Synthesize(cfg.script, cfg.interpreter, obs)
+	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
+	// the same names profiling recorded and granted.
+	proposed.Env = sortedKeys(cfg.env)
+	printProposalWarnings(proposed)
+	return proposed, nil
+}
+
+// printProposalWarnings clamps p in place (dropping shielded credential paths and
+// over-broad grants from the auto-proposal) and prints why each was withheld, so a
+// path the tool wants but bento will not auto-grant is never silently missing.
+func printProposalWarnings(p *policy.Policy) {
+	shielded, broadReads, broadWrites := clampProposal(p)
+	for _, d := range shielded {
+		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
+	}
+	for _, d := range broadReads {
+		fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
+	}
+	for _, d := range broadWrites {
+		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
+	}
+	for _, d := range foreignHomeShields(append(append([]string{}, p.Read...), p.Write...)) {
+		fmt.Fprintf(os.Stderr, "[bento] proposing %q - it reaches shielded credential or persistence paths in a home directory profiling did not shield; the enforced run only shields the home it executes as, so these would be exposed. Confirm the script needs it before approving.\n", d)
+	}
+}
+
+// converge repeats profiling rounds, mounting the grants the user accepts so a
+// content-branching target proceeds past its error branch and reveals the next layer
+// of accesses, until a round surfaces nothing new. round is the profiling seam (the
+// real backend-backed profileRound in production, a fake in tests): it receives the
+// discovery policy carrying the accepted grants and returns the clamped proposal.
+// prompt asks about one newly-attempted path; declining it (or anything but yes/all)
+// leaves it recorded-only and never mounts it - the consent that keeps real content off
+// a path the user did not approve. It returns the final proposal with reads/writes
+// narrowed to exactly the accepted set.
+func converge(base *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), out io.Writer) (*policy.Policy, error) {
+	acceptedR := map[string]bool{}
+	acceptedW := map[string]bool{}
+	declined := map[string]bool{} // key() -> asked and refused, so it is not re-asked
+	acceptAll := false
+	accept := func(it grantItem) {
+		if it.kind == "read" {
+			acceptedR[it.path] = true
+		} else {
+			acceptedW[it.path] = true
+		}
+	}
+
+	var last *policy.Policy
+loop:
+	for r := 1; ; r++ {
+		discovery := &policy.Policy{
+			Entrypoint:  base.Entrypoint,
+			Interpreter: base.Interpreter,
+			Args:        base.Args,
+			Network:     base.Network,
+			Exec:        base.Exec,
+			Read:        append(append([]string{}, base.Read...), sortedBoolKeys(acceptedR)...),
+			Write:       append(append([]string{}, base.Write...), sortedBoolKeys(acceptedW)...),
+		}
+		proposal, err := round(discovery)
+		if err != nil {
+			return nil, err
+		}
+		last = proposal
+		items := newGrants(proposal, acceptedR, acceptedW, declined)
+		if len(items) == 0 {
+			fmt.Fprintf(out, "[bento] round %d: no new attempted paths - converged.\n", r)
+			break
+		}
+		fmt.Fprintf(out, "[bento] round %d: the target attempted %d new path(s):\n", r, len(items))
+		for _, it := range items {
+			if acceptAll {
+				accept(it)
+				continue
+			}
+			c, err := prompt(it.kind, it.path)
+			if err != nil {
+				return nil, err
+			}
+			switch c {
+			case grantAll:
+				acceptAll = true
+				accept(it)
+			case grantYes:
+				accept(it)
+			case grantQuit:
+				break loop
+			default: // grantNo and any unrecognized answer: decline, do not re-ask
+				declined[it.key()] = true
+			}
+		}
+	}
+
+	final := last
+	final.Read = sortedBoolKeys(acceptedR)
+	final.Write = sortedBoolKeys(acceptedW)
+	return final, nil
+}
+
+// grantItem is one filesystem access the target attempted but has not been granted yet.
+type grantItem struct{ kind, path string } // kind is "read" or "write"
+
+func (g grantItem) key() string { return g.kind + "\x00" + g.path }
+
+// newGrants returns the reads and writes in proposal that are neither already accepted
+// nor already declined - the round's delta, the paths worth asking about.
+func newGrants(proposal *policy.Policy, acceptedR, acceptedW, declined map[string]bool) []grantItem {
+	var out []grantItem
+	for _, p := range proposal.Read {
+		it := grantItem{"read", p}
+		if !acceptedR[p] && !declined[it.key()] {
+			out = append(out, it)
+		}
+	}
+	for _, p := range proposal.Write {
+		it := grantItem{"write", p}
+		if !acceptedW[p] && !declined[it.key()] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+type grantChoice int
+
+const (
+	grantNo   grantChoice = iota // n / blank / unrecognized: decline, do not mount
+	grantYes                     // y: mount this path next round
+	grantAll                     // a: accept this and every remaining path this session
+	grantQuit                    // q / EOF: stop the loop, keep what was accepted so far
+)
+
+// newGrantPrompter reads one single-line answer per call from in, mapping it to a
+// grant choice. EOF returns grantQuit so a closed input ends the loop rather than
+// erroring or looping forever.
+func newGrantPrompter(in io.Reader, out io.Writer) func(kind, path string) (grantChoice, error) {
+	r := bufio.NewReader(in)
+	return func(kind, path string) (grantChoice, error) {
+		fmt.Fprintf(out, "[bento]   grant %s %s? [y]es / [n]o / [a]ll / [q]uit > ", kind, path)
+		line, err := r.ReadString('\n')
+		if err != nil && line == "" {
+			return grantQuit, nil
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return grantYes, nil
+		case "a", "all":
+			return grantAll, nil
+		case "q", "quit":
+			return grantQuit, nil
+		default:
+			return grantNo, nil
+		}
+	}
+}
+
+// confirmNetworkExfil warns that --allow-network forwards egress while real granted
+// content is mounted - a compromised target could exfiltrate the credentials being
+// granted - and refuses the run unless the user confirms.
+func confirmNetworkExfil(in io.Reader, out io.Writer) error {
+	fmt.Fprintln(out, "[bento] WARNING: --allow-network forwards the target's egress WHILE the content you grant is")
+	fmt.Fprintln(out, "[bento] mounted with real data. A compromised target could exfiltrate those credentials.")
+	fmt.Fprint(out, "[bento] Continue with network forwarding? [y/N] > ")
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return nil
+	default:
+		return fmt.Errorf("aborted: re-run without --allow-network to profile with egress recorded but not forwarded")
+	}
+}
+
+// interactiveStdin reports whether stdin is a terminal, so profiling drives the
+// interactive convergence loop only when there is a human to answer its prompts; a
+// pipe or CI run falls back to a single non-interactive pass.
+func interactiveStdin() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// openTTY returns the controlling terminal for reading the convergence prompts, kept
+// separate from the target's own stdin. It falls back to os.Stdin where /dev/tty is
+// unavailable.
+func openTTY() io.Reader {
+	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
+		return f
+	}
+	return os.Stdin
+}
+
+// sortedBoolKeys returns the set's keys sorted, so a manifest's grant order is stable.
+func sortedBoolKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // discoveryPolicy is the policy a profiling run executes under. It is default-deny,
