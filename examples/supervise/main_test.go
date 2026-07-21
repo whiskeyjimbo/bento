@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -96,6 +99,135 @@ func TestAssertStoreShielded(t *testing.T) {
 				t.Errorf("a write grant %q covering the store must be refused", g)
 			}
 		})
+	}
+}
+
+// The trial runs under default-deny: discoveryPolicy binds only the script's own
+// directory (unless that directory is broad), so a script anywhere else in the home
+// tree probes credential paths that are simply absent. It grants exactly its dir and
+// nothing more.
+func TestDiscoveryPolicyBindsOnlyScriptDir(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+
+	p := discoveryPolicy("/home/u/proj/agent.sh", "sh")
+	if len(p.Read) != 1 || p.Read[0] != "/home/u/proj" {
+		t.Errorf("Read = %v, want just the script dir /home/u/proj", p.Read)
+	}
+	if len(p.Write) != 1 || p.Write[0] != "/home/u/proj" {
+		t.Errorf("Write = %v, want just the script dir /home/u/proj", p.Write)
+	}
+	if p.Exec != policy.ExecAll {
+		t.Errorf("Exec = %q, want all so the script exercises subprocesses", p.Exec)
+	}
+
+	// A script whose directory is broad (home itself, or a top-level dir) must not
+	// bind that tree - it would re-expose every credential beside it, the fail-open
+	// model default-deny inverts away from. The entrypoint alone still runs.
+	for name, script := range map[string]string{
+		"home root":  "/home/u/agent.sh",
+		"top-level":  "/opt/agent.sh",
+		"filesystem": "/agent.sh",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := discoveryPolicy(script, "sh")
+			if len(p.Read) != 0 || len(p.Write) != 0 {
+				t.Errorf("broad dir %q: Read=%v Write=%v, want no host grant", script, p.Read, p.Write)
+			}
+		})
+	}
+}
+
+// discoveryPolicy does NOT itself shield the permission store: a script living in or
+// beside the store makes its script-dir grant cover the store, so the trial's
+// protection rests on the caller passing the store as a ProfileOptions deny path (the
+// linux backend applies deny paths after grants, last-wins). This pins that the grant
+// really does cover the store in those placements, so the deny path is load-bearing
+// and must never be dropped on the theory that default-deny alone hides the store.
+func TestDiscoveryPolicyGrantCoversStoreWhenAdjacent(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	for name, tc := range map[string]struct{ script, storeDir string }{
+		"script in config dir": {"/home/u/.config/agent.sh", "/home/u/.config/bento-supervise"},
+		"script in store dir":  {"/home/u/.config/bento-supervise/agent.sh", "/home/u/.config/bento-supervise"},
+		"dev XDG_CONFIG_HOME":  {"/home/u/proj/agent.sh", "/home/u/proj/bento-supervise"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := discoveryPolicy(tc.script, "sh")
+			if err := assertStoreShielded(p, tc.storeDir); err == nil {
+				t.Errorf("discoveryPolicy(%q) grant %v must be shown to cover store %q, proving the trial deny path is required",
+					tc.script, append(p.Read, p.Write...), tc.storeDir)
+			}
+		})
+	}
+}
+
+func requireSandbox(t *testing.T) {
+	t.Helper()
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("bwrap not installed")
+	}
+	// bwrap in PATH is not enough: a host with unprivileged user namespaces disabled
+	// cannot create the namespace, so the trial fails to confine rather than shielding.
+	// Probe it the way admission does, so this skips (not fails) on that host class.
+	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
+		t.Skip("unprivileged user namespaces unavailable on this host")
+	}
+}
+
+// The trial deny path is what keeps the untrusted script out of the permission store
+// when the script sits in or beside it (a dev-set XDG_CONFIG_HOME the script dir also
+// contains). discoveryPolicy grants the script's dir, which then covers the store, so
+// this drives the real trial call end-to-end. Without the deny path the trial reads
+// the store - the fail-open regression this guards. With it, as run() passes s.dir,
+// bento shields the store fail-closed: it refuses the writable-parent-over-shield
+// combination outright, so the store never reaches the trial. The baseline leak is
+// what makes the shielded case meaningful. The store lives under $HOME, not /tmp,
+// because the sandbox always overmounts /tmp with its own tmpfs.
+func TestTrialDenyPathShieldsAdjacentStore(t *testing.T) {
+	requireSandbox(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	proj, err := os.MkdirTemp(home, "bento-supervise-adjtest-") // a dev-set XDG_CONFIG_HOME the script also lives in
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(proj)
+	storeDir := filepath.Join(proj, "bento-supervise")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "TOPSECRET-SUPERVISE-STORE"
+	storeFile := filepath.Join(storeDir, "permissions.json")
+	if err := os.WriteFile(storeFile, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(proj, "peek.sh")
+	if err := os.WriteFile(script, []byte("cat "+storeFile+" 2>&1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(deny []string) (string, error) {
+		var out bytes.Buffer
+		_, err := backend.Profile(context.Background(), discoveryPolicy(script, "sh"),
+			enforce.Process{Stdout: &out, Stderr: &out},
+			backend.ProfileOptions{DenyPaths: deny})
+		return out.String(), err
+	}
+
+	base, err := run(nil)
+	if err != nil {
+		t.Fatalf("baseline Profile: %v", err)
+	}
+	if !strings.Contains(base, secret) {
+		t.Fatalf("baseline: the script-dir grant should reach the adjacent store with no deny path; got %q", base)
+	}
+	// Fail-closed: either the run is refused (err != nil) or it ran without the secret.
+	// The only failure is a completed run that exposed it.
+	if out, err := run([]string{storeDir}); err == nil && strings.Contains(out, secret) {
+		t.Errorf("the trial deny path did not shield the store: it leaked %q", out)
 	}
 }
 

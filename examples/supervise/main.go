@@ -7,7 +7,7 @@
 // enforces them differently:
 //
 //   - Filesystem is approved from a TRIAL run. bento observes what the script
-//     reads and writes during a permissive, non-forwarding pass, and you approve
+//     reads and writes during a default-deny, non-forwarding pass, and you approve
 //     paths before the enforced run. A denied read then fails inside the kernel;
 //     there is no per-access callback to prompt on mid-read, so the decision is
 //     made up front, not live.
@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,18 +122,29 @@ func run(scriptArg string) int {
 	p := newPrompter(termIn, os.Stderr)
 	t := p.t // one theme, detected on os.Stderr, shared by the banners below
 
-	// Act 1: trial run under observation, then approve what it wants. The store dir
-	// is shielded from the permissive trial (bv2-16h): the trial grants Read:["/"],
-	// so without this the untrusted target could read the store during profiling.
-	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(permissive - nothing leaves the host)"))
-	obs, err := backend.Profile(context.Background(), permissivePolicy(script, interp),
-		enforce.Process{Stdout: io.Discard, Stderr: io.Discard},
+	// Act 1: trial run under default-deny observation, then approve what it wants.
+	// Only the script's own directory is mounted, so every credential path the script
+	// probes elsewhere is absent - the attempt is recorded without the content being
+	// exposed. The store still needs an explicit deny: it lives under the config dir,
+	// and a script placed in or beside the store (e.g. under a dev-set XDG_CONFIG_HOME
+	// the script dir also sits in) would otherwise be handed the store by the script-
+	// dir grant, so shield it regardless of where the script lives. The target runs
+	// with the real HOME (and its config anchors) so a $HOME-relative probe names the
+	// real path the observer records; the same names go into the approved policy's env
+	// allowlist so the enforced run rebuilds them.
+	trialEnv := discoveryEnv()
+	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(default-deny - nothing leaves the host)"))
+	obs, err := backend.Profile(context.Background(), discoveryPolicy(script, interp),
+		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv},
 		backend.ProfileOptions{DenyPaths: []string{s.dir}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
 		return 1
 	}
 	proposal := profile.Synthesize(script, interp, obs)
+	// Allowlist the discovery anchors so the enforced run resolves the same
+	// $HOME-relative paths the trial recorded and the human approved.
+	proposal.Env = sortedEnvNames(trialEnv)
 	approved := approve(p, s, key, script, interp, proposal)
 	// Record identity for a faithful future manifest export.
 	s.app(key).Entrypoint = script
@@ -227,19 +239,75 @@ func assertStoreShielded(final *policy.Policy, storeDir string) error {
 	return nil
 }
 
-// permissivePolicy is the broad policy the trial run uses so the script exercises
-// its real behavior: everything readable, its own directory writable, egress
-// recorded but (because Profile is called with allowNetwork=false) not forwarded,
-// subprocesses allowed. bento's deny-list still shields known-sensitive paths.
-func permissivePolicy(script, interp string) *policy.Policy {
-	return &policy.Policy{
+// discoveryPolicy is the default-deny policy the trial run uses. Only the script's
+// own directory is mounted; every other path the script touches is absent, so the
+// attempt is RECORDED without the content ever being exposed, and the human grants
+// it explicitly before the enforced run. Egress is recorded but (because Profile is
+// called with allowNetwork=false) not forwarded, and subprocesses are allowed so the
+// script exercises its real behavior. This binds only the script's directory, so
+// the caller shields the permission store separately (via a trial deny path): a
+// script that lives in or beside the store would otherwise get it through this
+// script-dir grant.
+func discoveryPolicy(script, interp string) *policy.Policy {
+	p := &policy.Policy{
 		Entrypoint:  script,
 		Interpreter: interp,
-		Read:        []string{"/"},
-		Write:       []string{filepath.Dir(script)},
 		Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
 		Exec:        policy.ExecAll,
 	}
+	// Bind the script's own directory unless it is broad (the home directory or a
+	// top-level dir): mounting a broad directory during discovery would re-expose the
+	// credentials that live beside the script, defeating the default-deny the run
+	// relies on. A broad-dir script still runs - the entrypoint is bound regardless -
+	// with its sibling reads recorded as intent, not honored.
+	if dir := filepath.Dir(script); !isBroadDir(dir) {
+		p.Read = []string{dir}
+		p.Write = []string{dir}
+	}
+	return p
+}
+
+// isBroadDir reports whether dir is too broad to bind during the trial: the
+// filesystem root, any top-level directory, or the home directory itself.
+func isBroadDir(dir string) bool {
+	if dir == "/" || filepath.Dir(dir) == "/" {
+		return true
+	}
+	home, _ := os.UserHomeDir()
+	return home != "" && dir == filepath.Clean(home)
+}
+
+// discoveryEnvNames are the variables that anchor $HOME-relative paths. The trial
+// passes their host values to the target so it names real paths (which the observer
+// records even though default-deny leaves them unmounted), and they are allowlisted
+// in the approved policy so the enforced run rebuilds the identical paths.
+var discoveryEnvNames = []string{
+	"HOME", "USER", "LOGNAME",
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+}
+
+// discoveryEnv reads the discovery variables actually set on the host. An unset
+// variable is left out rather than passed empty, so the enforced run's env allowlist
+// names only variables it will really see.
+func discoveryEnv() map[string]string {
+	env := make(map[string]string)
+	for _, name := range discoveryEnvNames {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			env[name] = v
+		}
+	}
+	return env
+}
+
+// sortedEnvNames returns the env variable names present in m, sorted, for a stable
+// env allowlist on the approved policy.
+func sortedEnvNames(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // approve walks the synthesized proposal and builds the policy the enforced run is
@@ -248,7 +316,11 @@ func permissivePolicy(script, interp string) *policy.Policy {
 // that would expose the store is refused outright. Synthesize has already dropped
 // the noise (the interpreter's runtime, /proc, /dev, the script itself).
 func approve(p *prompter, s *store, key, script, interp string, proposal *policy.Policy) *policy.Policy {
-	final := &policy.Policy{Entrypoint: script, Interpreter: interp, Exec: policy.ExecNone}
+	// Carry the discovery env allowlist through unprompted: HOME and the XDG anchors
+	// are low-risk name bindings, and the enforced run needs them to rebuild the same
+	// $HOME-relative paths the trial recorded. They name variables, not grants; a path
+	// under one is still bound only if its own read/write grant is approved below.
+	final := &policy.Policy{Entrypoint: script, Interpreter: interp, Exec: policy.ExecNone, Env: proposal.Env}
 
 	fmt.Fprintln(p.out, p.t.dim("  approve what the trial touched  ·  y allow (this script) · n deny · o once"))
 

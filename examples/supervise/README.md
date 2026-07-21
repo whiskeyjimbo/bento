@@ -20,9 +20,10 @@ differ because the kernel enforces network and filesystem differently:
 - **Filesystem is approved from a trial run.** A denied read is refused inside the
   kernel (Landlock / the mount set); the box never learns what was attempted, so
   there is no per-access callback to prompt on mid-read. Instead, a **trial pass**
-  runs the script permissively under observation, records every file it reads and
-  writes (nothing leaves the host), and you approve paths *before* the enforced
-  run. The enforced run then denies anything you did not approve.
+  runs the script under a default-deny sandbox that mounts only the script's own
+  directory, records every file it tries to read or write (nothing leaves the host),
+  and you approve paths *before* the enforced run. The enforced run then denies
+  anything you did not approve.
 
 So filesystem approval happens up front, network approval can happen live. That is
 not a limitation this example papers over - it is how bento works, and the demo is
@@ -50,7 +51,7 @@ hosts. Nothing is declared up front, so you decide everything.
 
 ### Act 1 - trial run, approve what it wants
 
-The script runs permissively under observation, then you approve each access with
+The script runs under default-deny observation, then you approve each access with
 three keys: **[y]es** allows it and remembers that for this script, **[n]o** denies
 and remembers, **[o]nce** allows just this run without remembering. That is the whole
 per-access choice - a standing rule for *every* script is a deliberate `perms global`
@@ -59,7 +60,7 @@ quoted, since a filename can carry terminal escapes. Output is colorized on a te
 (the access kind, a `✓`/`✗` verdict); set `NO_COLOR` or pipe it for plain text.
 
 ```
-trial run · agent.sh  (permissive - nothing leaves the host)
+trial run · agent.sh  (default-deny - nothing leaves the host)
   approve what the trial touched  ·  y allow (this script) · n deny · o once
     read  "~/.../vault/data.csv"    [y]es [n]o [o]nce › y
     read  "~/.../vault/secret.txt"  [y]es [n]o [o]nce › n   <- keep the secret out
@@ -73,7 +74,7 @@ Your answers become the manifest the enforced run is held to. You may also see a
 couple of incidental reads the trial caught - `curl` opening its own TLS config,
 say (`/etc/gnutls/config`, `~/.curlrc`); the exact set depends on your `curl`
 build. Decline them: the request still works without them, and that is the point
-of reviewing what a permissive run actually touched. The wrapper does drop the
+of reviewing what the trial run actually touched. The wrapper does drop the
 sandbox's own scratch (`/tmp`, `/dev`, `/proc`) before asking, since granting
 those is meaningless.
 
@@ -111,7 +112,7 @@ Your answers are kept in a permission store at
 every access shows `(remembered)` and applies without a prompt:
 
 ```
-trial run · agent.sh  (permissive - nothing leaves the host)
+trial run · agent.sh  (default-deny - nothing leaves the host)
   ✓ read  "~/.../vault/data.csv"    allowed (remembered)
   ✗ read  "~/.../vault/secret.txt"  denied (remembered)
   ...
@@ -124,9 +125,12 @@ worth knowing:
   identical code shares the same decisions wherever it lives. This is launcher
   identity, not behavior identity (a script that `curl | sh`s more code keeps its
   key), so it is convenience memory, not a security boundary.
-- **The store shields itself from the trial.** The permissive trial grants
-  `Read:["/"]`, so the wrapper passes its own store directory to `backend.Profile`
-  as a deny path - the untrusted script cannot read your saved decisions.
+- **The store is shielded from the trial.** The trial runs default-deny, mounting only
+  the script's own directory. The store lives under the config dir, so a script placed
+  in or beside it (say, under a dev-set `XDG_CONFIG_HOME`) could reach it through that
+  script-dir grant; the wrapper passes the store directory to `backend.Profile` as a
+  trial deny path, so the untrusted script cannot read or tamper with your saved
+  decisions wherever the script lives.
 - **A grant that would expose the store is refused** outright (you cannot approve
   `read ~/.config` when the store lives under it).
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
