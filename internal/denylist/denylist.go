@@ -83,9 +83,13 @@ func Home(home string) []Rule {
 		".git-credential-cache",    // git credential-cache helper socket dir
 		".cache/git/credential",    // modern git credential-cache socket location
 
+		".cert", // NetworkManager / 802.1X / VPN client certificates and private keys
+
 		// Mail clients: saved IMAP/SMTP passwords in the profile store.
 		".thunderbird",      // Thunderbird
 		".config/evolution", // GNOME Evolution
+		".mail",             // mutt/notmuch maildir; message bodies and cached credentials
+		".Mail",             // same, capitalized variant used by some setups
 
 		// Browser profiles: cookies, session tokens, and saved-password databases.
 		".mozilla",               // Firefox

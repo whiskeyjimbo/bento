@@ -252,7 +252,7 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 	// A read grant of $HOME is the case that still reaches the shields (a write grant
 	// above them is refused); the shield must be applied after the grant.
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
-	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa"))
 
 	grant := pairIndex(args, "--ro-bind-try", "/home/u")
 	shield := pairIndex(args, "--tmpfs", "/home/u/.ssh")
@@ -307,7 +307,7 @@ func hasShield(shields []enforce.ShieldApplied, path, kind string) bool {
 // skipped so the grant binds the real content instead of being overmounted empty.
 func TestExplicitShieldGrantIsHonored(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh"}}
-	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa"))
 
 	if !has(args, "--ro-bind-try", "/home/u/.ssh") {
 		t.Error("an explicit grant of ~/.ssh must be bound")
@@ -321,7 +321,7 @@ func TestExplicitShieldGrantIsHonored(t *testing.T) {
 // explicit grant of /run is honored and its shield skipped.
 func TestExplicitRuntimeShieldGrantIsHonored(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/run"}}
-	args := compileOrFail(t, p, testSandbox("/run"))
+	args := compileOrFail(t, p, testSandbox("/run", "/run/docker.sock"))
 
 	if !has(args, "--ro-bind-try", "/run") {
 		t.Error("an explicit grant of the runtime dir must be bound")
@@ -334,8 +334,12 @@ func TestExplicitRuntimeShieldGrantIsHonored(t *testing.T) {
 // The opt-in wins even when a broad grant also covers the shield: the user asked for the
 // whole shielded directory, so it is exposed via either grant and the carve is skipped.
 func TestExplicitShieldGrantWinsUnderBroadGrant(t *testing.T) {
+	// ~/.ssh is modeled as a real directory (a child under it), so a regressed shield
+	// would emit --tmpfs here rather than an empty-file bind that a tmpfs-only assertion
+	// would miss - this exact-opt-in-under-broad-grant combo is not covered by the fuzz
+	// oracle, which never passes a broad grant alongside the exact one.
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u", "/home/u/.ssh"}}
-	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa"))
 
 	if has(args, "--tmpfs", "/home/u/.ssh") {
 		t.Error("~/.ssh explicitly granted must not be shielded, even under a broad ~ grant")
@@ -368,10 +372,51 @@ func TestExtraDenyIsNotOptInable(t *testing.T) {
 // into enclosing grants.
 func TestBroadGrantWithoutOptInStillShields(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
-	args := compileOrFail(t, p, testSandbox("/home/u/.ssh"))
+	args := compileOrFail(t, p, testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa"))
 
 	if !has(args, "--tmpfs", "/home/u/.ssh") {
 		t.Error("read: ~ without an explicit ~/.ssh opt-in must still shield ~/.ssh")
+	}
+}
+
+// A DenyAll shield must choose tmpfs vs empty-file bind from the REAL filesystem
+// kind when the path exists, not the rule's declared Dir. A declared-dir rule on a
+// path that is actually a file (or the reverse) would otherwise hand bwrap a
+// tmpfs-over-file (or file-over-dir) mount it rejects, aborting the whole run - which
+// is what blocked shielding ~/.cert, whose kind varies across hosts.
+func TestDenyAllShieldMatchesRealKind(t *testing.T) {
+	// Declared dir, real file: bind the empty file, not tmpfs.
+	sbFile := testSandbox("/home/u/.cert") // a childless leaf is a file in the fake fs
+	if got := shield(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll, Dir: true}, sbFile); !slices.Equal(got, []string{"--ro-bind", sbFile.emptyFile, "/home/u/.cert"}) {
+		t.Errorf("declared-dir DenyAll on a real file must bind the empty file; got %v", got)
+	}
+	// Declared file, real dir: tmpfs, not a file bound over a directory.
+	sbDir := testSandbox("/home/u/.cert", "/home/u/.cert/client.pem")
+	if got := shield(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll}, sbDir); !slices.Equal(got, []string{"--tmpfs", "/home/u/.cert"}) {
+		t.Errorf("declared-file DenyAll on a real dir must tmpfs; got %v", got)
+	}
+	// Absent: fall back to the declared kind. An absent credential file stays an empty
+	// read-only file rather than becoming a tmpfs directory a reader would choke on.
+	sbAbsent := testSandbox()
+	if got := shield(denylist.Rule{Path: "/home/u/.netrc", Deny: denylist.DenyAll}, sbAbsent); !slices.Equal(got, []string{"--ro-bind", sbAbsent.emptyFile, "/home/u/.netrc"}) {
+		t.Errorf("absent declared-file DenyAll must bind the empty file; got %v", got)
+	}
+}
+
+// The kind-sensitive shield unblocks ~/.cert (NetworkManager/802.1X client keys) and
+// the ~/.mail / ~/.Mail maildirs, directories firejail blacklists. A home read grant
+// must report them hidden without the run aborting on a kind mismatch.
+func TestCertAndMailDirsAreShielded(t *testing.T) {
+	sb := testSandbox("/home/u/.cert", "/home/u/.cert/client.pem",
+		"/home/u/.mail", "/home/u/.mail/cur", "/home/u/.Mail", "/home/u/.Mail/cur")
+	_, shields, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/home/u/.cert", "/home/u/.mail", "/home/u/.Mail"} {
+		if !hasShield(shields, p, "hidden") {
+			t.Errorf("%s must be shielded hidden under a home grant; got %v", p, shields)
+		}
 	}
 }
 
@@ -1221,7 +1266,7 @@ func TestGrantOfRuntimeDirIsRefused(t *testing.T) {
 // under a system mount, which no grant reaches. The mount exposes it, so it needs
 // a shield: reachability must follow the mounts, not just the grants.
 func TestExtraDenyUnderSystemMountIsShielded(t *testing.T) {
-	sb := testSandbox("/usr", "/usr/share/secret", "/work")
+	sb := testSandbox("/usr", "/usr/share/secret", "/usr/share/secret/key", "/work")
 	sb.extraDeny = []denylist.Rule{{Path: "/usr/share/secret", Deny: denylist.DenyAll, Dir: true}}
 	args := compileOrFail(t, &policy.Policy{Read: []string{"/work"}}, sb)
 

@@ -33,6 +33,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/openstack",     // OpenStack clouds.yaml/secure.yaml
 		"/home/u/.thunderbird",          // Thunderbird saved mail passwords
 		"/home/u/.config/evolution",     // Evolution saved mail passwords
+		"/home/u/.cert",                 // 802.1X/VPN client keys (real kind varies by host)
+		"/home/u/.mail",                 // maildir bodies and cached creds
+		"/home/u/.Mail",                 // capitalized maildir variant
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]

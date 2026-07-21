@@ -702,11 +702,20 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) 
 // this way, but that grant is discouraged and the profiler no longer proposes it.)
 func shield(r denylist.Rule, sb sandbox) []string {
 	switch {
-	case r.Deny == denylist.DenyAll && r.Dir:
-		// An empty tmpfs hides existing contents and absorbs any new file.
-		return []string{"--tmpfs", r.Path}
 	case r.Deny == denylist.DenyAll:
-		// An empty read-only file: contents unreadable, writes rejected.
+		// A tmpfs hides a directory's contents and absorbs new files; a file cannot take
+		// a tmpfs, so an empty read-only bind hides it (contents unreadable, writes
+		// rejected). Pick from the real kind when the path exists rather than the declared
+		// r.Dir - ~/.cert is a directory on one host, a file on another - so bwrap is never
+		// handed a tmpfs-over-file or file-over-dir mount that aborts the run. When absent,
+		// synthesize per the declared kind.
+		dir := r.Dir
+		if sb.exists(r.Path) {
+			dir = sb.isDir(r.Path)
+		}
+		if dir {
+			return []string{"--tmpfs", r.Path}
+		}
 		return []string{"--ro-bind", sb.emptyFile, r.Path}
 	case r.Dir:
 		// DenyWrite on a directory. Rebinding it read-only keeps existing contents
