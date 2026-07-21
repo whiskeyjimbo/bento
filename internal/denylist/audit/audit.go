@@ -242,26 +242,49 @@ var IntentionalExclusions = map[string]string{
 	"_exrc":   "a Windows-only ex rc name, dead on Linux",
 }
 
+// ReviewedGlobs are firejail wildcard directives a human has already decided about,
+// keyed by ${HOME}-relative pattern with how the class is covered. bento cannot express
+// a wildcard shield, so a glob cannot be diffed against the rule list mechanically. A
+// glob listed here is reported for periodic re-check but does not fail the gate; a glob
+// NOT listed hard-fails, so a new upstream wildcard (e.g. a bare *.key or *.kdbx in the
+// top-secret section) forces an explicit decision instead of scrolling past as a note -
+// the ratchet that keeps an inexpressible-but-real credential class from silently
+// passing once the concrete-path backlog is cleared.
+var ReviewedGlobs = map[string]string{
+	".*_history": "covered by shielding the named history instances (.bash_history, .zsh_history, .sh_history, ...) as DenyAll files",
+}
+
 // excluded reports whether path is an intentional exclusion at the given home.
 func excluded(path, home string) bool {
+	return relLookup(path, home, IntentionalExclusions)
+}
+
+// reviewedGlob reports whether a glob path has a recorded coverage decision.
+func reviewedGlob(path, home string) bool {
+	return relLookup(path, home, ReviewedGlobs)
+}
+
+func relLookup(path, home string, m map[string]string) bool {
 	rel, ok := strings.CutPrefix(path, strings.TrimSuffix(home, "/")+"/")
 	if !ok {
 		return false
 	}
-	_, ok = IntentionalExclusions[rel]
+	_, ok = m[rel]
 	return ok
 }
 
 // Audit reads firejail profile contents, diffs them against bento's full shield list
 // (Home + Runtime), and partitions the in-scope gaps into: unclassified - concrete
 // paths bento neither shields nor excludes, the hard-fail set a human must resolve; and
-// globs - wildcard directives bento cannot express (e.g. ${HOME}/.*_history), which it
-// covers by shielding named instances. Globs are reported for review rather than
-// hard-failed and are NEVER silently suppressed, because a glob hides a whole class:
-// leaving it invisible is the manual-audit chore this tool exists to kill. outBySection
-// summarizes the out-of-scope firejail sections bento does not enumerate, so they stay
-// accountable. home and runUser expand firejail's ${HOME}/${RUNUSER}; the profile files
-// are a dev-time diff input, never vendored into the binary.
+// (Home + Runtime), and partitions the in-scope gaps into: unclassified - concrete
+// paths bento neither shields nor excludes PLUS any glob without a recorded coverage
+// decision, the hard-fail set a human must resolve; and globs - wildcard directives
+// listed in ReviewedGlobs, reported for periodic re-check but not hard-failed. An
+// unreviewed glob hard-fails rather than becoming a note, so an inexpressible credential
+// class (a bare *.key/*.kdbx in the top-secret section) cannot silently pass once the
+// concrete backlog clears. outBySection summarizes the out-of-scope firejail sections
+// bento does not enumerate, so they stay accountable. home and runUser expand firejail's
+// ${HOME}/${RUNUSER}; the profile files are a dev-time diff input, never vendored.
 func Audit(contents []string, home, runUser string) (unclassified, globs []Gap, outBySection map[string]int) {
 	var candidates []Candidate
 	for _, c := range contents {
@@ -273,7 +296,7 @@ func Audit(contents []string, home, runUser string) (unclassified, globs []Gap, 
 		if excluded(g.Path, home) {
 			continue
 		}
-		if g.Glob {
+		if g.Glob && reviewedGlob(g.Path, home) {
 			globs = append(globs, g)
 		} else {
 			unclassified = append(unclassified, g)

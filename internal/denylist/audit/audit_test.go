@@ -213,6 +213,7 @@ func TestAuditReportsOnlyUnclassifiedInScopeGaps(t *testing.T) {
 blacklist ${HOME}/.ssh
 blacklist ${HOME}/_vimrc
 blacklist ${HOME}/.newsecret
+blacklist ${HOME}/*.kdbx
 
 # History files
 blacklist ${HOME}/.*_history
@@ -227,10 +228,13 @@ blacklist ${HOME}/.audit_test_privacy_app
 		got[g.Path] = true
 	}
 	// .ssh is shielded (no gap); _vimrc is an intentional exclusion (suppressed); the
-	// .*_history glob goes to the glob review bucket, not the hard-fail set; only
-	// .newsecret is a genuine unclassified gap.
+	// reviewed .*_history glob goes to the review bucket; .newsecret (concrete) and the
+	// UNREVIEWED *.kdbx glob are genuine hard-fail gaps.
 	if !got["/HOME/.newsecret"] {
 		t.Errorf("an unshielded, unexcluded in-scope entry must surface; got %+v", unclassified)
+	}
+	if !got["/HOME/*.kdbx"] {
+		t.Errorf("an unreviewed glob must hard-fail, not become a note; got %+v", unclassified)
 	}
 	if got["/HOME/.ssh"] {
 		t.Error(".ssh is shielded and must not surface as a gap")
@@ -238,13 +242,13 @@ blacklist ${HOME}/.audit_test_privacy_app
 	if got["/HOME/_vimrc"] {
 		t.Error("_vimrc is an intentional exclusion and must be suppressed")
 	}
-	if len(unclassified) != 1 {
-		t.Errorf("want exactly one unclassified gap, got %d: %+v", len(unclassified), unclassified)
+	if len(unclassified) != 2 {
+		t.Errorf("want exactly two unclassified gaps (.newsecret, *.kdbx), got %d: %+v", len(unclassified), unclassified)
 	}
-	// A glob is reported for review, never in the hard-fail set and never silently
-	// dropped - leaving a whole class invisible is the chore this tool kills.
+	// A REVIEWED glob is reported for periodic re-check, not hard-failed and never
+	// silently dropped - leaving a whole class invisible is the chore this tool kills.
 	if len(globs) != 1 || globs[0].Path != "/HOME/.*_history" {
-		t.Errorf("the .*_history glob must surface as a glob for review, got %+v", globs)
+		t.Errorf("the reviewed .*_history glob must surface as a glob for review, got %+v", globs)
 	}
 	// The gnome entry is firejail's other-app privacy scope: accounted for out-of-scope,
 	// never a gap.
