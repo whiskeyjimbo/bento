@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist/audit"
 )
 
@@ -60,20 +59,25 @@ func looksLikeFirejailProfile(content string) bool {
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
 func report(w io.Writer, content, home, runUser string) int {
-	candidates := audit.ParseFirejail(content, home, runUser)
-	rules := append(denylist.Home(home), denylist.Runtime()...)
-	gaps := audit.Diff(candidates, rules)
+	// One diff logic, two triggers: this CLI and the completeness test both go through
+	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
+	unclassified, globs, outBySection := audit.Audit([]string{content}, home, runUser)
 
-	inScope, outBySection := audit.SplitByScope(gaps)
-	if len(inScope) == 0 {
-		fmt.Fprintln(w, "no in-scope gaps: every secret/exec firejail shield is covered")
+	// Globs are reported for review (bento cannot express a wildcard; it covers the
+	// class by shielding named instances) but do not fail the gate on their own.
+	for _, g := range globs {
+		fmt.Fprintf(w, "glob for review - verify bento's named instances cover it: %s [%s]\n", g.Path, g.Section)
+	}
+
+	if len(unclassified) == 0 {
+		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec firejail shield is covered or excluded")
 		reportOutOfScope(w, outBySection)
 		return 0
 	}
 
-	fmt.Fprintf(w, "%d in-scope firejail-shielded path(s) bento does not fully cover:\n\n", len(inScope))
+	fmt.Fprintf(w, "%d in-scope firejail-shielded path(s) bento neither shields nor excludes:\n\n", len(unclassified))
 	section := ""
-	for _, g := range inScope {
+	for _, g := range unclassified {
 		if g.Section != section {
 			section = g.Section
 			fmt.Fprintf(w, "[%s]\n", section)
@@ -81,9 +85,6 @@ func report(w io.Writer, content, home, runUser string) int {
 		note := "missing"
 		if g.Weaker {
 			note = "present but DenyWrite; firejail blacklists (candidate DenyAll)"
-		}
-		if g.Glob {
-			note += "; glob - shield the covering directory"
 		}
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}

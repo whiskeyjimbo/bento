@@ -211,19 +211,23 @@ func TestDiffAgainstRealList(t *testing.T) {
 func TestAuditReportsOnlyUnclassifiedInScopeGaps(t *testing.T) {
 	const content = `# Top secret
 blacklist ${HOME}/.ssh
-blacklist ${HOME}/.cert
+blacklist ${HOME}/_vimrc
 blacklist ${HOME}/.newsecret
+
+# History files
+blacklist ${HOME}/.*_history
 
 # gnome
 blacklist ${HOME}/.audit_test_privacy_app
 `
-	unclassified, out := Audit([]string{content}, "/HOME", "/run/user/1000")
+	unclassified, globs, out := Audit([]string{content}, "/HOME", "/run/user/1000")
 
 	got := map[string]bool{}
 	for _, g := range unclassified {
 		got[g.Path] = true
 	}
-	// .ssh is shielded (no gap); .cert is an intentional exclusion (suppressed); only
+	// .ssh is shielded (no gap); _vimrc is an intentional exclusion (suppressed); the
+	// .*_history glob goes to the glob review bucket, not the hard-fail set; only
 	// .newsecret is a genuine unclassified gap.
 	if !got["/HOME/.newsecret"] {
 		t.Errorf("an unshielded, unexcluded in-scope entry must surface; got %+v", unclassified)
@@ -231,11 +235,16 @@ blacklist ${HOME}/.audit_test_privacy_app
 	if got["/HOME/.ssh"] {
 		t.Error(".ssh is shielded and must not surface as a gap")
 	}
-	if got["/HOME/.cert"] {
-		t.Error(".cert is an intentional exclusion and must be suppressed")
+	if got["/HOME/_vimrc"] {
+		t.Error("_vimrc is an intentional exclusion and must be suppressed")
 	}
 	if len(unclassified) != 1 {
 		t.Errorf("want exactly one unclassified gap, got %d: %+v", len(unclassified), unclassified)
+	}
+	// A glob is reported for review, never in the hard-fail set and never silently
+	// dropped - leaving a whole class invisible is the chore this tool kills.
+	if len(globs) != 1 || globs[0].Path != "/HOME/.*_history" {
+		t.Errorf("the .*_history glob must surface as a glob for review, got %+v", globs)
 	}
 	// The gnome entry is firejail's other-app privacy scope: accounted for out-of-scope,
 	// never a gap.
@@ -254,23 +263,37 @@ func TestFirejailCompleteness(t *testing.T) {
 	if dir == "" {
 		dir = "/etc/firejail"
 	}
-	var contents []string
-	for _, name := range []string{"disable-common.inc", "disable-programs.inc"} {
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		contents = append(contents, string(b))
+	// Only disable-common.inc: it carries the section headers this audit's scope
+	// classification keys off. disable-programs.inc is a flat list with no headers, so
+	// every entry would fall out-of-scope and be discarded - feeding it would fake
+	// completeness over real app-credential stores (keepassxc, Bitwarden). Classifying
+	// that file needs a content/name-based classifier, tracked separately.
+	path := filepath.Join(dir, "disable-common.inc")
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
 	}
-	if len(contents) == 0 {
-		t.Skipf("no firejail profiles under %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	unclassified, _ := Audit(contents, home, filepath.Join("/run/user", "1000"))
+	unclassified, globs, outBySection := Audit([]string{string(content)}, home, "/run/user/1000")
+
+	// Globs and out-of-scope totals are surfaced (not silently dropped) so a whole
+	// class or the app/privacy scope stays visible for periodic manual review.
+	for _, g := range globs {
+		t.Logf("glob for review (bento covers by named instance - verify the set is current): %s [%s]", g.Path, g.Section)
+	}
+	total := 0
+	for _, n := range outBySection {
+		total += n
+	}
+	t.Logf("%d out-of-scope firejail entries in %d section(s) (firejail's privacy/other-app/system scope, not enumerated by bento)", total, len(outBySection))
+
 	if len(unclassified) == 0 {
 		return
 	}

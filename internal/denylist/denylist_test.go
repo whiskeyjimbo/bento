@@ -54,6 +54,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.yarnrc.yml",     // yarn npmAuthToken
 		"/home/u/.my.cnf",         // MySQL plaintext password
 		"/home/u/.mylogin.cnf",    // MySQL login-path store (obfuscated, not encrypted)
+		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
+		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
+		"/home/u/.php_history",    // php -a interactive REPL history
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]
@@ -114,7 +117,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.bashrc.d",          // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
 		"/home/u/.config/containers", // podman/skopeo exec-redirect knobs
 		"/home/u/.config/autostart",
-		"/home/u/.config/systemd", // whole --user tree (covers the former .config/systemd/user)
+		"/home/u/.config/systemd",           // whole --user tree (covers the former .config/systemd/user)
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
 		"/home/u/.config/nushell",           // nushell config and autoloads
 		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
@@ -371,8 +374,8 @@ func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
 // DenyWrite shield: stacked after the DenyAll hide, its readable ro-bind would
 // expose the credential under bwrap's last-wins ordering.
 func TestHomeStartupRelocationSkipsDenyAllCollision(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.netrc")   // a DenyAll file
-	t.Setenv("ZDOTDIR", "/home/u/.ssh")               // under a DenyAll dir
+	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.netrc") // a DenyAll file
+	t.Setenv("ZDOTDIR", "/home/u/.ssh")             // under a DenyAll dir
 	for _, r := range Home("/home/u") {
 		if r.Deny == DenyWrite && (r.Path == "/home/u/.netrc" || strings.HasPrefix(r.Path, "/home/u/.ssh/")) {
 			t.Errorf("DenyWrite shield at %q collides with a DenyAll rule and would expose it", r.Path)

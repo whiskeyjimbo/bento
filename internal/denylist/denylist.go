@@ -170,6 +170,9 @@ func Home(home string) []Rule {
 		// typed into a SQL/redis session lands here in the clear.
 		".bash_history",
 		".zsh_history",
+		".history",     // tcsh's default history file (histfile unset); .cshrc/.tcshrc are shielded, so the shell is in scope
+		".sh_history",  // ksh's default HISTFILE; .kshrc/.mkshrc are shielded
+		".php_history", // php -a interactive shell readline history
 		".mysql_history",
 		".psql_history",
 		".sqlite_history",

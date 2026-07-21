@@ -43,10 +43,10 @@ func TestLooksLikeFirejailProfile(t *testing.T) {
 		t.Error("the real profile must be recognized")
 	}
 	for name, content := range map[string]string{
-		"empty":            "",
-		"html error page":  "<html><body>404 Not Found</body></html>",
-		"include-only":     "# moved\ninclude disable-home.inc\n",
-		"unrelated 200":    "just some other text file\n",
+		"empty":           "",
+		"html error page": "<html><body>404 Not Found</body></html>",
+		"include-only":    "# moved\ninclude disable-home.inc\n",
+		"unrelated 200":   "just some other text file\n",
 	} {
 		if looksLikeFirejailProfile(content) {
 			t.Errorf("%s: must not be accepted as the firejail profile", name)
