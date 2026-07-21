@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/backend"
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/manifest"
+	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
 func newRunCmd() *cobra.Command {
@@ -78,47 +80,7 @@ func newRunCmd() *cobra.Command {
 				Strict:        strict,
 				AllowDegraded: allowDegraded,
 			})
-
-			var refusal *enforce.Refusal
-			switch {
-			case errors.As(err, &refusal):
-				if asJSON {
-					_ = writeJSON(os.Stdout, struct {
-						Refused bool       `json:"refused"`
-						Reason  string     `json:"reason"`
-						Report  reportJSON `json:"report"`
-					}{true, refusal.Reason, toReportJSON(refusal.Report)})
-					return &exitError{code: bentoFailed}
-				}
-				return err
-			case err != nil:
-				return err
-			}
-
-			if asJSON {
-				// The script already ran and its exit code is the result. If writing the
-				// JSON envelope fails (a redirected stdout that is full or gone), reporting
-				// that as bentoFailed would overwrite the real exit code with 125 - a lie
-				// that bento could not run the script. Warn and still pass the code through.
-				if err := writeJSON(os.Stdout, struct {
-					ExitCode          int        `json:"exit_code"`
-					Stdout            string     `json:"stdout"`
-					Stderr            string     `json:"stderr"`
-					EgressConnections int        `json:"egress_connections"`
-					ShieldedGrants    []string   `json:"shielded_grants,omitempty"`
-					Report            reportJSON `json:"report"`
-				}{res.ExitCode, out.String(), errOut.String(), res.EgressConnections, res.ShieldedGrants, toReportJSON(res.Report)}); err != nil {
-					fmt.Fprintf(os.Stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
-				}
-			} else {
-				writeShieldedGrantWarning(os.Stderr, res)
-				writeDegradations(os.Stderr, res.Report)
-				writeEgressHint(os.Stderr, p, res)
-			}
-
-			// The script ran; its exit code is the result, passed up so cleanup
-			// unwinds before the process exits.
-			return &exitError{code: res.ExitCode}
+			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, out.String(), errOut.String(), err)
 		},
 	}
 
@@ -128,6 +90,56 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output instead of the script's own streams being summarized")
 	return cmd
+}
+
+// writeRunResult turns the outcome of enforce.Run into the frontend's contract: it
+// writes the human or --json output and returns the error the command propagates. The
+// exit-code mapping is the load-bearing invariant - a refusal (bento could not run the
+// script) becomes exitError{bentoFailed}, distinct from the target's own code, which is
+// passed through untouched via exitError{res.ExitCode}. capturedOut/capturedErr are the
+// target's streams, captured only in --json mode (empty otherwise, where they went
+// straight to the real streams).
+func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, capturedOut, capturedErr string, runErr error) error {
+	var refusal *enforce.Refusal
+	switch {
+	case errors.As(runErr, &refusal):
+		if asJSON {
+			_ = writeJSON(stdout, struct {
+				Refused bool       `json:"refused"`
+				Reason  string     `json:"reason"`
+				Report  reportJSON `json:"report"`
+			}{true, refusal.Reason, toReportJSON(refusal.Report)})
+			return &exitError{code: bentoFailed}
+		}
+		return runErr
+	case runErr != nil:
+		return runErr
+	}
+
+	if asJSON {
+		// The script already ran and its exit code is the result. If writing the
+		// JSON envelope fails (a redirected stdout that is full or gone), reporting
+		// that as bentoFailed would overwrite the real exit code with 125 - a lie
+		// that bento could not run the script. Warn and still pass the code through.
+		if err := writeJSON(stdout, struct {
+			ExitCode          int        `json:"exit_code"`
+			Stdout            string     `json:"stdout"`
+			Stderr            string     `json:"stderr"`
+			EgressConnections int        `json:"egress_connections"`
+			ShieldedGrants    []string   `json:"shielded_grants,omitempty"`
+			Report            reportJSON `json:"report"`
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toReportJSON(res.Report)}); err != nil {
+			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
+		}
+	} else {
+		writeShieldedGrantWarning(stderr, res)
+		writeDegradations(stderr, res.Report)
+		writeEgressHint(stderr, p, res)
+	}
+
+	// The script ran; its exit code is the result, passed up so cleanup
+	// unwinds before the process exits.
+	return &exitError{code: res.ExitCode}
 }
 
 // requireApproval refuses to run a manifest whose approval is not current. The stamp
