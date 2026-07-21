@@ -225,6 +225,59 @@ func SplitByScope(gaps []Gap) (inScope []Gap, outBySection map[string]int) {
 	return inScope, outBySection
 }
 
+// IntentionalExclusions are firejail in-scope entries bento deliberately does NOT
+// shield, keyed by their ${HOME}-relative path with the reason. The audit subtracts
+// these so it flags only genuinely-new, unclassified entries; a human adds to it when
+// classifying a flagged candidate as "correctly not shielded". It is bento's own
+// artifact (path facts plus bento's reasoning), not a copy of firejail's profile.
+//
+// This seeds only the exclusions grounded in a recorded decision; it is expected to
+// grow when the audit first runs against a real firejail profile and a human triages
+// the remaining flags.
+var IntentionalExclusions = map[string]string{
+	".cert":             "often exists as a regular file, and a DenyAll tmpfs over a file aborts a broad-grant run; concrete credential files are shielded by name instead",
+	".mail":             "same tmpfs-over-file abort risk as a bare mail dir; bento shields the concrete mail stores it enumerates",
+	".Mail":             "same tmpfs-over-file abort risk as a bare mail dir",
+	".history":          "a generic name bento does not shield; the concrete ~/.*_history credential-history files are shielded individually",
+	".*_history":        "firejail's history glob, which bento cannot express; shielded as the named instances (.bash_history, .zsh_history, ...) instead",
+	".local/state/nvim": "editor state, not auto-sourced code - no host-exec vector, and shielding it only breaks nvim's persistence",
+	"_vimrc":            "a Windows-only vim rc name, dead on Linux where the real names (.vimrc, .gvimrc, .exrc) are shielded",
+	"_gvimrc":           "a Windows-only gvim rc name, dead on Linux",
+	"_exrc":             "a Windows-only ex rc name, dead on Linux",
+}
+
+// excluded reports whether path is an intentional exclusion at the given home.
+func excluded(path, home string) bool {
+	rel, ok := strings.CutPrefix(path, strings.TrimSuffix(home, "/")+"/")
+	if !ok {
+		return false
+	}
+	_, ok = IntentionalExclusions[rel]
+	return ok
+}
+
+// Audit reads firejail profile contents, diffs them against bento's full shield list
+// (Home + Runtime), and returns the in-scope gaps that are neither shielded nor an
+// intentional exclusion - the entries a human must classify and either shield or
+// exclude. outBySection summarizes the out-of-scope firejail sections bento does not
+// enumerate, so they stay accountable rather than silently dropped. home and runUser
+// expand firejail's ${HOME}/${RUNUSER}; the profile files are a dev-time diff input,
+// never vendored into the binary.
+func Audit(contents []string, home, runUser string) (unclassified []Gap, outBySection map[string]int) {
+	var candidates []Candidate
+	for _, c := range contents {
+		candidates = append(candidates, ParseFirejail(c, home, runUser)...)
+	}
+	rules := append(denylist.Home(home), denylist.Runtime()...)
+	inScope, outBySection := SplitByScope(Diff(candidates, rules))
+	for _, g := range inScope {
+		if !excluded(g.Path, home) {
+			unclassified = append(unclassified, g)
+		}
+	}
+	return unclassified, outBySection
+}
+
 // cover finds a rule that shields path, returning it and true. An exact match wins;
 // otherwise a directory rule whose path encloses it covers it.
 func cover(path string, rules []denylist.Rule) (denylist.Rule, bool) {

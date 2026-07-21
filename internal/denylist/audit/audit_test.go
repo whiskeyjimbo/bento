@@ -1,6 +1,9 @@
 package audit
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
@@ -142,9 +145,9 @@ func TestDiffCoverageAndClass(t *testing.T) {
 	}
 	candidates := []Candidate{
 		{Path: "/HOME/.ssh/authorized_keys", Deny: denylist.DenyAll}, // covered by the .ssh dir shield
-		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},        // covered by the /run dir shield
-		{Path: "/HOME/.aws", Deny: denylist.DenyAll},                // missing entirely
-		{Path: "/HOME/.bashrc", Deny: denylist.DenyAll},             // present but only DenyWrite -> weaker
+		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},         // covered by the /run dir shield
+		{Path: "/HOME/.aws", Deny: denylist.DenyAll},                 // missing entirely
+		{Path: "/HOME/.bashrc", Deny: denylist.DenyAll},              // present but only DenyWrite -> weaker
 	}
 
 	gaps := Diff(candidates, rules)
@@ -170,9 +173,9 @@ func TestSplitByScopeUsesFirejailSections(t *testing.T) {
 	gaps := []Gap{
 		{Candidate: Candidate{Path: "/HOME/.aws", Section: "top secret"}},
 		{Candidate: Candidate{Path: "/HOME/.config/autostart-scripts", Section: "X11 session autostart"}},
-		{Candidate: Candidate{Path: "/HOME/.mozilla", Section: "gnome"}},                 // out: other-app
-		{Candidate: Candidate{Path: "/HOME/.local/share/Trash", Section: "var"}},         // out
-		{Candidate: Candidate{Path: "/HOME/.cargo/credentials", Section: "top secret"}},  // in
+		{Candidate: Candidate{Path: "/HOME/.mozilla", Section: "gnome"}},                // out: other-app
+		{Candidate: Candidate{Path: "/HOME/.local/share/Trash", Section: "var"}},        // out
+		{Candidate: Candidate{Path: "/HOME/.cargo/credentials", Section: "top secret"}}, // in
 	}
 	inScope, out := SplitByScope(gaps)
 	if len(inScope) != 3 {
@@ -199,4 +202,85 @@ func TestDiffAgainstRealList(t *testing.T) {
 	if gaps := Diff(c, rules); len(gaps) != 0 {
 		t.Errorf("~/.ssh/id_rsa should be covered by the real list, got gaps %+v", gaps)
 	}
+}
+
+// Audit ties parse -> diff -> scope -> exclusions together: it must surface only the
+// in-scope firejail entries bento neither shields nor deliberately excludes. This is
+// the machinery's real verification (the live-firejail test below skips where firejail
+// is absent, which is most hosts).
+func TestAuditReportsOnlyUnclassifiedInScopeGaps(t *testing.T) {
+	const content = `# Top secret
+blacklist ${HOME}/.ssh
+blacklist ${HOME}/.cert
+blacklist ${HOME}/.newsecret
+
+# gnome
+blacklist ${HOME}/.audit_test_privacy_app
+`
+	unclassified, out := Audit([]string{content}, "/HOME", "/run/user/1000")
+
+	got := map[string]bool{}
+	for _, g := range unclassified {
+		got[g.Path] = true
+	}
+	// .ssh is shielded (no gap); .cert is an intentional exclusion (suppressed); only
+	// .newsecret is a genuine unclassified gap.
+	if !got["/HOME/.newsecret"] {
+		t.Errorf("an unshielded, unexcluded in-scope entry must surface; got %+v", unclassified)
+	}
+	if got["/HOME/.ssh"] {
+		t.Error(".ssh is shielded and must not surface as a gap")
+	}
+	if got["/HOME/.cert"] {
+		t.Error(".cert is an intentional exclusion and must be suppressed")
+	}
+	if len(unclassified) != 1 {
+		t.Errorf("want exactly one unclassified gap, got %d: %+v", len(unclassified), unclassified)
+	}
+	// The gnome entry is firejail's other-app privacy scope: accounted for out-of-scope,
+	// never a gap.
+	if out["gnome"] != 1 {
+		t.Errorf("the out-of-scope gnome entry must be counted, got %+v", out)
+	}
+}
+
+// The live completeness gate: diff bento's shield list against the firejail profiles
+// installed on this host (or FIREJAIL_DIR). It skips where firejail is absent - the
+// profile data is GPLv2 and read only as a dev-time diff input, never vendored - so on
+// a host with firejail it fails loudly listing any upstream in-scope path bento neither
+// shields nor excludes, turning "remember to re-run the diff" into an enforced check.
+func TestFirejailCompleteness(t *testing.T) {
+	dir := os.Getenv("FIREJAIL_DIR")
+	if dir == "" {
+		dir = "/etc/firejail"
+	}
+	var contents []string
+	for _, name := range []string{"disable-common.inc", "disable-programs.inc"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		contents = append(contents, string(b))
+	}
+	if len(contents) == 0 {
+		t.Skipf("no firejail profiles under %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", dir)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unclassified, _ := Audit(contents, home, filepath.Join("/run/user", "1000"))
+	if len(unclassified) == 0 {
+		return
+	}
+	var b strings.Builder
+	for _, g := range unclassified {
+		weak := ""
+		if g.Weaker {
+			weak = " (bento has it DenyWrite; firejail blacklists it)"
+		}
+		b.WriteString("\n  " + g.Path + " [" + g.Section + "]" + weak)
+	}
+	t.Errorf("firejail shields %d in-scope path(s) bento neither shields nor excludes - classify each (shield in denylist.go or add to IntentionalExclusions):%s", len(unclassified), b.String())
 }
