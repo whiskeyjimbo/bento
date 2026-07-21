@@ -183,6 +183,9 @@ func run(scriptArg string) int {
 	saveErr := s.save()
 	if saveErr != nil {
 		fmt.Fprintf(os.Stderr, "supervise: saving permission store: %v\n", saveErr)
+		if s.recordedDeny {
+			fmt.Fprintln(os.Stderr, "supervise: a deny or standing block from this run was NOT persisted; exiting non-zero so the loss is not silent.")
+		}
 	}
 
 	// Summary: what the live gate let out beyond the manifest, and any shortfall.
@@ -201,8 +204,9 @@ func run(scriptArg string) int {
 // finalExitCode is the process exit code. It is the target's own code untouched,
 // except when persisting the store failed AND this run recorded a deny or standing
 // block: that lost a security decision the human made, so a zero target code would
-// falsely report a clean run over a dropped block. Signal it with a distinct non-zero
-// code. A target that already failed keeps its own (already non-zero) code.
+// falsely report a clean run over a dropped block. Signal it with a non-zero code
+// (paired with a stderr note at the save site). A target that already failed keeps its
+// own (already non-zero) code.
 func finalExitCode(targetExit int, saveErr error, recordedDeny bool) int {
 	if saveErr != nil && recordedDeny && targetExit == 0 {
 		return 1

@@ -129,14 +129,16 @@ func TestFinalExitCode(t *testing.T) {
 // A recorded deny (or standing block) sets the flag finalExitCode reads, across all
 // three permission dimensions; an allow leaves it clear.
 func TestStoreRecordedDenyTracksDenies(t *testing.T) {
-	if s := newTestStore(); func() bool { s.rememberNetwork("k", "a", "443", allow, false); return s.recordedDeny }() {
+	allowOnly := newTestStore()
+	allowOnly.rememberNetwork("k", "a", "443", allow, false)
+	if allowOnly.recordedDeny {
 		t.Error("an allow must not set recordedDeny")
 	}
 	for name, record := range map[string]func(*store){
-		"network deny": func(s *store) { s.rememberNetwork("k", "a", "443", deny, false) },
+		"network deny":   func(s *store) { s.rememberNetwork("k", "a", "443", deny, false) },
 		"standing block": func(s *store) { s.rememberNetwork("k", "a", "443", deny, true) },
-		"path deny": func(s *store) { s.rememberPath("k", "read", "/x", deny, false) },
-		"exec deny": func(s *store) { s.rememberExec("k", deny, false) },
+		"path deny":      func(s *store) { s.rememberPath("k", "read", "/x", deny, false) },
+		"exec deny":      func(s *store) { s.rememberExec("k", deny, false) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestStore()
