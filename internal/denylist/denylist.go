@@ -121,7 +121,10 @@ func Home(home string) []Rule {
 		".local/state/nvim/backup", // 'backup' writes prior file contents here (off by default, but plantable/populated)
 		// Pre-0.8 nvim kept the same three stores under stdpath('data'); an upgraded host
 		// keeps the abandoned files (nvim never migrates or deletes them), so the legacy
-		// location holds the same secrets and is shielded too.
+		// location holds the same secrets and is shielded too. Unlike the state-dir entries
+		// above, these nest inside the DenyWrite ".local/share/nvim" plugin tree: hidden under
+		// a read grant, but a write grant to a sibling subdir still re-exposes them read-only
+		// via the parent bind (a residual tracked for the general DenyAll-under-DenyWrite fix).
 		".local/share/nvim/shada",
 		".local/share/nvim/undo",
 		".local/share/nvim/swap",
