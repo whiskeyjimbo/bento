@@ -123,20 +123,13 @@ func run(scriptArg string) int {
 	t := p.t // one theme, detected on os.Stderr, shared by the banners below
 
 	// Act 1: trial run under default-deny observation, then approve what it wants.
-	// Only the script's own directory is mounted, so every credential path the script
-	// probes elsewhere is absent - the attempt is recorded without the content being
-	// exposed. The store still needs an explicit deny: it lives under the config dir,
-	// and a script placed in or beside the store (e.g. under a dev-set XDG_CONFIG_HOME
-	// the script dir also sits in) would otherwise be handed the store by the script-
-	// dir grant, so shield it regardless of where the script lives. The target runs
-	// with the real HOME (and its config anchors) so a $HOME-relative probe names the
-	// real path the observer records; the same names go into the approved policy's env
-	// allowlist so the enforced run rebuilds them.
+	// The target runs with the real HOME (and its config anchors) so a $HOME-relative
+	// probe names the real path the observer records; the same names go into the
+	// approved policy's env allowlist so the enforced run rebuilds them.
 	trialEnv := discoveryEnv()
 	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(default-deny - nothing leaves the host)"))
-	obs, err := backend.Profile(context.Background(), discoveryPolicy(script, interp),
-		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv},
-		backend.ProfileOptions{DenyPaths: []string{s.dir}})
+	obs, err := trialProfile(context.Background(), s, discoveryPolicy(script, interp),
+		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
 		return 1
@@ -237,6 +230,17 @@ func assertStoreShielded(final *policy.Policy, storeDir string) error {
 		}
 	}
 	return nil
+}
+
+// trialProfile runs the observed trial pass under default-deny, always shielding the
+// permission store. Only the script's own directory is mounted, so the store is absent
+// unless the script sits in or beside it (a dev-set XDG_CONFIG_HOME the script dir also
+// contains), where the script-dir grant would otherwise cover the store; the store deny
+// path shields it regardless of where the script lives. Owning the deny here, not at the
+// call site, keeps that shield from being dropped by a future edit to the trial call -
+// the fail-open regression the store must never suffer.
+func trialProfile(ctx context.Context, s *store, discovery *policy.Policy, proc enforce.Process) (profile.Observation, error) {
+	return backend.Profile(ctx, discovery, proc, backend.ProfileOptions{DenyPaths: []string{s.dir}})
 }
 
 // discoveryPolicy is the default-deny policy the trial run uses. Only the script's

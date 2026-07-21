@@ -174,16 +174,16 @@ func requireSandbox(t *testing.T) {
 	}
 }
 
-// The trial deny path is what keeps the untrusted script out of the permission store
-// when the script sits in or beside it (a dev-set XDG_CONFIG_HOME the script dir also
-// contains). discoveryPolicy grants the script's dir, which then covers the store, so
-// this drives the real trial call end-to-end. Without the deny path the trial reads
-// the store - the fail-open regression this guards. With it, as run() passes s.dir,
-// bento shields the store fail-closed: it refuses the writable-parent-over-shield
-// combination outright, so the store never reaches the trial. The baseline leak is
-// what makes the shielded case meaningful. The store lives under $HOME, not /tmp,
-// because the sandbox always overmounts /tmp with its own tmpfs.
-func TestTrialDenyPathShieldsAdjacentStore(t *testing.T) {
+// trialProfile must keep the untrusted script out of the permission store even when
+// the script sits in or beside it (a dev-set XDG_CONFIG_HOME the script dir also
+// contains), where discoveryPolicy's script-dir grant covers the store. This drives
+// trialProfile - the seam run() uses - so it guards the actual wiring, not just the
+// backend mechanism: a baseline calling Profile with no deny shows the script-dir
+// grant reaching the store (the fail-open regression), and trialProfile shields it
+// fail-closed (refusing the writable-parent-over-shield combination outright), so the
+// store never reaches the trial. Dropping the deny inside trialProfile fails this. The
+// store lives under $HOME, not /tmp, because the sandbox always overmounts /tmp.
+func TestTrialProfileShieldsAdjacentStore(t *testing.T) {
 	requireSandbox(t)
 
 	home, err := os.UserHomeDir()
@@ -208,26 +208,27 @@ func TestTrialDenyPathShieldsAdjacentStore(t *testing.T) {
 	if err := os.WriteFile(script, []byte("cat "+storeFile+" 2>&1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	discovery := discoveryPolicy(script, "sh")
 
-	run := func(deny []string) (string, error) {
-		var out bytes.Buffer
-		_, err := backend.Profile(context.Background(), discoveryPolicy(script, "sh"),
-			enforce.Process{Stdout: &out, Stderr: &out},
-			backend.ProfileOptions{DenyPaths: deny})
-		return out.String(), err
-	}
-
-	base, err := run(nil)
-	if err != nil {
+	// Baseline: Profile with no deny path shows discoveryPolicy's script-dir grant does
+	// reach the adjacent store, so the shield trialProfile adds is genuinely load-bearing.
+	var base bytes.Buffer
+	if _, err := backend.Profile(context.Background(), discovery,
+		enforce.Process{Stdout: &base, Stderr: &base}, backend.ProfileOptions{}); err != nil {
 		t.Fatalf("baseline Profile: %v", err)
 	}
-	if !strings.Contains(base, secret) {
-		t.Fatalf("baseline: the script-dir grant should reach the adjacent store with no deny path; got %q", base)
+	if !strings.Contains(base.String(), secret) {
+		t.Fatalf("baseline: the script-dir grant should reach the adjacent store with no deny path; got %q", base.String())
 	}
-	// Fail-closed: either the run is refused (err != nil) or it ran without the secret.
-	// The only failure is a completed run that exposed it.
-	if out, err := run([]string{storeDir}); err == nil && strings.Contains(out, secret) {
-		t.Errorf("the trial deny path did not shield the store: it leaked %q", out)
+
+	// trialProfile owns the store deny path. Fail-closed: either the run is refused
+	// (err != nil) or it ran without the secret; the only failure is a completed run
+	// that exposed it. Removing the deny inside trialProfile makes this leak.
+	var out bytes.Buffer
+	_, err = trialProfile(context.Background(), &store{dir: storeDir}, discovery,
+		enforce.Process{Stdout: &out, Stderr: &out})
+	if err == nil && strings.Contains(out.String(), secret) {
+		t.Errorf("trialProfile did not shield the store: it leaked %q", out.String())
 	}
 }
 
