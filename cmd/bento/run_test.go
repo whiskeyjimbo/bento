@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento-v2/enforce"
@@ -161,6 +162,72 @@ func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 		t.Error("success envelope must carry exit_code")
 	}
 }
+
+// A --json envelope write that fails (a redirected stdout that is full or gone) must
+// NOT be re-minted as a bento refusal: the script already ran, so its exit code still
+// passes through and the failure is only a warning on stderr. Overwriting it with
+// bentoFailed would lie that bento could not run the script.
+func TestWriteRunResultJSONWriteFailureKeepsExitCode(t *testing.T) {
+	var stderr bytes.Buffer
+	err := writeRunResult(failWriter{}, &stderr, true, validPolicy(),
+		enforce.Result{ExitCode: 5}, "out", "err", nil)
+	if got := asExitError(t, err).code; got != 5 {
+		t.Fatalf("a failed JSON write must still pass the target code; got %d, want 5", got)
+	}
+	if !strings.Contains(stderr.String(), "could not encode the JSON result") {
+		t.Errorf("a failed JSON write must warn on stderr; got %q", stderr.String())
+	}
+}
+
+// In human mode writeRunResult must surface every non-silent notice: the shielded-grant
+// exposure warning (a credential store the policy opted into), the degradation report,
+// and the egress-bypass hint. Dropping any call would silence a warning the tool exists
+// to make loud, so pin that all three reach stderr.
+func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this host")
+	res := enforce.Result{
+		ExitCode:       1, // non-zero + zero egress triggers the egress-bypass hint
+		Report:         report,
+		ShieldedGrants: []string{"/home/u/.ssh"},
+	}
+	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
+
+	var stdout, stderr bytes.Buffer
+	err := writeRunResult(&stdout, &stderr, false, netPolicy, res, "", "", nil)
+	if got := asExitError(t, err).code; got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	out := stderr.String()
+	for _, want := range []string{"/home/u/.ssh", "does not enforce everything", "egress proxy"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("human output missing %q; got:\n%s", want, out)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("human mode must not write to stdout; got %q", stdout.String())
+	}
+}
+
+// The success envelope omits shielded_grants entirely for the common run that opts into
+// none (omitempty), so a machine consumer keying on the field's presence is not misled.
+func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	var env map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := env["shielded_grants"]; present {
+		t.Error("shielded_grants must be omitted when empty (omitempty), not emitted as null/[]")
+	}
+}
+
+// failWriter is a stdout that always fails, so a test can drive the JSON-encode error
+// path of writeRunResult.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("stdout is gone") }
 
 // validPolicy is the minimal policy writeRunResult needs (writeEgressHint reads its
 // Network); no network means the hint stays quiet.

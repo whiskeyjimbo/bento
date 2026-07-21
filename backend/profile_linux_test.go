@@ -26,8 +26,16 @@ func TestMain(m *testing.M) {
 
 func requireSandbox(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("bwrap"); err != nil {
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
 		t.Skip("bwrap not installed")
+	}
+	// bwrap alone is not enough: a host with unprivileged user namespaces disabled has
+	// bwrap in PATH but cannot create the namespace, so Profile fails to complete rather
+	// than shielding anything. Probe the same way the enforcer's admission does, so this
+	// test skips (not fails) on that supported-but-degraded host class.
+	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
+		t.Skip("unprivileged user namespaces unavailable on this host")
 	}
 }
 
