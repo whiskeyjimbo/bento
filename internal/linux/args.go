@@ -654,12 +654,15 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// A DenyWrite directory shield binds its real subtree read-only, which re-exposes
 	// any DenyAll path nested inside it: the readable parent bind wins over a hidden
 	// child that landed earlier, or was never emitted because no grant reached it
-	// directly. Collect the DenyWrite dirs whose shield actually fires and binds real
-	// content (an absent one becomes an empty tmpfs and exposes nothing), so a DenyAll
-	// descendant of one is shielded even when only the parent is granted.
+	// directly. Collect the DenyWrite rules whose shield actually ro-binds a real
+	// directory subtree, so a DenyAll descendant of one is shielded even when only the
+	// parent is granted. The test is the real kind, not the declared r.Dir: shield()
+	// binds by what is on disk, so a file-declared rule pointed at a directory (an env
+	// relocation like GIT_CONFIG_GLOBAL) still ro-binds the whole tree. An absent path
+	// becomes an empty tmpfs and a real file has no subtree, so both expose nothing.
 	var exposed []string
 	for _, r := range resolved {
-		if r.Deny == denylist.DenyWrite && r.Dir && sb.exists(r.Path) && shieldNeeded(r, sb, grants, writes, optIns) {
+		if r.Deny == denylist.DenyWrite && sb.exists(r.Path) && sb.isDir(r.Path) && shieldNeeded(r, sb, grants, writes, optIns) {
 			exposed = append(exposed, r.Path)
 		}
 	}

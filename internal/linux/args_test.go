@@ -507,6 +507,32 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	}
 }
 
+// The carve must key on the real filesystem kind, not the declared Rule.Dir: shield()
+// ro-binds by what is on disk, so a file-declared DenyWrite rule pointed at a directory
+// (an env relocation such as GIT_CONFIG_GLOBAL=~/.local) still binds the whole tree
+// read-only and would re-expose a DenyAll store nested inside it. Here the gh token dir
+// (~/.local/share/gh) sits under the relocated config path; a sibling write must not let
+// the parent bind re-expose it.
+func TestCarveKeysOnRealKindNotDeclaredDir(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.local") // a directory: produces a DenyWrite file-rule over a dir
+	sb := testSandbox(
+		"/home/u/.local",
+		"/home/u/.local/foo/plugin", // write target, makes .local and foo real dirs
+		"/home/u/.local/share/gh",
+		"/home/u/.local/share/gh/hosts.yml",
+	)
+	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
+		Write: []string{"/home/u/.local/foo"}}, sb)
+	parent := pairIndex(args, "--ro-bind", "/home/u/.local")
+	child := pairIndex(args, "--tmpfs", "/home/u/.local/share/gh")
+	if parent < 0 || child < 0 {
+		t.Fatalf("a file-rule over a real dir must shield parent (ro-bind idx=%d) and force the nested gh store (tmpfs idx=%d)", parent, child)
+	}
+	if child < parent {
+		t.Errorf("the gh store shield (idx %d) must follow the parent bind (idx %d)", child, parent)
+	}
+}
+
 // A hidden credential shield binds a PATH, so a hardlink to the same inode elsewhere in
 // a granted tree stays readable past the shield. hardlinkedShields walks each engaged
 // hidden shield - including the credential files inside a directory shield - and reports

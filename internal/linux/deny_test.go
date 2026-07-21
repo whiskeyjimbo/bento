@@ -136,20 +136,57 @@ func TestNestedDenyAllHiddenUnderExposedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(nvim, "lazy")
-	for _, d := range []string{filepath.Join(sub, ".git", "hooks"), filepath.Join(sub, ".vscode"), filepath.Join(sub, ".idea")} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, f := range []string{filepath.Join(sub, ".git", "config"), filepath.Join(sub, ".git", "config.worktree")} {
-		if err := os.WriteFile(f, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	populateWorkspaceTargets(t, sub)
 
 	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+filepath.Join(shada, "main.shada")+" 2>&1 || true\n")
 	if strings.Contains(out, secret) {
 		t.Errorf("the nvim shada store leaked through the parent bind: %q", out)
+	}
+}
+
+// A DenyWrite rule whose real target is a directory (an env relocation like
+// GIT_CONFIG_GLOBAL pointed at ~/.local) ro-binds that whole tree read-only, so a
+// DenyAll store nested inside it (the gh OAuth token dir at ~/.local/share/gh) must stay
+// hidden. The carve keys on the real filesystem kind, not the declared Rule.Dir, so this
+// file-declared rule is treated as the directory bind it actually is.
+func TestFileRuleOverDirDoesNotExposeNestedStore(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".local"))
+	gh := filepath.Join(home, ".local", "share", "gh")
+	if err := os.MkdirAll(gh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "GH-OAUTH-TOKEN-SECRET"
+	if err := os.WriteFile(filepath.Join(gh, "hosts.yml"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(home, ".local", "foo")
+	populateWorkspaceTargets(t, sub)
+
+	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+filepath.Join(gh, "hosts.yml")+" 2>&1 || true\n")
+	if strings.Contains(out, secret) {
+		t.Errorf("the gh token store leaked through the relocated-config parent bind: %q", out)
+	}
+}
+
+// populateWorkspaceTargets pre-creates every workspace shield target under a
+// write-granted dir, so each becomes a ro-bind of an existing path rather than a tmpfs
+// that would need mkdir inside a read-only parent bind (which aborts the run, masking the
+// exposure under test).
+func populateWorkspaceTargets(t *testing.T, dir string) {
+	t.Helper()
+	for _, d := range []string{filepath.Join(dir, ".git", "hooks"), filepath.Join(dir, ".vscode"), filepath.Join(dir, ".idea")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(dir, ".git", "config"), filepath.Join(dir, ".git", "config.worktree")} {
+		if err := os.WriteFile(f, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
