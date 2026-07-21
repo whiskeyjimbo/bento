@@ -310,9 +310,16 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 // target is not followed, so a store-deduplicated target does not false-warn). The
 // complete fix is inode-aware granted-tree scanning.
 func hardlinkedShields(sb sandbox, shields []enforce.ShieldApplied) []string {
+	if sb.home == "" {
+		return nil
+	}
+	// The shield paths are symlink-resolved (denyArgs resolves them), so resolve home the
+	// same way before comparing - on a host where $HOME sits behind a symlink (/home ->
+	// /var/home) an unresolved prefix would match nothing and silently skip every credential.
+	home := sb.resolve(sb.home)
 	var out []string
 	for _, s := range shields {
-		if s.Kind != "hidden" || sb.home == "" || !under(s.Path, sb.home) {
+		if s.Kind != "hidden" || !under(s.Path, home) {
 			continue
 		}
 		out = append(out, sb.hardlinkedUnder(s.Path)...)

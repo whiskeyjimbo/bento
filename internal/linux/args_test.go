@@ -457,6 +457,29 @@ func TestHardlinkedShieldsWalksHiddenShields(t *testing.T) {
 	}
 }
 
+// On a host where $HOME sits behind a symlink (/home -> /var/home on Silverblue), the
+// engaged shield paths are symlink-resolved but $HOME is not, so the home-scope filter
+// must resolve home too - otherwise it matches nothing and silently skips every
+// credential, the worst kind of no-op.
+func TestHardlinkedShieldsResolvesHomeForScope(t *testing.T) {
+	sb := testSandbox()
+	sb.home = "/home/u"
+	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
+	sb.hardlinkedUnder = func(p string) []string {
+		if p == "/var/home/u/.aws" {
+			return []string{"/var/home/u/.aws/credentials"}
+		}
+		return nil
+	}
+	// Shields arrive already resolved, as denyArgs hands them over.
+	shields := []enforce.ShieldApplied{{Path: "/var/home/u/.aws", Kind: "hidden"}}
+	got := hardlinkedShields(sb, shields)
+	want := []string{"/var/home/u/.aws/credentials"}
+	if !slices.Equal(got, want) {
+		t.Errorf("home-scope filter must resolve $HOME's symlinks; got %v want %v", got, want)
+	}
+}
+
 // hostHardlinkedUnder finds a credential that has a hardlink alias, whether the shield
 // path is the file itself or a directory holding it, and reports nothing for a
 // single-link file - the positive control that keeps a green result from being vacuous.
