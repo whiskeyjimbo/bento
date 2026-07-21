@@ -50,6 +50,19 @@ func TestThemeWrappingIsWellFormed(t *testing.T) {
 	if th.kindLabel("mystery") != "mystery" {
 		t.Error("an unknown kind must not be colored")
 	}
+
+	// The call sites color a padded label (pad measures plain runes), so a four-letter
+	// kind arrives padded to five columns. kindLabel must still color it - a switch on
+	// the raw padded string would silently drop the color for "read" and "exec".
+	for _, kind := range []string{"read", "write", "exec", "reach"} {
+		got := th.kindLabel(pad(kind, 5))
+		if !ansiRE.MatchString(got) {
+			t.Errorf("kindLabel(pad(%q,5)) = %q, want it colored", kind, got)
+		}
+		if stripped := ansiRE.ReplaceAllString(got, ""); stripped != pad(kind, 5) {
+			t.Errorf("kindLabel dropped the padding: stripped %q, want %q", stripped, pad(kind, 5))
+		}
+	}
 	if (theme{}).allow("ok") != "ok" {
 		t.Error("an off theme must pass text through unchanged")
 	}

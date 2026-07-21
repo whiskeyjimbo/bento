@@ -62,8 +62,12 @@ func (t theme) warn(s string) string  { return t.paint(ansiYellow, s) }
 
 // kindLabel colors an access-kind word by kind, so read/write/exec/reach are
 // distinguishable at a glance.
+// kindLabel colors an access-kind label. Callers pad before coloring (so the plain
+// runes are measured for alignment), so the switch is on the trimmed kind while the
+// paint keeps the padding - otherwise the four-letter kinds ("read", "exec") arrive
+// padded to five columns and never match.
 func (t theme) kindLabel(kind string) string {
-	switch kind {
+	switch strings.TrimSpace(kind) {
 	case "read":
 		return t.paint(ansiBlue, kind)
 	case "write":

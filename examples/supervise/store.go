@@ -60,6 +60,11 @@ type store struct {
 	dir  string // the store directory (shielded from the trial; refused as a grant)
 	path string // permissions.json inside dir
 
+	// recordedDeny is set when this run stored a deny or standing block. It lets the
+	// caller tell a lost security decision (a save that failed after a deny) from a
+	// benign one, so an exit code never reports a clean run over a dropped block.
+	recordedDeny bool
+
 	// base is a deep copy of the decisions as loaded, so save can persist only what
 	// THIS process changed rather than its whole snapshot. Without it, a run that
 	// loads the store, parks at a prompt, and saves last would rewrite every key it
@@ -499,6 +504,9 @@ func underComponent(child, parent string) bool {
 
 // rememberNetwork records a network decision, per-app or (global) for every app.
 func (s *store) rememberNetwork(key, host, port string, d decision, global bool) {
+	if d == deny {
+		s.recordedDeny = true
+	}
 	k := netKey(host, port)
 	if global {
 		if s.Global.Network == nil {
@@ -516,6 +524,9 @@ func (s *store) rememberNetwork(key, host, port string, d decision, global bool)
 
 // rememberPath records a filesystem decision, per-app or (global) for every app.
 func (s *store) rememberPath(key, kind, path string, d decision, global bool) {
+	if d == deny {
+		s.recordedDeny = true
+	}
 	m := &s.Global.Read
 	if global {
 		if kind == "write" {
@@ -540,6 +551,7 @@ func (s *store) rememberExec(key string, d decision, global bool) {
 	mode := string(policy.ExecAll)
 	if d == deny {
 		mode = string(policy.ExecNone)
+		s.recordedDeny = true
 	}
 	if global {
 		s.Global.Exec = mode

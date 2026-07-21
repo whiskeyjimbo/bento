@@ -145,6 +145,17 @@ func run(scriptArg string) int {
 	// reader has not read yet.
 	p.drain()
 
+	// Belt-and-suspenders behind the store shield: the enforced run passes no
+	// DenyPaths (the linux backend takes nil for an enforced run by design), so the
+	// store's protection rests entirely on approve() having refused every grant that
+	// covers it. Re-check the assembled policy so a future edit that builds it by some
+	// path other than consider/coversStore cannot silently expose the store. Reaching
+	// here with a covering grant is a bug, so fail closed rather than run.
+	if err := assertStoreShielded(approved, s.dir); err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		return 1
+	}
+
 	// Act 2: enforced run under exactly what was approved, with a live gate for any
 	// undeclared host the script reaches at runtime.
 	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("enforced run · "+name), t.dim("(a live gate prompts for any undeclared host)"))
@@ -169,8 +180,9 @@ func run(scriptArg string) int {
 
 	// Persist the run's decisions so the next run of this app prompts only for what
 	// is new.
-	if err := s.save(); err != nil {
-		fmt.Fprintf(os.Stderr, "supervise: saving permission store: %v\n", err)
+	saveErr := s.save()
+	if saveErr != nil {
+		fmt.Fprintf(os.Stderr, "supervise: saving permission store: %v\n", saveErr)
 	}
 
 	// Summary: what the live gate let out beyond the manifest, and any shortfall.
@@ -183,7 +195,32 @@ func run(scriptArg string) int {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(hp.Host+":"+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
-	return res.ExitCode
+	return finalExitCode(res.ExitCode, saveErr, s.recordedDeny)
+}
+
+// finalExitCode is the process exit code. It is the target's own code untouched,
+// except when persisting the store failed AND this run recorded a deny or standing
+// block: that lost a security decision the human made, so a zero target code would
+// falsely report a clean run over a dropped block. Signal it with a distinct non-zero
+// code. A target that already failed keeps its own (already non-zero) code.
+func finalExitCode(targetExit int, saveErr error, recordedDeny bool) int {
+	if saveErr != nil && recordedDeny && targetExit == 0 {
+		return 1
+	}
+	return targetExit
+}
+
+// assertStoreShielded refuses a final policy that grants any path covering the
+// permission store. It is the backstop described where it is called: the enforced run
+// carries no DenyPaths, so this is the last check that a copyist widening the approval
+// path cannot expose the store to the supervised script.
+func assertStoreShielded(final *policy.Policy, storeDir string) error {
+	for _, g := range append(append([]string{}, final.Read...), final.Write...) {
+		if coversStore(g, storeDir) {
+			return fmt.Errorf("refusing to run: the approved policy grants %q, which covers the permission store %q", g, storeDir)
+		}
+	}
+	return nil
 }
 
 // permissivePolicy is the broad policy the trial run uses so the script exercises

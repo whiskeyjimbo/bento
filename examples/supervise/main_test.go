@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,6 +65,86 @@ func TestPrompterDrainDiscardsStaleInput(t *testing.T) {
 	go func() { io.WriteString(pw, "y\n") }()
 	if got := p.ask(context.Background(), ""); got != choiceAllow {
 		t.Errorf("ask after drain = %v, want allow from the fresh line (stale input must be discarded)", got)
+	}
+}
+
+// The enforced run carries no DenyPaths, so the store shield rests on approve()
+// refusing a covering grant. assertStoreShielded is the backstop for a policy built
+// by some other path: it must refuse a final policy whose read OR write grant covers
+// the store dir (in either direction), and pass a policy that stays clear of it.
+func TestAssertStoreShielded(t *testing.T) {
+	const storeDir = "/home/u/.config/bento-supervise"
+
+	clear := &policy.Policy{Read: []string{"/home/u/proj"}, Write: []string{"/home/u/proj/out"}}
+	if err := assertStoreShielded(clear, storeDir); err != nil {
+		t.Errorf("a policy clear of the store must pass; got %v", err)
+	}
+
+	// A grant that IS the store, a grant strictly inside it, and a grant that ENCLOSES
+	// it (a broad ~/.config read) must all be refused - the last is the copyist trap
+	// the assertion exists to catch.
+	for name, g := range map[string]string{
+		"exact":     storeDir,
+		"inside":    filepath.Join(storeDir, "permissions.json"),
+		"enclosing": "/home/u/.config",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := assertStoreShielded(&policy.Policy{Read: []string{g}}, storeDir); err == nil {
+				t.Errorf("a read grant %q covering the store must be refused", g)
+			}
+			if err := assertStoreShielded(&policy.Policy{Write: []string{g}}, storeDir); err == nil {
+				t.Errorf("a write grant %q covering the store must be refused", g)
+			}
+		})
+	}
+}
+
+// A failed save loses the run's decisions. When one of those was a deny or standing
+// block, a zero target code would report a clean run over a dropped security decision,
+// so finalExitCode forces non-zero. A clean save, a run with no deny, and an already-
+// failed target each keep the target's own code.
+func TestFinalExitCode(t *testing.T) {
+	saveErr := os.ErrPermission
+	cases := []struct {
+		name         string
+		targetExit   int
+		saveErr      error
+		recordedDeny bool
+		want         int
+	}{
+		{"clean save passes target code", 0, nil, true, 0},
+		{"save fail but no deny recorded", 0, saveErr, false, 0},
+		{"save fail loses a deny", 0, saveErr, true, 1},
+		{"save fail, target already failed", 7, saveErr, true, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := finalExitCode(tc.targetExit, tc.saveErr, tc.recordedDeny); got != tc.want {
+				t.Errorf("finalExitCode(%d,%v,%v) = %d, want %d", tc.targetExit, tc.saveErr, tc.recordedDeny, got, tc.want)
+			}
+		})
+	}
+}
+
+// A recorded deny (or standing block) sets the flag finalExitCode reads, across all
+// three permission dimensions; an allow leaves it clear.
+func TestStoreRecordedDenyTracksDenies(t *testing.T) {
+	if s := newTestStore(); func() bool { s.rememberNetwork("k", "a", "443", allow, false); return s.recordedDeny }() {
+		t.Error("an allow must not set recordedDeny")
+	}
+	for name, record := range map[string]func(*store){
+		"network deny": func(s *store) { s.rememberNetwork("k", "a", "443", deny, false) },
+		"standing block": func(s *store) { s.rememberNetwork("k", "a", "443", deny, true) },
+		"path deny": func(s *store) { s.rememberPath("k", "read", "/x", deny, false) },
+		"exec deny": func(s *store) { s.rememberExec("k", deny, false) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore()
+			record(s)
+			if !s.recordedDeny {
+				t.Error("a recorded deny must set recordedDeny")
+			}
+		})
 	}
 }
 
