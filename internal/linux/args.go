@@ -298,22 +298,29 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 // hardlinkedShields reports the engaged credential files that carry an extra hardlink,
 // so a broad grant exposing a second name for the same inode does not do so silently. A
 // shield binds a PATH, so a hardlink to the credential's inode under a different granted
-// path stays readable past the shield. Only hidden (DenyAll) shields qualify - a
-// read-only shield keeps the file readable by design. A directory shield is walked for
-// the credential files inside it (~/.ssh/id_rsa, ~/.aws/credentials); a file shield
-// checks itself. Necessary, not sufficient: it flags that an alias exists, not where,
-// and misses an alias whose credential path no grant reached (its shield never engaged).
-// The complete fix is inode-aware granted-tree scanning.
+// path stays readable past the shield. Only hidden (DenyAll) shields under the user's
+// home qualify: a read-only shield keeps the file readable by design, and the non-home
+// hidden shields are host service directories (/run, an embedder's out-of-home store),
+// not credential files - walking /run on a `read: /` run would descend into removable
+// media and FUSE mounts and flag their unrelated backup hardlinks. A directory shield is
+// walked for the credential files inside it (~/.ssh/id_rsa, ~/.aws/credentials); a file
+// shield checks itself. Necessary, not sufficient: it flags that an alias exists, not
+// where; it misses an alias whose credential path no grant reached (its shield never
+// engaged), a credential that resolves outside home, and a symlinked credential (whose
+// target is not followed, so a store-deduplicated target does not false-warn). The
+// complete fix is inode-aware granted-tree scanning.
 func hardlinkedShields(sb sandbox, shields []enforce.ShieldApplied) []string {
 	var out []string
 	for _, s := range shields {
-		if s.Kind != "hidden" {
+		if s.Kind != "hidden" || sb.home == "" || !under(s.Path, sb.home) {
 			continue
 		}
 		out = append(out, sb.hardlinkedUnder(s.Path)...)
 	}
 	sort.Strings(out)
-	return out
+	// Nested hidden shields (e.g. GNUPGHOME under ~/.password-store) walk overlapping
+	// trees, so the same file can surface twice; report each once.
+	return slices.Compact(out)
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on

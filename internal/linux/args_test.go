@@ -432,9 +432,12 @@ func TestCertAndMailDirsAreShielded(t *testing.T) {
 func TestHardlinkedShieldsWalksHiddenShields(t *testing.T) {
 	sb := testSandbox()
 	aliased := map[string][]string{
-		"/home/u/.aws":       {"/home/u/.aws/credentials"}, // a file inside a directory shield
-		"/home/u/.netrc":     {"/home/u/.netrc"},           // a file shield checking itself
-		"/home/u/.gitconfig": {"/home/u/.gitconfig"},       // a read-only shield, must be ignored
+		"/home/u/.aws":                  {"/home/u/.aws/credentials"},      // a file inside a directory shield
+		"/home/u/.netrc":                {"/home/u/.netrc"},                // a file shield checking itself
+		"/home/u/.gitconfig":            {"/home/u/.gitconfig"},            // a read-only shield, must be ignored
+		"/home/u/.password-store":       {"/home/u/.password-store/x/key"}, // overlaps the nested gnupg shield
+		"/home/u/.password-store/gnupg": {"/home/u/.password-store/x/key"}, // same file, must appear once
+		"/run":                          {"/run/media/u/backup/data"},      // a non-home host service shield, must be skipped
 	}
 	sb.hardlinkedUnder = func(p string) []string { return aliased[p] }
 
@@ -443,11 +446,14 @@ func TestHardlinkedShieldsWalksHiddenShields(t *testing.T) {
 		{Path: "/home/u/.ssh", Kind: "hidden"}, // engaged but no extra link
 		{Path: "/home/u/.netrc", Kind: "hidden"},
 		{Path: "/home/u/.gitconfig", Kind: "read-only"},
+		{Path: "/home/u/.password-store", Kind: "hidden"},
+		{Path: "/home/u/.password-store/gnupg", Kind: "hidden"},
+		{Path: "/run", Kind: "hidden"}, // walking /run would descend into removable media
 	}
 	got := hardlinkedShields(sb, shields)
-	want := []string{"/home/u/.aws/credentials", "/home/u/.netrc"}
+	want := []string{"/home/u/.aws/credentials", "/home/u/.netrc", "/home/u/.password-store/x/key"}
 	if !slices.Equal(got, want) {
-		t.Errorf("hardlinkedShields = %v, want %v (hidden only, directory walked, sorted)", got, want)
+		t.Errorf("hardlinkedShields = %v, want %v (hidden home shields only, dir walked, deduped, sorted)", got, want)
 	}
 }
 
