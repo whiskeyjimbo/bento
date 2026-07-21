@@ -92,6 +92,25 @@ type Result struct {
 	// opts into none. A frontend surfaces each as a loud warning so the exposure is
 	// never silent - the backend does not refuse it, the operator chose it.
 	ShieldedGrants []string
+	// Shields lists the always-on shields the run actually engaged: the credential
+	// and host-service paths the sandbox hid or made read-only for this policy. It is
+	// the operator-visible evidence that the boundary engaged, and shows which
+	// credential classes a reachable grant would otherwise have exposed. Sorted by
+	// path, deduped, empty only when no shield was reachable (a run granting nothing
+	// under home). It records what the sandbox shielded from its own rule set, NOT
+	// what the target tried to reach: there is no observer at enforce time, so a tool
+	// that fails closed because a path it needs was denied is diagnosed by profiling,
+	// not from this list.
+	Shields []ShieldApplied
+}
+
+// ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path
+// is absent - a credential store the sandbox tmpfs'd or overmounted with an empty
+// file) or "read-only" (the path stays readable but cannot be written - a
+// code-execution surface like a git hooks dir).
+type ShieldApplied struct {
+	Path string
+	Kind string
 }
 
 // HostPort is one egress destination admitted at runtime by a NetworkGate rather

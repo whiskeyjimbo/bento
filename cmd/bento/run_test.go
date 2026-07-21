@@ -115,7 +115,9 @@ func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 func TestWriteRunResultSuccessJSON(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-	res := enforce.Result{ExitCode: 3, Report: report, EgressConnections: 2, ShieldedGrants: []string{"/home/u/.ssh"}}
+	res := enforce.Result{ExitCode: 3, Report: report, EgressConnections: 2,
+		ShieldedGrants: []string{"/home/u/.ssh"},
+		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}}}
 
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, "hello-stdout", "warn-stderr", nil)
@@ -129,6 +131,10 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 		Stderr            string   `json:"stderr"`
 		EgressConnections int      `json:"egress_connections"`
 		ShieldedGrants    []string `json:"shielded_grants"`
+		Shields           []struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+		} `json:"shields"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("success envelope is not valid JSON: %v\n%s", err, stdout.String())
@@ -138,6 +144,29 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 	if env.EgressConnections != 2 || len(env.ShieldedGrants) != 1 {
 		t.Errorf("success envelope dropped egress/shielded-grant fields: %+v", env)
+	}
+	if len(env.Shields) != 2 || env.Shields[0].Path != "/home/u/.aws" || env.Shields[0].Kind != "hidden" || env.Shields[1].Kind != "read-only" {
+		t.Errorf("success envelope dropped or mangled the shield audit: %+v", env.Shields)
+	}
+}
+
+// The human run prints one concise line confirming the boundary engaged, with counts
+// by kind, so an operator sees the sandbox worked without a per-path dump (that is the
+// --json list). A run whose grants reached no shield stays silent.
+func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
+	res := enforce.Result{ExitCode: 0,
+		Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}}}
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, "", "", nil)
+	got := stderr.String()
+	if !strings.Contains(got, "3 credential/host-service path(s) shielded") || !strings.Contains(got, "2 hidden, 1 read-only") {
+		t.Errorf("shield summary line missing or wrong: %q", got)
+	}
+
+	var none bytes.Buffer
+	_ = writeRunResult(&none, &none, false, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	if strings.Contains(none.String(), "sandbox engaged") {
+		t.Errorf("a run that shielded nothing must not print the summary: %q", none.String())
 	}
 }
 

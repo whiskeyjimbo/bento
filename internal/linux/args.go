@@ -104,9 +104,9 @@ const observeReportFD = 3
 // Order is load-bearing: bwrap applies mounts in argv order and the last one
 // wins, so the mandatory deny-list must come after the policy's own grants.
 // Otherwise a grant of $HOME would re-expose ~/.ssh.
-func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, error) {
+func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []enforce.ShieldApplied, error) {
 	if sb.entrypoint == "" {
-		return nil, fmt.Errorf("linux: no entrypoint")
+		return nil, nil, fmt.Errorf("linux: no entrypoint")
 	}
 	args := baseFlags()
 
@@ -124,10 +124,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 
 	reads, writes, err := resolveGrants(p)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkGrants(sb, p, reads, writes); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Grants are bound at their resolved targets, so a grant that names a symlink
@@ -136,7 +136,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// destination that already exists.
 	symlinks, err := grantSymlinks(sb, p, reads, writes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	args = append(args, symlinks...)
 
@@ -175,7 +175,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		// Unlike a read grant, "/" is never expanded for writes: making the entire
 		// host root writable would defeat the sandbox, and it is never a real grant.
 		if path == "/" {
-			return nil, fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
+			return nil, nil, fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
 		}
 		// Write grants are directory-granular: bwrap can only make a directory
 		// writable in a way that supports creating and renaming files inside it.
@@ -183,7 +183,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		// save-to-temp-then-rename that editors and libraries use. So a grant that
 		// names an existing file is refused, pointing at the directory instead.
 		if sb.exists(path) && !sb.isDir(path) {
-			return nil, fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", path)
+			return nil, nil, fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", path)
 		}
 		args = append(args, "--bind-try", path, path)
 	}
@@ -191,7 +191,8 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 	// The deny-list goes after the grants so it always wins - except for a shield the
 	// policy explicitly opts into (yz3.2), which denyArgs skips so the grant above binds.
 	_, optIns := explicitShieldOptIns(sb, p.Read)
-	args = append(args, denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)...)
+	deny, appliedShields := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
+	args = append(args, deny...)
 
 	// The entrypoint is bound read-only last so a write grant covering its
 	// directory cannot leave the script itself writable mid-run.
@@ -265,7 +266,26 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, erro
 		Target:      command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)
-	return append(args, launcher.EncodeLaunch(cfg)...), nil
+	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(appliedShields), nil
+}
+
+// shieldsApplied converts the deny-list rules a run engaged into the operator-facing
+// audit record: one entry per shielded path, sorted, with the kind of shield. All
+// current built-in shields are DenyAll (hidden); a DenyWrite rule reports read-only.
+func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]enforce.ShieldApplied, 0, len(rules))
+	for _, r := range rules {
+		kind := "hidden"
+		if r.Deny == denylist.DenyWrite {
+			kind = "read-only"
+		}
+		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on
@@ -564,10 +584,11 @@ const maxGitdirDepth = 64
 // A rule whose path no grant reaches is skipped: it is already invisible under
 // deny-by-default, and binding over it would force bwrap to create a mount point
 // it has no parent for.
-func denyArgs(sb sandbox, grants, writes, optIns []string) []string {
+func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist.Rule) {
 	rules := shieldRules(sb, writes)
 
 	var args []string
+	var applied []denylist.Rule
 	seen := map[denylist.Rule]bool{}
 	for _, r := range rules {
 		// Resolve the rule's path the same way grants are resolved, so the shield
@@ -596,8 +617,9 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) []string {
 			continue
 		}
 		args = append(args, shield(r, sb)...)
+		applied = append(applied, r)
 	}
-	return args
+	return args, applied
 }
 
 // createdShieldDirs returns the DIRECTORY shield mount points bwrap will create on

@@ -166,7 +166,7 @@ func TestResolveFollowsSymlinkBeforeDotDotInDanglingTarget(t *testing.T) {
 
 func compileOrFail(t *testing.T, p *policy.Policy, sb sandbox) []string {
 	t.Helper()
-	args, err := compile(p, enforce.Process{}, sb)
+	args, _, err := compile(p, enforce.Process{}, sb)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -264,6 +264,44 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 	}
 }
 
+// compile reports the always-on shields a run actually engaged, so an operator can
+// confirm the boundary is working. A grant reaching the home tree engages the
+// credential shields under it; each is reported hidden and the list is sorted. A grant
+// that reaches no shield reports none - the audit names what a reachable grant would
+// otherwise have exposed, not the whole rule set.
+func TestCompileReportsAppliedShields(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh", "/home/u/.aws")
+	_, shields, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasShield(shields, "/home/u/.ssh", "hidden") || !hasShield(shields, "/home/u/.aws", "hidden") {
+		t.Errorf("a home grant must report the credential shields it reaches as hidden; got %v", shields)
+	}
+	for i := 1; i < len(shields); i++ {
+		if shields[i-1].Path > shields[i].Path {
+			t.Errorf("shields must be sorted by path; got %v", shields)
+		}
+	}
+
+	_, none, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/work"}}, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a grant reaching no shield must report none; got %v", none)
+	}
+}
+
+func hasShield(shields []enforce.ShieldApplied, path, kind string) bool {
+	for _, s := range shields {
+		if s.Path == path && s.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // yz3.2: a grant that names a credential shield EXACTLY is a deliberate opt-in. It is
 // honored rather than refused (compileOrFail would fail on a refusal), and the shield is
 // skipped so the grant binds the real content instead of being overmounted empty.
@@ -308,7 +346,7 @@ func TestExplicitShieldGrantWinsUnderBroadGrant(t *testing.T) {
 // threat the deny-list exists to stop, so it stays refused even when named exactly.
 func TestWriteGrantOfShieldIsRefused(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.ssh"}}
-	if _, err := compile(p, enforce.Process{}, testSandbox("/home/u/.ssh")); err == nil {
+	if _, _, err := compile(p, enforce.Process{}, testSandbox("/home/u/.ssh")); err == nil {
 		t.Error("a write grant of ~/.ssh must be refused - write opt-in is never honored")
 	}
 }
@@ -320,7 +358,7 @@ func TestExtraDenyIsNotOptInable(t *testing.T) {
 	sb := testSandbox("/home/u/proj/store")
 	sb.extraDeny = []denylist.Rule{{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true}}
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/proj/store"}}
-	if _, err := compile(p, enforce.Process{}, sb); err == nil {
+	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
 		t.Error("a caller extraDeny path must stay refused - it is not an opt-in-able built-in shield")
 	}
 }
@@ -760,7 +798,7 @@ func TestGitDirShieldsTerminatesOnSymlinkLoop(t *testing.T) {
 func TestFileWriteGrantIsRejected(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work/out.txt"}}
 	sb := testSandbox("/work/out.txt") // exists as a file (no children)
-	_, err := compile(p, enforce.Process{}, sb)
+	_, _, err := compile(p, enforce.Process{}, sb)
 	if err == nil {
 		t.Fatal("a write grant naming an existing file should be rejected")
 	}
@@ -773,7 +811,7 @@ func TestFileWriteGrantIsRejected(t *testing.T) {
 // sandbox; unlike a "/" read grant it is never expanded, only refused.
 func TestRootWriteGrantIsRejected(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/"}}
-	_, err := compile(p, enforce.Process{}, testSandbox())
+	_, _, err := compile(p, enforce.Process{}, testSandbox())
 	if err == nil {
 		t.Fatal("a \"/\" write grant should be rejected")
 	}
@@ -847,14 +885,14 @@ func TestManagedMountGrantRefused(t *testing.T) {
 			{Entrypoint: "/work/run.py", Read: []string{managed}},
 			{Entrypoint: "/work/run.py", Write: []string{managed}},
 		} {
-			if _, err := compile(p, enforce.Process{}, testSandbox()); err == nil {
+			if _, _, err := compile(p, enforce.Process{}, testSandbox()); err == nil {
 				t.Errorf("grant of %s should be refused, not overmount the sandbox's own", managed)
 			}
 		}
 	}
 
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/proc/cpuinfo"}}
-	if _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
+	if _, _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
 		t.Errorf("a specific path inside /proc should still bind: %v", err)
 	}
 }
@@ -863,7 +901,7 @@ func TestManagedMountGrantRefused(t *testing.T) {
 // hard error rather than silently vanishing behind the shield.
 func TestGrantInsideShieldedPathIsRejected(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh/pubkeys"}}
-	_, err := compile(p, enforce.Process{}, testSandbox())
+	_, _, err := compile(p, enforce.Process{}, testSandbox())
 	if err == nil {
 		t.Fatal("a grant inside ~/.ssh should be rejected, not silently dropped")
 	}
@@ -877,7 +915,7 @@ func TestGrantInsideShieldedPathIsRejected(t *testing.T) {
 // the parent.
 func TestReadGrantContainingShieldedPathIsAllowed(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
-	if _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
+	if _, _, err := compile(p, enforce.Process{}, testSandbox()); err != nil {
 		t.Fatalf("reading $HOME (with ~/.ssh shielded inside) should be allowed: %v", err)
 	}
 }
@@ -887,7 +925,7 @@ func TestReadGrantContainingShieldedPathIsAllowed(t *testing.T) {
 // replace a symlinked one, bypassing it.
 func TestWriteGrantContainingShieldedPathIsRejected(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	_, err := compile(p, enforce.Process{}, testSandbox())
+	_, _, err := compile(p, enforce.Process{}, testSandbox())
 	if err == nil {
 		t.Fatal("a write grant of $HOME (above ~/.ssh) should be rejected")
 	}
@@ -910,7 +948,7 @@ func TestWriteGrantAboveSymlinkedShieldIsRejected(t *testing.T) {
 		return p
 	}
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u"}}
-	_, err := compile(p, enforce.Process{}, sb)
+	_, _, err := compile(p, enforce.Process{}, sb)
 	if err == nil {
 		t.Fatal("a write grant above a symlinked ~/.ssh should be rejected (the symlink is deletable in the writable parent)")
 	}
@@ -921,7 +959,7 @@ func TestWriteGrantAboveSymlinkedShieldIsRejected(t *testing.T) {
 
 func TestEnvIsClearedAndAllowlistApplied(t *testing.T) {
 	proc := enforce.Process{Env: map[string]string{"LANG": "C", "TOKEN": "abc"}}
-	args, err := compile(&policy.Policy{Entrypoint: "/work/run.py"}, proc, testSandbox())
+	args, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py"}, proc, testSandbox())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -1170,7 +1208,7 @@ func TestReadRootShieldsHostRuntimeSockets(t *testing.T) {
 // grant inside ~/.ssh.
 func TestGrantOfRuntimeDirIsRefused(t *testing.T) {
 	sb := testSandbox("/run", "/run/docker.sock")
-	_, err := compile(&policy.Policy{Read: []string{"/run/docker.sock"}}, enforce.Process{}, sb)
+	_, _, err := compile(&policy.Policy{Read: []string{"/run/docker.sock"}}, enforce.Process{}, sb)
 	if err == nil {
 		t.Fatalf("a grant of /run/docker.sock must be refused, not silently shielded")
 	}

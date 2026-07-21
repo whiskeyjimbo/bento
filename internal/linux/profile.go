@@ -85,7 +85,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		stopProxy = stop
 	}
 
-	args, err := compile(p, proc, sb)
+	args, _, err := compile(p, proc, sb)
 	if err != nil {
 		return profile.Observation{}, err
 	}

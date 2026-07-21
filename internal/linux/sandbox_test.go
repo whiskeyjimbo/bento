@@ -89,6 +89,41 @@ func TestUngrantedPathIsNotReadable(t *testing.T) {
 	}
 }
 
+// The enforced run reports the always-on shields it engaged all the way out to the
+// Result, so an operator can confirm the boundary worked. A home grant reaches the
+// credential shields under it, so a real run must surface ~/.ssh as hidden - the
+// compile-level test proves the set is computed; this proves Run threads it to Result.
+func TestRunResultReportsAppliedShields(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{home, dir}, Exec: policy.ExecAll}
+
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	ssh := filepath.Join(home, ".ssh")
+	found := false
+	for _, s := range res.Shields {
+		if s.Path == ssh && s.Kind == "hidden" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Run result did not report the ~/.ssh shield the home grant reached; Shields=%v", res.Shields)
+	}
+}
+
 // A read grant is read-only: writing to it must fail.
 func TestReadGrantIsNotWritable(t *testing.T) {
 	requireSandbox(t)

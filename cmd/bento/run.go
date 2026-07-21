@@ -122,16 +122,18 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// that as bentoFailed would overwrite the real exit code with 125 - a lie
 		// that bento could not run the script. Warn and still pass the code through.
 		if err := writeJSON(stdout, struct {
-			ExitCode          int        `json:"exit_code"`
-			Stdout            string     `json:"stdout"`
-			Stderr            string     `json:"stderr"`
-			EgressConnections int        `json:"egress_connections"`
-			ShieldedGrants    []string   `json:"shielded_grants,omitempty"`
-			Report            reportJSON `json:"report"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toReportJSON(res.Report)}); err != nil {
+			ExitCode          int          `json:"exit_code"`
+			Stdout            string       `json:"stdout"`
+			Stderr            string       `json:"stderr"`
+			EgressConnections int          `json:"egress_connections"`
+			ShieldedGrants    []string     `json:"shielded_grants,omitempty"`
+			Shields           []shieldJSON `json:"shields,omitempty"`
+			Report            reportJSON   `json:"report"`
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), toReportJSON(res.Report)}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
+		writeShieldSummary(stderr, res)
 		writeShieldedGrantWarning(stderr, res)
 		writeDegradations(stderr, res.Report)
 		writeEgressHint(stderr, p, res)

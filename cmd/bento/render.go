@@ -56,6 +56,48 @@ func toReportJSON(r enforce.Report) reportJSON {
 	return out
 }
 
+// shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is
+// "hidden" or "read-only"; see enforce.ShieldApplied.
+type shieldJSON struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
+	if len(shields) == 0 {
+		return nil
+	}
+	out := make([]shieldJSON, 0, len(shields))
+	for _, s := range shields {
+		out = append(out, shieldJSON{Path: s.Path, Kind: s.Kind})
+	}
+	return out
+}
+
+// writeShieldSummary prints one concise line confirming the boundary engaged: how many
+// credential/host-service paths the run shielded, so an operator sees the sandbox is
+// working without a per-path dump (the full list is in --json). It records what the
+// sandbox shielded from its rule set, not what the target tried to reach, so it is
+// silent when a run's grants reached no shield.
+func writeShieldSummary(w io.Writer, res enforce.Result) {
+	if len(res.Shields) == 0 {
+		return
+	}
+	hidden, readonly := 0, 0
+	for _, s := range res.Shields {
+		if s.Kind == "read-only" {
+			readonly++
+		} else {
+			hidden++
+		}
+	}
+	msg := fmt.Sprintf("%d hidden", hidden)
+	if readonly > 0 {
+		msg += fmt.Sprintf(", %d read-only", readonly)
+	}
+	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg)
+}
+
 func writeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

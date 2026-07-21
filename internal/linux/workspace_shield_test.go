@@ -33,7 +33,7 @@ func TestWorkspaceShieldRedirectRefused(t *testing.T) {
 				return base(p)
 			}
 			p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/work"}}
-			if _, err := compile(p, enforce.Process{}, sb); err == nil {
+			if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
 				t.Fatalf("a write grant whose .git shield is redirected (%s) must be refused", name)
 			}
 		})
@@ -69,7 +69,7 @@ func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := &policy.Policy{Entrypoint: entry, Write: []string{root}}
-		if _, err := compile(p, enforce.Process{}, realSB(entry)); err != nil {
+		if _, _, err := compile(p, enforce.Process{}, realSB(entry)); err != nil {
 			t.Fatalf("a real symlink-free project write grant must not be refused: %v", err)
 		}
 	})
@@ -88,7 +88,7 @@ func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := &policy.Policy{Entrypoint: entry, Write: []string{root}}
-		if _, err := compile(p, enforce.Process{}, realSB(entry)); err == nil {
+		if _, _, err := compile(p, enforce.Process{}, realSB(entry)); err == nil {
 			t.Fatal("a write grant whose real .git is a symlink escaping the grant must be refused")
 		}
 	})

@@ -99,7 +99,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		defer stopProxy()
 	}
 
-	args, err := compile(p, proc, sb)
+	args, shields, err := compile(p, proc, sb)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -136,12 +136,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}

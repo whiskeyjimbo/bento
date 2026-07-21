@@ -157,7 +157,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 		return // a refused policy is never enforced; nothing to prove about its shields
 	}
 
-	args := denyArgs(sb, reads, nil, optInRes)
+	args, _ := denyArgs(sb, reads, nil, optInRes)
 	allDests := shieldDests(args, sb.emptyFile, false)
 	hidingDests := shieldDests(args, sb.emptyFile, true)
 
