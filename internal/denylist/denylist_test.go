@@ -40,6 +40,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.local/state/nvim/undo",  // undo files hold full prior contents of edited files
 		"/home/u/.local/state/nvim/swap",  // live buffer contents, including unsaved edits
 		"/home/u/.local/state/nvim/backup",
+		"/home/u/.local/share/nvim/shada", // pre-0.8 legacy location, abandoned but not deleted on upgrade
+		"/home/u/.local/share/nvim/undo",
+		"/home/u/.local/share/nvim/swap",
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]

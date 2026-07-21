@@ -112,13 +112,19 @@ func Home(home string) []Rule {
 
 		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
 		// default-deny a program that legitimately needs its own history opts in per-path.
-		".adobe",                           // Flash local storage (LSO)
-		".macromedia",                      // Flash local storage (legacy)
-		".ne",                              // ne editor state, incl. history
-		".local/state/nvim/shada",          // nvim registers + command/search history (the .viminfo equivalent)
-		".local/state/nvim/undo",           // persistent undo files hold full prior contents of edited files
-		".local/state/nvim/swap",           // swap files hold live buffer contents, including unsaved edits, of every open file
-		".local/state/nvim/backup",         // 'backup' writes prior file contents here (off by default, but plantable/populated)
+		".adobe",                   // Flash local storage (LSO)
+		".macromedia",              // Flash local storage (legacy)
+		".ne",                      // ne editor state, incl. history
+		".local/state/nvim/shada",  // nvim registers + command/search history (the .viminfo equivalent)
+		".local/state/nvim/undo",   // persistent undo files hold full prior contents of edited files
+		".local/state/nvim/swap",   // swap files hold live buffer contents, including unsaved edits, of every open file
+		".local/state/nvim/backup", // 'backup' writes prior file contents here (off by default, but plantable/populated)
+		// Pre-0.8 nvim kept the same three stores under stdpath('data'); an upgraded host
+		// keeps the abandoned files (nvim never migrates or deletes them), so the legacy
+		// location holds the same secrets and is shielded too.
+		".local/share/nvim/shada",
+		".local/share/nvim/undo",
+		".local/share/nvim/swap",
 		".cache/xfce4/clipman",             // clipboard history
 		".kde/share/apps/klipper",          // clipboard history
 		".kde4/share/apps/klipper",         // clipboard history (KDE4)

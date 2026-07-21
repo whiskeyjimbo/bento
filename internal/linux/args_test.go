@@ -423,6 +423,34 @@ func TestCertAndMailDirsAreShielded(t *testing.T) {
 	}
 }
 
+// The legacy pre-0.8 nvim stores (shada/undo/swap under ~/.local/share/nvim) are DenyAll
+// dirs nested inside the DenyWrite ~/.local/share/nvim plugin tree. The nesting looks like
+// the last-wins hazard the deny loop warns about (a later parent ro-bind could shadow an
+// earlier child tmpfs), so prove it cannot bite: under a read grant the child is hidden and
+// the parent shield never emits (DenyWrite only shields where a grant is writable), and the
+// one grant shape that would emit the parent - a write reaching the tree - is refused for
+// containing the DenyAll child. Together those close the collision without reordering.
+func TestLegacyNvimStoresHiddenUnderReadGrantWriteRefused(t *testing.T) {
+	// shada must both exist and be a directory in the fake fs, so pass a child under it.
+	sb := testSandbox(
+		"/home/u/.local/share/nvim",
+		"/home/u/.local/share/nvim/lazy/plugin.lua", // plugin tree stays readable
+		"/home/u/.local/share/nvim/shada",
+		"/home/u/.local/share/nvim/shada/main.shada",
+	)
+	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, sb)
+	if pairIndex(args, "--tmpfs", "/home/u/.local/share/nvim/shada") < 0 {
+		t.Error("a read grant must hide the legacy nvim shada store")
+	}
+	if pairIndex(args, "--ro-bind", "/home/u/.local/share/nvim") >= 0 {
+		t.Error("the DenyWrite parent must not emit under a read grant, or its bind would shadow the child shield")
+	}
+
+	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.local/share/nvim"}}, enforce.Process{}, sb); err == nil {
+		t.Error("a write grant reaching the DenyAll shada child must be refused")
+	}
+}
+
 // A hidden credential shield binds a PATH, so a hardlink to the same inode elsewhere in
 // a granted tree stays readable past the shield. hardlinkedShields walks each engaged
 // hidden shield - including the credential files inside a directory shield - and reports
