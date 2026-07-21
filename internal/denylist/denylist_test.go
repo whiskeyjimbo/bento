@@ -38,6 +38,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.Mail",                   // capitalized maildir variant
 		"/home/u/.local/state/nvim/shada", // nvim registers + command/search history (like .viminfo)
 		"/home/u/.local/state/nvim/undo",  // undo files hold full prior contents of edited files
+		"/home/u/.local/state/nvim/swap",  // live buffer contents, including unsaved edits
+		"/home/u/.local/state/nvim/backup",
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]

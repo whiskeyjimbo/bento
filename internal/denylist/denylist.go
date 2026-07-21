@@ -117,6 +117,8 @@ func Home(home string) []Rule {
 		".ne",                              // ne editor state, incl. history
 		".local/state/nvim/shada",          // nvim registers + command/search history (the .viminfo equivalent)
 		".local/state/nvim/undo",           // persistent undo files hold full prior contents of edited files
+		".local/state/nvim/swap",           // swap files hold live buffer contents, including unsaved edits, of every open file
+		".local/state/nvim/backup",         // 'backup' writes prior file contents here (off by default, but plantable/populated)
 		".cache/xfce4/clipman",             // clipboard history
 		".kde/share/apps/klipper",          // clipboard history
 		".kde4/share/apps/klipper",         // clipboard history (KDE4)
