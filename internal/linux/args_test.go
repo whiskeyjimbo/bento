@@ -425,19 +425,11 @@ func TestCertAndMailDirsAreShielded(t *testing.T) {
 
 // The legacy pre-0.8 nvim stores (shada/undo/swap under ~/.local/share/nvim) are DenyAll
 // dirs nested inside the DenyWrite ~/.local/share/nvim plugin tree. This locks in the two
-// grant shapes the shield does cover: a read grant hides the child (and the DenyWrite parent
-// never emits, since it shields only where a grant is writable), and a write reaching the
-// whole tree is refused for containing the DenyAll child.
-//
-// RESIDUAL (not covered here, tracked separately): a write grant to a SIBLING under the
-// parent - e.g. write: ~/.local/share/nvim/lazy, the plugin-install grant the DenyWrite
-// parent exists to allow - makes the parent writable-reachable, so its --ro-bind fires and
-// re-exposes the stores read-only (and emitted after the child tmpfs, or without it when no
-// read grant reaches the child). Closing that needs the general fix: carve DenyAll holes
-// inside a shielded DenyWrite tree (emit DenyAll last AND force-emit DenyAll descendants
-// when a DenyWrite ancestor's shield fires). This predates the shield - the parent bind
-// exposed these before they were listed at all - so the shield is a strict improvement, not
-// a regression, but it is not complete.
+// simplest grant shapes: a read grant hides the child (and the DenyWrite parent never emits,
+// since it shields only where a grant is writable), and a write reaching the whole tree is
+// refused for containing the DenyAll child. The sibling-write shape, where the parent's bind
+// fires and would otherwise re-expose the child, is carved out by denyArgs and covered by
+// TestNestedDenyAllHiddenUnderExposedParent and TestDenyAllChildEmittedAfterExposedDenyWriteParent.
 func TestLegacyNvimStoresHiddenUnderReadGrantWriteRefused(t *testing.T) {
 	// shada must both exist and be a directory in the fake fs, so pass a child under it.
 	sb := testSandbox(
