@@ -251,8 +251,8 @@ func TestSynthesizeDropsRuntimeDirGrants(t *testing.T) {
 // must see. The home-shape test is structural, not keyed on the profiler's own $HOME.
 func TestRuntimeTreeRejectsBroadTrees(t *testing.T) {
 	keep := map[string]string{
-		"/opt/py/bin/python3":           "/opt/py",
-		"/home/u/proj/.venv/bin/python": "/home/u/proj/.venv",
+		"/opt/py/bin/python3":                                           "/opt/py",
+		"/home/u/proj/.venv/bin/python":                                 "/home/u/proj/.venv",
 		"/home/u/.local/share/mise/installs/python/3.14/bin/python3.14": "/home/u/.local/share/mise/installs/python/3.14",
 	}
 	for interp, want := range keep {

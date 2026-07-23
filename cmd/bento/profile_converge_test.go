@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,12 +32,7 @@ func branchingRound(discovery *policy.Policy) (*policy.Policy, error) {
 }
 
 func hasPath(paths []string, want string) bool {
-	for _, p := range paths {
-		if p == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paths, want)
 }
 
 func baseDiscovery() *policy.Policy {

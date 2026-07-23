@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"slices"
 	"time"
 )
 
@@ -82,13 +83,11 @@ func deriveNAT64Prefix(addr net.IP) (nat64Prefix, bool) {
 	for _, length := range rfc6052Lengths {
 		pos := rfc6052Positions[length]
 		v4 := [4]byte{ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]]}
-		for _, known := range ipv4onlyV4 {
-			if v4 == known {
-				var p nat64Prefix
-				copy(p.prefix[:], ip16[:length/8]) // keep prefix bits, drop embedded/suffix
-				p.prefixLen = length
-				return p, true
-			}
+		if slices.Contains(ipv4onlyV4, v4) {
+			var p nat64Prefix
+			copy(p.prefix[:], ip16[:length/8]) // keep prefix bits, drop embedded/suffix
+			p.prefixLen = length
+			return p, true
 		}
 	}
 	return nat64Prefix{}, false

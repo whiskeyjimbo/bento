@@ -14,9 +14,11 @@ func newRootCmd() *cobra.Command {
 			"What a given host can actually enforce varies. bento reports every gap rather\n" +
 			"than quietly substituting a weaker sandbox - run `bento doctor` to see what\n" +
 			"this host enforces.",
+		Version:       versionInfo(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd())
+	root.SetVersionTemplate("bento {{.Version}}\n")
+	root.AddCommand(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd(), newVersionCmd())
 	return root
 }
