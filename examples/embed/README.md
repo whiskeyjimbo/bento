@@ -29,7 +29,7 @@ go build -o embed .
 ```
 
 This module is intentionally separate (its own `go.mod`), so Go's internal-package
-rule turns any import of `bento-v2/internal/...` into a compile error. If it
+rule turns any import of `bento/internal/...` into a compile error. If it
 builds, bento's public packages are self-sufficient for an embedder.
 
 ## The demo

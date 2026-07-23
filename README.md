@@ -1,202 +1,171 @@
-# bento
+<p align="center">
+  <img src=".github/assets/bento-gopher.png" width="25%" alt="Bento Gopher Logo" />
+</p>
 
-Run an untrusted script under the permissions declared in a manifest: deny-by-default
-filesystem access, no network unless a rule allows it, no subprocesses unless asked.
-bento enforces those permissions with the kernel (bubblewrap, seccomp, Landlock, cgroups
-on Linux), and it reports every gap between what a manifest asks for and what the host can
-actually enforce rather than quietly substituting a weaker sandbox.
+# Bento
 
-> Status: this is the ground-up v2 rebuild. The Linux backend is implemented and tested.
-> macOS is planned (see `docs/design.md` section 6.6) and not yet built. See the beads
-> issue tracker (`bd ready`) for what is in flight.
+**Run untrusted scripts under strict, manifest-declared permissions.**
 
-## Why
+Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted code (build scripts, CLI utilities, AI agent actions) with deny-by-default security. It isolates filesystem access, blocks unauthorized network egress, prevents subprocess execution, and shields host credentials even if a manifest includes broad read grants.
 
-Two properties define bento:
+Bento surfaces any gap between what a manifest requests and what the host kernel can enforce, refusing to run under degraded security when `--strict` is enabled.
 
-- **Isolation.** The script runs in a sandbox that can only see and touch what the manifest
-  grants. Everything else is denied by default, and a mandatory deny-list shields
-  credentials, SSH keys, cloud and CLI tokens, OS keyrings, crypto vaults, shell history,
-  and startup/exec configs no matter what a broad grant would otherwise expose.
-- **Declarative permissions.** The policy lives in a manifest, not in code. There is no
-  runtime prompting: bento either runs within the declared permissions or refuses. That is
-  what makes it usable unattended (CI, agents, Go embedders), where no human is present to
-  answer a dialog. `run` also refuses a manifest whose approval is missing or stale (the
-  permissions changed since it was approved), so an unreviewed change cannot run unattended;
-  `--allow-unapproved` opts out for the profile-then-run inner loop.
+> **Status:** Fully implemented and verified on **Linux (amd64)** using bubblewrap, seccomp, Landlock, and systemd cgroups. Support for **Linux (arm64)** and **macOS** is planned. See [`docs/architecture.md`](docs/architecture.md) for architecture details and [`docs/threat-model.md`](docs/threat-model.md) for security boundaries.
 
-When the host cannot enforce something a manifest declares, bento does not silently run a
-weaker sandbox. It surfaces the shortfall in `bento doctor` and in the run output, and
-`--strict` refuses rather than degrade.
+---
 
-## Requirements
+## Why Bento?
 
-- Linux with **bubblewrap** (`bwrap`) installed and **unprivileged user namespaces**
-  enabled (bento skips or reports clearly when they are unavailable).
-- Go 1.26 to build.
-- Optional: a systemd user manager with delegated `memory`/`pids` (and `cpu`) controllers
-  for resource limits.
+- **Default-Deny Isolation:** The sandbox only exposes explicitly granted files and directories. Everything else is hidden.
+- **Built-in Credential & Host Shielding:** Sensitive paths (`~/.ssh`, `~/.aws`, GPG keyrings, OS keyrings, environment-relocated secret stores, runtime sockets in `/run`, and persistence targets like `.git/hooks` or `.vscode`) remain shielded even under broad grants like `read: ~`.
+- **Declarative Permissions & Fingerprinted Approvals:** Policy lives in a human-readable manifest (`manifest.yaml`). Unattended runs (`bento run`) require a valid approval fingerprint over policy fields to prevent unreviewed permission creep in CI or autonomous agents.
+- **Egress-Controlled Proxy:** Network traffic is blocked by default in an unshared network namespace. Per-host egress is strictly routed through a host-side HTTP CONNECT proxy with hostname validation and IP pin checks.
+- **Host Honesty & No Quiet Degradation:** `bento doctor` reports kernel capability support. When host isolation layers (such as seccomp or cgroups) are unavailable, Bento flags the shortfall instead of quietly falling back to a weaker sandbox.
 
-## Build
+---
 
+## Requirements & Installation
+
+### Requirements
+- **OS:** Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled.
+- **Build Toolchain:** Go 1.26 or later.
+- **Optional:** `systemd` user manager with delegated `memory`, `pids`, and `cpu` controllers for resource limits.
+
+### Build from Source
 ```sh
 go build -o bento ./cmd/bento
 ```
 
-## Workflow
+---
 
-The manifest is tool-owned: you generate it by profiling, review it, approve it, then run.
+## Quick Start Workflow
+
+Bento follows a 4-step workflow: **Profile → Validate → Approve → Run**.
 
 ```sh
-# 1. Observe what the script actually does and propose a tight manifest.
-#    Profiling runs the script; do it on code you would run unsandboxed. Egress is
-#    recorded but not forwarded by default, so the script's data stays on the host.
-bento profile ./fetch.py            # writes ./fetch.py.manifest.yaml
-#   --interpreter python3           # override the interpreter guessed from the extension
-#   --out ./fetch.yaml              # write the manifest somewhere other than <script>.manifest.yaml
-#   --allow-network                 # forward egress for a faithful run of network-dependent code
+# 1. Profile: Observe what a script touches under default-deny to generate a draft manifest.
+#    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
+bento profile ./fetch.py
 
-# 2. Review the proposed permissions.
-bento validate ./fetch.py.manifest.yaml
-#   --strict                        # exit non-zero on a stale/missing approval (CI gate)
-#   --json                          # emit the parsed policy as JSON
+# 2. Validate: Check manifest syntax and review requested permissions.
+bento validate ./fetch.py.manifest.yaml --strict
 
-# 3. Approve it (stamps an approval fingerprint over the policy fields).
+# 3. Approve: Stamp an approval fingerprint over the reviewed manifest policy fields.
 bento approve ./fetch.py.manifest.yaml
 
-# 4. Run the script under the approved manifest. run refuses an unapproved or stale
-#    manifest by default (pass --allow-unapproved to run one anyway).
+# 4. Run: Execute the script inside the enforced sandbox.
+#    Refuses to run if the manifest is unapproved or modified unless --allow-unapproved is passed.
 bento run ./fetch.py.manifest.yaml
-#   --strict                        # refuse unless every guarantee the policy needs is fully enforced
-#   --allow-degraded                # run even when a core guarantee is only partially enforced
-#   --env NAME=VALUE                # supply a value for an allowlisted env var (repeatable)
-#   --json                          # emit a machine-readable result envelope instead of the streams
 
-# At any time: what can this host actually enforce?
+# Inspect Host Capabilities: Verify what isolation mechanisms this host kernel enforces.
 bento doctor
-#   --json                          # emit the enforcement matrix as JSON
 ```
 
-## The manifest
+---
+
+## Security & Threat Model
+
+Bento assumes the sandboxed program may be hostile or contain compromised dependencies. For complete details on adversary assumptions, non-goals, and residual security gaps, see **[`docs/threat-model.md`](docs/threat-model.md)**.
+
+### What Bento Protects
+1. **Credentials & Secrets:** SSH keys, cloud CLI tokens, GPG keyrings, crypto vaults, and shell histories under `$HOME`.
+2. **Host Integrity & Persistence:** Blocks write access to persistence vectors such as `.git/hooks`, `.vscode`, `.idea`, and shell initialization files (`.bashrc`, `.zshrc`).
+3. **Host Service Sockets:** Shields unix control sockets in `/run` and `/var/run` (e.g., Docker daemon, gpg-agent, session bus) to prevent host compromise via socket connections.
+4. **Network Egress:** Denies outbound network connections by default via an empty network namespace (`--unshare-net`).
+5. **Secrecy During Profiling:** Profiling inspects syscall registers directly (via `ptrace`) without opening host files, preventing untrusted scripts from probing secrets during manifest discovery.
+
+### Built-in Shields & Exceptions
+- **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: ~`) are strictly refused.
+- **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh/id_rsa`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
+- **Fail-Closed Principle:** Any ambiguity, missing permission, unhandled network request, or missing kernel feature fails closed by default.
+
+---
+
+## Manifest Reference
+
+Manifests define the sandbox policy in YAML:
 
 ```yaml
-entrypoint: ./fetch.py          # script or compiled binary
-interpreter: python3            # optional; omit for a compiled binary
+entrypoint: ./fetch.py          # Script or binary to execute
+interpreter: python3            # Optional interpreter (omit for compiled binaries)
 args: [--verbose]
 
-env: [LANG, AWS_DEFAULT_REGION]  # allowlist of env var NAMES; values passed through if set
+env: [LANG, AWS_DEFAULT_REGION]  # Allowlist of environment variable names to pass through
 
-read:  [./data]                 # deny-by-default; paths relative to the manifest
-write: [./out]                  # directory-granular (see note); a missing dir is created
+read:  [./data]                 # Allowed read paths (deny-by-default; relative to manifest)
+write: [./out]                  # Allowed write directories (automatically created if missing)
 
-network:                        # a list of rules; omitted/empty means all egress denied
-  - host: api.github.com        # host + quoted port; suffix match with a leading dot
+network:                        # Allowed egress rules (empty/omitted means all network denied)
+  - host: api.github.com
     port: "443"
 
-exec: none                      # none (blocks execve) | none-strict (also fork/clone, threads ok; amd64) | all
+exec: none                      # Subprocess execution: none | none-strict | all
 limits: { memory: 128M, cpu: 100%, pids: 32 }
 
-# Written by the tool, not by hand:
+# Provenance block generated by `bento approve`
 provenance:
   generated-by: bento profile
   generated-at: 2026-07-14T00:00:00Z
-  approves: <sha-256 over the policy fields>   # attests the policy, not the code
+  approves: <sha256-fingerprint-over-policy-fields>
 ```
 
-**Write grants are directory-granular.** A `write:` entry names a directory, not a file.
-This is forced by the enforcement mechanism: the sandbox can only make a directory writable
-in a way that supports creating and renaming files inside it. Naming a file breaks
-save-via-rename (editors, `os.replace`, git), so a write grant that names an existing file
-is refused, and a granted directory that does not exist yet is created before the run.
+---
 
-A write grant that *contains* a shielded credential path is also refused: `write: ~`
-(above `~/.ssh`) or `write: ~/.cargo` (above `~/.cargo/credentials`) would make the
-shield's parent writable, so bento refuses it and asks you to grant a narrower directory.
-A broad *read* grant over the same tree is fine - the deny-list keeps carving out the
-credentials inside it.
+## Enforcement Matrix
 
-A program that legitimately needs a shielded path (a deploy tool that reads `~/.ssh`) can
-opt in by naming the shield's exact path in `read:`. That is honored as a deliberate,
-caveat-emptor exception: the shield is skipped, the real content binds read-only, and the
-exposure is surfaced in the run output (and `--json`). The opt-in is read-only and applies
-only to bento's built-in credential shields: a *write* grant of a shield stays refused (the
-key-planting vector), an embedder's own `denyPaths` stay shielded, and a broad enclosing
-grant keeps carving rather than exposing the shield.
+Bento organizes enforcement capabilities into **Core** and **Hardening** tiers:
 
-## What is enforced
-
-bento reports capabilities in tiers. The **core tier** is the baseline both platforms aim
-to provide; the **hardening tier** is Linux-only for now.
-
-| Guarantee | Tier | Linux mechanism |
+| Guarantee | Tier | Linux Mechanism |
 |---|---|---|
-| Read only granted paths | core | bubblewrap read-only binds, deny-by-default root |
-| Write only granted directories | core | bubblewrap read-write binds; root remounted read-only |
-| Credentials/dotfiles always shielded | core | deny-list bind mounts (even for unborn paths) |
-| No egress unless a rule allows it | core | empty network namespace (no route out) |
-| Per-host:port egress | core | host-side SNI/CONNECT allowlist proxy behind the fence |
-| No `execve` subprocesses | hardening | seccomp exec-block filter (`none-strict` also blocks fork/clone on amd64) |
-| memory / pids / cpu limits | hardening | transient `systemd` scope |
-| Filesystem backstop behind bubblewrap | hardening | Landlock (best-effort) |
+| Read only granted paths | Core | Bubblewrap read-only bind mounts, deny-by-default root |
+| Write only granted directories | Core | Bubblewrap read-write bind mounts; root remounted read-only |
+| Shield credentials & dotfiles | Core | Mandatory denylist bind mounts (covers uncreated paths) |
+| Deny network egress by default | Core | Empty network namespace (`--unshare-net`) |
+| Per-host:port network egress | Core | Host-side HTTP CONNECT proxy over isolated unix socket |
+| Block `execve` subprocesses | Hardening | Seccomp syscall filter (`none-strict` blocks fork/clone on amd64) |
+| Memory / CPU / PID limits | Hardening | Systemd transient scope with cgroup v2 controllers |
+| Filesystem backstop | Hardening | Landlock LSM rules (best-effort secondary layer) |
 
-If a hardening layer is unavailable on the host, `doctor` and `run` say so, and `--strict`
-refuses. The Landlock backstop is best-effort: it warns and proceeds rather than making
-bubblewrap's confinement contingent on it.
+If a hardening layer is missing on the host, `bento doctor` flags the shortfall. When `--strict` is passed, `bento run` refuses to execute under degraded enforcement.
+
+---
 
 ## Architecture
 
-bento is layered behind one seam so a platform backend can be swapped without touching the
-core.
+Bento is architected around a platform-decoupled enforcement seam:
 
-- `enforce` - the `Enforcer` interface (`Probe` + `Run`) and the degradation
-  reporting (`Report`, tiers, states, admission). A backend answers with what it actually
-  enforced; no backend type appears in the core's signatures.
-- `policy` - the `Policy` domain model, validation, host:port matching, and the
-  approval `Fingerprint` (platform-independent).
-- `internal/denylist` - the mandatory deny-list as platform-independent data; each backend
-  decides how to enforce a rule.
-- `manifest` - manifest load/marshal and provenance.
-- `internal/proxy` - the egress allowlist CONNECT proxy, shared across platforms.
-- `internal/linux` - the bubblewrap backend, with `internal/launcher` (the in-sandbox
-  stage), `internal/observe` (the ptrace profiler), `internal/seccomp`, and
-  `internal/landlock`.
-- `backend` - selects the platform backend; `profile` synthesizes a
-  manifest from an observed run.
+- **`enforce`**: Core `Enforcer` interface (`Probe` + `Run`) and degradation reporting (`Report`, enforcement tiers).
+- **`policy`**: Domain model, manifest validation, host:port matching, and approval fingerprinting.
+- **`internal/denylist`**: Platform-independent mandatory denylist data structures and rules.
+- **`internal/linux`**: Linux implementation using bubblewrap, `internal/launcher`, `internal/observe` (ptrace profiler), seccomp, and Landlock.
+- **`internal/proxy`**: Shared host-side egress HTTP CONNECT proxy.
+- **`manifest`**: YAML manifest loader, serializer, and provenance tracker.
+- **`backend`**: Backend selection logic and profiling synthesis.
 
-The full design and rationale, including the macOS plan and the security model, live in
-[`docs/design.md`](docs/design.md).
+---
 
-## Development
+## Development & Testing
 
-This module builds standalone; if you have a parent `go.work`, disable it for these
-commands:
+Run tests and checks locally:
 
 ```sh
-GOWORK=off go build ./...
+# Run tests (sandbox tests automatically skip if bwrap/userns are missing)
+GOWORK=off go test ./...
+
+# Run vet
 GOWORK=off go vet ./...
-GOWORK=off go test ./...        # the sandbox tests skip when bwrap/userns are unavailable
+
+# Audit denylist against upstream firejail reference definitions
+./scripts/denylist-audit.sh
 ```
 
-The tests run real probes inside real sandboxes and assert that the boundary actually
-holds - a policy compiler that produces plausible arguments proves nothing about whether
-the sandbox confines anything.
+The test suite executes real probes inside real bubblewrap sandboxes to verify that security boundaries strictly hold.
 
-`scripts/denylist-audit.sh` cross-references bento's credential/exec deny-list against
-firejail's upstream `disable-common.inc` and prints any secret- or exec-scope shield
-bento is missing, so the list stays complete without hand-hunting. It needs network
-access (firejail's data is fetched as a GPL reference, never vendored) and exits non-zero
-when a gap is found, so it can gate CI; a failed fetch is reported and does not fail the
-build. Run it after adding a tool that stores credentials, and classify each flagged path
-into `internal/denylist/denylist.go`.
+---
 
-## Security notes
+## License & Security
 
-- Profiling runs the script under the same default-deny sandbox a real run gets: nothing
-  under your home is mounted, so a probe of `~/.ssh` is recorded but never exposed. The
-  proposal shows what the script *wants*; you grant it explicitly. Because nothing sensitive
-  is bound, one run can under-report - grant what it shows and profile again to converge -
-  so treat the proposed manifest as a proposal to review, not a guarantee.
-- The approval fingerprint attests the *policy*, not the code. Re-approve after changing
-  permissions; changing the script does not invalidate an approval.
-- Known residual gaps are tracked in the issue tracker and documented in `docs/design.md`
-  (for example, on Linux the exec-block is soft on `execveat`).
+Bento is released under the [Apache 2.0 License](LICENSE).
+
+For security architecture, threat boundaries, and architectural decision records, refer to [`docs/architecture.md`](docs/architecture.md), [`docs/threat-model.md`](docs/threat-model.md), and [`docs/adr/`](docs/adr/).
+
