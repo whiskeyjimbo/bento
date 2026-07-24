@@ -77,7 +77,7 @@ vuln: ## Scan both modules for known vulnerabilities (needs network)
 	@printf "$(GREEN)$(BOLD)✓ No known vulnerabilities!$(RESET)\n"
 
 repro: ## Verify the binary builds byte-identically from a different source path
-	@./scripts/repro-build.sh
+	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" ./scripts/repro-build.sh
 
 check: vet test audit ## Run all quality gates (vet, test, audit)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"

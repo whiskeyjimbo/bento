@@ -24,6 +24,19 @@ if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
 	exit 2
 fi
 
+# Without this the hashes below come back empty on a host lacking the tool, compare
+# equal, and the check reports success having measured nothing - the one failure a
+# verification gate must never have.
+if ! command -v sha256sum >/dev/null 2>&1; then
+	echo "repro: sha256sum not found, cannot compare builds" >&2
+	exit 2
+fi
+
+# Taken from the environment so `make repro` verifies the flags `make build` actually
+# uses; a local default keeps the script runnable on its own. Hardcoding a second copy
+# would let the two drift and leave this gate certifying a build nobody ships.
+build_flags=${GO_BUILD_FLAGS:--trimpath -buildvcs=false}
+
 version=${VERSION:-0.1.0-dev}
 commit=$(git -C "$repo" rev-parse --short HEAD)
 epoch=$(git -C "$repo" log -1 --format=%ct)
@@ -41,7 +54,9 @@ git -C "$repo" archive --format=tar HEAD | (cd "$work/b" && tar x) || exit 2
 for d in a b; do
 	# The two trees sit at different paths, which is the point: an untrimmed build
 	# bakes $work/<d> into the binary and the hashes then differ.
-	(cd "$work/$d" && GOWORK=off CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+	# build_flags is deliberately unquoted: it carries several words.
+	# shellcheck disable=SC2086
+	(cd "$work/$d" && GOWORK=off CGO_ENABLED=0 go build $build_flags \
 		-ldflags "$ldflags" -o "$work/bento-$d" ./cmd/bento) || {
 		echo "repro: build failed in $d" >&2
 		exit 2
