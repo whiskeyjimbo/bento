@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -95,25 +96,13 @@ func openPTY(t *testing.T) (master, slave *os.File) {
 		m.Close()
 		t.Skipf("cannot read the pty number here: %v", err)
 	}
-	s, err := os.OpenFile(filepath.Join("/dev/pts", itoa(n)), os.O_RDWR|syscall.O_NOCTTY, 0)
+	s, err := os.OpenFile(filepath.Join("/dev/pts", strconv.Itoa(n)), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		m.Close()
 		t.Skipf("cannot open the pty slave: %v", err)
 	}
 	t.Cleanup(func() { s.Close(); m.Close() })
 	return m, s
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
 
 // The launching process must itself own the pty as its controlling terminal, or the whole
@@ -162,7 +151,12 @@ func TestBwrapTierDetachesControllingTerminalHelper(t *testing.T) {
 	}
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		t.Fatalf("CONTROL_NOCTTY %v", err)
+		// Report and exit CLEANLY: failing to obtain a controlling terminal is a
+		// property of the host, not a broken guarantee, and the parent can only tell
+		// the two apart if this half distinguishes them. Fataling here would exit
+		// non-zero and the parent would call it a failure instead of skipping.
+		t.Logf("CONTROL_NOCTTY %v", err)
+		return
 	}
 	f.Close()
 	t.Log("CONTROL_HASCTTY")

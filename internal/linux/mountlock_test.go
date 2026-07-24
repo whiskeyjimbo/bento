@@ -123,8 +123,9 @@ func TestShieldsSurviveRemountFromInsideSandbox(t *testing.T) {
 		t.Errorf("control: the granted write directory should stay writable (proving the probe detects writability at all); output:\n%s", got)
 	}
 
-	// The sandbox-side report is only half of it: what matters is that nothing appeared
-	// in the real hooks directory on the host, whatever happened to the mount inside.
+	// Belt and suspenders. The UNWRITABLE token above is the real guard - the probe
+	// removes its own file, so a breach would leave this directory empty anyway - but a
+	// probe that somehow wrote without reporting it would still be caught here.
 	entries, err := os.ReadDir(shield)
 	if err != nil {
 		t.Fatal(err)
