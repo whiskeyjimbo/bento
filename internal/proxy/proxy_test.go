@@ -102,6 +102,53 @@ func TestAllowedHostTunnels(t *testing.T) {
 	}
 }
 
+// A hostname rule must not be satisfiable by dialing the address that hostname
+// resolves to. The allowlist matches the CONNECT authority as a string, so a target
+// naming the IP is a different target than the rule's name - otherwise anyone who
+// resolved an allowlisted name once could reach any host sharing that address (shared
+// CDN/reverse-proxy IPs), and a rule scoped to one name would silently widen to every
+// site behind it. Both an apex rule and a subdomain-suffix rule are pinned, because the
+// suffix form is the one a reader is most likely to assume is address-based.
+func TestIPLiteralDoesNotSatisfyHostnameRule(t *testing.T) {
+	for name, rule := range map[string]policy.NetworkRule{
+		"literal host rule":  {Host: "example.com", Port: "443"},
+		"suffix host rule":   {Host: ".example.com", Port: "443"},
+		"wildcard port rule": {Host: "example.com", Port: "*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := New([]policy.NetworkRule{rule}, WithDialer(fakeDialer("HELLO")))
+			dialProxy, stop := startProxy(t, p)
+			defer stop()
+
+			c := dialProxy()
+			defer c.Close()
+			// 93.184.216.34 was example.com's public address; an attacker who resolved
+			// the name offline would dial exactly this.
+			status, _ := connect(t, c, "93.184.216.34:443")
+			if !strings.Contains(status, "403") {
+				t.Errorf("an IP literal satisfied the hostname rule %+v: status = %q, want 403", rule, status)
+			}
+		})
+	}
+
+	// Positive control: the same IP literal IS reachable when a rule names the address
+	// itself. Without this the denials above would also pass if the proxy rejected every
+	// IP-literal target for some unrelated reason, which would prove nothing about the
+	// name-versus-address distinction this test exists to pin.
+	t.Run("explicit IP rule admits it", func(t *testing.T) {
+		p := New([]policy.NetworkRule{{Host: "93.184.216.34", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
+		dialProxy, stop := startProxy(t, p)
+		defer stop()
+
+		c := dialProxy()
+		defer c.Close()
+		status, _ := connect(t, c, "93.184.216.34:443")
+		if !strings.Contains(status, "200") {
+			t.Fatalf("an explicit IP rule must admit its own address: status = %q, want 200", status)
+		}
+	})
+}
+
 func TestDeniedHostRefusedWithReason(t *testing.T) {
 	var seen []string
 	p := New(
