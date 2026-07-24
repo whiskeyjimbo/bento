@@ -28,16 +28,26 @@ guarantee. What is promised: a boundary report is triaged before feature work.
 
 In scope - any of these is a security bug, even without a working exploit:
 
-- A shielded path becomes readable, writable, or plantable from inside the
-  sandbox. The credential and persistence shields (`~/.ssh`, cloud tokens, GPG
-  and OS keyrings, password stores, `.git/hooks`, editor task files, and the
-  runtime socket directory) are the core promise.
-- A grant exposes more than it names - a sibling directory, a symlink or hardlink
-  target outside the granted tree, a parent.
+- A **hidden** shield leaks: a path that should be invisible becomes readable,
+  writable, or plantable from inside the sandbox. These are the credential and
+  runtime-socket shields (`~/.ssh`, cloud tokens, GPG and OS keyrings, password
+  stores, and the runtime socket directory) - the sandbox replaces each with an
+  empty stand-in, so any read of the real content is a failure.
+- A **write** shield is written or planted through: the persistence shields
+  (`.git/hooks`, `.git/config`, editor task files under `.vscode` / `.idea`) are
+  deliberately left readable so a build can consult them, but a write or a planted
+  file that reaches the real path is a failure. Reading these is by design, not a
+  bug.
+- A grant exposes more than it names - a sibling directory, a symlink target
+  outside the granted tree, a parent. (A host-created hardlink or bind alias into
+  a granted tree is a documented residual, not a bug; see threat model section 5.)
 - Network egress reaches a host the manifest did not allow, or bypasses the
   proxy allowlist.
-- A subprocess runs under `exec: none`, through any path other than the
-  documented `execveat` and `io_uring` limitations.
+- A subprocess runs under `exec: none` through any path other than the documented
+  `execveat` limitation. (`io_uring` is a separate documented gap - it dispatches
+  I/O, not process creation - so an `io_uring` file or socket operation reaching
+  past enforcement is in scope, but "a subprocess spawned via `io_uring`" is not a
+  thing it can do.)
 - **A layer degrades silently**: the host cannot enforce something and Bento
   reports it as enforced, or `--strict` runs instead of refusing. Silent
   degradation is the defect class Bento exists to eliminate, so it is treated as
@@ -58,6 +68,9 @@ of these are welcome as issues, but they are not vulnerabilities:
 - Anything that requires the host, the kernel, the bubblewrap binary, or the
   Bento binary itself to already be compromised. Those are trusted inputs; see
   threat model section 3.
+- A kernel 0-day or a hardware side channel used to escape confinement. An
+  unprivileged sandbox cannot defend against a bug in the kernel it runs on;
+  these are out of scope entirely, matching threat model section 5.
 
 If you are unsure which side of that line something falls on, report it
 privately and let the triage decide.
