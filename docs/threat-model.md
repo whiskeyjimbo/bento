@@ -46,10 +46,25 @@ A few things Bento trusts rather than defends:
   unprivileged user namespaces, bind mounts, and `--unshare-net`. The behavior
   we rely on is checked on kernel 6.8 and bwrap 0.9.0. An older or unusual kernel
   is an assumption we don't yet enforce - see section 5.
-- **The base image and interpreter closure.** The read-only base and the nix
-  closure of the program's interpreter are mounted readable inside the sandbox.
-  Their integrity is part of the boundary. They aren't user data and don't show
-  up on the consent surface.
+- **The base image and the Nix store.** The read-only base (`/usr`, `/bin`,
+  `/lib`, the CA bundles) is mounted readable inside the sandbox, and when the
+  program's interpreter comes from Nix, so is the store. Note the scope: not that
+  interpreter's closure but `/nix/store` *whole*, because a store path's shared
+  libraries are themselves separate store paths and binding only the interpreter's
+  prefix leaves it unable to load. Their integrity is part of the boundary, and
+  none of it shows up on the consent surface.
+
+  Integrity here rests on the host's Nix, not on anything Bento checks, and it is
+  worth being precise about what that does and doesn't buy. Standard store paths
+  are *input*-addressed: the hash names the derivation that produced the path, not
+  the bytes sitting there now. So the path hash cannot be recomputed to detect
+  tampering the way a content hash could - what protects the store is that it is
+  immutable and root-owned, plus whatever trust the host placed in the substituter
+  it fetched from. Bento binds it read-only, so a sandboxed program cannot alter
+  what the next run executes, but it does not re-verify the store and should not:
+  that is `nix store verify`'s job and the host's business, and a compromised host
+  is already out of scope. A poisoned store means a poisoned interpreter, and no
+  sandbox survives that.
 - **Your own grants.** An explicit grant is caveat emptor. Grant `read: ~/.ssh`
   and you get a warning, then Bento takes you at your word. What it defends
   against is a *broad* grant pulling in a secret you didn't think about - not a
@@ -62,9 +77,9 @@ A few things Bento trusts rather than defends:
 The sandbox root is a tmpfs, remounted read-only after everything else is in
 place (`--remount-ro /` goes on last, so `/tmp`, `/dev`, `/proc`, and the paths
 you granted stay writable). The program wakes up in an almost-empty world: the
-read-only base and interpreter closure from section 3, plus the paths you
-granted, and nothing more. The shields below still apply on top of the base
-mounts. There's no route from "not listed" to "readable."
+read-only base and, for a Nix interpreter, the store from section 3, plus the
+paths you granted, and nothing more. The shields below still apply on top of the
+base mounts. There's no route from "not listed" to "readable."
 
 ### 4.2 Credential and persistence shields
 
@@ -143,6 +158,17 @@ in `/var/lib/mysql`, say) or one a host process opens partway through the run is
 only reachable if a grant exposes its directory - but no fixed list can name them
 all. They're covered when they sit inside a shielded store, and a residual
 otherwise.
+
+**Secrets built into the Nix store.** The store is bound readable whole, on the
+premise that it holds world-readable package content and no user data. That
+premise is Nix's own model, and it holds for anything built normally - but a
+derivation that embeds a secret (reading a key file at build time, or passing a
+token as a build argument) lands that secret in a world-readable store path. It
+is a known Nix anti-pattern rather than a Bento one, and on a host that has done
+it, every sandbox with a Nix interpreter can read it. Bento cannot tell such a
+path from any other package, so it does not try: keep secrets out of derivations.
+The same reasoning applies to the read-only base - a credential someone parked in
+`/usr` is readable too.
 
 **Datagram `sendmsg` to a socket.** Putting sockets on the consent surface via a
 `connect()` hook is a usability win, not a control: a datagram `sendmsg` skips
@@ -224,7 +250,7 @@ The boundary we're building toward:
 - Every escape we know about is a regression test, and the Linux and macOS
   backends are proven to enforce the same thing rather than assumed to.
 - The version facts we lean on become startup preconditions that fail loud, and
-  the build and its bound-in closure have an audited supply chain.
+  the build and everything it binds in readable have an audited supply chain.
 - An operator can watch the boundary engage and tell when a tool is failing
   closed because it was denied something it needed.
 - An outside security review of the isolation and permission model before anyone
