@@ -175,8 +175,8 @@ func writeExposedWarning(w io.Writer, res enforce.Result) {
 	if len(res.Exposed) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] WARNING: this host cannot shield credentials, so these paths a normal run would")
-	fmt.Fprintln(w, "[bento] hide or make read-only were left exposed to the script - review that this is intended:")
+	fmt.Fprintln(w, "[bento] WARNING: this host cannot shield credentials or persistence surfaces, so these paths")
+	fmt.Fprintln(w, "[bento] a normal run would hide or make read-only were left exposed to the script - review:")
 	for _, s := range res.Exposed {
 		fmt.Fprintf(w, "[bento]   %q (%s)\n", s.Path, s.Kind)
 	}

@@ -71,10 +71,14 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 
 	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
 	// would carve are discovered), record which always-on shields a bwrap run would have
-	// engaged for this policy. This tier applies none of them - the whole host filesystem
-	// is visible - so they are exposed, not hidden, and the audit says so rather than
-	// reporting an empty shield set for a run that shielded nothing.
-	exposed := exposedShields(sb, reads, writes, optIns)
+	// engaged among the paths THIS tier actually exposes - its Landlock read/write set,
+	// sysReads + reads + writes. The degraded tier applies none of them (no mount
+	// namespace), so they are exposed, not hidden, and the audit says so rather than
+	// reporting an empty shield set for a run that shielded nothing. Scoping to the real
+	// exposure, not the full tier's exposedPaths, keeps it from warning about a credential
+	// under an interpreter prefix this tier never makes readable.
+	sysReads, sysWrites := degradedSystemPaths()
+	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optIns)
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
@@ -93,7 +97,6 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if sb.interpreter != "" {
 		execPaths = append(execPaths, sb.interpreter)
 	}
-	sysReads, sysWrites := degradedSystemPaths()
 	block, strictBlock := execBlockFlags(p.Exec, seccompSupported())
 	cfg := launcher.DegradedConfig{
 		Readable:    concat(sysReads, reads),

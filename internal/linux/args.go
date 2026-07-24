@@ -294,13 +294,16 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 	return out
 }
 
-// exposedShields reports the always-on shields a full bwrap run would have engaged for
-// this policy, for the degraded tier to record as exposed rather than applied. It runs
-// the same deny-list match denyArgs does - so it names exactly what the full tier would
-// have hidden or made read-only - and discards the argv, since the degraded tier has no
-// mount namespace to apply it in. Opt-ins are already dropped by denyArgs.
-func exposedShields(sb sandbox, reads, writes, optIns []string) []enforce.ShieldApplied {
-	_, applied := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
+// exposedShields reports the always-on shields a bwrap run would have engaged among the
+// paths visible to this run, for the degraded tier to record as exposed rather than
+// applied. It runs the same deny-list match denyArgs does - naming exactly what would have
+// been hidden or made read-only - and discards the argv, since the degraded tier has no
+// mount namespace to apply it in. visible is the set this tier actually exposes host
+// content at (its Landlock read/write set), NOT the full tier's exposedPaths: the degraded
+// tier never binds an out-of-FHS interpreter's whole prefix, so a credential under it is
+// not exposed here and must not be reported as if it were. Opt-ins are dropped by denyArgs.
+func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.ShieldApplied {
+	_, applied := denyArgs(sb, visible, writes, optIns)
 	return shieldsApplied(applied)
 }
 

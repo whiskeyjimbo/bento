@@ -66,6 +66,17 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	if got := exposedShields(sb, reads, nil, optIns); len(got) != 0 {
 		t.Fatalf("unrelated read: exposed = %v, want empty", got)
 	}
+
+	// A write grant on a checkout exposes its persistence surfaces - git hooks and editor
+	// task dirs - which the full tier would make read-only. This exercises the DenyWrite ->
+	// "read-only" kind, distinct from the hidden credential stores above, so a regression
+	// that flattened every exposed record to "hidden" is caught.
+	proj := testSandbox("/home/u/proj/.git/config", "/home/u/proj/.git/hooks/pre-commit")
+	writes := []string{"/home/u/proj"}
+	_, wOptIns := explicitShieldOptIns(proj, nil)
+	if got := exposedShields(proj, writes, writes, wOptIns); !has(got, "/home/u/proj/.git/hooks", "read-only") {
+		t.Fatalf("write grant on a checkout: exposed = %v, want .git/hooks read-only", got)
+	}
 }
 
 // A signal-killed target must surface as 128+signal, matching the bwrap and supervise
