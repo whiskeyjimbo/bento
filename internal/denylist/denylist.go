@@ -491,8 +491,9 @@ func Home(home string) []Rule {
 	// is shielded above, so a value equal to that default is already covered and dropped.
 	// INPUTRC (readline macros run on a keypress), PYTHONSTARTUP (interactive python init),
 	// SCREENRC (GNU screen runs its commands), PSQLRC (psql \! runs a shell command), and
-	// R_PROFILE_USER / R_ENVIRON_USER (R evaluates them at startup, and .Renviron can point
-	// R_PROFILE_USER at a writable file) all run host code from the file they name.
+	// R_PROFILE_USER (.Rprofile is R code evaluated at startup) name a file the host runs.
+	// R_ENVIRON_USER (.Renviron is name=value lines) is here because one of those lines can
+	// point R_PROFILE_USER at a writable file, so a plantable .Renviron is a foothold too.
 	for _, de := range []struct{ env, def string }{
 		{"INPUTRC", ".inputrc"},
 		{"PYTHONSTARTUP", ".pythonrc.py"},
