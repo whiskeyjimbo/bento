@@ -67,6 +67,8 @@ bento doctor
 
 Bento assumes the sandboxed program may be hostile or contain compromised dependencies. For complete details on adversary assumptions, non-goals, and residual security gaps, see **[`docs/threat-model.md`](docs/threat-model.md)**.
 
+To report a boundary failure privately, and for how versioning treats a shield regression, see **[`SECURITY.md`](SECURITY.md)**.
+
 ### What Bento Protects
 1. **Credentials & Secrets:** SSH keys, cloud CLI tokens, GPG keyrings, crypto vaults, and shell histories under `$HOME`.
 2. **Host Integrity & Persistence:** Blocks write access to persistence vectors such as `.git/hooks`, `.vscode`, `.idea`, and shell initialization files (`.bashrc`, `.zshrc`).
