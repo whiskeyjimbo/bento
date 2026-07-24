@@ -261,7 +261,7 @@ func dropInheritedFDs() error {
 // the run report (from Probe) marks the exec-strict layer degraded so the gap is
 // never silent.
 func installExecFilter(strict bool) error {
-	if strict && seccomp.StrictExecSupported() {
+	if strict && strictExecSupported() {
 		return seccomp.BlockExecStrict()
 	}
 	return seccomp.BlockExec()

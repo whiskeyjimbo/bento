@@ -54,6 +54,7 @@ type DegradedConfig struct {
 var (
 	landlockAvailable      = landlock.Available
 	seccompEgressSupported = seccomp.EgressSupported
+	strictExecSupported    = seccomp.StrictExecSupported
 )
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
