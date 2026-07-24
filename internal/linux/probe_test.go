@@ -170,6 +170,9 @@ func TestProbeReadsTheEgressCheckForTheDegradedTier(t *testing.T) {
 
 	swap(t, &seccompEgressSupported, false)
 	after := layerStatus(t, enforce.LayerFilesystem)
+	// The state check carries the teeth here: the Degraded reason this must NOT be
+	// also mentions the seccomp egress block, so a reason-only assertion passes even
+	// when Probe ignores the check entirely.
 	if after.State != enforce.Unavailable || !strings.Contains(after.Reason, "seccomp") {
 		t.Errorf("with the egress fence absent filesystem = %v (%q), want unavailable blaming the seccomp fences - Probe is not reading the check",
 			after.State, after.Reason)

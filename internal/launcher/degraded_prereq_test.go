@@ -74,6 +74,9 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 				t.Fatalf("child failed: %v\n%s", err, out)
 			}
 			got := string(out)
+			// The fence name carries the teeth: runDegraded prefixes ANY RunDegraded
+			// error with "REFUSED: ", so a bypassed guard still prints one (the target
+			// fails later, under Landlock). Only these strings are unique to the guard.
 			if !strings.Contains(got, "REFUSED: ") || !strings.Contains(got, tc.wantHas) {
 				t.Errorf("with %s absent the child printed %q; want a refusal naming %q - RunDegraded is not reading the check",
 					tc.fence, got, tc.wantHas)
