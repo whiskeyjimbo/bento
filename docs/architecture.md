@@ -97,21 +97,21 @@ Capabilities are structured into **Core** (baseline guarantees) and **Hardening*
 
 ```mermaid
 flowchart LR
-    subgraph Core Tier ["Core Tier (Baseline Guarantees)"]
+    subgraph CoreTier ["Core Tier (Baseline Guarantees)"]
         FS["Filesystem Isolation (tmpfs ro-root)"]
         Shields["Credential & Socket Shields (~/.ssh, /run)"]
         NetFence["Empty Net Namespace (--unshare-net)"]
         ProxyEgress["Egress CONNECT Proxy"]
     end
 
-    subgraph Hardening Tier ["Hardening Tier (Linux Hardening)"]
+    subgraph HardeningTier ["Hardening Tier (Linux Hardening)"]
         Seccomp["Seccomp Subprocess Blocking"]
         Cgroups["Systemd Scope Resource Limits"]
         Landlock["Landlock LSM Backstop"]
     end
 
-    Core Tier --> DoctorCheck{"bento doctor Check"}
-    Hardening Tier --> DoctorCheck
+    CoreTier --> DoctorCheck{"bento doctor Check"}
+    HardeningTier --> DoctorCheck
     DoctorCheck -->|All Intact| CleanRun["Clean Enforced Execution"]
     DoctorCheck -->|Hardening Missing & --strict| RefuseRun["Refuse Execution (Fail Closed)"]
 ```
