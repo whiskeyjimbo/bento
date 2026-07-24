@@ -171,6 +171,12 @@ func run(manifestPath string) int {
 	for _, path := range res.ShieldedGrants {
 		fmt.Fprintf(os.Stderr, "embed: WARNING: exposed shielded credential path to the target: %s\n", path)
 	}
+	// Exposed names what a full run would have shielded but this tier could not (the
+	// degraded, no-mount-namespace tier). Same honesty contract as ShieldedGrants: the
+	// backend does not refuse, so a frontend that stays silent hides the exposure.
+	for _, s := range res.Exposed {
+		fmt.Fprintf(os.Stderr, "embed: WARNING: host cannot shield %s (%s), left exposed to the target\n", s.Path, s.Kind)
+	}
 	return res.ExitCode
 }
 

@@ -129,14 +129,16 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			ShieldedGrants    []string     `json:"shielded_grants,omitempty"`
 			Shields           []shieldJSON `json:"shields,omitempty"`
 			HardlinkedShields []string     `json:"hardlinked_shields,omitempty"`
+			Exposed           []shieldJSON `json:"exposed,omitempty"`
 			Report            reportJSON   `json:"report"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), res.HardlinkedShields, toReportJSON(res.Report)}); err != nil {
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), res.HardlinkedShields, toShieldsJSON(res.Exposed), toReportJSON(res.Report)}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
 		writeShieldSummary(stderr, res)
 		writeShieldedGrantWarning(stderr, res)
 		writeHardlinkWarning(stderr, res)
+		writeExposedWarning(stderr, res)
 		writeDegradations(stderr, res.Report)
 		writeEgressHint(stderr, p, res)
 	}

@@ -294,6 +294,16 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 	return out
 }
 
+// exposedShields reports the always-on shields a full bwrap run would have engaged for
+// this policy, for the degraded tier to record as exposed rather than applied. It runs
+// the same deny-list match denyArgs does - so it names exactly what the full tier would
+// have hidden or made read-only - and discards the argv, since the degraded tier has no
+// mount namespace to apply it in. Opt-ins are already dropped by denyArgs.
+func exposedShields(sb sandbox, reads, writes, optIns []string) []enforce.ShieldApplied {
+	_, applied := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
+	return shieldsApplied(applied)
+}
+
 // hardlinkedShields reports the engaged credential files that carry an extra hardlink,
 // so a broad grant exposing a second name for the same inode does not do so silently. A
 // shield binds a PATH, so a hardlink to the credential's inode under a different granted

@@ -117,6 +117,18 @@ type Result struct {
 	// granted-tree scanning. Sorted and deduped, empty for the common run with no aliased
 	// credential in scope.
 	HardlinkedShields []string
+	// Exposed lists the always-on shields a full bwrap run WOULD have engaged for this
+	// policy but that this run left exposed, so the audit stays honest on a tier that
+	// cannot shield. It is populated only by the degraded tier, which has no mount
+	// namespace and therefore applies no shields at all: a home read grant that reached
+	// a credential store makes it readable to the target here, where the full tier would
+	// have hidden it. Each record names the path and the Kind the full tier would have
+	// applied ("hidden"/"read-only") - it is the protection this tier did NOT deliver,
+	// the mirror image of Shields, not evidence anything was hidden. Opt-ins are excluded
+	// (they are a deliberate exposure the full tier makes too, reported via
+	// ShieldedGrants). Sorted by path, empty for the full tier and for a degraded run
+	// whose grants reached no shield.
+	Exposed []ShieldApplied
 }
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path

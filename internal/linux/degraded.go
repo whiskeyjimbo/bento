@@ -55,7 +55,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
-	optedIn, _ := explicitShieldOptIns(sb, p.Read)
+	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
 	// A write grant is a directory the target writes into; create a missing one so
 	// Landlock has a path to grant (RWDirs skips a path that does not exist). Landlock
 	// cannot carve a shielded subpath out of an allowed tree, so a read grant that
@@ -68,6 +68,13 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 			}
 		}
 	}
+
+	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
+	// would carve are discovered), record which always-on shields a bwrap run would have
+	// engaged for this policy. This tier applies none of them - the whole host filesystem
+	// is visible - so they are exposed, not hidden, and the audit says so rather than
+	// reporting an empty shield set for a run that shielded nothing.
+	exposed := exposedShields(sb, reads, writes, optIns)
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
@@ -124,7 +131,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
-		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report, ShieldedGrants: optedIn}, nil
+		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report, ShieldedGrants: optedIn, Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

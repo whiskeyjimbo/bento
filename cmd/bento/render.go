@@ -165,6 +165,23 @@ func writeHardlinkWarning(w io.Writer, res enforce.Result) {
 	}
 }
 
+// writeExposedWarning tells the user which credential and persistence paths a full
+// bwrap run would have shielded but this degraded run left exposed, so a run on a
+// tier that cannot shield is not silent about what it exposed. The full tier's shield
+// summary confirms the boundary engaged; this is its counterpart when the boundary
+// could not. The paths carry host-enumerated names (submodule directories), so they
+// are quoted.
+func writeExposedWarning(w io.Writer, res enforce.Result) {
+	if len(res.Exposed) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] WARNING: this host cannot shield credentials, so these paths a normal run would")
+	fmt.Fprintln(w, "[bento] hide or make read-only were left exposed to the script - review that this is intended:")
+	for _, s := range res.Exposed {
+		fmt.Fprintf(w, "[bento]   %q (%s)\n", s.Path, s.Kind)
+	}
+}
+
 // writeDegradations tells the user exactly which guarantees this host is not
 // delivering. In a non-JSON run the target's own streams are live during the run, so
 // this prints after the script's output; a pre-run refusal is what --strict and

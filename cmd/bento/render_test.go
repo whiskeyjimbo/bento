@@ -102,3 +102,28 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 		t.Errorf("a run that opted into no shields must print nothing; got %q", empty.String())
 	}
 }
+
+func TestWriteExposedWarning(t *testing.T) {
+	var b bytes.Buffer
+	writeExposedWarning(&b, enforce.Result{Exposed: []enforce.ShieldApplied{
+		{Path: "/home/u/.ssh", Kind: "hidden"},
+		{Path: "/home/u/proj/.git/hooks", Kind: "read-only"},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("the notice must be loud; got %q", out)
+	}
+	// Each exposed path is named with the protection the degraded tier could not deliver,
+	// so the operator can see exactly what a normal run would have shielded.
+	for _, want := range []string{"/home/u/.ssh", "hidden", "/home/u/proj/.git/hooks", "read-only"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must name each exposed path and kind; %q missing from %q", want, out)
+		}
+	}
+
+	var empty bytes.Buffer
+	writeExposedWarning(&empty, enforce.Result{})
+	if empty.Len() != 0 {
+		t.Errorf("a run that exposed no shields (the full tier's every run) must print nothing; got %q", empty.String())
+	}
+}
