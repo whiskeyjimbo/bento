@@ -125,6 +125,8 @@ func Home(home string) []Rule {
 
 		// Browser profiles: cookies, session tokens, and saved-password databases.
 		".mozilla",               // Firefox
+		".config/mozilla",        // XDG Firefox profile location (cookies, key4.db, logins.json)
+		".zen",                   // Zen (Firefox fork): same profile store contents
 		".config/google-chrome",  // Chrome
 		".config/chromium",       // Chromium
 		".config/BraveSoftware",  // Brave
@@ -154,9 +156,10 @@ func Home(home string) []Rule {
 		".local/state/nvim/backup", // 'backup' writes prior file contents here (off by default, but plantable/populated)
 		// Pre-0.8 nvim kept the same three stores under stdpath('data'); an upgraded host
 		// keeps the abandoned files (nvim never migrates or deletes them), so the legacy
-		// location holds the same secrets and is shielded too. These are the only DenyAll
-		// entries that nest inside a DenyWrite directory (the readable ".local/share/nvim"
-		// plugin tree); a backend that binds a readable parent must carve them back out.
+		// location holds the same secrets and is shielded too. These DenyAll entries nest
+		// inside a DenyWrite directory (the readable ".local/share/nvim"/".local/state/nvim"
+		// trees; ".local/share/fish"/fish_history is the same shape); a backend that binds a
+		// readable parent must carve them back out.
 		".local/share/nvim/shada",
 		".local/share/nvim/undo",
 		".local/share/nvim/swap",
@@ -258,7 +261,9 @@ func Home(home string) []Rule {
 		".lesshst",
 		".histfile",
 		".python_history", // CPython's default readline REPL history (underscore is the real name)
+		".python-history", // dash-spelled variant some REPLs write
 		".pythonhist",     // bpython history
+		".cache/greenclip.history", // greenclip clipboard-manager history: holds pasted secrets
 		".mupdf.history",
 		".cache/mupdf.history",
 		".mutthistory",
@@ -350,12 +355,10 @@ func Home(home string) []Rule {
 		// Read-only in firejail: single init/config files whose modification redirects a
 		// later action (a browser profile pointer, an editor rc) or whose write-protection
 		// prevents tampering. Readable, plant/tamper-denied.
-		".nanorc",                            // nano rc (include/syntax directives)
-		".iscreenrc",                         // iscreen rc
-		".reportbugrc",                       // Debian reportbug config
-		".config/mozilla/firefox/profiles.ini", // profile pointer; a redirect loads a planted user.js
-		".zen/profiles.ini",                  // Zen browser profile pointer
-		".config/user-dirs.locale",           // locale for xdg user-dirs (write-protected against redirection)
+		".nanorc",                  // nano rc (include/syntax directives)
+		".iscreenrc",               // iscreen rc
+		".reportbugrc",             // Debian reportbug config
+		".config/user-dirs.locale", // locale for xdg user-dirs (write-protected against redirection)
 		".Xdefaults",                         // xrdb resources read at login
 		// Public finger(1) info files: not secrets and not executed, so left readable, but
 		// write-protected so a broad home write grant cannot tamper with published info.

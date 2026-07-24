@@ -21,6 +21,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.aws",
 		"/home/u/.local/share/keyrings",
 		"/home/u/.mozilla",
+		"/home/u/.config/mozilla", // XDG Firefox profile store
+		"/home/u/.zen",            // Zen browser profile store
 		"/home/u/.config/google-chrome",
 		"/home/u/.config/rclone",
 		"/home/u/.config/keybase",         // Keybase keys/tokens
@@ -89,7 +91,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/startupconfig", // KDE generated startup config
 		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
 		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
-		"/home/u/.php_history",    // php -a interactive REPL history
+		"/home/u/.php_history",           // php -a interactive REPL history
+		"/home/u/.python-history",        // dash-spelled Python REPL history variant
+		"/home/u/.cache/greenclip.history", // greenclip clipboard history (pasted secrets)
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]

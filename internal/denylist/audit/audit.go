@@ -257,8 +257,8 @@ var ReviewedGlobs = map[string]string{
 	// a .kdbx is an encrypted database (useless without its master password), and a key
 	// file placed at a self-chosen path is outside the concrete-path model. Re-check if a
 	// new upstream wildcard names a plaintext-secret class that a named store would miss.
-	"*.kdb":  "arbitrary-location KeePass 1.x database; encrypted at rest, and known credential stores are shielded by name",
-	"*.kdbx": "arbitrary-location KeePass 2.x database; encrypted at rest, and known credential stores are shielded by name",
+	"*.kdb":  "arbitrary-location KeePass 1.x database; bento shields named credential stores and cannot express a home-root wildcard",
+	"*.kdbx": "arbitrary-location KeePass 2.x database; bento shields named credential stores and cannot express a home-root wildcard",
 	"*.key":  "arbitrary-location key file; bento shields named key/credential stores, not a home-wide wildcard it cannot express",
 	// firejail write-protects per-host .Xdefaults-<hostname> variants; bento shields the
 	// base .Xdefaults (DenyWrite) and cannot express the wildcard, so the host variants are
