@@ -415,6 +415,7 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	t.Setenv("BASH_ENV", "/cfg/bashenv")
 	t.Setenv("ENV", "/cfg/shinit")
 	t.Setenv("INPUTRC", "/cfg/inputrc")
+	t.Setenv("PYTHONSTARTUP", "/cfg/pystartup")
 
 	byRule := map[string]Rule{}
 	for _, r := range Home("/home/u") {
@@ -423,7 +424,7 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 		}
 		byRule[r.Path] = r
 	}
-	for _, p := range []string{"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc"} {
+	for _, p := range []string{"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc", "/cfg/pystartup"} {
 		r, ok := byRule[p]
 		if !ok {
 			t.Errorf("expected a DenyWrite shield at %q (startup env relocation), missing", p)
@@ -462,6 +463,10 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	t.Setenv("HISTFILE", "/secrets/histfile")
 	t.Setenv("NPM_CONFIG_USERCONFIG", "/secrets/npmrc")
+	t.Setenv("LESSHISTFILE", "/secrets/lesshst")
+	t.Setenv("MYSQL_HISTFILE", "/secrets/mysqlhist")
+	t.Setenv("REDISCLI_HISTFILE", "/secrets/redishist")
+	t.Setenv("NODE_REPL_HISTORY", "/secrets/nodehist")
 
 	byRule := map[string]Rule{}
 	for _, r := range Home("/home/u") {
@@ -470,7 +475,10 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 		}
 		byRule[r.Path] = r
 	}
-	for _, p := range []string{"/secrets/histfile", "/secrets/npmrc"} {
+	for _, p := range []string{
+		"/secrets/histfile", "/secrets/npmrc",
+		"/secrets/lesshst", "/secrets/mysqlhist", "/secrets/redishist", "/secrets/nodehist",
+	} {
 		r, ok := byRule[p]
 		if !ok {
 			t.Errorf("expected a DenyAll shield at %q (credential relocation), missing", p)

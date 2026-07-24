@@ -412,11 +412,17 @@ func Home(home string) []Rule {
 	// passwords, pasted tokens) off ~/.bash_history / ~/.zsh_history; it has no single
 	// default (the name is shell-specific and the defaults are shielded individually), so
 	// any absolute target is shielded, and /dev/null - the idiom for disabling history -
-	// is left alone. NPM_CONFIG_USERCONFIG moves ~/.npmrc (auth tokens); a value equal to
-	// the default is already covered and dropped. Relative values cannot be bound.
+	// is left alone. The tool-specific *_HISTFILE / history vars move an already-shielded
+	// history file off its default; NPM_CONFIG_USERCONFIG moves ~/.npmrc (auth tokens). A
+	// value equal to the named default is already covered and dropped; relative values
+	// cannot be bound.
 	fileDenyAllEnvs := []struct{ env, def string }{
 		{"HISTFILE", ""},
 		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
+		{"LESSHISTFILE", ".lesshst"},
+		{"MYSQL_HISTFILE", ".mysql_history"},
+		{"REDISCLI_HISTFILE", ".rediscli_history"},
+		{"NODE_REPL_HISTORY", ".node_repl_history"},
 	}
 	for _, fe := range fileDenyAllEnvs {
 		v := os.Getenv(fe.env)
@@ -473,17 +479,23 @@ func Home(home string) []Rule {
 	// Env vars that relocate a single startup file the host runs, the DenyWrite analog of
 	// the block above. BASH_ENV is sourced by every non-interactive bash (why sudo strips
 	// it); ENV by interactive POSIX sh/ksh/mksh/dash, and it is how ~/.kshrc / ~/.mkshrc
-	// get designated. Both name a file with no default path to compare against. INPUTRC
-	// relocates readline's inputrc, whose macro bindings run on a keypress; its default
-	// ~/.inputrc is shielded above, so an equal value is dropped.
+	// get designated. Both name a file with no default path to compare against.
 	for _, env := range []string{"BASH_ENV", "ENV"} {
 		if v := os.Getenv(env); filepath.IsAbs(v) {
 			addWriteShield(filepath.Clean(v))
 		}
 	}
-	if ir := os.Getenv("INPUTRC"); filepath.IsAbs(ir) {
-		if c := filepath.Clean(ir); c != join(".inputrc") {
-			addWriteShield(c)
+	// INPUTRC (readline macro bindings run on a keypress) and PYTHONSTARTUP (sourced at
+	// interactive python startup) each have a conventional default shielded above, so a
+	// value equal to that default is already covered and dropped.
+	for _, de := range []struct{ env, def string }{
+		{"INPUTRC", ".inputrc"},
+		{"PYTHONSTARTUP", ".pythonrc.py"},
+	} {
+		if v := os.Getenv(de.env); filepath.IsAbs(v) {
+			if c := filepath.Clean(v); c != join(de.def) {
+				addWriteShield(c)
+			}
 		}
 	}
 	// CARGO_HOME relocates BOTH severity classes at once: the registry tokens
