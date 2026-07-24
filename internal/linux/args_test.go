@@ -267,6 +267,26 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 	}
 }
 
+// v1's allow_exec disabled seccomp AND Landlock AND the FD limit at once, so asking
+// for subprocesses silently surrendered filesystem confinement too. In v2 the exec
+// policy is an independent layer: exec: all drops only the exec-block, and the
+// credential shields stand exactly as they do under exec: none.
+func TestExecAllStillShieldsCredentials(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}, Exec: policy.ExecAll}
+	args := compileOrFail(t, p, sb)
+
+	grant := pairIndex(args, "--ro-bind-try", "/home/u")
+	shield := pairIndex(args, "--tmpfs", "/home/u/.ssh")
+	if grant < 0 || shield < 0 || shield < grant {
+		t.Errorf("exec: all lost the credential shield over a home grant; grant=%d shield=%d", grant, shield)
+	}
+	// The exec-block is the ONLY layer exec: all is allowed to drop.
+	if !hasFlagValue(args, "--exec", "all") {
+		t.Errorf("exec: all did not reach the launcher: %v", args)
+	}
+}
+
 // compile reports the always-on shields a run actually engaged, so an operator can
 // confirm the boundary is working. A grant reaching the home tree engages the
 // credential shields under it; each is reported hidden and the list is sorted. A grant
