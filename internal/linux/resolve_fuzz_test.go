@@ -1,10 +1,12 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -21,12 +23,16 @@ import (
 // just its leaf: a loop reached through a dangling leaf fails closed at a path like
 // n2/leaf where the symlink is the parent n2 and the missing leaf is not a link):
 //
-//   - result still has a symlink component => the depth-cutoff/loop branch. The only
-//     guarantee is that resolve returned an absolute path to fail closed on; assert
-//     nothing stronger.
-//   - result is fully symlink-free => a resolved path, which must be a FIXED POINT
-//     (resolve(resolve(p)) == resolve(p)) and, where the whole input path exists, must
-//     agree with the kernel's filepath.EvalSymlinks.
+//   - result still has a symlink component => the depth-cutoff/loop branch. A loop has no
+//     valid resolution, so the only guarantee is that resolve terminated and returned an
+//     absolute path to fail closed on; assert nothing stronger.
+//   - result is fully symlink-free => a resolved path, which must be a FIXED POINT and,
+//     crucially, must be where the kernel itself lands once the tree is populated: the
+//     oracle creates the missing components a write through start would create (each as a
+//     directory, following symlinks before a later "..") and requires the kernel to then
+//     resolve start to exactly that path. That is a real check on the dangling walk (which
+//     runs precisely when EvalSymlinks(start) fails, so comparing against EvalSymlinks
+//     directly would test nothing), catching any resolution that lands on the wrong path.
 //
 // This is breadth over the hand-written TestResolveFollows* cases (relative dangling leaf
 // through a symlinked parent, multi-hop dangling chain, ".." after a symlink), so it is
@@ -58,16 +64,20 @@ func buildSymlinkTree(root string, data []byte) {
 		// A target node index in [0, maxResolveNodes]; the extra value names a node that
 		// is never created, so the symlink dangles.
 		tgt := int(a) % (maxResolveNodes + 1)
-		switch a / 64 % 3 {
+		switch a / 64 % 4 {
 		case 0:
 			targets[i] = name(tgt) // absolute
 		case 1:
 			targets[i] = fmt.Sprintf("n%d", tgt) // relative, same directory
-		default:
-			// ".." after a component: resolved from root (the symlink's parent), this
-			// walks up and back into the tree, exercising the "apply .. only after the
-			// symlink is followed" path.
+		case 2:
+			// ".." after a real parent: walks up out of root and back in.
 			targets[i] = fmt.Sprintf("../%s/n%d", filepath.Base(root), tgt)
+		default:
+			// ".." AFTER ANOTHER NODE that may itself be a symlink: this is the class the
+			// raw-join logic exists for - if n<lead> is a symlink to a dir elsewhere, the ".."
+			// must apply to THAT dir, not be cleaned away lexically to name(tgt)'s sibling.
+			lead := (tgt + 1) % maxResolveNodes
+			targets[i] = fmt.Sprintf("n%d/../n%d", lead, tgt)
 		}
 	}
 
@@ -130,12 +140,51 @@ func assertResolveOracle(t *testing.T, start string) (looped bool) {
 	if r2 != r1 {
 		t.Fatalf("resolve is not a fixed point: resolve(%q) = %q, resolve(%q) = %q", start, r1, r1, r2)
 	}
-	// Where the whole input path exists, the custom dangling-walk must not diverge from
-	// the kernel's own resolution.
-	if eval, err := filepath.EvalSymlinks(start); err == nil && eval != r1 {
-		t.Fatalf("resolve(%q) = %q disagrees with EvalSymlinks = %q", start, r1, eval)
+
+	// The real oracle for the dangling walk: resolveExisting promises r1 is "the target a
+	// write through start would actually reach", following each symlink (even a dangling
+	// one) before a later "..". filepath.EvalSymlinks cannot validate that directly - it
+	// errors on the first missing component, and where start fully exists resolveExisting
+	// just returns EvalSymlinks verbatim, so agreeing there proves nothing about the walk.
+	// So confirm the prediction the way a real write would: populate the missing pieces and
+	// see where the kernel lands. This catches any bug that resolves start to the wrong path
+	// on the generated trees - a dropped path remainder, a mis-followed chain, a bad
+	// dangling leaf - since the kernel follows the true chain regardless of resolve's output.
+	// (The specific raw-vs-lexical ".." divergence needs a CROSS-DEPTH symlink these flat
+	// trees do not build; that case is pinned by TestResolveFollowsSymlinkBeforeDotDotInDanglingTarget.)
+	kernelR, ok := kernelResolveByPopulating(start)
+	if !ok {
+		return false // start routes through a real file (or did not converge); nothing to confirm
+	}
+	if kernelR != r1 {
+		t.Fatalf("resolve(%q) = %q, but once its dangling components are populated the kernel resolves start to %q", start, r1, kernelR)
 	}
 	return false
+}
+
+// kernelResolveByPopulating confirms resolve's write-target prediction the way the kernel
+// would once the tree is populated: it repeatedly asks filepath.EvalSymlinks(start) and,
+// each time the kernel reports a missing component, creates that component as a directory -
+// exactly the chain a write through start would create, following each (now-real) symlink
+// before a later "..". It returns where the kernel finally resolves start, or ok=false when
+// start routes through a real file (ENOTDIR, which resolveExisting handles lexically but the
+// kernel cannot) so there is no kernel resolution to compare against. Bounded so a
+// pathological input cannot spin; start is symlink-free-resolved here, so it holds no loop.
+func kernelResolveByPopulating(start string) (string, bool) {
+	for i := 0; i < 4*maxResolveNodes+16; i++ {
+		eval, err := filepath.EvalSymlinks(start)
+		if err == nil {
+			return eval, true
+		}
+		var pe *os.PathError
+		if !errors.As(err, &pe) || !errors.Is(err, syscall.ENOENT) {
+			return "", false // ENOTDIR (routes through a file) or unexpected: not confirmable
+		}
+		if os.MkdirAll(pe.Path, 0o755) != nil {
+			return "", false // an ancestor is a real file; cannot populate
+		}
+	}
+	return "", false // did not converge within the bound
 }
 
 func FuzzResolveSymlinkTree(f *testing.F) {
