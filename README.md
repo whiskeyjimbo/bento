@@ -144,6 +144,83 @@ Bento is architected around a platform-decoupled enforcement seam:
 
 ---
 
+## Embedding Bento (Go Library)
+
+Bento can be imported directly into Go applications to enforce sandbox policies in-process, receive structured execution results, or supply custom interactive network gates (such as prompting a human when an agent attempts undeclared network egress).
+
+### Minimal Example
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento-v2/manifest"
+)
+
+func main() {
+	// Dispatch sandbox re-exec stage before any other initialization
+	backend.DispatchReexec()
+
+	ctx := context.Background()
+
+	// 1. Load and parse the manifest file
+	f, err := os.Open("fetch.py.manifest.yaml")
+	if err != nil {
+		log.Fatalf("failed to open manifest: %v", err)
+	}
+	defer f.Close()
+
+	pol, err := manifest.Load(f)
+	if err != nil {
+		log.Fatalf("invalid manifest policy: %v", err)
+	}
+
+	// 2. Resolve environment variables allowed by the manifest policy
+	env, _, err := enforce.ResolveEnv(pol, nil, os.LookupEnv)
+	if err != nil {
+		log.Fatalf("env resolution failed: %v", err)
+	}
+
+	// 3. Create the platform backend enforcer
+	e, err := backend.New()
+	if err != nil {
+		log.Fatalf("failed to instantiate enforcer: %v", err)
+	}
+
+	// 4. Run the target inside the sandbox
+	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
+	res, err := enforce.Run(ctx, e, pol, proc, enforce.Options{})
+	if err != nil {
+		log.Fatalf("execution error: %v", err)
+	}
+
+	fmt.Printf("Exit Code: %d, Degraded: %v\n", res.ExitCode, res.Report.IsDegraded())
+}
+```
+
+### Runnable Examples
+
+Explore the [`examples/`](examples/) directory for complete, runnable reference code:
+
+- **[`examples/embed`](examples/embed)**: In-process execution with an interactive `NetworkGate` supervisor that prompts human approval for undeclared egress.
+- **[`examples/supervise`](examples/supervise)**: Full 2-act interactive wrapper demonstrating trial profiling for filesystem access and live proxy gating for network egress.
+
+### Live Network Gates vs. Filesystem Approvals
+
+When building a supervised wrapper (such as an editor agent or interactive CLI tool), Bento exposes two distinct interaction models:
+
+- **Live Network Egress (`NetworkGate`)**: Outbound traffic is routed through Bento's host-side proxy, allowing your application to supply a live callback (`opts.NetworkGate`) that prompts or evaluates egress requests synchronously at connect time.
+- **Pre-Run Filesystem Approvals**: File access is enforced directly inside the Linux kernel (Landlock and mount namespaces) and fails fast with `EACCES` without a userspace callback seam. Supervised wrappers implement filesystem policy by running a trial profiling pass (`backend.Profile`), prompting the user to approve/deny recorded file paths, and passing the resulting policy into the enforced run (`enforce.Run`).
+
+---
+
 ## Development & Testing
 
 Run tests and checks locally:
