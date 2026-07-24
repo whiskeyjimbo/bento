@@ -387,8 +387,10 @@ func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
 // DenyWrite shield: stacked after the DenyAll hide, its readable ro-bind would
 // expose the credential under bwrap's last-wins ordering.
 func TestHomeStartupRelocationSkipsDenyAllCollision(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.netrc") // a DenyAll file
-	t.Setenv("ZDOTDIR", "/home/u/.ssh")             // under a DenyAll dir
+	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.netrc")       // a DenyAll file
+	t.Setenv("ZDOTDIR", "/home/u/.ssh")                   // under a DenyAll dir
+	t.Setenv("PIP_CONFIG_FILE", "/home/u/.netrc")         // a colon-free single-file follow
+	t.Setenv("MAILCAPS", "/home/u/.ssh/x:/home/u/.netrc") // each colon entry must also route through the collision guard
 	for _, r := range Home("/home/u") {
 		if r.Deny == DenyWrite && (r.Path == "/home/u/.netrc" || strings.HasPrefix(r.Path, "/home/u/.ssh/")) {
 			t.Errorf("DenyWrite shield at %q collides with a DenyAll rule and would expose it", r.Path)
@@ -459,6 +461,62 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("INPUTRC=default must not add a second ~/.inputrc rule, got %d", count)
+	}
+}
+
+// PIP_CONFIG_FILE relocates pip.conf (index-url can redirect installs to a malicious
+// registry) and MAILCAPS relocates .mailcap (MIME handlers run on attachment open); both
+// name a file the host acts on, so each target gets a DenyWrite shield. MAILCAPS is a
+// colon-separated list (it replaces the default search path when set), so every entry is
+// shielded. Values equal to a shielded default and relative entries are dropped.
+func TestHomeShieldsRelocatedPipAndMailcapConfigs(t *testing.T) {
+	t.Setenv("PIP_CONFIG_FILE", "/cfg/pip.conf")
+	t.Setenv("MAILCAPS", "/cfg/a.mailcap:/cfg/b.mailcap")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
+		}
+		byRule[r.Path] = r
+	}
+	for _, p := range []string{"/cfg/pip.conf", "/cfg/a.mailcap", "/cfg/b.mailcap"} {
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a DenyWrite shield at %q (config relocation), missing", p)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("shield at %q must be a DenyWrite file rule, got %+v", p, r)
+		}
+	}
+
+	// A PIP_CONFIG_FILE equal to either shielded default and a MAILCAPS entry equal to the
+	// default add no second rule; relative entries are dropped entirely.
+	t.Setenv("PIP_CONFIG_FILE", "/home/u/.pip/pip.conf")
+	t.Setenv("MAILCAPS", "/home/u/.mailcap:rel.mailcap:/cfg/c.mailcap")
+	pipCount, mailcapCount, cCount := 0, 0, 0
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative MAILCAPS entry leaked a non-absolute shield path %q", r.Path)
+		}
+		switch r.Path {
+		case "/home/u/.pip/pip.conf":
+			pipCount++
+		case "/home/u/.mailcap":
+			mailcapCount++
+		case "/cfg/c.mailcap":
+			cCount++
+		}
+	}
+	if pipCount != 1 {
+		t.Errorf("PIP_CONFIG_FILE=default must not add a second ~/.pip/pip.conf rule, got %d", pipCount)
+	}
+	if mailcapCount != 1 {
+		t.Errorf("MAILCAPS default entry must not add a second ~/.mailcap rule, got %d", mailcapCount)
+	}
+	if cCount != 1 {
+		t.Errorf("a valid MAILCAPS entry alongside a relative one must still be shielded, got %d", cCount)
 	}
 }
 

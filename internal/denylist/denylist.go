@@ -516,6 +516,29 @@ func Home(home string) []Rule {
 			}
 		}
 	}
+	// PIP_CONFIG_FILE names the single pip.conf pip reads (index-url can redirect installs to
+	// a malicious registry), the DenyWrite analog of the single-default loop but with TWO
+	// conventional defaults, both shielded above. A value equal to either is already covered
+	// and dropped; a relative value cannot be bound.
+	if v := os.Getenv("PIP_CONFIG_FILE"); filepath.IsAbs(v) {
+		if c := filepath.Clean(v); c != join(".config/pip/pip.conf") && c != join(".pip/pip.conf") {
+			addWriteShield(c)
+		}
+	}
+	// MAILCAPS is a colon-separated list of mailcap files (MIME-type -> command run on
+	// attachment open); when set it replaces the default search path, so every listed file is
+	// one the host acts on. Shield each entry DenyWrite, the fileEnvs colon-split shape but
+	// routed through addWriteShield so an entry under a DenyAll rule is not re-exposed. The
+	// ~/.mailcap default is already shielded, so a matching entry is dropped, as are relative
+	// and empty entries.
+	for _, p := range filepath.SplitList(os.Getenv("MAILCAPS")) {
+		if !filepath.IsAbs(p) {
+			continue
+		}
+		if c := filepath.Clean(p); c != join(".mailcap") {
+			addWriteShield(c)
+		}
+	}
 	// CARGO_HOME relocates BOTH severity classes at once: the registry tokens
 	// (credentials{,.toml}, hidden) and the build configs (config{,.toml}, env - each
 	// names a rustc-wrapper/linker/runner the host executes, readable but not writable)
