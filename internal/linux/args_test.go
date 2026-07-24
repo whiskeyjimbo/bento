@@ -276,7 +276,10 @@ func TestExecAllStillShieldsCredentials(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}, Exec: policy.ExecAll}
 	args := compileOrFail(t, p, sb)
 
-	grant := pairIndex(args, "--ro-bind-try", "/home/u")
+	// The LAST grant of the home tree is the one that matters: bwrap is last-wins, so
+	// a re-bind emitted after the shield would re-expose the credential while an
+	// assertion against the first grant still saw the shield ordered correctly.
+	grant := lastPairIndex(args, "--ro-bind-try", "/home/u")
 	shield := pairIndex(args, "--tmpfs", "/home/u/.ssh")
 	if grant < 0 || shield < 0 || shield < grant {
 		t.Errorf("exec: all lost the credential shield over a home grant; grant=%d shield=%d", grant, shield)
