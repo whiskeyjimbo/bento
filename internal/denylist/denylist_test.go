@@ -46,6 +46,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/autostart",    // XDG autostart .desktop entries (hidden, matching firejail)
 		"/home/u/.config/systemd",      // systemd --user unit/timer tree
 		"/home/u/.local/share/systemd", // systemd --user state
+		"/home/u/Mail",                 // mutt default mail folder (no leading dot)
+		"/home/u/mail",                 // mutt default mail folder
+		"/home/u/Private",              // ecryptfs decrypted mount point
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -72,6 +75,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.xsession",       // X session script
 		"/home/u/.xprofile",       // X login profile
 		"/home/u/.xsessionrc",     // Debian/Ubuntu Xsession startup
+		"/home/u/.Xauthority",     // X display-access cookie (credential)
+		"/home/u/.signature",      // mail signature (PII/PGP fingerprint)
+		"/home/u/postponed",       // mutt postponed mbox
+		"/home/u/sent",            // mutt sent mbox
+		"/home/u/.zuluCrypt-socket", // zuluCrypt IPC socket
+		"/home/u/.s3cmd",          // s3cmd state
 		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
 		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
 		"/home/u/.php_history",    // php -a interactive REPL history

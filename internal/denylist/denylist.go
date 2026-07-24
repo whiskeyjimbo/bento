@@ -98,6 +98,8 @@ func Home(home string) []Rule {
 		".config/evolution", // GNOME Evolution
 		".mail",             // mutt/notmuch maildir; message bodies and cached credentials
 		".Mail",             // same, capitalized variant used by some setups
+		"Mail",              // mutt default mail folder at ~/Mail (no leading dot)
+		"mail",              // mutt default mail folder at ~/mail
 
 		// Browser profiles: cookies, session tokens, and saved-password databases.
 		".mozilla",               // Firefox
@@ -110,7 +112,8 @@ func Home(home string) []Rule {
 		".TrueCrypt",
 		".VeraCrypt",
 		".zuluCrypt",
-		".Private",                  // ecryptfs private directory
+		".Private",                  // ecryptfs private directory (encrypted underlay)
+		"Private",                   // ecryptfs DECRYPTED mount point at ~/Private: holds cleartext when mounted
 		".ecryptfs",                 // ecryptfs config and wrapped passphrase
 		".fscrypt",                  // fscrypt policies and protectors
 		".local/share/plasma-vault", // KDE Plasma Vault
@@ -193,6 +196,25 @@ func Home(home string) []Rule {
 		".davfs2/secrets",    // davfs2 mount credentials
 		".cargo/credentials", // legacy cargo registry token (pre-credentials.toml)
 		".passwd-s3fs",       // s3fs password file
+		".s3cmd",             // s3cmd state firejail blacklists (the .s3cfg config file is shielded above)
+
+		// Mail message stores and identity. mutt's default mailbox files/dirs and the
+		// signature; message bodies carry reset links and 2FA codes, and a signature can
+		// carry a PGP fingerprint or contact PII. The maildir roots ~/Mail and ~/mail are
+		// shielded as directories above.
+		"postponed",  // mutt default postponed-message mbox at ~/postponed
+		"sent",       // mutt sent-mail mbox at ~/sent
+		".signature", // outgoing-mail signature
+
+		// The X11 display-access cookie: reading it grants control of the live X session
+		// (keylog, screenshot, inject events), so it is a credential, not a config. Hidden,
+		// not merely read-only as firejail has it - a bento sandbox has no X display to
+		// authenticate to, so there is no legitimate in-sandbox read.
+		".Xauthority",
+
+		// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
+		// volumes (the .zuluCrypt store dir is shielded above).
+		".zuluCrypt-socket",
 
 		// Shell and REPL history: command lines and pasted secrets. Shielded as files
 		// (not their parent dir) so a sibling config the tool also reads stays available.

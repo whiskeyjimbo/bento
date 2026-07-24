@@ -252,6 +252,14 @@ var IntentionalExclusions = map[string]string{
 // passing once the concrete-path backlog is cleared.
 var ReviewedGlobs = map[string]string{
 	".*_history": "covered by shielding the named history instances (.bash_history, .zsh_history, .sh_history, ...) as DenyAll files",
+	// KeePass databases and bare key files dropped at an arbitrary spot in $HOME. bento
+	// cannot express a home-wide wildcard and shields the known credential stores by name;
+	// a .kdbx is an encrypted database (useless without its master password), and a key
+	// file placed at a self-chosen path is outside the concrete-path model. Re-check if a
+	// new upstream wildcard names a plaintext-secret class that a named store would miss.
+	"*.kdb":  "arbitrary-location KeePass 1.x database; encrypted at rest, and known credential stores are shielded by name",
+	"*.kdbx": "arbitrary-location KeePass 2.x database; encrypted at rest, and known credential stores are shielded by name",
+	"*.key":  "arbitrary-location key file; bento shields named key/credential stores, not a home-wide wildcard it cannot express",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.
