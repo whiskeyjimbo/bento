@@ -149,14 +149,30 @@ func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
 	}
 }
 
-// The filesystem layer degrades rather than vanishing when Landlock is present but
-// userns is not, so losing the reduced tier's seccomp fences - not Landlock - is what
-// leaves it with nothing to offer. Covered here because it is the one capability the
-// filesystem layer reads only indirectly.
+// The egress check reaches the filesystem layer only indirectly, through the
+// degradedFencesOK term: the reduced tier stands in for the missing namespaces with
+// a seccomp egress block, so without one there is no tier left to offer. Dropping
+// that term from Probe would offer --allow-degraded on a host where the launcher can
+// only refuse, which is the fail-open this layer exists to prevent.
+//
+// Emptying PATH is what makes the branch reachable: usableNamespaces looks bwrap up
+// on PATH, so this drives Probe down the userns-blocked path on a host where userns
+// works.
 func TestProbeReadsTheEgressCheckForTheDegradedTier(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	// A positive control: with the fences intact this host must still offer the
+	// degraded tier, or the Unavailable below would just be the absent bwrap talking.
+	if before := layerStatus(t, enforce.LayerFilesystem); before.State != enforce.Degraded {
+		t.Skipf("without bwrap this host reports filesystem %v (%q), not the degraded tier, so losing the egress fence proves nothing",
+			before.State, before.Reason)
+	}
+
 	swap(t, &seccompEgressSupported, false)
-	if _, reason := filesystemLayer(false, "userns blocked", landlockAvailable(), landlockTruncateRestricted(), seccompSupported() && seccompEgressSupported()); !strings.Contains(reason, "seccomp") {
-		t.Errorf("reason %q does not blame the missing seccomp fences", reason)
+	after := layerStatus(t, enforce.LayerFilesystem)
+	if after.State != enforce.Unavailable || !strings.Contains(after.Reason, "seccomp") {
+		t.Errorf("with the egress fence absent filesystem = %v (%q), want unavailable blaming the seccomp fences - Probe is not reading the check",
+			after.State, after.Reason)
 	}
 }
 

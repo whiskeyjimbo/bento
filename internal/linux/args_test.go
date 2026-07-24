@@ -1158,6 +1158,45 @@ func TestExecBlockFlagsGatedOnSeccomp(t *testing.T) {
 	}
 }
 
+// compile must gate the exec-block on the real seccomp check, not on the seccomp
+// every development host has. The pure decision above proves the gating; this proves
+// compile consults the check at all, which a host WITH seccomp cannot otherwise
+// exercise: a compile that hardcoded seccomp support would encode a none-strict
+// launch the launcher then cannot deliver.
+func TestCompileReadsTheRealSeccompCheck(t *testing.T) {
+	sb := testSandbox("/work/run.py")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Exec: policy.ExecNoneStrict}
+
+	// A positive control: with seccomp present this host must encode the strict
+	// block, or the fallback below would not be caused by losing the capability.
+	args, _, err := compile(p, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFlagValue(args, "--exec", "none-strict") {
+		t.Skipf("this host does not encode a none-strict launch to begin with: %v", args)
+	}
+
+	swap(t, &seccompSupported, false)
+	args, _, err = compile(p, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFlagValue(args, "--exec", "all") {
+		t.Errorf("without seccomp compile still encodes a blocking exec mode: %v - it is not reading the check", args)
+	}
+}
+
+// hasFlagValue reports whether args carries flag immediately followed by value.
+func hasFlagValue(args []string, flag, value string) bool {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
 // A grant of a pseudo-filesystem baseFlags mounts fresh (/proc, /dev, /tmp) must be
 // refused: bound whole it would overmount the sandbox's hardened version with the
 // host's. A specific path inside one still binds.
