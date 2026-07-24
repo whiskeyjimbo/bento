@@ -156,10 +156,13 @@ func checkPersistenceShielded(t *testing.T, mask int) {
 		}
 		expected = append(expected, s.plant(t, root)...)
 	}
-	// The static top-level Workspace surfaces are shielded on every checkout, present or not.
+	// The static top-level Workspace surfaces are shielded on every checkout, present or not
+	// (an absent one is tmpfs'd so it cannot be planted).
 	expected = append(expected,
 		filepath.Join(root, ".git", "hooks"),
 		filepath.Join(root, ".git", "config"),
+		filepath.Join(root, ".vscode"),
+		filepath.Join(root, ".idea"),
 	)
 
 	sb := persistenceSandbox(root)
