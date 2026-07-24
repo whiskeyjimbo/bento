@@ -132,6 +132,15 @@ func run(scriptArg string) int {
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
+		// A script in or beside its permission store makes discoveryPolicy's script-dir
+		// grant cover the store, which trialProfile's store deny path refuses fail-closed
+		// with a cryptic backend message. That is the likely cause when the placement
+		// overlaps, so add the actionable fix - printed alongside the real error, never
+		// instead of it, so an unrelated failure (bwrap missing, a script fault) is not
+		// masked by a wrong explanation.
+		if scriptDirCoversStore(script, interp, s.dir) {
+			fmt.Fprintf(os.Stderr, "supervise: the script's directory overlaps its permission store %q; move the script to a directory that neither contains nor sits inside the store, or point XDG_CONFIG_HOME at a location that does not contain it.\n", s.dir)
+		}
 		return 1
 	}
 	proposal := profile.Synthesize(script, interp, obs)
@@ -230,6 +239,17 @@ func assertStoreShielded(final *policy.Policy, storeDir string) error {
 		}
 	}
 	return nil
+}
+
+// scriptDirCoversStore reports whether the trial's script-dir grant would cover the
+// permission store - the placement (script in or beside the store dir) that makes
+// trialProfile's store deny path refuse the trial. It reuses the coverage predicate of
+// assertStoreShielded, the enforced-run backstop, so the two share one definition of
+// "covers". It is a best-effort match for the trial refusal, which resolves a not-yet-
+// created store's path slightly differently; the message is additive, so a miss only
+// falls back to the raw backend error, never a wrong abort.
+func scriptDirCoversStore(script, interp, storeDir string) bool {
+	return assertStoreShielded(discoveryPolicy(script, interp), storeDir) != nil
 }
 
 // trialProfile runs the observed trial pass under default-deny, always shielding the

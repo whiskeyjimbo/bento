@@ -160,6 +160,31 @@ func TestDiscoveryPolicyGrantCoversStoreWhenAdjacent(t *testing.T) {
 	}
 }
 
+// scriptDirCoversStore drives the diagnostic run() prints instead of the cryptic backend
+// refusal when a script sits in or beside its permission store. It must fire for exactly
+// the placements where the trial's script-dir grant covers the store, and stay quiet for a
+// script kept well away from it, so an ordinary trial failure keeps its own error.
+func TestScriptDirCoversStore(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	overlap := map[string]struct{ script, storeDir string }{
+		"script in config dir": {"/home/u/.config/agent.sh", "/home/u/.config/bento-supervise"},
+		"script in store dir":  {"/home/u/.config/bento-supervise/agent.sh", "/home/u/.config/bento-supervise"},
+		"dev XDG_CONFIG_HOME":  {"/home/u/proj/agent.sh", "/home/u/proj/bento-supervise"},
+	}
+	for name, tc := range overlap {
+		t.Run(name, func(t *testing.T) {
+			if !scriptDirCoversStore(tc.script, "sh", tc.storeDir) {
+				t.Errorf("scriptDirCoversStore(%q, %q) = false, want true (grant covers the store)", tc.script, tc.storeDir)
+			}
+		})
+	}
+	// A script in an unrelated directory must not be misdiagnosed: a real trial failure
+	// there should surface its own error, not the store-overlap message.
+	if scriptDirCoversStore("/home/u/proj/agent.sh", "sh", "/home/u/.config/bento-supervise") {
+		t.Error("scriptDirCoversStore fired for a script that does not overlap the store")
+	}
+}
+
 func requireSandbox(t *testing.T) {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
