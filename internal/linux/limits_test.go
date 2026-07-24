@@ -2,6 +2,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +160,81 @@ func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
 	if got := r.StateOf(enforce.LayerLimitsCPU); got != enforce.Unavailable {
 		t.Errorf("LayerLimitsCPU = %v with delegation unreadable, want Unavailable (fail closed)", got)
 	}
+}
+
+// Admission is otherwise only ever exercised against a fake enforcer returning a
+// synthetic Report, so nothing proved a REAL probe's output drives the refuse/run
+// decision - the report could stop matching what admission expects and every existing
+// test would stay green. This drives the real enforcer end to end: the delegation seam
+// makes cpu delegation unreadable (the fail-closed case), and all three postures are
+// pinned against that one real Report. Default and strict refuse a requested limit this
+// host cannot enforce; --allow-degraded waives it and the target actually runs, because
+// limits are hardening tier. That last asymmetry is the one a synthetic Report cannot
+// vouch for, and it is what makes the two refusals meaningful rather than a host that
+// simply never runs anything.
+func TestRealProbeDrivesStrictAndDefaultRefusalAndDegradedRun(t *testing.T) {
+	requireSandbox(t)
+	nsOK, _ := usableNamespaces(context.Background())
+	if ok, _ := canCreateScope(); !nsOK || !ok {
+		t.Skip("no bwrap tier with a usable systemd scope on this host; the cpu limits layer is not emitted")
+	}
+	orig := delegatedControllers
+	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	defer func() { delegatedControllers = orig }()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("echo RAN\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := sandboxEnforcer(t)
+	run := func(opts enforce.Options) (string, error) {
+		var out strings.Builder
+		_, err := enforce.Run(context.Background(), e,
+			&policy.Policy{
+				Entrypoint:  script,
+				Interpreter: "sh",
+				Read:        []string{dir},
+				Limits:      policy.Limits{CPU: "50%"},
+			},
+			enforce.Process{Stdout: &out, Stderr: &out}, opts)
+		return out.String(), err
+	}
+
+	for name, opts := range map[string]enforce.Options{
+		"default": {},
+		"strict":  {Strict: true},
+	} {
+		t.Run(name+" refuses", func(t *testing.T) {
+			out, err := run(opts)
+			var refusal *enforce.Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("want a Refusal driven by the real probe, got err=%v out=%q", err, out)
+			}
+			named := false
+			for _, l := range refusal.Short {
+				if l.Layer == enforce.LayerLimitsCPU {
+					named = true
+				}
+			}
+			if !named {
+				t.Errorf("the refusal must name the cpu limits layer that fell short; got %v", refusal.Short)
+			}
+			if strings.Contains(out, "RAN") {
+				t.Error("a refused run must not execute the target")
+			}
+		})
+	}
+
+	t.Run("allow-degraded runs", func(t *testing.T) {
+		out, err := run(enforce.Options{AllowDegraded: true})
+		if err != nil {
+			t.Fatalf("--allow-degraded must waive a hardening-tier limit and run: %v (out=%q)", err, out)
+		}
+		if !strings.Contains(out, "RAN") {
+			t.Errorf("the target should have run under --allow-degraded; got %q", out)
+		}
+	})
 }
 
 func TestCpuDelegationStateFailsClosed(t *testing.T) {
