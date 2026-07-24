@@ -25,6 +25,35 @@ func TestIsLoopbackHost(t *testing.T) {
 	}
 }
 
+// The degradation contract is that a shortfall is surfaced LOUDLY, and this table is
+// the surface a human actually reads (doctor, and the report printed alongside a
+// refusal). An enforced layer carries no reason, so a renderer that dropped the detail
+// column would still look right on a healthy host and would silently swallow exactly
+// the text that explains a shortfall - which is why the degraded row's reason is
+// asserted verbatim rather than just checking the layer appears.
+func TestWriteReportTableSurfacesShortfallDetail(t *testing.T) {
+	const reason = "the cpu controller is not delegated to your systemd user manager"
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerLimitsCPU, enforce.Unavailable, reason)
+
+	var b bytes.Buffer
+	writeReportTable(&b, r)
+	out := b.String()
+
+	for _, want := range []string{
+		"LAYER", "TIER", "STATE", "DETAIL", // the header names every column
+		string(enforce.LayerFilesystem), enforce.Enforced.String(),
+		string(enforce.LayerLimitsCPU), enforce.Unavailable.String(),
+		enforce.TierHardening.String(), // the shortfall's tier tells the reader how much it costs
+		reason,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report table must surface %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	networked := &policy.Policy{Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 	noNetwork := &policy.Policy{}
