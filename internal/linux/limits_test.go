@@ -178,6 +178,12 @@ func TestRealProbeDrivesStrictAndDefaultRefusalAndDegradedRun(t *testing.T) {
 	if ok, _ := canCreateScope(); !nsOK || !ok {
 		t.Skip("no bwrap tier with a usable systemd scope on this host; the cpu limits layer is not emitted")
 	}
+	// Overriding AFTER the guard above is deliberate and load-bearing. canCreateScope
+	// caches behind a sync.Once and reads delegation inside it, so the guard must run
+	// first and cache a real scopeOK; the cpu sub-layer is then measured outside that
+	// Once and does see this override. Move the override earlier and canCreateScope
+	// caches false instead, limitsLayers emits no cpu sub-layer at all, and this test
+	// silently SKIPS forever while still reporting PASS.
 	orig := delegatedControllers
 	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
 	defer func() { delegatedControllers = orig }()
