@@ -666,6 +666,8 @@ func TestRelocatedStartupFileShieldedUnderWriteGrant(t *testing.T) {
 	t.Setenv("ENV", "/cfg/shinit")              // sourced by POSIX sh/ksh/dash
 	t.Setenv("INPUTRC", "/cfg/inputrc")         // readline macro binding runs on a keypress
 	t.Setenv("PYTHONSTARTUP", "/cfg/pystartup") // sourced at interactive python startup
+	t.Setenv("SCREENRC", "/cfg/screenrc")       // GNU screen runs its commands
+	t.Setenv("PSQLRC", "/cfg/psqlrc")           // psql \! runs a shell command
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/cfg"}}
 	args := compileOrFail(t, p, testSandbox("/cfg/x")) // /cfg exists as a dir so the grant binds it
 
@@ -673,6 +675,7 @@ func TestRelocatedStartupFileShieldedUnderWriteGrant(t *testing.T) {
 	for _, want := range []string{
 		"/cfg/gitconfig", "/cfg/zsh/.zshrc",
 		"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc", "/cfg/pystartup",
+		"/cfg/screenrc", "/cfg/psqlrc",
 	} {
 		if !slices.Contains(dests, want) {
 			t.Errorf("relocated startup file %q must be shielded under a write grant reaching it; shields=%v", want, dests)

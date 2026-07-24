@@ -416,6 +416,10 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	t.Setenv("ENV", "/cfg/shinit")
 	t.Setenv("INPUTRC", "/cfg/inputrc")
 	t.Setenv("PYTHONSTARTUP", "/cfg/pystartup")
+	t.Setenv("SCREENRC", "/cfg/screenrc")
+	t.Setenv("PSQLRC", "/cfg/psqlrc")
+	t.Setenv("R_PROFILE_USER", "/cfg/rprofile")
+	t.Setenv("R_ENVIRON_USER", "/cfg/renviron")
 
 	byRule := map[string]Rule{}
 	for _, r := range Home("/home/u") {
@@ -424,7 +428,10 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 		}
 		byRule[r.Path] = r
 	}
-	for _, p := range []string{"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc", "/cfg/pystartup"} {
+	for _, p := range []string{
+		"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc", "/cfg/pystartup",
+		"/cfg/screenrc", "/cfg/psqlrc", "/cfg/rprofile", "/cfg/renviron",
+	} {
 		r, ok := byRule[p]
 		if !ok {
 			t.Errorf("expected a DenyWrite shield at %q (startup env relocation), missing", p)
@@ -465,6 +472,8 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	t.Setenv("NPM_CONFIG_USERCONFIG", "/secrets/npmrc")
 	t.Setenv("LESSHISTFILE", "/secrets/lesshst")
 	t.Setenv("MYSQL_HISTFILE", "/secrets/mysqlhist")
+	t.Setenv("PSQL_HISTORY", "/secrets/psqlhist")
+	t.Setenv("SQLITE_HISTORY", "/secrets/sqlitehist")
 	t.Setenv("REDISCLI_HISTFILE", "/secrets/redishist")
 	t.Setenv("NODE_REPL_HISTORY", "/secrets/nodehist")
 
@@ -477,7 +486,8 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/secrets/histfile", "/secrets/npmrc",
-		"/secrets/lesshst", "/secrets/mysqlhist", "/secrets/redishist", "/secrets/nodehist",
+		"/secrets/lesshst", "/secrets/mysqlhist", "/secrets/psqlhist",
+		"/secrets/sqlitehist", "/secrets/redishist", "/secrets/nodehist",
 	} {
 		r, ok := byRule[p]
 		if !ok {

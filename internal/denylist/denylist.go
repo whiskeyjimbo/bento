@@ -421,6 +421,8 @@ func Home(home string) []Rule {
 		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
 		{"LESSHISTFILE", ".lesshst"},
 		{"MYSQL_HISTFILE", ".mysql_history"},
+		{"PSQL_HISTORY", ".psql_history"},
+		{"SQLITE_HISTORY", ".sqlite_history"},
 		{"REDISCLI_HISTFILE", ".rediscli_history"},
 		{"NODE_REPL_HISTORY", ".node_repl_history"},
 	}
@@ -485,12 +487,19 @@ func Home(home string) []Rule {
 			addWriteShield(filepath.Clean(v))
 		}
 	}
-	// INPUTRC (readline macro bindings run on a keypress) and PYTHONSTARTUP (sourced at
-	// interactive python startup) each have a conventional default shielded above, so a
-	// value equal to that default is already covered and dropped.
+	// Env vars that each relocate a single startup/config file whose conventional default
+	// is shielded above, so a value equal to that default is already covered and dropped.
+	// INPUTRC (readline macros run on a keypress), PYTHONSTARTUP (interactive python init),
+	// SCREENRC (GNU screen runs its commands), PSQLRC (psql \! runs a shell command), and
+	// R_PROFILE_USER / R_ENVIRON_USER (R evaluates them at startup, and .Renviron can point
+	// R_PROFILE_USER at a writable file) all run host code from the file they name.
 	for _, de := range []struct{ env, def string }{
 		{"INPUTRC", ".inputrc"},
 		{"PYTHONSTARTUP", ".pythonrc.py"},
+		{"SCREENRC", ".screenrc"},
+		{"PSQLRC", ".psqlrc"},
+		{"R_PROFILE_USER", ".Rprofile"},
+		{"R_ENVIRON_USER", ".Renviron"},
 	} {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
 			if c := filepath.Clean(v); c != join(de.def) {
