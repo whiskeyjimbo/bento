@@ -261,6 +261,7 @@ func Home(home string) []Rule {
 		".logout",      // csh logout
 		".zshrc.local", // sourced by ~/.zshrc on several distros
 		".forward",     // a leading "|command" line runs on local mail delivery
+		".inputrc",     // readline init: a macro binding runs a command on a keypress
 
 		// Tool configs that name or run a command on a routine action.
 		".caffrc",                // caff/gpg options
@@ -406,6 +407,29 @@ func Home(home string) []Rule {
 		}
 	}
 
+	// Env vars that relocate a single credential/history FILE whose default is a named
+	// file rather than a whole store directory. HISTFILE moves the shell history (typed
+	// passwords, pasted tokens) off ~/.bash_history / ~/.zsh_history; it has no single
+	// default (the name is shell-specific and the defaults are shielded individually), so
+	// any absolute target is shielded, and /dev/null - the idiom for disabling history -
+	// is left alone. NPM_CONFIG_USERCONFIG moves ~/.npmrc (auth tokens); a value equal to
+	// the default is already covered and dropped. Relative values cannot be bound.
+	fileDenyAllEnvs := []struct{ env, def string }{
+		{"HISTFILE", ""},
+		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
+	}
+	for _, fe := range fileDenyAllEnvs {
+		v := os.Getenv(fe.env)
+		if !filepath.IsAbs(v) {
+			continue
+		}
+		c := filepath.Clean(v)
+		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) {
+			continue
+		}
+		rules = append(rules, Rule{Path: c, Deny: DenyAll})
+	}
+
 	// A startup file relocated by an env var is a persistence-planting target the
 	// default DenyWrite shields above miss: ZDOTDIR points zsh at a different
 	// directory for its whole startup group, and GIT_CONFIG_GLOBAL at a different
@@ -444,6 +468,40 @@ func Home(home string) []Rule {
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
 		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
 			addWriteShield(c)
+		}
+	}
+	// Env vars that relocate a single startup file the host runs, the DenyWrite analog of
+	// the block above. BASH_ENV is sourced by every non-interactive bash (why sudo strips
+	// it); ENV by interactive POSIX sh/ksh/mksh/dash, and it is how ~/.kshrc / ~/.mkshrc
+	// get designated. Both name a file with no default path to compare against. INPUTRC
+	// relocates readline's inputrc, whose macro bindings run on a keypress; its default
+	// ~/.inputrc is shielded above, so an equal value is dropped.
+	for _, env := range []string{"BASH_ENV", "ENV"} {
+		if v := os.Getenv(env); filepath.IsAbs(v) {
+			addWriteShield(filepath.Clean(v))
+		}
+	}
+	if ir := os.Getenv("INPUTRC"); filepath.IsAbs(ir) {
+		if c := filepath.Clean(ir); c != join(".inputrc") {
+			addWriteShield(c)
+		}
+	}
+	// CARGO_HOME relocates BOTH severity classes at once: the registry tokens
+	// (credentials{,.toml}, hidden) and the build configs (config{,.toml}, env - each
+	// names a rustc-wrapper/linker/runner the host executes, readable but not writable)
+	// sit side by side under it. The dirEnvs table cannot express that split (it is
+	// DenyAll-only), so emit the mixed set explicitly, re-based on the relocation and
+	// mirroring the default ~/.cargo rules. The DenyAll files go in first so
+	// addWriteShield's collision guard sees them; a write grant over the relocated dir is
+	// refused upstream for containing the credential shields, as for the default ~/.cargo.
+	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
+		if c := filepath.Clean(base); c != join(".cargo") {
+			for _, f := range []string{"credentials.toml", "credentials"} {
+				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll})
+			}
+			for _, f := range []string{"config.toml", "config", "env"} {
+				addWriteShield(filepath.Join(c, f))
+			}
 		}
 	}
 	return rules

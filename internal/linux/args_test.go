@@ -662,11 +662,17 @@ func TestUnbornWorkspaceFileIsShielded(t *testing.T) {
 func TestRelocatedStartupFileShieldedUnderWriteGrant(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/cfg/gitconfig")
 	t.Setenv("ZDOTDIR", "/cfg/zsh")
+	t.Setenv("BASH_ENV", "/cfg/bashenv") // sourced by non-interactive bash
+	t.Setenv("ENV", "/cfg/shinit")       // sourced by POSIX sh/ksh/dash
+	t.Setenv("INPUTRC", "/cfg/inputrc")  // readline macro binding runs on a keypress
 	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/cfg"}}
 	args := compileOrFail(t, p, testSandbox("/cfg/x")) // /cfg exists as a dir so the grant binds it
 
 	dests := shieldDests(args, "/tmp/shield", true)
-	for _, want := range []string{"/cfg/gitconfig", "/cfg/zsh/.zshrc"} {
+	for _, want := range []string{
+		"/cfg/gitconfig", "/cfg/zsh/.zshrc",
+		"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc",
+	} {
 		if !slices.Contains(dests, want) {
 			t.Errorf("relocated startup file %q must be shielded under a write grant reaching it; shields=%v", want, dests)
 		}
@@ -680,6 +686,33 @@ func TestRelocatedStartupFileShieldedUnderWriteGrant(t *testing.T) {
 	}
 	if grant := pairIndex(args, "--bind-try", "/cfg"); grant < 0 || grant > shield {
 		t.Errorf("shield at %d must follow the /cfg write-grant bind at %d", shield, grant)
+	}
+}
+
+// CARGO_HOME relocates the mixed-severity cargo store: the registry tokens
+// (credentials{,.toml}) hide, and the build configs stay readable but unwritable. A broad
+// read grant reaching the relocation must hide the tokens; a write grant over the relocated
+// dir must be refused for containing them - exactly as for the default ~/.cargo.
+func TestRelocatedCargoHomeShieldedUnderReadWriteRefused(t *testing.T) {
+	t.Setenv("CARGO_HOME", "/cfg/cargo")
+	sb := testSandbox(
+		"/cfg/cargo",
+		"/cfg/cargo/config.toml",
+		"/cfg/cargo/credentials.toml",
+	)
+	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/cfg"}}, sb)
+	hidden := shieldDests(args, "/tmp/shield", true)
+	if !slices.Contains(hidden, "/cfg/cargo/credentials.toml") {
+		t.Errorf("a read grant reaching CARGO_HOME must hide the registry token; hidden=%v", hidden)
+	}
+	// config.toml stays readable via the read grant (DenyWrite adds nothing under a read)
+	// and must not be blanked to the empty file.
+	if slices.Contains(hidden, "/cfg/cargo/config.toml") {
+		t.Error("cargo config.toml must stay readable, not hidden")
+	}
+
+	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/cfg/cargo"}}, enforce.Process{}, sb); err == nil {
+		t.Error("a write grant over the relocated CARGO_HOME must be refused for containing the credential shield")
 	}
 }
 

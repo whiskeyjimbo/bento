@@ -109,6 +109,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.pam_environment",     // PAM login env (LD_PRELOAD/PATH)
 		"/home/u/.config/pip/pip.conf", // pip index-url registry redirect
 		"/home/u/.pip/pip.conf",        // legacy per-user pip config, also default-read
+		"/home/u/.inputrc",             // readline macro binding runs on a keypress
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -403,5 +404,154 @@ func TestHomeStartupRelocationSkipsDenyAllCollision(t *testing.T) {
 	}
 	if r := byRule["/home/u/.ssh"]; r.Deny != DenyAll || !r.Dir {
 		t.Errorf("~/.ssh must stay a DenyAll dir, got %+v", r)
+	}
+}
+
+// BASH_ENV/ENV designate a startup file the host sources (non-interactive bash; POSIX
+// sh/ksh/mksh/dash), and INPUTRC relocates readline's inputrc (macro bindings run on a
+// keypress). Each must get a DenyWrite file shield at the target, or a write grant there
+// could plant a line the host runs. INPUTRC=default and relative values are dropped.
+func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
+	t.Setenv("BASH_ENV", "/cfg/bashenv")
+	t.Setenv("ENV", "/cfg/shinit")
+	t.Setenv("INPUTRC", "/cfg/inputrc")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
+		}
+		byRule[r.Path] = r
+	}
+	for _, p := range []string{"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc"} {
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a DenyWrite shield at %q (startup env relocation), missing", p)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("shield at %q must be a DenyWrite file rule, got %+v", p, r)
+		}
+	}
+	// The default ~/.inputrc stays shielded regardless of the relocation.
+	if r := byRule["/home/u/.inputrc"]; r.Deny != DenyWrite || r.Dir {
+		t.Errorf("default ~/.inputrc must stay a DenyWrite file, got %+v", r)
+	}
+
+	// INPUTRC pointed at its own default adds no second rule; a relative value is dropped.
+	t.Setenv("INPUTRC", "/home/u/.inputrc")
+	t.Setenv("BASH_ENV", "relenv")
+	count := 0
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative BASH_ENV leaked a non-absolute shield path %q", r.Path)
+		}
+		if r.Path == "/home/u/.inputrc" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("INPUTRC=default must not add a second ~/.inputrc rule, got %d", count)
+	}
+}
+
+// HISTFILE relocates the shell history (typed passwords, pasted tokens) and
+// NPM_CONFIG_USERCONFIG relocates ~/.npmrc (auth tokens); both must get a DenyAll file
+// shield at the target so a broad read grant cannot read the secret. HISTFILE=/dev/null
+// (disable-history idiom), NPM_CONFIG_USERCONFIG=default, and relative values are dropped.
+func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
+	t.Setenv("HISTFILE", "/secrets/histfile")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "/secrets/npmrc")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
+		}
+		byRule[r.Path] = r
+	}
+	for _, p := range []string{"/secrets/histfile", "/secrets/npmrc"} {
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a DenyAll shield at %q (credential relocation), missing", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Dir {
+			t.Errorf("shield at %q must be a DenyAll file rule, got %+v", p, r)
+		}
+	}
+	// The default ~/.npmrc and ~/.bash_history stay shielded.
+	if r := byRule["/home/u/.npmrc"]; r.Deny != DenyAll {
+		t.Errorf("default ~/.npmrc must stay DenyAll, got %+v", r)
+	}
+
+	// Non-plantable / redundant / relative values add no shield.
+	t.Setenv("HISTFILE", "/dev/null")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "/home/u/.npmrc")
+	npmCount := 0
+	for _, r := range Home("/home/u") {
+		if r.Path == "/dev/null" {
+			t.Error("HISTFILE=/dev/null must not add a shield")
+		}
+		if r.Path == "/home/u/.npmrc" {
+			npmCount++
+		}
+	}
+	if npmCount != 1 {
+		t.Errorf("NPM_CONFIG_USERCONFIG=default must not add a second ~/.npmrc rule, got %d", npmCount)
+	}
+	t.Setenv("HISTFILE", "relhist")
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative HISTFILE leaked a non-absolute shield path %q", r.Path)
+		}
+	}
+}
+
+// CARGO_HOME relocates both severity classes at once: the registry tokens
+// (credentials{,.toml}) hidden, and the build configs (config{,.toml}, env - each names
+// a tool the host executes) readable but not writable. Both must follow the relocation,
+// mirroring the default ~/.cargo. A relative value and the default location are dropped.
+func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
+	t.Setenv("CARGO_HOME", "/cfg/cargo")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("CARGO_HOME relocation leaked a non-absolute shield path %q", r.Path)
+		}
+		byRule[r.Path] = r
+	}
+	for _, f := range []string{"credentials.toml", "credentials"} {
+		p := "/cfg/cargo/" + f
+		if r, ok := byRule[p]; !ok || r.Deny != DenyAll || r.Dir {
+			t.Errorf("shield at %q must be a DenyAll file rule, got %+v (present=%v)", p, byRule[p], ok)
+		}
+	}
+	for _, f := range []string{"config.toml", "config", "env"} {
+		p := "/cfg/cargo/" + f
+		if r, ok := byRule[p]; !ok || r.Deny != DenyWrite || r.Dir {
+			t.Errorf("shield at %q must be a DenyWrite file rule, got %+v (present=%v)", p, byRule[p], ok)
+		}
+	}
+	// The default ~/.cargo files stay shielded regardless.
+	if r := byRule["/home/u/.cargo/credentials.toml"]; r.Deny != DenyAll {
+		t.Errorf("default ~/.cargo/credentials.toml must stay DenyAll, got %+v", r)
+	}
+
+	// A relative value adds nothing; the default location is already covered and dropped.
+	t.Setenv("CARGO_HOME", "relcargo")
+	for _, r := range Home("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative CARGO_HOME leaked a non-absolute shield path %q", r.Path)
+		}
+	}
+	t.Setenv("CARGO_HOME", "/home/u/.cargo")
+	for _, r := range Home("/home/u") {
+		if strings.HasPrefix(r.Path, "/home/u/.cargo/") && r.Path != "/home/u/.cargo/credentials.toml" &&
+			r.Path != "/home/u/.cargo/credentials" && r.Path != "/home/u/.cargo/config.toml" &&
+			r.Path != "/home/u/.cargo/config" && r.Path != "/home/u/.cargo/env" {
+			t.Errorf("CARGO_HOME=default must not add extra rules, saw %q", r.Path)
+		}
 	}
 }
