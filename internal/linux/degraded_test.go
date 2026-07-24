@@ -127,6 +127,51 @@ func TestDegradedExecAllSupervisesChild(t *testing.T) {
 	}
 }
 
+// runDegraded decides whether to install the exec-block from the REAL seccomp check
+// (execBlockFlags(p.Exec, seccompSupported), degraded.go), the twin of the bwrap
+// compile() call site that TestCompileReadsTheRealSeccompCheck covers. A host with
+// seccomp cannot otherwise reach the fallback, so a runDegraded that hardcoded seccomp
+// support would drop the block on a no-seccomp kernel while looking correct here. This
+// drives the real degraded run and reads the effect on a subprocess: with seccomp the
+// exec:none block stops it, and with the seam forced off the block is absent and it
+// runs.
+func TestRunDegradedExecBlockGatesOnRealSeccomp(t *testing.T) {
+	requireDegraded(t)
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	// An ABSOLUTE path to a reachable shell: the degraded tier sets no PATH (only the
+	// policy's declared env), so a bare `sh` would fail the lookup and read as blocked
+	// whether or not the exec filter is installed. /bin is in systemReadPaths, so the
+	// only thing that can stop this execve is the block under test.
+	spawn := "echo START; /bin/sh -c 'echo SUBPROCESS-RAN' 2>/dev/null || echo SUBPROCESS-BLOCKED; echo END"
+	if err := os.WriteFile(script, []byte(spawn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func() string {
+		var out strings.Builder
+		p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Exec: policy.ExecNone}
+		if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(),
+			p, enforce.Process{Stdout: &out, Stderr: &out}); err != nil {
+			t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
+		}
+		return out.String()
+	}
+
+	// Positive control: with the real seccomp check the exec:none block engages and the
+	// subprocess is refused, so the fallback below is caused by losing the capability.
+	if base := run(); !strings.Contains(base, "SUBPROCESS-BLOCKED") {
+		t.Fatalf("with seccomp present exec:none did not block the subprocess: %q", base)
+	}
+
+	swap(t, &seccompSupported, false)
+	if got := run(); !strings.Contains(got, "SUBPROCESS-RAN") {
+		t.Errorf("with seccomp forced unsupported runDegraded still installed the exec block: %q - it is not reading the check", got)
+	}
+}
+
 // A process the target backgrounds and leaves running must be swept when the run
 // ends: with no PID namespace to tear down, the enforcer runs the launcher in its
 // own process group and SIGKILLs the group on teardown. The target records the
