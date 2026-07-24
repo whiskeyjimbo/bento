@@ -68,6 +68,116 @@ func TestLimitsLayersDegradedTierNeverEnforced(t *testing.T) {
 	}
 }
 
+// exec-strict is the stricter of the two claims and needs the architecture filter on
+// top of seccomp, so a host with seccomp but no strict filter must report exec
+// Enforced and exec-strict Unavailable rather than letting the coarser layer's
+// success speak for both.
+func TestExecLayers(t *testing.T) {
+	cases := []struct {
+		name            string
+		seccompOK       bool
+		strictOK        bool
+		wantExec        enforce.State
+		wantStrict      enforce.State
+		strictReasonHas string
+	}{
+		{"seccomp and strict filter", true, true, enforce.Enforced, enforce.Enforced, ""},
+		{"seccomp, no strict filter", true, false, enforce.Enforced, enforce.Unavailable, "not implemented for this architecture"},
+		{"no seccomp", false, true, enforce.Unavailable, enforce.Unavailable, "does not support seccomp BPF"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := execLayers(tc.seccompOK, tc.strictOK)
+			if len(got) != 2 || got[0].Layer != enforce.LayerExec || got[1].Layer != enforce.LayerExecStrict {
+				t.Fatalf("got %+v, want LayerExec then LayerExecStrict", got)
+			}
+			if got[0].State != tc.wantExec {
+				t.Errorf("exec = %v, want %v", got[0].State, tc.wantExec)
+			}
+			if got[1].State != tc.wantStrict {
+				t.Errorf("exec-strict = %v, want %v", got[1].State, tc.wantStrict)
+			}
+			if !strings.Contains(got[1].Reason, tc.strictReasonHas) {
+				t.Errorf("exec-strict reason %q does not mention %q", got[1].Reason, tc.strictReasonHas)
+			}
+		})
+	}
+}
+
+// Probe must read the real capability checks, not assume the capabilities it was
+// developed on. The decision functions above prove the decisions; this proves the
+// wiring, which no host that HAS every capability can otherwise exercise: a Probe
+// that hardcoded a layer Enforced would satisfy every test above and still report a
+// guarantee this kernel cannot deliver.
+func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
+	cases := []struct {
+		name string
+		lose func(*testing.T)
+
+		layer enforce.Layer
+		// wantState after the loss. The filesystem layer stays Enforced without
+		// Landlock on a userns-capable host - bwrap is the guarantee there and
+		// Landlock only the backstop - so what must change is the disclosure, not
+		// the verdict.
+		wantState     enforce.State
+		wantReasonHas string
+	}{
+		{"no landlock", func(t *testing.T) { swap(t, &landlockAvailable, false) },
+			enforce.LayerFilesystem, enforce.Enforced, "bwrap alone"},
+		{"no seccomp", func(t *testing.T) { swap(t, &seccompSupported, false) },
+			enforce.LayerExec, enforce.Unavailable, "does not support seccomp BPF"},
+		{"no strict exec filter", func(t *testing.T) { swap(t, &seccompStrictExecSupported, false) },
+			enforce.LayerExecStrict, enforce.Unavailable, "not implemented for this architecture"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A positive control: this host must report the layer Enforced and NOT
+			// already say what the loss should make it say, or the assertion below
+			// would hold for a Probe that ignores the check entirely.
+			before := layerStatus(t, tc.layer)
+			if before.State != enforce.Enforced || strings.Contains(before.Reason, tc.wantReasonHas) {
+				t.Skipf("this host already reports %v as %v (%q), so losing the capability proves nothing",
+					tc.layer, before.State, before.Reason)
+			}
+			tc.lose(t)
+			after := layerStatus(t, tc.layer)
+			if after.State != tc.wantState || !strings.Contains(after.Reason, tc.wantReasonHas) {
+				t.Errorf("with the capability absent %v = %v (%q), want %v mentioning %q - Probe is not reading the check",
+					tc.layer, after.State, after.Reason, tc.wantState, tc.wantReasonHas)
+			}
+		})
+	}
+}
+
+// The filesystem layer degrades rather than vanishing when Landlock is present but
+// userns is not, so losing the reduced tier's seccomp fences - not Landlock - is what
+// leaves it with nothing to offer. Covered here because it is the one capability the
+// filesystem layer reads only indirectly.
+func TestProbeReadsTheEgressCheckForTheDegradedTier(t *testing.T) {
+	swap(t, &seccompEgressSupported, false)
+	if _, reason := filesystemLayer(false, "userns blocked", landlockAvailable(), landlockTruncateRestricted(), seccompSupported() && seccompEgressSupported()); !strings.Contains(reason, "seccomp") {
+		t.Errorf("reason %q does not blame the missing seccomp fences", reason)
+	}
+}
+
+func swap(t *testing.T, fn *func() bool, v bool) {
+	t.Helper()
+	orig := *fn
+	t.Cleanup(func() { *fn = orig })
+	*fn = func() bool { return v }
+}
+
+func layerStatus(t *testing.T, layer enforce.Layer) enforce.LayerStatus {
+	t.Helper()
+	for _, ls := range New().Probe(t.Context()).Layers {
+		if ls.Layer == layer {
+			return ls
+		}
+	}
+	t.Fatalf("Probe reported no %v layer", layer)
+	return enforce.LayerStatus{}
+}
+
 // The degraded and unavailable reasons must carry the underlying namespace reason,
 // so a user sees why bwrap could not run (and its remediation), not just that the
 // filesystem tier changed.

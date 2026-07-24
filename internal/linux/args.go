@@ -14,7 +14,6 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/enforce"
 	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
 	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 	"github.com/whiskeyjimbo/bento-v2/policy"
 )
 
@@ -262,7 +261,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	// (Both layers are still stricter on the deny-list shields, by design - a
 	// shield denies the write and that is the intent.) Deriving both from this
 	// one place keeps them in sync.
-	block, strictBlock := execBlockFlags(execMode, seccomp.Supported())
+	block, strictBlock := execBlockFlags(execMode, seccompSupported())
 	cfg := launcher.Config{
 		Socket:      socket,
 		Block:       block,

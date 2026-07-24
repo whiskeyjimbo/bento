@@ -46,6 +46,30 @@ type DegradedConfig struct {
 	Target []string
 }
 
+// The kernel capability checks the degraded tier's refusals read. They are vars so a
+// test can construct the host that lacks a capability: these are direct kernel and
+// compile-time queries with no override, so on a host that HAS the capability the
+// refusal path is otherwise unreachable, and a regression that dropped the guard
+// entirely would look identical here.
+var (
+	landlockAvailable      = landlock.Available
+	seccompEgressSupported = seccomp.EgressSupported
+)
+
+// degradedPrerequisites refuses a degraded run whose confinement this host cannot
+// supply. Both layers are the ONLY one of their kind in this tier - there is no
+// mount namespace behind them - so a missing one means running the target with the
+// host filesystem or network exposed, never a quieter downgrade.
+func degradedPrerequisites(landlockOK, egressOK bool) error {
+	if !landlockOK {
+		return fmt.Errorf("launcher: refusing to run - the degraded tier needs Landlock and this kernel has none")
+	}
+	if !egressOK {
+		return fmt.Errorf("launcher: refusing to run - the degraded tier needs the seccomp egress block, unavailable on this architecture")
+	}
+	return nil
+}
+
 // RunDegraded is the no-bwrap execution stage. Every confinement here is the ONLY
 // one of its kind - there is no mount namespace behind it - so each failure is
 // fatal: the target is never run half-confined. Order mirrors the bwrap launcher
@@ -56,13 +80,8 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if len(cfg.Target) == 0 {
 		return 0, fmt.Errorf("launcher: no target command")
 	}
-	// Landlock is the whole filesystem guarantee here; without it there is nothing to
-	// fall back on, so refuse rather than run the target with the host FS exposed.
-	if !landlock.Available() {
-		return 0, fmt.Errorf("launcher: refusing to run - the degraded tier needs Landlock and this kernel has none")
-	}
-	if !seccomp.EgressSupported() {
-		return 0, fmt.Errorf("launcher: refusing to run - the degraded tier needs the seccomp egress block, unavailable on this architecture")
+	if err := degradedPrerequisites(landlockAvailable(), seccompEgressSupported()); err != nil {
+		return 0, err
 	}
 
 	if err := dropInheritedFDs(); err != nil {

@@ -11,6 +11,22 @@ import (
 	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
 )
 
+// The kernel capability checks this package's fail-closed decisions read. They are
+// vars so a test can construct the host that lacks a capability: these are direct
+// kernel and compile-time queries with no override, so on a host that HAS the
+// capability - which is every host bento is developed on - the branch that reports
+// the layer unavailable and refuses the run is otherwise unreachable. Testing the
+// pure decision functions is not a substitute: it proves the decision, not that
+// this call site consults the probe at all, so a site that hardcoded availability
+// would still pass.
+var (
+	landlockAvailable          = landlock.Available
+	landlockTruncateRestricted = landlock.TruncateRestricted
+	seccompSupported           = seccomp.Supported
+	seccompStrictExecSupported = seccomp.StrictExecSupported
+	seccompEgressSupported     = seccomp.EgressSupported
+)
+
 // Probe reports what this host can actually enforce.
 //
 // It reports what it can prove, not what it hopes: the filesystem layer is only
@@ -28,8 +44,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// The reduced-confinement tier stands in for the missing netns and PID namespace
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
-	degradedFencesOK := seccomp.Supported() && seccomp.EgressSupported()
-	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlock.Available(), landlock.TruncateRestricted(), degradedFencesOK)
+	degradedFencesOK := seccompSupported() && seccompEgressSupported()
+	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlockAvailable(), landlockTruncateRestricted(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -54,25 +70,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		r.Add(enforce.LayerNetwork, enforce.Unavailable, nsReason)
 	}
 
-	if seccomp.Supported() {
-		r.Add(enforce.LayerExec, enforce.Enforced, "")
-	} else {
-		r.Add(enforce.LayerExec, enforce.Unavailable,
-			"this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced")
-	}
-
-	// exec-strict (none-strict's fork/vfork/clone blocking) needs both seccomp and
-	// the architecture-specific filter; off amd64 it degrades to the execve-only
-	// block rather than silently claiming the stricter guarantee.
-	switch {
-	case !seccomp.Supported():
-		r.Add(enforce.LayerExecStrict, enforce.Unavailable,
-			"this kernel does not support seccomp BPF")
-	case !seccomp.StrictExecSupported():
-		r.Add(enforce.LayerExecStrict, enforce.Unavailable,
-			"fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here")
-	default:
-		r.Add(enforce.LayerExecStrict, enforce.Enforced, "")
+	for _, ls := range execLayers(seccompSupported(), seccompStrictExecSupported()) {
+		r.Add(ls.Layer, ls.State, ls.Reason)
 	}
 
 	scopeOK, scopeReason := canCreateScope()
@@ -95,6 +94,31 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	return r
+}
+
+// execLayers decides the exec and exec-strict layers. exec-strict (none-strict's
+// fork/vfork/clone blocking) needs both seccomp and the architecture-specific
+// filter; off amd64 it degrades to the execve-only block rather than silently
+// claiming the stricter guarantee.
+func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
+	var out []enforce.LayerStatus
+	if seccompOK {
+		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExec, State: enforce.Enforced})
+	} else {
+		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExec, State: enforce.Unavailable,
+			Reason: "this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced"})
+	}
+	switch {
+	case !seccompOK:
+		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
+			Reason: "this kernel does not support seccomp BPF"})
+	case !strictOK:
+		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
+			Reason: "fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here"})
+	default:
+		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Enforced})
+	}
+	return out
 }
 
 // limitsLayers decides the resource-limit layers. It gates on nsOK because only the
