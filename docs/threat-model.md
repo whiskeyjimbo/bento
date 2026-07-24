@@ -226,7 +226,7 @@ would put the spoofing back.
 versions. An older kernel is an assumption we don't currently enforce with a
 startup check.
 
-**`exec:none` is a soft block.** It stops `execve` via seccomp filters (and `none-strict` also blocks `fork`/`clone` on amd64), but does not block `execveat` - it is an execution policy convenience rather than a complete system call boundary.
+**`exec:none` is a soft block.** It stops `execve` via seccomp filters (and `none-strict` also blocks `fork`/`clone` on amd64), but does not block `execveat`, nor `io_uring`, which can dispatch work the exec filter never sees. An enforced run installs no `io_uring` block - the one during profiling exists to keep observation complete, not to confine. So this is an execution policy convenience rather than a complete system call boundary. What still holds either way is the filesystem: a spawned image is confined by the same bind mounts and Landlock rules as its parent.
 
 **Out of scope entirely**: a malicious host, kernel 0-days, side channels, and
 resource-exhaustion DoS.
