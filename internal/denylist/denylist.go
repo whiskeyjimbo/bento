@@ -157,6 +157,13 @@ func Home(home string) []Rule {
 		".msmtprc",    // SMTP passwords (msmtp enforces 600 and refuses a readable one)
 		".muttrc",     // often holds plaintext imap_pass
 		".yarnrc.yml", // yarn 2+ stores npmAuthToken here (like .npmrc)
+		// R loads .Renviron (name=value) into the session env at startup; it routinely
+		// holds plaintext API keys and DB passwords. Hidden, not just write-denied, so a
+		// broad read grant cannot read the secret - which also neutralizes its exec knob
+		// (a line can point R_PROFILE_USER at a writable file). R is rarely a sandboxed
+		// target, so hiding it is unlikely to break a real in-sandbox workflow. The
+		// sibling .Rprofile stays DenyWrite: it is R code R sources, the .vimrc analog.
+		".Renviron",
 
 		// Remote-login trust: writable would grant persistence, and the contents name
 		// trusted hosts/users; sshd treats these as security-sensitive.
@@ -247,8 +254,7 @@ func Home(home string) []Rule {
 		".pip/pip.conf",        // legacy per-user pip config, also read by default (same index-url redirect)
 		".xscreensaver",        // names programs run as screensavers
 		".psqlrc",              // \! runs a shell command when psql starts
-		".Rprofile",            // R sources it at startup
-		".Renviron",            // can set R_PROFILE_USER to a writable file; creating it is the attack
+		".Rprofile",            // R sources it at startup (.Renviron holds the secrets and is DenyAll above)
 		".mcp.json",
 
 		// Additional shell startup files: read when the matching shell starts or a login
@@ -413,12 +419,14 @@ func Home(home string) []Rule {
 	// default (the name is shell-specific and the defaults are shielded individually), so
 	// any absolute target is shielded, and /dev/null - the idiom for disabling history -
 	// is left alone. The tool-specific *_HISTFILE / history vars move an already-shielded
-	// history file off its default; NPM_CONFIG_USERCONFIG moves ~/.npmrc (auth tokens). A
-	// value equal to the named default is already covered and dropped; relative values
-	// cannot be bound.
+	// history file off its default; NPM_CONFIG_USERCONFIG moves ~/.npmrc (auth tokens), and
+	// R_ENVIRON_USER moves ~/.Renviron (plaintext API keys/DB passwords) - both credential
+	// configs, hidden for the same reason as the histories. A value equal to the named
+	// default is already covered and dropped; relative values cannot be bound.
 	fileDenyAllEnvs := []struct{ env, def string }{
 		{"HISTFILE", ""},
 		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
+		{"R_ENVIRON_USER", ".Renviron"},
 		{"LESSHISTFILE", ".lesshst"},
 		{"MYSQL_HISTFILE", ".mysql_history"},
 		{"PSQL_HISTORY", ".psql_history"},
@@ -492,15 +500,15 @@ func Home(home string) []Rule {
 	// INPUTRC (readline macros run on a keypress), PYTHONSTARTUP (interactive python init),
 	// SCREENRC (GNU screen runs its commands), PSQLRC (psql \! runs a shell command), and
 	// R_PROFILE_USER (.Rprofile is R code evaluated at startup) name a file the host runs.
-	// R_ENVIRON_USER (.Renviron is name=value lines) is here because one of those lines can
-	// point R_PROFILE_USER at a writable file, so a plantable .Renviron is a foothold too.
+	// R_ENVIRON_USER is not here: .Renviron holds plaintext secrets, so its relocation is a
+	// DenyAll target in the fileDenyAllEnvs block above (which also neutralizes the same
+	// R_PROFILE_USER exec knob).
 	for _, de := range []struct{ env, def string }{
 		{"INPUTRC", ".inputrc"},
 		{"PYTHONSTARTUP", ".pythonrc.py"},
 		{"SCREENRC", ".screenrc"},
 		{"PSQLRC", ".psqlrc"},
 		{"R_PROFILE_USER", ".Rprofile"},
-		{"R_ENVIRON_USER", ".Renviron"},
 	} {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
 			if c := filepath.Clean(v); c != join(de.def) {

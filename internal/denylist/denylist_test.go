@@ -62,6 +62,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/hub",     // hub OAuth token
 		"/home/u/.msmtprc",        // SMTP passwords (hidden, not just write-denied)
 		"/home/u/.yarnrc.yml",     // yarn npmAuthToken
+		"/home/u/.Renviron",       // plaintext API keys/DB passwords loaded into the R session; hiding also neutralizes its R_PROFILE_USER exec knob
 		"/home/u/.my.cnf",         // MySQL plaintext password
 		"/home/u/.mylogin.cnf",    // MySQL login-path store (obfuscated, not encrypted)
 		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
@@ -98,7 +99,6 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.emacs",               // elisp at emacs startup
 		"/home/u/.gdbinit",             // executed by gdb on startup
 		"/home/u/.direnvrc",            // legacy direnv global rc
-		"/home/u/.Renviron",            // can set R_PROFILE_USER
 		"/home/u/.cargo/env",           // rustup makes .profile source it
 		"/home/u/.exrc",                // vim also sources this
 		"/home/u/.gvimrc",              // gvim rc
@@ -419,7 +419,6 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	t.Setenv("SCREENRC", "/cfg/screenrc")
 	t.Setenv("PSQLRC", "/cfg/psqlrc")
 	t.Setenv("R_PROFILE_USER", "/cfg/rprofile")
-	t.Setenv("R_ENVIRON_USER", "/cfg/renviron")
 
 	byRule := map[string]Rule{}
 	for _, r := range Home("/home/u") {
@@ -430,7 +429,7 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/cfg/bashenv", "/cfg/shinit", "/cfg/inputrc", "/cfg/pystartup",
-		"/cfg/screenrc", "/cfg/psqlrc", "/cfg/rprofile", "/cfg/renviron",
+		"/cfg/screenrc", "/cfg/psqlrc", "/cfg/rprofile",
 	} {
 		r, ok := byRule[p]
 		if !ok {
@@ -476,6 +475,7 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	t.Setenv("SQLITE_HISTORY", "/secrets/sqlitehist")
 	t.Setenv("REDISCLI_HISTFILE", "/secrets/redishist")
 	t.Setenv("NODE_REPL_HISTORY", "/secrets/nodehist")
+	t.Setenv("R_ENVIRON_USER", "/secrets/renviron") // .Renviron holds plaintext secrets, so its relocation is a DenyAll target, not DenyWrite
 
 	byRule := map[string]Rule{}
 	for _, r := range Home("/home/u") {
@@ -488,6 +488,7 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 		"/secrets/histfile", "/secrets/npmrc",
 		"/secrets/lesshst", "/secrets/mysqlhist", "/secrets/psqlhist",
 		"/secrets/sqlitehist", "/secrets/redishist", "/secrets/nodehist",
+		"/secrets/renviron",
 	} {
 		r, ok := byRule[p]
 		if !ok {
