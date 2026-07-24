@@ -260,6 +260,10 @@ var ReviewedGlobs = map[string]string{
 	"*.kdb":  "arbitrary-location KeePass 1.x database; encrypted at rest, and known credential stores are shielded by name",
 	"*.kdbx": "arbitrary-location KeePass 2.x database; encrypted at rest, and known credential stores are shielded by name",
 	"*.key":  "arbitrary-location key file; bento shields named key/credential stores, not a home-wide wildcard it cannot express",
+	// firejail write-protects per-host .Xdefaults-<hostname> variants; bento shields the
+	// base .Xdefaults (DenyWrite) and cannot express the wildcard, so the host variants are
+	// a reviewed accepted residual rather than a hard fail.
+	".Xdefaults-*": "per-host xrdb resource variant; the base .Xdefaults is shielded DenyWrite and the hostname suffix is not expressible as a concrete path",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.

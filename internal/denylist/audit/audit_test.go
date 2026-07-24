@@ -213,7 +213,7 @@ func TestAuditReportsOnlyUnclassifiedInScopeGaps(t *testing.T) {
 blacklist ${HOME}/.ssh
 blacklist ${HOME}/_vimrc
 blacklist ${HOME}/.newsecret
-blacklist ${HOME}/*.kdbx
+blacklist ${HOME}/*.audittest
 
 # History files
 blacklist ${HOME}/.*_history
@@ -229,11 +229,11 @@ blacklist ${HOME}/.audit_test_privacy_app
 	}
 	// .ssh is shielded (no gap); _vimrc is an intentional exclusion (suppressed); the
 	// reviewed .*_history glob goes to the review bucket; .newsecret (concrete) and the
-	// UNREVIEWED *.kdbx glob are genuine hard-fail gaps.
+	// UNREVIEWED *.audittest glob are genuine hard-fail gaps.
 	if !got["/HOME/.newsecret"] {
 		t.Errorf("an unshielded, unexcluded in-scope entry must surface; got %+v", unclassified)
 	}
-	if !got["/HOME/*.kdbx"] {
+	if !got["/HOME/*.audittest"] {
 		t.Errorf("an unreviewed glob must hard-fail, not become a note; got %+v", unclassified)
 	}
 	if got["/HOME/.ssh"] {
@@ -243,7 +243,7 @@ blacklist ${HOME}/.audit_test_privacy_app
 		t.Error("_vimrc is an intentional exclusion and must be suppressed")
 	}
 	if len(unclassified) != 2 {
-		t.Errorf("want exactly two unclassified gaps (.newsecret, *.kdbx), got %d: %+v", len(unclassified), unclassified)
+		t.Errorf("want exactly two unclassified gaps (.newsecret, *.audittest), got %d: %+v", len(unclassified), unclassified)
 	}
 	// A REVIEWED glob is reported for periodic re-check, not hard-failed and never
 	// silently dropped - leaving a whole class invisible is the chore this tool kills.

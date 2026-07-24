@@ -49,6 +49,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/Mail",                 // mutt default mail folder (no leading dot)
 		"/home/u/mail",                 // mutt default mail folder
 		"/home/u/Private",              // ecryptfs decrypted mount point
+		"/home/u/.config/i3",           // WM config `exec` (hidden, matching firejail)
+		"/home/u/.config/plasma-workspace", // KDE session env/autostart
+		"/home/u/.kde4/Autostart",      // legacy KDE autostart
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -81,6 +84,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/sent",            // mutt sent mbox
 		"/home/u/.zuluCrypt-socket", // zuluCrypt IPC socket
 		"/home/u/.s3cmd",          // s3cmd state
+		"/home/u/.Xresources",     // xrdb resources (hidden, matching firejail)
+		"/home/u/.xserverrc",      // startx X server launch script
+		"/home/u/.config/startupconfig", // KDE generated startup config
 		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
 		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
 		"/home/u/.php_history",    // php -a interactive REPL history
@@ -125,6 +131,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/pip/pip.conf", // pip index-url registry redirect
 		"/home/u/.pip/pip.conf",        // legacy per-user pip config, also default-read
 		"/home/u/.inputrc",             // readline macro binding runs on a keypress
+		"/home/u/.nanorc",              // nano rc (include/syntax)
+		"/home/u/.plan",                // finger info: readable, tamper-protected
+		"/home/u/.Xdefaults",           // xrdb resources read at login
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -154,6 +163,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.vscode",                   // VS Code extensions dir
 		"/home/u/.config/mpv",               // mpv autoloaded scripts
 		"/home/u/.xmonad",                   // xmonad.hs compiled+run
+		"/home/u/.local/lib",                // user libraries imported at runtime
+		"/home/u/.local/state/nvim",         // nvim state tree (history stores inside are DenyAll)
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]

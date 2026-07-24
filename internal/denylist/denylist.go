@@ -92,6 +92,28 @@ func Home(home string) []Rule {
 		".config/autostart",    // XDG autostart .desktop entries
 		".config/systemd",      // systemd --user units/timers (whole tree: user/ and drop-ins)
 		".local/share/systemd", // systemd --user timer/service state
+		// Window-manager and desktop-session trees firejail blacklists: their config runs
+		// commands at session start (i3/sway `exec`, awesome rc.lua, openbox autostart), so
+		// they are host-exec persistence surfaces. Hidden to match firejail and the
+		// login-script class above; a sandboxed build has no need to read a WM config.
+		".blackbox",                 // Blackbox WM
+		".config/autostart-scripts", // KDE autostart scripts
+		".config/awesome",           // awesome rc.lua (Lua run at start)
+		".config/i3",                // i3 config `exec` lines
+		".config/openbox",           // openbox autostart + rc.xml
+		".config/plasma-workspace",  // KDE Plasma env/ and autostart scripts
+		".config/sway",              // sway config `exec` lines
+		".fluxbox",                  // Fluxbox startup/apps
+		".kde/Autostart",            // legacy KDE autostart
+		".kde/env",                  // legacy KDE login env scripts
+		".kde/share/autostart",      // legacy KDE autostart
+		".kde/shutdown",             // legacy KDE shutdown scripts
+		".kde4/Autostart",           // KDE4 autostart
+		".kde4/env",                 // KDE4 login env scripts
+		".kde4/share/autostart",     // KDE4 autostart
+		".kde4/shutdown",            // KDE4 shutdown scripts
+		".local/share/autostart",    // XDG autostart .desktop entries (data dir)
+		".local/share/xorg",         // Xorg session logs/state
 
 		// Mail clients: saved IMAP/SMTP passwords in the profile store.
 		".thunderbird",      // Thunderbird
@@ -216,6 +238,21 @@ func Home(home string) []Rule {
 		// volumes (the .zuluCrypt store dir is shielded above).
 		".zuluCrypt-socket",
 
+		// Graphical-session scripts and generated startup configs firejail blacklists: each
+		// is read or executed at login and a planted line runs on the host. Hidden to match
+		// firejail and the WM trees above.
+		".Xresources",                          // xrdb-loaded resources (read at login)
+		".Xsession",                            // capitalized X session script variant
+		".gnomerc",                             // sourced at GNOME login
+		".xserverrc",                           // startx-run X server launch script
+		".config/lxsession/LXDE/autostart",     // LXDE session autostart commands
+		".config/startupconfig",                // KDE generated startup config
+		".config/startupconfigkeys",            // KDE generated startup keys
+		".kde/share/config/startupconfig",      // legacy KDE generated startup config
+		".kde/share/config/startupconfigkeys",  // legacy KDE generated startup keys
+		".kde4/share/config/startupconfig",     // KDE4 generated startup config
+		".kde4/share/config/startupconfigkeys", // KDE4 generated startup keys
+
 		// Shell and REPL history: command lines and pasted secrets. Shielded as files
 		// (not their parent dir) so a sibling config the tool also reads stays available.
 		".lesshst",
@@ -309,6 +346,22 @@ func Home(home string) []Rule {
 		".pythonrc.py",           // sourced at interactive python startup (PYTHONSTARTUP convention)
 		".config/mimeapps.list",  // default-application map; redirects an open to a planted .desktop
 		".config/user-dirs.dirs", // sourced by xdg-user-dirs-update; a shell-injection line runs
+
+		// Read-only in firejail: single init/config files whose modification redirects a
+		// later action (a browser profile pointer, an editor rc) or whose write-protection
+		// prevents tampering. Readable, plant/tamper-denied.
+		".nanorc",                            // nano rc (include/syntax directives)
+		".iscreenrc",                         // iscreen rc
+		".reportbugrc",                       // Debian reportbug config
+		".config/mozilla/firefox/profiles.ini", // profile pointer; a redirect loads a planted user.js
+		".zen/profiles.ini",                  // Zen browser profile pointer
+		".config/user-dirs.locale",           // locale for xdg user-dirs (write-protected against redirection)
+		".Xdefaults",                         // xrdb resources read at login
+		// Public finger(1) info files: not secrets and not executed, so left readable, but
+		// write-protected so a broad home write grant cannot tamper with published info.
+		".plan",
+		".project",
+		".pgpkey",
 	}
 
 	// Directories whose contents run on the host at the next login, shell start, or
@@ -321,7 +374,6 @@ func Home(home string) []Rule {
 		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
 		".config/containers",           // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
 		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
-		".config/plasma-workspace/env", // KDE login shell scripts
 		".config/fish",                 // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
 		".config/nushell",              // config.nu/env.nu and autoloads
 		".vim",                         // plugin/, autoload/, after/plugin/ are auto-sourced
@@ -347,6 +399,26 @@ func Home(home string) []Rule {
 		".local/share/applications",    // .desktop entries whose Exec= runs on launch
 		".config/menus",                // XDG menu definitions pointing at .desktop entries
 		".gnome/apps",                  // legacy GNOME menu entries
+
+		// Read-only in firejail: config/data trees whose entries run or load code on a later
+		// invocation (an editor rc, an imported library, a browser profile), so a planted
+		// entry is the threat; reads stay allowed as a build may legitimately inspect them.
+		".cache/deno",                 // Deno cache holds compiled modules that run
+		".deno",                       // legacy Deno dir
+		".config/nano",                // nanorc (syntax/include directives)
+		".nano",                       // nano state/history dir
+		".elinks",                     // ELinks config (exec knobs)
+		".w3m",                        // w3m config (external-command mappings)
+		".dotfiles",                   // dotfile-manager checkout, symlinked/sourced into $HOME
+		"dotfiles",                    // same, non-hidden ~/dotfiles checkout
+		".homesick",                   // homesick dotfile-manager castles
+		".local/lib",                  // user libraries imported at runtime (pip --user, etc.)
+		".local/share/cool-retro-term", // terminal-emulator config
+		".local/state/nvim",           // nvim state tree (shada/undo/swap inside are DenyAll above)
+		".local/share/fish",           // fish functions/completions (fish_history inside is DenyAll above)
+		".local/share/mime",           // compiled MIME db: redirects which handler opens a file type
+		".csh_files",                  // csh startup-file collection firejail write-protects
+		".zsh_files",                  // zsh startup-file collection firejail write-protects
 	}
 
 	// A relocated XDG base moves the real credential/config stores out from under the
