@@ -43,6 +43,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.local/share/nvim/shada", // pre-0.8 legacy location, abandoned but not deleted on upgrade
 		"/home/u/.local/share/nvim/undo",
 		"/home/u/.local/share/nvim/swap",
+		"/home/u/.config/autostart",    // XDG autostart .desktop entries (hidden, matching firejail)
+		"/home/u/.config/systemd",      // systemd --user unit/timer tree
+		"/home/u/.local/share/systemd", // systemd --user state
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -65,6 +68,10 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.Renviron",       // plaintext API keys/DB passwords loaded into the R session; hiding also neutralizes its R_PROFILE_USER exec knob
 		"/home/u/.my.cnf",         // MySQL plaintext password
 		"/home/u/.mylogin.cnf",    // MySQL login-path store (obfuscated, not encrypted)
+		"/home/u/.xinitrc",        // X startup script (hidden, matching firejail)
+		"/home/u/.xsession",       // X session script
+		"/home/u/.xprofile",       // X login profile
+		"/home/u/.xsessionrc",     // Debian/Ubuntu Xsession startup
 		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
 		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
 		"/home/u/.php_history",    // php -a interactive REPL history
@@ -105,7 +112,6 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.screenrc",            // GNU screen runs commands
 		"/home/u/.mailcap",             // MIME handler commands
 		"/home/u/.yarnrc",              // yarn-path exec (classic, no token)
-		"/home/u/.xsessionrc",          // Debian/Ubuntu Xsession startup
 		"/home/u/.pam_environment",     // PAM login env (LD_PRELOAD/PATH)
 		"/home/u/.config/pip/pip.conf", // pip index-url registry redirect
 		"/home/u/.pip/pip.conf",        // legacy per-user pip config, also default-read
@@ -127,8 +133,6 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	wantDenyWriteDir := []string{
 		"/home/u/.bashrc.d",          // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
 		"/home/u/.config/containers", // podman/skopeo exec-redirect knobs
-		"/home/u/.config/autostart",
-		"/home/u/.config/systemd",           // whole --user tree (covers the former .config/systemd/user)
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
 		"/home/u/.config/nushell",           // nushell config and autoloads
 		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs

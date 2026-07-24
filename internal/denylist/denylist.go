@@ -85,6 +85,14 @@ func Home(home string) []Rule {
 
 		".cert", // NetworkManager / 802.1X / VPN client certificates and private keys
 
+		// Graphical-login and user-service persistence trees. These run code on the host at
+		// the next login/session, and hiding them (not merely denying writes) both blocks
+		// planting and keeps a sandboxed run from reading a session layout that aids a later
+		// attack; firejail blacklists them and there is no in-sandbox need to read them.
+		".config/autostart",    // XDG autostart .desktop entries
+		".config/systemd",      // systemd --user units/timers (whole tree: user/ and drop-ins)
+		".local/share/systemd", // systemd --user timer/service state
+
 		// Mail clients: saved IMAP/SMTP passwords in the profile store.
 		".thunderbird",      // Thunderbird
 		".config/evolution", // GNOME Evolution
@@ -170,6 +178,16 @@ func Home(home string) []Rule {
 		".rhosts",
 		".shosts",
 
+		// Graphical-login scripts (X11): shell code run at graphical login. firejail
+		// blacklists them; hidden here rather than merely write-denied, matching the
+		// autostart/systemd persistence trees above - there is no in-sandbox read need and
+		// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
+		// the systemd/autostart dirs above.)
+		".xprofile",
+		".xinitrc",
+		".xsession",
+		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
+
 		// Credential files various tools read by default.
 		".fetchmailrc",       // fetchmail account password
 		".davfs2/secrets",    // davfs2 mount credentials
@@ -222,12 +240,6 @@ func Home(home string) []Rule {
 		".zlogin",
 		".zlogout",
 		".profile",
-		// Graphical-login scripts (X11; Wayland persistence routes through the
-		// systemd/autostart dirs below).
-		".xprofile",
-		".xinitrc",
-		".xsession",
-		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
 		// PAM login environment: pam_env can set LD_PRELOAD/PATH for the whole session
 		// from here. Deprecated and default-off on modern Linux-PAM (user_readenv
 		// defaults off since 1.4.0), but still present and live on older hosts, so
@@ -286,9 +298,6 @@ func Home(home string) []Rule {
 	writeOnlyDirs := []string{
 		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
 		".config/containers",           // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
-		".config/autostart",            // XDG autostart .desktop entries
-		".config/systemd",              // systemd --user units/timers (whole tree: user/ and drop-ins)
-		".local/share/systemd",         // systemd --user timer/service state
 		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
 		".config/plasma-workspace/env", // KDE login shell scripts
 		".config/fish",                 // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
