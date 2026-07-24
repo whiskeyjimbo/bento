@@ -26,13 +26,30 @@ import (
 var (
 	bentoOnce sync.Once
 	bentoBin  string
-	bentoErr  error
+	// bentoDir is the temp dir bentoOnce builds the binary into; TestMain removes it
+	// after the suite. It must outlive individual tests (the binary is bind-mounted into
+	// live sandboxes throughout the run), so t.Cleanup cannot own it.
+	bentoDir string
+	bentoErr error
 	// toolchainHome is the real HOME, captured before any test can override it.
 	// Tests that anchor the deny-list at a temp dir set HOME, and the build below
 	// would otherwise inherit it and put the module cache - read-only files the
 	// test's own cleanup then cannot remove - inside that temp dir.
 	toolchainHome = os.Getenv("HOME")
 )
+
+// TestMain removes the one-per-process build dir testBento creates, which formerly
+// leaked a /tmp/bento-test-bin-* dir (with a static binary) on every suite run. It runs
+// after m.Run() so the binary survives every test, and removes ONLY this process's own
+// dir - never another concurrent agent's or a stale one, which on this shared checkout
+// may be bind-mounted into a live sandbox and unsafe to delete mid-run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if bentoDir != "" {
+		os.RemoveAll(bentoDir)
+	}
+	os.Exit(code)
+}
 
 // testBento builds the bento binary once per test run and returns its path. The
 // in-sandbox launcher is bento re-exec'd, so any sandbox test that routes through
@@ -50,6 +67,7 @@ func testBento(t *testing.T) string {
 			bentoErr = err
 			return
 		}
+		bentoDir = dir
 		bin := filepath.Join(dir, "bento")
 		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/cmd/bento")
 		cmd.Env = append(os.Environ(), "GOWORK=off", "HOME="+toolchainHome)
