@@ -34,7 +34,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test vet audit vuln repro check install clean help
+.PHONY: all build test race vet audit vuln repro check install clean help
 
 all: build
 
@@ -60,6 +60,18 @@ test: ## Run unit and integration tests
 	@GOWORK=off go test ./...
 	@printf "$(GREEN)$(BOLD)✓ All tests passed!$(RESET)\n"
 
+# The proxy's concurrency tests hold many connections at the gate and the egress guard
+# at once to prove a verdict never crosses connections. Some of those properties are
+# enforced only by the race detector - a mutation that parks a verdict on the Proxy
+# struct passes hundreds of plain runs and fails immediately under -race - so the gate
+# runs this package with it. CGO_ENABLED=1 because -race needs cgo, and the scope stays
+# narrow: the linux tier tests spawn real bwrap and systemd scopes, which -race would
+# make slow without telling us anything about them.
+race: ## Run the proxy concurrency tests under the race detector
+	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
+	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
+	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
+
 vet: ## Run go vet checks
 	@printf "$(CYAN)$(BOLD)==> Running go vet...$(RESET)\n"
 	@GOWORK=off go vet ./...
@@ -79,7 +91,7 @@ vuln: ## Scan both modules for known vulnerabilities (needs network)
 repro: ## Verify the binary builds byte-identically from a different source path
 	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" ./scripts/repro-build.sh
 
-check: vet test audit ## Run all quality gates (vet, test, audit)
+check: vet test race audit ## Run all quality gates (vet, test, race, audit)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
