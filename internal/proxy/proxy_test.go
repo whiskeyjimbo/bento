@@ -3,9 +3,11 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +83,47 @@ func TestReadConnectRejectsControlCharTarget(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "control character") {
 			t.Errorf("target %q: expected a control-character rejection; got %v", target, err)
 		}
+	}
+}
+
+// A port the dialer will silently renumber ("08080" becomes 8080) or reject
+// outright ("0x1f90") must not reach the allowlist: Allows would see the raw
+// spelling while guardUpstream sees the resolved one, so the two layers would
+// judge different ports on the same connection.
+func TestReadConnectRejectsNonCanonicalPort(t *testing.T) {
+	for _, target := range []string{"example.com:08080", "example.com:0x1f90", "example.com:", "example.com:65536", "example.com:000443"} {
+		client, server := net.Pipe()
+		go func() {
+			fmt.Fprintf(client, "CONNECT %s HTTP/1.1\r\n\r\n", target)
+		}()
+		_, _, _, err := readConnect(server)
+		client.Close()
+		server.Close()
+		if err == nil || !strings.Contains(err.Error(), "malformed target port") {
+			t.Errorf("target %q: expected a malformed-port rejection; got %v", target, err)
+		}
+	}
+}
+
+// The port readConnect accepts must survive a dial round-trip unchanged, so the
+// spelling matched against the allowlist is the spelling guardUpstream inspects.
+func TestReadConnectPortSurvivesResolution(t *testing.T) {
+	client, server := net.Pipe()
+	go func() {
+		fmt.Fprint(client, "CONNECT 127.0.0.1:8080 HTTP/1.1\r\n\r\n")
+	}()
+	_, port, _, err := readConnect(server)
+	client.Close()
+	server.Close()
+	if err != nil {
+		t.Fatalf("readConnect: %v", err)
+	}
+	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Fatalf("resolving %q: %v", port, err)
+	}
+	if got := strconv.Itoa(addr.Port); got != port {
+		t.Errorf("port %q resolves to %q; the allowlist and the egress guard would see different ports", port, got)
 	}
 }
 
@@ -555,8 +598,8 @@ func TestGuardBlocksZonedHostReserved(t *testing.T) {
 	// appears in the error if the guard stripped the zone and classified the
 	// underlying IP; the raw fail-closed path would report the whole address string.
 	err := guard("[::ffff:127.0.0.1%foo.example.com]:6379")
-	blk, ok := err.(*blockedUpstreamError)
-	if !ok {
+	var blk *blockedUpstreamError
+	if !errors.As(err, &blk) {
 		t.Fatalf("guard mapped-loopback-with-dotted-zone: got %v, want *blockedUpstreamError", err)
 	}
 	if blk.addr != "127.0.0.1" {

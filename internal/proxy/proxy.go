@@ -507,6 +507,16 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 			return "", "", nil, fmt.Errorf("target contains a control character")
 		}
 	}
+	// net.SplitHostPort hands back whatever sat after the colon: "08080" and
+	// "0x1f90" both survive it, but the dialer resolves the first to 8080 and
+	// rejects the second. A non-canonical port would be matched against the
+	// allowlist and reported in one spelling while the connection is dialed in
+	// another, and guardUpstream - which splits the address the dialer already
+	// resolved - would disagree with Allows about the port of the same
+	// connection. Refuse it at the boundary so every layer sees one spelling.
+	if !canonicalPort(port) {
+		return "", "", nil, fmt.Errorf("malformed target port %q", port)
+	}
 	// Drain the remaining request headers up to the blank line.
 	for {
 		h, err := br.ReadString('\n')
@@ -520,6 +530,22 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// Request parsed; lift the cap so the tunnel body copy through br is unbounded.
 	lr.N = math.MaxInt64
 	return host, port, br, nil
+}
+
+// canonicalPort reports whether s spells a port exactly as the dialer will
+// resolve it: decimal digits, no leading zero, within the 16-bit range.
+func canonicalPort(s string) bool {
+	if s == "" || len(s) > 5 || (len(s) > 1 && s[0] == '0') {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n <= 65535
 }
 
 func writeStatus(c net.Conn, status, body string) {
@@ -577,7 +603,7 @@ func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 // instead of hanging on a peer that will never send again.
 func halfClose(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
-		cw.CloseWrite()
+		_ = cw.CloseWrite()
 		return
 	}
 	c.SetDeadline(time.Now())
