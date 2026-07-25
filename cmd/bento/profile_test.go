@@ -286,6 +286,25 @@ func TestMergeExisting(t *testing.T) {
 	if !slices.Contains(merged.Read, "/w/prior.txt") || !slices.Contains(merged.Read, "/w/in.txt") {
 		t.Errorf("merge should union prior and proposed reads; got %v", merged.Read)
 	}
+
+	// A relative grant in the existing manifest names the same path the (always
+	// absolute) proposal does, so the union must not write both spellings of it.
+	rel := filepath.Join(dir, "relative.yaml")
+	relData, err := manifest.Marshal(&policy.Policy{Entrypoint: "run.py", Read: []string{"in.txt"}}, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rel, relData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	same := &policy.Policy{Entrypoint: filepath.Join(dir, "run.py"), Read: []string{filepath.Join(dir, "in.txt")}}
+	merged, err = mergeExisting(rel, same)
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if len(merged.Read) != 1 {
+		t.Errorf("a relative grant naming the proposal's path must merge to one entry; got %v", merged.Read)
+	}
 }
 
 func TestClampShieldedGrants(t *testing.T) {
@@ -396,7 +415,7 @@ func TestSeedGrants(t *testing.T) {
 	}
 
 	// Missing --out is the first run: nothing to resume from, and no error.
-	if seed, err := seedGrants(filepath.Join(dir, "absent.yaml"), io.Discard); seed != nil || err != nil {
+	if seed, err := seedGrants(filepath.Join(dir, "absent.yaml"), "/w/run.py", io.Discard); seed != nil || err != nil {
 		t.Errorf("a missing manifest should seed nothing without error; got %v, %v", seed, err)
 	}
 
@@ -406,14 +425,14 @@ func TestSeedGrants(t *testing.T) {
 	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := seedGrants(corrupt, io.Discard); err == nil {
+	if _, err := seedGrants(corrupt, "/w/run.py", io.Discard); err == nil {
 		t.Errorf("an unparseable manifest at --out must be refused, not ignored")
 	}
 
 	// Unapproved: the stamp is the consent record for mounting without a prompt, so
 	// without it nothing is seeded and the loop asks about every path again.
 	unapproved := write("unapproved.yaml", &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/secret"}}, manifest.Provenance{})
-	if seed, err := seedGrants(unapproved, io.Discard); err != nil || seed != nil {
+	if seed, err := seedGrants(unapproved, "/w/run.py", io.Discard); err != nil || seed != nil {
 		t.Errorf("an unapproved manifest must seed nothing; got %v, %v", seed, err)
 	}
 
@@ -433,15 +452,23 @@ func TestSeedGrants(t *testing.T) {
 	if err := os.WriteFile(stale, staleData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if seed, err := seedGrants(stale, io.Discard); err != nil || seed != nil {
+	if seed, err := seedGrants(stale, "/w/run.py", io.Discard); err != nil || seed != nil {
 		t.Errorf("a stale approval must seed nothing; got %v, %v", seed, err)
+	}
+
+	// Approved, but for another script: the consent was "run.py may see these paths",
+	// so profiling a different target against the same --out mounts nothing.
+	other := write("other.yaml", &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/secret"}}, manifest.Provenance{})
+	approve(other)
+	if seed, err := seedGrants(other, "/w/attacker.py", io.Discard); err != nil || seed != nil {
+		t.Errorf("an approval for a different entrypoint must seed nothing; got %v, %v", seed, err)
 	}
 
 	// Approved: its grants seed the loop, with relative paths resolved against the
 	// manifest's own directory the way run resolves them.
 	path := write("approved.yaml", &policy.Policy{Entrypoint: "run.py", Read: []string{"data/in.txt"}, Write: []string{"/w/out"}}, manifest.Provenance{})
 	approve(path)
-	seed, err := seedGrants(path, io.Discard)
+	seed, err := seedGrants(path, filepath.Join(dir, "run.py"), io.Discard)
 	if err != nil {
 		t.Fatalf("an approved manifest should seed; got %v", err)
 	}

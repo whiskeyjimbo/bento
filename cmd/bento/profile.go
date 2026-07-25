@@ -49,10 +49,11 @@ func newProfileCmd() *cobra.Command {
 			"decide what to do next takes its error branch and never exercises the paths\n" +
 			"beyond it, so one run can under-report. Grant what the proposal shows and\n" +
 			"profile again to converge; grants are merged, not overwritten.\n\n" +
-			"On a terminal, an existing manifest at --out that is currently approved is\n" +
-			"resumed: its grants are mounted from the first round instead of being asked\n" +
-			"again, so quitting mid-session and re-running picks up where you left off.\n" +
-			"An unapproved or stale manifest seeds nothing and every path is asked again.",
+			"On a terminal, an existing manifest at --out that is currently approved for\n" +
+			"this same script is resumed: its grants are listed and mounted from the first\n" +
+			"round instead of being asked again, so quitting mid-session and re-running\n" +
+			"picks up where you left off. An unapproved or stale manifest mounts nothing\n" +
+			"and every path is asked again.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := filepath.Abs(args[0])
@@ -97,7 +98,7 @@ func newProfileCmd() *cobra.Command {
 						return err
 					}
 				}
-				seed, seedErr := seedGrants(out, os.Stderr)
+				seed, seedErr := seedGrants(out, script, os.Stderr)
 				if seedErr != nil {
 					return seedErr
 				}
@@ -743,19 +744,22 @@ func guessInterpreter(path string) string {
 // convergence loop's first round, so quitting mid-loop and re-running resumes instead
 // of re-prompting every path. It returns nil when there is nothing to resume from.
 //
-// Seeding mounts real content with no prompt in this session, so the approval stamp has
-// to carry the consent the prompt otherwise would: an unstamped or stale manifest - the
-// shape an attacker who dropped a file at --out would leave - seeds nothing, and every
-// path is asked again. A missing path is the first run.
-func seedGrants(path string, out io.Writer) (*policy.Policy, error) {
+// Seeding mounts real content with no prompt in this session, so it takes the stamp as
+// the consent the prompt otherwise gives: an unstamped or stale manifest seeds nothing
+// and every path is asked again. The stamp is unkeyed drift detection, not a signature
+// (see `bento approve`), so it does not by itself prove the file is one the user wrote -
+// which is why the seeded grants are listed as they are mounted, and why a manifest
+// approved for a different entrypoint is not honored here. A missing path is the first
+// run.
+func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 	doc, err := loadDocument(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, nil
 	case err != nil:
-		// mergeExisting refuses this same file at the end; refusing it here spares the
-		// user a full profiling session that cannot be written out.
-		return nil, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+		// mergeExisting refuses this same file at the end; refusing it now spares the user
+		// a whole profiling session whose result cannot be written out.
+		return nil, fmt.Errorf("refusing to profile against unreadable manifest %s: %w", path, err)
 	}
 	if checkApproval(doc) != approvalCurrent {
 		fmt.Fprintf(out, "[bento] %s is not approved, so its grants are not mounted - review and `bento approve` it to resume from them.\n", path)
@@ -764,8 +768,17 @@ func seedGrants(path string, out io.Writer) (*policy.Policy, error) {
 	// After the approval check, never before: the fingerprint attests the manifest as
 	// written, so resolving its relative paths first would make a valid stamp read stale.
 	resolveManifestPaths(doc.Policy, path)
-	if n := len(doc.Policy.Read) + len(doc.Policy.Write); n > 0 {
-		fmt.Fprintf(out, "[bento] resuming from %s: %d approved grant(s) mounted from the first round.\n", path, n)
+	// The approval says "this script may see these paths". Profiling a different target
+	// against the same --out is outside what was approved, so it starts fresh.
+	if doc.Policy.Entrypoint != script {
+		fmt.Fprintf(out, "[bento] %s is approved for %s, not %s, so its grants are not mounted.\n", path, doc.Policy.Entrypoint, script)
+		return nil, nil
+	}
+	for _, r := range doc.Policy.Read {
+		fmt.Fprintf(out, "[bento] resuming from %s: mounting approved read %s\n", path, r)
+	}
+	for _, w := range doc.Policy.Write {
+		fmt.Fprintf(out, "[bento] resuming from %s: mounting approved write %s\n", path, w)
 	}
 	return doc.Policy, nil
 }
@@ -780,6 +793,10 @@ func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, error)
 	existing, err := loadDocument(path)
 	switch {
 	case err == nil:
+		// Resolve before the union: a proposal names absolute paths, so a relative grant
+		// in the existing manifest would survive the merge as a second spelling of a path
+		// the proposal already carries, and the written manifest would hold both.
+		resolveManifestPaths(existing.Policy, path)
 		return mergePolicies(existing.Policy, proposed), nil
 	case errors.Is(err, fs.ErrNotExist):
 		return proposed, nil
