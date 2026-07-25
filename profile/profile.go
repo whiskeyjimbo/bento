@@ -94,7 +94,10 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || isSystemPath(p) ||
 			resolvesIntoProc(p) ||
-			(runtime != "" && strings.HasPrefix(p, runtime+"/"))
+			// The install root itself matches, not just paths beneath it: a read of the
+			// root is the same runtime noise, and a write inside it collapses via
+			// writeDir to the root, which must not become a writable grant.
+			(runtime != "" && (p == runtime || strings.HasPrefix(p, runtime+"/")))
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
