@@ -100,8 +100,10 @@ func TestRestrictConfinesReads(t *testing.T) {
 	}
 
 	// A regular file in the writable set must get a file rule. Routed to RWDirs it
-	// returns EINVAL, and RestrictPaths applies the ruleset as a whole - so the process
-	// would run with NO rules at all and outside=OK. Only the real kernel shows this:
+	// returns EINVAL, and RestrictPaths applies the ruleset as a whole - so the caller
+	// gets an error and (in the launcher) proceeds with no rules at all. Here the probe
+	// exits non-zero on that error, which is what this catches. Only the real kernel
+	// shows it:
 	// the rule kinds are indistinguishable until the ruleset is submitted, which is why
 	// this goes through the probe rather than asserting on the rules bento builds.
 	t.Run("a file in the writable set does not discard the ruleset", func(t *testing.T) {

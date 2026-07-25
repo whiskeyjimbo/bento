@@ -50,10 +50,10 @@ func Restrict(writable []string) error {
 //
 // A path naming a regular file gets a file rule, not a directory one: the
 // directory rules reject a non-directory with EINVAL, and RestrictPaths applies
-// the ruleset as a whole, so one file in either set would abort EVERY rule and
-// leave the process unconfined. The bwrap tier's callers happen to pass only
-// directories today, but that invariant lives in another package and this is where
-// its failure would be silent.
+// the ruleset as a whole, so one file in either set aborts EVERY rule - the caller
+// then warns and proceeds (bwrap is the primary guarantee), so the run simply has no
+// backstop. The callers happen to pass only directories today, but that invariant
+// lives in another package, and it is this one that has to hold the ruleset together.
 func RestrictTo(read, write []string) error {
 	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
 	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
