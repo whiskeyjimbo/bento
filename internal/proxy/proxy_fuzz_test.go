@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -60,13 +62,18 @@ func FuzzReadConnect(f *testing.F) {
 }
 
 // The egress guard classifies an address, so every spelling of one address must
-// reach the same verdict. classifyIP itself decodes only some of those spellings
-// (mapped, IPv4-compatible, 6to4, the well-known Pref64), and each decoder is a
-// separate branch that can be dropped or mis-indexed without any single-address
-// test noticing: a reserved or RFC1918 target wearing a v6 rendering the decoder
-// forgot classifies public, and guardUpstream then dials it.
+// reach the same verdict. classifyIP decodes only some of those spellings
+// (IPv4-compatible, 6to4, the well-known Pref64), and each decoder is a separate
+// branch that can be dropped or mis-indexed without any single-address test
+// noticing: a reserved or RFC1918 target wearing a v6 rendering the decoder forgot
+// classifies public, and guardUpstream then dials it.
 //
-// Fuzzing the four octets rather than raw bytes is deliberate - the property is
+// This is a differential property - every rendering agrees with the v4 - so it
+// cannot see a hole that moves them all together. classifyIP's absolute verdicts
+// are anchored by TestClassifyIP, TestAdversarialClassifyIP and the independent
+// prefix table in FuzzGuardUpstreamRefusesNonPublicRenderings below.
+//
+// Fuzzing the four octets rather than raw bytes is deliberate: the property is
 // about renderings of the SAME address, which needs a v4 to render from.
 func FuzzClassifyIPIsRenderingAgnostic(f *testing.F) {
 	f.Add(byte(192), byte(168), byte(1), byte(1))     // RFC1918
@@ -86,7 +93,9 @@ func FuzzClassifyIPIsRenderingAgnostic(f *testing.F) {
 
 		// Built byte-wise rather than by parsing a formatted string: a rendering that
 		// failed to parse would be a nil IP, which classifyIP passes as public, so the
-		// test would report a decoder gap that is really a bug in its own fixture.
+		// test would report a decoder gap that is really a bug in its own fixture. The
+		// v6-mapped form is not among them - net.IPv4 already returns it, so comparing
+		// it against want would be the same call on the same bytes.
 		compat := make(net.IP, 16) // deprecated IPv4-compatible ::a.b.c.d
 		copy(compat[12:], []byte{a, b, c, d})
 		sixToFour := make(net.IP, 16) // 6to4 2002:AABB:CCDD::
@@ -100,7 +109,6 @@ func FuzzClassifyIPIsRenderingAgnostic(f *testing.F) {
 			name string
 			ip   net.IP
 		}{
-			{"v6-mapped", v4.To16()},
 			{"IPv4-compatible", compat},
 			{"6to4", sixToFour},
 			{"well-known Pref64", wellKnown},
@@ -113,41 +121,79 @@ func FuzzClassifyIPIsRenderingAgnostic(f *testing.F) {
 	})
 }
 
+// neverEgress names address space no sandbox may reach, written out here rather
+// than derived from classifyIP so the guard is checked against an outside opinion.
+// A property phrased in terms of classifyIP only proves the guard agrees with
+// itself: gut classifyIP to "return ipPublic" and every such assertion still holds
+// while the whole boundary is open.
+//
+// One-directional by design. An address outside the table is not asserted to be
+// allowed - the transition renderings (6to4, Pref64) carry a v4 this table does not
+// look through, and refusing more than the table names is always safe.
+var neverEgress = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // this-network
+	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT
+	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
+	netip.MustParsePrefix("169.254.0.0/16"), // link-local, incl. cloud metadata
+	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
+	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
+	netip.MustParsePrefix("198.18.0.0/15"),  // RFC 2544 benchmarking
+	netip.MustParsePrefix("224.0.0.0/4"),    // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, incl. limited broadcast
+	netip.MustParsePrefix("::/128"),         // unspecified
+	netip.MustParsePrefix("::1/128"),        // loopback
+	netip.MustParsePrefix("fc00::/7"),       // ULA
+	netip.MustParsePrefix("fe80::/10"),      // link-local
+	netip.MustParsePrefix("fec0::/10"),      // deprecated site-local
+	netip.MustParsePrefix("ff00::/8"),       // multicast
+}
+
 // guardUpstream is the SSRF backstop: it re-vets the address the dialer resolved
 // to, after the allowlist has already passed the hostname. It composes a zone-id
-// strip, a parse, a classification and an explicit-IP-rule exemption, and every
-// bug found in it so far has been textual - a spelling that slipped past
-// classification. With no rules the exemption can never fire, so the whole
-// non-public space must be refused however it is spelled.
+// strip, a parse, a classification and an explicit-IP-rule exemption, and the bugs
+// found in it so far have been textual - a spelling that slipped past
+// classification. With no rules the exemption can never fire, so every address in
+// neverEgress must be refused however it is spelled, and an address the guard
+// could not parse at all must be refused rather than dialed unvetted.
 //
-// Both directions are asserted in one target because each is the other's control:
-// "everything is refused" is what a guard that fails closed on all input looks
-// like, and "the public address is allowed" is what proves the allow path is
-// reachable at all.
+// The public direction is asserted too, because "refuses everything" is what a
+// guard broken shut looks like and it would satisfy every refusal above.
 func FuzzGuardUpstreamRefusesNonPublicRenderings(f *testing.F) {
-	f.Add([]byte(net.ParseIP("127.0.0.1").To16()))
-	f.Add([]byte(net.ParseIP("169.254.169.254").To16()))
-	f.Add([]byte(net.ParseIP("192.168.1.1").To16()))
-	f.Add([]byte(net.ParseIP("10.0.0.1").To16()))
-	f.Add([]byte(net.ParseIP("fe80::1").To16()))
-	f.Add([]byte(net.ParseIP("fd00::1").To16()))
-	f.Add([]byte(net.ParseIP("::1").To16()))
-	f.Add([]byte(net.ParseIP("64:ff9b::c0a8:101").To16()))
-	f.Add([]byte(net.ParseIP("8.8.8.8").To16()))
-	f.Add([]byte(net.ParseIP("2606:4700::1111").To16()))
+	seed := func(s string) {
+		ip := net.ParseIP(s).To16()
+		f.Add(binary.BigEndian.Uint64(ip[:8]), binary.BigEndian.Uint64(ip[8:]))
+	}
+	seed("127.0.0.1")
+	seed("169.254.169.254")
+	seed("192.168.1.1")
+	seed("10.0.0.1")
+	seed("100.64.0.1")
+	seed("fe80::1")
+	seed("fd00::1")
+	seed("::1")
+	seed("64:ff9b::c0a8:101")
+	seed("8.8.8.8")
+	seed("2606:4700::1111")
 
 	// No rules and no gatekeeper: nothing can be exempted as an explicit IP literal,
 	// so the guard's verdict is its classification alone.
 	p := New(nil)
 
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		if len(raw) != net.IPv6len {
-			t.Skip("only a 16-byte address is a rendering of a single IP")
-		}
-		ip := net.IP(raw)
+	// The address halves are fuzzed as two uint64s rather than a byte slice so every
+	// input is exactly one address: a length check would spend most of the fuzzer's
+	// budget skipping slices that are not 16 bytes long.
+	f.Fuzz(func(t *testing.T, hi, lo uint64) {
+		var raw [16]byte
+		binary.BigEndian.PutUint64(raw[:8], hi)
+		binary.BigEndian.PutUint64(raw[8:], lo)
+		ip := net.IP(raw[:])
 		text := ip.String()
-		if net.ParseIP(text) == nil {
-			t.Skipf("%v does not round-trip through its own text form", raw)
+
+		// A resolved dial target the guard cannot parse must fail closed. Nothing else
+		// here reaches that branch, since every rendering below is a valid literal.
+		if err := p.guardUpstream(t.Context(), "", "host-"+text+":443", nil); err == nil {
+			t.Errorf("guardUpstream allowed %q, which is not an address it could vet at all", text)
 		}
 
 		renderings := []string{
@@ -161,22 +207,31 @@ func FuzzGuardUpstreamRefusesNonPublicRenderings(f *testing.F) {
 			net.JoinHostPort(strings.ToUpper(text), "443"),
 		}
 
-		if classifyIP(ip) == ipPublic {
-			// The allow path must stay reachable, including through the zone strip - a
-			// strip that refused a zoned public address would be a false refusal, and
-			// without this clause every assertion below would hold for a guard that
-			// refused everything.
-			for _, addr := range renderings {
-				if err := p.guardUpstream(t.Context(), "", addr, nil); err != nil {
-					t.Errorf("guardUpstream refused public %s: %v", addr, err)
+		addr := netip.AddrFrom16(raw).Unmap()
+		for _, pfx := range neverEgress {
+			if !pfx.Contains(addr) {
+				continue
+			}
+			for _, r := range renderings {
+				if err := p.guardUpstream(t.Context(), "", r, nil); err == nil {
+					t.Errorf("guardUpstream allowed %s, which is in %s - the sandbox reaches the host or the LAN through this spelling", r, pfx)
 				}
 			}
 			return
 		}
-		for _, addr := range renderings {
-			if err := p.guardUpstream(t.Context(), "", addr, nil); err == nil {
-				t.Errorf("guardUpstream allowed non-public %s (class %d) - the sandbox reaches the host or the LAN through this spelling",
-					addr, classifyIP(ip))
+
+		if classifyIP(ip) != ipPublic {
+			// Refusing beyond the table is the guard's job (transition renderings, and
+			// space the table deliberately does not enumerate), so there is nothing left
+			// to assert for this address.
+			return
+		}
+		// The allow path must stay reachable, including through the zone strip - a strip
+		// that refused a zoned public address would be a false refusal, and without this
+		// clause every refusal above would hold for a guard that refused everything.
+		for _, r := range renderings {
+			if err := p.guardUpstream(t.Context(), "", r, nil); err != nil {
+				t.Errorf("guardUpstream refused public %s: %v", r, err)
 			}
 		}
 	})
