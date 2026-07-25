@@ -23,6 +23,7 @@ import (
 var (
 	landlockAvailable          = landlock.Available
 	landlockTruncateRestricted = landlock.TruncateRestricted
+	landlockIoctlDevRestricted = landlock.IoctlDevRestricted
 	seccompSupported           = seccomp.Supported
 	seccompStrictExecSupported = seccomp.StrictExecSupported
 	seccompEgressSupported     = seccomp.EgressSupported
@@ -46,7 +47,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlockAvailable(), landlockTruncateRestricted(), degradedFencesOK)
+	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -163,7 +164,7 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(nsOK bool, nsReason string, landlockAvail, truncateRestricted, degradedFencesOK bool) (enforce.State, string) {
+func filesystemLayer(nsOK bool, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, degradedFencesOK bool) (enforce.State, string) {
 	switch {
 	case nsOK && landlockAvail:
 		return enforce.Enforced, "Landlock backstop active"
@@ -191,7 +192,8 @@ func filesystemLayer(nsOK bool, nsReason string, landlockAvail, truncateRestrict
 			"network namespace " +
 			"(seccomp blocks IP egress but not netlink interface enumeration, nor a unix socket to a host " +
 			"daemon, including an abstract-namespace one no grant is needed to reach). It confines filesystem " +
-			"read/write/exec, nothing more (" + nsReason + ")" + truncateResidual(truncateRestricted)
+			"read/write/exec, nothing more (" + nsReason + ")" +
+			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted)
 	default:
 		return enforce.Unavailable, nsReason +
 			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
@@ -208,6 +210,21 @@ func truncateResidual(truncateRestricted bool) string {
 	}
 	return ". Additionally this kernel's Landlock ABI is below 3, which cannot restrict truncate, so a " +
 		"read-only granted file can still be truncated (zeroed) - an integrity gap this tier cannot close"
+}
+
+// ioctlDevResidual is the degraded-tier disclosure clause for a kernel whose Landlock
+// ABI (< 5, i.e. before 6.10) cannot restrict ioctl on device files. Landlock leaves an
+// unhandled right unrestricted, so every ioctl on every granted device node is available
+// - and this tier grants /dev/urandom, /dev/random, /dev/zero and /dev/null to every run.
+// seccomp's terminal-injection block covers the tty ioctls that matter most but not the
+// rest, so the gap is disclosed rather than treated as closed. Empty from 6.10 on.
+func ioctlDevResidual(ioctlDevRestricted bool) string {
+	if ioctlDevRestricted {
+		return ""
+	}
+	return ". This kernel's Landlock ABI is also below 5, which cannot restrict ioctl on device files, so " +
+		"any ioctl on a granted device node (/dev/urandom, /dev/random, /dev/zero, /dev/null) is available " +
+		"beyond the terminal-injection set seccomp blocks"
 }
 
 // usableNamespaces reports whether bwrap is installed and can create here the

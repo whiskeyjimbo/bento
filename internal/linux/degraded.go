@@ -79,7 +79,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// actually makes readable - which now includes the interpreter prefix added below, so
 	// a credential store inside one IS reported here. That is the honest answer: the full
 	// tier binds a shield over it, and Landlock cannot carve one out of a granted tree.
-	sysReads, sysWrites := degradedSystemPaths()
+	sysReads, sysWrites := degradedSystemPaths(sb)
 	// An interpreter outside the system paths (pyenv, mise, conda) needs its install
 	// prefix readable or it cannot load its stdlib. The launcher grants the interpreter
 	// FILE (it is an exec path), so the binary starts - and then fails on the first
@@ -232,14 +232,28 @@ func killProcessGroup(p *os.Process) error {
 // for the usual stream sinks. These are read-only except /dev/null, which is
 // read-write. They are host paths, not a fresh /dev: another cost of having no mount
 // namespace, and part of why the tier is materially weaker.
-func degradedSystemPaths() (reads, writes []string) {
-	reads = append([]string{}, systemReadPaths...)
-	if _, err := os.Stat("/nix"); err == nil {
-		reads = append(reads, "/nix")
+//
+// Every path is resolved through the sandbox's resolver, as grants are. These are raw
+// literals and several are commonly symlinks - /dev/urandom and the FHS lib paths on a
+// usrmerge host, /nix on some Nix setups. go-landlock opens a path without O_NOFOLLOW,
+// so the rule it installs already lands on the resolved target; resolving here is what
+// makes bento's own record of the read set name the same paths, so the exposure scan
+// that runs over it sees what was actually granted rather than the name it was granted
+// under.
+func degradedSystemPaths(sb sandbox) (reads, writes []string) {
+	resolved := func(paths ...string) []string {
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, sb.resolve(p))
+		}
+		return out
 	}
-	reads = append(reads, "/dev/urandom", "/dev/random", "/dev/zero")
-	writes = []string{"/dev/null"}
-	return reads, writes
+	reads = resolved(systemReadPaths...)
+	if _, err := os.Stat("/nix"); err == nil {
+		reads = append(reads, sb.resolve("/nix"))
+	}
+	reads = append(reads, resolved("/dev/urandom", "/dev/random", "/dev/zero")...)
+	return reads, resolved("/dev/null")
 }
 
 // concat joins path lists into a fresh slice, so a caller's append never aliases a

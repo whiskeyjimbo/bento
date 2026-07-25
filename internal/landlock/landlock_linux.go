@@ -112,9 +112,11 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // (zeroed), and below ABI 5 (pre-6.10) the ioctl_dev right is unhandled. The read/
 // write/execute access this tier grants all exists at the v1 floor, so path access is
 // confined as intended; the residual is the newer rights BestEffort silently drops.
-// The terminal-injection ioctls that make the ioctl_dev gap an escape are blocked
-// separately by seccomp (BlockTerminalInjection); the truncate residual is disclosed
-// in the degraded run report so the operator sees it on an old kernel.
+// Both residuals are disclosed in the degraded run report so an operator on an old
+// kernel sees them. seccomp's BlockTerminalInjection narrows the ioctl_dev gap to what
+// matters most - it blocks the terminal-injection ioctls on the tty - but it does not
+// close it: the unhandled right leaves every other ioctl on every granted device node
+// unrestricted, which is why the report names it rather than treating it as covered.
 func RestrictDegraded(read, write, exec []string) error {
 	// BestEffort silently restricts nothing when it detects ABI 0 (an empty ruleset
 	// returns success), which for this tier - where Landlock is the only filesystem
@@ -170,6 +172,18 @@ func Available() bool {
 // this in its run report so an operator on an old kernel sees the residual.
 func TruncateRestricted() bool {
 	return effectiveABI() >= 3
+}
+
+// IoctlDevRestricted reports whether this kernel's Landlock ABI (>= 5, i.e. 6.10+) can
+// restrict ioctl(2) on device files. Below it the ioctl_dev right is absent from
+// handled_access_fs and therefore unrestricted, so EVERY ioctl on EVERY granted device
+// node is available - not merely the terminal-injection set seccomp blocks separately.
+// The degraded tier grants /dev/urandom, /dev/random, /dev/zero and /dev/null to every
+// run, so this is not hypothetical there, and it has no mount namespace behind Landlock
+// to narrow what a device node exposes. It is disclosed in the run report for the same
+// reason truncate is: 5.13 through 6.9 is most of the field.
+func IoctlDevRestricted() bool {
+	return effectiveABI() >= 5
 }
 
 // signalScopeErratum is the errata bit go-landlock checks: when it is clear the

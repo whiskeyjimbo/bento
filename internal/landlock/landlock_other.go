@@ -17,3 +17,6 @@ func Available() bool { return false }
 
 // TruncateRestricted reports false: Landlock is Linux-only.
 func TruncateRestricted() bool { return false }
+
+// IoctlDevRestricted reports false: Landlock is Linux-only.
+func IoctlDevRestricted() bool { return false }

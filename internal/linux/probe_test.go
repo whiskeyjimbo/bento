@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,20 +24,22 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 		nsOK               bool
 		landlockAvail      bool
 		truncateRestricted bool
+		ioctlDevRestricted bool
 		degradedFencesOK   bool
 		want               enforce.State
 		reasonHas          string
 	}{
-		{"userns ok, landlock present", true, true, true, true, enforce.Enforced, "backstop"},
-		{"userns ok, no landlock", true, false, true, true, enforce.Enforced, "bwrap alone"},
-		{"userns blocked, landlock present, fences ok", false, true, true, true, enforce.Degraded, "Landlock path rules"},
-		{"userns blocked, landlock present, truncate unrestricted", false, true, false, true, enforce.Degraded, "cannot restrict truncate"},
-		{"userns blocked, landlock present, no seccomp fences", false, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
-		{"userns blocked, no landlock", false, false, true, true, enforce.Unavailable, "no filesystem confinement"},
+		{"userns ok, landlock present", true, true, true, true, true, enforce.Enforced, "backstop"},
+		{"userns ok, no landlock", true, false, true, true, true, enforce.Enforced, "bwrap alone"},
+		{"userns blocked, landlock present, fences ok", false, true, true, true, true, enforce.Degraded, "Landlock path rules"},
+		{"userns blocked, landlock present, truncate unrestricted", false, true, false, true, true, enforce.Degraded, "cannot restrict truncate"},
+		{"userns blocked, landlock present, ioctl_dev unrestricted", false, true, true, false, true, enforce.Degraded, "cannot restrict ioctl on device files"},
+		{"userns blocked, landlock present, no seccomp fences", false, true, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
+		{"userns blocked, no landlock", false, false, true, true, true, enforce.Unavailable, "no filesystem confinement"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, reason := filesystemLayer(tc.nsOK, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.degradedFencesOK)
+			state, reason := filesystemLayer(tc.nsOK, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.degradedFencesOK)
 			if state != tc.want {
 				t.Errorf("state = %v, want %v", state, tc.want)
 			}
@@ -203,7 +206,7 @@ func layerStatus(t *testing.T, layer enforce.Layer) enforce.LayerStatus {
 func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 	const nsReason = "AppArmor restricts unprivileged user namespaces"
 	for _, landlock := range []bool{true, false} {
-		state, reason := filesystemLayer(false, nsReason, landlock, true, true)
+		state, reason := filesystemLayer(false, nsReason, landlock, true, true, true)
 		if !strings.Contains(reason, nsReason) {
 			t.Errorf("landlock=%v: %v reason %q dropped the namespace reason", landlock, state, reason)
 		}
@@ -229,5 +232,31 @@ func TestCanUnshareRunsTheResolvedCanary(t *testing.T) {
 
 	if err := canUnshare(context.Background(), "bwrap"); err == nil {
 		t.Error("canUnshare passed while its canary exited 3; it ran a hardcoded /bin/true, not the resolved one")
+	}
+}
+
+// The degraded tier's own system paths are raw literals, and several are commonly
+// symlinks (/dev/urandom, the FHS lib dirs on a usrmerge host, /nix). go-landlock
+// opens a path without O_NOFOLLOW, so the rule it installs lands on the resolved
+// target either way - but bento's record of the read set feeds the exposure scan,
+// which must name the paths that were actually granted, not the names they were
+// granted under.
+func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string {
+		if p == "/dev/urandom" {
+			return "/dev/hwrng"
+		}
+		return p
+	}
+	reads, writes := degradedSystemPaths(sb)
+	if !slices.Contains(reads, "/dev/hwrng") {
+		t.Errorf("reads = %v, want the symlinked /dev/urandom resolved to /dev/hwrng", reads)
+	}
+	if slices.Contains(reads, "/dev/urandom") {
+		t.Errorf("reads = %v, want only the resolved name, not the symlink", reads)
+	}
+	if !slices.Contains(writes, "/dev/null") {
+		t.Errorf("writes = %v, want /dev/null", writes)
 	}
 }
