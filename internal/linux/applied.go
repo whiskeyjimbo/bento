@@ -72,6 +72,10 @@ func parseApplied(path string) applied {
 			a.complete = true
 		case key == launcher.AppliedExecFilter:
 			a.execFilter = value
+		case key == launcher.AppliedLandlock && value == launcher.AppliedAbsent:
+			// A kernel with no usable Landlock ABI. The probe already reports that this host
+			// has no backstop and that bwrap alone confines, so there is nothing to
+			// reconcile - recording it keeps "yes" meaning a ruleset really landed.
 		case key == launcher.AppliedLandlock && value == launcher.AppliedNo:
 			// Quoted by the writer so a newline in the error cannot forge a record; an
 			// unquotable detail still counts as a failure, just without the reason.
@@ -90,25 +94,37 @@ func parseApplied(path string) applied {
 // report, so a layer is only claimed once the child confirms it applied.
 //
 // The probe answers what this HOST can enforce; only the child can answer what this
-// RUN enforced. Where they disagree the child wins, and it only ever worsens a layer:
-// exitCode is carried into the reason because a stage that reported nothing usually
-// exited 125 (reexecFail), and naming it is what distinguishes bento failing to
-// confine from a target that itself exits 125.
-func (a applied) reconcile(r *enforce.Report, strictWanted bool, exitCode int) {
+// RUN enforced. Where they disagree the child wins, and it only ever worsens a layer.
+// blockWanted/strictWanted are what the policy asked the child to install, so a report
+// that names a weaker filter - or none - is judged against the request rather than
+// taken at face value. exitCode goes into the reason for a silent child: the exit code
+// alone cannot separate a bento setup failure from a target that exits 125 itself, and
+// the report is what does.
+func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, exitCode int) {
 	if !a.complete {
-		r.Set(enforce.LayerExec, enforce.Unavailable, fmt.Sprintf(
-			"the sandboxed launcher did not report installing the exec-block filter (it exited %d before completing setup), "+
-				"so this run has no proof the filter was applied", exitCode))
-		r.Set(enforce.LayerExecStrict, enforce.Unavailable, fmt.Sprintf(
-			"the sandboxed launcher did not report what it applied (it exited %d before completing setup)", exitCode))
-		r.Set(enforce.LayerFilesystem, enforce.Unavailable, fmt.Sprintf(
-			"the sandboxed launcher did not report applying its filesystem confinement (it exited %d before completing setup)", exitCode))
+		// The reason states what is known - no report, and the code the run ended with -
+		// rather than asserting a cause: the same absence covers a launcher that died in
+		// setup (the usual case, exiting 125 via reexecFail), a bwrap or scope wrapper that
+		// never reached the launcher, and a report the host could not read back.
+		silent := fmt.Sprintf("the sandboxed launcher did not report what it applied (the run ended with exit code %d), "+
+			"so this run has no proof the layer was in place", exitCode)
+		r.Set(enforce.LayerExec, enforce.Unavailable, silent)
+		r.Set(enforce.LayerExecStrict, enforce.Unavailable, silent)
+		r.Set(enforce.LayerFilesystem, enforce.Unavailable, silent)
 		return
 	}
-	// The exec layers are only as strong as the filter that actually landed. basic
-	// where strict was asked for is the architecture fallback: execve is blocked, but
-	// fork/vfork/process-clone are not.
-	if strictWanted && a.execFilter == launcher.AppliedExecBasic {
+	// The exec layers are only as strong as the filter that actually landed. A report
+	// naming no filter (or a value this host does not recognize) where the policy asked
+	// for one is the case a marker alone cannot catch: the child completed setup and
+	// truthfully said it installed nothing, so claiming the probe's Enforced would be
+	// the same lie by a shorter route.
+	if blockWanted && a.execFilter != launcher.AppliedExecBasic && a.execFilter != launcher.AppliedExecStrict {
+		reason := fmt.Sprintf("the sandbox reported installing no exec-block filter (%q) though the policy asked for one", a.execFilter)
+		r.Set(enforce.LayerExec, enforce.Unavailable, reason)
+		r.Set(enforce.LayerExecStrict, enforce.Unavailable, reason)
+	} else if strictWanted && a.execFilter == launcher.AppliedExecBasic {
+		// basic where strict was asked for is the architecture fallback: execve is
+		// blocked, but fork/vfork/process-clone are not.
 		r.Set(enforce.LayerExecStrict, enforce.Degraded,
 			"the sandbox installed the execve-only block; fork/vfork/process-clone blocking is not available on this architecture")
 	}

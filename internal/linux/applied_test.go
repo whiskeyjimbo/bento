@@ -151,9 +151,32 @@ func TestAppliedReconcile(t *testing.T) {
 	cases := []struct {
 		name         string
 		report       string
+		blockWanted  bool
 		strictWanted bool
 		want         map[enforce.Layer]enforce.State
 	}{
+		{
+			name:        "a complete report naming no filter where the policy asked for one claims neither exec layer",
+			report:      launcher.AppliedExecFilter + " " + launcher.AppliedExecNone + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
+			blockWanted: true,
+			want:        map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Unavailable, enforce.LayerExecStrict: enforce.Unavailable, enforce.LayerFilesystem: enforce.Enforced},
+		},
+		{
+			name:        "a complete report with no exec-filter line at all claims neither exec layer",
+			report:      launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
+			blockWanted: true,
+			want:        map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Unavailable, enforce.LayerExecStrict: enforce.Unavailable},
+		},
+		{
+			name:   "no filter is no shortfall when the policy did not ask for one",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecNone + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
+			want:   map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Enforced, enforce.LayerExecStrict: enforce.Enforced},
+		},
+		{
+			name:   "a kernel without Landlock is the probe's business, not a run shortfall",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedAbsent + "\n" + launcher.AppliedMarker + "\n",
+			want:   map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Enforced},
+		},
 		{
 			name:   "a complete report claims nothing extra",
 			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
@@ -162,6 +185,7 @@ func TestAppliedReconcile(t *testing.T) {
 		{
 			name:         "the execve-only fallback degrades exec-strict only",
 			report:       launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
+			blockWanted:  true,
 			strictWanted: true,
 			want:         map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Enforced, enforce.LayerExecStrict: enforce.Degraded, enforce.LayerFilesystem: enforce.Enforced},
 		},
@@ -198,7 +222,7 @@ func TestAppliedReconcile(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			parseApplied(path).reconcile(&r, tc.strictWanted, 125)
+			parseApplied(path).reconcile(&r, tc.blockWanted, tc.strictWanted, 125)
 
 			for layer, want := range tc.want {
 				if got := r.StateOf(layer); got != want {

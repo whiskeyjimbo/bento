@@ -164,6 +164,11 @@ func Run(cfg Config) (int, error) {
 	if err := landlock.Restrict(cfg.Writable); err != nil {
 		fmt.Fprintf(os.Stderr, "[bento] warning: the Landlock filesystem backstop could not be applied (%v); bwrap confinement still holds\n", err)
 		applied.record(AppliedLandlock, AppliedNo, err)
+	} else if !landlock.Available() {
+		// Restrict is best-effort: on a kernel below the usable ABI it installs no ruleset
+		// and still returns nil. Reporting that as applied would make the report assert a
+		// backstop that does not exist, which is the whole failure this channel closes.
+		applied.record(AppliedLandlock, AppliedAbsent, nil)
 	} else {
 		applied.record(AppliedLandlock, AppliedYes, nil)
 	}

@@ -23,7 +23,10 @@ const (
 	// (execve plus fork/vfork/process-clone).
 	AppliedExecFilter = "exec-filter"
 	// AppliedLandlock carries whether the Landlock confinement was applied:
-	// AppliedYes, or AppliedNo with the failure as its detail.
+	// AppliedYes, AppliedNo with the failure as its detail, or AppliedAbsent when this
+	// kernel has no usable Landlock at all. Absent is distinct from failed because the
+	// host already knows an ABI-less kernel has no backstop and reports it - what it
+	// cannot otherwise know is that a kernel WITH Landlock installed no ruleset.
 	AppliedLandlock = "landlock"
 
 	AppliedExecNone   = "none"
@@ -31,6 +34,7 @@ const (
 	AppliedExecStrict = "strict"
 	AppliedYes        = "yes"
 	AppliedNo         = "no"
+	AppliedAbsent     = "absent"
 
 	// AppliedMarker terminates the report. It is written last and only after every
 	// layer decision, so a stage that died partway through setup - or never ran at all
