@@ -299,6 +299,14 @@ func reapTracees(tracees map[int]bool) {
 }
 
 // inspect decodes a syscall stop and records file opens / subprocess execs.
+//
+// The numbers below are amd64's, and nothing here checks the tracee's ABI, because
+// nothing here can reach a foreign one: the launcher installs seccomp's foreign-arch
+// guard (BlockIoUring) before forking the tracee, and that kills the process on any
+// syscall issued through a non-native ABI - including int 0x80 from a 64-bit process,
+// since seccomp keys on the syscall ABI rather than the code segment. Without it an
+// i386 syscall would decode against the wrong table (i386 85 is readlink, amd64 85 is
+// creat) and fabricate write grants that become enforcement policy on the next run.
 func inspect(pid int, record func(string, bool), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {

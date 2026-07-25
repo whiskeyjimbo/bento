@@ -17,7 +17,21 @@ import (
 // forces the target onto the synchronous syscalls the observer records, keeping the
 // manifest complete. A program that hard-requires io_uring instead fails loudly (a
 // nonzero exit the host warns on), which beats a quietly incomplete manifest.
+//
+// The foreign-arch guard carries the same completeness argument, which is why this
+// is not the security-fence exception to it. The observer decodes syscall numbers as
+// amd64 unconditionally, so a tracee issuing i386 syscalls - a 32-bit helper, or
+// int 0x80 from a 64-bit process - is decoded against the wrong table: i386 85 is
+// readlink and would be recorded as a write on whatever the first argument points at,
+// while real accesses go unseen. That is a manifest with fabricated grants and missing
+// ones, and it becomes enforcement policy on the next run. seccomp keys on the syscall
+// ABI rather than the code segment, so it catches the int 0x80 case a register check
+// would miss, and it kills rather than filters - a profile that cannot be trusted must
+// not complete. It also closes i386 io_uring_setup, which is 425 there too.
 func BlockIoUring() error {
+	if err := blockForeignArch(); err != nil {
+		return err
+	}
 	return installPolicy(seccomp.Policy{
 		DefaultAction: seccomp.ActionAllow,
 		Syscalls: []seccomp.SyscallGroup{
