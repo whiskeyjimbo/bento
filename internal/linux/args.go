@@ -3,7 +3,6 @@ package linux
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,11 +83,20 @@ type sandbox struct {
 	// gitdirs from the scan. Injected alongside exists so the git-directory scan
 	// (gitDirShields) is testable against a hypothetical filesystem.
 	listDir func(string) (names []string, ok bool)
-	// hardlinkedUnder returns the regular files at or under a host path whose inode
-	// carries more than one hardlink. It walks a directory shield for its interior
-	// credential files and checks a file shield itself. Injected alongside the other stat
-	// seams so the hardlink-alias warning is testable without a real filesystem.
-	hardlinkedUnder func(string) []string
+	// fileIDs returns the content identity and link count of every regular file at or
+	// under a host path: the file itself for a file shield, the credential files inside
+	// it for a directory shield. Injected alongside the other stat seams so the alias
+	// scan is testable without a real filesystem.
+	fileIDs func(string) []identifiedFile
+	// aliasesUnder returns the files under a granted tree whose content identity is one
+	// of want's, keyed to the credential each aliases. Injected beside fileIDs; the two
+	// are separate seams because the credential trees are small enough to enumerate
+	// whole while a granted tree must be filtered as it is walked.
+	aliasesUnder func(root string, want map[fileID]string) []credentialAlias
+	// bindMounts returns the host's bind mounts. A bind exposes a credential's inode at
+	// a second path without adding a directory entry to it, so no link count reveals
+	// one and the mount table is the only place it shows up.
+	bindMounts func() []bindMount
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -307,42 +315,6 @@ func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.Shie
 	return shieldsApplied(applied)
 }
 
-// hardlinkedShields reports the engaged credential files that carry an extra hardlink,
-// so a broad grant exposing a second name for the same inode does not do so silently. A
-// shield binds a PATH, so a hardlink to the credential's inode under a different granted
-// path stays readable past the shield. Only hidden (DenyAll) shields under the user's
-// home qualify: a read-only shield keeps the file readable by design, and the non-home
-// hidden shields are host service directories (/run, an embedder's out-of-home store),
-// not credential files - walking /run on a `read: /` run would descend into removable
-// media and FUSE mounts and flag their unrelated backup hardlinks. A directory shield is
-// walked for the credential files inside it (~/.ssh/id_rsa, ~/.aws/credentials); a file
-// shield checks itself. Necessary, not sufficient: it flags that an alias exists, not
-// where; it misses an alias whose credential path no grant reached (its shield never
-// engaged), a credential that resolves outside home, and a symlinked credential (whose
-// target is not followed, so a store-deduplicated target does not false-warn). The
-// complete fix is inode-aware granted-tree scanning.
-func hardlinkedShields(sb sandbox, shields []enforce.ShieldApplied) []string {
-	if sb.home == "" {
-		return nil
-	}
-	// The shield paths are symlink-resolved (denyArgs resolves them), so resolve home the
-	// same way before comparing - on a host where $HOME sits behind a symlink (/home ->
-	// /var/home) an unresolved prefix would match nothing and silently skip every credential.
-	home := sb.resolve(sb.home)
-	var out []string
-	for _, s := range shields {
-		if s.Kind != "hidden" || !under(s.Path, home) {
-			continue
-		}
-		out = append(out, sb.hardlinkedUnder(s.Path)...)
-	}
-	sort.Strings(out)
-	// Nested hidden shields (e.g. GNUPGHOME under ~/.password-store) walk overlapping
-	// trees, so the same file can surface twice; report each once.
-	return slices.Compact(out)
-}
-
-// execBlockFlags reports the launcher's exec-block flags for execMode, gated on
 // whether the kernel supports seccomp. The exec-block is a hardening layer
 // (TierHardening): where seccomp BPF is absent the probe reports
 // LayerExec=Unavailable and admission proceeds with a warning, so the launcher
@@ -1405,30 +1377,6 @@ func hostExists(path string) bool {
 func hostIsDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
-}
-
-// hostHardlinkedUnder returns the regular files at or under path whose inode carries
-// more than one link - a hardlink alias to the same content exists somewhere on the
-// host. It walks without following symlinks (WalkDir reports them without descending),
-// so a symlink planted in a credential directory cannot redirect the walk or loop, and
-// stats only regular files. Best-effort: an unreadable subtree is skipped, never fatal,
-// since this feeds an advisory warning, not a refusal.
-func hostHardlinkedUnder(path string) []string {
-	var out []string
-	filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
-			out = append(out, p)
-		}
-		return nil
-	})
-	return out
 }
 
 // hostListDir returns the names of a directory's immediate children that are

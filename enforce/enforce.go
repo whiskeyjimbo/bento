@@ -104,19 +104,6 @@ type Result struct {
 	// reach: there is no observer at enforce time, so a tool that fails closed because
 	// a path it needs was denied is diagnosed by profiling, not from this list.
 	Shields []ShieldApplied
-	// HardlinkedShields lists engaged home credential files (a hidden file shield, or a
-	// regular file inside a hidden directory shield, under the user's home) that carry
-	// more than one hardlink on the host. A shield binds a PATH, so it hides only the
-	// credential's own name; a hardlink to the same inode under a different, granted path
-	// is a second readable name the shield does not cover - a silent leak the sandboxed
-	// target cannot itself create (inside the sandbox the credential path is empty). This
-	// is advisory, never a refusal: an extra link can be a harmless backup, the alias's
-	// location is not reported, and it does not detect an alias whose credential path no
-	// grant reached (no shield engaged), a credential resolving outside home, or a
-	// symlinked credential (its target is not followed). The complete fix is inode-aware
-	// granted-tree scanning. Sorted and deduped, empty for the common run with no aliased
-	// credential in scope.
-	HardlinkedShields []string
 	// Exposed lists the always-on shields a full bwrap run WOULD have engaged for this
 	// policy but that this run left exposed, so the audit stays honest on a tier that
 	// cannot shield. It is populated only by the degraded tier, which has no mount

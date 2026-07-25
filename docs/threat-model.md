@@ -184,28 +184,48 @@ covered by the shield itself. The sandboxed program can't set this up itself
 to link), so it takes a host-created alias - but a user granting `read: ~/project`
 would not expect a hardlink there to expose `~/.aws/credentials`.
 
-A cheap partial mitigation now converts this from *silent* to *flagged*: when a
-run's grant engages a home credential shield, bento stats that credential (walking a
-directory shield for its interior files) and warns if any has more than one
-hardlink - "these shielded credentials have extra hardlinks; a grant that exposes
-another name for the same file would leak it past the shield". It is
-necessary-not-sufficient, and its residuals are deliberate:
+Bento refuses such a run before the target starts, naming both the granted path
+that reaches the content and the credential it reaches, since the alias is
+host-made and the user is the one who can remove it. Two mechanisms find it,
+because the two alias kinds leave different traces:
 
-- it says an alias *exists*, not where, and over-warns on a harmless backup hardlink;
-- the walk covers only *engaged* shields, so an alias whose credential path no grant
-  reached (its shield never engaged) is not detected;
-- it covers only shields under `$HOME`; the non-home hidden shields are host service
-  directories (`/run`), not credential files, and walking them would descend into
-  removable media and FUSE mounts and flag their unrelated backup links;
-- a credential that *resolves* outside `$HOME` (a symlinked store) is skipped for the
-  same reason, and a symlinked credential's *target* is not followed at all - a
-  store-deduplicated target (Nix, which hardlinks identical files by design) would
-  otherwise false-warn on every home-manager-linked dotfile;
-- it does not cover bind aliases or reflinks, which share content without sharing a
-  link count.
+- *Hardlinks* are found by identity. A hardlink needs a second directory entry
+  pointing at the credential's inode, so `nlink == 1` on every credential *proves*
+  no hardlink to any of them exists anywhere on the host. Bento stats the credential
+  set first - dozens of files - and only when that gate fires does it walk the
+  granted trees to find where the alias is, never descending into a filesystem none
+  of the credentials live on. On an ordinary run the walk is provably unnecessary
+  and does not happen.
+- *Bind aliases* bump no link count, so the gate correctly skips the walk for them.
+  They are read instead from `/proc/self/mountinfo`, at O(mounts).
 
-The full fix remains inode-aware shielding (walk each granted tree, match inodes
-against every shielded credential), a separate and more expensive design.
+The credential set is built from the deny-list itself rather than from the shields
+a given run engaged: a credential no grant reached is still reachable through an
+alias that a grant *did* reach. It covers `DenyAll` shields under `$HOME` - a
+read-only shield's file is readable by design, and the non-home hidden shields are
+host service directories like `/run`, which it would be wrong to enumerate. A
+credential's own path being explicitly opted into the sandbox drops it from the
+scan: its shield never engages, so there is no shield for an alias to defeat.
+
+Two narrowings keep the refusal honest. A symlinked credential's *target* is not
+followed - a store that deduplicates identical files by hardlinking them (Nix) gives
+every linked dotfile an extra link by design. And VCS object stores inside a
+credential directory are not used as identity anchors: `~/.password-store` is a git
+repo by design and `git clone --local` hardlinks every object into the clone, so
+anchoring on a blob would refuse a run because the user's own clone sits in a
+granted tree, while the store stays shielded either way.
+
+Two residuals are accepted rather than engineered against:
+
+- a *reflink* shares content without sharing an inode, so identity comparison never
+  sees one; catching it would mean hashing the contents of every file in every
+  granted tree;
+- the scan is a *snapshot*, so a host actor can create an alias after it runs.
+
+Both are bounded by the same fact: the actor who could exploit either already holds
+the user's privileges and could read the credential directly without an alias. What
+the mechanism delivers is naming an alias the user did not intend, not blocking
+someone who needs no alias.
 
 **Access you grant is yours to grant.** An explicit grant to a shielded path
 warns and proceeds. Bento won't second-guess a deliberate opt-in.

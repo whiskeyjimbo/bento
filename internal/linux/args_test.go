@@ -66,9 +66,11 @@ func testSandbox(existing ...string) sandbox {
 			}
 			return names, isDir
 		},
-		// The fake filesystem has no hardlinks by default; tests that exercise the
-		// alias warning override this to name aliased files under a shield path.
-		hardlinkedUnder: func(string) []string { return nil },
+		// The fake filesystem has no aliased credentials by default; the alias-scan
+		// tests override these seams to plant one.
+		fileIDs:      func(string) []identifiedFile { return nil },
+		aliasesUnder: func(string, map[fileID]string) []credentialAlias { return nil },
+		bindMounts:   func() []bindMount { return nil },
 	}
 }
 
@@ -550,99 +552,6 @@ func TestCarveKeysOnRealKindNotDeclaredDir(t *testing.T) {
 	}
 	if child < parent {
 		t.Errorf("the gh store shield (idx %d) must follow the parent bind (idx %d)", child, parent)
-	}
-}
-
-// A hidden credential shield binds a PATH, so a hardlink to the same inode elsewhere in
-// a granted tree stays readable past the shield. hardlinkedShields walks each engaged
-// hidden shield - including the credential files inside a directory shield - and reports
-// the aliased ones so the leak is flagged, not silent. A read-only shield is not
-// consulted (its file is readable by design), and an engaged shield with no extra-linked
-// file contributes nothing.
-func TestHardlinkedShieldsWalksHiddenShields(t *testing.T) {
-	sb := testSandbox()
-	aliased := map[string][]string{
-		"/home/u/.aws":                  {"/home/u/.aws/credentials"},      // a file inside a directory shield
-		"/home/u/.netrc":                {"/home/u/.netrc"},                // a file shield checking itself
-		"/home/u/.gitconfig":            {"/home/u/.gitconfig"},            // a read-only shield, must be ignored
-		"/home/u/.password-store":       {"/home/u/.password-store/x/key"}, // overlaps the nested gnupg shield
-		"/home/u/.password-store/gnupg": {"/home/u/.password-store/x/key"}, // same file, must appear once
-		"/run":                          {"/run/media/u/backup/data"},      // a non-home host service shield, must be skipped
-	}
-	sb.hardlinkedUnder = func(p string) []string { return aliased[p] }
-
-	shields := []enforce.ShieldApplied{
-		{Path: "/home/u/.aws", Kind: "hidden"},
-		{Path: "/home/u/.ssh", Kind: "hidden"}, // engaged but no extra link
-		{Path: "/home/u/.netrc", Kind: "hidden"},
-		{Path: "/home/u/.gitconfig", Kind: "read-only"},
-		{Path: "/home/u/.password-store", Kind: "hidden"},
-		{Path: "/home/u/.password-store/gnupg", Kind: "hidden"},
-		{Path: "/run", Kind: "hidden"}, // walking /run would descend into removable media
-	}
-	got := hardlinkedShields(sb, shields)
-	want := []string{"/home/u/.aws/credentials", "/home/u/.netrc", "/home/u/.password-store/x/key"}
-	if !slices.Equal(got, want) {
-		t.Errorf("hardlinkedShields = %v, want %v (hidden home shields only, dir walked, deduped, sorted)", got, want)
-	}
-}
-
-// On a host where $HOME sits behind a symlink (/home -> /var/home on Silverblue), the
-// engaged shield paths are symlink-resolved but $HOME is not, so the home-scope filter
-// must resolve home too - otherwise it matches nothing and silently skips every
-// credential, the worst kind of no-op.
-func TestHardlinkedShieldsResolvesHomeForScope(t *testing.T) {
-	sb := testSandbox()
-	sb.home = "/home/u"
-	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
-	sb.hardlinkedUnder = func(p string) []string {
-		if p == "/var/home/u/.aws" {
-			return []string{"/var/home/u/.aws/credentials"}
-		}
-		return nil
-	}
-	// Shields arrive already resolved, as denyArgs hands them over.
-	shields := []enforce.ShieldApplied{{Path: "/var/home/u/.aws", Kind: "hidden"}}
-	got := hardlinkedShields(sb, shields)
-	want := []string{"/var/home/u/.aws/credentials"}
-	if !slices.Equal(got, want) {
-		t.Errorf("home-scope filter must resolve $HOME's symlinks; got %v want %v", got, want)
-	}
-}
-
-// hostHardlinkedUnder finds a credential that has a hardlink alias, whether the shield
-// path is the file itself or a directory holding it, and reports nothing for a
-// single-link file - the positive control that keeps a green result from being vacuous.
-func TestHostHardlinkedUnderFindsAlias(t *testing.T) {
-	dir := t.TempDir()
-	credDir := filepath.Join(dir, ".aws")
-	if err := os.MkdirAll(credDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cred := filepath.Join(credDir, "credentials")
-	if err := os.WriteFile(cred, []byte("SECRET"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	single := filepath.Join(credDir, "config")
-	if err := os.WriteFile(single, []byte("plain"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A hardlink to the credential inside a sibling tree a broad grant would expose.
-	if err := os.Link(cred, filepath.Join(dir, "innocent.txt")); err != nil {
-		t.Fatal(err)
-	}
-
-	// Directory shield: the walk flags the aliased interior file, not the single-link one.
-	if got := hostHardlinkedUnder(credDir); !slices.Equal(got, []string{cred}) {
-		t.Errorf("dir walk = %v, want just the aliased credential %q", got, cred)
-	}
-	// File shield: checking the credential path directly also flags it.
-	if got := hostHardlinkedUnder(cred); !slices.Equal(got, []string{cred}) {
-		t.Errorf("file check = %v, want %q", got, cred)
-	}
-	// Positive control: a file with one link is not reported, so the check has teeth.
-	if got := hostHardlinkedUnder(single); len(got) != 0 {
-		t.Errorf("single-link file must not be reported; got %v", got)
 	}
 }
 

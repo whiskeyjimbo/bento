@@ -149,22 +149,6 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	}
 }
 
-// writeHardlinkWarning tells the user that a shielded credential has an extra hardlink
-// on the host. The shield hides the credential's own path, but a second name for the
-// same inode inside a granted tree stays readable past it. bento cannot tell whether
-// this run's grants actually expose that alias, so it warns rather than refuses. The
-// paths carry host-enumerated file names, so they are quoted.
-func writeHardlinkWarning(w io.Writer, res enforce.Result) {
-	if len(res.HardlinkedShields) == 0 {
-		return
-	}
-	fmt.Fprintln(w, "[bento] WARNING: these shielded credentials have extra hardlinks; a grant that exposes")
-	fmt.Fprintln(w, "[bento] another name for the same file would leak it past the shield - review:")
-	for _, p := range res.HardlinkedShields {
-		fmt.Fprintf(w, "[bento]   %q\n", p)
-	}
-}
-
 // writeExposedWarning tells the user which credential and persistence paths a full
 // bwrap run would have shielded but this degraded run left exposed, so a run on a
 // tier that cannot shield is not silent about what it exposed. The full tier's shield

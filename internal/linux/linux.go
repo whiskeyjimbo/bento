@@ -109,10 +109,17 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// path. The shields still protect every path not opted into.
 	optedIn, _ := explicitShieldOptIns(sb, p.Read)
 
-	// A shield hides a credential's path, not its inode: flag any engaged credential that
-	// carries an extra hardlink so a grant exposing another name for the same file is not
-	// a silent leak. Computed once from the engaged shields and carried on every result.
-	hardlinked := hardlinkedShields(sb, shields)
+	// A shield hides a credential's path, not the content behind it. Refuse before the
+	// target starts if a granted tree holds a second name for a shielded credential's
+	// inode: the user granted that tree, not the credential, so proceeding would hand
+	// over a store they never opted into. An explicit opt-in is honored - those
+	// credentials are dropped from the scan - so this refuses only what nobody asked for.
+	// The degraded tier returns above without reaching here, and correctly: it applies no
+	// shields at all, so there is no shield for an alias to defeat and its exposure is
+	// already reported in full through the Report.
+	if aliases := aliasedCredentials(sb, p.Read, p.Write, optedIn); len(aliases) > 0 {
+		return enforce.Result{}, aliasRefusal(aliases)
+	}
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
@@ -141,12 +148,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, HardlinkedShields: hardlinked}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, HardlinkedShields: hardlinked}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -259,7 +266,9 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		rootDirs:        hostRootDirs,
 		resolve:         hostResolve,
 		listDir:         hostListDir,
-		hardlinkedUnder: hostHardlinkedUnder,
+		fileIDs:         hostFileIDs,
+		aliasesUnder:    hostAliasesUnder,
+		bindMounts:      hostBindMounts,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
