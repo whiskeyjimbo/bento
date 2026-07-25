@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento/enforce"
 )
 
 // filesystemLayer is the decision at the heart of the degraded tier: bwrap when
@@ -122,12 +122,18 @@ func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
 		wantState     enforce.State
 		wantReasonHas string
 	}{
-		{"no landlock", func(t *testing.T) { swap(t, &landlockAvailable, false) },
-			enforce.LayerFilesystem, enforce.Enforced, "bwrap alone"},
-		{"no seccomp", func(t *testing.T) { swap(t, &seccompSupported, false) },
-			enforce.LayerExec, enforce.Unavailable, "does not support seccomp BPF"},
-		{"no strict exec filter", func(t *testing.T) { swap(t, &seccompStrictExecSupported, false) },
-			enforce.LayerExecStrict, enforce.Unavailable, "not implemented for this architecture"},
+		{
+			"no landlock", func(t *testing.T) { swap(t, &landlockAvailable, false) },
+			enforce.LayerFilesystem, enforce.Enforced, "bwrap alone",
+		},
+		{
+			"no seccomp", func(t *testing.T) { swap(t, &seccompSupported, false) },
+			enforce.LayerExec, enforce.Unavailable, "does not support seccomp BPF",
+		},
+		{
+			"no strict exec filter", func(t *testing.T) { swap(t, &seccompStrictExecSupported, false) },
+			enforce.LayerExecStrict, enforce.Unavailable, "not implemented for this architecture",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

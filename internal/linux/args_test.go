@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // testSandbox compiles argv against a hypothetical filesystem, so the
@@ -488,8 +488,10 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 
 	// Sibling write only, no read: the child is not independently reachable, yet is
 	// force-emitted because the parent's bind would expose it - and after that bind.
-	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Write: []string{"/home/u/.local/share/fish/functions"}}, sb)
+	args := compileOrFail(t, &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Write:      []string{"/home/u/.local/share/fish/functions"},
+	}, sb)
 	p, c := pairIndex(args, "--ro-bind", parent), pairIndex(args, sb.emptyFile, child)
 	if p < 0 || c < 0 {
 		t.Fatalf("sibling write must shield both parent (ro-bind idx=%d) and force the child (idx=%d)", p, c)
@@ -500,8 +502,10 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 
 	// Home read + sibling write: the child is reachable and emitted normally, but must
 	// still land after the parent bind.
-	args2 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Read: []string{"/home/u"}, Write: []string{"/home/u/.local/share/fish/functions"}}, sb)
+	args2 := compileOrFail(t, &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Read:       []string{"/home/u"}, Write: []string{"/home/u/.local/share/fish/functions"},
+	}, sb)
 	p2, c2 := pairIndex(args2, "--ro-bind", parent), pairIndex(args2, sb.emptyFile, child)
 	if p2 < 0 || c2 < 0 || c2 < p2 {
 		t.Errorf("read+write: child (idx %d) must follow parent (idx %d), both present", c2, p2)
@@ -511,8 +515,10 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	// the same nesting - the carve must follow.
 	t.Setenv("XDG_DATA_HOME", "/xdg")
 	sbx := testSandbox("/xdg/fish", "/xdg/fish/functions/ls.fish", "/xdg/fish/fish_history")
-	args3 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Write: []string{"/xdg/fish/functions"}}, sbx)
+	args3 := compileOrFail(t, &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Write:      []string{"/xdg/fish/functions"},
+	}, sbx)
 	p3, c3 := pairIndex(args3, "--ro-bind", "/xdg/fish"), pairIndex(args3, sbx.emptyFile, "/xdg/fish/fish_history")
 	if p3 < 0 || c3 < 0 || c3 < p3 {
 		t.Errorf("relocated pair: child (idx %d) must follow parent (idx %d), both present", c3, p3)
@@ -533,8 +539,10 @@ func TestCarveKeysOnRealKindNotDeclaredDir(t *testing.T) {
 		"/home/u/.local/share/gh",
 		"/home/u/.local/share/gh/hosts.yml",
 	)
-	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Write: []string{"/home/u/.local/foo"}}, sb)
+	args := compileOrFail(t, &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Write:      []string{"/home/u/.local/foo"},
+	}, sb)
 	parent := pairIndex(args, "--ro-bind", "/home/u/.local")
 	child := pairIndex(args, "--tmpfs", "/home/u/.local/share/gh")
 	if parent < 0 || child < 0 {

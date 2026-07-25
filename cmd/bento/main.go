@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento/backend"
 )
 
 // bentoFailed is the exit code when bento itself could not run the target - a

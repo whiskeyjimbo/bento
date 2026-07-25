@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // These tests exercise the whole egress path: a real sandbox, the re-exec'd
@@ -69,7 +69,7 @@ func testBento(t *testing.T) string {
 		}
 		bentoDir = dir
 		bin := filepath.Join(dir, "bento")
-		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/cmd/bento")
+		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/cmd/bento")
 		cmd.Env = append(os.Environ(), "GOWORK=off", "HOME="+toolchainHome)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			bentoErr = fmt.Errorf("building bento: %v\n%s", err, out)

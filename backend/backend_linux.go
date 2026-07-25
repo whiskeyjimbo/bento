@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
-	"github.com/whiskeyjimbo/bento-v2/internal/linux"
-	"github.com/whiskeyjimbo/bento-v2/policy"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/internal/linux"
+	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // New returns the enforcer for this platform.

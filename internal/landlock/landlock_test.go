@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
 func TestAvailableOnLinux(t *testing.T) {
@@ -34,7 +34,7 @@ func TestAvailableWithoutSecurityfs(t *testing.T) {
 	}
 
 	bin := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/internal/landlock/internal/probe")
+	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building probe: %v\n%s", err, out)
@@ -42,7 +42,8 @@ func TestAvailableWithoutSecurityfs(t *testing.T) {
 
 	// --tmpfs over /sys/kernel/security makes the lsm file unreadable, exactly as a
 	// restricted-/sys container does, while the Landlock syscalls stay available.
-	out, err := exec.Command(bwrap,
+	out, err := exec.Command(
+		bwrap,
 		"--dev-bind", "/", "/",
 		"--tmpfs", "/sys/kernel/security",
 		bin, "available",
@@ -68,7 +69,7 @@ func TestRestrictConfinesReads(t *testing.T) {
 	}
 
 	bin := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento-v2/internal/landlock/internal/probe")
+	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building probe: %v\n%s", err, out)

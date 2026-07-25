@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // writeManifest marshals a policy to a temp manifest file and returns its path, so

@@ -58,7 +58,7 @@ func buildSymlinkTree(root string, data []byte) {
 
 	kinds := make([]byte, maxResolveNodes)
 	targets := make([]string, maxResolveNodes)
-	for i := 0; i < maxResolveNodes; i++ {
+	for i := range maxResolveNodes {
 		kinds[i] = byteAt(2*i) % 3
 		a := byteAt(2*i + 1)
 		// A target node index in [0, maxResolveNodes]; the extra value names a node that
@@ -81,7 +81,7 @@ func buildSymlinkTree(root string, data []byte) {
 		}
 	}
 
-	for i := 0; i < maxResolveNodes; i++ {
+	for i := range maxResolveNodes {
 		switch kinds[i] {
 		case 0:
 			os.Mkdir(name(i), 0o755)
@@ -89,7 +89,7 @@ func buildSymlinkTree(root string, data []byte) {
 			os.WriteFile(name(i), nil, 0o644)
 		}
 	}
-	for i := 0; i < maxResolveNodes; i++ {
+	for i := range maxResolveNodes {
 		if kinds[i] == 1 {
 			os.Symlink(targets[i], name(i))
 		}
@@ -171,7 +171,7 @@ func assertResolveOracle(t *testing.T, start string) (looped bool) {
 // kernel cannot) so there is no kernel resolution to compare against. Bounded so a
 // pathological input cannot spin; start is symlink-free-resolved here, so it holds no loop.
 func kernelResolveByPopulating(start string) (string, bool) {
-	for i := 0; i < 4*maxResolveNodes+16; i++ {
+	for range 4*maxResolveNodes + 16 {
 		eval, err := filepath.EvalSymlinks(start)
 		if err == nil {
 			return eval, true
@@ -248,7 +248,7 @@ func mustLink(t *testing.T, target, link string) {
 // links, so the walk only ever flags symlinks the fuzzer planted.
 func hasSymlinkComponent(p string) bool {
 	cur := "/"
-	for _, c := range strings.Split(strings.Trim(p, "/"), "/") {
+	for c := range strings.SplitSeq(strings.Trim(p, "/"), "/") {
 		if c == "" {
 			continue
 		}

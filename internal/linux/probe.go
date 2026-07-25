@@ -6,9 +6,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/seccomp"
 )
 
 // The kernel capability checks this package's fail-closed decisions read. They are
@@ -105,16 +105,22 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 	if seccompOK {
 		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExec, State: enforce.Enforced})
 	} else {
-		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExec, State: enforce.Unavailable,
-			Reason: "this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced"})
+		out = append(out, enforce.LayerStatus{
+			Layer: enforce.LayerExec, State: enforce.Unavailable,
+			Reason: "this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced",
+		})
 	}
 	switch {
 	case !seccompOK:
-		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
-			Reason: "this kernel does not support seccomp BPF"})
+		out = append(out, enforce.LayerStatus{
+			Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
+			Reason: "this kernel does not support seccomp BPF",
+		})
 	case !strictOK:
-		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
-			Reason: "fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here"})
+		out = append(out, enforce.LayerStatus{
+			Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
+			Reason: "fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here",
+		})
 	default:
 		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExecStrict, State: enforce.Enforced})
 	}
@@ -132,8 +138,10 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 func limitsLayers(nsOK, scopeOK bool, scopeReason string, cpuState enforce.State, cpuReason string) []enforce.LayerStatus {
 	switch {
 	case !nsOK:
-		return []enforce.LayerStatus{{Layer: enforce.LayerLimits, State: enforce.Unavailable,
-			Reason: "the reduced-confinement tier runs the target directly and applies no resource limits"}}
+		return []enforce.LayerStatus{{
+			Layer: enforce.LayerLimits, State: enforce.Unavailable,
+			Reason: "the reduced-confinement tier runs the target directly and applies no resource limits",
+		}}
 	case !scopeOK:
 		// No scope at all: the cpu gap is subsumed by the whole limits layer being
 		// unavailable, which already refuses a cpu-limit policy. A separate

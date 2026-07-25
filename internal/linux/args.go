@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
-	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // systemReadPaths are mounted read-only in every sandbox so an interpreter can
@@ -400,7 +400,8 @@ var namespaceFlags = []string{
 
 func baseFlags() []string {
 	flags := append([]string{"--die-with-parent", "--new-session"}, namespaceFlags...)
-	return append(flags,
+	return append(
+		flags,
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
@@ -600,7 +601,8 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 		// "config", which is how a submodule literally named "config" nests its own
 		// gitdir at .git/modules/config/).
 		if cfg := filepath.Join(d, "config"); sb.exists(cfg) && !sb.isDir(cfg) {
-			rules = append(rules,
+			rules = append(
+				rules,
 				denylist.Rule{Path: cfg, Deny: denylist.DenyWrite},
 				denylist.Rule{Path: filepath.Join(d, "hooks"), Deny: denylist.DenyWrite, Dir: true},
 			)

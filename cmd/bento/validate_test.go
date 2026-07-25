@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // validate must surface resource limits in both the human summary and --json, so a

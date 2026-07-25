@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
+	"github.com/whiskeyjimbo/bento/internal/seccomp"
 )
 
 // sentinelInstallFilter re-execs the test binary as the sacrificial child that

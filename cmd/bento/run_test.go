@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // asExitError unwraps the *exitError a command returns to carry a target's exit
@@ -115,9 +115,11 @@ func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 func TestWriteRunResultSuccessJSON(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-	res := enforce.Result{ExitCode: 3, Report: report, EgressConnections: 2,
+	res := enforce.Result{
+		ExitCode: 3, Report: report, EgressConnections: 2,
 		ShieldedGrants: []string{"/home/u/.ssh"},
-		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}}}
+		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
+	}
 
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, "hello-stdout", "warn-stderr", nil)
@@ -154,8 +156,10 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 // by kind, so an operator sees the sandbox worked without a per-path dump (that is the
 // --json list). A run whose grants reached no shield stays silent.
 func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
-	res := enforce.Result{ExitCode: 0,
-		Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}}}
+	res := enforce.Result{
+		ExitCode: 0,
+		Shields:  []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
+	}
 	var stdout, stderr bytes.Buffer
 	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, "", "", nil)
 	got := stderr.String()

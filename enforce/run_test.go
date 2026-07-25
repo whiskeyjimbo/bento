@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // fakeEnforcer is an in-memory Enforcer for exercising the core orchestration

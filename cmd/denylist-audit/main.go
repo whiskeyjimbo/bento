@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist/audit"
+	"github.com/whiskeyjimbo/bento/internal/denylist/audit"
 )
 
 const firejailURL = "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc"

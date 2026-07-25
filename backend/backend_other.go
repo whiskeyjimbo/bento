@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // New reports that this platform has no enforcement backend yet.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Red-team regression corpus: each test is a named escape attempt the boundary must

@@ -11,7 +11,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Enforcer applies a policy around a process under platform isolation.

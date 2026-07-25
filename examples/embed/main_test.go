@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/backend"
+	"github.com/whiskeyjimbo/bento/backend"
 )
 
 // TestMain shows the pattern an embedder's own tests must follow. Under `go test`

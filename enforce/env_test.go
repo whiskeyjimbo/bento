@@ -3,7 +3,7 @@ package enforce
 import (
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // fakeHost is an in-memory stand-in for the host environment.

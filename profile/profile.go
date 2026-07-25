@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // HostPort is one observed outbound destination.

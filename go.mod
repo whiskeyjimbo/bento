@@ -1,4 +1,4 @@
-module github.com/whiskeyjimbo/bento-v2
+module github.com/whiskeyjimbo/bento
 
 go 1.26.5
 

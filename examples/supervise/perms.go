@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // perms inspects and edits the permission store from the command line, so a
@@ -335,7 +335,8 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	// over-grant (drop the deny) or under-grant (drop the allow).
 	offending := append(
 		deniesUnderAllows(readGrants(readAllows, writeAllows), readDenies, "read"),
-		deniesUnderAllows(writeAllows, writeDenies, "write")...)
+		deniesUnderAllows(writeAllows, writeDenies, "write")...,
+	)
 	if len(offending) > 0 {
 		for _, c := range offending {
 			fmt.Fprintf(out, "supervise: cannot export: %s %s is denied but lies under the allowed %s; a manifest is a pure allowlist and cannot express the sub-deny. forget one of them first.\n",

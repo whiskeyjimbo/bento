@@ -298,7 +298,6 @@ func TestAdversarialPolicyValidation(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if tc.name == "reject_nil_policy" {
@@ -327,10 +326,10 @@ func TestAdversarialAllows(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		rules    []NetworkRule
-		host     string
-		port     string
+		name      string
+		rules     []NetworkRule
+		host      string
+		port      string
 		wantAllow bool
 	}{
 		{
@@ -420,7 +419,6 @@ func TestAdversarialAllows(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := Allows(tc.rules, tc.host, tc.port)
@@ -462,17 +460,15 @@ func TestAdversarialFingerprintConcurrency(t *testing.T) {
 	const goroutines = 100
 	const iterations = 50
 
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+	for range goroutines {
+		wg.Go(func() {
+			for range iterations {
 				h := p.Fingerprint()
 				if h != initialHash {
 					t.Errorf("Fingerprint non-deterministic under concurrent access: got %q, want %q", h, initialHash)
 				}
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

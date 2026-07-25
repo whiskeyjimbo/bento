@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func fakeLookup(addrs ...net.IP) func(context.Context) ([]net.IP, error) {

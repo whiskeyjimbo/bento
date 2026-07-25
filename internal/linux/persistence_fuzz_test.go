@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Property fuzz for the WRITE-GRANT persistence class, the DenyWrite half the read-grant
@@ -158,7 +158,8 @@ func checkPersistenceShielded(t *testing.T, mask int) {
 	}
 	// The static top-level Workspace surfaces are shielded on every checkout, present or not
 	// (an absent one is tmpfs'd so it cannot be planted).
-	expected = append(expected,
+	expected = append(
+		expected,
 		filepath.Join(root, ".git", "hooks"),
 		filepath.Join(root, ".git", "config"),
 		filepath.Join(root, ".vscode"),
@@ -183,11 +184,11 @@ func checkPersistenceShielded(t *testing.T, mask int) {
 }
 
 func FuzzPersistenceShieldsCoverReachableSurfaces(f *testing.F) {
-	f.Add(0)                                // bare checkout: only the static Workspace shields
-	f.Add(1)                                // one submodule
-	f.Add(1 << 5)                           // the unreadable-subtree fail-closed path
-	f.Add(1<<len(persistenceSurfaces) - 1)  // every surface at once
-	f.Add(1<<1 | 1<<3)                      // nested submodule + a worktree config
+	f.Add(0)                               // bare checkout: only the static Workspace shields
+	f.Add(1)                               // one submodule
+	f.Add(1 << 5)                          // the unreadable-subtree fail-closed path
+	f.Add(1<<len(persistenceSurfaces) - 1) // every surface at once
+	f.Add(1<<1 | 1<<3)                     // nested submodule + a worktree config
 	f.Fuzz(func(t *testing.T, mask int) {
 		checkPersistenceShielded(t, ((mask%(1<<len(persistenceSurfaces)))+(1<<len(persistenceSurfaces)))%(1<<len(persistenceSurfaces)))
 	})

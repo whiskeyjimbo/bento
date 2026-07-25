@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento/enforce"
 )
 
 // doctor gates its exit code only on core guarantees every manifest needs. Network

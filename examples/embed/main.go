@@ -25,9 +25,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/whiskeyjimbo/bento-v2/backend"
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/manifest"
+	"github.com/whiskeyjimbo/bento/backend"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/manifest"
 )
 
 func main() {

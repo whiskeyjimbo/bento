@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/seccomp"
 )
 
 // SentinelLaunchDegraded marks the no-bwrap launch stage: bento re-exec'd as a

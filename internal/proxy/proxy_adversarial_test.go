@@ -125,7 +125,6 @@ func TestAdversarialClassifyIP(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ip := net.ParseIP(tc.ipStr)
@@ -189,7 +188,6 @@ func TestAdversarialReadConnect(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			conn := &mockConn{Buffer: *bytes.NewBufferString(tc.rawReq)}

@@ -19,10 +19,10 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
-	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/proxy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Enforcer applies policies with bubblewrap.

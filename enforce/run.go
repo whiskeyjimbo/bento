@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Options tunes a Run. The zero value is the default posture: refuse to run when

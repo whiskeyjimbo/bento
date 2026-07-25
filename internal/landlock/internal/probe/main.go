@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento/enforce"
 )
 
 // The memory/pids delegation gate is host-safety critical - an uncapped memory bomb

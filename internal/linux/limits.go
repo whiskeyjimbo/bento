@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Resource limits are enforced by running bwrap inside a transient systemd user

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/observe"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/internal/observe"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/proxy"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/proxy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // runGated runs sh -c script under the enforcer with the given policy and gate,

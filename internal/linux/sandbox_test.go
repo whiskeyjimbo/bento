@@ -14,12 +14,12 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
-	"github.com/whiskeyjimbo/bento-v2/internal/observe"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
-	"github.com/whiskeyjimbo/bento-v2/policy"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/observe"
+	"github.com/whiskeyjimbo/bento/internal/seccomp"
+	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // These tests assert that the sandbox actually denies what it claims to. They

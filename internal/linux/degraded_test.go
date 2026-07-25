@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/landlock"
-	"github.com/whiskeyjimbo/bento-v2/internal/seccomp"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/landlock"
+	"github.com/whiskeyjimbo/bento/internal/seccomp"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // exposedShields is the pure computation behind Result.Exposed: the always-on shields a

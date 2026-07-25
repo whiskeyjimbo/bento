@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
+	"github.com/whiskeyjimbo/bento/enforce"
 )
 
 // Off Linux, New must REFUSE (error, nil enforcer) rather than substitute a

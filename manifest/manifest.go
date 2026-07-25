@@ -15,7 +15,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // maxManifestBytes caps how much of the input Parse reads. A manifest is a small

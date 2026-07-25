@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func newValidateCmd() *cobra.Command {

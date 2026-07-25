@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // bv2-2wy regression: the clamp order is load-bearing - DropCovered must run LAST,

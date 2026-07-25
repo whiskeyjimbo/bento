@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // The permission store is the wrapper's persistent memory of human decisions - the

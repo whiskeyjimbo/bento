@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
 // Candidate is one firejail directive mapped into bento's terms.

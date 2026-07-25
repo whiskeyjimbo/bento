@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // bv2-bbq gate: enforcing limits in the degraded tier would wrap the launcher in
@@ -25,8 +25,10 @@ func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 	}
 	pidFile := filepath.Join(t.TempDir(), "sleeper.pid")
 	// A shell that backgrounds a long sleep (a leaked descendant) and records its pid.
-	exe, args := wrapWithLimits("sh", []string{"-c",
-		"sleep 300 & echo $! > " + pidFile + "; sleep 1"}, policy.Limits{Memory: "64M"})
+	exe, args := wrapWithLimits("sh", []string{
+		"-c",
+		"sleep 300 & echo $! > " + pidFile + "; sleep 1",
+	}, policy.Limits{Memory: "64M"})
 
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

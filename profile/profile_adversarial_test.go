@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func TestAdversarialSynthesize(t *testing.T) {
@@ -131,7 +131,6 @@ func TestAdversarialSynthesize(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p := Synthesize(tc.entrypoint, tc.interpreter, tc.obs)
@@ -196,7 +195,6 @@ func TestAdversarialDropCovered(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := DropCovered(tc.reads, tc.writeDirs)

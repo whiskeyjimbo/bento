@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
 func TestParseFirejailKeepsScopedShields(t *testing.T) {

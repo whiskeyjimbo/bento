@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // newTestStore is an empty in-memory store whose dir cannot cover any test grant.

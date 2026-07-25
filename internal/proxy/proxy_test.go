@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // fakeUpstream is a canned server the proxy "dials" instead of the real network:
@@ -774,7 +774,8 @@ func TestGatekeeperUnderConcurrencyOpensOnlyAdmittedTunnels(t *testing.T) {
 	for i := range rules {
 		rules[i] = policy.NetworkRule{Host: fmt.Sprintf("declared%d.example.com", i), Port: "443"}
 	}
-	p := New(rules,
+	p := New(
+		rules,
 		WithGatekeeper(func(_ context.Context, host, _ string) bool {
 			arrived <- struct{}{}
 			<-release
@@ -902,7 +903,8 @@ func TestConcurrentGatesBlockedAtCancelOpenNoTunnels(t *testing.T) {
 	)
 	arrived := make(chan struct{}, conns)
 
-	p := New(nil,
+	p := New(
+		nil,
 		WithGatekeeper(func(ctx context.Context, _, _ string) bool {
 			arrived <- struct{}{}
 			<-ctx.Done() // block as a human prompt would, until the run ends

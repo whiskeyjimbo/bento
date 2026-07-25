@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/internal/launcher"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // runDegraded runs the target under the no-bwrap Landlock-only tier: bento re-exec'd

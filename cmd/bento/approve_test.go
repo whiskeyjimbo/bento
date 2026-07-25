@@ -4,8 +4,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func doc(approves string) *manifest.Document {

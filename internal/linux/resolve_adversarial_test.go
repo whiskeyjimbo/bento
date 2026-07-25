@@ -36,9 +36,9 @@ func TestAdversarialSymlinkResolution(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		path     string
-		check    func(t *testing.T, got string)
+		name  string
+		path  string
+		check func(t *testing.T, got string)
 	}{
 		{
 			name: "eval_symlink_before_dotdot",
@@ -91,7 +91,6 @@ func TestAdversarialSymlinkResolution(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := resolve(tc.path)

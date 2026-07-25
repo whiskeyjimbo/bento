@@ -6,8 +6,8 @@ import (
 	"os"
 	"sort"
 
-	"github.com/whiskeyjimbo/bento-v2/manifest"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // warnManifestDrift warns when a script's committed manifest disagrees with the

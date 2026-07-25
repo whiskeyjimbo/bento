@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento-v2/backend"
-	"github.com/whiskeyjimbo/bento-v2/policy"
+	"github.com/whiskeyjimbo/bento/backend"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // The linux backend confines a target by re-executing this binary as a hidden launch
@@ -99,8 +99,10 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 
 	// Round 2: grant the config so it is mounted with real content. The script now reads
 	// it, proceeds, and attempts the downstream path, which is recorded.
-	granted := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll,
-		Network: base.Network, Read: append(append([]string{}, base.Read...), cfg)}
+	granted := &policy.Policy{
+		Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll,
+		Network: base.Network, Read: append(append([]string{}, base.Read...), cfg),
+	}
 	round2, err := profileRound(cfgRun, granted)
 	if err != nil {
 		t.Fatalf("round 2: %v", err)

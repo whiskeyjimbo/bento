@@ -30,10 +30,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/whiskeyjimbo/bento-v2/backend"
-	"github.com/whiskeyjimbo/bento-v2/enforce"
-	"github.com/whiskeyjimbo/bento-v2/policy"
-	"github.com/whiskeyjimbo/bento-v2/profile"
+	"github.com/whiskeyjimbo/bento/backend"
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 func main() {
@@ -427,7 +427,8 @@ func warnDenyUnderAllow(p *prompter, s *store, key string, final *policy.Policy)
 	_, writeDenies := s.effectivePaths(key, "write")
 	for _, c := range append(
 		deniesUnderAllows(readGrants(final.Read, final.Write), readDenies, "read"),
-		deniesUnderAllows(final.Write, writeDenies, "write")...) {
+		deniesUnderAllows(final.Write, writeDenies, "write")...,
+	) {
 		fmt.Fprintf(p.out, "  note: %s %s is denied but lies under the allowed %s; bento cannot enforce the sub-deny\n",
 			c.kind, quotePath(c.deny), quotePath(c.allow))
 	}

@@ -5,3 +5,6 @@
 .beads-credential-key
 bin/
 .beads/*
+./bento
+dist/
+

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Proves bento's public API is self-sufficient. This example is a separate module
 # (see go.mod's replace), so Go's internal-package rule makes any import of
-# github.com/whiskeyjimbo/bento-v2/internal/... a hard compile error here - the
+# github.com/whiskeyjimbo/bento/internal/... a hard compile error here - the
 # build below cannot pass while reaching into internal/. The grep is a clearer
 # early failure for the same violation.
 set -eu
