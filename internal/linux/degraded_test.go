@@ -2,6 +2,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -391,4 +392,73 @@ func main() {
 		t.Fatalf("building degraded probe: %v\n%s", err, out)
 	}
 	return bin
+}
+
+// exec: none-strict is the one guarantee whose availability is decided at COMPILE
+// time rather than probed: the none-strict filter is written for amd64 and every
+// other architecture gets a stub reporting it unsupported. So on arm64 this layer
+// vanishes for a reason no probe can discover at runtime, and what a manifest
+// asking for it gets must be a decision rather than an accident of build tags.
+//
+// The decision this pins: --strict refuses, naming the layer, and the target does
+// not run; the default posture runs it, because exec-strict is hardening tier and
+// the execve block underneath it still holds. Every other --strict assertion over
+// a real Enforcer covers the limits layer, so without this the exec-strict half of
+// the refusal path was proven only against a synthetic Report.
+func TestRealProbeRefusesStrictExecUnderStrictWhenUnsupported(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("echo RAN\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := sandboxEnforcer(t)
+	run := func(opts enforce.Options) (string, error) {
+		var out strings.Builder
+		_, err := enforce.Run(context.Background(), e,
+			&policy.Policy{
+				Entrypoint:  script,
+				Interpreter: "sh",
+				Read:        []string{dir},
+				Exec:        policy.ExecNoneStrict,
+			},
+			enforce.Process{Stdout: &out, Stderr: &out}, opts)
+		return out.String(), err
+	}
+
+	// A positive control: this host must run the same policy under --strict while the
+	// filter IS available, or the refusal below would be some other shortfall talking
+	// and would hold for a Probe that never consults the strict-exec check at all.
+	if out, err := run(enforce.Options{Strict: true}); err != nil {
+		t.Skipf("this host cannot run a none-strict policy under --strict anyway (%v, out=%q), so losing the filter proves nothing", err, out)
+	}
+
+	swap(t, &seccompStrictExecSupported, false)
+
+	out, err := run(enforce.Options{Strict: true})
+	var refusal *enforce.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("want a Refusal driven by the real probe, got err=%v out=%q", err, out)
+	}
+	named := false
+	for _, l := range refusal.Short {
+		if l.Layer == enforce.LayerExecStrict {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the refusal must name the exec-strict layer that fell short; got %v", refusal.Short)
+	}
+	if strings.Contains(out, "RAN") {
+		t.Error("a refused run must not execute the target")
+	}
+
+	// The other half of the decision: without --strict the run proceeds, because the
+	// execve block is still enforced and only the strict extra is missing. Asserting
+	// it here is what makes the refusal above a posture rather than a host that
+	// refuses everything.
+	if out, err := run(enforce.Options{}); err != nil || !strings.Contains(out, "RAN") {
+		t.Errorf("the default posture must run with only the hardening-tier extra missing; got err=%v out=%q", err, out)
+	}
 }
