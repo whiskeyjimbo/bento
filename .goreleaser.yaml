@@ -1,0 +1,73 @@
+# GoReleaser v2 configuration for bento
+# Reference: https://goreleaser.com
+version: 2
+
+project_name: bento
+
+env:
+  - GOWORK=off
+
+before:
+  hooks:
+    # download, not tidy: a tidy that rewrites go.mod mid-release makes the
+    # published archive differ from the tag it claims to be built from.
+    - go mod download
+
+builds:
+  - id: bento
+    main: ./cmd/bento
+    binary: bento
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    # The stamp and the archive mtimes come from the commit, never the wall clock,
+    # so a published binary can be reproduced from its tag and compared against the
+    # checksum. See the same reasoning behind SOURCE_DATE_EPOCH in the Makefile.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.CommitDate}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - SECURITY.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    # Subjects here are scoped - `docs(denylist): ...` - so an unscoped `^docs:`
+    # would match nothing.
+    exclude:
+      - '^docs(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+      - '^style(\(.+\))?:'
+      - 'merge conflict'
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
