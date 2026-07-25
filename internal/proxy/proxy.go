@@ -379,10 +379,12 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 				p.handle(ctx, c)
 			})
 		default:
-			// At capacity: refuse rather than let the host process grow unbounded.
+			// At capacity: refuse rather than let the host process grow unbounded. The
+			// refusal is recorded before the client is told, so a caller that observes
+			// the 503 has already observed the report.
+			p.report(Refused, "", "")
 			writeStatus(c, "503 Service Unavailable", "bento egress proxy is at its connection limit")
 			c.Close()
-			p.report(Refused, "", "")
 		}
 	}
 }
