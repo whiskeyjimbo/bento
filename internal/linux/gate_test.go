@@ -203,3 +203,29 @@ func TestRunValidatesThePolicyItself(t *testing.T) {
 		t.Fatalf("Run with an invalid policy: err = %v, want the policy validation error", err)
 	}
 }
+
+// A grant the run is going to refuse must not leave a directory behind. The write
+// grant here is legal on its own, so nothing but the ordering of the checks decides
+// whether prepareWriteDirs creates it before the /proc refusal fires - and that
+// refusal is one of the four that used to run only later, inside compile.
+func TestRunRefusesBeforeCreatingWriteDirs(t *testing.T) {
+	requireSandbox(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "unborn-output")
+	p := &policy.Policy{
+		Entrypoint:  script,
+		Interpreter: "sh",
+		Read:        []string{dir, "/proc/self"},
+		Write:       []string{out},
+	}
+	if _, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{}); err == nil {
+		t.Fatal("a grant resolving into a host process directory must refuse the run")
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Errorf("the refused run created %q; every refusal must be decided before anything touches the host", out)
+	}
+}
