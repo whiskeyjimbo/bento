@@ -25,7 +25,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Access is one file the program opened.
+// Access is one path the program reached: opened, modified, or - via a successful
+// stat/access/readlink - established the existence of. An existence probe is a read
+// because the sandbox has no narrower grant: a path is bound in or it is not there.
 type Access struct {
 	Path  string
 	Write bool // the open requested write access
@@ -422,6 +424,75 @@ func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceR
 		res.Execed = true
 	default:
 		inspectMutating(pid, &regs, record, drop)
+		inspectExistence(pid, &regs, record, drop)
+	}
+}
+
+// atSyscallEntry reports whether this stop is the syscall's entry rather than its
+// exit. The kernel leaves -ENOSYS in rax across the entry stop and overwrites it with
+// the return value before the exit stop, so the pair is told apart without any
+// per-tracee bookkeeping. A syscall the running kernel does not implement returns
+// -ENOSYS for real and so reads as an entry stop twice; callers that only act on the
+// exit therefore skip it, which is right - it touched nothing.
+func atSyscallEntry(regs *syscall.PtraceRegs) bool {
+	return int64(regs.Rax) == -int64(syscall.ENOSYS)
+}
+
+// inspectExistence decodes the path-EXISTENCE syscalls - the ones that ask whether a
+// path is there without opening it. Under enforcement an ungranted path is not merely
+// unreadable but absent, so a target that stats a config it never opens sees it during
+// the permissive profiling run, gets ENOENT on the enforced run, and takes a different
+// branch. Existence and read are the same grant here - making a stat succeed means
+// binding the path into the sandbox - so each is recorded as a plain read.
+//
+// Unlike every other case in this decoder these are read at the syscall EXIT stop and
+// recorded only when the call SUCCEEDED. A failed open still needs a grant, because the
+// script meant to open that file; a stat that already returned ENOENT needs none,
+// because enforcement reproduces that exact answer. The filter is what keeps manifests
+// tight: a shell's PATH search misses hundreds of times per command, and recording those
+// probes would bury the paths the run actually needs.
+//
+// A successful access(W_OK) is recorded as a read, not a write. It reports that a write
+// would be permitted, which a read-only bind makes false - but over-attribution silently
+// widens the manifest while under-attribution fails the run closed and is fixed by
+// adding a grant, the same asymmetry openat2Resolve turns on.
+//
+// getdents64 and fchdir carry no pathname, and the descriptor they act on came from an
+// openat this decoder already recorded. getcwd names the run's own working directory,
+// which the sandbox must have bound for the process to be running in it.
+func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func()) {
+	// chdir is decoded at the ENTRY stop instead, because it moves the very anchor
+	// resolveAt reads back out of /proc: at its exit stop a relative pathname would be
+	// joined onto the directory the call just entered. That costs it the success filter,
+	// so a chdir to a path that is not there is recorded like a failed open.
+	if regs.Orig_rax == unix.SYS_CHDIR {
+		if atSyscallEntry(regs) {
+			if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
+				record(path, false)
+			} else {
+				drop()
+			}
+		}
+		return
+	}
+	if atSyscallEntry(regs) || int64(regs.Rax) < 0 {
+		return
+	}
+	at := func(dirfd int32, pathReg uint64) {
+		if path, ok := readPathAt(pid, dirfd, uintptr(pathReg)); ok {
+			record(path, false)
+			return
+		}
+		drop()
+	}
+	switch regs.Orig_rax {
+	case unix.SYS_STAT, unix.SYS_LSTAT, unix.SYS_ACCESS, unix.SYS_READLINK:
+		at(atFdCwd, regs.Rdi)
+	// The *at forms take (dirfd, path, ...). AT_EMPTY_PATH with an empty pathname makes
+	// them operate on the descriptor itself, naming no path; record's empty-path skip
+	// covers that without a separate flag test.
+	case unix.SYS_NEWFSTATAT, unix.SYS_STATX, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2, unix.SYS_READLINKAT:
+		at(int32(regs.Rdi), regs.Rsi)
 	}
 }
 

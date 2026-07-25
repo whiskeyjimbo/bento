@@ -189,10 +189,23 @@ func Run(cfg Config) (int, error) {
 }
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
-// no Landlock - enforcement is off so every access is seen) and writes what the
-// target opened, and whether it exec'd, to the inherited report descriptor for
-// the host to read.
+// no Landlock - enforcement is off so every access is seen) and writes the paths the
+// target reached, and whether it exec'd, to the inherited report descriptor for the
+// host to read.
+//
+// "Reached" is what the decoder in observe covers: opens, the path-mutating syscalls,
+// AF_UNIX bind/connect, and the existence probes (stat/access/readlink/chdir) that
+// succeeded. It is not every syscall that takes a path - a probe that already failed is
+// deliberately not recorded, and io_uring is blocked below rather than decoded.
 func runObserve(cfg Config, env []string) (int, error) {
+	// Validate the report descriptor before the run rather than after it: os.NewFile
+	// never returns nil for a nonnegative fd, so an --observe-fd naming nothing would
+	// otherwise survive a full traced run and only surface as an EBADF from Truncate,
+	// under an error about the report rather than about the descriptor that was wrong.
+	if _, err := unix.FcntlInt(uintptr(cfg.ObserveFD), unix.F_GETFD, 0); err != nil {
+		return 0, fmt.Errorf("launcher: observation descriptor %d is not valid: %w", cfg.ObserveFD, err)
+	}
+
 	// Block io_uring before forking the tracee (which inherits the process-wide filter
 	// and keeps it across its exec): file I/O dispatched through a ring runs in a kernel
 	// worker thread and produces no ptrace syscall stop, so it would be silently absent
