@@ -523,3 +523,57 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 		}
 	}
 }
+
+// A full-node wallet client's keys sit in a named location inside a data directory that
+// is shielded whole - the chain data around them is far too large to enumerate. That
+// makes the anchor a path the deny list has no rule for, so selecting rules by
+// anchorhood skips the shielded parent as "not an anchor" and never reaches the keys.
+// Both layouts are covered: modern Bitcoin Core keeps wallets under wallets/, and a host
+// upgraded from before 0.16 still has wallet.dat at the top of the data directory.
+func TestCredentialFilesReachesAnchorsNestedInABulkStore(t *testing.T) {
+	home := t.TempDir()
+	data := filepath.Join(home, ".bitcoin")
+	if err := os.MkdirAll(filepath.Join(data, "blocks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(data, "wallets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chain := filepath.Join(data, "blocks", "blk00000.dat")
+	if err := os.WriteFile(chain, []byte("CHAIN"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	modern := filepath.Join(data, "wallets", "wallet.dat")
+	legacy := filepath.Join(data, "wallet.dat")
+	for _, w := range []string{modern, legacy} {
+		if err := os.WriteFile(w, []byte("SPENDING KEYS"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The extra name a host actor would have to create for either to leak.
+	if err := os.Link(legacy, filepath.Join(home, "backup.dat")); err != nil {
+		t.Skipf("no hardlink support: %v", err)
+	}
+
+	sb := testSandbox()
+	sb.home = home
+	sb.resolve = func(p string) string { return p }
+	sb.fileIDs = hostFileIDs
+
+	files, linked := credentialFiles(sb, nil)
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.path)
+	}
+	if !linked {
+		t.Error("a hardlinked wallet must open the gate; the wallet anchors are unreachable if it does not")
+	}
+	for _, w := range []string{modern, legacy} {
+		if !slices.Contains(got, w) {
+			t.Errorf("wallet %q must be anchored; got %v", w, got)
+		}
+	}
+	if slices.Contains(got, chain) {
+		t.Errorf("chain data %q must not be anchored - that is the walk the narrowing exists to avoid", chain)
+	}
+}

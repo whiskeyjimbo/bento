@@ -268,21 +268,28 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 		resolvedOptIns = append(resolvedOptIns, sb.resolve(o))
 	}
 
-	anchorDir := map[string]bool{}
-	for _, d := range denylist.AliasAnchors(sb.home) {
-		anchorDir[sb.resolve(d)] = true
+	// The anchors are walked directly rather than filtered out of the deny rules. An
+	// anchor is not always a rule: a full-node wallet client's keys sit in a named
+	// subdirectory of a tree that is shielded whole, so selecting rules by anchorhood
+	// would skip the shielded parent as "not an anchor" and never reach the keys inside
+	// it. Hidden FILE rules are anchors too - a single file is cheap to stat and is named
+	// because it holds a secret.
+	roots := make([]string, 0, 128)
+	for _, a := range denylist.AliasAnchors(sb.home) {
+		roots = append(roots, sb.resolve(a))
+	}
+	for _, r := range alwaysShields(sb) {
+		if r.Deny == denylist.DenyAll && !r.Dir {
+			roots = append(roots, sb.resolve(r.Path))
+		}
 	}
 
 	seen := map[string]bool{}
-	for _, r := range alwaysShields(sb) {
-		path := sb.resolve(r.Path)
-		if r.Deny != denylist.DenyAll || !under(path, home) || seen[path] {
+	for _, path := range roots {
+		if !under(path, home) || seen[path] {
 			continue
 		}
 		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {
-			continue
-		}
-		if r.Dir && !anchorDir[path] {
 			continue
 		}
 		seen[path] = true
