@@ -62,6 +62,14 @@ const sysFchmodat2 = 452
 // Open flags that mean the open requested write access.
 const writeFlags = syscall.O_WRONLY | syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC | syscall.O_APPEND
 
+// Supported reports whether this build has the ptrace observation backend. It is
+// a build-time fact, not a kernel capability: the decoder reads syscall numbers
+// and the register layout for amd64, so every other architecture links the stub.
+// Callers must consult it before launching a profiling sandbox, so a host that
+// cannot observe says so instead of running the target and reporting an empty
+// observation as a failed one.
+func Supported() bool { return true }
+
 // Trace runs argv under ptrace and reports the files it opened and whether it
 // spawned subprocesses. The target runs with the given environment and standard
 // streams; a non-zero exit is returned in Result, not as an error.

@@ -1,12 +1,17 @@
 package linux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/observe"
+	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
 
@@ -103,5 +108,42 @@ func TestParseObservationsReadsExitStatus(t *testing.T) {
 	}
 	if obs := report(t, "SIGNAL 9"); !obs.Signaled || obs.Signal != 9 || obs.ExitCode != 137 {
 		t.Errorf("SIGNAL 9: got Signaled=%v Signal=%d ExitCode=%d, want signaled 9 / 137", obs.Signaled, obs.Signal, obs.ExitCode)
+	}
+}
+
+// The observation backend is chosen at build time - the ptrace decoder reads amd64
+// syscall numbers and register layout, so every other architecture links a stub
+// that only returns an error. Profile must refuse up front on such a host.
+//
+// Without the pre-flight check the failure still surfaced, but misdiagnosed: the
+// sandbox launched, the launcher failed inside it, and the host found a report
+// with no completion marker - which it reports as a sandbox that failed to start,
+// pointing the reader at bwrap rather than at an architecture that cannot profile.
+func TestProfileRefusesWithoutAnObservationBackend(t *testing.T) {
+	orig := observeSupported
+	observeSupported = func() bool { return false }
+	t.Cleanup(func() { observeSupported = orig })
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("echo RAN\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}}
+
+	var out strings.Builder
+	_, err := New().Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+	if err == nil {
+		t.Fatal("Profile must refuse on a host with no observation backend, not run and report an empty observation")
+	}
+	// The message has to name what is missing, or the reader is left with the same
+	// misdiagnosis the pre-flight exists to prevent.
+	for _, want := range []string{"profiling is not supported", runtime.GOARCH} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not mention %q", err, want)
+		}
+	}
+	if strings.Contains(out.String(), "RAN") {
+		t.Error("a refused profile must not execute the target")
 	}
 }

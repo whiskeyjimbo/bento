@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,12 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
+
+// observeSupported is a var so a test can construct the host that lacks the
+// observation backend: it is a build-time constant, so on amd64 - which is every
+// host bento is developed on - the branch that refuses to profile is otherwise
+// unreachable, and a Profile that forgot to consult it would still pass.
+var observeSupported = observe.Supported
 
 // Profile runs p under observation and reports what the target did. p is default-deny
 // like a real run - nothing under $HOME is mounted - with exec and network open so the
@@ -30,6 +37,14 @@ import (
 func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths []string) (profile.Observation, error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
+	}
+	// Refuse before launching anything. The observation backend is amd64-only at
+	// build time, and without this the run would start, the launcher would fail
+	// inside the sandbox, and the host would meet a report with no completion marker
+	// - reported as a sandbox that failed to start, which sends the reader looking
+	// for a broken bwrap instead of an architecture that cannot profile at all.
+	if !observeSupported() {
+		return profile.Observation{}, fmt.Errorf("linux: profiling is not supported on %s/%s: the observation backend is implemented for linux/amd64 only", runtime.GOOS, runtime.GOARCH)
 	}
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
