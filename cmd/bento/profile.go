@@ -48,7 +48,11 @@ func newProfileCmd() *cobra.Command {
 			"Because nothing sensitive is mounted, a script that reads a credential to\n" +
 			"decide what to do next takes its error branch and never exercises the paths\n" +
 			"beyond it, so one run can under-report. Grant what the proposal shows and\n" +
-			"profile again to converge; grants are merged, not overwritten.",
+			"profile again to converge; grants are merged, not overwritten.\n\n" +
+			"On a terminal, an existing manifest at --out that is currently approved is\n" +
+			"resumed: its grants are mounted from the first round instead of being asked\n" +
+			"again, so quitting mid-session and re-running picks up where you left off.\n" +
+			"An unapproved or stale manifest seeds nothing and every path is asked again.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := filepath.Abs(args[0])
@@ -93,9 +97,13 @@ func newProfileCmd() *cobra.Command {
 						return err
 					}
 				}
+				seed, seedErr := seedGrants(out, os.Stderr)
+				if seedErr != nil {
+					return seedErr
+				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
 				round := func(d *policy.Policy) (*policy.Policy, error) { return profileRound(cfg, d) }
-				proposed, err = converge(base, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
+				proposed, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
 				// one default-deny pass and write. A content-branching target under-reports;
@@ -219,11 +227,24 @@ const maxConvergeRounds = 25
 // leaves it recorded-only and never mounts it - the consent that keeps real content off
 // a path the user did not approve. risky reports a path that would be exposed at enforce
 // time (a foreign-home shield the run will not re-shield); those always prompt, never
-// auto-accepted under [a]ll. It returns the final proposal with reads/writes narrowed to
-// exactly the accepted set.
-func converge(base *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
+// auto-accepted under [a]ll. seed carries the grants of an approved manifest to accept
+// before round 1, so a session resumed after a quit continues where it left off rather
+// than re-asking every path; only its Read and Write are read, and nil starts fresh. It
+// returns the final proposal with reads/writes narrowed to exactly the accepted set.
+func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
+	// A seed's grants are mounted in round 1 and never prompted, so it must come from
+	// a manifest whose approval stamp is current - the reviewer's recorded consent
+	// standing in for this session's prompt, including for a foreignShielded path.
+	if seed != nil {
+		for _, p := range seed.Read {
+			acceptedR[p] = true
+		}
+		for _, p := range seed.Write {
+			acceptedW[p] = true
+		}
+	}
 	declined := map[string]bool{} // key() -> asked and refused, so it is not re-asked
 	acceptAll := false
 	accept := func(it grantItem) {
@@ -716,6 +737,37 @@ func guessInterpreter(path string) string {
 	default:
 		return ""
 	}
+}
+
+// seedGrants returns the grants an existing manifest at path contributes to the
+// convergence loop's first round, so quitting mid-loop and re-running resumes instead
+// of re-prompting every path. It returns nil when there is nothing to resume from.
+//
+// Seeding mounts real content with no prompt in this session, so the approval stamp has
+// to carry the consent the prompt otherwise would: an unstamped or stale manifest - the
+// shape an attacker who dropped a file at --out would leave - seeds nothing, and every
+// path is asked again. A missing path is the first run.
+func seedGrants(path string, out io.Writer) (*policy.Policy, error) {
+	doc, err := loadDocument(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		// mergeExisting refuses this same file at the end; refusing it here spares the
+		// user a full profiling session that cannot be written out.
+		return nil, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+	}
+	if checkApproval(doc) != approvalCurrent {
+		fmt.Fprintf(out, "[bento] %s is not approved, so its grants are not mounted - review and `bento approve` it to resume from them.\n", path)
+		return nil, nil
+	}
+	// After the approval check, never before: the fingerprint attests the manifest as
+	// written, so resolving its relative paths first would make a valid stamp read stale.
+	resolveManifestPaths(doc.Policy, path)
+	if n := len(doc.Policy.Read) + len(doc.Policy.Write); n > 0 {
+		fmt.Fprintf(out, "[bento] resuming from %s: %d approved grant(s) mounted from the first round.\n", path, n)
+	}
+	return doc.Policy, nil
 }
 
 // mergeExisting folds proposed into an existing manifest at path so re-profiling

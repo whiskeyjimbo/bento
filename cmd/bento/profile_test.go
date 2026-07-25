@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,5 +360,95 @@ func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
 	}
 	if got := profileWarnings(profile.Observation{SeccompKilled: true}); len(got) != 0 {
 		t.Errorf("a seccomp kill must refuse, not warn; got %v", got)
+	}
+}
+
+func TestSeedGrants(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, p *policy.Policy, prov manifest.Provenance) string {
+		t.Helper()
+		data, err := manifest.Marshal(p, prov)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// Stamp the way `bento approve` does - over the policy as parsed back from disk,
+	// which is what checkApproval fingerprints.
+	approve := func(path string) {
+		t.Helper()
+		doc, err := loadDocument(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc.Provenance.Approves = doc.Policy.Fingerprint()
+		data, err := manifest.Marshal(doc.Policy, doc.Provenance)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Missing --out is the first run: nothing to resume from, and no error.
+	if seed, err := seedGrants(filepath.Join(dir, "absent.yaml"), io.Discard); seed != nil || err != nil {
+		t.Errorf("a missing manifest should seed nothing without error; got %v, %v", seed, err)
+	}
+
+	// A file that cannot be parsed is refused up front rather than after a whole
+	// profiling session that mergeExisting would then refuse to write.
+	corrupt := filepath.Join(dir, "corrupt.yaml")
+	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seedGrants(corrupt, io.Discard); err == nil {
+		t.Errorf("an unparseable manifest at --out must be refused, not ignored")
+	}
+
+	// Unapproved: the stamp is the consent record for mounting without a prompt, so
+	// without it nothing is seeded and the loop asks about every path again.
+	unapproved := write("unapproved.yaml", &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/secret"}}, manifest.Provenance{})
+	if seed, err := seedGrants(unapproved, io.Discard); err != nil || seed != nil {
+		t.Errorf("an unapproved manifest must seed nothing; got %v, %v", seed, err)
+	}
+
+	// Stale: approved once, then widened. Same refusal - the stamp no longer attests
+	// the grants the file now holds.
+	stale := write("stale.yaml", &policy.Policy{Entrypoint: "/w/run.py"}, manifest.Provenance{})
+	approve(stale)
+	staleDoc, err := loadDocument(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleDoc.Policy.Read = []string{"/w/a"} // widened after approval, stamp not refreshed
+	staleData, err := manifest.Marshal(staleDoc.Policy, staleDoc.Provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, staleData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if seed, err := seedGrants(stale, io.Discard); err != nil || seed != nil {
+		t.Errorf("a stale approval must seed nothing; got %v, %v", seed, err)
+	}
+
+	// Approved: its grants seed the loop, with relative paths resolved against the
+	// manifest's own directory the way run resolves them.
+	path := write("approved.yaml", &policy.Policy{Entrypoint: "run.py", Read: []string{"data/in.txt"}, Write: []string{"/w/out"}}, manifest.Provenance{})
+	approve(path)
+	seed, err := seedGrants(path, io.Discard)
+	if err != nil {
+		t.Fatalf("an approved manifest should seed; got %v", err)
+	}
+	if !slices.Contains(seed.Read, filepath.Join(dir, "data/in.txt")) {
+		t.Errorf("a relative read grant must resolve against the manifest dir; got %v", seed.Read)
+	}
+	if !slices.Contains(seed.Write, "/w/out") {
+		t.Errorf("write grants must seed too; got %v", seed.Write)
 	}
 }

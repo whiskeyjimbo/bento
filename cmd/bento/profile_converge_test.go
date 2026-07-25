@@ -50,7 +50,7 @@ func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 	// One prompt per new path: config in round 1, data in round 2. Round 3 sees both
 	// granted and nothing new, so it converges without prompting.
 	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
-	final, err := converge(baseDiscovery(), branchingRound, prompt, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestConvergeDeclineNeverMountsOrReveals(t *testing.T) {
 	// "y" is never consumed. A broken converge that mounts a declined path would reveal
 	// dataPath, prompt it, and the "y" would accept it, failing the assertions below.
 	prompt := newGrantPrompter(strings.NewReader("n\ny\n"), io.Discard)
-	final, err := converge(baseDiscovery(), capturing, prompt, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 		prompts++
 		return grantAll, nil
 	}
-	final, err := converge(baseDiscovery(), branchingRound, counting, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, branchingRound, counting, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 func TestConvergeQuitKeepsAcceptedSoFar(t *testing.T) {
 	// A round-1 prompt: quit before accepting anything.
 	prompt := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
-	final, err := converge(baseDiscovery(), branchingRound, prompt, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestConvergeNoAttemptsConvergesImmediately(t *testing.T) {
 		t.Fatalf("must not prompt when there is nothing to grant (%s %s)", kind, path)
 		return grantNo, nil
 	}
-	final, err := converge(baseDiscovery(), empty, fail, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, empty, fail, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestConvergeAllStillPromptsRiskyPaths(t *testing.T) {
 		}
 		return grantAll, nil // [a]ll on the innocuous path
 	}
-	final, err := converge(baseDiscovery(), round, prompt, risky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, round, prompt, risky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
 		return &policy.Policy{Entrypoint: "/x", Read: []string{"/p/" + string(rune('a'+rounds%26)) + string(rune('0'+rounds))}}, nil
 	}
 	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
-	if _, err := converge(baseDiscovery(), everNew, acceptAll, noRisky, io.Discard); err != nil {
+	if _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if rounds > maxConvergeRounds+1 {
@@ -241,7 +241,7 @@ func TestConvergeDoesNotReaskDeclined(t *testing.T) {
 		}
 		return grantNo, nil // decline /b
 	}
-	final, err := converge(baseDiscovery(), twoPaths, prompt, noRisky, io.Discard)
+	final, err := converge(baseDiscovery(), nil, twoPaths, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -252,5 +252,37 @@ func TestConvergeDoesNotReaskDeclined(t *testing.T) {
 	}
 	if !hasPath(final.Read, "/a") || hasPath(final.Read, "/b") {
 		t.Errorf("final must hold /a (accepted) and not /b (declined); got Read=%v", final.Read)
+	}
+}
+
+// A resumed session must not re-ask what the previous one already granted, and the
+// seeded grant must be MOUNTED in round 1 - the point of resuming is that the target
+// proceeds past its error branch immediately instead of re-walking the whole loop.
+func TestConvergeSeedMountsGrantsWithoutReasking(t *testing.T) {
+	var round1Reads []string
+	recording := func(d *policy.Policy) (*policy.Policy, error) {
+		if round1Reads == nil {
+			round1Reads = append([]string{}, d.Read...)
+		}
+		return branchingRound(d)
+	}
+	asked := map[string]int{}
+	prompt := func(kind, path string) (grantChoice, error) {
+		asked[path]++
+		return grantYes, nil
+	}
+	seed := &policy.Policy{Read: []string{cfgPath}}
+	final, err := converge(baseDiscovery(), seed, recording, prompt, noRisky, io.Discard)
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if !hasPath(round1Reads, cfgPath) {
+		t.Errorf("a seeded grant must be mounted in round 1; round 1 discovery Read=%v", round1Reads)
+	}
+	if asked[cfgPath] != 0 {
+		t.Errorf("a seeded grant must not be re-asked; %s was asked %d time(s)", cfgPath, asked[cfgPath])
+	}
+	if !hasPath(final.Read, cfgPath) || !hasPath(final.Read, dataPath) {
+		t.Errorf("final must keep the seeded grant and the path it unlocked; got Read=%v", final.Read)
 	}
 }
