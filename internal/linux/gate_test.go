@@ -228,8 +228,9 @@ func TestRunRefusesBeforeCreatingWriteDirs(t *testing.T) {
 		Read:        []string{dir, "/proc/self"},
 		Write:       []string{out},
 	}
-	if _, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{}); err == nil {
-		t.Fatal("a grant resolving into a host process directory must refuse the run")
+	_, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "a host process's directory in /proc") {
+		t.Fatalf("Run = %v, want the /proc refusal; any other error would pass this test for the wrong reason", err)
 	}
 	if _, err := os.Stat(out); err == nil {
 		t.Errorf("the refused run created %q; every refusal must be decided before anything touches the host", out)
