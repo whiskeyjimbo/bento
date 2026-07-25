@@ -824,7 +824,12 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // and managed-mount checks re-resolve for their own diagnostics.
 func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	_, optInShields := explicitShieldOptIns(sb, p.Read)
-	if err := checkNotShielded(sb, append(append([]string{}, reads...), writes...), optInShields); err != nil {
+	// Only reads carry the opt-in: a write grant under a shield the policy also reads
+	// must stay refused, so it is checked against no opt-ins at all.
+	if err := checkNotShielded(sb, reads, optInShields); err != nil {
+		return err
+	}
+	if err := checkNotShielded(sb, writes, nil); err != nil {
 		return err
 	}
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {

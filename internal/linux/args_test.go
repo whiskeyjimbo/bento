@@ -384,6 +384,54 @@ func TestWriteGrantOfShieldIsRefused(t *testing.T) {
 	}
 }
 
+// A read opt-in exposes the shield read-only; it must not carry a co-present write
+// grant with it. Reading ~/.gnupg does not make its private-key directory writable.
+func TestReadOptInDoesNotLiftShieldForWrite(t *testing.T) {
+	sb := testSandbox("/home/u/.gnupg", "/home/u/.gnupg/private-keys-v1.d/key")
+	p := &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Read:       []string{"/home/u/.gnupg"},
+		Write:      []string{"/home/u/.gnupg/private-keys-v1.d"},
+	}
+	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
+		t.Error("a write grant inside a read-opted-in credential shield must be refused")
+	}
+}
+
+// The same, where the shield is a symlink. Needs a real filesystem: grants resolve
+// through the package-level resolve() while shields go through sb.resolve, so the
+// hypothetical filesystem cannot express a disagreement between the two.
+func TestReadOptInDoesNotLiftSymlinkedShieldForWrite(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home", "u")
+	keys := filepath.Join(root, "data", "keys")
+	if err := os.MkdirAll(keys, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(keys, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := testSandbox()
+	sb.home = home
+	sb.exists = func(p string) bool { _, err := os.Lstat(p); return err == nil }
+	sb.isDir = func(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
+	sb.resolve = hostResolve
+	sb.listDir = hostListDir
+
+	p := &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Read:       []string{filepath.Join(home, ".ssh")},
+		Write:      []string{filepath.Join(home, ".ssh")},
+	}
+	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
+		t.Error("a write grant of a read-opted-in symlinked shield must be refused")
+	}
+}
+
 // The opt-in covers only the built-in credential shields, never a caller's extraDeny (a
 // supervising embedder's own control store). Granting an extraDeny path by name must NOT
 // lift its shield; the grant stays refused, as before yz3.2.
