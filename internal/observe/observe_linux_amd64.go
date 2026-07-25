@@ -350,13 +350,21 @@ func dropOnce(seen map[string]bool, pid int, n *int) func(*syscall.PtraceRegs) {
 
 // inspect decodes a syscall stop and records file opens / subprocess execs.
 //
-// The numbers below are amd64's, and nothing here checks the tracee's ABI, because
-// nothing here can reach a foreign one: the launcher installs seccomp's foreign-arch
-// guard (BlockIoUring) before forking the tracee, and that kills the process on any
-// syscall issued through a non-native ABI - including int 0x80 from a 64-bit process,
-// since seccomp keys on the syscall ABI rather than the code segment. Without it an
-// i386 syscall would decode against the wrong table (i386 85 is readlink, amd64 85 is
-// creat) and fabricate write grants that become enforcement policy on the next run.
+// The numbers below are amd64's, and nothing here checks the tracee's ABI - so a
+// foreign one IS decoded against the wrong table (i386 85 is readlink, amd64 85 is
+// creat) and does fabricate a write for whatever rdi happens to hold. The launcher's
+// foreign-arch guard (BlockIoUring) does not prevent that, despite killing the
+// process: syscall_trace_enter reports the ptrace entry stop BEFORE running seccomp,
+// so the access is recorded and only then does the filter kill. What keeps the
+// fabricated grant out of a manifest is the same guard's other effect - the death is
+// a SIGSYS, this loop sets SeccompKilled, and the profile command refuses the whole
+// run on it rather than synthesizing anything. That refusal is load-bearing, not a
+// courtesy: a caller that reads Accesses without checking SeccompKilled gets the
+// fabricated write. Pinned by the foreign-ABI tests in internal/launcher.
+//
+// A backstop here would need the dispatch ABI, not the code segment: int 0x80 from a
+// 64-bit process leaves cs at 0x33 (measured), so only PTRACE_GET_SYSCALL_INFO's arch
+// field distinguishes it.
 func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
