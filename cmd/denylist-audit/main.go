@@ -1,10 +1,17 @@
 // Command denylist-audit reports the home/runtime paths firejail shields that
 // bento does not, so denylist gaps surface on a cycle instead of in a review.
 //
-// It fetches firejail's disable-common.inc (GPLv2, read as a reference/diff input,
-// never vendored), maps its blacklist/read-only directives to bento's shield
-// classes, and prints the gaps. Classification of each gap - DenyAll vs DenyWrite -
-// stays a human call. Exit status is 1 when any gap is found, so CI can gate on it.
+// It fetches firejail's disable-common.inc and disable-programs.inc (GPLv2, read as a
+// reference/diff input, never vendored), maps their blacklist/read-only directives to
+// bento's shield classes, and prints the gaps. Classification of each gap - DenyAll vs
+// DenyWrite - stays a human call. Exit status is 1 when any gap is found, so CI can gate
+// on it.
+//
+// Both profiles are fetched because they are classified by different halves of the audit
+// package: disable-common.inc carries the section headers inScopeSection keys off, while
+// disable-programs.inc is a flat header-less per-application list that only the
+// credentialName classifier can pick credential stores out of. Fetching one left that
+// classifier dead on this path.
 package main
 
 import (
@@ -18,7 +25,20 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist/audit"
 )
 
-const firejailURL = "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc"
+// firejailSources are the upstream profiles the audit diffs against, each with a
+// sentinel directive it has carried for years. A 200 response is not proof the body is
+// the profile - an upstream rename, a reformat to include-only files, or a CDN error
+// page all return 200 with content that parses to zero candidates, which would read as
+// "everything covered" and exit 0, a false pass on a CI safety gate. The sentinel is
+// per-file because the files share no directive: ${HOME}/.ssh is disable-common's, and
+// checking it against disable-programs would reject a perfectly good fetch.
+var firejailSources = []struct {
+	url      string
+	sentinel string
+}{
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "${HOME}/.ssh"},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "${HOME}/.mozilla"},
+}
 
 // The paths the parser expands firejail's variables to; any absolute value works,
 // it only has to match what denylist.Home/Runtime emit for the same home.
@@ -28,29 +48,32 @@ const (
 )
 
 func main() {
-	content, err := fetch(firejailURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "denylist-audit: fetching firejail profile: %v\n", err)
-		os.Exit(2)
+	// Every source must arrive intact. A partial set is refused rather than audited,
+	// because a missing profile silently narrows the diff: the entries it would have
+	// contributed simply are not gaps, and the gate reports a pass over a comparison it
+	// never made. That is the failure this command exists to prevent.
+	var contents []string
+	for _, src := range firejailSources {
+		content, err := fetch(src.url)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "denylist-audit: fetching %s: %v\n", src.url, err)
+			os.Exit(2)
+		}
+		if !isProfile(content, src.sentinel) {
+			fmt.Fprintf(os.Stderr, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected firejail profile; refusing to report a pass\n", src.url, src.sentinel)
+			os.Exit(2)
+		}
+		contents = append(contents, content)
 	}
-	// A 200 response is not proof the body is the profile: an upstream rename, a
-	// reformat to include-only files, or a CDN error page all return 200 with content
-	// that parses to zero candidates - which report() would then read as "everything
-	// covered" and exit 0, a false pass on a CI safety gate. Refuse to trust an empty
-	// diff unless the content still carries a directive the profile has always had.
-	if !looksLikeFirejailProfile(content) {
-		fmt.Fprintln(os.Stderr, "denylist-audit: fetched content does not look like firejail's disable-common.inc; refusing to report a pass")
-		os.Exit(2)
-	}
-	os.Exit(report(os.Stdout, content, home, runUser))
+	os.Exit(report(os.Stdout, contents, home, runUser))
 }
 
-// looksLikeFirejailProfile reports whether content is plausibly firejail's
-// disable-common.inc. ${HOME}/.ssh is one of the oldest, most stable shields in that
-// file; if even it is absent, the fetch did not return the profile and the audit
-// cannot conclude anything.
-func looksLikeFirejailProfile(content string) bool {
-	return strings.Contains(content, "${HOME}/.ssh")
+// isProfile reports whether content is plausibly the firejail profile that sentinel
+// identifies - a directive that file has carried for years. Absent it, the fetch did not
+// return the profile and the audit cannot conclude anything, so a zero-gap diff over it
+// must not be reported as a pass.
+func isProfile(content, sentinel string) bool {
+	return strings.Contains(content, sentinel)
 }
 
 // report parses the firejail profile, diffs it against bento's deny-list, writes the
@@ -58,10 +81,10 @@ func looksLikeFirejailProfile(content string) bool {
 // 1 when any in-scope gap remains, 0 when the list already covers them. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
-func report(w io.Writer, content, home, runUser string) int {
+func report(w io.Writer, contents []string, home, runUser string) int {
 	// One diff logic, two triggers: this CLI and the completeness test both go through
 	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
-	unclassified, globs, outBySection := audit.Audit([]string{content}, home, runUser)
+	unclassified, globs, outBySection := audit.Audit(contents, home, runUser)
 
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.

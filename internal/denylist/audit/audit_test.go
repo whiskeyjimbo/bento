@@ -355,22 +355,31 @@ blacklist ${HOME}/.audit_test_privacy_app
 // a host with firejail it fails loudly listing any upstream in-scope path bento neither
 // shields nor excludes, turning "remember to re-run the diff" into an enforced check.
 func TestFirejailCompleteness(t *testing.T) {
-	dir := os.Getenv("FIREJAIL_DIR")
-	if dir == "" {
+	// An explicitly set FIREJAIL_DIR is a caller asserting the profiles are there, so a
+	// missing one is their error and fails. Only the implicit default may skip: firejail
+	// is genuinely absent on plenty of dev boxes and CI images, the profile data is GPLv2
+	// and cannot be vendored to testdata, so there is nothing to diff against and no
+	// honest verdict to reach. The enforced gate is `make audit`, which fetches upstream
+	// rather than reading the host.
+	dir, explicit := os.LookupEnv("FIREJAIL_DIR")
+	if !explicit {
 		dir = "/etc/firejail"
 	}
 	// disable-common.inc carries the section headers the scope classification keys off;
 	// disable-programs.inc is a flat per-application list with no headers, where the
 	// name classifier is what picks the credential stores out of ~1300 ordinary app dirs.
-	// disable-common.inc is the gate's floor - without it there is nothing to diff, so
-	// the test skips. disable-programs.inc is additive: a partial install that lacks it
-	// still gets the headed profile audited rather than losing the gate entirely.
+	// disable-common.inc is the gate's floor - without it there is nothing to diff.
+	// disable-programs.inc is additive: a partial install that lacks it still gets the
+	// headed profile audited rather than losing the gate entirely.
 	var contents []string
 	for i, name := range []string{"disable-common.inc", "disable-programs.inc"} {
 		path := filepath.Join(dir, name)
 		content, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
 			if i == 0 {
+				if explicit {
+					t.Fatalf("FIREJAIL_DIR names %s but it has no %s; the completeness gate cannot run against the directory you pointed it at", dir, name)
+				}
 				t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
 			}
 			t.Logf("no profile at %s; auditing the profiles present", path)
