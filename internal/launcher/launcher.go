@@ -103,8 +103,14 @@ func Run(cfg Config) (int, error) {
 	if err := dropInheritedFDs(); err != nil {
 		return 0, err
 	}
-	if err := refuseNetworkStdio(); err != nil {
-		return 0, err
+	// An empty Socket means the policy grants no egress, so the netns is the whole
+	// guarantee - and an inherited socket walks through it. With a proxy socket the
+	// policy does grant egress, and refusing there would break an embedder deliberately
+	// passing a connection as stdio; see refuseNetworkStdio.
+	if cfg.Socket == "" {
+		if err := refuseNetworkStdio(); err != nil {
+			return 0, err
+		}
 	}
 
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
@@ -305,26 +311,28 @@ func runObserve(cfg Config, env []string) (int, error) {
 // target untouched - see refuseNetworkStdio for the one thing they must not carry.
 const firstInheritableFD = 3
 
-// refuseNetworkStdio refuses the run when fd 0, 1, or 2 is an inherited IP socket.
+// refuseNetworkStdio refuses the run when fd 0, 1, or 2 is an inherited socket that
+// could reach a network.
 //
 // Every other inherited descriptor is dropped by dropInheritedFDs; stdio is kept
-// unconditionally because it is the target's own standard streams. Neither egress fence
-// revokes it: the empty network namespace fences the creation of new connections, and
-// seccomp.BlockEgress filters socket(2) - creation again, not read/write on a
-// description that already exists. So an inherited connected socket on fd 0-2 is a live
-// network channel that read/write reach entirely unfiltered, under policies whose claim
-// is that the target cannot open one at all.
+// unconditionally because it is the target's own standard streams. No fence bento
+// installs revokes what they carry: a network namespace binds at socket CREATION,
+// seccomp.BlockEgress filters socket(2) - creation again - and Landlock governs paths,
+// not open descriptions. So read/write/sendmsg on an inherited socket are unfiltered,
+// and it is a live channel under a policy whose claim is that the target cannot open
+// one at all.
 //
 // It is reachable only through the embedding API: os/exec passes the raw descriptor
 // when enforce.Process.Stdin/Stdout is an *os.File, while a plain io.Reader is funnelled
-// through a pipe and the socket does not survive. Refusing is right rather than
-// harsh - an embedder handing the target a network socket as stdio is supplying exactly
-// the capability the sandbox exists to withhold, and there is no way to confine it
-// afterwards.
+// through a pipe and the socket does not survive.
 //
-// AF_UNIX stdio is left alone and remains a residual alongside the AF_UNIX and
-// SCM_RIGHTS ones already documented: it reaches no network, and the egress filter
-// deliberately allows AF_UNIX so in-sandbox and bridge sockets keep working.
+// This runs only where the policy grants NO egress, which is the claim an inherited
+// socket falsifies outright. Under an egress-allowed policy such a descriptor still
+// bypasses the host proxy's allowlist, but an embedder handing the target a connection
+// as stdio - the socket-activation pattern, where a server passes a per-connection
+// handler its accepted conn - is doing so deliberately, and refusing would break that
+// on the sandbox's guess about intent. That is a residual of the embedding API,
+// alongside the AF_UNIX and SCM_RIGHTS ones.
 func refuseNetworkStdio() error {
 	for fd := range firstInheritableFD {
 		if err := refuseNetworkFD(fd); err != nil {
@@ -334,12 +342,22 @@ func refuseNetworkStdio() error {
 	return nil
 }
 
-// refuseNetworkFD reports whether one descriptor is an open IP socket. A descriptor
-// that is not open at all is fine: the target gets the same EBADF the launcher just did.
+// refuseNetworkFD refuses one descriptor that is a socket of a family able to reach a
+// network. The families are an ALLOWLIST, mirroring egressFilter's: AF_UNIX and
+// AF_NETLINK pass and every other family is refused, because a denylist would miss a
+// family we did not enumerate and "no egress" must not rest on remembering every wire
+// family. Enumerating AF_INET and AF_INET6 would let an AF_PACKET descriptor - raw
+// frames on the host's wire - through the check written to stop exactly that.
 func refuseNetworkFD(fd int) error {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return nil
+		// Nothing is open there, so nothing was inherited on it and the target gets the
+		// same EBADF. Any other errno means the descriptor could not be classified, which
+		// is not a thing to assume benign.
+		if err == unix.EBADF {
+			return nil
+		}
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d could not be examined: %w", fd, err)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
 		return nil
@@ -348,8 +366,8 @@ func refuseNetworkFD(fd int) error {
 	if err != nil {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a socket whose domain could not be read: %w", fd, err)
 	}
-	if domain == unix.AF_INET || domain == unix.AF_INET6 {
-		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited network socket; no sandbox layer can revoke an already-open network channel", fd)
+	if domain != unix.AF_UNIX && domain != unix.AF_NETLINK {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited socket of family %d; no sandbox layer can revoke an already-open network channel", fd, domain)
 	}
 	return nil
 }

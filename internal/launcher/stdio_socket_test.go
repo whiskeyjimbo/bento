@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // dropInheritedFDs keeps 0/1/2 unconditionally, and neither egress fence revokes what
@@ -28,7 +30,7 @@ func TestRefuseNetworkFD(t *testing.T) {
 		if err == nil {
 			t.Fatal("an inherited TCP socket on stdio was accepted")
 		}
-		if !strings.Contains(err.Error(), "inherited network socket") {
+		if !strings.Contains(err.Error(), "inherited socket of family") {
 			t.Errorf("wrong refusal for a TCP socket: %v", err)
 		}
 	})
@@ -42,6 +44,39 @@ func TestRefuseNetworkFD(t *testing.T) {
 		f := rawFile(t, ln.(*net.UnixListener))
 		if err := refuseNetworkFD(int(f.Fd())); err != nil {
 			t.Errorf("an AF_UNIX stdio socket was refused: %v", err)
+		}
+	})
+
+	// The families are an allowlist, mirroring egressFilter's, so a family nobody
+	// enumerated does not slip past. AF_PACKET is the one egress_linux_amd64.go names
+	// explicitly: raw frames on the host wire, which an AF_INET/AF_INET6 denylist would
+	// wave through. Creating one needs CAP_NET_RAW, so the check runs against a
+	// non-IP socket that any user can make instead - it exercises the same branch.
+	t.Run("a non-IP, non-AF_UNIX socket is refused", func(t *testing.T) {
+		fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+		if err != nil {
+			t.Skipf("no AF_VSOCK socket available: %v", err)
+		}
+		defer unix.Close(fd)
+		err = refuseNetworkFD(fd)
+		if err == nil {
+			t.Fatal("an inherited AF_VSOCK socket on stdio was accepted")
+		}
+		if !strings.Contains(err.Error(), "inherited socket of family") {
+			t.Errorf("wrong refusal for a non-IP socket: %v", err)
+		}
+	})
+
+	// AF_NETLINK is allowed for the same reason egressFilter allows it: it is kernel
+	// IPC and cannot egress, and runtimes enumerate interfaces with it.
+	t.Run("an AF_NETLINK socket is allowed", func(t *testing.T) {
+		fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE)
+		if err != nil {
+			t.Skipf("no AF_NETLINK socket available: %v", err)
+		}
+		defer unix.Close(fd)
+		if err := refuseNetworkFD(fd); err != nil {
+			t.Errorf("an AF_NETLINK stdio socket was refused: %v", err)
 		}
 	})
 

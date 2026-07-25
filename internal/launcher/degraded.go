@@ -105,6 +105,8 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if err := dropInheritedFDs(); err != nil {
 		return 0, err
 	}
+	// Unconditional here, unlike the bwrap tier's Socket check: this tier only ever runs
+	// a no-network manifest, so there is no egress-allowed case to spare.
 	if err := refuseNetworkStdio(); err != nil {
 		return 0, err
 	}

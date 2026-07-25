@@ -98,8 +98,9 @@ func egressFilter() []unix.SockFilter {
 //
 // It filters socket CREATION, not I/O, so it cannot revoke a socket the target already
 // holds. The two ways to hold one are an inherited stdio descriptor, which the launcher
-// refuses before installing this filter (refuseNetworkStdio), and an AF_UNIX SCM_RIGHTS
-// passing - a documented residual, since the filter allows AF_UNIX by design.
+// refuses before installing this filter (refuseNetworkStdio, whose family allowlist
+// mirrors this one), and an AF_UNIX SCM_RIGHTS passing - a documented residual, since
+// the filter allows AF_UNIX by design.
 func BlockEgress() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)
