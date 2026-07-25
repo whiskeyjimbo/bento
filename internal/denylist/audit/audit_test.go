@@ -15,6 +15,8 @@ blacklist ${HOME}/.ssh
 read-only ${HOME}/.bashrc
 blacklist-nolog ${HOME}/.*_history
 blacklist-nolog ${HOME}/.viminfo
+blacklist ${HOME}/.config/Ledger Live
+blacklist ${HOME}/Applications # used for storing AppImages
 blacklist ${RUNUSER}/bus
 blacklist /sbin
 blacklist ${PATH}/sudo
@@ -32,6 +34,11 @@ rmenv GITHUB_TOKEN
 		// identically to blacklist - it must not parse as a no-op.
 		{Path: "/HOME/.*_history", Deny: denylist.DenyAll, Glob: true},
 		{Path: "/HOME/.viminfo", Deny: denylist.DenyAll},
+		// firejail profiles carry paths with spaces and directives with trailing
+		// comments; taking the second field alone truncates the first and appends the
+		// second to the path, in both cases diffing a name that does not exist.
+		{Path: "/HOME/.config/Ledger Live", Deny: denylist.DenyAll},
+		{Path: "/HOME/Applications", Deny: denylist.DenyAll},
 		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},
 	}
 	if len(got) != len(want) {
@@ -146,8 +153,8 @@ func TestInScopeSectionRejectsNegatedHeaders(t *testing.T) {
 // would drag a privacy-scope directory into the hard-fail set, where the only ways out
 // are shielding a path bento has no reason to shield or recording a bogus intentional
 // exclusion. The negative cases here are the real near-misses in that profile - a Tetris
-// clone, a crypto price ticker, a session manager, and the messengers that are firejail's
-// privacy scope rather than bento's secret scope.
+// clone, a session manager, and the messengers whose store is an encrypted message
+// database, which are firejail's privacy scope rather than bento's secret scope.
 func TestCredentialNameMatchesStoresNotLookalikes(t *testing.T) {
 	for _, p := range []string{
 		"/home/u/.keepassxc",
@@ -164,6 +171,17 @@ func TestCredentialNameMatchesStoresNotLookalikes(t *testing.T) {
 		"/home/u/.bitcoin",
 		"/home/u/.electrum",
 		"/home/u/.config/monero-project",
+		"/home/u/.ethereum",
+		"/home/u/.electron-cash", // the fork that dropped the "electrum" stem
+		"/home/u/.config/Ledger Live",
+		// Reaching firejail's .*coin glob needs the "coin" token, which also takes the
+		// price ticker with it - accepted, since its config can hold exchange API keys.
+		"/home/u/.config/cointop",
+		"/home/u/.icedove", // Debian-rebranded Thunderbird
+		"/home/u/.claws-mail",
+		"/home/u/.config/remmina",
+		"/home/u/.gist",
+		"/home/u/.purple",
 	} {
 		if !credentialName(p) {
 			t.Errorf("credentialName(%q) = false, want true", p)
@@ -171,7 +189,6 @@ func TestCredentialNameMatchesStoresNotLookalikes(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/home/u/.local/share/quadrapassel", // contains "pass", not "password"
-		"/home/u/.config/cointop",           // a price ticker, not a wallet
 		"/home/u/.config/gnome-session",
 		"/home/u/.config/Signal",
 		"/home/u/.local/share/signal-cli",
@@ -339,12 +356,19 @@ func TestFirejailCompleteness(t *testing.T) {
 	// disable-common.inc carries the section headers the scope classification keys off;
 	// disable-programs.inc is a flat per-application list with no headers, where the
 	// name classifier is what picks the credential stores out of ~1300 ordinary app dirs.
+	// disable-common.inc is the gate's floor - without it there is nothing to diff, so
+	// the test skips. disable-programs.inc is additive: a partial install that lacks it
+	// still gets the headed profile audited rather than losing the gate entirely.
 	var contents []string
-	for _, name := range []string{"disable-common.inc", "disable-programs.inc"} {
+	for i, name := range []string{"disable-common.inc", "disable-programs.inc"} {
 		path := filepath.Join(dir, name)
 		content, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
-			t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
+			if i == 0 {
+				t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
+			}
+			t.Logf("no profile at %s; auditing the profiles present", path)
+			continue
 		}
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)

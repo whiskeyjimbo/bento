@@ -52,11 +52,25 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/Bitwarden",
 		"/home/u/.config/1Password",
 		"/home/u/.local/share/Enpass",
-		"/home/u/.config/Authenticator",    // TOTP seeds
-		"/home/u/.smartgit",                // per-version subdir holds remote passwords
-		"/home/u/.bitcoin",                 // wallet private keys
-		"/home/u/.electrum",                // named instance behind the .electrum* glob
-		"/home/u/Monero/wallets",           // non-hidden wallet dir at the home root
+		"/home/u/.config/Authenticator", // TOTP seeds
+		"/home/u/.smartgit",             // per-version subdir holds remote passwords
+		"/home/u/.bitcoin",              // wallet private keys
+		"/home/u/.electrum",             // named instance behind the .electrum* glob
+		"/home/u/Monero/wallets",        // non-hidden wallet dir at the home root
+		"/home/u/.ethereum",             // geth keystore
+		"/home/u/.electron-cash",        // Electrum fork that dropped the stem
+		"/home/u/.config/Ledger Live",
+		"/home/u/.config/cointop",
+		"/home/u/.icedove",    // Debian-rebranded Thunderbird, same profile format
+		"/home/u/.claws-mail", // saved IMAP/SMTP passwords
+		"/home/u/.remmina",    // recoverable RDP/VNC passwords
+		"/home/u/.anydesk",
+		"/home/u/.gist",      // plaintext GitHub OAuth token
+		"/home/u/.gdfuse",    // Google Drive OAuth tokens
+		"/home/u/.filezilla", // base64-encoded site passwords
+		"/home/u/.purple",    // pidgin plaintext passwords and OTR keys
+		"/home/u/.weechat",   // IRC server passwords
+		"/home/u/.config/coyim",
 		"/home/u/.config/i3",               // WM config `exec` (hidden, matching firejail)
 		"/home/u/.config/plasma-workspace", // KDE session env/autostart
 		"/home/u/.kde4/Autostart",          // legacy KDE autostart
@@ -103,6 +117,10 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/KeePassXCrc",      // vault location and recently-opened entries
 		"/home/u/.config/kwalletrc",        // KDE Wallet config
 		"/home/u/wallet.dat",               // Bitcoin Core wallet at the home root
+		"/home/u/.mcabberrc",               // XMPP account password
+		"/home/u/.pinerc",                  // pine/alpine config
+		"/home/u/.config/mailtransports",   // Akonadi SMTP transports, incl. passwords
+		"/home/u/.pine-interrupted-mail",   // draft message body on disk
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]

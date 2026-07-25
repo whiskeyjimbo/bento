@@ -176,8 +176,58 @@ func Home(home string) []Rule {
 		".bitcoin",
 		".config/Bitcoin",
 		".electrum",
+		".electron-cash", // Electrum's BCH fork, same seed-file layout
+		".ethereum",      // geth keystore: the encrypted spending keys
+		".dashcore",
 		".config/monero-project",
 		"Monero/wallets",
+		".config/Exodus",
+		".config/Ledger Live",
+		".config/cointop", // portfolio tracker: exchange API keys
+
+		// Mail clients beyond the ones shielded above: the profile store holds saved
+		// IMAP/SMTP passwords, and the message bodies carry reset links and 2FA codes.
+		".icedove",       // Debian-rebranded Thunderbird, identical profile format
+		".cache/icedove", // the caches hold message bodies too
+		".cache/thunderbird",
+		".claws-mail",
+		".cache/claws-mail",
+		".fossamail",
+		".cache/fossamail",
+		".sylpheed-2.0",
+		".balsa",
+		".nylas-mail",
+		".config/Nylas Mail",
+		".config/electron-mail",
+		".config/sendgmail", // sendgmail OAuth credentials
+		".local/share/local-mail",
+		".local/share/kmail2", // KMail/Akonadi message store
+		".cache/kmail2",
+
+		// Remote-access clients: the saved RDP/VNC/SSH passwords are recoverable,
+		// because the key that encrypts them sits beside them in the same tree.
+		".remmina",
+		".config/remmina",
+		".local/share/remmina",
+		".anydesk",
+
+		// Hosting and cloud-storage tokens, the class already shielded for rclone.
+		".gist",   // plaintext GitHub OAuth token
+		".gdfuse", // google-drive-ocamlfuse OAuth tokens
+		".config/gdfuse",
+		".cache/gdfuse",
+		".local/share/gdfuse",
+		".filezilla", // sitemanager.xml stores passwords base64-encoded
+		".config/filezilla",
+
+		// Chat clients that keep account passwords in plaintext on disk. pidgin also
+		// holds OTR private keys. Messengers whose store is an encrypted message
+		// database (Signal, Session) are firejail's privacy scope and stay out.
+		".purple",
+		".weechat",
+		".irssi",
+		".mcabber",
+		".config/coyim",
 
 		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
 		// default-deny a program that legitimately needs its own history opts in per-path.
@@ -262,6 +312,19 @@ func Home(home string) []Rule {
 		// in the shielded store.
 		".config/KeePassXCrc",
 		".config/kwalletrc",
+		// Mail-client config and identity files: account passwords (or the pointers to
+		// where they are stored) and the addresses the account sends as.
+		".mcabberrc", // mcabber XMPP config, holds the account password
+		".pinerc",    // pine/alpine config
+		".pinercex",  // its per-host companion
+		".config/emaildefaults",
+		".config/emailidentities",
+		".local/share/emailidentities",
+		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
+		".config/kmail2rc",
+		".config/kmailsearchindexingrc",
+		".config/specialmailcollectionsrc",
+		".pine-interrupted-mail",       // an interrupted draft: message body on disk
 		".kde/share/config/kwalletrc",  // legacy KDE location
 		".kde4/share/config/kwalletrc", // KDE4 location
 		"wallet.dat",                   // Bitcoin Core wallet at the home root: the spending keys

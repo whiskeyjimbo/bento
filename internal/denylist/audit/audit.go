@@ -1,6 +1,7 @@
 // Package audit cross-references bento's shield list against firejail's
-// disable-common profile, so a path firejail shields but bento does not surfaces
-// as a candidate rather than waiting for an adversarial review to find it.
+// disable-common and disable-programs profiles, so a path firejail shields but bento
+// does not surfaces as a candidate rather than waiting for an adversarial review to
+// find it.
 //
 // It is a dev-time completeness check, not part of the sandbox: the mapping from
 // firejail's directives to bento's DenyAll/DenyWrite classes is a hint, and the
@@ -65,8 +66,7 @@ func inScopeSection(section string) bool {
 // whose real "section" is boilerplate.
 const credentialSection = "credential store (name-classified)"
 
-// credentialName reports whether a path names a known secret store: a password manager,
-// a crypto-currency wallet, an OTP authenticator, or an OS keyring. It exists for
+// credentialName reports whether a path names a known secret store. It exists for
 // firejail's disable-programs.inc, a flat ~1300-entry list of per-application directories
 // with no section headers at all, where inScopeSection has nothing to key off and would
 // bin real credential stores (keepassxc, Bitwarden, 1Password) with the browser and
@@ -74,11 +74,17 @@ const credentialSection = "credential store (name-classified)"
 //
 // Matching is per path component and case-insensitive, so a token catches an app's
 // variants and its future spellings (keepass -> .keepassx, .config/keepassxc,
-// .local/share/KeePass) without enumerating paths. The vocabulary is deliberately narrow:
-// it names the private-key and secret classes bento already shields elsewhere
-// (.password-store, the crypto containers), and NOT firejail's broader privacy scope -
-// messengers, browsers, and per-app caches stay out of scope, as they are under
-// inScopeSection.
+// .local/share/KeePass) without enumerating paths. The vocabulary mirrors the classes
+// inScopeSection already admits for a headed profile - password/top-secret stores, mail
+// directories, remote access, cloud providers - so the two classifiers decide the same
+// way whether or not a profile carries headers. Browsers and per-app caches stay out, as
+// they are under inScopeSection.
+//
+// Chat clients are the one place this goes further than inScopeSection, which names no
+// messaging class: the ones matched here (pidgin, weechat, irssi, mcabber, coyim) keep
+// account passwords in plaintext on disk, which is the credential class by bento's own
+// rule. Messengers whose store is an encrypted message database - Signal, Session - stay
+// out; the line is plaintext credentials, not messaging.
 //
 // This trades away one guarantee that inScopeSection has: a header-less file cannot make
 // "unrecognised = in-scope" work, since that would hard-fail on the ~1300 ordinary app
@@ -93,10 +99,26 @@ func credentialName(path string) bool {
 			"keepass", "bitwarden", "1password", "lastpass", "enpass", "gopass",
 			"pwsafe", "password", "passwd", "credential", "keyring", "keychain",
 			"gnupg",
-			// crypto-currency wallets: private keys, the same class as an ssh key
-			"wallet", "electrum", "monero", "bitcoin",
+			// crypto-currency wallets: private keys, the same class as an ssh key.
+			// "coin" covers the Core wallets (bitcoin, litecoin, dogecoin); the forks
+			// that dropped the stem need their own token.
+			"wallet", "coin", "electrum", "electron-cash", "ethereum", "monero",
+			"dashcore", "exodus", "ledger live",
 			// one-time-password / 2FA stores
 			"authenticator",
+			// mail stores: saved IMAP/SMTP passwords and message bodies, the class
+			// inScopeSection admits as "mail directories" and bento shields for mutt,
+			// Thunderbird, and Evolution.
+			"mail", "thunderbird", "icedove", "sylpheed", "balsa", "pinerc",
+			// remote-access clients: saved RDP/VNC passwords, recoverable because the
+			// key sits beside them ("remote access" in inScopeSection).
+			"remmina", "anydesk",
+			// hosting and cloud-storage tokens, the class bento shields for rclone
+			"gdfuse", "gist", "filezilla",
+			// chat clients that keep account passwords in plaintext on disk (and, for
+			// pidgin, OTR private keys). Messengers whose store is an encrypted message
+			// database - Signal, Session - are firejail's privacy scope and stay out.
+			"purple", "weechat", "irssi", "mcabber", "coyim",
 		} {
 			if strings.Contains(comp, tok) {
 				return true
@@ -178,7 +200,17 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		default:
 			continue
 		}
-		raw := fields[1]
+		// The path is the rest of the line, not the second field: firejail profiles carry
+		// paths with spaces in them ("${HOME}/.config/Ledger Live", "${HOME}/.Wolfram
+		// Research"), and taking one field truncates those to a directory that does not
+		// exist - which then diffs as covered-by-nothing against a name bento will never
+		// shield. A directive may end in a comment ("${HOME}/Applications # AppImages"),
+		// so cut that first; a '#' at the start of a line is a comment and never reaches
+		// here, and firejail's paths do not contain one.
+		raw := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		if i := strings.IndexByte(raw, '#'); i >= 0 {
+			raw = strings.TrimSpace(raw[:i])
+		}
 		path, ok := expand(raw, home, runUser)
 		if !ok {
 			continue
@@ -320,7 +352,12 @@ var ReviewedGlobs = map[string]string{
 	// base .Xdefaults (DenyWrite) and cannot express the wildcard, so the host variants are
 	// a reviewed accepted residual rather than a hard fail.
 	".Xdefaults-*": "per-host xrdb resource variant; the base .Xdefaults is shielded DenyWrite and the hostname suffix is not expressible as a concrete path",
-	".electrum*":   "Electrum wallet; the base .electrum is shielded DenyAll and the altcoin-fork suffixes (.electrum-ltc and friends) are not expressible as concrete paths",
+	// Wallet and token stores whose concrete instances are shielded by name; the
+	// wildcard stands for an open-ended set of forks and per-account files, which is
+	// what bento cannot express - not any single one of them.
+	".electrum*":   "Electrum and its forks; .electrum and .electron-cash are shielded DenyAll, but the fork set (.electrum-ltc and successors) is open-ended",
+	".*coin":       "altcoin Core wallets; the enumerable ones (.bitcoin, .dashcore, .ethereum, .config/Bitcoin) are shielded DenyAll, but the coin set is open-ended",
+	".sendgmail.*": "per-account sendgmail credential files; the .config/sendgmail store is shielded DenyAll and the account suffix is not expressible as a concrete path",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.
