@@ -422,19 +422,31 @@ func systemMountPaths(sb sandbox) []string {
 		}
 	}
 
+	if extra := interpreterReadPath(sb); extra != "" {
+		paths = append(paths, extra)
+	}
+	return paths
+}
+
+// interpreterReadPath returns the one host path a run must be able to read for an
+// interpreter that lives outside the system paths to load its stdlib and shared
+// objects, or "" when the system paths already cover it. Both tiers use it - the
+// bwrap tier ro-binds it, the degraded tier grants it to Landlock - so a manifest
+// profiled against a pyenv/mise/conda runtime starts the same way under either.
+func interpreterReadPath(sb sandbox) string {
 	// A Nix interpreter's shared libraries are themselves separate store paths,
 	// so binding only its own prefix leaves it unable to load. Bind the whole
 	// store instead: it is immutable and world-readable package content, so it
 	// carries no user data to protect.
 	if strings.HasPrefix(sb.interpreter, nixStore+"/") && sb.exists(nixStore) {
-		return append(paths, nixStore)
+		return nixStore
 	}
 
 	// Otherwise the interpreter may still live outside the system paths (pyenv,
 	// mise). Bind its install prefix so its stdlib and shared objects resolve.
 	prefix := interpreterPrefix(sb.interpreter)
 	if prefix == "" {
-		return paths
+		return ""
 	}
 	// The prefix comes from the symlink-resolved interpreter, so the home it is
 	// compared against must be resolved too: on a host where $HOME reaches the real
@@ -451,14 +463,14 @@ func systemMountPaths(sb sandbox) []string {
 		// single-file runtime links against system libraries, so both still run; a
 		// runtime whose stdlib really is in ~/lib needs an explicit read grant for it.
 		if sb.exists(sb.interpreter) {
-			paths = append(paths, sb.interpreter)
+			return sb.interpreter
 		}
-		return paths
+		return ""
 	}
 	if sb.exists(prefix) {
-		paths = append(paths, prefix)
+		return prefix
 	}
-	return paths
+	return ""
 }
 
 // exposedPaths lists everything the compiled sandbox exposes host content at, so

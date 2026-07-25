@@ -78,6 +78,16 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// exposure, not the full tier's exposedPaths, keeps it from warning about a credential
 	// under an interpreter prefix this tier never makes readable.
 	sysReads, sysWrites := degradedSystemPaths()
+	// An interpreter outside the system paths (pyenv, mise, conda) needs its install
+	// prefix readable or it cannot load its stdlib. The launcher grants the interpreter
+	// FILE (it is an exec path), so the binary starts - and then fails on the first
+	// stdlib read. The bwrap tier ro-binds the whole prefix; without the same grant here
+	// a manifest profiled for such a runtime cannot run, and Synthesize strips the
+	// runtime tree from proposals, so the manifest never carries a read grant for it.
+	if extra := interpreterReadPath(sb); extra != "" {
+		sysReads = append(sysReads, extra)
+	}
+
 	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optIns)
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable

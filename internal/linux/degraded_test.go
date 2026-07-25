@@ -501,3 +501,49 @@ func TestDegradedRefusesFileWriteGrantLikeTheFullTier(t *testing.T) {
 		t.Errorf("the write grant was not created at all: %v", err)
 	}
 }
+
+// An interpreter outside the system paths (pyenv, mise, conda) loads its stdlib from
+// its own install prefix. The launcher grants the interpreter FILE, so the binary
+// starts - and then fails on the first stdlib read unless the prefix is granted too.
+// The bwrap tier ro-binds that prefix; this tier has to give Landlock the same. It
+// matters because Synthesize strips the runtime tree from its proposals, so a manifest
+// profiled against such a runtime carries no read grant that would cover it.
+func TestDegradedRunsInterpreterOutsideSystemPaths(t *testing.T) {
+	requireDegraded(t)
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	// A runtime laid out the way interpreterPrefix recognizes: <prefix>/bin/rt, with its
+	// "stdlib" beside it under <prefix>/lib. The temp dir is not under $HOME, so it does
+	// not hit the home floor that deliberately narrows a ~/bin wrapper to a single file.
+	prefix := t.TempDir()
+	for _, d := range []string{"bin", "lib"} {
+		if err := os.Mkdir(filepath.Join(prefix, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdlib := filepath.Join(prefix, "lib", "stdlib.sh")
+	if err := os.WriteFile(stdlib, []byte("greet() { echo ran-outside-fhs; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	interp := filepath.Join(prefix, "bin", "rt")
+	if err := os.WriteFile(interp, []byte("#!/bin/sh\n. "+stdlib+"\ngreet\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("# the runtime does the work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: interp, Read: []string{dir}, Exec: policy.ExecAll}
+	var out strings.Builder
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
+		enforce.Process{Stdout: &out, Stderr: &out})
+	if err != nil {
+		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ran-outside-fhs") {
+		t.Errorf("the runtime could not read its own stdlib; exit=%d output:\n%s", res.ExitCode, out.String())
+	}
+}
