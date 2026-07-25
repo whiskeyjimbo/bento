@@ -17,7 +17,7 @@ import (
 // tests are skipped for want of a usable kernel.
 
 func TestCheckGrantNotLoopedRealFilesystem(t *testing.T) {
-	d := t.TempDir()
+	d := canonTempDir(t)
 	a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
 	mustLink(t, b, a)
 	mustLink(t, a, b)
@@ -59,7 +59,7 @@ func TestCheckGrantNotLoopedRealFilesystem(t *testing.T) {
 // A read and a write grant that loop are found at different points in the run, so
 // the refusal must read the same either way.
 func TestLoopedGrantErrorAgreesAcrossReadAndWrite(t *testing.T) {
-	d := t.TempDir()
+	d := canonTempDir(t)
 	a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
 	mustLink(t, b, a)
 	mustLink(t, a, b)
@@ -78,7 +78,7 @@ func TestLoopedGrantErrorAgreesAcrossReadAndWrite(t *testing.T) {
 // host, at a MID link that nothing else fills - so the chain breaks in the middle
 // unless missingHop follows the filled name and recreates the mid name instead.
 func TestGrantSymlinksMultiHopRealFilesystem(t *testing.T) {
-	root := t.TempDir()
+	root := canonTempDir(t)
 	other, elsewhere := filepath.Join(root, "other"), filepath.Join(root, "elsewhere")
 	for _, d := range []string{other, elsewhere} {
 		if err := os.Mkdir(d, 0o755); err != nil {
@@ -122,7 +122,7 @@ func TestGrantSymlinksMultiHopRealFilesystem(t *testing.T) {
 // The same tree with the mid hop already inside a grant needs no link at all: the
 // bind carries the host's own entry there, and recreating it would abort bwrap.
 func TestGrantSymlinksSkipsChainAlreadyMounted(t *testing.T) {
-	root := t.TempDir()
+	root := canonTempDir(t)
 	other := filepath.Join(root, "other")
 	if err := os.Mkdir(other, 0o755); err != nil {
 		t.Fatal(err)
