@@ -98,4 +98,23 @@ func TestRestrictConfinesReads(t *testing.T) {
 	if !strings.Contains(got, "outside=DENIED") {
 		t.Errorf("a path outside the allowed dir must be denied by Landlock: %q", got)
 	}
+
+	// A regular file in the writable set must get a file rule. Routed to RWDirs it
+	// returns EINVAL, and RestrictPaths applies the ruleset as a whole - so the process
+	// would run with NO rules at all and outside=OK. Only the real kernel shows this:
+	// the rule kinds are indistinguishable until the ruleset is submitted, which is why
+	// this goes through the probe rather than asserting on the rules bento builds.
+	t.Run("a file in the writable set does not discard the ruleset", func(t *testing.T) {
+		out, err := exec.Command(bin, allowed, inside, outside, inside).CombinedOutput()
+		if err != nil {
+			t.Fatalf("probe with a file write path: %v\n%s", err, out)
+		}
+		got := strings.TrimSpace(string(out))
+		if !strings.Contains(got, "outside=DENIED") {
+			t.Errorf("a file in the writable set left the process unconfined: %q", got)
+		}
+		if !strings.Contains(got, "inside=OK") {
+			t.Errorf("the granted tree stopped being readable: %q", got)
+		}
+	})
 }

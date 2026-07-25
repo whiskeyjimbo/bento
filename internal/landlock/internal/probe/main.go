@@ -3,8 +3,12 @@
 // observe Landlock's real effect in a fresh process (Landlock is irreversible
 // for the process that applies it).
 //
-// Usage: probe <allowed-dir> <inside-path> <outside-path>
-// Prints "inside=OK|DENIED outside=OK|DENIED".
+// Usage: probe <allowed-dir> <inside-path> <outside-path> [extra-write-file]
+// Prints "inside=OK|DENIED outside=OK|DENIED". extra-write-file is added to the
+// writable set as a regular FILE: Landlock's directory rules reject a non-directory
+// with EINVAL and the ruleset is applied all-or-nothing, so a caller that routed it
+// to a directory rule would confine nothing at all - which shows up here as
+// outside=OK.
 //
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
@@ -23,12 +27,16 @@ func main() {
 		fmt.Printf("available=%v\n", landlock.Available())
 		return
 	}
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: probe <allowed-dir> <inside-path> <outside-path>")
+	if len(os.Args) != 4 && len(os.Args) != 5 {
+		fmt.Fprintln(os.Stderr, "usage: probe <allowed-dir> <inside-path> <outside-path> [extra-write-file]")
 		os.Exit(2)
 	}
 	allowed := os.Args[1]
-	if err := landlock.RestrictTo([]string{allowed}, []string{allowed}); err != nil {
+	write := []string{allowed}
+	if len(os.Args) == 5 {
+		write = append(write, os.Args[4])
+	}
+	if err := landlock.RestrictTo([]string{allowed}, write); err != nil {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}

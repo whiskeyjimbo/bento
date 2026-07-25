@@ -47,14 +47,47 @@ func Restrict(writable []string) error {
 // missing path. This does not weaken confinement of a not-yet-created write
 // target: the target's parent must itself be writable to create it, and a
 // writable parent is a directory rule that covers the child recursively.
+//
+// A path naming a regular file gets a file rule, not a directory one: the
+// directory rules reject a non-directory with EINVAL, and RestrictPaths applies
+// the ruleset as a whole, so one file in either set would abort EVERY rule and
+// leave the process unconfined. The bwrap tier's callers happen to pass only
+// directories today, but that invariant lives in another package and this is where
+// its failure would be silent.
 func RestrictTo(read, write []string) error {
-	if err := ll.V9.BestEffort().RestrictPaths(
-		ll.RODirs(existing(read)...),
-		ll.RWDirs(existing(write)...),
-	); err != nil {
+	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
+	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
+	if err := ll.V9.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying ruleset: %w", err)
 	}
 	return nil
+}
+
+// classifyRules appends one rule per kind for the paths that exist, routing
+// directories to dirRule and everything else to fileRule. Landlock's directory
+// rules reject a non-directory with EINVAL and RestrictPaths is all-or-nothing, so
+// misrouting one path discards the whole ruleset. Both Restrict tiers build their
+// rules through here rather than each classifying its own way.
+func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...string) ll.FSRule) []ll.Rule {
+	var dirs, files []string
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			dirs = append(dirs, p)
+		} else {
+			files = append(files, p)
+		}
+	}
+	if len(dirs) > 0 {
+		rules = append(rules, dirRule(dirs...))
+	}
+	if len(files) > 0 {
+		rules = append(rules, fileRule(files...))
+	}
+	return rules
 }
 
 // RestrictDegraded is the PRIMARY filesystem confinement for the no-bwrap degraded
@@ -90,29 +123,8 @@ func RestrictDegraded(read, write, exec []string) error {
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
-	var rules []ll.Rule
-	classify := func(paths []string, dirRule, fileRule func(...string) ll.FSRule) {
-		var dirs, files []string
-		for _, p := range paths {
-			fi, err := os.Stat(p)
-			if err != nil {
-				continue
-			}
-			if fi.IsDir() {
-				dirs = append(dirs, p)
-			} else {
-				files = append(files, p)
-			}
-		}
-		if len(dirs) > 0 {
-			rules = append(rules, dirRule(dirs...))
-		}
-		if len(files) > 0 {
-			rules = append(rules, fileRule(files...))
-		}
-	}
-	classify(read, ll.RODirs, ll.ROFiles)
-	classify(write, ll.RWDirs, ll.RWFiles)
+	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
+	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
 	if e := existing(exec); len(e) > 0 {
 		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
 	}
