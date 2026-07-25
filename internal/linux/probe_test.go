@@ -1,6 +1,9 @@
 package linux
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -204,5 +207,27 @@ func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 		if !strings.Contains(reason, nsReason) {
 			t.Errorf("landlock=%v: %v reason %q dropped the namespace reason", landlock, state, reason)
 		}
+	}
+}
+
+// The namespace probe's canary must be resolved on $PATH, not hardcoded to
+// /bin/true. bwrap creates the namespaces first and execs last, so on a host with no
+// /bin/true only the exec fails - and the probe would report userns blocked, refuse
+// every network manifest, and silently downgrade the run to the Landlock-only tier.
+// A host missing /bin/true cannot be constructed here, so this drives the property
+// from the other side: with $PATH naming a `true` that exits non-zero, the probe must
+// fail, which it can only do if the canary it ran was the resolved one.
+func TestCanUnshareRunsTheResolvedCanary(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	canary := filepath.Join(dir, "true")
+	if err := os.WriteFile(canary, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := canUnshare(context.Background(), "bwrap"); err == nil {
+		t.Error("canUnshare passed while its canary exited 3; it ran a hardcoded /bin/true, not the resolved one")
 	}
 }

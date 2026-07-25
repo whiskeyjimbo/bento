@@ -233,9 +233,16 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// old bwrap - would otherwise pass this probe, report the filesystem layer Enforced, and
 	// then fail at launch with a bwrap exit code indistinguishable from the target's. Probing
 	// the shared set surfaces that at admission instead. --unshare-net is probed too (the run
-	// adds it for the network layer); --bind / / makes /bin/true reachable for the check.
+	// adds it for the network layer); --bind / / makes the canary reachable for the check.
+	// The canary is resolved on $PATH, not hardcoded to /bin/true: bwrap sets the
+	// namespaces up FIRST and only then execs, so on a host with no /bin/true (NixOS,
+	// a minimal image) the namespaces would succeed and only the exec fail - and this
+	// probe cannot tell the two apart. It would report userns blocked, refuse every
+	// network manifest, and downgrade the run to the Landlock-only tier while sending
+	// the user off to flip AppArmor sysctls on a host where userns works. limits.go's
+	// trueBinary resolves it the same way for the same reason.
 	args := append([]string{}, namespaceFlags...)
-	args = append(args, "--unshare-net", "--bind", "/", "/", "/bin/true")
+	args = append(args, "--unshare-net", "--bind", "/", "/", trueBinary())
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
