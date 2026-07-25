@@ -10,6 +10,10 @@
 // to a directory rule would confine nothing at all - which shows up here as
 // outside=OK.
 //
+// Usage: probe otherthread <allowed-dir> <inside-path> <outside-path>
+// Prints "otherthread_inside=... otherthread_outside=...", read from a thread that
+// already existed when the ruleset was applied.
+//
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
 // whose /sys/kernel/security has been masked, reproducing a container.
@@ -18,11 +22,17 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"syscall"
 
 	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
 func main() {
+	if len(os.Args) == 5 && os.Args[1] == "otherthread" {
+		otherThread(os.Args[2], os.Args[3], os.Args[4])
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "available" {
 		fmt.Printf("available=%v\n", landlock.Available())
 		return
@@ -48,4 +58,42 @@ func readable(path string) string {
 		return "DENIED"
 	}
 	return "OK"
+}
+
+// otherThread applies the ruleset while a second OS thread is already parked, then
+// has THAT thread do the reads. Landlock is per-thread, and go-landlock reaches the
+// others by a mechanism that differs between the cgo and no-cgo builds - libpsx
+// versus syscall.AllThreadsSyscall. A thread started after the restrict call would
+// inherit it through clone under either one and prove nothing, so the thread here is
+// locked and synchronized to exist first.
+func otherThread(allowed, inside, outside string) {
+	// Both ends pinned so the two tids below are stable and the check that they differ
+	// is not a race: without it a scheduler that ran the reads on the restricting
+	// thread would make this pass while proving nothing.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	self := syscall.Gettid()
+
+	parked, restricted := make(chan struct{}), make(chan struct{})
+	tid := make(chan int)
+	result := make(chan string)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		tid <- syscall.Gettid()
+		close(parked)
+		<-restricted
+		result <- fmt.Sprintf("otherthread_inside=%s otherthread_outside=%s", readable(inside), readable(outside))
+	}()
+	if other := <-tid; other == self {
+		fmt.Fprintln(os.Stderr, "the probe thread is the restricting thread")
+		os.Exit(2)
+	}
+	<-parked
+	if err := landlock.RestrictTo([]string{allowed}, []string{allowed}); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	close(restricted)
+	fmt.Println(<-result)
 }

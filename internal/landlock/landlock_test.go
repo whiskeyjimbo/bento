@@ -10,6 +10,27 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
+// buildProbe compiles the probe the way make build ships bento, and returns its path.
+//
+// CGO_ENABLED=0 is the point, not boilerplate: go-landlock selects a different
+// all-threads mechanism per build tag - cgo routes the restrict syscall through
+// libpsx and adds a /proc/$PID/task workaround rule, no-cgo uses
+// syscall.AllThreadsSyscall and adds neither. A probe built with cgo would verify
+// confinement on a code path the shipped binary never runs.
+func buildProbe(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available to build the probe")
+	}
+	bin := filepath.Join(t.TempDir(), "probe")
+	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
+	build.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building probe: %v\n%s", err, out)
+	}
+	return bin
+}
+
 func TestAvailableOnLinux(t *testing.T) {
 	if !landlock.Available() {
 		t.Skip("Landlock not present on this kernel")
@@ -29,16 +50,7 @@ func TestAvailableWithoutSecurityfs(t *testing.T) {
 	if err != nil {
 		t.Skip("bwrap not available to mask /sys/kernel/security")
 	}
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not available to build the probe")
-	}
-
-	bin := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
-	build.Env = append(os.Environ(), "GOWORK=off")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building probe: %v\n%s", err, out)
-	}
+	bin := buildProbe(t)
 
 	// --tmpfs over /sys/kernel/security makes the lsm file unreadable, exactly as a
 	// restricted-/sys container does, while the Landlock syscalls stay available.
@@ -64,16 +76,7 @@ func TestRestrictConfinesReads(t *testing.T) {
 	if !landlock.Available() {
 		t.Skip("Landlock not present on this kernel")
 	}
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not available to build the probe")
-	}
-
-	bin := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
-	build.Env = append(os.Environ(), "GOWORK=off")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building probe: %v\n%s", err, out)
-	}
+	bin := buildProbe(t)
 
 	allowed := t.TempDir()
 	inside := filepath.Join(allowed, "in.txt")
@@ -119,4 +122,40 @@ func TestRestrictConfinesReads(t *testing.T) {
 			t.Errorf("the granted tree stopped being readable: %q", got)
 		}
 	})
+}
+
+// Landlock is applied per thread, and the Go runtime has several. go-landlock covers
+// them with libpsx under cgo and syscall.AllThreadsSyscall without it - and the
+// shipped binary is the no-cgo one, which nothing exercised until buildProbe started
+// forcing CGO_ENABLED=0. This asserts the property that mechanism exists for: a thread
+// that was already parked when the ruleset was applied is confined too. Started before
+// the restrict call on purpose; one started after would inherit the restriction through
+// clone under either mechanism and prove nothing.
+func TestRestrictReachesAPreexistingThread(t *testing.T) {
+	if !landlock.Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	allowed := t.TempDir()
+	inside := filepath.Join(allowed, "in.txt")
+	if err := os.WriteFile(inside, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(bin, "otherthread", allowed, inside, outside).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, "otherthread_outside=DENIED") {
+		t.Errorf("a thread that existed before the ruleset was applied is unconfined: %q", got)
+	}
+	if !strings.Contains(got, "otherthread_inside=OK") {
+		t.Errorf("the granted tree stopped being readable from the other thread: %q", got)
+	}
 }

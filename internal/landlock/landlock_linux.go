@@ -122,6 +122,13 @@ func RestrictDegraded(read, write, exec []string) error {
 	// returns success), which for this tier - where Landlock is the only filesystem
 	// guarantee - is a fail-open. Refuse up front on the same effective ABI the gate
 	// uses, so a run never reaches the target believing it is confined when it is not.
+	//
+	// This guard covers the ABI-0 route only. BestEffort's downgrade has a second
+	// silent-success path - a config it cannot satisfy collapses to v0 and returns nil,
+	// having restricted nothing - which an ABI check cannot see. Nothing reaches it
+	// today because it needs a refer rule on ABI 1, and this package never asks for
+	// one; adding WithRefer or WithIoctlDev would put a total fail-open back behind a
+	// guard that still passes.
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
