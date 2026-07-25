@@ -7,7 +7,7 @@
 set -eu
 cd "$(dirname "$0")"
 
-if grep -rn 'bento-v2/internal/' . --include='*.go'; then
+if grep -rn 'github.com/whiskeyjimbo/bento/internal/' . --include='*.go'; then
 	echo "FAIL: example imports an internal package; the public surface is insufficient" >&2
 	exit 1
 fi
