@@ -145,6 +145,40 @@ func Home(home string) []Rule {
 		".caff",                     // caff (GnuPG) signing material
 		".nyx",                      // nyx Tor controller (control-port password)
 
+		// Password managers and OTP stores: the local vault database, plus the caches
+		// and per-app config that record its path and recently-opened entries. Same
+		// class as ~/.password-store, which is shielded above.
+		".keepass",
+		".keepassx",
+		".keepassxc",
+		".config/keepass",
+		".config/keepassx",
+		".config/keepassxc",
+		".config/KeePass",  // the .NET KeePass uses the capitalized name
+		".cache/keepassxc", // last-opened database paths and search history
+		".local/share/keepass",
+		".local/share/KeePass",
+		".config/Bitwarden",
+		".config/1Password",
+		".lastpass",
+		".local/share/Enpass",
+		".cache/Enpass",
+		".config/Authenticator", // GNOME Authenticator: TOTP seeds
+		".cache/Authenticator",
+		".local/share/authenticator-rs", // authenticator-rs: TOTP seeds
+		// SmartGit keeps the passwords for its configured remotes under a per-version
+		// subdirectory (~/.smartgit/<version>/passwords), so the version is not
+		// expressible as a concrete path and the whole tree is shielded instead.
+		".smartgit",
+
+		// Crypto-currency wallets: a wallet holds the private keys that spend its
+		// funds, the same class as an ssh key rather than the app-privacy scope.
+		".bitcoin",
+		".config/Bitcoin",
+		".electrum",
+		".config/monero-project",
+		"Monero/wallets",
+
 		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
 		// default-deny a program that legitimately needs its own history opts in per-path.
 		".adobe",      // Flash local storage (LSO)
@@ -221,6 +255,16 @@ func Home(home string) []Rule {
 		".cargo/credentials", // legacy cargo registry token (pre-credentials.toml)
 		".passwd-s3fs",       // s3fs password file
 		".s3cmd",             // s3cmd state firejail blacklists (the .s3cfg config file is shielded above)
+
+		// Password-manager and wallet config files, hidden alongside the stores they
+		// point at: each names the vault's location and its recently-opened entries,
+		// which is reconnaissance for an attacker even where the secret itself lives
+		// in the shielded store.
+		".config/KeePassXCrc",
+		".config/kwalletrc",
+		".kde/share/config/kwalletrc",  // legacy KDE location
+		".kde4/share/config/kwalletrc", // KDE4 location
+		"wallet.dat",                   // Bitcoin Core wallet at the home root: the spending keys
 
 		// Mail message stores and identity. mutt's default mailbox files/dirs and the
 		// signature; message bodies carry reset links and 2FA codes, and a signature can

@@ -60,6 +60,52 @@ func inScopeSection(section string) bool {
 	return false
 }
 
+// credentialSection is the synthetic section given to a gap classified in-scope by name
+// rather than by its firejail section header, so the report reads sensibly for a profile
+// whose real "section" is boilerplate.
+const credentialSection = "credential store (name-classified)"
+
+// credentialName reports whether a path names a known secret store: a password manager,
+// a crypto-currency wallet, an OTP authenticator, or an OS keyring. It exists for
+// firejail's disable-programs.inc, a flat ~1300-entry list of per-application directories
+// with no section headers at all, where inScopeSection has nothing to key off and would
+// bin real credential stores (keepassxc, Bitwarden, 1Password) with the browser and
+// media-player dirs that make up the rest of the file.
+//
+// Matching is per path component and case-insensitive, so a token catches an app's
+// variants and its future spellings (keepass -> .keepassx, .config/keepassxc,
+// .local/share/KeePass) without enumerating paths. The vocabulary is deliberately narrow:
+// it names the private-key and secret classes bento already shields elsewhere
+// (.password-store, the crypto containers), and NOT firejail's broader privacy scope -
+// messengers, browsers, and per-app caches stay out of scope, as they are under
+// inScopeSection.
+//
+// This trades away one guarantee that inScopeSection has: a header-less file cannot make
+// "unrecognised = in-scope" work, since that would hard-fail on the ~1300 ordinary app
+// dirs. So a genuinely new credential app whose name contains no known token falls out of
+// scope silently, and the ratchet here is only as good as the vocabulary. That is
+// intrinsic to the profile's shape, not a gap to be closed; re-read the token list when a
+// new password manager becomes common.
+func credentialName(path string) bool {
+	for comp := range strings.SplitSeq(strings.ToLower(path), "/") {
+		for _, tok := range []string{
+			// password managers and secret stores
+			"keepass", "bitwarden", "1password", "lastpass", "enpass", "gopass",
+			"pwsafe", "password", "passwd", "credential", "keyring", "keychain",
+			"gnupg",
+			// crypto-currency wallets: private keys, the same class as an ssh key
+			"wallet", "electrum", "monero", "bitcoin",
+			// one-time-password / 2FA stores
+			"authenticator",
+		} {
+			if strings.Contains(comp, tok) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // negatedKeyword reports whether the section names kw only to exclude it. firejail has
 // a header "Configuration files that do not allow arbitrary command execution but
 // that..." which contains the exec keyword yet is deliberately out of the exec threat
@@ -207,14 +253,20 @@ func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 
 // SplitByScope partitions gaps into the ones inside bento's secret/exec threat model
 // (returned sorted by section, ready to list) and a count-by-section of the rest -
-// firejail's privacy/other-app/system scope, which bento does not enumerate. The
-// out-of-scope set is summarized rather than dropped so it stays accountable.
+// firejail's privacy/other-app/system scope, which bento does not enumerate. A gap is
+// in scope by its firejail section, or - for the header-less profiles where that says
+// nothing - by naming a known secret store. The out-of-scope set is summarized rather
+// than dropped so it stays accountable.
 func SplitByScope(gaps []Gap) (inScope []Gap, outBySection map[string]int) {
 	outBySection = map[string]int{}
 	for _, g := range gaps {
-		if inScopeSection(g.Section) {
+		switch {
+		case inScopeSection(g.Section):
 			inScope = append(inScope, g)
-		} else {
+		case credentialName(g.Path):
+			g.Section = credentialSection
+			inScope = append(inScope, g)
+		default:
 			outBySection[g.Section]++
 		}
 	}
@@ -268,6 +320,7 @@ var ReviewedGlobs = map[string]string{
 	// base .Xdefaults (DenyWrite) and cannot express the wildcard, so the host variants are
 	// a reviewed accepted residual rather than a hard fail.
 	".Xdefaults-*": "per-host xrdb resource variant; the base .Xdefaults is shielded DenyWrite and the hostname suffix is not expressible as a concrete path",
+	".electrum*":   "Electrum wallet; the base .electrum is shielded DenyAll and the altcoin-fork suffixes (.electrum-ltc and friends) are not expressible as concrete paths",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.

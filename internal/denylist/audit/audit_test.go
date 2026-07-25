@@ -141,6 +141,71 @@ func TestInScopeSectionRejectsNegatedHeaders(t *testing.T) {
 	}
 }
 
+// The name classifier is what makes the header-less disable-programs.inc auditable, and
+// its whole risk is over-matching: a token that also appears inside an ordinary app name
+// would drag a privacy-scope directory into the hard-fail set, where the only ways out
+// are shielding a path bento has no reason to shield or recording a bogus intentional
+// exclusion. The negative cases here are the real near-misses in that profile - a Tetris
+// clone, a crypto price ticker, a session manager, and the messengers that are firejail's
+// privacy scope rather than bento's secret scope.
+func TestCredentialNameMatchesStoresNotLookalikes(t *testing.T) {
+	for _, p := range []string{
+		"/home/u/.keepassxc",
+		"/home/u/.config/KeePassXCrc",
+		"/home/u/.local/share/KeePass",
+		"/home/u/.config/Bitwarden",
+		"/home/u/.config/1Password",
+		"/home/u/.lastpass",
+		"/home/u/.cache/Enpass",
+		"/home/u/.config/Authenticator",
+		"/home/u/.smartgit/21.1/passwords",
+		"/home/u/.config/kwalletrc",
+		"/home/u/wallet.dat",
+		"/home/u/.bitcoin",
+		"/home/u/.electrum",
+		"/home/u/.config/monero-project",
+	} {
+		if !credentialName(p) {
+			t.Errorf("credentialName(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{
+		"/home/u/.local/share/quadrapassel", // contains "pass", not "password"
+		"/home/u/.config/cointop",           // a price ticker, not a wallet
+		"/home/u/.config/gnome-session",
+		"/home/u/.config/Signal",
+		"/home/u/.local/share/signal-cli",
+		"/home/u/.config/Session",
+		"/home/u/.Atom",
+	} {
+		if credentialName(p) {
+			t.Errorf("credentialName(%q) = true, want false", p)
+		}
+	}
+}
+
+// A profile with no usable section header (disable-programs.inc leads with an
+// "overwritten during install" note) still has to surface its credential stores, and the
+// report must not label them with that note. A name-classified gap is relabelled to say
+// why it is in scope; an ordinary app dir in the same file stays out of scope and is only
+// counted.
+func TestSplitByScopeClassifiesHeaderlessProfileByName(t *testing.T) {
+	gaps := []Gap{
+		{Candidate: Candidate{Path: "/HOME/.keepassxc", Section: "This file is overwritten during software install."}},
+		{Candidate: Candidate{Path: "/HOME/.Atom", Section: "This file is overwritten during software install."}},
+	}
+	inScope, out := SplitByScope(gaps)
+	if len(inScope) != 1 || inScope[0].Path != "/HOME/.keepassxc" {
+		t.Fatalf("the credential store must be in scope, got %+v", inScope)
+	}
+	if inScope[0].Section != credentialSection {
+		t.Errorf("a name-classified gap must be relabelled, got section %q", inScope[0].Section)
+	}
+	if out["This file is overwritten during software install."] != 1 {
+		t.Errorf("the ordinary app dir must be counted out-of-scope, got %+v", out)
+	}
+}
+
 func TestDiffCoverageAndClass(t *testing.T) {
 	rules := []denylist.Rule{
 		{Path: "/HOME/.ssh", Deny: denylist.DenyAll, Dir: true},
@@ -271,25 +336,27 @@ func TestFirejailCompleteness(t *testing.T) {
 	if dir == "" {
 		dir = "/etc/firejail"
 	}
-	// Only disable-common.inc: it carries the section headers this audit's scope
-	// classification keys off. disable-programs.inc is a flat list with no headers, so
-	// every entry would fall out-of-scope and be discarded - feeding it would fake
-	// completeness over real app-credential stores (keepassxc, Bitwarden). Classifying
-	// that file needs a content/name-based classifier, tracked separately.
-	path := filepath.Join(dir, "disable-common.inc")
-	content, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
-	}
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
+	// disable-common.inc carries the section headers the scope classification keys off;
+	// disable-programs.inc is a flat per-application list with no headers, where the
+	// name classifier is what picks the credential stores out of ~1300 ordinary app dirs.
+	var contents []string
+	for _, name := range []string{"disable-common.inc", "disable-programs.inc"} {
+		path := filepath.Join(dir, name)
+		content, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
+		}
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		contents = append(contents, string(content))
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	unclassified, globs, outBySection := Audit([]string{string(content)}, home, "/run/user/1000")
+	unclassified, globs, outBySection := Audit(contents, home, "/run/user/1000")
 
 	// Globs and out-of-scope totals are surfaced (not silently dropped) so a whole
 	// class or the app/privacy scope stays visible for periodic manual review.

@@ -25,27 +25,38 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.zen",            // Zen browser profile store
 		"/home/u/.config/google-chrome",
 		"/home/u/.config/rclone",
-		"/home/u/.config/keybase",          // Keybase keys/tokens
-		"/home/u/.pki",                     // NSS cert/key DBs
-		"/home/u/.gnome2/keyrings",         // legacy keyring path
-		"/home/u/.git-credential-cache",    // git credential cache
-		"/home/u/.mutt",                    // mutt config (imap_pass) hidden
-		"/home/u/.config/mutt",             // XDG mutt config
-		"/home/u/.subversion/auth",         // SVN plaintext passwords
-		"/home/u/.config/openstack",        // OpenStack clouds.yaml/secure.yaml
-		"/home/u/.thunderbird",             // Thunderbird saved mail passwords
-		"/home/u/.config/evolution",        // Evolution saved mail passwords
-		"/home/u/.cert",                    // 802.1X/VPN client keys (real kind varies by host)
-		"/home/u/.mail",                    // maildir bodies and cached creds
-		"/home/u/.Mail",                    // capitalized maildir variant
-		"/home/u/.local/state/nvim",        // shada/undo/swap/backup: registers, search history, and full buffer contents
-		"/home/u/.local/share/nvim",        // pre-0.8 legacy location of the same stores, abandoned but not deleted on upgrade
-		"/home/u/.config/autostart",        // XDG autostart .desktop entries (hidden, matching firejail)
-		"/home/u/.config/systemd",          // systemd --user unit/timer tree
-		"/home/u/.local/share/systemd",     // systemd --user state
-		"/home/u/Mail",                     // mutt default mail folder (no leading dot)
-		"/home/u/mail",                     // mutt default mail folder
-		"/home/u/Private",                  // ecryptfs decrypted mount point
+		"/home/u/.config/keybase",       // Keybase keys/tokens
+		"/home/u/.pki",                  // NSS cert/key DBs
+		"/home/u/.gnome2/keyrings",      // legacy keyring path
+		"/home/u/.git-credential-cache", // git credential cache
+		"/home/u/.mutt",                 // mutt config (imap_pass) hidden
+		"/home/u/.config/mutt",          // XDG mutt config
+		"/home/u/.subversion/auth",      // SVN plaintext passwords
+		"/home/u/.config/openstack",     // OpenStack clouds.yaml/secure.yaml
+		"/home/u/.thunderbird",          // Thunderbird saved mail passwords
+		"/home/u/.config/evolution",     // Evolution saved mail passwords
+		"/home/u/.cert",                 // 802.1X/VPN client keys (real kind varies by host)
+		"/home/u/.mail",                 // maildir bodies and cached creds
+		"/home/u/.Mail",                 // capitalized maildir variant
+		"/home/u/.local/state/nvim",     // shada/undo/swap/backup: registers, search history, and full buffer contents
+		"/home/u/.local/share/nvim",     // pre-0.8 legacy location of the same stores, abandoned but not deleted on upgrade
+		"/home/u/.config/autostart",     // XDG autostart .desktop entries (hidden, matching firejail)
+		"/home/u/.config/systemd",       // systemd --user unit/timer tree
+		"/home/u/.local/share/systemd",  // systemd --user state
+		"/home/u/Mail",                  // mutt default mail folder (no leading dot)
+		"/home/u/mail",                  // mutt default mail folder
+		"/home/u/Private",               // ecryptfs decrypted mount point
+		"/home/u/.keepassxc",            // password-manager vault
+		"/home/u/.config/keepassxc",     // and its config/cache siblings
+		"/home/u/.cache/keepassxc",
+		"/home/u/.config/Bitwarden",
+		"/home/u/.config/1Password",
+		"/home/u/.local/share/Enpass",
+		"/home/u/.config/Authenticator",    // TOTP seeds
+		"/home/u/.smartgit",                // per-version subdir holds remote passwords
+		"/home/u/.bitcoin",                 // wallet private keys
+		"/home/u/.electrum",                // named instance behind the .electrum* glob
+		"/home/u/Monero/wallets",           // non-hidden wallet dir at the home root
 		"/home/u/.config/i3",               // WM config `exec` (hidden, matching firejail)
 		"/home/u/.config/plasma-workspace", // KDE session env/autostart
 		"/home/u/.kde4/Autostart",          // legacy KDE autostart
@@ -89,6 +100,9 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.php_history",             // php -a interactive REPL history
 		"/home/u/.python-history",          // dash-spelled Python REPL history variant
 		"/home/u/.cache/greenclip.history", // greenclip clipboard history (pasted secrets)
+		"/home/u/.config/KeePassXCrc",      // vault location and recently-opened entries
+		"/home/u/.config/kwalletrc",        // KDE Wallet config
+		"/home/u/wallet.dat",               // Bitcoin Core wallet at the home root
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]
