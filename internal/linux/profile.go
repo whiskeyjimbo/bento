@@ -63,7 +63,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 
 	// Remove directory shield mount points bwrap creates on the host, as Run does -
 	// profiling applies the same deny-list shields, so it leaves the same artifacts.
-	if reads, writes, err := resolveGrants(p); err == nil {
+	if reads, writes, err := resolveGrants(sb, p); err == nil {
 		_, optIns := explicitShieldOptIns(sb, p.Read)
 		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
 	}

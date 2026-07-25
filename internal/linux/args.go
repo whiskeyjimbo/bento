@@ -145,7 +145,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		args = append(args, "--tmpfs", home)
 	}
 
-	reads, writes, err := resolveGrants(p)
+	reads, writes, err := resolveGrants(sb, p)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -851,7 +851,7 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	if err := checkGrantNotProcess(sb, p); err != nil {
 		return err
 	}
-	if err := checkGrantNotManagedMount(p); err != nil {
+	if err := checkGrantNotManagedMount(sb, p); err != nil {
 		return err
 	}
 	return checkGrantNotLooped(p)
@@ -1008,11 +1008,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 // instead of a run-killer.
 func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
-		abs, err := filepath.Abs(g)
-		if err != nil {
-			return fmt.Errorf("linux: %q: %w", g, err)
-		}
-		real, err := resolve(abs)
+		real, err := resolveGrant(sb, g)
 		if err != nil {
 			return err
 		}
@@ -1030,13 +1026,9 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 // DB passwords) of same-uid host processes, read:/dev the full host device set, and
 // a /tmp grant other processes' temp files. A specific path inside one still binds
 // fine; only the whole root is refused.
-func checkGrantNotManagedMount(p *policy.Policy) error {
+func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
-		abs, err := filepath.Abs(g)
-		if err != nil {
-			return fmt.Errorf("linux: %q: %w", g, err)
-		}
-		real, err := resolve(abs)
+		real, err := resolveGrant(sb, g)
 		if err != nil {
 			return err
 		}
@@ -1115,11 +1107,11 @@ func under(child, parent string) bool {
 // at ~/.ssh, we bind the real target, and the deny-list - which runs after and
 // also works on real paths - still shields it. Binding the unresolved path would
 // have let the symlink redirect the mount.
-func resolveGrants(p *policy.Policy) (reads, writes []string, err error) {
-	if reads, err = resolveAll(p.Read); err != nil {
+func resolveGrants(sb sandbox, p *policy.Policy) (reads, writes []string, err error) {
+	if reads, err = resolveAll(sb, p.Read); err != nil {
 		return nil, nil, err
 	}
-	if writes, err = resolveAll(p.Write); err != nil {
+	if writes, err = resolveAll(sb, p.Write); err != nil {
 		return nil, nil, err
 	}
 	return reads, writes, nil
@@ -1172,7 +1164,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		if err != nil {
 			return nil, fmt.Errorf("linux: %q: %w", g, err)
 		}
-		real, err := resolve(abs)
+		real, err := resolveGrant(sb, abs)
 		if err != nil {
 			return nil, err
 		}
@@ -1254,11 +1246,11 @@ func coveredBy(path string, roots []string) bool {
 	return false
 }
 
-func resolveAll(paths []string) ([]string, error) {
+func resolveAll(sb sandbox, paths []string) ([]string, error) {
 	out := make([]string, 0, len(paths))
 	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
-		r, err := resolve(p)
+		r, err := resolveGrant(sb, p)
 		if err != nil {
 			return nil, err
 		}
@@ -1274,6 +1266,23 @@ func resolveAll(paths []string) ([]string, error) {
 // resolve returns an absolute, symlink-resolved path. A path that does not exist
 // yet (a write target) is resolved as far as it does exist, so the parts that
 // could be a symlink are still followed.
+// resolveGrant resolves a policy grant through the sandbox's resolver seam, so a
+// grant and a shield are compared on the same footing. Both used to reach the host
+// filesystem directly and so agreed in production, but only shields went through
+// sb.resolve - which left every fake-filesystem test resolving fake shield paths
+// against real-host-resolved grants, a hybrid that never runs.
+func resolveGrant(sb sandbox, path string) (string, error) {
+	abs := path
+	if !filepath.IsAbs(path) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("linux: %q: %w", path, err)
+		}
+		abs = filepath.Clean(wd) + "/" + path
+	}
+	return sb.resolve(abs), nil
+}
+
 func resolve(path string) (string, error) {
 	abs := path
 	if !filepath.IsAbs(path) {

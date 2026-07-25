@@ -39,7 +39,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	}
 	defer cleanup()
 
-	reads, writes, err := resolveGrants(p)
+	reads, writes, err := resolveGrants(sb, p)
 	if err != nil {
 		return enforce.Result{}, err
 	}

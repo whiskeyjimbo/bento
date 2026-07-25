@@ -75,7 +75,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// the order runDegraded already uses: the full grant-safety set and the alias scan
 	// run first, so a to-be-refused grant never leaves behind a directory prepareWriteDirs
 	// created for it. compile re-runs checkGrants as its own guard.
-	reads, writes, err := resolveGrants(p)
+	reads, writes, err := resolveGrants(sb, p)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -240,7 +240,7 @@ func isExitError(err error) bool {
 // belt-and-suspenders against that ordering drifting: they are what stops a mkdir
 // inside ~/.ssh for a grant that is about to be rejected.
 func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
-	writes, err := resolveAll(p.Write)
+	writes, err := resolveAll(sb, p.Write)
 	if err != nil {
 		return err
 	}

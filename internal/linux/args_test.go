@@ -1581,3 +1581,30 @@ func TestResolveFollowsSymlinkedGrant(t *testing.T) {
 		t.Errorf("resolve(%q) = %q, want an absolute path", "relative/path", got)
 	}
 }
+
+// A write grant that names a symlink into a credential store must be refused, and the
+// refusal has to hold on a host where the two paths differ only after resolution. This
+// is the case a fake filesystem could not express while grants resolved against the real
+// host and shields resolved through sb.resolve: the fake's shield resolved to
+// /home/u/.ssh while the grant stayed /home/u/link, so nothing matched and the test
+// passed for the wrong reason. Both now go through the same seam.
+func TestCheckGrantsResolvesGrantsThroughTheSandboxSeam(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh/id_rsa")
+	sb.resolve = func(p string) string {
+		if p == "/home/u/link" {
+			return "/home/u/.ssh"
+		}
+		return p
+	}
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/link"}}
+	reads, writes, err := resolveGrants(sb, p)
+	if err != nil {
+		t.Fatalf("resolveGrants: %v", err)
+	}
+	if len(writes) != 1 || writes[0] != "/home/u/.ssh" {
+		t.Fatalf("writes = %v, want the grant resolved through the seam to /home/u/.ssh", writes)
+	}
+	if err := checkGrants(sb, p, reads, writes); err == nil {
+		t.Error("a write grant symlinked into ~/.ssh must be refused")
+	}
+}
