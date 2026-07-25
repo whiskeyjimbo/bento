@@ -73,6 +73,11 @@ func TestValidateRejects(t *testing.T) {
 		{"empty port", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: ""}} }, "empty port"},
 		{"port out of range", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "70000"}} }, "out of range"},
 		{"inverted range", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "900-100"}} }, "inverted"},
+		// The proxy refuses a CONNECT target spelled this way, so such a rule would
+		// validate and then match nothing - a silently dead allowlist entry.
+		{"leading-zero port", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "08080"}} }, "plain decimal"},
+		{"leading-zero range end", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "8000-09000"}} }, "plain decimal"},
+		{"signed port", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "+443"}} }, "plain decimal"},
 		{"negative pids", func(p *Policy) { p.Limits = Limits{PIDs: -1} }, "pids must not be negative"},
 		{"cpu without percent", func(p *Policy) { p.Limits = Limits{CPU: "100"} }, "must be a percentage"},
 		{"cpu non-numeric", func(p *Policy) { p.Limits = Limits{CPU: "abc%"} }, "not a number"},

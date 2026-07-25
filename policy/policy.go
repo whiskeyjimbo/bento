@@ -320,6 +320,12 @@ func parsePortNum(s string) (int, error) {
 	if err != nil || n < 1 || n > 65535 {
 		return 0, fmt.Errorf("port %q out of range 1-65535", s)
 	}
+	// strconv.Atoi also accepts "08080" and "+443", spellings the proxy refuses in
+	// a CONNECT target. A rule written that way would validate and then match
+	// nothing, which is a silently dead allowlist entry rather than a loud error.
+	if s != strconv.Itoa(n) {
+		return 0, fmt.Errorf("port %q must be plain decimal (%d)", s, n)
+	}
 	return n, nil
 }
 

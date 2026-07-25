@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -105,25 +104,22 @@ func TestReadConnectRejectsNonCanonicalPort(t *testing.T) {
 	}
 }
 
-// The port readConnect accepts must survive a dial round-trip unchanged, so the
-// spelling matched against the allowlist is the spelling guardUpstream inspects.
-func TestReadConnectPortSurvivesResolution(t *testing.T) {
-	client, server := net.Pipe()
-	go func() {
-		fmt.Fprint(client, "CONNECT 127.0.0.1:8080 HTTP/1.1\r\n\r\n")
-	}()
-	_, port, _, err := readConnect(server)
-	client.Close()
-	server.Close()
-	if err != nil {
-		t.Fatalf("readConnect: %v", err)
-	}
-	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort("127.0.0.1", port))
-	if err != nil {
-		t.Fatalf("resolving %q: %v", port, err)
-	}
-	if got := strconv.Itoa(addr.Port); got != port {
-		t.Errorf("port %q resolves to %q; the allowlist and the egress guard would see different ports", port, got)
+// A range rule parses its target numerically, so "08080" satisfies 8000-9000 while
+// the equivalent single-port rule (a string compare) refuses it. Admitting either
+// would tunnel a connection whose port the allowlist and the egress guard spell
+// differently, so the proxy must refuse the target outright.
+func TestNonCanonicalPortNeverTunnels(t *testing.T) {
+	for _, rule := range []policy.NetworkRule{{Host: "example.com", Port: "8000-9000"}, {Host: "example.com", Port: "8080"}} {
+		p := New([]policy.NetworkRule{rule}, WithDialer(fakeDialer("HELLO")))
+		dialProxy, stop := startProxy(t, p)
+
+		c := dialProxy()
+		status, _ := connect(t, c, "example.com:08080")
+		if !strings.Contains(status, "400") {
+			t.Errorf("rule %+v: status = %q for port 08080, want 400", rule, status)
+		}
+		c.Close()
+		stop()
 	}
 }
 
