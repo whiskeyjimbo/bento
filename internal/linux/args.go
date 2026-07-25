@@ -1263,9 +1263,6 @@ func resolveAll(sb sandbox, paths []string) ([]string, error) {
 	return out, nil
 }
 
-// resolve returns an absolute, symlink-resolved path. A path that does not exist
-// yet (a write target) is resolved as far as it does exist, so the parts that
-// could be a symlink are still followed.
 // resolveGrant resolves a policy grant through the sandbox's resolver seam, so a
 // grant and a shield are compared on the same footing. Both used to reach the host
 // filesystem directly and so agreed in production, but only shields went through
@@ -1283,6 +1280,9 @@ func resolveGrant(sb sandbox, path string) (string, error) {
 	return sb.resolve(abs), nil
 }
 
+// resolve returns an absolute, symlink-resolved path. A path that does not exist
+// yet (a write target) is resolved as far as it does exist, so the parts that
+// could be a symlink are still followed.
 func resolve(path string) (string, error) {
 	abs := path
 	if !filepath.IsAbs(path) {
