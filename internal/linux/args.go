@@ -1109,6 +1109,14 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 // missing source (ENOENT), not ELOOP, so bwrap aborts the run naming itself
 // rather than the grant. A dangling symlink is not a loop and stays supported:
 // it resolves to a target that simply does not exist yet.
+//
+// The check asks the kernel (os.Stat/ELOOP) rather than the sandbox's resolver
+// seam, and stays that way deliberately. sb.resolve cannot report a loop - it
+// returns the path unchanged, which is also its answer for a path that is no
+// symlink at all - and a fake that walked only the granted leaf would miss a loop
+// in a parent component and pass where production refuses. A seam whose fake
+// disagrees with the kernel is worse than none, so the loop cases are covered
+// against real symlink trees instead (TestCheckGrantNotLoopedRealFilesystem).
 func checkGrantNotLooped(p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
 		abs, err := filepath.Abs(g)
@@ -1233,7 +1241,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		if real == abs {
 			continue
 		}
-		hop := missingHop(abs, real, filled)
+		hop := missingHop(sb, abs, real, filled)
 		if hop == "" || seen[hop] {
 			continue
 		}
@@ -1267,7 +1275,14 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 // (~/link -> /elsewhere/mid -> real, with only ~ and real bound). So each filled
 // name is followed the way the kernel will follow it, until one is missing: that
 // is the name worth making, and pointing it at real short-circuits the rest.
-func missingHop(abs, real string, filled []string) string {
+//
+// The chain walk reads the host's links directly (os.Readlink), and only the
+// parent resolution goes through sb.resolve, matching how grantSymlinks resolved
+// the grant itself. There is no readlink seam: a fake one would have to
+// reimplement kernel link-following, which is the same hybrid that resolving
+// grants off the seam produced. The multi-hop cases are covered against real
+// symlink trees instead (TestGrantSymlinksMultiHopRealFilesystem).
+func missingHop(sb sandbox, abs, real string, filled []string) string {
 	cur := abs
 	for range maxSymlinkDepth {
 		if !coveredBy(cur, filled) {
@@ -1283,12 +1298,12 @@ func missingHop(abs, real string, filled []string) string {
 		// symlink - so resolve the parent before joining, rather than letting Join
 		// clean ".." lexically and wander off.
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(resolveExisting(filepath.Dir(cur), 0), target)
+			target = filepath.Join(sb.resolve(filepath.Dir(cur)), target)
 		}
 		// Resolve the target's parent so it lands where the kernel would, but keep
 		// its own name literal - the next link's location is wanted here, not the
 		// thing it points at.
-		next := filepath.Join(resolveExisting(filepath.Dir(target), 0), filepath.Base(target))
+		next := filepath.Join(sb.resolve(filepath.Dir(target)), filepath.Base(target))
 		if next == real {
 			// The chain reaches the bound target on its own.
 			return ""
