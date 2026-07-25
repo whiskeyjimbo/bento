@@ -3,8 +3,10 @@
 package launcher
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -61,6 +63,57 @@ func TestInstallExecFilterFallsBackWhenStrictUnsupported(t *testing.T) {
 			t.Errorf("the strict path reported the wrong filter kind to the host: %q", out)
 		}
 	})
+}
+
+// The whole exec-block design rests on Run refusing when the filter will not install:
+// the alternative is a target running unconfined behind a report that claims otherwise.
+// Only the fallback SELECTION was covered before, never a failing install, so the
+// refusal itself - and the fact that no applied report accompanies it - was untested.
+// A real seccomp install fails only on a kernel that refuses the syscall, so the install
+// seam stands in for that kernel.
+func TestRunRefusesWhenTheExecFilterWillNotInstall(t *testing.T) {
+	if os.Getenv(sentinelRunRefusal) != "" {
+		runRefusalChild()
+		return
+	}
+
+	// Run makes the process permanently non-dumpable, so it cannot be called in the
+	// test process itself.
+	applied := filepath.Join(t.TempDir(), "applied")
+	f, err := os.Create(applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelRunRefusal+"=1")
+	cmd.ExtraFiles = []*os.File{f}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded with no exec filter installed:\n%s", out)
+	}
+	if !strings.Contains(string(out), "refusing to run") {
+		t.Errorf("Run failed without the fail-closed refusal: %q", out)
+	}
+	report, err := os.ReadFile(applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without the marker the host reports the exec layers unenforced instead of
+	// carrying the probe's Enforced through, which is the point of refusing here.
+	if strings.Contains(string(report), AppliedMarker) {
+		t.Errorf("the refused run still wrote a completed applied report: %q", report)
+	}
+}
+
+const sentinelRunRefusal = "BENTO_TEST_RUN_REFUSAL"
+
+func runRefusalChild() {
+	installExecBlock = func() error { return errors.New("seccomp: this kernel refuses the filter") }
+	if _, err := Run(Config{Block: true, AppliedFD: 3, Target: []string{"/bin/true"}}); err != nil {
+		os.Stdout.WriteString(err.Error() + "\n")
+		os.Exit(1)
+	}
 }
 
 func runInstallFilterChild(t *testing.T, mode string) string {

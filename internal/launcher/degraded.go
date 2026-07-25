@@ -67,6 +67,13 @@ var (
 	strictExecSupported    = seccomp.StrictExecSupported
 )
 
+// The exec-filter install, for the same reason: a seccomp install fails only on a kernel
+// that refuses the syscall, so the refusal both launch tiers make when it does - the
+// fail-closed stance the whole exec-block design rests on, since the alternative is
+// running the target unconfined behind a report claiming otherwise - has no other way to
+// be exercised.
+var installExecBlock = seccomp.BlockExec
+
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
 // supply. Both layers are the ONLY one of their kind in this tier - there is no
 // mount namespace behind them - so a missing one means running the target with the

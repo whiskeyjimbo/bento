@@ -222,8 +222,8 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// forge extra R/W/EXEC records, and the completion marker is written last and only
 	// on a successful trace, so a failed or truncated trace lacks it and is rejected by
 	// the host. The report is NOT tamper-proof against the profiled target itself (see
-	// the Truncate note below): a profiling report is
-	// trustworthy only to the degree the profiled code is.
+	// the Truncate note below): a profiling report is trustworthy only to the degree the
+	// profiled code is.
 	var b strings.Builder
 	if traceErr == nil {
 		for _, a := range res.Accesses {
@@ -256,20 +256,32 @@ func runObserve(cfg Config, env []string) (int, error) {
 		b.WriteString(observe.ReportStart + "\n")
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
-	if report == nil {
-		return 0, fmt.Errorf("launcher: observation descriptor %d is not valid", cfg.ObserveFD)
-	}
 	// Truncate before writing, to discard anything a descendant wrote to this file
-	// through the launcher's /proc/<pid>/fd while it was held open during the run.
-	// This is best-effort, not a guarantee: a descendant that mmap'd the report
-	// MAP_SHARED keeps writing forged records with plain memory stores (no syscall, so
-	// ptrace never stops it - a syscall-free loop is not frozen when Trace returns -
-	// and the mapped pages survive this truncate), landing them before the marker.
-	// That residual is bounded: a hostile target can already inject arbitrary records
-	// by merely *attempting* opens during the permissive run (inspect records the path
-	// from the syscall args regardless of whether the open succeeds), so the report's
-	// integrity rests on the trusted-code threat model and human manifest review, not
-	// on this truncate. PTRACE_O_EXITKILL reaps descendants on launcher exit.
+	// through the launcher's /proc/<pid>/fd while it was held open during the run - a
+	// truncate drops that content whichever description wrote it.
+	//
+	// The seek is separate, and defends the write rather than the truncate: Truncate
+	// resizes the file without moving this description's offset and Write is write(2)
+	// rather than pwrite, so on an advanced offset the report would land past a NUL hole
+	// and the host's Scanner would hit ErrTooLong at 64 KiB instead of parsing it.
+	// Nothing advances the offset today - this stage does not write to the report before
+	// here, and a descendant reaching the file by path gets its own open file description
+	// with its own offset - so it is a correctness floor, not a live fix.
+	//
+	// The truncate is defense in depth against a threat nothing can reach today:
+	// PR_SET_DUMPABLE(0) runs in Run before any tracee exists, so /proc/<launcher>/fd is
+	// root-owned by the time the target could look, and the report's file lives on a host
+	// mount absent from the sandbox namespace, which fails a reopen regardless. Were a
+	// descendant to get there, the residual would remain: an mmap'd MAP_SHARED report
+	// keeps taking forged records through plain memory stores, which raise no syscall for
+	// ptrace to stop and survive this truncate. That bound is acceptable because a
+	// hostile target can already inject arbitrary records by merely *attempting* opens
+	// during the permissive run (inspect records the path from the syscall args whether
+	// or not the open succeeds), so the report's integrity rests on the trusted-code
+	// threat model and human manifest review, not on this truncate.
+	if _, err := report.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("launcher: rewinding the observation report: %w", err)
+	}
 	if err := report.Truncate(0); err != nil {
 		return 0, fmt.Errorf("launcher: truncating the observation report: %w", err)
 	}
@@ -315,7 +327,7 @@ func installExecFilter(strict bool) (string, error) {
 		}
 		return AppliedExecStrict, nil
 	}
-	if err := seccomp.BlockExec(); err != nil {
+	if err := installExecBlock(); err != nil {
 		return "", err
 	}
 	return AppliedExecBasic, nil
