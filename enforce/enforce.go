@@ -24,17 +24,43 @@ type Enforcer interface {
 	// actually enforced. A non-zero process exit is returned in Result, not as
 	// err; err is reserved for a failure to set up or run the sandbox itself.
 	//
-	// gate, when non-nil, admits an egress host the manifest does not declare; nil
+	// Everything the core decided about this particular invocation travels in
+	// RunOptions rather than as positional arguments, so a new decision does not
+	// change this signature and a backend cannot mistake one flag for another.
+	Run(ctx context.Context, p *policy.Policy, proc Process, opts RunOptions) (Result, error)
+}
+
+// RunOptions carries what the core decided for one invocation. It is distinct from
+// Options: Options is what a frontend asks for, RunOptions is what the core resolved
+// after probing the host, so a backend never re-decides an admission question.
+type RunOptions struct {
+	// Gate, when non-nil, admits an egress host the manifest does not declare; nil
 	// keeps the declarative default of denying anything undeclared.
-	//
-	// degraded tells the backend the core filesystem layer can only be partially
+	Gate NetworkGate
+
+	// Degraded tells the backend the core filesystem layer can only be partially
 	// enforced (the probe reported it Degraded, e.g. bubblewrap cannot run because
 	// user namespaces are blocked) and the run was admitted anyway under
 	// --allow-degraded. The backend must then confine with its reduced-confinement
-	// tier rather than assume its full mechanism is available. Run never decides this
-	// itself: the refuse-versus-degrade choice lives in enforce.Run, so a backend can
-	// never silently downgrade.
-	Run(ctx context.Context, p *policy.Policy, proc Process, gate NetworkGate, degraded bool) (Result, error)
+	// tier rather than assume its full mechanism is available. A backend never decides
+	// this itself: the refuse-versus-degrade choice lives in enforce.Run, so a backend
+	// can never silently downgrade.
+	Degraded bool
+
+	// AcceptAliasesUnder are host trees whose credential aliases the caller has
+	// acknowledged. A shield hides a credential's path, not the content behind it, so a
+	// second name for one inside a tree the run can read is normally a refusal. Naming a
+	// tree here says "I know the aliases in here and accept them" - which a snapshot tool
+	// that hardlinks against the live file (cp -al, a whole-tree deduplicator) makes
+	// necessary, since it puts a second name for every credential under a backup root.
+	//
+	// It is a tree, not a path, because those tools rotate: today's snapshot directory is
+	// dated and tomorrow's is a different name, so acknowledging exact paths would go
+	// stale daily. It is deliberately NOT a policy field: an alias is a fact about this
+	// host's filesystem, and folding it into a portable, fingerprinted manifest would
+	// carry one machine's backup layout to every other. Whatever it admits is reported in
+	// Result.AcceptedAliases, the same way a gate admission is.
+	AcceptAliasesUnder []string
 }
 
 // NetworkGate decides an egress host the manifest's allowlist does not permit.
@@ -66,6 +92,13 @@ type Process struct {
 	Env map[string]string
 }
 
+// CredentialAlias is a second readable path to a shielded credential: Path reaches the
+// content, Credential is the shielded file it reaches.
+type CredentialAlias struct {
+	Path       string
+	Credential string
+}
+
 // Result is the outcome of a Run: the target's exit code and the report of what
 // the sandbox actually enforced around it.
 type Result struct {
@@ -85,6 +118,13 @@ type Result struct {
 	// gate is set, so the count and this list keep the run honest about egress it
 	// permitted beyond the declared policy.
 	GateAdmitted []HostPort
+	// AcceptedAliases lists the credential aliases this run was allowed to read past a
+	// shield because the caller acknowledged the tree they sit in. Each names the path
+	// that reaches the content and the credential it reaches. Non-empty means the run
+	// proceeded over a known gap in the boundary, so it is reported rather than assumed
+	// harmless - an audit that showed only the shields would claim a guarantee this run
+	// did not have. Sorted and deduped; empty for the ordinary run.
+	AcceptedAliases []CredentialAlias
 	// ShieldedGrants lists the always-shielded credential paths (~/.ssh, ~/.gnupg, the
 	// runtime dir, ...) the policy explicitly granted, so the backend honored the grant
 	// over its built-in shield. These are a deliberate caveat-emptor opt-in: exposing a

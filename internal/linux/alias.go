@@ -15,6 +15,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/whiskeyjimbo/bento/enforce"
+
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
@@ -147,17 +149,71 @@ func aliasedCredentials(sb sandbox, trees, optIns []string) []credentialAlias {
 	return slices.Compact(out)
 }
 
-// aliasRefusal explains which granted paths reach a shielded credential and what to do
-// about it. Naming both ends is the point: the alias is host-made, so the user is the
-// one who can remove it, and telling them only that "an alias exists" leaves them
-// nothing to act on.
+// splitAcknowledgedAliases divides found aliases into the ones that still refuse the run
+// and the ones the caller has acknowledged by naming a tree they sit under.
+//
+// Acknowledgement is by tree because the tools that create these aliases rotate their
+// paths: a cp -al snapshot root is dated, so today's alias path is not tomorrow's, and
+// acknowledging exact paths would go stale every day while needing one entry per
+// credential per snapshot. The trees are resolved before comparing, like every other path
+// this package compares - the aliases arrive resolved, so an unresolved acknowledgement
+// would match nothing and silently keep refusing.
+func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder []string) (refuse, accepted []credentialAlias) {
+	if len(found) == 0 {
+		return nil, nil
+	}
+	trees := make([]string, 0, len(acceptUnder))
+	for _, t := range acceptUnder {
+		trees = append(trees, sb.resolve(t))
+	}
+	for _, a := range found {
+		if slices.ContainsFunc(trees, func(t string) bool { return under(a.Path, t) }) {
+			accepted = append(accepted, a)
+			continue
+		}
+		refuse = append(refuse, a)
+	}
+	return refuse, accepted
+}
+
+// reportedAliases converts accepted aliases for the run's result. The scan already sorts
+// and dedupes, so this only crosses the type boundary - the adapter's own alias type stays
+// out of the core's signatures.
+func reportedAliases(accepted []credentialAlias) []enforce.CredentialAlias {
+	if len(accepted) == 0 {
+		return nil
+	}
+	out := make([]enforce.CredentialAlias, 0, len(accepted))
+	for _, a := range accepted {
+		out = append(out, enforce.CredentialAlias{Path: a.Path, Credential: a.Credential})
+	}
+	return out
+}
+
+// aliasRefusal explains which readable paths reach a shielded credential and what to do
+// about it. Naming both ends is the point: the alias is host-made, so the user is the one
+// who can remove it, and telling them only that "an alias exists" leaves them nothing to
+// act on.
+//
+// It also prints the acknowledgement as a ready-to-paste flag. These alias paths are
+// symlink-resolved, and one retyped by hand would not compare equal to what the scan
+// produced - so the message hands over the exact string the acknowledgement needs instead
+// of describing it.
 func aliasRefusal(aliases []credentialAlias) error {
 	var b strings.Builder
-	b.WriteString("linux: a granted path is a second name for a shielded credential, which would read past the shield:")
+	b.WriteString("linux: a readable path is a second name for a shielded credential, which would read past the shield:")
+	roots := make([]string, 0, len(aliases))
 	for _, a := range aliases {
 		fmt.Fprintf(&b, "\n  %s aliases %s", a.Path, a.Credential)
+		if r := filepath.Dir(a.Path); !slices.Contains(roots, r) {
+			roots = append(roots, r)
+		}
 	}
-	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it")
+	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it.")
+	b.WriteString("\nif these are known to you - a snapshot or deduplicated backup - acknowledge the tree:")
+	for _, r := range roots {
+		fmt.Fprintf(&b, "\n  --accept-alias %s", r)
+	}
 	return errors.New(b.String())
 }
 

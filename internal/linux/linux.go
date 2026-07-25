@@ -42,11 +42,11 @@ var _ enforce.Enforcer = (*Enforcer)(nil)
 // inside it. A non-zero exit from the target is returned in the Result; err is
 // reserved for a failure to build or start the sandbox, so a script that merely
 // fails is never confused with a sandbox that did not hold.
-func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, gate enforce.NetworkGate, degraded bool) (enforce.Result, error) {
+func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (enforce.Result, error) {
 	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
 	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
 	// after admitting the run under --allow-degraded, so this never silently downgrades.
-	if degraded {
+	if opts.Degraded {
 		return e.runDegraded(ctx, p, proc)
 	}
 
@@ -60,7 +60,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// no manifest network means "prompt on every host", so the proxy must exist for
 	// the gate to be consulted at all. Enforced runs take no caller deny paths - that
 	// seam is profiling-only (see Profile).
-	sb, cleanup, err := newSandbox(p, e.selfPath, gate != nil, nil)
+	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, nil)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -92,7 +92,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	egress := func() int { return 0 }
 	admitted := func() []enforce.HostPort { return nil }
 	if sb.proxySocket != "" {
-		stopProxy, egress, admitted, err = startProxy(ctx, p, sb.proxySocket, gate)
+		stopProxy, egress, admitted, err = startProxy(ctx, p, sb.proxySocket, opts.Gate)
 		if err != nil {
 			return enforce.Result{}, err
 		}
@@ -110,10 +110,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	optedIn, _ := explicitShieldOptIns(sb, p.Read)
 
 	// A shield hides a credential's path, not the content behind it. Refuse before the
-	// target starts if a granted tree holds a second name for a shielded credential's
-	// inode: the user granted that tree, not the credential, so proceeding would hand
-	// over a store they never opted into. An explicit opt-in is honored - those
-	// credentials are dropped from the scan - so this refuses only what nobody asked for.
+	// target starts if anything this run can read holds a second name for a shielded
+	// credential's inode: the user granted that tree, not the credential, so proceeding
+	// would hand over a store they never opted into. The scan covers everything bwrap
+	// binds, not only the policy's own grants, because an out-of-FHS interpreter's prefix
+	// is bound too and may sit under the home. An explicit opt-in is honored - those
+	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
+	// the aliases in it, so this refuses only what nobody asked for.
 	// The degraded tier returns above without reaching here, and that is a real gap, not
 	// a clean exemption: it confines with Landlock, which is path-hierarchy based, so an
 	// alias inside a granted tree is readable there for exactly the reason it would be
@@ -126,8 +129,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	if aliases := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn); len(aliases) > 0 {
-		return enforce.Result{}, aliasRefusal(aliases)
+	found := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
+	refuse, accepted := splitAcknowledgedAliases(sb, found, opts.AcceptAliasesUnder)
+	if len(refuse) > 0 {
+		return enforce.Result{}, aliasRefusal(refuse)
 	}
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
@@ -157,12 +162,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}

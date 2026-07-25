@@ -127,3 +127,23 @@ func TestWriteExposedWarning(t *testing.T) {
 		t.Errorf("a run that exposed no shields (the full tier's every run) must print nothing; got %q", empty.String())
 	}
 }
+
+// A run that read past a shield must say so on every invocation. The acknowledgement is
+// per-run and easy to leave behind in a wrapper script, so the warning names both the
+// alias and the credential it reached rather than reporting a count.
+func TestWriteAcceptedAliasWarning(t *testing.T) {
+	var b bytes.Buffer
+	writeAcceptedAliasWarning(&b, enforce.Result{AcceptedAliases: []enforce.CredentialAlias{
+		{Path: "/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+	}})
+	for _, want := range []string{"/home/u/backups/2026-07-24/.ssh/id_rsa", "/home/u/.ssh/id_rsa", "WARNING"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("the warning must mention %q; got:\n%s", want, b.String())
+		}
+	}
+	var empty bytes.Buffer
+	writeAcceptedAliasWarning(&empty, enforce.Result{})
+	if empty.Len() != 0 {
+		t.Errorf("the ordinary run with no acknowledged alias must print nothing; got %q", empty.String())
+	}
+}

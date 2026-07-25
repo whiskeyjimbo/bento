@@ -56,7 +56,7 @@ func runScript(t *testing.T, p *policy.Policy, src string) (int, string) {
 	p.Exec = policy.ExecAll
 
 	var out bytes.Buffer
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false)
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
@@ -108,7 +108,7 @@ func TestRunResultReportsAppliedShields(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{home, dir}, Exec: policy.ExecAll}
 
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestProfileThenEnforceHomePathRoundTrip(t *testing.T) {
 	var rout bytes.Buffer
 	enforced := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, cfg}, Exec: policy.ExecAll}
 	if _, err := sandboxEnforcer(t).Run(context.Background(), enforced,
-		enforce.Process{Env: env, Stdout: &rout, Stderr: &rout}, nil, false); err != nil {
+		enforce.Process{Env: env, Stdout: &rout, Stderr: &rout}, enforce.RunOptions{}); err != nil {
 		t.Fatalf("enforced run: %v (output: %s)", err, rout.String())
 	}
 	if !strings.Contains(rout.String(), "APPDATA-123") {
@@ -500,7 +500,7 @@ func TestWriteGrantAboveCredentialsIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{home}}
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 	if err == nil {
 		t.Fatal("a write grant of $HOME (above the credential shields) must be refused, not run")
 	}
@@ -629,7 +629,7 @@ func TestRunHonorsExplicitShieldGrant(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, sshDir}, Exec: policy.ExecAll}
 
 	var out bytes.Buffer
-	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false)
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("run: %v (output %q)", err, out.String())
 	}
@@ -666,7 +666,7 @@ func TestWriteGrantOfSymlinkedShieldNameIsRefused(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{filepath.Join(home, ".ssh")}}
 
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 	if err == nil {
 		t.Fatal("write to a symlinked ~/.ssh must be refused - a write opt-in would plant keys in the real store")
 	}
@@ -699,7 +699,7 @@ func TestGrantOnSymlinkedShieldTargetIsRejected(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{keys}}
 
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 	if err == nil {
 		t.Fatal("granting write to ~/.ssh's symlink target should be rejected")
 	}
@@ -1215,7 +1215,7 @@ func TestProcessPathGrantIsRefused(t *testing.T) {
 			}
 			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, path}, Exec: policy.ExecAll}
 
-			_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+			_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 			if err == nil {
 				t.Fatalf("grant %s was accepted; want a refusal", path)
 			}
@@ -1430,7 +1430,7 @@ func TestLoopedGrantIsRefused(t *testing.T) {
 		}
 		p.Entrypoint, p.Interpreter, p.Exec = script, "sh", policy.ExecAll
 		p.Read = append(p.Read, dir)
-		_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, nil, false)
+		_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 		return err
 	}
 
@@ -1559,7 +1559,7 @@ func runExec(t *testing.T, mode policy.ExecMode, readDir, src string) string {
 		Exec:        mode,
 	}
 	var out bytes.Buffer
-	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false); err != nil {
+	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
 	return out.String()

@@ -74,6 +74,24 @@ func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
 	return out
 }
 
+// aliasJSON is one acknowledged credential alias a run read past a shield, for the --json
+// envelope; see enforce.CredentialAlias.
+type aliasJSON struct {
+	Path       string `json:"path"`
+	Credential string `json:"credential"`
+}
+
+func toAliasesJSON(aliases []enforce.CredentialAlias) []aliasJSON {
+	if len(aliases) == 0 {
+		return nil
+	}
+	out := make([]aliasJSON, 0, len(aliases))
+	for _, a := range aliases {
+		out = append(out, aliasJSON{Path: a.Path, Credential: a.Credential})
+	}
+	return out
+}
+
 // writeShieldSummary prints one concise line confirming the boundary engaged: how many
 // credential/host-service paths the run shielded, so an operator sees the sandbox is
 // working without a per-path dump (the full list is in --json). It records what the
@@ -146,6 +164,22 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
 	for _, g := range res.ShieldedGrants {
 		fmt.Fprintf(w, "[bento]   %s\n", g)
+	}
+}
+
+// writeAcceptedAliasWarning names the credential aliases this run was allowed to read
+// past a shield. A run that proceeds over an acknowledged gap must say so every time:
+// the acknowledgement is per-invocation and easy to leave in a wrapper script, and a
+// silent one would let a real leak hide behind a flag added for a backup directory. The
+// paths are host-enumerated, so they are quoted.
+func writeAcceptedAliasWarning(w io.Writer, res enforce.Result) {
+	if len(res.AcceptedAliases) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] WARNING: these paths were readable as a second name for a shielded")
+	fmt.Fprintln(w, "[bento] credential, and you acknowledged the tree they sit in:")
+	for _, a := range res.AcceptedAliases {
+		fmt.Fprintf(w, "[bento]   %q aliases %q\n", a.Path, a.Credential)
 	}
 }
 

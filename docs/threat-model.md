@@ -258,6 +258,24 @@ the user's privileges and could read the credential directly without an alias. W
 the mechanism delivers is naming an alias the user did not intend, not blocking
 someone who needs no alias.
 
+**An alias you know about is yours to accept.** A snapshot tool that hardlinks
+against the live file - `cp -al`, or a whole-tree deduplicator - puts a second name
+for every credential under its backup root, and that refusal is correct but not
+useful. `--accept-alias <tree>` acknowledges the aliases inside a tree you name and
+proceeds. It takes a tree rather than a path because those tools rotate: today's
+snapshot directory is dated and tomorrow's is not, so acknowledging exact paths
+would go stale daily. An alias outside the named tree still refuses, so this stays
+far narrower than the alternative of granting read access to the credential store
+itself. Whatever it admits is listed in the run's result and warned about on every
+invocation, because a run that reads past a shield must not look clean; and it is an
+invocation flag, never a manifest field, since an alias is a fact about one host's
+filesystem and a manifest is portable and fingerprinted.
+
+Note that `rsync --link-dest` does *not* trigger this: it hardlinks each snapshot to
+the previous snapshot rather than to the source, so the live credential keeps a link
+count of one. Its snapshots are byte-identical copies, which is the content residual
+above, not an alias.
+
 **Access you grant is yours to grant.** An explicit grant to a shielded path
 warns and proceeds. Bento won't second-guess a deliberate opt-in.
 

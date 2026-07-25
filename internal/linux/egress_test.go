@@ -179,7 +179,7 @@ func runShell(t *testing.T, e *Enforcer, p *policy.Policy, script string) string
 	p.Read = append(p.Read, dir)
 
 	var buf strings.Builder
-	if _, err := e.Run(context.Background(), p, enforce.Process{Stdout: &buf, Stderr: &buf}, nil, false); err != nil {
+	if _, err := e.Run(context.Background(), p, enforce.Process{Stdout: &buf, Stderr: &buf}, enforce.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, buf.String())
 	}
 	return buf.String()

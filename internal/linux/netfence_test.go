@@ -79,7 +79,7 @@ func runProbe(t *testing.T, p *policy.Policy, bin, network, target string) strin
 	p.Read = append(p.Read, filepath.Dir(bin))
 
 	var out strings.Builder
-	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, nil, false)
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}

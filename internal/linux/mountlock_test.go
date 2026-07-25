@@ -109,7 +109,7 @@ func TestShieldsSurviveRemountFromInsideSandbox(t *testing.T) {
 
 	var out strings.Builder
 	if _, err := sandboxEnforcer(t).Run(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out}, nil, false); err != nil {
+		enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
 	}
 	got := out.String()

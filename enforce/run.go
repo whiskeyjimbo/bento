@@ -24,6 +24,10 @@ type Options struct {
 	// (the declarative default). A gate admission is surfaced in
 	// Result.GateAdmitted, never folded into the policy or its fingerprint.
 	NetworkGate NetworkGate
+	// AcceptAliasesUnder acknowledges the credential aliases inside the named host
+	// trees, which would otherwise refuse the run. See RunOptions.AcceptAliasesUnder
+	// for why it is a tree and why it is not a policy field.
+	AcceptAliasesUnder []string
 }
 
 // Run orchestrates a sandboxed execution: it validates the policy, probes what
@@ -49,7 +53,11 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// on the probed state, not on the flag, keeps the decision tied to what the host
 	// can actually do.
 	degraded := required.StateOf(LayerFilesystem) == Degraded
-	res, err := e.Run(ctx, p, proc, opts.NetworkGate, degraded)
+	res, err := e.Run(ctx, p, proc, RunOptions{
+		Gate:               opts.NetworkGate,
+		Degraded:           degraded,
+		AcceptAliasesUnder: opts.AcceptAliasesUnder,
+	})
 
 	// Report exactly what was judged. Start from the pre-run probe (already filtered
 	// to the required layers - warning about egress a no-network policy never asked

@@ -431,7 +431,7 @@ func TestRunRefusesAnAliasedCredential(t *testing.T) {
 	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{project}}
 	proc := enforce.Process{Env: map[string]string{"HOME": home}}
 
-	_, err := New().Run(context.Background(), p, proc, nil, false)
+	_, err := New().Run(context.Background(), p, proc, enforce.RunOptions{})
 	if err == nil {
 		t.Fatal("Run admitted a policy whose granted tree holds a hardlink to a shielded credential")
 	}
@@ -744,5 +744,125 @@ func TestEveryDeclaredAnchorIsReached(t *testing.T) {
 		if !got[w] {
 			t.Errorf("declared anchor is never walked, so it protects nothing: %s", filepath.Dir(w))
 		}
+	}
+}
+
+// The acknowledgement names a TREE, not a path, because the tools that create these
+// aliases rotate: a cp -al snapshot root is dated, so acknowledging exact paths would go
+// stale every day and need one entry per credential per snapshot. Acknowledging the
+// backup root covers today's snapshot and tomorrow's.
+func TestSplitAcknowledgedAliasesAcceptsByTree(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return p }
+	found := []credentialAlias{
+		{Path: "/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+		{Path: "/home/u/backups/2026-07-25/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+		{Path: "/home/u/project/stolen", Credential: "/home/u/.aws/credentials"},
+	}
+
+	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	if !slices.Equal(accepted, found[:2]) {
+		t.Errorf("both rotated snapshots must be accepted by one tree; got %v", accepted)
+	}
+	// An acknowledgement is not a blanket off-switch: an alias outside the named tree
+	// still refuses, which is what keeps this narrower than exposing the store.
+	if !slices.Equal(refuse, found[2:]) {
+		t.Errorf("an alias outside the acknowledged tree must still refuse; got %v", refuse)
+	}
+}
+
+// An acknowledgement that matches nothing must not quietly become an approval. Getting a
+// path slightly wrong is the likeliest user error here, and this mechanism has been bitten
+// repeatedly by comparisons that silently match nothing - so the run must still refuse,
+// which makes the mistake visible instead of fatal.
+func TestSplitAcknowledgedAliasesIgnoresANonMatchingTree(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return p }
+	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
+
+	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backup"}) // typo: no trailing s
+	if len(accepted) != 0 {
+		t.Errorf("a tree that contains no alias must accept nothing; got %v", accepted)
+	}
+	if !slices.Equal(refuse, found) {
+		t.Errorf("the run must still refuse so the mistyped tree is visible; got %v", refuse)
+	}
+}
+
+// The alias paths the scan produces are symlink-resolved, so an acknowledgement typed
+// against the pre-symlink name must be resolved too or it matches nothing - the same
+// silent no-op that has bitten every other path comparison in this mechanism.
+func TestSplitAcknowledgedAliasesResolvesTheAcknowledgedTree(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
+	found := []credentialAlias{{Path: "/var/home/u/backups/snap/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"}}
+
+	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	if len(refuse) != 0 || !slices.Equal(accepted, found) {
+		t.Errorf("the acknowledged tree must be resolved before comparing; refuse=%v accepted=%v", refuse, accepted)
+	}
+}
+
+// The refusal must hand over the exact string the acknowledgement needs. A user retyping a
+// resolved path by hand would produce something that does not compare equal, so describing
+// the flag instead of printing it would send them into the silent-no-match trap.
+func TestAliasRefusalPrintsThePasteableAcknowledgement(t *testing.T) {
+	err := aliasRefusal([]credentialAlias{
+		{Path: "/var/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"},
+	})
+	want := "--accept-alias /var/home/u/backups/2026-07-24/.ssh"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("refusal must print %q verbatim; got:\n%s", want, err)
+	}
+}
+
+// End to end against a real Enforcer, a real hardlink and real bwrap: the same policy that
+// TestRunRefusesAnAliasedCredential proves is refused must proceed once the tree is
+// acknowledged, and the result must SAY the run read past a shield. Recording it is the
+// point - an acknowledgement is per-invocation and easily left behind in a wrapper, so a
+// run that proceeds over a known gap has to report the gap rather than look clean.
+func TestRunProceedsOnAnAcknowledgedAlias(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A cp -al style snapshot: a dated directory holding a second name for the live key.
+	snapshot := filepath.Join(home, "backups", "2026-07-24", ".ssh")
+	if err := os.MkdirAll(snapshot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(snapshot, "id_rsa")
+	if err := os.Link(key, alias); err != nil {
+		t.Skipf("no hardlink support: %v", err)
+	}
+	entrypoint := filepath.Join(home, "backups", "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{filepath.Join(home, "backups")}}
+	proc := enforce.Process{Env: map[string]string{"HOME": home}}
+
+	// Control: without the acknowledgement this policy is refused.
+	if _, err := New().Run(context.Background(), p, proc, enforce.RunOptions{}); err == nil {
+		t.Fatal("the aliased snapshot must refuse the run without an acknowledgement")
+	}
+
+	res, err := New().Run(context.Background(), p, proc,
+		enforce.RunOptions{AcceptAliasesUnder: []string{filepath.Join(home, "backups")}})
+	if err != nil {
+		t.Fatalf("acknowledging the snapshot tree must let the run proceed: %v", err)
+	}
+	want := enforce.CredentialAlias{Path: alias, Credential: key}
+	if !slices.Contains(res.AcceptedAliases, want) {
+		t.Errorf("the result must record the acknowledged alias %+v; got %+v", want, res.AcceptedAliases)
 	}
 }

@@ -171,7 +171,7 @@ func TestBwrapTierDetachesControllingTerminalHelper(t *testing.T) {
 	// os.Stdin is the pty this process holds as its controlling terminal, so the target
 	// would inherit it too if bwrap did not start a new session.
 	if _, err := enforcerUsing(os.Getenv("BENTO_TEST_BENTO")).Run(context.Background(), p,
-		enforce.Process{Stdin: os.Stdin, Stdout: &out, Stderr: &out}, nil, false); err != nil {
+		enforce.Process{Stdin: os.Stdin, Stdout: &out, Stderr: &out}, enforce.RunOptions{}); err != nil {
 		t.Fatalf("sandboxed run: %v (output: %s)", err, out.String())
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {

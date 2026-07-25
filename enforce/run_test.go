@@ -23,17 +23,19 @@ type fakeEnforcer struct {
 	gateNil bool
 	// gotDegraded records the degraded flag enforce.Run passed, so a test can assert
 	// the reduced-confinement tier is selected only when the probe reports it.
-	gotDegraded bool
+	gotDegraded      bool
+	gotAcceptAliases []string
 }
 
 func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
 
-func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, gate NetworkGate, degraded bool) (Result, error) {
+func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opts RunOptions) (Result, error) {
 	f.ran = true
-	f.gateNil = gate == nil
-	f.gotDegraded = degraded
-	if gate != nil {
-		f.gotGate = gate(ctx, "example.com", "443")
+	f.gateNil = opts.Gate == nil
+	f.gotDegraded = opts.Degraded
+	f.gotAcceptAliases = opts.AcceptAliasesUnder
+	if opts.Gate != nil {
+		f.gotGate = opts.Gate(ctx, "example.com", "443")
 	}
 	return f.result, f.err
 }
