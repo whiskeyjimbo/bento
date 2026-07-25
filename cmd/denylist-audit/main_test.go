@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -56,20 +58,38 @@ func TestIsProfile(t *testing.T) {
 	}
 }
 
-// Each source must be checked against its OWN sentinel: a shared one would either
-// reject a good fetch or, if weakened to something both files carry, stop catching the
-// error page it exists to catch.
-func TestFirejailSourceSentinelsAreDistinct(t *testing.T) {
+// A sentinel must identify exactly ONE profile. A bare "${HOME}/.mozilla" looks
+// distinct but is a substring of disable-common's "read-only
+// ${HOME}/.mozilla/firefox/profiles.ini", so a URL mixup serving disable-common's body
+// for disable-programs would pass the check, the two would be audited as one, and the
+// ~1300 entries of the missing profile would silently not be gaps - the false pass the
+// sentinel exists to prevent. Asserting mutual exclusion catches that; asserting the
+// sentinels merely differ does not.
+func TestFirejailSourceSentinelsIdentifyOneProfileEach(t *testing.T) {
 	if len(firejailSources) != 2 {
 		t.Fatalf("expected the two upstream profiles, got %d", len(firejailSources))
 	}
-	for _, src := range firejailSources {
-		if src.sentinel == "" {
-			t.Errorf("%s has no sentinel, so a 200 error page would pass as a profile", src.url)
-		}
+	dir := os.Getenv("FIREJAIL_DIR")
+	if dir == "" {
+		dir = "/etc/firejail"
 	}
-	if firejailSources[0].sentinel == firejailSources[1].sentinel {
-		t.Error("the two profiles share no directive, so a shared sentinel must reject one of them")
+	bodies := make([]string, len(firejailSources))
+	for i, src := range firejailSources {
+		name := src.url[strings.LastIndexByte(src.url, '/')+1:]
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Skipf("no local %s to check the sentinels against: %v", name, err)
+		}
+		bodies[i] = string(b)
+	}
+	for i, src := range firejailSources {
+		for j, body := range bodies {
+			got := isProfile(body, src.sentinel)
+			if want := i == j; got != want {
+				t.Errorf("sentinel %q of source %d matched profile %d = %v, want %v; a sentinel that matches the other profile lets a URL mixup pass as a good fetch",
+					src.sentinel, i, j, got, want)
+			}
+		}
 	}
 }
 

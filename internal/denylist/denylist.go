@@ -369,9 +369,16 @@ func Home(home string) []Rule {
 		"bin",
 		// The rest of the $PATH-resident binary directories firejail write-protects: each
 		// holds executables or shims a later shell resolves a bare command name to, so a
-		// planted file runs on the host under a name the user already types. The toolchain
-		// trees (.nvm, .rustup) are here for their shim directories; writes into them from
-		// a sandbox are host mutation, which a policy opts into explicitly when it means it.
+		// planted file runs on the host under a name the user already types.
+		//
+		// These are whole trees, matching firejail, and the cost is real: a DenyWrite
+		// shield has no opt-out (the yz3.2 opt-in covers DenyAll shields only, see
+		// shieldNeeded), so `rustup update`, `nvm install`, `npm i -g`, `gem install
+		// --user-install` and `cargo install` fail EROFS in-sandbox even under an explicit
+		// write grant. That is the intended trade - each of those mutates the host's $PATH
+		// from inside a sandbox - but it is a trade, not a free shield. The registry and
+		// build caches (~/.cargo/registry, ~/.m2, ~/.gradle) are deliberately NOT here, so
+		// an ordinary build still writes what it needs.
 		".bin",
 		".cargo/bin",
 		".gem", // gem-installed binaries (the .gem/credentials file inside is DenyAll above)
@@ -826,8 +833,7 @@ var credentialAnchorDirs = []string{
 	// Ledger Live is the exception in this block: it is a hardware-wallet frontend, so the
 	// spending keys stay on the device and its config holds account xpubs and metadata. An
 	// xpub discloses the full transaction history and every future address of the account,
-	// which is the reconnaissance half of the same threat, so it is shielded alongside the
-	// key-bearing stores rather than with them.
+	// which is the reconnaissance half of the same threat and is why it is shielded here.
 	".config/Ledger Live",
 	".config/cointop", // portfolio tracker: exchange API keys
 

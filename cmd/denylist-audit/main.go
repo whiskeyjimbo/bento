@@ -29,15 +29,20 @@ import (
 // sentinel directive it has carried for years. A 200 response is not proof the body is
 // the profile - an upstream rename, a reformat to include-only files, or a CDN error
 // page all return 200 with content that parses to zero candidates, which would read as
-// "everything covered" and exit 0, a false pass on a CI safety gate. The sentinel is
-// per-file because the files share no directive: ${HOME}/.ssh is disable-common's, and
-// checking it against disable-programs would reject a perfectly good fetch.
+// "everything covered" and exit 0, a false pass on a CI safety gate.
+//
+// Each sentinel must identify ONE profile, so a URL serving the other file's body is
+// caught rather than accepted: the two would then be audited as one and the missing
+// profile's entries would silently not be gaps. That is why these carry the "blacklist "
+// directive prefix and a trailing newline rather than a bare path - disable-common has a
+// "read-only ${HOME}/.mozilla/firefox/profiles.ini" line, so a bare ${HOME}/.mozilla
+// matches both files and would wave the mixup through.
 var firejailSources = []struct {
 	url      string
 	sentinel string
 }{
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "${HOME}/.ssh"},
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "${HOME}/.mozilla"},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh\n"},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla\n"},
 }
 
 // The paths the parser expands firejail's variables to; any absolute value works,
