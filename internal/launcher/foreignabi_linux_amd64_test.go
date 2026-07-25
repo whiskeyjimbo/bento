@@ -46,46 +46,48 @@ func runForeignABITracer(t *testing.T, role string) string {
 	return string(out)
 }
 
-// A tracee that issues an i386 syscall IS decoded against the amd64 table, and the
-// foreign-arch guard does not prevent it: the kernel reports the ptrace syscall-entry
-// stop before running seccomp (syscall_trace_enter does ptrace first, "to catch any
-// tracer changes"), so the tracer has already recorded the access by the time the
-// filter kills the process. i386 readlink is 85; amd64 85 is creat - a READ probe
-// recorded as a WRITE to the path it names.
+// A tracee that issues an i386 syscall reaches the decoder before the foreign-arch
+// guard kills it - the kernel reports the ptrace syscall-entry stop before running
+// seccomp (syscall_trace_enter does ptrace first, "to catch any tracer changes"), so
+// the guard is no protection against a misdecode. i386 readlink is 85; amd64 85 is
+// creat, so without an ABI check in observe this READ probe becomes a WRITE grant on
+// the path it names. observe checks the dispatch arch and drops the stop instead.
 //
-// What keeps that fabricated grant out of a manifest is one layer up: the Result also
-// carries SeccompKilled, and the profile command refuses the whole run on it
-// (seccompKilledRefusal) rather than synthesizing from it. This pins BOTH halves,
-// because either one alone is the bug: the refusal without the fabrication is a test
-// of nothing, and the fabrication without the refusal is a write grant entering
-// enforcement policy.
-func TestForeignABITraceeIsDecodedButTheRunIsRefused(t *testing.T) {
+// Both halves are pinned, because either alone leaves the hole: the ABI check keeps the
+// fabricated grant from being synthesized at all, and SeccompKilled is what makes the
+// profile command refuse the run (seccompKilledRefusal) as incomplete rather than
+// synthesizing from what the killed process managed to touch.
+func TestForeignABITraceeIsNotDecodedAndTheRunIsRefused(t *testing.T) {
 	if !seccomp.Supported() {
 		t.Skip("seccomp not supported on this kernel")
 	}
 	out := runForeignABITracer(t, "guarded")
 	if !strings.Contains(out, "SECCOMPKILLED=true") {
-		t.Fatalf("the foreign-arch guard should have killed the tracee, and only SeccompKilled makes the profiler refuse the run:\n%s", out)
+		t.Fatalf("the foreign-arch guard should have killed the tracee, and SeccompKilled is what makes the profiler refuse the run:\n%s", out)
 	}
-	if !strings.Contains(out, "ACCESS "+foreignPath+" write=true") {
-		t.Errorf("the i386 readlink should still be decoded as an amd64 creat - if this stopped happening, observe grew an ABI check and the refusal above is no longer the only thing standing between a foreign syscall and a fabricated write grant:\n%s", out)
+	if strings.Contains(out, "ACCESS "+foreignPath) {
+		t.Errorf("the i386 readlink was decoded against the amd64 table, fabricating a grant on the path it named:\n%s", out)
 	}
 }
 
-// The same tracee with no guard at all: the decode is identical, and the only
-// difference is that nothing reports the run as unobservable. This is what the
-// fabricated grant looks like when it reaches a caller that does not check
-// SeccompKilled - the residual observe.Trace carries for any second caller.
-func TestForeignABIWithoutTheGuardLooksLikeACleanRun(t *testing.T) {
+// The same tracee with no guard at all. The guard is what kills the process, so this is
+// the case where the ABI check is the only thing between a foreign syscall and a
+// fabricated write grant: nothing here marks the run unobservable, so a caller reading
+// Accesses would take them at face value. The foreign syscall shows up as one drop,
+// which is how the Result says an access was seen and could not be read.
+func TestForeignABIWithoutTheGuardIsDroppedNotDecoded(t *testing.T) {
 	if !seccomp.Supported() {
 		t.Skip("seccomp not supported on this kernel")
 	}
 	out := runForeignABITracer(t, "plain")
-	if !strings.Contains(out, "ACCESS "+foreignPath+" write=true") {
-		t.Errorf("an unguarded i386 readlink should decode as an amd64 creat and fabricate a write grant:\n%s", out)
+	if strings.Contains(out, "ACCESS "+foreignPath) {
+		t.Errorf("an unguarded i386 readlink decoded as an amd64 creat and fabricated a write grant:\n%s", out)
 	}
 	if !strings.Contains(out, "SECCOMPKILLED=false") {
-		t.Errorf("without the guard nothing marks the run unobservable, which is the point of this case:\n%s", out)
+		t.Errorf("without the guard nothing marks the run unobservable, which is what makes the ABI check load-bearing here:\n%s", out)
+	}
+	if !strings.Contains(out, "DROPPED=1") {
+		t.Errorf("the foreign syscall should be counted once as a dropped observation, at its entry stop:\n%s", out)
 	}
 }
 
@@ -128,9 +130,9 @@ func TestForeignABIChild(t *testing.T) {
 // afterwards, exits quietly - the tracer reports what its Result says either way.
 //
 // The path buffer is mapped below 4 GiB because the compat ABI truncates syscall
-// arguments to 32 bits: a Go heap pointer would reach the kernel as garbage, the
-// decoder would fail to read a path and count a drop, and the control would assert
-// nothing about a fabricated grant.
+// arguments to 32 bits: a Go heap pointer would reach the kernel as garbage and a
+// wrong-table decode would fail to read a path at all, so the tests above would pass
+// on a decoder with no ABI check and assert nothing.
 func foreignABITracee() {
 	const lowAddr = 0x30000000
 	path := foreignPath + "\x00"

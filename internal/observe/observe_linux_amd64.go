@@ -21,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -53,11 +54,8 @@ type Result struct {
 	Dropped int
 	// SeccompKilled reports that a tracee - root or any descendant - died on SIGSYS,
 	// i.e. a kill-mode seccomp filter refused one of its syscalls. Everything that
-	// process would have touched after the refused syscall is absent from Accesses -
-	// and, worse than absent, the refused syscall itself may have ADDED a fabricated
-	// one: the ptrace stop precedes seccomp, so a foreign-ABI syscall is decoded
-	// against the amd64 table before the kill lands (see inspect). A caller must treat
-	// this run's Accesses as unusable rather than merely incomplete. Tracked separately from
+	// process would have touched after the refused syscall is absent from Accesses, so a
+	// caller must treat this run's observation as incomplete. Tracked separately from
 	// Signaled because a script that tolerates its helper dying still exits zero, and
 	// that run's observation is missing everything the helper did with nothing else to
 	// say so. Which filter killed it is the caller's to interpret: for bento's profiling
@@ -74,6 +72,13 @@ const (
 	sysCreat   = 85
 	sysExecve  = 59
 )
+
+// auditArchX8664 is the AUDIT_ARCH_ value the kernel reports for a syscall dispatched
+// through the 64-bit entry point. internal/seccomp gates its filters on the same value;
+// it is repeated here rather than shared because this package decodes syscalls and
+// installs nothing, and a decoder that imported the enforcement layer for a number would
+// be the wrong dependency.
+const auditArchX8664 = 0xC000003E
 
 // atFdCwd is openat's dirfd value meaning "relative to the working directory".
 // A real dirfd instead anchors a relative path at that descriptor's directory.
@@ -176,6 +181,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
 		return Result{}, fmt.Errorf("observe: initial wait: %w", err)
 	}
+	if err := requireSyscallInfo(root); err != nil {
+		return Result{}, err
+	}
 	const opts = syscall.PTRACE_O_TRACESYSGOOD |
 		syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEFORK | syscall.PTRACE_O_TRACEVFORK |
 		unixPtraceExitKill
@@ -184,6 +192,10 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	}
 
 	seen := map[string]bool{}
+	// The in-flight entry/exit pairs dropOnce is deduplicating, kept apart from the
+	// recorded-path set above: entries here are released as each pair completes, and
+	// mixing the two lifetimes in one map is how a stale key goes unnoticed.
+	drops := map[string]bool{}
 	var res Result
 	record := func(path string, write bool) {
 		if path == "" {
@@ -254,9 +266,14 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			delete(tracees, wpid)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
-			// A syscall stop. Decode the file-opening ones; recording on both
-			// entry and exit is deduplicated, so no enter/exit bookkeeping.
-			inspect(wpid, record, dropOnce(seen, wpid, &res.Dropped), &res)
+			// A syscall stop. Decode the file-opening ones, unless it came through a
+			// foreign ABI and the amd64 table would misread it. Recording on both entry
+			// and exit is deduplicated, so no enter/exit bookkeeping beyond the drop
+			// counter's own.
+			if nativeSyscall(wpid, &res.Dropped) {
+				count, release := dropOnce(drops, wpid, &res.Dropped)
+				inspect(wpid, record, count, release, &res)
+			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
 			// A fork/clone/vfork event reports the new child's pid here, before that
@@ -288,6 +305,72 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			_ = syscall.PtraceSyscall(wpid, sig)
 		}
 	}
+}
+
+// nativeSyscall reports whether the syscall this stop is reporting was dispatched
+// through the amd64 entry point, counting a dropped observation when it was not.
+//
+// inspect decodes syscall numbers and argument registers against the amd64 table, so a
+// syscall issued through the i386 compat entry (`int 0x80`) is decoded as an unrelated
+// amd64 one, against registers the compat ABI never set - the kernel takes compat args
+// from ebx/ecx/edx, not rdi/rsi/rdx. i386 readlink(85) reads as amd64 creat and
+// fabricates a write on whatever rdi holds; the collision is not confined to 85, and the
+// rest land on syscalls decoded at the entry stop, where no success filter could catch
+// them: i386 mmap(90) is amd64 chmod, i386 oldselect(82) is rename, i386 symlink(83) is
+// mkdir. A foreign syscall is therefore not decoded at all.
+//
+// It is counted as a drop rather than ignored because the decoder cannot tell what it
+// was, and a file access it could not read is exactly what Dropped exists to report.
+// Counted once per call, at the entry stop, which is what the op field distinguishes -
+// no dedup needed. A failed read is counted for the same reason: it says nothing about
+// what the stop was.
+func nativeSyscall(pid int, dropped *int) bool {
+	op, arch, err := syscallInfo(pid)
+	if err != nil {
+		*dropped++
+		return false
+	}
+	if arch == auditArchX8664 {
+		return true
+	}
+	if op == unix.PTRACE_SYSCALL_INFO_ENTRY {
+		*dropped++
+	}
+	return false
+}
+
+// syscallInfo reads the op and dispatch arch of the stop the tracee is in, via
+// PTRACE_GET_SYSCALL_INFO. Both live in the first eight bytes of struct
+// ptrace_syscall_info (u8 op, u8 pad[3], u32 arch), but the whole struct's size is
+// passed: the kernel writes min(the given size, its own) and returns its own, so asking
+// for eight would be a silent partial read on a layout that grows rather than an error.
+func syscallInfo(pid int) (op byte, arch uint32, err error) {
+	var info [88]byte
+	n, _, errno := unix.Syscall6(unix.SYS_PTRACE, unix.PTRACE_GET_SYSCALL_INFO,
+		uintptr(pid), uintptr(len(info)), uintptr(unsafe.Pointer(&info[0])), 0, 0)
+	if errno != 0 {
+		return 0, 0, errno
+	}
+	if n < 8 {
+		return 0, 0, fmt.Errorf("kernel returned %d bytes, too few to read the dispatch arch", n)
+	}
+	return info[0], binary.LittleEndian.Uint32(info[4:8]), nil
+}
+
+// requireSyscallInfo checks that the kernel implements PTRACE_GET_SYSCALL_INFO, which
+// nativeSyscall needs and which arrived in Linux 5.3. The tracee is at its initial
+// exec stop here rather than a syscall stop; the request answers there too, reporting
+// op = NONE with arch filled in, which is all this probe needs.
+//
+// Trace refuses the run rather than falling back to decoding without the check. Bento
+// degrades enforcement on an old kernel, but profiling is where a manifest is written:
+// a run that can fabricate a write grant is worse than no profile, and refusing matches
+// what the profile command already does with an unobservable run.
+func requireSyscallInfo(pid int) error {
+	if _, _, err := syscallInfo(pid); err != nil {
+		return fmt.Errorf("observe: PTRACE_GET_SYSCALL_INFO (Linux 5.3+) is needed to tell a foreign-ABI syscall from an amd64 one: %w", err)
+	}
+	return nil
 }
 
 // waitTracee is the loop's wait syscall, indirected through a var so a test can
@@ -331,47 +414,45 @@ func reapTracees(tracees map[int]bool) {
 	}
 }
 
-// dropOnce returns the drop counter for one syscall stop, deduplicated the way record
-// deduplicates paths. inspect runs on both the entry and the exit stop of the same
-// syscall, and every drop cause is deterministic across the pair - the tracee is frozen
-// between them, so an unreadable pathname is unreadable both times. Counting each stop
-// would report every lost access twice, and a count that is wrong by construction is
-// worse than none: it trains a reader to discount the warning.
+// dropOnce returns the drop counter for one syscall stop, and the release that ends its
+// deduplication. inspect runs on both the entry and the exit stop of the same syscall,
+// and every drop cause is deterministic across the pair - the tracee is frozen between
+// them, so an unreadable pathname is unreadable both times. Counting each stop would
+// report every lost access twice, and a count that is wrong by construction is worse than
+// none: it trains a reader to discount the warning.
 //
 // The key is the tracee plus the syscall's number and instruction pointer, which are
-// identical on entry and exit and differ between distinct calls - including two calls
-// to the same syscall from the same site, whose stops cannot interleave.
-func dropOnce(seen map[string]bool, pid int, n *int) func(*syscall.PtraceRegs) {
-	return func(regs *syscall.PtraceRegs) {
-		key := fmt.Sprintf("drop\x00%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
-		if seen[key] {
+// identical on entry and exit. They are NOT unique across calls: a libc call site issuing
+// the same syscall in a loop has the same Rip every iteration. So the dedup is scoped to
+// the pair it needs to span - inspect releases the key once the exit stop is decoded, and
+// the next iteration counts again. Held for the whole trace instead, a target whose
+// pathnames are unreadable from a loop reports one drop for N lost accesses, which is the
+// undercount this channel exists to prevent.
+//
+// Two keys still outlive their pair, both from stops with no usable registers to release
+// on: a failed register read (which keys on the zero regs) and a syscall the kernel does
+// not implement, whose real -ENOSYS makes both its stops read as entries. Each collapses
+// its repeats into one drop.
+func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*syscall.PtraceRegs)) {
+	key := func(regs *syscall.PtraceRegs) string {
+		return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
+	}
+	count = func(regs *syscall.PtraceRegs) {
+		k := key(regs)
+		if inFlight[k] {
 			return
 		}
-		seen[key] = true
+		inFlight[k] = true
 		*n++
 	}
+	release = func(regs *syscall.PtraceRegs) { delete(inFlight, key(regs)) }
+	return count, release
 }
 
-// inspect decodes a syscall stop and records file opens / subprocess execs.
-//
-// The numbers below are amd64's, and nothing here checks the tracee's ABI - so a
-// foreign one IS decoded against the wrong table (i386 85 is readlink, amd64 85 is
-// creat) and does fabricate a write for whatever rdi happens to hold. The launcher's
-// foreign-arch guard (BlockIoUring) does not prevent that, despite killing the
-// process: syscall_trace_enter reports the ptrace entry stop BEFORE running seccomp,
-// so the access is recorded and only then does the filter kill. What keeps the
-// fabricated grant out of a manifest is the same guard's other effect - the death is
-// a SIGSYS, this loop sets SeccompKilled, and the profile command refuses the whole
-// run on it rather than synthesizing anything. That refusal is load-bearing, not a
-// courtesy: a caller that reads Accesses without checking SeccompKilled gets the
-// fabricated write. Pinned by the foreign-ABI tests in internal/launcher.
-//
-// A backstop that identified the foreign ABI would need the dispatch arch, not the
-// code segment: int 0x80 from a 64-bit process leaves cs at 0x33 (measured), so only
-// PTRACE_GET_SYSCALL_INFO's arch field distinguishes it. Recording creat only once
-// its exit stop reports success would drop the fabrication without identifying
-// anything, and is the cheaper shape.
-func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs), res *Result) {
+// inspect decodes a syscall stop and records file opens / subprocess execs. The numbers
+// below are amd64's; the caller has already established that this stop was dispatched
+// through the amd64 entry point (see nativeSyscall), so they mean what they say.
+func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -380,6 +461,11 @@ func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceR
 		// failure this channel exists to prevent, and the alternative is to guess.
 		countDrop(&regs)
 		return
+	}
+	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
+	// dropOnce. Deferred so it runs after the decode below has had its chance to count.
+	if !atSyscallEntry(&regs) {
+		defer releaseDrop(&regs)
 	}
 	drop := func() { countDrop(&regs) }
 	switch regs.Orig_rax {

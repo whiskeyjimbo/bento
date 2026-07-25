@@ -14,9 +14,10 @@ func Getpid()
 
 // Readlink issues i386 readlink (syscall 85) through `int 0x80` with the given
 // path argument. 85 is the number the observe decoder's amd64 table reads as
-// creat(2), so a foreign readlink that reaches a ptrace stop is decoded as a WRITE
-// to whatever path it names - the fabricated grant the guard exists to prevent, and
-// the reason a test needs this specific syscall rather than a harmless one.
+// creat(2), so a foreign readlink that reaches a ptrace stop would be decoded as a
+// WRITE to whatever path it names unless the decoder checks the dispatch arch - the
+// fabricated grant that check exists to prevent, and the reason a test needs this
+// specific syscall rather than a harmless one.
 //
 // It also parks path in rdi, the register amd64 creat takes its argument in, so a
 // wrong-table decode names a path rather than failing to read one - see the stub.

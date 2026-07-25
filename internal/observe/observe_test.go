@@ -771,3 +771,37 @@ libc.syscall(257, -100, ctypes.c_void_p(0x1), 0, 0)
 		t.Errorf("Dropped = %d (baseline %d), want exactly 1 for the one unreadable pathname; 2 is the signature of counting the entry and exit stop of the same syscall separately", res.Dropped, base.Dropped)
 	}
 }
+
+// The other half of the same count: N lost accesses from ONE call site must report N
+// drops. The dedup key is the syscall number and instruction pointer, which are equal
+// across a loop's iterations as well as across an entry/exit pair, so a key held for the
+// whole trace collapses the loop into a single drop. Dropped is the channel that tells
+// the host the manifest is short by an unknown amount; wrong low is the failure mode
+// that matters, because it reads as "one stray probe" for a file the target needs every
+// iteration.
+func TestTraceCountsEveryDropFromOneCallSite(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	const iterations = 5
+	// One ctypes call site, so every iteration stops at the same instruction pointer -
+	// which is the case a per-trace dedup key cannot tell from a repeated stop.
+	script := fmt.Sprintf(`
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+for _ in range(%d):
+    libc.syscall(257, -100, ctypes.c_void_p(0x1), 0, 0)
+`, iterations)
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	base, err := Trace([]string{py, "-c", "pass"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace (baseline): %v", err)
+	}
+	if got := res.Dropped - base.Dropped; got != iterations {
+		t.Errorf("Dropped = %d (baseline %d), want %d - one per lost access; %d is the signature of a dedup key that outlives its entry/exit pair", res.Dropped, base.Dropped, iterations, 1)
+	}
+}
