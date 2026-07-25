@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The loop reaps its tracee itself, so exec.Cmd's Wait never ran - and with a stream
@@ -80,7 +81,17 @@ func TestConcurrentTracesDoNotStealEachOthersStops(t *testing.T) {
 			results[i] = outcome{res: res, err: err, own: own}
 		}()
 	}
-	wg.Wait()
+	// Bounded, because the failure mode is not a wrong answer: a trace whose stop was
+	// consumed elsewhere blocks in its wait loop, so an unbounded Wait would turn a
+	// regression into a ten-minute suite timeout and a stack dump instead of a named
+	// failure. The passing case takes about a second.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a trace never returned; its wait status was consumed by a concurrent trace")
+	}
 
 	for i, o := range results {
 		if o.err != nil {
