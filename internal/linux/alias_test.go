@@ -760,7 +760,10 @@ func TestSplitAcknowledgedAliasesAcceptsByTree(t *testing.T) {
 		{Path: "/home/u/project/stolen", Credential: "/home/u/.aws/credentials"},
 	}
 
-	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	if err != nil {
+		t.Fatalf("acknowledging a backup tree must not error: %v", err)
+	}
 	if !slices.Equal(accepted, found[:2]) {
 		t.Errorf("both rotated snapshots must be accepted by one tree; got %v", accepted)
 	}
@@ -780,7 +783,10 @@ func TestSplitAcknowledgedAliasesIgnoresANonMatchingTree(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backup"}) // typo: no trailing s
+	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backup"}) // typo: no trailing s
+	if err != nil {
+		t.Fatalf("acknowledging a backup tree must not error: %v", err)
+	}
 	if len(accepted) != 0 {
 		t.Errorf("a tree that contains no alias must accept nothing; got %v", accepted)
 	}
@@ -797,7 +803,10 @@ func TestSplitAcknowledgedAliasesResolvesTheAcknowledgedTree(t *testing.T) {
 	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
 	found := []credentialAlias{{Path: "/var/home/u/backups/snap/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	if err != nil {
+		t.Fatalf("acknowledging a backup tree must not error: %v", err)
+	}
 	if len(refuse) != 0 || !slices.Equal(accepted, found) {
 		t.Errorf("the acknowledged tree must be resolved before comparing; refuse=%v accepted=%v", refuse, accepted)
 	}
@@ -913,5 +922,31 @@ func TestAcknowledgementRootsNeverSuggestsTheFilesystemRoot(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"/srv/a", "/mnt/b"}) {
 		t.Errorf("expected the narrow parents; got %v", got)
+	}
+}
+
+// An acknowledgement wide enough to hold a shielded credential is the mechanism switched
+// off, not an acknowledgement: every alias on the host falls inside it, including one
+// planted later in a directory the user never had in mind. Refuse it rather than silently
+// narrowing, which would answer a different question than the one asked. The same
+// predicate governs what the refusal is willing to suggest, so advice and enforcement
+// cannot drift apart.
+func TestSplitAcknowledgedAliasesRejectsAnOffSwitch(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return p }
+	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
+
+	for _, tree := range []string{"/", "/home/u", "/home/u/.."} {
+		_, accepted, err := splitAcknowledgedAliases(sb, found, []string{tree})
+		if err == nil {
+			t.Errorf("--accept-alias %s must be refused as an off-switch; accepted %v", tree, accepted)
+		}
+	}
+
+	// The legitimate case must still pass: a backup root holds second NAMES for
+	// credentials, not the credentials themselves.
+	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	if err != nil || len(refuse) != 0 || len(accepted) != 1 {
+		t.Errorf("a backup root must be acceptable; err=%v refuse=%v accepted=%v", err, refuse, accepted)
 	}
 }

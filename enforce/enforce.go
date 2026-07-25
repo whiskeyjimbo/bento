@@ -60,6 +60,10 @@ type RunOptions struct {
 	// host's filesystem, and folding it into a portable, fingerprinted manifest would
 	// carry one machine's backup layout to every other. Whatever it admits is reported in
 	// Result.AcceptedAliases, the same way a gate admission is.
+	//
+	// It has no effect on a Degraded run: that tier applies no shields, so it never scans
+	// for an alias and has nothing to acknowledge. Its exposure is reported through the
+	// Report instead.
 	AcceptAliasesUnder []string
 }
 

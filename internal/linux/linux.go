@@ -130,7 +130,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		return enforce.Result{}, err
 	}
 	found := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
-	refuse, accepted := splitAcknowledgedAliases(sb, found, opts.AcceptAliasesUnder)
+	refuse, accepted, err := splitAcknowledgedAliases(sb, found, opts.AcceptAliasesUnder)
+	if err != nil {
+		return enforce.Result{}, err
+	}
 	if len(refuse) > 0 {
 		return enforce.Result{}, aliasRefusal(refuse)
 	}

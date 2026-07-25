@@ -158,13 +158,23 @@ func aliasedCredentials(sb sandbox, trees, optIns []string) []credentialAlias {
 // credential per snapshot. The trees are resolved before comparing, like every other path
 // this package compares - the aliases arrive resolved, so an unresolved acknowledgement
 // would match nothing and silently keep refusing.
-func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder []string) (refuse, accepted []credentialAlias) {
+func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder []string) (refuse, accepted []credentialAlias, err error) {
 	if len(found) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	trees := make([]string, 0, len(acceptUnder))
 	for _, t := range acceptUnder {
-		trees = append(trees, sb.resolve(t))
+		t = sb.resolve(t)
+		// An acknowledgement wide enough to contain a shielded credential is not an
+		// acknowledgement of known aliases, it is the mechanism turned off: every alias
+		// on the host falls inside it, including one planted later somewhere the user
+		// never had in mind. Refusing is the honest answer - the caller asked to accept
+		// specific aliases and this would accept all of them, so silently narrowing it
+		// would be answering a different question than the one they asked.
+				if err := checkAcknowledgementScope(t, found); err != nil {
+			return nil, nil, err
+		}
+		trees = append(trees, t)
 	}
 	for _, a := range found {
 		if slices.ContainsFunc(trees, func(t string) bool { return under(a.Path, t) }) {
@@ -173,7 +183,28 @@ func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder [
 		}
 		refuse = append(refuse, a)
 	}
-	return refuse, accepted
+	return refuse, accepted, nil
+}
+
+// checkAcknowledgementScope rejects an acknowledged tree that would accept more than the
+// aliases in front of it. The same predicate decides what aliasRefusal is willing to
+// SUGGEST, so the advice and the enforcement cannot drift apart - suggesting a narrow tree
+// while accepting an arbitrarily wide one was the gap this closes.
+func checkAcknowledgementScope(tree string, aliases []credentialAlias) error {
+	if overbroadAcknowledgement(tree, aliases) {
+		return fmt.Errorf("linux: --accept-alias %s would accept every alias of a credential it contains, not the ones you meant; name the tree the aliases actually live in", tree)
+	}
+	return nil
+}
+
+// overbroadAcknowledgement reports whether a tree is too wide to acknowledge: the
+// filesystem root, or a tree holding one of the shielded credentials itself. A backup root
+// passes - it contains second names for credentials, not the credentials.
+func overbroadAcknowledgement(tree string, aliases []credentialAlias) bool {
+	if tree == "/" || tree == "." || tree == "" {
+		return true
+	}
+	return slices.ContainsFunc(aliases, func(a credentialAlias) bool { return under(a.Credential, tree) })
 }
 
 // reportedAliases converts accepted aliases for the run's result. The scan already sorts
@@ -236,13 +267,8 @@ func acknowledgementRoots(aliases []credentialAlias) []string {
 	for _, p := range parents[1:] {
 		shared = commonAncestor(shared, p)
 	}
-	if shared == "/" || shared == "." {
+	if overbroadAcknowledgement(shared, aliases) {
 		return parents
-	}
-	for _, a := range aliases {
-		if under(a.Credential, shared) {
-			return parents
-		}
 	}
 	return []string{shared}
 }
