@@ -8,6 +8,7 @@ package manifest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -120,14 +121,14 @@ func Parse(r io.Reader) (*Document, error) {
 	}
 	var m manifest
 	dec := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField())
-	if err := dec.Decode(&m); err != nil && err != io.EOF {
+	if err := dec.Decode(&m); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
 	}
 	// A manifest is a single policy document. A YAML stream with a second document
 	// (after a "---") would otherwise be parsed with only the first governing and the
 	// rest silently dropped - reject it so a second, ignored policy cannot hide.
 	var extra manifest
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
 			return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
 		}

@@ -2,6 +2,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -256,7 +257,8 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // is a specific, fixable AppArmor policy.
 func usernsReason(err error) string {
 	var out string
-	if ue, ok := err.(*usernsError); ok {
+	var ue *usernsError
+	if errors.As(err, &ue) {
 		out = ue.output
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"

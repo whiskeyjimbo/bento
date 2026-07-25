@@ -1,0 +1,87 @@
+version: "2"
+
+run:
+  # This checkout is not part of the parent go.work; without this the linter
+  # loads packages under the workspace and fails before it lints anything.
+  go: "1.26"
+
+linters:
+  default: standard
+  enable:
+    # A sandbox that swallows an error fails open, so the error-handling linters
+    # carry more weight here than style ones.
+    - errorlint
+    - nilerr
+    - bodyclose
+    - gosec
+    - misspell
+
+  settings:
+    misspell:
+      ignore-rules:
+        # A hard link, hardlinked - the dictionary wants "hardline".
+        - hardlinked
+
+    errcheck:
+      # An advisory deadline and a half-close on a connection that is being torn
+      # down either way: there is no recovery to write, and checking them would
+      # add error paths that cannot act. errcheck still covers everything else.
+      exclude-functions:
+        - (net.Conn).SetDeadline
+        - (net.Conn).SetReadDeadline
+        - (net.Conn).SetWriteDeadline
+        - (*net.TCPConn).SetDeadline
+        - (*net.TCPConn).SetReadDeadline
+        - (*net.TCPConn).CloseWrite
+
+    gosec:
+      excludes:
+        # Kernel structs are fixed-width, so the seccomp and landlock paths are
+        # all narrowing conversions the surrounding code already bounds.
+        - G115
+        # Bento's job is to run untrusted programs under a policy and to bind
+        # host paths into a sandbox, so "spawns a subprocess", "path from a
+        # variable", and their taint-analysis equivalents describe every line of
+        # the enforcement path. The boundary is asserted by the sandbox tests,
+        # not by flagging the calls that make it.
+        - G204
+        - G304
+        - G702
+        - G703
+        # errcheck owns unhandled errors; G104 only duplicates it, with no way to
+        # exempt a deliberate discard short of a nolint on every line.
+        - G104
+        # Fires on a const holding the words "credential store", which is a
+        # denylist section label, not a secret.
+        - G101
+        # The 0755 write-grant directories and the 0444 sentinel file are chosen,
+        # not defaults - but whether a granted write directory should be 0700 is
+        # a real question, so this is deferred rather than settled here.
+        - G301
+        - G306
+
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Test setup discards errors freely (a pipe write, a Kill, a raw syscall in
+      # a fixture). A test that got there and failed says more than a checked
+      # error in its scaffolding would.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+      # Malformed manifests are the fixture: a misspelled key and an embedded
+      # bidi override are what these cases assert the parser rejects.
+      - path: manifest/manifest_test\.go
+        linters:
+          - misspell
+          - staticcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

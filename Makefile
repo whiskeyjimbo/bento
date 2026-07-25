@@ -27,6 +27,10 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main
 # and is expected to move; the tool version is not.
 GOVULNCHECK_VERSION ?= v1.6.0
 
+# Pinned for the same reason as govulncheck: a linter that drifts turns an
+# unchanged tree red on its own schedule.
+GOLANGCI_LINT_VERSION ?= v2.12.2
+
 # Colors & Styling
 BOLD    := \033[1m
 CYAN    := \033[36m
@@ -34,7 +38,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test race vet audit vuln repro check install clean help
+.PHONY: all build test race vet lint audit vuln repro check install clean help
 
 all: build
 
@@ -77,6 +81,11 @@ vet: ## Run go vet checks
 	@printf "$(CYAN)$(BOLD)==> Running go vet...$(RESET)\n"
 	@GOWORK=off go vet ./...
 	@printf "$(GREEN)$(BOLD)✓ go vet clean!$(RESET)\n"
+
+lint: ## Run golangci-lint (not part of check: it needs the pinned linter)
+	@printf "$(CYAN)$(BOLD)==> Linting ($(GOLANGCI_LINT_VERSION))...$(RESET)\n"
+	@GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+	@printf "$(GREEN)$(BOLD)✓ Lint clean!$(RESET)\n"
 
 audit: ## Run the denylist completeness audit script
 	@printf "$(CYAN)$(BOLD)==> Running denylist audit...$(RESET)\n"

@@ -274,19 +274,19 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	}
 
 	sb := sandbox{
-		home:            home,
-		emptyFile:       empty,
-		entrypoint:      entrypoint,
-		interpreter:     interp,
-		exists:          hostExists,
-		isDir:           hostIsDir,
-		rootDirs:        hostRootDirs,
-		resolve:         hostResolve,
-		listDir:         hostListDir,
-		fileIDs:         hostFileIDs,
-		aliasesUnder:    hostAliasesUnder,
-		mountpoints:     hostMountpoints,
-		statID:          hostStatID,
+		home:         home,
+		emptyFile:    empty,
+		entrypoint:   entrypoint,
+		interpreter:  interp,
+		exists:       hostExists,
+		isDir:        hostIsDir,
+		rootDirs:     hostRootDirs,
+		resolve:      hostResolve,
+		listDir:      hostListDir,
+		fileIDs:      hostFileIDs,
+		aliasesUnder: hostAliasesUnder,
+		mountpoints:  hostMountpoints,
+		statID:       hostStatID,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
@@ -447,7 +447,7 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
-		proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
+		_ = proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
 		close(done)
 	}()
 	return func() { cancel(); <-done }, nil

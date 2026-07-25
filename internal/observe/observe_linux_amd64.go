@@ -9,6 +9,7 @@ package observe
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -145,7 +146,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 
 	for {
 		wpid, err := waitTracee(-1, &ws, 0, nil)
-		if err == syscall.EINTR {
+		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
 		if err != nil {
@@ -188,7 +189,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// A syscall stop. Decode the file-opening ones; recording on both
 			// entry and exit is deduplicated, so no enter/exit bookkeeping.
 			inspect(wpid, record, &res)
-			syscall.PtraceSyscall(wpid, 0)
+			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
 			// A fork/clone/vfork event reports the new child's pid here, before that
 			// child's own first stop is dequeued - and the parent stays stopped at this
@@ -216,7 +217,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 					sig = int(s)
 				}
 			}
-			syscall.PtraceSyscall(wpid, sig)
+			_ = syscall.PtraceSyscall(wpid, sig)
 		}
 	}
 }

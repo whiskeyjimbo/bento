@@ -477,7 +477,7 @@ func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 
 func halfClose(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
-		cw.CloseWrite()
+		_ = cw.CloseWrite()
 		return
 	}
 	c.SetDeadline(time.Now())

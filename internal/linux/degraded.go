@@ -154,7 +154,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	cmd.WaitDelay = 2 * time.Second
 
 	err = cmd.Run()
-	killProcessGroup(cmd.Process)
+	_ = killProcessGroup(cmd.Process)
 	switch {
 	case cmd.ProcessState == nil:
 		// The launcher never started or exec failed - a genuine setup failure.

@@ -134,9 +134,7 @@ func aliasedCredentials(sb sandbox, trees, optIns []string) []credentialAlias {
 			devs = append(devs, id.dev)
 		}
 	}
-	for _, a := range mountAliases(sb, creds, shielded, trees, devs) {
-		out = append(out, a)
-	}
+	out = append(out, mountAliases(sb, creds, shielded, trees, devs)...)
 
 	slices.SortFunc(out, func(a, b credentialAlias) int {
 		if a.Path != b.Path {
@@ -171,7 +169,7 @@ func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder [
 		// never had in mind. Refusing is the honest answer - the caller asked to accept
 		// specific aliases and this would accept all of them, so silently narrowing it
 		// would be answering a different question than the one they asked.
-				if err := checkAcknowledgementScope(t, found); err != nil {
+		if err := checkAcknowledgementScope(t, found); err != nil {
 			return nil, nil, err
 		}
 		trees = append(trees, t)
@@ -444,8 +442,9 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 // direction only for what it did see.
 func hostFileIDs(path string) []identifiedFile {
 	var out []identifiedFile
-	filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			//nolint:nilerr // an unreadable subtree is skipped, not fatal: see above.
 			return nil
 		}
 		// A credential store kept in git (~/.password-store is one by design) holds its
@@ -487,8 +486,9 @@ func hostAliasesUnder(root string, want map[fileID]string) []credentialAlias {
 		devs[id.dev] = true
 	}
 	var out []credentialAlias
-	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			//nolint:nilerr // an unreadable subtree is skipped, not fatal: see above.
 			return nil
 		}
 		if d.IsDir() {

@@ -72,7 +72,7 @@ func testBento(t *testing.T) string {
 		cmd := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/cmd/bento")
 		cmd.Env = append(os.Environ(), "GOWORK=off", "HOME="+toolchainHome)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			bentoErr = fmt.Errorf("building bento: %v\n%s", err, out)
+			bentoErr = fmt.Errorf("building bento: %w\n%s", err, out)
 			return
 		}
 		bentoBin = bin
