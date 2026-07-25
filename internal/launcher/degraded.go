@@ -42,6 +42,11 @@ type DegradedConfig struct {
 	// so a target that writes temp files has a granted place for them instead of the
 	// host /tmp, which the read/write set deliberately excludes.
 	Scratch string
+	// StripEnv names variables the enforcer added to the child's environment for its
+	// own use (the session-bus variables systemd-run needs to create the limit scope)
+	// and that the target must not see. They are dropped just before exec, so the
+	// target still sees only the policy environment.
+	StripEnv []string
 	// Target is the absolute command to run: interpreter, entrypoint, and args.
 	Target []string
 }
@@ -92,7 +97,7 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
 	}
 
-	env := os.Environ()
+	env := dropEnv(os.Environ(), cfg.StripEnv...)
 	if cfg.Scratch != "" {
 		// Drop any inherited TMPDIR/TMP/TEMP before appending the scratch override:
 		// glibc getenv returns the first occurrence, so a policy-declared TMPDIR would
@@ -158,6 +163,9 @@ func EncodeLaunchDegraded(cfg DegradedConfig) []string {
 	for _, p := range cfg.ExecPaths {
 		args = append(args, "--x", p)
 	}
+	for _, n := range cfg.StripEnv {
+		args = append(args, "--strip-env", n)
+	}
 	args = append(args, "--")
 	return append(args, cfg.Target...)
 }
@@ -174,13 +182,14 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 	var (
 		execMode          string
 		scratch           string
-		read, write, exec stringList
+		read, write, exec, stripEnv stringList
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
 	fs.StringVar(&scratch, "scratch", "", "")
 	fs.Var(&read, "ro", "")
 	fs.Var(&write, "rw", "")
 	fs.Var(&exec, "x", "")
+	fs.Var(&stripEnv, "strip-env", "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return DegradedConfig{}, fmt.Errorf("launcher: parsing degraded-launch invocation: %w", err)
 	}
@@ -195,6 +204,7 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 		Block:       block,
 		StrictBlock: strict,
 		Scratch:     scratch,
+		StripEnv:    stripEnv,
 		Target:      fs.Args(),
 	}, nil
 }

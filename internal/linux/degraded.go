@@ -97,6 +97,27 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if sb.interpreter != "" {
 		execPaths = append(execPaths, sb.interpreter)
 	}
+	// The launcher runs with the sanitized policy environment, which has none of the
+	// session-bus variables systemd-run needs to reach the user manager - so add them
+	// here and have the launcher drop them again before exec. Without limits nothing is
+	// added and the run is unchanged.
+	env := envSlice(proc.Env)
+	var stripEnv []string
+	scoped := false
+	if !p.Limits.IsZero() {
+		if ok, _ := canCreateScope(); ok {
+			env, stripEnv = withScopeBusVars(env, proc.Env)
+			// Preflight with the environment the real command will get: a probe run with
+			// the enforcer's own environment would find the bus even when the sanitized
+			// one cannot, and the failure would then surface as systemd-run's exit code
+			// for a target that never ran.
+			if err := preflightLimits(p.Limits, env); err != nil {
+				return enforce.Result{}, fmt.Errorf("linux: %w", err)
+			}
+			scoped = true
+		}
+	}
+
 	block, strictBlock := execBlockFlags(p.Exec, seccompSupported())
 	cfg := launcher.DegradedConfig{
 		Readable:    concat(sysReads, reads),
@@ -105,11 +126,18 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		Block:       block,
 		StrictBlock: strictBlock,
 		Scratch:     scratch,
+		StripEnv:    stripEnv,
 		Target:      degradedTarget(sb.interpreter, sb.entrypoint, p.Args),
 	}
 
-	cmd := exec.CommandContext(ctx, sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)...)
-	cmd.Env = envSlice(proc.Env)
+	// A scope execs its command in place, so the launcher stays the leader of the group
+	// set below and the process-group sweep still reaches anything it leaks.
+	exe, cargs := sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)
+	if scoped {
+		exe, cargs = wrapWithLimits(exe, cargs, p.Limits)
+	}
+	cmd := exec.CommandContext(ctx, exe, cargs...)
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// Run the launcher in its own process group so a descendant it leaves behind can be
 	// swept on teardown. Without a PID namespace this is the only sweep available, and

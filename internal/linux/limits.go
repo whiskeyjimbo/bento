@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -41,7 +42,7 @@ func canCreateScope() (bool, string) {
 			scopeReason = "systemd-run is not installed, so resource limits cannot be enforced unprivileged"
 			return
 		}
-		if err := runScopeProbe(policy.Limits{Memory: "64M"}); err != nil {
+		if err := runScopeProbe(policy.Limits{Memory: "64M"}, nil); err != nil {
 			scopeReason = "no usable systemd user manager for resource limits: " + err.Error()
 			return
 		}
@@ -87,11 +88,17 @@ func hostControllersDelegated(ctrls map[string]bool, known bool) (bool, string) 
 // a throwaway scope carrying them. This turns a run-time scope-creation failure
 // into a clear error up front, instead of letting systemd-run's own exit code
 // masquerade as the target's when the scope never starts.
-func preflightLimits(l policy.Limits) error {
+//
+// env is the environment the real run will hand systemd-run, or nil to inherit the
+// enforcer's. Passing the real one matters on the degraded tier, whose command env is
+// the sanitized policy env: systemd-run needs the session bus variables to reach the
+// user manager, and a probe that inherited the host env would pass while the real run
+// died with the scope never created and the target never started.
+func preflightLimits(l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return nil
 	}
-	if err := runScopeProbe(l); err != nil {
+	if err := runScopeProbe(l, env); err != nil {
 		return fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
 	}
 	return nil
@@ -99,12 +106,14 @@ func preflightLimits(l policy.Limits) error {
 
 // runScopeProbe creates a transient scope with the given limits running /bin/true
 // and returns whether it succeeded.
-func runScopeProbe(l policy.Limits) error {
+func runScopeProbe(l policy.Limits, env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	exe, args := wrapWithLimits(trueBinary(), nil, l)
-	out, err := exec.CommandContext(ctx, exe, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
@@ -209,6 +218,35 @@ func shBinary() string {
 		return p
 	}
 	return "/bin/sh"
+}
+
+// scopeBusVars are the variables systemd-run reads to find the systemd user manager.
+// A command run with a sanitized environment has none of them and systemd-run fails
+// with "No medium found" before the scope exists.
+var scopeBusVars = []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
+
+// withScopeBusVars returns env with the host's session-bus variables added, plus the
+// names it added. A variable the policy itself declares is left alone: the target must
+// see the policy's value, so it is neither overwritten here nor stripped later.
+//
+// The added values are for systemd-run only, which is why the names come back: the
+// launcher drops exactly them before exec, so the target still sees only the policy
+// environment. They travel in the environment rather than in argv because this tier has
+// no PID namespace, and a same-uid host process can read another's /proc/self/cmdline.
+func withScopeBusVars(env []string, policyEnv map[string]string) (out []string, added []string) {
+	out = env
+	for _, name := range scopeBusVars {
+		if _, declared := policyEnv[name]; declared {
+			continue
+		}
+		v, ok := os.LookupEnv(name)
+		if !ok {
+			continue
+		}
+		out = append(out, name+"="+v)
+		added = append(added, name)
+	}
+	return out, added
 }
 
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's

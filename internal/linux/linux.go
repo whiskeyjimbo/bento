@@ -124,7 +124,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			// Preflight the exact limits so a scope-creation failure surfaces as a
 			// clear error, never as the target's exit code for a target that never
 			// ran.
-			if err := preflightLimits(p.Limits); err != nil {
+			if err := preflightLimits(p.Limits, nil); err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
 			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)

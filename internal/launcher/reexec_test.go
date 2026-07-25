@@ -55,6 +55,7 @@ func TestLaunchDegradedCodecRoundTrip(t *testing.T) {
 			ExecPaths: []string{"/usr/bin/python3", "/w/app.py"},
 			Block:     true,
 			Scratch:   "/scratch",
+			StripEnv:  []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"},
 			Target:    []string{"/usr/bin/python3", "/w/app.py"},
 		},
 		"exec none-strict keeps target flags after --": {
@@ -98,4 +99,16 @@ func TestExecModeStringPanicsOnStrictWithoutBlock(t *testing.T) {
 		}
 	}()
 	execModeString(Config{Block: false, StrictBlock: true})
+}
+
+// The enforcer adds the session-bus variables systemd-run needs to create the limit
+// scope; the target must not see them. Their removal is a plain env filter, but a
+// regression here leaks the host's bus address into a sandboxed target.
+func TestDropEnvRemovesOnlyNamedVars(t *testing.T) {
+	env := []string{"PATH=/bin", "XDG_RUNTIME_DIR=/run/user/1000", "HOME=/home/a", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"}
+	got := dropEnv(env, "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR")
+	want := []string{"PATH=/bin", "HOME=/home/a"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dropEnv = %v, want %v", got, want)
+	}
 }

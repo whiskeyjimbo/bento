@@ -15,10 +15,11 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
-// bv2-bbq gate: enforcing limits in the degraded tier would wrap the launcher in
-// systemd-run --scope, but the degraded tier's leaked-process cleanup relies on the
-// process-group sweep (killProcessGroup). This proves --scope does NOT break that
-// sweep: a backgrounded process under the scoped command must still be killed.
+// The degraded tier wraps its launcher in systemd-run --scope to apply resource
+// limits, while its leaked-process cleanup relies on the process-group sweep
+// (killProcessGroup). This proves --scope does NOT break that sweep - it puts the
+// command in a new cgroup, not a new process group - so a backgrounded descendant of
+// the scoped command is still killed.
 func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 	if ok, reason := canCreateScope(); !ok {
 		t.Skip("no usable systemd user scope: " + reason)

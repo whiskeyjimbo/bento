@@ -27,9 +27,8 @@ import (
 // positive control: same Probe path, no override, and it must report Enforced, so the
 // override child's Unavailable is caused by the delegation loss and nothing else.
 func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
-	nsOK, _ := usableNamespaces(context.Background())
-	if ok, _ := canCreateScope(); !nsOK || !ok {
-		t.Skip("no bwrap tier with a usable systemd scope on this host; the limits layer is not enforced to begin with")
+	if ok, _ := canCreateScope(); !ok {
+		t.Skip("no usable systemd scope on this host; the limits layer is not enforced to begin with")
 	}
 
 	baseline := runMemPidsChild(t, "baseline")

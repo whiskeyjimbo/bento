@@ -845,11 +845,10 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 		t.Errorf("exec-block state = %v, want %v", states[enforce.LayerExec], wantExec)
 	}
 
-	// Limits are applied only by the bwrap tier's systemd scope; the degraded tier
-	// (nsOK false) runs the target directly and applies none, so it must not report
-	// them enforced even where a scope could be created.
+	// Limits ride a systemd scope, which both tiers wrap their command in, so the
+	// state tracks scope creation and nothing about the namespace.
 	wantLimits := enforce.Unavailable
-	if ok, _ := canCreateScope(); nsOK && ok {
+	if ok, _ := canCreateScope(); ok {
 		wantLimits = enforce.Enforced
 	}
 	if states[enforce.LayerLimits] != wantLimits {
