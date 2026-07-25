@@ -169,7 +169,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// A run that was signaled or exited nonzero may have stopped before exercising all
 	// its code paths, so the observations - and the manifest synthesized from them - can
 	// be silently over-tight. Warn before proposing it.
-	if w := partialRunWarning(obs); w != "" {
+	for _, w := range profileWarnings(obs) {
 		fmt.Fprintln(os.Stderr, w)
 	}
 	proposed := profile.Synthesize(cfg.script, cfg.interpreter, obs)
@@ -460,6 +460,21 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// profileWarnings returns every reason this observation may be short of what the run
+// really needs, in the order a reader should see them: whether the run finished, then
+// whether the observer could name everything it saw. They are independent - a clean
+// exit says nothing about dropped accesses - so both are reported, not just the first.
+func profileWarnings(obs profile.Observation) []string {
+	var out []string
+	if w := partialRunWarning(obs); w != "" {
+		out = append(out, w)
+	}
+	if obs.Dropped > 0 {
+		out = append(out, fmt.Sprintf("[bento] WARNING: the observer could not name %d file access(es) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the paths by hand.", obs.Dropped))
+	}
+	return out
 }
 
 // partialRunWarning returns a warning when the profiled run may not have finished -

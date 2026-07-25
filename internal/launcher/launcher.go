@@ -231,6 +231,12 @@ func runObserve(cfg Config, env []string) (int, error) {
 		} else {
 			fmt.Fprintf(&b, "EXIT %d\n", res.ExitCode)
 		}
+		// Accesses the observer could not read. Without this the host cannot tell a
+		// target that touched nothing from one whose paths the observer failed to fetch,
+		// and a manifest short of what the run needs looks complete.
+		if res.Dropped > 0 {
+			fmt.Fprintf(&b, "DROPPED %d\n", res.Dropped)
+		}
 		b.WriteString(observe.ReportStart + "\n")
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")

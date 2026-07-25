@@ -42,6 +42,13 @@ type Result struct {
 	// incomplete.
 	Signaled bool
 	Signal   int
+	// Dropped counts observations the observer could not read: a syscall stop whose
+	// registers would not load, a pathname or sockaddr it could not fetch from the
+	// tracee's memory, a relative path whose anchor directory /proc would not name.
+	// Each one is a file access that happened and is absent from Accesses, so a
+	// nonzero count means the manifest below is incomplete - indistinguishable, without
+	// it, from a target that simply touched nothing there.
+	Dropped int
 }
 
 // amd64 syscall numbers.
@@ -223,7 +230,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones; recording on both
 			// entry and exit is deduplicated, so no enter/exit bookkeeping.
-			inspect(wpid, record, &res)
+			inspect(wpid, record, func() { res.Dropped++ }, &res)
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
 			// A fork/clone/vfork event reports the new child's pid here, before that
@@ -307,40 +314,61 @@ func reapTracees(tracees map[int]bool) {
 // since seccomp keys on the syscall ABI rather than the code segment. Without it an
 // i386 syscall would decode against the wrong table (i386 85 is readlink, amd64 85 is
 // creat) and fabricate write grants that become enforcement policy on the next run.
-func inspect(pid int, record func(string, bool), res *Result) {
+func inspect(pid int, record func(string, bool), drop func(), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
+		drop()
 		return
 	}
 	switch regs.Orig_rax {
 	case sysOpenat:
-		path := resolveAt(pid, int32(regs.Rdi), readString(pid, uintptr(regs.Rsi)))
-		record(path, regs.Rdx&writeFlags != 0)
+		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {
+			record(path, regs.Rdx&writeFlags != 0)
+		} else {
+			drop()
+		}
 	case sysOpenat2:
 		// openat2(dirfd, path, struct open_how *how, size): flags and resolve are fields
 		// of *how, not registers. Increasingly used (Rust std, systemd tools), so a
 		// program using it must not profile as touching nothing.
 		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
-		path := readString(pid, uintptr(regs.Rsi))
-		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec {
-			record(resolveAt(pid, int32(regs.Rdi), anchored), ok && flags&uint64(writeFlags) != 0)
+		path, pathOK := readString(pid, uintptr(regs.Rsi))
+		if !ok || !pathOK {
+			// An unreadable open_how leaves the open's intent unknown. Record it as a
+			// write - the conservative half of the pair, matching the anchor choice
+			// openat2Resolve makes - and count the drop, so a manifest that granted
+			// read where the target wanted write is not the silent outcome.
+			drop()
+		}
+		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec && pathOK {
+			if anchoredPath, anchorOK := resolveAt(pid, int32(regs.Rdi), anchored); anchorOK {
+				record(anchoredPath, !ok || flags&uint64(writeFlags) != 0)
+			} else {
+				drop()
+			}
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
 		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
 		// a relative open after a chdir would be mis-anchored.
-		path := resolveAt(pid, atFdCwd, readString(pid, uintptr(regs.Rdi)))
-		record(path, regs.Rsi&writeFlags != 0)
+		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
+			record(path, regs.Rsi&writeFlags != 0)
+		} else {
+			drop()
+		}
 	case sysCreat:
-		path := resolveAt(pid, atFdCwd, readString(pid, uintptr(regs.Rdi)))
-		record(path, true)
+		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
+			record(path, true)
+		} else {
+			drop()
+		}
 	case sysExecve:
 		// Only execve is counted: the enforcement exec-block filter blocks execve
 		// but allows execveat, so a program that spawns via execveat runs fine under
 		// exec: none and does not need exec: all.
 		res.Execed = true
 	default:
-		inspectMutating(pid, &regs, record)
+		inspectMutating(pid, &regs, record, drop)
 	}
 }
 
@@ -355,9 +383,13 @@ func inspect(pid int, record func(string, bool), res *Result) {
 // amd64 arg registers are Rdi, Rsi, Rdx, R10, R8. Read at the syscall stop, so a
 // failed attempt is still recorded (matching the open cases) - the script's intent
 // is what the manifest must grant.
-func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool)) {
+func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func()) {
 	at := func(dirfd int32, pathReg uint64, write bool) {
-		record(resolveAt(pid, dirfd, readString(pid, uintptr(pathReg))), write)
+		if path, ok := readPathAt(pid, dirfd, uintptr(pathReg)); ok {
+			record(path, write)
+			return
+		}
+		drop()
 	}
 	switch regs.Orig_rax {
 	// rename removes the source and creates the destination: both directories need
@@ -398,8 +430,14 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// than NUL-terminated, so it needs its own read. Abstract and unnamed sockets make
 	// no filesystem entry and are skipped by sockaddrUnixPath.
 	case unix.SYS_BIND:
-		if path := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
-			record(resolveAt(pid, atFdCwd, path), true)
+		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
+			drop()
+		} else if path != "" {
+			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
+				record(anchored, true)
+			} else {
+				drop()
+			}
 		}
 	// connect(2) to an AF_UNIX pathname socket needs that socket present in the sandbox;
 	// a read-only bind is enough (connect succeeds through it - netns does not fence a
@@ -411,8 +449,14 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// sockets make no filesystem entry and are netns-fenced in this tier, so they are
 	// skipped - nothing to grant.
 	case unix.SYS_CONNECT:
-		if path := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); path != "" {
-			record(resolveAt(pid, atFdCwd, path), false)
+		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
+			drop()
+		} else if path != "" {
+			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
+				record(anchored, false)
+			} else {
+				drop()
+			}
 		}
 	}
 }
@@ -420,21 +464,25 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 // sockaddrUnixPath returns the filesystem path an AF_UNIX bind(2) or connect(2) names,
 // or "" when the address makes no filesystem entry. It reads addrlen bytes of the
 // sockaddr from the traced process and hands them to unixSockaddrPath for the parse.
-func sockaddrUnixPath(pid int, addr uintptr, addrlen uint64) string {
+func sockaddrUnixPath(pid int, addr uintptr, addrlen uint64) (string, bool) {
 	// sockaddr_un is a 2-byte family plus up to 108 bytes of sun_path; a larger addrlen
-	// is rejected by the kernel (EINVAL), so it names no file.
+	// is rejected by the kernel (EINVAL), so it names no file. That is an answer, not a
+	// failure, so it is not a drop.
 	if addrlen <= 2 || addrlen > 110 {
-		return ""
+		return "", true
 	}
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer mem.Close()
 
 	buf := make([]byte, addrlen)
-	n, _ := mem.ReadAt(buf, int64(addr))
-	return unixSockaddrPath(buf[:max(n, 0)])
+	n, err := mem.ReadAt(buf, int64(addr))
+	if n <= 0 && err != nil {
+		return "", false
+	}
+	return unixSockaddrPath(buf[:max(n, 0)]), true
 }
 
 // unixSockaddrPath extracts the bound filesystem path from a raw sockaddr, or "" when
@@ -509,9 +557,9 @@ func openat2Resolve(resolve uint64, ok bool) uint64 {
 // descriptor that is not one readlinks to a non-path ("socket:[N]", "anon_inode:…")
 // or a deleted directory ("… (deleted)"). Passing the bare relative path through
 // would wrongly anchor it at the profiler's own cwd downstream - the bug being fixed.
-func resolveAt(pid int, dirfd int32, path string) string {
+func resolveAt(pid int, dirfd int32, path string) (string, bool) {
 	if path == "" || strings.HasPrefix(path, "/") {
-		return path
+		return path, true
 	}
 	link := fmt.Sprintf("/proc/%d/cwd", pid)
 	if dirfd != atFdCwd {
@@ -519,9 +567,19 @@ func resolveAt(pid int, dirfd int32, path string) string {
 	}
 	dir, err := os.Readlink(link)
 	if err != nil || !strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, " (deleted)") {
-		return ""
+		return "", false
 	}
-	return filepath.Join(dir, path)
+	return filepath.Join(dir, path), true
+}
+
+// readPathAt reads a pathname argument from the tracee and anchors it. ok is false if
+// either step failed, which is a dropped observation rather than an access to nothing.
+func readPathAt(pid int, dirfd int32, addr uintptr) (string, bool) {
+	path, ok := readString(pid, addr)
+	if !ok {
+		return "", false
+	}
+	return resolveAt(pid, dirfd, path)
 }
 
 // openHow reads the openat2 open_how struct at addr: flags at offset 0 and resolve
@@ -543,10 +601,10 @@ func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 }
 
 // readString reads a NUL-terminated string from the traced process's memory.
-func readString(pid int, addr uintptr) string {
+func readString(pid int, addr uintptr) (string, bool) {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer mem.Close()
 
@@ -554,10 +612,12 @@ func readString(pid int, addr uintptr) string {
 	n, _ := mem.ReadAt(buf[:], int64(addr))
 	for i := range n {
 		if buf[i] == 0 {
-			return string(buf[:i])
+			return string(buf[:i]), true
 		}
 	}
-	return ""
+	// No NUL in the window: either the read failed outright or the pathname is longer
+	// than any the kernel would accept. Either way the path is unknown, not empty.
+	return "", false
 }
 
 func exitCode(ws syscall.WaitStatus) int {

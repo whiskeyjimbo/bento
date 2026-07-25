@@ -147,3 +147,25 @@ func TestProfileRefusesWithoutAnObservationBackend(t *testing.T) {
 		t.Error("a refused profile must not execute the target")
 	}
 }
+
+// The observer counts accesses it saw but could not name, and that count has to reach
+// the Observation - otherwise a manifest short of what the run needs is indistinguishable
+// from one for a run that touched nothing. A record whose quoting is unreadable is the
+// same kind of loss and counts too, rather than vanishing.
+func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report")
+	content := fmt.Sprintf("R %q\nR not-a-quoted-path\nDROPPED 3\nEXIT 0\n%s\n", "/a", observe.ReportStart)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obs, err := parseObservations(path)
+	if err != nil {
+		t.Fatalf("parseObservations: %v", err)
+	}
+	if len(obs.Reads) != 1 {
+		t.Errorf("Reads = %v, want only the readable record", obs.Reads)
+	}
+	if obs.Dropped != 4 {
+		t.Errorf("Dropped = %d, want 4 (the observer's 3 plus the unquotable record)", obs.Dropped)
+	}
+}

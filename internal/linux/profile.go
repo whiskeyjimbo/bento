@@ -170,7 +170,8 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 
 // parseObservations reads the launcher's observation report: "R <path>" and
 // "W <path>" lines for opens, an "EXEC" line if the target spawned a subprocess,
-// and an "EXIT <code>" or "SIGNAL <n>" line carrying the run's exit status.
+// an "EXIT <code>" or "SIGNAL <n>" line carrying the run's exit status, and a
+// "DROPPED <n>" line counting accesses the observer could not name.
 func parseObservations(path string) (profile.Observation, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -199,17 +200,28 @@ func parseObservations(path string) (profile.Observation, error) {
 			started = true
 		case line == "EXEC":
 			obs.Execed = true
+		// An unquotable record is a path this run touched and the proposal will not
+		// carry, so it counts as a drop rather than vanishing - the same honesty the
+		// observer's own DROPPED line provides.
 		case strings.HasPrefix(line, "R "):
 			if p, err := strconv.Unquote(line[2:]); err == nil {
 				obs.Reads = append(obs.Reads, p)
+			} else {
+				obs.Dropped++
 			}
 		case strings.HasPrefix(line, "W "):
 			if p, err := strconv.Unquote(line[2:]); err == nil {
 				obs.Writes = append(obs.Writes, p)
+			} else {
+				obs.Dropped++
 			}
 		case strings.HasPrefix(line, "EXIT "):
 			if n, err := strconv.Atoi(line[5:]); err == nil {
 				obs.ExitCode = n
+			}
+		case strings.HasPrefix(line, "DROPPED "):
+			if n, err := strconv.Atoi(line[8:]); err == nil {
+				obs.Dropped += n
 			}
 		case strings.HasPrefix(line, "SIGNAL "):
 			if n, err := strconv.Atoi(line[7:]); err == nil {

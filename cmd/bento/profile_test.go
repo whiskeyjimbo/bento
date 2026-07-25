@@ -322,3 +322,18 @@ func TestClampShieldedGrants(t *testing.T) {
 		t.Errorf("ordinary write must be kept; keptWrites=%v", keptW)
 	}
 }
+
+// A clean exit says nothing about whether the observer could name everything it saw, so
+// the two warnings are independent and a run that is both signaled and lossy reports both.
+func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
+	if got := profileWarnings(profile.Observation{}); len(got) != 0 {
+		t.Errorf("a clean, complete observation warns about nothing; got %v", got)
+	}
+	got := profileWarnings(profile.Observation{Dropped: 2})
+	if len(got) != 1 || !strings.Contains(got[0], "could not name 2 file access") {
+		t.Errorf("a lossy but clean run must still warn; got %v", got)
+	}
+	if got := profileWarnings(profile.Observation{Signaled: true, Signal: 9, Dropped: 1}); len(got) != 2 {
+		t.Errorf("a signaled AND lossy run must report both reasons; got %v", got)
+	}
+}

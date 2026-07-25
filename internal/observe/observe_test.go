@@ -462,11 +462,11 @@ os.close(fd)
 
 func TestResolveAtAnchorsAndDrops(t *testing.T) {
 	// An absolute path and an empty path are returned unchanged.
-	if got := resolveAt(0, 5, "/abs/x"); got != "/abs/x" {
-		t.Errorf("absolute: got %q, want it unchanged", got)
+	if got, ok := resolveAt(0, 5, "/abs/x"); got != "/abs/x" || !ok {
+		t.Errorf("absolute: got %q, %v, want it unchanged and not a drop", got, ok)
 	}
-	if got := resolveAt(0, atFdCwd, ""); got != "" {
-		t.Errorf("empty: got %q, want it unchanged", got)
+	if got, ok := resolveAt(0, atFdCwd, ""); got != "" || !ok {
+		t.Errorf("empty: got %q, %v, want it unchanged and not a drop", got, ok)
 	}
 	// An AT_FDCWD relative path is anchored at the process's working directory, read
 	// from /proc/<pid>/cwd. Using this test process's own pid, the anchor is the
@@ -476,16 +476,17 @@ func TestResolveAtAnchorsAndDrops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveAt(os.Getpid(), atFdCwd, "rel/x"); got != filepath.Join(cwd, "rel/x") {
-		t.Errorf("AT_FDCWD: got %q, want it anchored at %q", got, filepath.Join(cwd, "rel/x"))
+	if got, ok := resolveAt(os.Getpid(), atFdCwd, "rel/x"); got != filepath.Join(cwd, "rel/x") || !ok {
+		t.Errorf("AT_FDCWD: got %q, %v, want it anchored at %q", got, ok, filepath.Join(cwd, "rel/x"))
 	}
 	// A pid whose /proc/<pid>/cwd cannot be read, and a descriptor that is not a live
-	// directory, both drop to empty rather than pass the bare relative path through.
-	if got := resolveAt(0, atFdCwd, "rel/x"); got != "" {
-		t.Errorf("unreadable cwd: got %q, want dropped to empty", got)
+	// directory, both drop rather than pass the bare relative path through - and they
+	// report the drop, so the count reaches the report instead of reading as "no access".
+	if got, ok := resolveAt(0, atFdCwd, "rel/x"); got != "" || ok {
+		t.Errorf("unreadable cwd: got %q, %v, want a reported drop", got, ok)
 	}
-	if got := resolveAt(os.Getpid(), 0x7fffffff, "rel/x"); got != "" {
-		t.Errorf("unresolvable dirfd: got %q, want dropped to empty", got)
+	if got, ok := resolveAt(os.Getpid(), 0x7fffffff, "rel/x"); got != "" || ok {
+		t.Errorf("unresolvable dirfd: got %q, %v, want a reported drop", got, ok)
 	}
 }
 
