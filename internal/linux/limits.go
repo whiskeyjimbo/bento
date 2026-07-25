@@ -236,7 +236,9 @@ var scopeBusVars = []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
 // The added values are for systemd-run only, which is why the names come back: the
 // launcher drops exactly them before exec, so the target still sees only the policy
 // environment. They travel in the environment rather than in argv because this tier has
-// no PID namespace, and a same-uid host process can read another's /proc/self/cmdline.
+// no PID namespace: a same-uid host process can read another's /proc/pid/cmdline, while
+// the launcher's PR_SET_DUMPABLE(0) makes its /proc/pid/environ root-owned. That matters
+// less for the bus address than for the policy values sharing the same channel.
 func withScopeBusVars(env []string, policyEnv map[string]string) (out []string, added []string) {
 	out = env
 	for _, name := range scopeBusVars {

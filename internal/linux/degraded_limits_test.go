@@ -74,9 +74,39 @@ func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 	}
 }
 
+// Everything above would still pass with the scope wrapping removed - the report reads
+// the host's capability, not this run - so the cap has to be proven to BIND. The probe
+// touches far more memory than the limit allows and must be OOM-killed by the cgroup;
+// unwrapped it would allocate happily and exit 7. This is the assertion that fails if
+// the degraded tier ever goes back to running the target directly while still reporting
+// LayerLimits=Enforced.
+func TestDegradedRunMemoryLimitActuallyBinds(t *testing.T) {
+	requireDegraded(t)
+	if ok, reason := canCreateScope(); !ok {
+		t.Skip("no usable systemd user scope: " + reason)
+	}
+
+	p := &policy.Policy{
+		Entrypoint: buildEnvDumpProbe(t),
+		Exec:       policy.ExecNone,
+		Limits:     policy.Limits{Memory: "48M"},
+	}
+	var out strings.Builder
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
+		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"BENTO_ALLOC": "512"}})
+	if err != nil {
+		t.Fatalf("scoped degraded run failed: %v\noutput:\n%s", err, out.String())
+	}
+	// 128+SIGKILL: the cgroup OOM killer, the only thing that stops this probe.
+	if res.ExitCode != 137 {
+		t.Fatalf("exit code = %d, want 137 (OOM-killed at the 48M cap); the memory limit did not bind\noutput:\n%s", res.ExitCode, out.String())
+	}
+}
+
 // buildEnvDumpProbe compiles a static probe that writes its own environment to the
-// path named by BENTO_DUMP and exits 7. Static (CGO off) so it needs no libc in the
-// read set.
+// path named by BENTO_DUMP and exits 7, or - with BENTO_ALLOC set to a megabyte count -
+// touches that much memory first, so a bound cap kills it before it can exit. Static
+// (CGO off) so it needs no libc in the read set.
 func buildEnvDumpProbe(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -88,10 +118,23 @@ func buildEnvDumpProbe(t *testing.T) string {
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
 func main() {
+	if mb, err := strconv.Atoi(os.Getenv("BENTO_ALLOC")); err == nil {
+		// Touch every page: an untouched allocation is not charged to the cgroup.
+		var held [][]byte
+		for i := 0; i < mb; i++ {
+			b := make([]byte, 1<<20)
+			for j := range b {
+				b[j] = byte(j)
+			}
+			held = append(held, b)
+		}
+		_ = held
+	}
 	os.WriteFile(os.Getenv("BENTO_DUMP"), []byte(strings.Join(os.Environ(), "\n")), 0o644)
 	os.Exit(7)
 }

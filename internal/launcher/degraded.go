@@ -180,8 +180,8 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 	fs := flag.NewFlagSet(SentinelLaunchDegraded, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		execMode          string
-		scratch           string
+		execMode                    string
+		scratch                     string
 		read, write, exec, stripEnv stringList
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
