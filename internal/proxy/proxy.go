@@ -19,6 +19,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -66,9 +67,13 @@ type Proxy struct {
 	// discovery; nil disables it. Set once before Serve, then read-only. See nat64.go.
 	discoverAAAA func(ctx context.Context) ([]net.IP, error)
 
-	// nat64 holds the NAT64 prefixes discovered at Serve start. Populated once,
-	// before any handler runs, so concurrent classify reads need no lock.
+	// nat64 holds the NAT64 prefixes discovered at Serve start. Written once, before
+	// any handler runs, so concurrent classify reads need no lock. The served guard
+	// is what makes "once" true: a second Serve would rewrite it under live handlers.
 	nat64 []nat64Prefix
+
+	// served marks that Serve has been entered, so a Proxy is used at most once.
+	served atomic.Bool
 }
 
 // Option configures a Proxy.
@@ -352,7 +357,14 @@ const maxConcurrent = 512
 
 // Serve accepts connections on l and enforces the allowlist on each until ctx is
 // cancelled or l is closed. It returns when l stops accepting.
+//
+// A Proxy serves at most once. NAT64 discovery writes p.nat64 unlocked on the
+// promise that no handler is running yet, which a second Serve would break, so
+// re-entry is an error rather than a data race under live tunnels.
 func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
+	if !p.served.CompareAndSwap(false, true) {
+		return errors.New("proxy: Serve called more than once on the same Proxy")
+	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrent)
 	// Derive a cancellable context so the closer goroutine below always exits,

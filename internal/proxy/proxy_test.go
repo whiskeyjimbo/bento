@@ -360,6 +360,37 @@ func TestServeReturnsTerminalAcceptError(t *testing.T) {
 	}
 }
 
+// NAT64 discovery writes p.nat64 with no lock, safe only because it runs before any
+// handler exists. A second Serve on the same *Proxy would rewrite it while the first
+// Serve's tunnels are classifying against it, so re-entry must be refused before
+// discovery runs at all.
+func TestSecondServeIsRefusedBeforeItRewritesDiscovery(t *testing.T) {
+	calls := 0
+	lookup := func(context.Context) ([]net.IP, error) {
+		calls++
+		if calls == 1 {
+			return []net.IP{net.ParseIP("2001:db8:1:2:3:4:c000:aa")}, nil // /96 site prefix
+		}
+		return []net.IP{net.ParseIP("2001:db8:aaaa:bbbb::c000:aa")}, nil // a different prefix
+	}
+	p := New(egressRules, WithNAT64Discovery(lookup), WithDialer(fakeDialer("x")))
+	if err := p.Serve(context.Background(), &deadListener{err: fmt.Errorf("listener is gone")}); err == nil {
+		t.Fatal("first Serve should return the listener's terminal error")
+	}
+	first := p.nat64
+
+	err := p.Serve(context.Background(), &deadListener{err: fmt.Errorf("listener is gone")})
+	if err == nil {
+		t.Error("a second Serve on the same Proxy must be refused, not served")
+	}
+	if calls != 1 {
+		t.Errorf("discovery ran %d times; a refused Serve must not re-run it", calls)
+	}
+	if len(p.nat64) != len(first) || (len(first) > 0 && p.nat64[0] != first[0]) {
+		t.Errorf("nat64 = %+v after the refused Serve, want the first Serve's %+v", p.nat64, first)
+	}
+}
+
 // deadListener fails every Accept, standing in for a listener whose socket has been
 // removed or whose fd was closed out from under the proxy.
 type deadListener struct {
