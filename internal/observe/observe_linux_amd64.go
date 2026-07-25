@@ -18,7 +18,9 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -71,13 +73,31 @@ const writeFlags = syscall.O_WRONLY | syscall.O_RDWR | syscall.O_CREAT | syscall
 // observation as a failed one.
 func Supported() bool { return true }
 
+// traceCalls serializes Trace within a process. The loop dequeues stops with
+// Wait4(-1) because there is no wait-for-this-set syscall, and a -1 wait CONSUMES
+// another concurrent trace's stops rather than merely seeing them: the thief would
+// record a foreign tracee's file accesses into its own Result - a misattributed audit
+// record, the one failure this package must not have - while the robbed call died on
+// ECHILD. Serializing is what makes the -1 wait safe; the residual is that a -1 wait
+// still reaps an unrelated child of the CALLING process, which is why Trace documents
+// that it owns the process's child reaping for its duration.
+var traceCalls sync.Mutex
+
 // Trace runs argv under ptrace and reports the files it opened and whether it
 // spawned subprocesses. The target runs with the given environment and standard
 // streams; a non-zero exit is returned in Result, not as an error.
+//
+// Trace is single-flight and takes over child reaping for its duration: it dequeues
+// wait statuses with Wait4(-1) (ptrace offers no way to wait on one tracee set), so
+// concurrent calls are serialized, and a caller must not have its own children whose
+// exit status it needs while a trace runs - this consumes it. bento's profiling path
+// satisfies both: the trace runs in the dedicated in-sandbox launcher stage.
 func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, fmt.Errorf("observe: empty argv")
 	}
+	traceCalls.Lock()
+	defer traceCalls.Unlock()
 
 	// ptrace requires every call to come from the thread that started the tracee,
 	// so the whole trace runs pinned to one OS thread.
@@ -88,10 +108,25 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	// When a stream is not an *os.File, Start pipes it through a copier goroutine, and
+	// only Wait joins those goroutines and closes the parent ends of the pipes. This
+	// loop reaps the tracee itself (ptrace requires it), so Wait's own wait fails - but
+	// it still joins the copiers and closes the pipes, which is why it is called anyway
+	// below. WaitDelay bounds that join: without it a descendant still holding the pipe
+	// would block the join forever, where the old code merely abandoned the goroutine.
+	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("observe: starting target: %w", err)
 	}
 	root := cmd.Process.Pid
+
+	// Registered before the reap guard below so it runs AFTER it (defers are LIFO):
+	// the copiers finish when the last holder of the pipe is gone, so the tracees must
+	// be killed first. The error is dropped deliberately - it reports this loop's own
+	// reaping as a failed wait, and the exit status comes from that reaping, not here.
+	// Without this call an embedder passing a bytes.Buffer gets truncated output and a
+	// leaked goroutine writing into it after Trace returned.
+	defer func() { _ = cmd.Wait() }()
 
 	// Every tracee the loop has seen and not yet reaped: root, plus any descendant
 	// auto-attached via PTRACE_O_TRACECLONE/FORK/VFORK. The cleanup guard reaps all of
