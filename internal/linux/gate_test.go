@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
@@ -198,7 +199,12 @@ func TestRunValidatesThePolicyItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Env: []string{"NOT A NAME"}}
-	_, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	// Bounded: a regression here means Run proceeds into the real sandbox instead of
+	// refusing, and without a deadline that stalls the package until the test binary
+	// times out rather than reporting a failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := New().Run(ctx, p, enforce.Process{}, enforce.RunOptions{})
 	if err == nil || !strings.Contains(err.Error(), "invalid env name") {
 		t.Fatalf("Run with an invalid policy: err = %v, want the policy validation error", err)
 	}
