@@ -1,10 +1,5 @@
 version: "2"
 
-run:
-  # This checkout is not part of the parent go.work; without this the linter
-  # loads packages under the workspace and fails before it lints anything.
-  go: "1.26"
-
 linters:
   default: standard
   enable:
@@ -75,11 +70,16 @@ linters:
           - errcheck
 
       # Malformed manifests are the fixture: a misspelled key and an embedded
-      # bidi override are what these cases assert the parser rejects.
+      # bidi override are what these cases assert the parser rejects. Scoped to
+      # the two rules, since staticcheck also carries the real-bug SA checks.
+      - path: manifest/manifest_test\.go
+        linters:
+          - staticcheck
+        text: "ST1018"
       - path: manifest/manifest_test\.go
         linters:
           - misspell
-          - staticcheck
+        text: "netwrok"
 
 formatters:
   enable:
