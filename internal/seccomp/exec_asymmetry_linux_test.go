@@ -74,3 +74,17 @@ func TestExecBlockIsSoftAllowsExecveatHelper(t *testing.T) {
 	}
 	fmt.Println("ASYMMETRY_OK")
 }
+
+// execveat(AT_FDCWD, path, ..., 0) resolves a relative path against the working
+// directory exactly as execve does, so an absolute argv[0] is a checked precondition
+// here, not something the syscall gives for free. Exec must refuse a relative one, or
+// it diverges from the supervising path (superviseTarget), which refuses it to avoid a
+// $PATH lookup - and the target that runs is not the one the manifest named.
+func TestExecRejectsRelativeArgv0(t *testing.T) {
+	if err := Exec([]string{"true"}, nil); err == nil || !strings.Contains(err.Error(), "absolute path") {
+		t.Errorf("Exec with a relative argv[0] = %v, want a refusal naming the absolute-path requirement", err)
+	}
+	if err := Exec(nil, nil); err == nil {
+		t.Error("Exec with an empty argv must refuse")
+	}
+}

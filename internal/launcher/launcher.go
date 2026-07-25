@@ -379,8 +379,10 @@ func proxyEnv() []string {
 func superviseTarget(target, env []string) (int, error) {
 	// exec.Command does a $PATH lookup when target[0] has no slash, resolving against
 	// the target's own (policy-supplied) PATH - a different binary than intended. The
-	// Block path (seccomp.Exec via execveat) requires an absolute argv[0]; enforce the
-	// same invariant here so the two exec modes cannot diverge on a relative target.
+	// Block path (seccomp.Exec via execveat) resolves a relative argv[0] against the
+	// working directory rather than a PATH, so it is the milder failure, but it is a
+	// failure too; both paths refuse one, which is what keeps the exec modes from
+	// diverging on the same target.
 	if len(target) == 0 || !filepath.IsAbs(target[0]) {
 		return 0, fmt.Errorf("launcher: target command must be an absolute path, got %q", target)
 	}

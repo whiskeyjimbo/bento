@@ -12,6 +12,7 @@ package seccomp
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -123,11 +124,20 @@ func BlockProcessReach() error {
 
 // Exec replaces the current process with argv via execveat(2). The exec-block
 // filter permits execveat (it denies only execve), so this transition succeeds
-// while the target's later execve attempts do not. argv[0] must be an absolute
-// path. Exec returns only on failure.
+// while the target's later execve attempts do not. Exec returns only on failure.
+//
+// argv[0] must be absolute, and that is enforced here rather than assumed:
+// execveat(AT_FDCWD, path, ..., 0) resolves a relative path against the caller's
+// working directory exactly as execve would, so nothing about this path makes an
+// absolute argv[0] intrinsic. The supervising sibling refuses a relative target to
+// keep exec.Command off a $PATH lookup; refusing it here too is what actually stops
+// the two exec modes from diverging.
 func Exec(argv, envp []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("seccomp: empty argv")
+	}
+	if !filepath.IsAbs(argv[0]) {
+		return fmt.Errorf("seccomp: target command must be an absolute path, got %q", argv[0])
 	}
 	pathPtr, err := syscall.BytePtrFromString(argv[0])
 	if err != nil {

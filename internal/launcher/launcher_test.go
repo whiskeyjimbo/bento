@@ -15,8 +15,11 @@ import (
 )
 
 // superviseTarget must refuse a relative target[0]: exec.Command would otherwise do a
-// $PATH lookup and run a different binary than the manifest named, diverging from the
-// Block path (seccomp.Exec) which requires an absolute argv[0].
+// $PATH lookup and run a different binary than the manifest named. The Block path
+// (seccomp.Exec) refuses one as well - see TestExecRejectsRelativeArgv0 in the seccomp
+// package - so the two exec modes agree. Neither is covered by the other: execveat
+// resolves a relative path against the working directory perfectly happily, so the
+// refusal there is a check, not a property of the syscall.
 func TestSuperviseTargetRejectsRelative(t *testing.T) {
 	if _, err := superviseTarget([]string{"true"}, nil); err == nil {
 		t.Error("superviseTarget ran a relative target[0] instead of refusing it")
