@@ -736,3 +736,124 @@ func TestMalformedRequestRejected(t *testing.T) {
 		c.Close()
 	}
 }
+
+// Every handler consults the gatekeeper from its own goroutine, so the gate, the
+// dialer and the observer all run concurrently on a real run - and nothing else
+// tests them that way. The gate's own axes are covered singly (panic denies,
+// cancellation unblocks a gate blocked in a prompt, the slot cap refuses past
+// capacity); what is untested is whether a decision stays attached to ITS
+// connection when many are in flight. A gate verdict that crossed connections
+// would open a tunnel to a host the gate denied, which no single-connection test
+// can see.
+//
+// Every gate call is held until all of them have arrived, so the decisions really
+// do overlap rather than happening to serialize. Run with -race: the observer is
+// called from every handler, and a production observer (egressCollector, and the
+// profiler's recording closure) takes a lock for exactly this reason.
+func TestGatekeeperUnderConcurrencyOpensOnlyAdmittedTunnels(t *testing.T) {
+	const conns = 64 // well under maxConcurrent, so nothing is refused at the cap
+
+	var (
+		mu        sync.Mutex
+		dialed    []string
+		decisions = map[string]Decision{}
+	)
+	arrived := make(chan struct{}, conns)
+	release := make(chan struct{})
+
+	p := New(nil,
+		WithGatekeeper(func(_ context.Context, host, _ string) bool {
+			arrived <- struct{}{}
+			<-release
+			return strings.HasPrefix(host, "admit")
+		}),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			mu.Lock()
+			dialed = append(dialed, addr)
+			mu.Unlock()
+			return fakeDialer("tunnel")(ctx, network, addr)
+		}),
+		WithObserver(func(d Decision, host, port string) {
+			mu.Lock()
+			decisions[host] = d
+			mu.Unlock()
+		}),
+	)
+	dialProxy, stop := startProxy(t, p)
+	// Releasing before stop() is what lets Serve's wg.Wait return; the Once covers
+	// the fatal paths below, which would otherwise leave every handler in the gate.
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer func() { unblock(); stop() }()
+
+	type result struct {
+		host   string
+		status string
+	}
+	results := make(chan result, conns)
+	for i := range conns {
+		host := fmt.Sprintf("admit%d.example.com", i)
+		if i%2 == 1 {
+			host = fmt.Sprintf("deny%d.example.com", i)
+		}
+		go func() {
+			c := dialProxy()
+			defer c.Close()
+			c.SetDeadline(time.Now().Add(30 * time.Second))
+			fmt.Fprintf(c, "CONNECT %s:443 HTTP/1.1\r\n\r\n", host)
+			status, err := bufio.NewReader(c).ReadString('\n')
+			if err != nil {
+				status = "read error: " + err.Error()
+			}
+			results <- result{host, strings.TrimSpace(status)}
+		}()
+	}
+
+	// Hold every gate call until all of them are in it, so the verdicts below are
+	// decided concurrently. Without this the handlers could serialize and the test
+	// would prove only what the single-connection tests already do.
+	for range conns {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			t.Fatal("not every connection reached the gatekeeper; a handler is stuck before the gate")
+		}
+	}
+	unblock()
+
+	for range conns {
+		r := <-results
+		want := "403"
+		if strings.HasPrefix(r.host, "admit") {
+			want = "200"
+		}
+		if !strings.Contains(r.status, want) {
+			t.Errorf("%s got %q, want %s - a gate verdict landed on the wrong connection", r.host, r.status, want)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for host, d := range decisions {
+		want := Denied
+		if strings.HasPrefix(host, "admit") {
+			want = AdmittedByGate
+		}
+		if d != want {
+			t.Errorf("observer reported %s as %q, want %q", host, d, want)
+		}
+	}
+	if len(decisions) != conns {
+		t.Errorf("observer saw %d decisions, want one per connection (%d)", len(decisions), conns)
+	}
+	// The teeth: a denied host must never have been dialed. A tunnel to it is an
+	// open state the 403 status would not reveal, since the status is written by the
+	// same handler either way.
+	if len(dialed) != conns/2 {
+		t.Errorf("dialed %d upstreams, want one per admitted host (%d): %v", len(dialed), conns/2, dialed)
+	}
+	for _, addr := range dialed {
+		if !strings.HasPrefix(addr, "admit") {
+			t.Errorf("dialed %q, which the gatekeeper denied", addr)
+		}
+	}
+}
