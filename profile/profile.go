@@ -91,13 +91,14 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	}
 
 	runtime := runtimeTree(obs.Interpreter)
+	// The install root itself counts as in-tree, not just the paths beneath it: a read
+	// of the root is the same runtime noise as a read of its stdlib.
+	inRuntime := func(p string) bool {
+		return runtime != "" && (p == runtime || strings.HasPrefix(p, runtime+"/"))
+	}
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || isSystemPath(p) ||
-			resolvesIntoProc(p) ||
-			// The install root itself matches, not just paths beneath it: a read of the
-			// root is the same runtime noise, and a write inside it collapses via
-			// writeDir to the root, which must not become a writable grant.
-			(runtime != "" && (p == runtime || strings.HasPrefix(p, runtime+"/")))
+			resolvesIntoProc(p) || inRuntime(p)
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
@@ -105,6 +106,14 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	// grant of its directory.
 	writeDir := func(p string) string {
 		if !filepath.IsAbs(p) {
+			return ""
+		}
+		// A runtime write is dropped by its observed name, before the collapse. mkdir,
+		// unlink, and rename need write access to the parent, so they are recorded
+		// against the entry itself: collapsing a write named at the runtime root first
+		// would propose its parent - the tree holding every installed version - which no
+		// later filter recognizes as runtime.
+		if inRuntime(p) {
 			return ""
 		}
 		return filepath.Dir(p)

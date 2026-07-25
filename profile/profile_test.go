@@ -244,24 +244,25 @@ func TestSynthesizeDropsRuntimeDirGrants(t *testing.T) {
 }
 
 // The runtime install root is dropped as itself, not just as a prefix of the paths
-// beneath it. A read of the root is the same runtime noise as a read of its stdlib, and
-// a write anywhere directly in it collapses to a grant of the root - a writable
-// interpreter tree, which nothing downstream clamps (it is neither top-level nor the
-// home dir) and which hands anyone who approves the manifest a place to plant code the
-// next run executes.
+// beneath it. A read of the root is the same runtime noise as a read of its stdlib; a
+// write inside it would collapse to a grant of the root, and a write named at the root
+// (mkdir, unlink, and rename are recorded against the entry, since they need write on
+// the parent) would collapse to the tree holding every installed version. Neither
+// escaping grant is clamped downstream - they are neither top-level nor the home dir -
+// so approving such a manifest hands the target a writable interpreter tree.
 func TestSynthesizeDropsRuntimeRootItself(t *testing.T) {
 	root := "/opt/toolchains/python/3.14"
 	obs := Observation{
 		Interpreter: root + "/bin/python3.14",
 		Reads:       []string{root, root + "/lib/python3.14/os.py", "/data/input.txt"},
-		Writes:      []string{root + "/scratch.log"},
+		Writes:      []string{root + "/scratch.log", root},
 	}
 	p := Synthesize("/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
 		t.Errorf("read = %v, want just the script's own input (the runtime root is noise)", p.Read)
 	}
 	if len(p.Write) != 0 {
-		t.Errorf("write = %v, want no writable grant on the interpreter's install root", p.Write)
+		t.Errorf("write = %v, want no writable grant on the interpreter's install root or its parent", p.Write)
 	}
 }
 
