@@ -118,6 +118,16 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		}
 	}
 
+	// The degraded stage reports what it applied through this file, as the bwrap tier
+	// does. It matters more here: every fence in this tier is the only one of its kind,
+	// so a stage that died before applying them ran nothing confined, and the report
+	// must not describe a shielded run.
+	appliedReport, dropApplied, err := newAppliedReport()
+	if err != nil {
+		return enforce.Result{}, err
+	}
+	defer dropApplied()
+
 	block, strictBlock := execBlockFlags(p.Exec, seccompSupported())
 	cfg := launcher.DegradedConfig{
 		Readable:    concat(sysReads, reads),
@@ -127,6 +137,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		StrictBlock: strictBlock,
 		Scratch:     scratch,
 		StripEnv:    stripEnv,
+		AppliedFD:   appliedReportFD,
 		Target:      degradedTarget(sb.interpreter, sb.entrypoint, p.Args),
 	}
 
@@ -152,6 +163,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// target exits, Wait waits this long for the pipes, then closes them and returns so
 	// the group sweep below can reap the straggler.
 	cmd.WaitDelay = 2 * time.Second
+	// Placed at FD appliedReportFD in the launcher, surviving the systemd-run scope
+	// wrapper above; the launcher marks it close-on-exec so the target never sees it.
+	cmd.ExtraFiles = []*os.File{appliedReport}
 
 	err = cmd.Run()
 	_ = killProcessGroup(cmd.Process)
@@ -162,7 +176,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
-		return enforce.Result{ExitCode: exitCodeOf(cmd.ProcessState), Report: report, ShieldedGrants: optedIn, Exposed: exposed}, nil
+		code := exitCodeOf(cmd.ProcessState)
+		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec == policy.ExecNoneStrict, code)
+		return enforce.Result{ExitCode: code, Report: report, ShieldedGrants: optedIn, Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

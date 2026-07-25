@@ -35,10 +35,11 @@ func New() (enforce.Enforcer, error) {
 //
 // When os.Args names a re-exec stage it runs to completion and never returns: it
 // exits with the target's exit code, or with 125 (bento's "could not run the
-// target" code) on a setup failure. A target that itself exits 125 is therefore
-// indistinguishable from a bento failure - the same ambiguity the CLI carries, and
-// something an embedder reading a Result cannot disambiguate from stderr the way a
-// human can. Otherwise it returns and the program's own startup proceeds.
+// target" code) on a setup failure. The exit code alone cannot tell the two apart -
+// a target may exit 125 itself - but the Result's Report can: a stage that fails
+// setup never writes its applied-layer report, so the layers it was to install come
+// back unenforced, naming the exit code. An embedder reads that rather than parsing
+// stderr. Otherwise it returns and the program's own startup proceeds.
 //
 // The whole binary re-executes inside the sandbox, so every package init() runs
 // again there, under a cleared environment. Keep package init cheap and free of

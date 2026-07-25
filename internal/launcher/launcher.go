@@ -57,6 +57,11 @@ type Config struct {
 	// uses it to synthesize a manifest from an observe-only run; no seccomp or Landlock is
 	// applied, so what the target does is fully observed.
 	ObserveFD int
+	// AppliedFD, when > 0, is an inherited descriptor this stage writes its
+	// applied-layer report to before the target is reached, so the host's run report
+	// reflects what was really installed rather than only what the host probed as
+	// possible. See applied.go. Zero means no report.
+	AppliedFD int
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -133,13 +138,18 @@ func Run(cfg Config) (int, error) {
 		return runObserve(cfg, env)
 	}
 
+	applied := appliedReport{fd: cfg.AppliedFD}
+	installed := AppliedExecNone
 	if cfg.Block {
-		if err := installExecFilter(cfg.StrictBlock); err != nil {
+		var err error
+		if installed, err = installExecFilter(cfg.StrictBlock); err != nil {
 			// Fail closed: never run the target unconfined while claiming to block
-			// subprocesses.
+			// subprocesses. No applied report is written, so the host reports the exec
+			// layers unenforced rather than carrying the probe's Enforced through.
 			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
 		}
 	}
+	applied.record(AppliedExecFilter, installed, nil)
 
 	// The Landlock backstop is applied last, after the egress bridge has already
 	// started (the bridge must open its socket before writes are confined) and
@@ -153,6 +163,16 @@ func Run(cfg Config) (int, error) {
 	// is a silent no-op inside Restrict, not an error.)
 	if err := landlock.Restrict(cfg.Writable); err != nil {
 		fmt.Fprintf(os.Stderr, "[bento] warning: the Landlock filesystem backstop could not be applied (%v); bwrap confinement still holds\n", err)
+		applied.record(AppliedLandlock, AppliedNo, err)
+	} else {
+		applied.record(AppliedLandlock, AppliedYes, nil)
+	}
+
+	// Written before the target is reached, because on the exec-block path this
+	// process is replaced by it and there is no later moment to write from. Every
+	// layer above is decided by now, so the report is complete when the marker lands.
+	if err := applied.write(); err != nil {
+		return 0, err
 	}
 
 	if cfg.Block {
@@ -256,15 +276,22 @@ func dropInheritedFDs() error {
 }
 
 // installExecFilter installs the strongest exec-block filter the policy asks for
-// and this architecture provides. none-strict gets the fork/clone-blocking filter
-// on amd64; where that is unavailable it falls back to the execve-only block, and
-// the run report (from Probe) marks the exec-strict layer degraded so the gap is
-// never silent.
-func installExecFilter(strict bool) error {
+// and this architecture provides, returning which one landed (AppliedExecStrict or
+// AppliedExecBasic). none-strict gets the fork/clone-blocking filter on amd64;
+// where that is unavailable it falls back to the execve-only block, and the
+// returned value is what tells the host to report the exec-strict layer degraded,
+// so the gap is never silent.
+func installExecFilter(strict bool) (string, error) {
 	if strict && strictExecSupported() {
-		return seccomp.BlockExecStrict()
+		if err := seccomp.BlockExecStrict(); err != nil {
+			return "", err
+		}
+		return AppliedExecStrict, nil
 	}
-	return seccomp.BlockExec()
+	if err := seccomp.BlockExec(); err != nil {
+		return "", err
+	}
+	return AppliedExecBasic, nil
 }
 
 // startBridge launches the bridge as a separate child process before any filter

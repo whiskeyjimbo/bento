@@ -99,6 +99,17 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		defer stopProxy()
 	}
 
+	// The in-sandbox launcher reports what it actually applied through this file, and
+	// the report below is reconciled against it: without that, every layer the child
+	// installs would be claimed on the strength of a host-side probe alone. Set before
+	// compile, which encodes the descriptor into the launch invocation.
+	sb.applied = true
+	appliedReport, dropApplied, err := newAppliedReport()
+	if err != nil {
+		return enforce.Result{}, err
+	}
+	defer dropApplied()
+
 	args, shields, err := compile(p, proc, sb)
 	if err != nil {
 		return enforce.Result{}, err
@@ -161,15 +172,21 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
+	// bwrap passes this through to the launcher as FD appliedReportFD; it survives the
+	// systemd-run scope wrapper above too. The launcher marks it close-on-exec, so the
+	// target never inherits the channel.
+	cmd.ExtraFiles = []*os.File{appliedReport}
 
 	switch err := cmd.Run(); {
 	case err == nil:
 		stopProxy()
+		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec == policy.ExecNoneStrict, 0)
 		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		stopProxy()
+		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec == policy.ExecNoneStrict, ee.ExitCode())
 		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)

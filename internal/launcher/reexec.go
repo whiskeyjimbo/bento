@@ -33,6 +33,9 @@ func EncodeLaunch(cfg Config) []string {
 	if cfg.ObserveFD > 0 {
 		args = append(args, "--observe-fd", strconv.Itoa(cfg.ObserveFD))
 	}
+	if cfg.AppliedFD > 0 {
+		args = append(args, "--applied-fd", strconv.Itoa(cfg.AppliedFD))
+	}
 	for _, w := range cfg.Writable {
 		args = append(args, "--rw", w)
 	}
@@ -54,11 +57,13 @@ func DecodeLaunch(args []string) (Config, error) {
 		socket    string
 		execMode  string
 		observeFD int
+		appliedFD int
 		writable  stringList
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
 	fs.StringVar(&socket, "socket", "", "")
 	fs.IntVar(&observeFD, "observe-fd", 0, "")
+	fs.IntVar(&appliedFD, "applied-fd", 0, "")
 	fs.Var(&writable, "rw", "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, fmt.Errorf("launcher: parsing launch invocation: %w", err)
@@ -73,6 +78,7 @@ func DecodeLaunch(args []string) (Config, error) {
 		StrictBlock: strict,
 		Writable:    writable,
 		ObserveFD:   observeFD,
+		AppliedFD:   appliedFD,
 		Target:      fs.Args(),
 	}, nil
 }

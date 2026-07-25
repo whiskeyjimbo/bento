@@ -60,6 +60,11 @@ type sandbox struct {
 	// includes the report. That is not tamper-proof (a descendant can reach the fd via
 	// /proc/<launcher>/fd; see the launcher's runObserve).
 	observe bool
+	// applied signals that the launcher should write its applied-layer report to an
+	// inherited descriptor (FD appliedReportFD), which the host reconciles into the
+	// run report so a layer is claimed only once the child confirms it. Mutually
+	// exclusive with observe: profiling produces an observation, not a report.
+	applied bool
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
 	exists func(string) bool
@@ -267,6 +272,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	if sb.observe {
 		observeFD = observeReportFD
 	}
+	appliedFD := 0
+	if sb.applied {
+		appliedFD = appliedReportFD
+	}
 	// The launcher's Landlock backstop confines writes to exactly the paths
 	// passed here: the runtime scratch mounts plus the write grants. With the
 	// root remounted read-only above, those are the only paths bwrap leaves
@@ -281,6 +290,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		StrictBlock: strictBlock,
 		Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
 		ObserveFD:   observeFD,
+		AppliedFD:   appliedFD,
 		Target:      command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)

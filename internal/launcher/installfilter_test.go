@@ -44,6 +44,9 @@ func TestInstallExecFilterFallsBackWhenStrictUnsupported(t *testing.T) {
 		if !strings.Contains(out, "FORK_OK") {
 			t.Errorf("the fallback installed the STRICT filter (fork was blocked) instead of the execve-only block: %q", out)
 		}
+		if !strings.Contains(out, "INSTALLED "+AppliedExecBasic) {
+			t.Errorf("the fallback reported the wrong filter kind to the host: %q", out)
+		}
 	})
 
 	t.Run("strict control blocks fork", func(t *testing.T) {
@@ -53,6 +56,9 @@ func TestInstallExecFilterFallsBackWhenStrictUnsupported(t *testing.T) {
 		out := runInstallFilterChild(t, "strict")
 		if !strings.Contains(out, "FORK_BLOCKED") {
 			t.Errorf("with strict supported installExecFilter did not install the fork-blocking filter: %q", out)
+		}
+		if !strings.Contains(out, "INSTALLED "+AppliedExecStrict) {
+			t.Errorf("the strict path reported the wrong filter kind to the host: %q", out)
 		}
 	})
 }
@@ -78,10 +84,16 @@ func installFilterChild(mode string) {
 	if mode == "fallback" {
 		strictExecSupported = func() bool { return false }
 	}
-	if err := installExecFilter(true); err != nil {
+	installed, err := installExecFilter(true)
+	if err != nil {
 		os.Stdout.WriteString("INSTALL_ERR " + err.Error() + "\n")
 		return
 	}
+	// The kind the host will be told was applied, printed alongside the behavioral
+	// probes below so the report and the real filter are checked against each other -
+	// a claim of "strict" over a filter that lets fork through is the shape of lie
+	// this channel exists to prevent.
+	os.Stdout.WriteString("INSTALLED " + installed + "\n")
 
 	// execve a path that does not exist: EPERM proves the filter denied it before the
 	// kernel resolved the path; ENOENT proves execve reached resolution, so no block was

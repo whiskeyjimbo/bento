@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -47,6 +48,10 @@ type DegradedConfig struct {
 	// and that the target must not see. They are dropped just before exec, so the
 	// target still sees only the policy environment.
 	StripEnv []string
+	// AppliedFD, when > 0, is an inherited descriptor this stage writes its
+	// applied-layer report to before the target is reached; see applied.go. Zero
+	// means no report.
+	AppliedFD int
 	// Target is the absolute command to run: interpreter, entrypoint, and args.
 	Target []string
 }
@@ -106,11 +111,15 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 		env = append(env, "TMPDIR="+cfg.Scratch, "TMP="+cfg.Scratch, "TEMP="+cfg.Scratch)
 	}
 
+	applied := appliedReport{fd: cfg.AppliedFD}
+	installed := AppliedExecNone
 	if cfg.Block {
-		if err := installExecFilter(cfg.StrictBlock); err != nil {
+		var err error
+		if installed, err = installExecFilter(cfg.StrictBlock); err != nil {
 			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
 		}
 	}
+	applied.record(AppliedExecFilter, installed, nil)
 	// The degraded tier only ever runs a no-network manifest (a network manifest
 	// requires LayerNetwork, which is Unavailable without a netns, so it refuses at
 	// admission). So egress is always blocked here, giving even a static binary a real
@@ -139,6 +148,15 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if err := landlock.RestrictDegraded(cfg.Readable, cfg.Writable, cfg.ExecPaths); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not apply the Landlock confinement: %w", err)
 	}
+	applied.record(AppliedLandlock, AppliedYes, nil)
+
+	// Every fence in this tier is fatal on failure, so a report that reaches its
+	// marker is itself the proof that all of them are in place - and one that does not
+	// is what stops the host reporting a confined run for a stage that confined
+	// nothing. Written before the target is reached; see Run.
+	if err := applied.write(); err != nil {
+		return 0, err
+	}
 
 	if cfg.Block {
 		return 0, seccomp.Exec(cfg.Target, env)
@@ -153,6 +171,9 @@ func EncodeLaunchDegraded(cfg DegradedConfig) []string {
 	args := []string{SentinelLaunchDegraded, "--exec", execModeString(Config{Block: cfg.Block, StrictBlock: cfg.StrictBlock})}
 	if cfg.Scratch != "" {
 		args = append(args, "--scratch", cfg.Scratch)
+	}
+	if cfg.AppliedFD > 0 {
+		args = append(args, "--applied-fd", strconv.Itoa(cfg.AppliedFD))
 	}
 	for _, p := range cfg.Readable {
 		args = append(args, "--ro", p)
@@ -182,10 +203,12 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 	var (
 		execMode                    string
 		scratch                     string
+		appliedFD                   int
 		read, write, exec, stripEnv stringList
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
 	fs.StringVar(&scratch, "scratch", "", "")
+	fs.IntVar(&appliedFD, "applied-fd", 0, "")
 	fs.Var(&read, "ro", "")
 	fs.Var(&write, "rw", "")
 	fs.Var(&exec, "x", "")
@@ -205,6 +228,7 @@ func DecodeLaunchDegraded(args []string) (DegradedConfig, error) {
 		StrictBlock: strict,
 		Scratch:     scratch,
 		StripEnv:    stripEnv,
+		AppliedFD:   appliedFD,
 		Target:      fs.Args(),
 	}, nil
 }
