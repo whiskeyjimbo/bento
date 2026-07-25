@@ -53,6 +53,11 @@ func inScopeSection(section string) bool {
 		// host-exec sections (a plant that runs on the host later)
 		"arbitrary command execution", "startup files", "autostart", "session manager",
 		"systemd", "openrc", "desktop entries", "terminal emulator", "ipc socket",
+		// Directories on $PATH and the portable-app tree: planting a binary in one is run
+		// by the next bare command name that resolves to it, which is the same
+		// plant-that-runs-on-the-host-later model the exec keywords above cover. These sat
+		// in the out-of-scope bucket while the classifier claimed to cover exec.
+		"$path", "portable apps",
 	} {
 		if strings.Contains(s, kw) && !negatedKeyword(s, kw) {
 			return true
@@ -80,11 +85,19 @@ const credentialSection = "credential store (name-classified)"
 // way whether or not a profile carries headers. Browsers and per-app caches stay out, as
 // they are under inScopeSection.
 //
-// Chat clients are the one place this goes further than inScopeSection, which names no
-// messaging class: the ones matched here (pidgin, weechat, irssi, mcabber, coyim) keep
-// account passwords in plaintext on disk, which is the credential class by bento's own
-// rule. Messengers whose store is an encrypted message database - Signal, Session - stay
-// out; the line is plaintext credentials, not messaging.
+// Chat and VoIP clients are the one place this goes further than inScopeSection, which
+// names no messaging class: the ones matched here keep an account password, a private
+// key, or both in plaintext on disk, which is the credential class by bento's own rule.
+//
+// The boundary is drawn at the CLIENT'S OWN account credential, not at message content
+// and not at every recoverable token. So Signal and Session stay out - their store is an
+// encrypted message database. The Electron messengers stay out too, and this is the part
+// worth stating plainly rather than implying: Discord, Slack, Skype, and Telegram Desktop
+// hold plaintext-recoverable auth tokens and session keys, and are the standard
+// infostealer target set, so the "encrypted database" rationale does NOT cover them. They
+// are excluded because shielding a browser-profile-shaped Electron tree is browser scope,
+// which bento leaves to the profile shields above, not because their tokens are safe. A
+// deliberate decision to widen into that class is a scope change, not a token addition.
 //
 // This trades away one guarantee that inScopeSection has: a header-less file cannot make
 // "unrecognised = in-scope" work, since that would hard-fail on the ~1300 ordinary app
@@ -92,6 +105,13 @@ const credentialSection = "credential store (name-classified)"
 // scope silently, and the ratchet here is only as good as the vocabulary. That is
 // intrinsic to the profile's shape, not a gap to be closed; re-read the token list when a
 // new password manager becomes common.
+//
+// One boundary this mechanism cannot express: a token matches a path COMPONENT, so it
+// cannot separate a cloud-sync client's config tree from its synced document folder -
+// "nextcloud" catches both .config/Nextcloud (account tokens, a credential store) and
+// ~/Nextcloud plus ~/Nextcloud/Notes (user documents, which bento does not shield). Those
+// config trees are therefore shielded by name in the denylist and given no token here,
+// which keeps the documents out of scope instead of forcing a decision on them.
 func credentialName(path string) bool {
 	for comp := range strings.SplitSeq(strings.ToLower(path), "/") {
 		for _, tok := range []string{
@@ -120,6 +140,14 @@ func credentialName(path string) bool {
 			// pidgin, OTR private keys). Messengers whose store is an encrypted message
 			// database - Signal, Session - are firejail's privacy scope and stay out.
 			"purple", "weechat", "xchat", "irssi", "mcabber", "coyim",
+			"dino", "profanity", "psi", "gajim", "telepathy", "nicotine",
+			// SIP/VoIP account passwords, a client certificate INCLUDING its private key,
+			// and a device-pairing RSA key: key material, not message history.
+			"linphone", "mumble", "kdeconnect",
+			// remote-desktop saved credentials, the class remmina/anydesk already covers
+			"parsec",
+			// hashcat's potfile is recovered plaintext passwords - the cracked output
+			"hashcat",
 		} {
 			if strings.Contains(comp, tok) {
 				return true

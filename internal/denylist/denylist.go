@@ -113,6 +113,8 @@ func Home(home string) []Rule {
 		".composer/auth.json",       // Composer registry/VCS tokens
 		".bundle/config",            // bundler stores gem-source and push credentials here
 		".nuget/NuGet/NuGet.Config", // NuGet apikeys (the ~/.nuget/packages cache stays readable)
+		".ivy2/.credentials",        // Ivy resolver credentials (the ~/.ivy2 cache stays readable)
+		".sbt/.credentials",         // sbt's conventional credentials file, same shape
 
 		// Credential files various tools read by default.
 		".fetchmailrc",       // fetchmail account password
@@ -365,6 +367,22 @@ func Home(home string) []Rule {
 		// to them.
 		".local/bin",
 		"bin",
+		// The rest of the $PATH-resident binary directories firejail write-protects: each
+		// holds executables or shims a later shell resolves a bare command name to, so a
+		// planted file runs on the host under a name the user already types. The toolchain
+		// trees (.nvm, .rustup) are here for their shim directories; writes into them from
+		// a sandbox are host mutation, which a policy opts into explicitly when it means it.
+		".bin",
+		".cargo/bin",
+		".gem", // gem-installed binaries (the .gem/credentials file inside is DenyAll above)
+		".local/share/coursier/bin",
+		".luarocks",
+		".npm-packages",
+		".nvm",
+		".rustup",
+		// AppImages and other portable binaries launched by name from the file manager or
+		// a desktop entry; firejail write-protects this for the same reason.
+		"Applications",
 
 		// Gradle runs every .gradle script in init.d before each build, so a planted file
 		// executes on the next build with the developer's privileges. The credential file
@@ -805,6 +823,11 @@ var credentialAnchorDirs = []string{
 	".config/monero-project",
 	"Monero/wallets",
 	".config/Exodus",
+	// Ledger Live is the exception in this block: it is a hardware-wallet frontend, so the
+	// spending keys stay on the device and its config holds account xpubs and metadata. An
+	// xpub discloses the full transaction history and every future address of the account,
+	// which is the reconnaissance half of the same threat, so it is shielded alongside the
+	// key-bearing stores rather than with them.
 	".config/Ledger Live",
 	".config/cointop", // portfolio tracker: exchange API keys
 
@@ -898,6 +921,54 @@ var bulkStoreDirs = []string{
 	".config/geary",
 	".local/share/geary",
 	".cache/geary",
+
+	// Chat and VoIP clients that keep account passwords, private keys, or both in
+	// plaintext on disk - the same rule that admits pidgin/weechat/irssi above, applied to
+	// the protocols they do not cover. Hidden whole rather than per-file: each store also
+	// carries the message archive, and there is no in-sandbox need for either half.
+	".local/share/dino",                 // XMPP: OMEMO identity keys plus account passwords
+	".config/profanity",                 // XMPP console client account config
+	".local/share/profanity",            // its account/OTR key store
+	".config/gajim",                     // XMPP: saved account passwords
+	".local/share/gajim",                //
+	".cache/gajim",                      //
+	".config/psi",                       // XMPP (Psi/Psi+): account passwords and OTR keys
+	".config/psi+",                      //
+	".local/share/psi",                  //
+	".local/share/psi+",                 //
+	".local/share/Psi",                  // firejail carries both spellings; Qt picked either
+	".cache/psi",                        //
+	".cache/Psi",                        //
+	".local/share/telepathy",            // accounts.cfg holds the connection-manager passwords
+	".config/telepathy-account-widgets", //
+	".cache/telepathy",                  //
+	".nicotine",                         // Soulseek client: the account password in its config
+	".linphonerc",                       // SIP account auth password
+	".linphone-history.db",              // call history alongside it
+	".config/linphone",                  //
+	".local/share/linphone",             //
+	".config/Mumble",                    // Mumble client certificate INCLUDING its private key
+	".local/share/Mumble",               //
+	".local/share/data/Mumble",          // legacy Qt location for the same
+	".config/kdeconnect",                // device pairing RSA key and trusted-device list
+	".parsec",                           // remote-desktop client, the class remmina/anydesk already covers
+	// hashcat's potfile is recovered plaintext passwords - the cracked output, which is
+	// as sensitive as any store above.
+	".hashcat",
+	".local/share/hashcat",
+	".cache/hashcat",
+
+	// Cloud-sync client CONFIGURATION: the account tokens the client authenticates with.
+	// Only the config and state trees, never the synced document folders (~/Nextcloud,
+	// ~/Seafile) - those are user data, not secrets, and bento does not shield documents.
+	// Deliberately not given a credentialName token: the classifier matches on path
+	// components, and every token that catches .config/Nextcloud also catches ~/Nextcloud,
+	// so the boundary cannot be drawn there (see the note on credentialName).
+	".config/Nextcloud",
+	".local/share/Nextcloud",
+	".config/Seafile",
+	".dropbox",
+	".dropbox-dist",
 
 	// Browser profiles: cookies, session tokens, and saved-password databases.
 	".mozilla",               // Firefox

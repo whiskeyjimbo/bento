@@ -421,3 +421,54 @@ func TestFirejailCompleteness(t *testing.T) {
 	}
 	t.Errorf("firejail shields %d in-scope path(s) bento neither shields nor excludes - classify each (shield in denylist.go or add to IntentionalExclusions):%s", len(unclassified), b.String())
 }
+
+// The exec half of the classifier claimed to cover "a plant that runs on the host later"
+// while firejail's $PATH and portable-app sections sat in the out-of-scope bucket - the
+// most direct instance of that threat there is. Both must now classify in scope, and the
+// negated-exec header must still not.
+func TestInScopeSectionAdmitsPathSections(t *testing.T) {
+	for _, s := range []string{
+		"Make directories commonly found in $PATH read-only",
+		"Write-protection for portable apps",
+	} {
+		if !inScopeSection(s) {
+			t.Errorf("%q holds host-exec plant targets and must be in scope", s)
+		}
+	}
+	if inScopeSection("Configuration files that do not allow arbitrary command execution but that") {
+		t.Error("the negated exec header must stay out of scope")
+	}
+}
+
+// The Tier-2 vocabulary: each token names a store holding an account password or private
+// key. The counter-cases matter as much - the classifier must not quietly widen into
+// message content or into the Electron messengers, whose exclusion is a scope decision
+// recorded in credentialName's doc rather than an accident of the token list.
+func TestCredentialNameTierTwoTokens(t *testing.T) {
+	for _, p := range []string{
+		"/home/u/.local/share/dino", "/home/u/.config/gajim", "/home/u/.config/psi+",
+		"/home/u/.config/profanity", "/home/u/.local/share/telepathy", "/home/u/.nicotine",
+		"/home/u/.linphonerc", "/home/u/.config/Mumble", "/home/u/.config/kdeconnect",
+		"/home/u/.parsec", "/home/u/.hashcat",
+	} {
+		if !credentialName(p) {
+			t.Errorf("%s holds an account password or private key and must classify as a credential store", p)
+		}
+	}
+	for _, p := range []string{
+		// Encrypted message databases: the stated boundary.
+		"/home/u/.config/Signal", "/home/u/.config/Session",
+		// Electron messengers: excluded as browser-shaped scope, NOT because their
+		// tokens are safe. If one of these starts matching, it is a scope change.
+		"/home/u/.config/discord", "/home/u/.config/Slack", "/home/u/.TelegramDesktop",
+		// Cloud-sync: shielded by name in the denylist precisely so no token here
+		// catches the synced document folders too.
+		"/home/u/.config/Nextcloud", "/home/u/Nextcloud/Notes", "/home/u/.config/Seafile",
+		// Ordinary app dirs that make up the bulk of the header-less profile.
+		"/home/u/.config/vlc", "/home/u/.local/share/Steam",
+	} {
+		if credentialName(p) {
+			t.Errorf("%s must stay out of the name classifier; widening it is a deliberate scope change", p)
+		}
+	}
+}

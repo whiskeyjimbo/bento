@@ -1,6 +1,7 @@
 package denylist
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -723,11 +724,18 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 			t.Errorf("relative CARGO_HOME leaked a non-absolute shield path %q", r.Path)
 		}
 	}
+	// Pointing CARGO_HOME at the default must add nothing. Compared against the rules
+	// with it unset rather than against an enumerated list of the static ~/.cargo
+	// shields, which would need editing every time one is added - and would then be
+	// asserting the shield list rather than the relocation logic this test is about.
+	os.Unsetenv("CARGO_HOME")
+	baseline := map[string]bool{}
+	for _, r := range Home("/home/u") {
+		baseline[r.Path] = true
+	}
 	t.Setenv("CARGO_HOME", "/home/u/.cargo")
 	for _, r := range Home("/home/u") {
-		if strings.HasPrefix(r.Path, "/home/u/.cargo/") && r.Path != "/home/u/.cargo/credentials.toml" &&
-			r.Path != "/home/u/.cargo/credentials" && r.Path != "/home/u/.cargo/config.toml" &&
-			r.Path != "/home/u/.cargo/config" && r.Path != "/home/u/.cargo/env" {
+		if !baseline[r.Path] {
 			t.Errorf("CARGO_HOME=default must not add extra rules, saw %q", r.Path)
 		}
 	}
@@ -873,5 +881,96 @@ func TestHomeHidesCredentialsInsideWriteShieldedAgentTrees(t *testing.T) {
 		if tree.Deny != DenyWrite || secret.Deny != DenyAll {
 			t.Errorf("%s: want a DenyWrite tree around a DenyAll credential, got %+v and %+v", tc.tree, *tree, *secret)
 		}
+	}
+}
+
+// Tier-2 credential classes: the same "plaintext credentials on disk" rule bento already
+// applies to pidgin/weechat, extended to the protocols and tools that were only out of
+// scope because no classifier token matched them. Each store below holds an account
+// password, a private key, or cracked plaintext - not message content, which stays out.
+func TestHomeShieldsTierTwoCredentialStores(t *testing.T) {
+	rules := Home("/home/u")
+	byPath := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{
+		"/home/u/.local/share/dino",      // OMEMO identity keys and account passwords
+		"/home/u/.config/gajim",          // saved XMPP account passwords
+		"/home/u/.config/psi",            // XMPP account passwords and OTR keys
+		"/home/u/.local/share/Psi",       // firejail carries both spellings
+		"/home/u/.config/profanity",      //
+		"/home/u/.local/share/telepathy", // accounts.cfg connection-manager passwords
+		"/home/u/.nicotine",              //
+		"/home/u/.linphonerc",            // SIP account auth password
+		"/home/u/.config/Mumble",         // client certificate including its private key
+		"/home/u/.config/kdeconnect",     // device-pairing RSA key
+		"/home/u/.parsec",                // remote-desktop saved credentials
+		"/home/u/.hashcat",               // potfile: recovered plaintext passwords
+		"/home/u/.ivy2/.credentials",     // build-tool registry credentials
+		"/home/u/.sbt/.credentials",      //
+	} {
+		if r, ok := byPath[p]; !ok || r.Deny != DenyAll {
+			t.Errorf("%s must be shielded DenyAll, got %+v (present=%v)", p, byPath[p], ok)
+		}
+	}
+	// The build-tool trees stay readable, as in TestHomeShieldsPathsFirejailDoesNotList:
+	// only the credential file inside is hidden, so in-sandbox builds keep their caches.
+	for _, p := range []string{"/home/u/.ivy2", "/home/u/.sbt"} {
+		if r, ok := byPath[p]; ok {
+			t.Errorf("%s is shielded as %+v; only its credentials file should be", p, r)
+		}
+	}
+}
+
+// Cloud-sync clients: the config tree holds the account token and is shielded; the synced
+// DOCUMENT folder is user data and is deliberately left alone. The two cannot be told
+// apart by the audit's component-token classifier - any token matching .config/Nextcloud
+// also matches ~/Nextcloud - which is why these are shielded by name and given no token.
+func TestHomeShieldsCloudSyncConfigButNotDocuments(t *testing.T) {
+	rules := Home("/home/u")
+	byPath := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{
+		"/home/u/.config/Nextcloud",
+		"/home/u/.local/share/Nextcloud",
+		"/home/u/.config/Seafile",
+		"/home/u/.dropbox",
+	} {
+		if r, ok := byPath[p]; !ok || r.Deny != DenyAll || !r.Dir {
+			t.Errorf("%s must be a DenyAll dir shield, got %+v (present=%v)", p, byPath[p], ok)
+		}
+	}
+	for _, p := range []string{"/home/u/Nextcloud", "/home/u/Nextcloud/Notes", "/home/u/Seafile"} {
+		if r, ok := byPath[p]; ok {
+			t.Errorf("%s is the synced document folder, not a credential store, but is shielded as %+v", p, r)
+		}
+	}
+}
+
+// $PATH-resident binary directories: a planted file here runs on the host under the next
+// bare command name that resolves to it. Write-denied rather than hidden, since a build
+// legitimately reads and executes from its own toolchain.
+func TestHomeWriteShieldsPathBinaryDirs(t *testing.T) {
+	rules := Home("/home/u")
+	byPath := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{
+		"/home/u/.bin", "/home/u/.cargo/bin", "/home/u/.gem",
+		"/home/u/.local/share/coursier/bin", "/home/u/.luarocks", "/home/u/.npm-packages",
+		"/home/u/.nvm", "/home/u/.rustup", "/home/u/Applications",
+	} {
+		if r, ok := byPath[p]; !ok || r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s must be a DenyWrite dir shield, got %+v (present=%v)", p, byPath[p], ok)
+		}
+	}
+	// ~/.gem is write-shielded for its binaries while the credentials file inside stays
+	// hidden - the same DenyWrite-tree-around-a-DenyAll-file pairing the agent trees use.
+	if r, ok := byPath["/home/u/.gem/credentials"]; !ok || r.Deny != DenyAll {
+		t.Errorf("~/.gem/credentials must stay DenyAll inside the write-shielded tree, got %+v (present=%v)", r, ok)
 	}
 }
