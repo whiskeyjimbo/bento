@@ -71,3 +71,23 @@ changelog:
       - Merge pull request
       - Merge remote-tracking branch
       - Merge branch
+
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless: the signature carries the workflow identity that produced it, so a
+# consumer can verify the archives came from this repo's tagged release run
+# rather than from someone with a leaked key. Signing the checksum file covers
+# every archive through it.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+    output: true
