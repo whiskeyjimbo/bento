@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 
@@ -86,5 +87,63 @@ func TestNAT64WithoutDiscoveryLeavesBaseline(t *testing.T) {
 	}
 	if got := p.classify(net.ParseIP("64:ff9b::c0a8:101")); got != ipPrivate { // 192.168.1.1, well-known
 		t.Errorf("well-known NAT64 RFC1918 should classify private; got %d", got)
+	}
+}
+
+// Every RFC 6052 prefix length must be recognized, and its embedded IPv4 read from
+// the right bytes. The byte offsets below are written out from the RFC rather than
+// read from rfc6052Positions, because a seed or fixture built from that map would
+// move with a mis-indexed entry and agree with it: discovery would fail to derive
+// the prefix at all, the reclassification would never be reached, and the test
+// would pass while the layout it exists to pin was wrong. Only /96 and /64 are
+// otherwise covered, and the short lengths are exactly where the reserved u-octet
+// at byte 8 makes the layout easy to get wrong.
+func TestNAT64DerivesEveryRFC6052Length(t *testing.T) {
+	for _, c := range []struct {
+		length int
+		at     [4]int // where the embedded IPv4 sits, per RFC 6052 sec 2.2
+	}{
+		{32, [4]int{4, 5, 6, 7}},
+		{40, [4]int{5, 6, 7, 9}},
+		{48, [4]int{6, 7, 9, 10}},
+		{56, [4]int{7, 9, 10, 11}},
+		{64, [4]int{9, 10, 11, 12}},
+		{96, [4]int{12, 13, 14, 15}},
+	} {
+		t.Run(fmt.Sprintf("/%d", c.length), func(t *testing.T) {
+			embed := func(v4 [4]byte) net.IP {
+				ip := make(net.IP, 16)
+				// A documentation prefix (2001:db8::/32) padded out to the length under
+				// test, so the prefix bits themselves are public and the verdict can only
+				// come from the embedded address.
+				copy(ip, []byte{0x20, 0x01, 0x0d, 0xb8})
+				for i := 4; i < c.length/8; i++ {
+					ip[i] = 0xaa
+				}
+				for i, pos := range c.at {
+					ip[pos] = v4[i]
+				}
+				return ip
+			}
+
+			synth := embed([4]byte{192, 0, 0, 171}) // ipv4only.arpa, as a DNS64 resolver returns it
+			pfx, ok := deriveNAT64Prefix(synth)
+			if !ok || pfx.prefixLen != c.length {
+				t.Fatalf("deriveNAT64Prefix(%v) = %+v, %v; want a /%d prefix", synth, pfx, ok, c.length)
+			}
+
+			p := New(egressRules, WithNAT64Discovery(fakeLookup(synth)))
+			p.discoverNAT64(t.Context())
+			private := embed([4]byte{192, 168, 1, 1})
+			// A positive control: the address must be public on its prefix bits alone, or
+			// the assertion below would hold without discovery having decoded anything.
+			if got := classifyIP(private); got != ipPublic {
+				t.Fatalf("%v classifies %d before discovery, so this fixture cannot show discovery working", private, got)
+			}
+			if got := p.classify(private); got != ipPrivate {
+				t.Errorf("192.168.1.1 synthesized under the discovered /%d prefix (%v) classified %d, want ipPrivate (%d)",
+					c.length, private, got, ipPrivate)
+			}
+		})
 	}
 }

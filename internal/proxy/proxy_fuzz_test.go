@@ -164,17 +164,29 @@ func FuzzGuardUpstreamRefusesNonPublicRenderings(f *testing.F) {
 		ip := net.ParseIP(s).To16()
 		f.Add(binary.BigEndian.Uint64(ip[:8]), binary.BigEndian.Uint64(ip[8:]))
 	}
-	seed("127.0.0.1")
-	seed("169.254.169.254")
-	seed("192.168.1.1")
-	seed("10.0.0.1")
-	seed("100.64.0.1")
-	seed("fe80::1")
-	seed("fd00::1")
-	seed("::1")
-	seed("64:ff9b::c0a8:101")
-	seed("8.8.8.8")
-	seed("2606:4700::1111")
+	// One address from every neverEgress prefix. A prefix with no seed contributes
+	// nothing at any realistic fuzz budget - the coverage guidance has no foothold to
+	// mutate toward it, so dropping the clause that refuses it goes unnoticed for
+	// millions of executions.
+	seed("0.1.2.3")           // this-network
+	seed("10.0.0.1")          // RFC1918
+	seed("100.64.0.1")        // CGNAT
+	seed("127.0.0.1")         // loopback
+	seed("169.254.169.254")   // cloud metadata
+	seed("172.16.0.1")        // RFC1918
+	seed("192.168.1.1")       // RFC1918
+	seed("198.18.0.1")        // RFC 2544 benchmarking
+	seed("224.0.0.1")         // multicast
+	seed("240.0.0.1")         // reserved
+	seed("::")                // unspecified
+	seed("::1")               // loopback
+	seed("fd00::1")           // ULA
+	seed("fe80::1")           // link-local
+	seed("fec0::1")           // deprecated site-local
+	seed("ff02::1")           // multicast
+	seed("64:ff9b::c0a8:101") // well-known Pref64 wrapping RFC1918, outside the table
+	seed("8.8.8.8")           // public, the positive control
+	seed("2606:4700::1111")   // public
 
 	// No rules and no gatekeeper: nothing can be exempted as an explicit IP literal,
 	// so the guard's verdict is its classification alone.
@@ -190,8 +202,9 @@ func FuzzGuardUpstreamRefusesNonPublicRenderings(f *testing.F) {
 		ip := net.IP(raw[:])
 		text := ip.String()
 
-		// A resolved dial target the guard cannot parse must fail closed. Nothing else
-		// here reaches that branch, since every rendering below is a valid literal.
+		// A resolved dial target the guard cannot vet must fail closed. Which of the two
+		// refusals it takes depends on the form: a v6 text carries colons, so the host
+		// fails to split at all, while a dotted quad splits and then fails to parse.
 		if err := p.guardUpstream(t.Context(), "", "host-"+text+":443", nil); err == nil {
 			t.Errorf("guardUpstream allowed %q, which is not an address it could vet at all", text)
 		}
