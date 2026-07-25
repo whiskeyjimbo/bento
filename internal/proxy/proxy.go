@@ -143,6 +143,12 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 	d := &net.Dialer{
 		ControlContext: p.guardUpstream,
 		Resolver:       &net.Resolver{PreferGo: true},
+		// Without this a CONNECT to an allowed hostname that resolves to a blackholed
+		// address holds its handler slot for the kernel's full SYN retry budget (~127s).
+		// connectTimeout bounds only the CONNECT read, so maxConcurrent such requests
+		// exhaust the concurrency cap the sandbox is supposed to be unable to exhaust -
+		// the run's own egress stops working while the dials sit there.
+		Timeout: dialTimeout,
 	}
 	p.dial = d.DialContext
 	for _, opt := range opts {
@@ -388,6 +394,11 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 		}
 	}
 }
+
+// dialTimeout bounds a single upstream connect. It is generous next to a healthy TCP
+// handshake and short next to the kernel's SYN retry budget, which is what it exists to
+// cut short; a legitimate destination that needs longer than this is already failing.
+const dialTimeout = 15 * time.Second
 
 // connectTimeout bounds how long a client may take to send its CONNECT request
 // before its handler slot is reclaimed, so a client that connects and sends

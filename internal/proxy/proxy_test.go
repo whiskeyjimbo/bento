@@ -1074,3 +1074,63 @@ func TestConcurrentGatesBlockedAtCancelOpenNoTunnels(t *testing.T) {
 		t.Errorf("cancellation left %d upstreams dialed, want none: %v", len(dialed), dialed)
 	}
 }
+
+// halfClose prefers CloseWrite and falls back to SetDeadline only for conns that lack
+// it. Production conns (unix, TCP) all have CloseWrite, but every other tunnel test
+// fakes the upstream with net.Pipe, which does not - so the branch that actually runs
+// in production is the one nothing covers. This drives a real TCP upstream to close
+// that gap.
+//
+// The property is what separates the two branches: a client that half-closes signals
+// EOF upstream while the return direction stays open, so data the upstream sends after
+// seeing EOF still reaches the client. The SetDeadline fallback kills both directions
+// at once and would lose it.
+func TestTunnelHalfCloseKeepsTheReturnDirectionOpen(t *testing.T) {
+	// An upstream that reads to EOF, then replies. It can only answer if the tunnel
+	// delivered the half-close AND kept the reverse direction alive.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		got, _ := io.ReadAll(c)
+		fmt.Fprintf(c, "saw-eof-after:%s", got)
+	}()
+
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("tcp", ln.Addr().String())
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("CONNECT = %q, want 200", status)
+	}
+	if _, err := io.WriteString(c, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	// Half-close the client's write side; the proxy must carry that to the upstream as
+	// EOF rather than tearing the whole tunnel down.
+	if err := c.(*net.UnixConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	reply, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("reading the upstream reply after half-close: %v", err)
+	}
+	// connect reads only the status line, so the header terminator is still buffered.
+	if got := strings.TrimPrefix(string(reply), "\r\n"); got != "saw-eof-after:ping" {
+		t.Errorf("reply = %q, want the upstream's post-EOF answer to survive the half-close", got)
+	}
+}
