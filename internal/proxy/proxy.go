@@ -35,6 +35,10 @@ const (
 	// gatekeeper admitted at runtime. It is distinct from Allowed so a run can be
 	// honest about egress it permitted beyond the declared manifest.
 	AdmittedByGate Decision = "gate"
+	// Refused marks a connection turned away at the concurrency limit, before its
+	// CONNECT was read - so it carries no host or port. It is reported so a run that
+	// floods the proxy is not counted as one that never touched the network.
+	Refused Decision = "refused"
 )
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
@@ -378,6 +382,7 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			// At capacity: refuse rather than let the host process grow unbounded.
 			writeStatus(c, "503 Service Unavailable", "bento egress proxy is at its connection limit")
 			c.Close()
+			p.report(Refused, "", "")
 		}
 	}
 }

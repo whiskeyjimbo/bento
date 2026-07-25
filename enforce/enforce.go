@@ -109,10 +109,11 @@ type Result struct {
 	ExitCode int
 	Report   Report
 	// EgressConnections is how many outbound connections reached the egress proxy
-	// during the run. A count of zero on a run that could egress (the policy allows
-	// it, or a NetworkGate is present) means the target either used no network or
-	// bypassed the proxy (which, in the default cooperative mode, fails closed) -
-	// letting a frontend explain a network failure precisely.
+	// during the run, including any the proxy turned away at its concurrency limit
+	// before reading their request. A count of zero on a run that could egress (the
+	// policy allows it, or a NetworkGate is present) means the target either used no
+	// network or bypassed the proxy (which, in the default cooperative mode, fails
+	// closed) - letting a frontend explain a network failure precisely.
 	EgressConnections int
 	// GateAdmitted lists the destinations a NetworkGate admitted beyond the
 	// manifest, deduped and sorted. A host appears once the gate approved it, even

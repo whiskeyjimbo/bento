@@ -3,6 +3,7 @@ package linux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -273,5 +274,35 @@ func TestParseAppliedQuotedReasonCannotForgeRecords(t *testing.T) {
 	}
 	if !strings.Contains(a.landlockErr, "line one") {
 		t.Errorf("landlockErr = %q, want the quoted reason back intact", a.landlockErr)
+	}
+}
+
+// A proxy listener that stops accepting mid-run leaves the declared egress unserved
+// for the remainder, and the run must say so. The note lands after reconcile, so a
+// child that installed its netns cannot overwrite it, and it replaces the network
+// layer's status rather than adding a second contradictory entry.
+func TestNoteDeadListenerDegradesTheNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	noteDeadListener(&r, nil)
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Enforced {
+		t.Fatalf("StateOf(network) = %v, want enforced when the listener ended with the run", got)
+	}
+
+	noteDeadListener(&r, errors.New("accept: bad file descriptor"))
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Errorf("StateOf(network) = %v, want degraded after the listener died", got)
+	}
+	var network int
+	for _, l := range r.Layers {
+		if l.Layer == enforce.LayerNetwork {
+			network++
+		}
+	}
+	if network != 1 {
+		t.Errorf("network layer appears %d times, want 1 (the dead listener replaces the status)", network)
+	}
+	if !strings.Contains(r.Degradations()[0].Reason, "bad file descriptor") {
+		t.Errorf("reason = %q, want the listener's error named", r.Degradations()[0].Reason)
 	}
 }

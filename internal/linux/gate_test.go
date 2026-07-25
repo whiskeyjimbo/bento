@@ -109,9 +109,10 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	c.observe(proxy.AdmittedByGate, "a.example", "22")  // same host, tiebreak on port
 	c.observe(proxy.Denied, "blocked.example", "443")   // counted, never admitted
 	c.observe(proxy.Allowed, "declared.example", "443") // counted, not a gate admission
+	c.observe(proxy.Refused, "", "")                    // at capacity: counted, no host to admit
 
-	if got := c.counted(); got != 6 {
-		t.Errorf("counted() = %d, want 6 (every decision counts, duplicates included)", got)
+	if got := c.counted(); got != 7 {
+		t.Errorf("counted() = %d, want 7 (every decision counts, duplicates included)", got)
 	}
 
 	want := []enforce.HostPort{

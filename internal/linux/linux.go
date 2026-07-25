@@ -88,7 +88,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// a gate admitted during target teardown is recorded before the result is read.
 	// It is idempotent (sync.OnceFunc inside startProxy), so the defer stays as a
 	// safety net for the error paths without double-closing.
-	stopProxy := func() {}
+	stopProxy := func() error { return nil }
 	egress := func() int { return 0 }
 	admitted := func() []enforce.HostPort { return nil }
 	if sb.proxySocket != "" {
@@ -96,7 +96,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if err != nil {
 			return enforce.Result{}, err
 		}
-		defer stopProxy()
+		defer func() { _ = stopProxy() }()
 	}
 
 	// The in-sandbox launcher reports what it actually applied through this file, and
@@ -179,18 +179,33 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	switch err := cmd.Run(); {
 	case err == nil:
-		stopProxy()
+		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
+		noteDeadListener(&report, serveErr)
 		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
-		stopProxy()
+		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, ee.ExitCode())
+		noteDeadListener(&report, serveErr)
 		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
+}
+
+// noteDeadListener records a proxy listener that stopped accepting on its own. The
+// run fails closed - the socket is gone, so the sandbox cannot reach the network at
+// all past that point - but the egress the manifest declared was only served for
+// part of the run, and a report that claimed LayerNetwork Enforced would hide that.
+// It runs after reconcile so the in-sandbox report cannot overwrite it.
+func noteDeadListener(r *enforce.Report, err error) {
+	if err == nil {
+		return
+	}
+	r.Set(enforce.LayerNetwork, enforce.Degraded,
+		fmt.Sprintf("the egress proxy stopped accepting mid-run (%v); declared egress was refused for the remainder", err))
 }
 
 func isExitError(err error) bool {
@@ -388,11 +403,11 @@ func writeEmptyFile(path string) error {
 
 // startProxy serves the egress allowlist on socket for the run's lifetime,
 // optionally consulting gate for hosts the manifest does not declare. It returns
-// an idempotent stop function, a count of how many connections reached the proxy
-// (a zero count on an egress-capable run tells the frontend the target never went
-// through the proxy - used no network, or bypassed it), and the hosts the gate
-// admitted beyond the manifest.
-func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func(), count func() int, admitted func() []enforce.HostPort, err error) {
+// an idempotent stop function (which reports the listener's terminal error), a
+// count of how many connections reached the proxy (a zero count on an egress-capable
+// run tells the frontend the target never went through the proxy - used no network,
+// or bypassed it), and the hosts the gate admitted beyond the manifest.
+func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func() error, count func() int, admitted func() []enforce.HostPort, err error) {
 	c := &egressCollector{}
 	// Discover the host's NAT64 prefix so a synthesized RFC1918 target cannot reach
 	// the LAN through a permitted public hostname (RFC 7050). The profiling path
@@ -406,7 +421,7 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return sync.OnceFunc(stop), c.counted, c.gateAdmitted, nil
+	return sync.OnceValue(stop), c.counted, c.gateAdmitted, nil
 }
 
 // egressCollector records the proxy's per-connection decisions for the run
@@ -459,18 +474,24 @@ func (c *egressCollector) gateAdmitted() []enforce.HostPort {
 
 // startProxyWith serves the egress allowlist on socket with a caller-supplied
 // observer, returning a stop function.
-func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func(), err error) {
+// The returned stop reports the listener's terminal error: nil when Serve ended
+// because the run did, non-nil when Accept failed on its own and the egress fence
+// stopped serving for the rest of the run.
+func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func() error, err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("linux: starting egress proxy: %w", err)
 	}
 	proxyCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	// serveErr is written before done is closed and read only after it, so the close
+	// carries the handoff.
+	var serveErr error
 	go func() {
-		_ = proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
+		serveErr = proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
 		close(done)
 	}()
-	return func() { cancel(); <-done }, nil
+	return func() error { cancel(); <-done; return serveErr }, nil
 }
 
 // ResolveInterpreter guesses the interpreter for a script from its extension or

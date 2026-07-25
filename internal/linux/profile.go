@@ -153,9 +153,19 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 		opts = append(opts, proxy.WithoutEgress())
 	}
 	stop, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
+		// A refusal at the concurrency limit carries no host: it was turned away before
+		// its CONNECT was read, so there is nothing to put in the proposed manifest.
+		if d == proxy.Refused {
+			return
+		}
 		record(host, port)
 	}, opts...)
-	return stop, err
+	if err != nil {
+		return nil, err
+	}
+	// The profiling run's report has no network layer to degrade, so a listener that
+	// dies mid-profile shows up as the hosts it never recorded, not as an error here.
+	return func() { _ = stop() }, nil
 }
 
 // parseObservations reads the launcher's observation report: "R <path>" and

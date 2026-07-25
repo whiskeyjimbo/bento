@@ -296,10 +296,20 @@ func TestConcurrencyIsCapped(t *testing.T) {
 	// A dialer that blocks until the test unblocks it, so every accepted tunnel
 	// occupies a slot and none free up while the cap is being probed.
 	block := make(chan struct{})
+	var mu sync.Mutex
+	var refused int
 	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
 		WithDialer(func(context.Context, string, string) (net.Conn, error) {
 			<-block
 			return nil, fmt.Errorf("test dialer unblocked")
+		}),
+		WithObserver(func(d Decision, host, port string) {
+			if d != Refused {
+				return
+			}
+			mu.Lock()
+			refused++
+			mu.Unlock()
 		}))
 	dialProxy, stop := startProxy(t, p)
 	// Unblock the handlers BEFORE stopping, or Serve's wg.Wait would deadlock on
@@ -329,7 +339,36 @@ func TestConcurrencyIsCapped(t *testing.T) {
 	if !strings.Contains(status, "503") {
 		t.Errorf("connection past the cap should be refused with 503; got %q", status)
 	}
+	// The refusal must reach the observer, or a run that floods the proxy is reported
+	// as one that never attempted egress at all.
+	mu.Lock()
+	defer mu.Unlock()
+	if refused == 0 {
+		t.Error("a connection refused at capacity must be reported to the observer")
+	}
 }
+
+// A listener that stops accepting on its own kills the egress fence for the rest of
+// the run, so Serve must hand that error back rather than return as if the run had
+// ended it. Only a caller-cancelled Serve returns nil.
+func TestServeReturnsTerminalAcceptError(t *testing.T) {
+	want := fmt.Errorf("listener is gone")
+	l := &deadListener{err: want}
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("x")))
+	if err := p.Serve(context.Background(), l); !errors.Is(err, want) {
+		t.Errorf("Serve() = %v, want the listener's terminal error %v", err, want)
+	}
+}
+
+// deadListener fails every Accept, standing in for a listener whose socket has been
+// removed or whose fd was closed out from under the proxy.
+type deadListener struct {
+	err error
+}
+
+func (d *deadListener) Accept() (net.Conn, error) { return nil, d.err }
+func (d *deadListener) Close() error              { return nil }
+func (d *deadListener) Addr() net.Addr            { return &net.UnixAddr{Name: "dead", Net: "unix"} }
 
 // A request with no terminating newline must not let a sandboxed client grow the
 // host process's memory: the proxy caps what it buffers before the tunnel and
