@@ -147,22 +147,21 @@ func Home(home string) []Rule {
 
 		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
 		// default-deny a program that legitimately needs its own history opts in per-path.
-		".adobe",                   // Flash local storage (LSO)
-		".macromedia",              // Flash local storage (legacy)
-		".ne",                      // ne editor state, incl. history
-		".local/state/nvim/shada",  // nvim registers + command/search history (the .viminfo equivalent)
-		".local/state/nvim/undo",   // persistent undo files hold full prior contents of edited files
-		".local/state/nvim/swap",   // swap files hold live buffer contents, including unsaved edits, of every open file
-		".local/state/nvim/backup", // 'backup' writes prior file contents here (off by default, but plantable/populated)
-		// Pre-0.8 nvim kept the same three stores under stdpath('data'); an upgraded host
-		// keeps the abandoned files (nvim never migrates or deletes them), so the legacy
-		// location holds the same secrets and is shielded too. These DenyAll entries nest
-		// inside a DenyWrite directory (the readable ".local/share/nvim"/".local/state/nvim"
-		// trees; ".local/share/fish"/fish_history is the same shape); a backend that binds a
-		// readable parent must carve them back out.
-		".local/share/nvim/shada",
-		".local/share/nvim/undo",
-		".local/share/nvim/swap",
+		".adobe",      // Flash local storage (LSO)
+		".macromedia", // Flash local storage (legacy)
+		".ne",         // ne editor state, incl. history
+		// nvim's state tree holds shada (registers plus command/search history, the
+		// .viminfo equivalent), undo files (full prior contents of edited files), swap
+		// (live buffer contents, including unsaved edits, of every open file), and backup.
+		// Pre-0.8 nvim kept the same stores under stdpath('data'), and an upgraded host
+		// keeps the abandoned files - nvim never migrates or deletes them - so the legacy
+		// location holds the same secrets. Both trees are shielded whole rather than
+		// per-store: the write-only alternative left the secrets readable, and nvim's own
+		// plugin trees live under the data dir, so a sandboxed nvim reads neither. That
+		// costs in-sandbox nvim its plugins and state; a session that needs them opts in
+		// per-path.
+		".local/state/nvim",
+		".local/share/nvim",
 		".cache/xfce4/clipman",             // clipboard history
 		".kde/share/apps/klipper",          // clipboard history
 		".kde4/share/apps/klipper",         // clipboard history (KDE4)
@@ -260,9 +259,9 @@ func Home(home string) []Rule {
 		// (not their parent dir) so a sibling config the tool also reads stays available.
 		".lesshst",
 		".histfile",
-		".python_history", // CPython's default readline REPL history (underscore is the real name)
-		".python-history", // dash-spelled variant some REPLs write
-		".pythonhist",     // bpython history
+		".python_history",          // CPython's default readline REPL history (underscore is the real name)
+		".python-history",          // dash-spelled variant some REPLs write
+		".pythonhist",              // bpython history
 		".cache/greenclip.history", // greenclip clipboard-manager history: holds pasted secrets
 		".mupdf.history",
 		".cache/mupdf.history",
@@ -359,7 +358,7 @@ func Home(home string) []Rule {
 		".iscreenrc",               // iscreen rc
 		".reportbugrc",             // Debian reportbug config
 		".config/user-dirs.locale", // locale for xdg user-dirs (write-protected against redirection)
-		".Xdefaults",                         // xrdb resources read at login
+		".Xdefaults",               // xrdb resources read at login
 		// Public finger(1) info files: not secrets and not executed, so left readable, but
 		// write-protected so a broad home write grant cannot tamper with published info.
 		".plan",
@@ -374,54 +373,52 @@ func Home(home string) []Rule {
 	// files cannot be pre-enumerated - a not-yet-created entry is still plantable, the
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
-		".bashrc.d",                    // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
-		".config/containers",           // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
-		".config/environment.d",        // systemd user-session env (LD_PRELOAD, PATH, ...)
-		".config/fish",                 // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
-		".config/nushell",              // config.nu/env.nu and autoloads
-		".vim",                         // plugin/, autoload/, after/plugin/ are auto-sourced
-		".config/nvim",                 // init.{vim,lua}, lua/, plugin/, after/
-		".local/share/nvim",            // packpath + plugin-manager trees (site/pack, lazy/, mason/) hold auto-sourced Lua; DenyWrite (not DenyAll) keeps nvim readable, at the cost of blocking in-sandbox plugin installs
-		".emacs.d",                     // init.el and site-lisp
-		".config/emacs",                // XDG location for the same
-		".config/gdb",                  // gdb 11+ reads gdbinit/gdbearlyinit here
-		".config/tmux",                 // XDG location for tmux.conf
-		".config/direnv",               // direnvrc, sourced on cd for direnv users
-		".local/share/direnv/allow",    // authorization records: an entry pre-approves a workspace .envrc
-		".config/Code",                 // VS Code User/settings.json (git.path, interpreter paths) run commands
-		".vscode",                      // extensions/ load on startup
-		".config/mpv",                  // scripts/*.lua autoloaded on launch
-		".xmonad",                      // xmonad.hs is compiled and executed
-		".config/xmonad",               // XDG location for xmonad.hs (0.17+)
-		".oh-my-zsh",                   // framework: plugins/ and themes/ are sourced on shell start
-		".antigen",                     // zsh antigen-managed plugins, sourced on shell start
-		".zfunc",                       // autoloaded zsh functions (planting one hijacks a command)
-		".zsh.d",                       // sourced zsh config fragments
-		".config/nsxiv/exec",           // nsxiv key-handler scripts run on keypress
-		".config/pkcs11",               // pkcs11 module configs load shared objects (code)
-		".local/share/applications",    // .desktop entries whose Exec= runs on launch
-		".config/menus",                // XDG menu definitions pointing at .desktop entries
-		".gnome/apps",                  // legacy GNOME menu entries
+		".bashrc.d",                 // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
+		".config/containers",        // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
+		".config/environment.d",     // systemd user-session env (LD_PRELOAD, PATH, ...)
+		".config/fish",              // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
+		".config/nushell",           // config.nu/env.nu and autoloads
+		".vim",                      // plugin/, autoload/, after/plugin/ are auto-sourced
+		".config/nvim",              // init.{vim,lua}, lua/, plugin/, after/
+		".emacs.d",                  // init.el and site-lisp
+		".config/emacs",             // XDG location for the same
+		".config/gdb",               // gdb 11+ reads gdbinit/gdbearlyinit here
+		".config/tmux",              // XDG location for tmux.conf
+		".config/direnv",            // direnvrc, sourced on cd for direnv users
+		".local/share/direnv/allow", // authorization records: an entry pre-approves a workspace .envrc
+		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
+		".vscode",                   // extensions/ load on startup
+		".config/mpv",               // scripts/*.lua autoloaded on launch
+		".xmonad",                   // xmonad.hs is compiled and executed
+		".config/xmonad",            // XDG location for xmonad.hs (0.17+)
+		".oh-my-zsh",                // framework: plugins/ and themes/ are sourced on shell start
+		".antigen",                  // zsh antigen-managed plugins, sourced on shell start
+		".zfunc",                    // autoloaded zsh functions (planting one hijacks a command)
+		".zsh.d",                    // sourced zsh config fragments
+		".config/nsxiv/exec",        // nsxiv key-handler scripts run on keypress
+		".config/pkcs11",            // pkcs11 module configs load shared objects (code)
+		".local/share/applications", // .desktop entries whose Exec= runs on launch
+		".config/menus",             // XDG menu definitions pointing at .desktop entries
+		".gnome/apps",               // legacy GNOME menu entries
 
 		// Read-only in firejail: config/data trees whose entries run or load code on a later
 		// invocation (an editor rc, an imported library, a browser profile), so a planted
 		// entry is the threat; reads stay allowed as a build may legitimately inspect them.
-		".cache/deno",                 // Deno cache holds compiled modules that run
-		".deno",                       // legacy Deno dir
-		".config/nano",                // nanorc (syntax/include directives)
-		".nano",                       // nano state/history dir
-		".elinks",                     // ELinks config (exec knobs)
-		".w3m",                        // w3m config (external-command mappings)
-		".dotfiles",                   // dotfile-manager checkout, symlinked/sourced into $HOME
-		"dotfiles",                    // same, non-hidden ~/dotfiles checkout
-		".homesick",                   // homesick dotfile-manager castles
-		".local/lib",                  // user libraries imported at runtime (pip --user, etc.)
+		".cache/deno",                  // Deno cache holds compiled modules that run
+		".deno",                        // legacy Deno dir
+		".config/nano",                 // nanorc (syntax/include directives)
+		".nano",                        // nano state/history dir
+		".elinks",                      // ELinks config (exec knobs)
+		".w3m",                         // w3m config (external-command mappings)
+		".dotfiles",                    // dotfile-manager checkout, symlinked/sourced into $HOME
+		"dotfiles",                     // same, non-hidden ~/dotfiles checkout
+		".homesick",                    // homesick dotfile-manager castles
+		".local/lib",                   // user libraries imported at runtime (pip --user, etc.)
 		".local/share/cool-retro-term", // terminal-emulator config
-		".local/state/nvim",           // nvim state tree (shada/undo/swap inside are DenyAll above)
-		".local/share/fish",           // fish functions/completions (fish_history inside is DenyAll above)
-		".local/share/mime",           // compiled MIME db: redirects which handler opens a file type
-		".csh_files",                  // csh startup-file collection firejail write-protects
-		".zsh_files",                  // zsh startup-file collection firejail write-protects
+		".local/share/fish",            // fish functions/completions (fish_history inside is DenyAll above)
+		".local/share/mime",            // compiled MIME db: redirects which handler opens a file type
+		".csh_files",                   // csh startup-file collection firejail write-protects
+		".zsh_files",                   // zsh startup-file collection firejail write-protects
 	}
 
 	// A relocated XDG base moves the real credential/config stores out from under the

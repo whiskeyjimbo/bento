@@ -446,31 +446,29 @@ func TestCertAndMailDirsAreShielded(t *testing.T) {
 	}
 }
 
-// The legacy pre-0.8 nvim stores (shada/undo/swap under ~/.local/share/nvim) are DenyAll
-// dirs nested inside the DenyWrite ~/.local/share/nvim plugin tree. This locks in the two
+// fish_history is a DenyAll file nested inside the DenyWrite ~/.local/share/fish tree,
+// which stays readable so fish can load its functions and completions. This locks in the two
 // simplest grant shapes: a read grant hides the child (and the DenyWrite parent never emits,
 // since it shields only where a grant is writable), and a write reaching the whole tree is
 // refused for containing the DenyAll child. The sibling-write shape, where the parent's bind
 // fires and would otherwise re-expose the child, is carved out by denyArgs and covered by
 // TestNestedDenyAllHiddenUnderExposedParent and TestDenyAllChildEmittedAfterExposedDenyWriteParent.
-func TestLegacyNvimStoresHiddenUnderReadGrantWriteRefused(t *testing.T) {
-	// shada must both exist and be a directory in the fake fs, so pass a child under it.
+func TestNestedDenyAllHiddenUnderReadGrantWriteRefused(t *testing.T) {
 	sb := testSandbox(
-		"/home/u/.local/share/nvim",
-		"/home/u/.local/share/nvim/lazy/plugin.lua", // plugin tree stays readable
-		"/home/u/.local/share/nvim/shada",
-		"/home/u/.local/share/nvim/shada/main.shada",
+		"/home/u/.local/share/fish",
+		"/home/u/.local/share/fish/functions/ls.fish", // function tree stays readable
+		"/home/u/.local/share/fish/fish_history",
 	)
 	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, sb)
-	if pairIndex(args, "--tmpfs", "/home/u/.local/share/nvim/shada") < 0 {
-		t.Error("a read grant must hide the legacy nvim shada store")
+	if pairIndex(args, sb.emptyFile, "/home/u/.local/share/fish/fish_history") < 0 {
+		t.Error("a read grant must hide the fish history store")
 	}
-	if pairIndex(args, "--ro-bind", "/home/u/.local/share/nvim") >= 0 {
+	if pairIndex(args, "--ro-bind", "/home/u/.local/share/fish") >= 0 {
 		t.Error("the DenyWrite parent must not emit under a read grant, or its bind would shadow the child shield")
 	}
 
-	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.local/share/nvim"}}, enforce.Process{}, sb); err == nil {
-		t.Error("a write grant reaching the DenyAll shada child must be refused")
+	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.local/share/fish"}}, enforce.Process{}, sb); err == nil {
+		t.Error("a write grant reaching the DenyAll fish_history child must be refused")
 	}
 }
 
@@ -481,21 +479,20 @@ func TestLegacyNvimStoresHiddenUnderReadGrantWriteRefused(t *testing.T) {
 // this pins the argv the run relies on.
 func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	sb := testSandbox(
-		"/home/u/.local/share/nvim",
-		"/home/u/.local/share/nvim/lazy/plugin.lua",
-		"/home/u/.local/share/nvim/shada",
-		"/home/u/.local/share/nvim/shada/main.shada",
+		"/home/u/.local/share/fish",
+		"/home/u/.local/share/fish/functions/ls.fish",
+		"/home/u/.local/share/fish/fish_history",
 	)
-	const parent = "/home/u/.local/share/nvim"
-	const child = "/home/u/.local/share/nvim/shada"
+	const parent = "/home/u/.local/share/fish"
+	const child = "/home/u/.local/share/fish/fish_history"
 
 	// Sibling write only, no read: the child is not independently reachable, yet is
 	// force-emitted because the parent's bind would expose it - and after that bind.
 	args := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Write: []string{"/home/u/.local/share/nvim/lazy"}}, sb)
-	p, c := pairIndex(args, "--ro-bind", parent), pairIndex(args, "--tmpfs", child)
+		Write: []string{"/home/u/.local/share/fish/functions"}}, sb)
+	p, c := pairIndex(args, "--ro-bind", parent), pairIndex(args, sb.emptyFile, child)
 	if p < 0 || c < 0 {
-		t.Fatalf("sibling write must shield both parent (ro-bind idx=%d) and force the child (tmpfs idx=%d)", p, c)
+		t.Fatalf("sibling write must shield both parent (ro-bind idx=%d) and force the child (idx=%d)", p, c)
 	}
 	if c < p {
 		t.Errorf("child shield (idx %d) must be emitted after the parent bind (idx %d), or the parent re-exposes it", c, p)
@@ -504,8 +501,8 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	// Home read + sibling write: the child is reachable and emitted normally, but must
 	// still land after the parent bind.
 	args2 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Read: []string{"/home/u"}, Write: []string{"/home/u/.local/share/nvim/lazy"}}, sb)
-	p2, c2 := pairIndex(args2, "--ro-bind", parent), pairIndex(args2, "--tmpfs", child)
+		Read: []string{"/home/u"}, Write: []string{"/home/u/.local/share/fish/functions"}}, sb)
+	p2, c2 := pairIndex(args2, "--ro-bind", parent), pairIndex(args2, sb.emptyFile, child)
 	if p2 < 0 || c2 < 0 || c2 < p2 {
 		t.Errorf("read+write: child (idx %d) must follow parent (idx %d), both present", c2, p2)
 	}
@@ -513,10 +510,10 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	// XDG_DATA_HOME relocation moves both parent and child to the relocated base, keeping
 	// the same nesting - the carve must follow.
 	t.Setenv("XDG_DATA_HOME", "/xdg")
-	sbx := testSandbox("/xdg/nvim", "/xdg/nvim/lazy/plugin.lua", "/xdg/nvim/shada", "/xdg/nvim/shada/main.shada")
+	sbx := testSandbox("/xdg/fish", "/xdg/fish/functions/ls.fish", "/xdg/fish/fish_history")
 	args3 := compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py",
-		Write: []string{"/xdg/nvim/lazy"}}, sbx)
-	p3, c3 := pairIndex(args3, "--ro-bind", "/xdg/nvim"), pairIndex(args3, "--tmpfs", "/xdg/nvim/shada")
+		Write: []string{"/xdg/fish/functions"}}, sbx)
+	p3, c3 := pairIndex(args3, "--ro-bind", "/xdg/fish"), pairIndex(args3, sbx.emptyFile, "/xdg/fish/fish_history")
 	if p3 < 0 || c3 < 0 || c3 < p3 {
 		t.Errorf("relocated pair: child (idx %d) must follow parent (idx %d), both present", c3, p3)
 	}

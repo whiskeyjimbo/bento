@@ -21,8 +21,8 @@ import (
 type Candidate struct {
 	// Path is the shielded path with firejail's variables expanded.
 	Path string
-	// Deny is the class the directive maps to: blacklist -> DenyAll, read-only ->
-	// DenyWrite.
+	// Deny is the class the directive maps to: blacklist and blacklist-nolog ->
+	// DenyAll, read-only -> DenyWrite.
 	Deny denylist.Deny
 	// Glob reports that the source directive used a wildcard, which bento does not
 	// express (it shields directories instead). A glob candidate needs a human to
@@ -79,7 +79,7 @@ type Gap struct {
 	Weaker bool
 }
 
-// ParseFirejail maps the blacklist/read-only directives of a firejail profile into
+// ParseFirejail maps the blacklist/blacklist-nolog/read-only directives of a firejail profile into
 // candidates, expanding ${HOME} and ${RUNUSER} and keeping only home- and
 // runtime-scoped paths - bento's shield scope. System paths (/etc, /sbin, /usr),
 // ${PATH} entries, and the non-shield directives (noblacklist, read-write, include,
@@ -123,7 +123,9 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		}
 		var deny denylist.Deny
 		switch fields[0] {
-		case "blacklist":
+		case "blacklist", "blacklist-nolog":
+			// blacklist-nolog shields exactly as blacklist does; firejail only suppresses
+			// the access log for it, which is nothing bento models.
 			deny = denylist.DenyAll
 		case "read-only":
 			deny = denylist.DenyWrite
@@ -146,7 +148,7 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 // below it are attributed to. A real header is prose ("Top secret", "History files"),
 // so its first token is not a lowercase directive keyword.
 var firejailDirectives = map[string]bool{
-	"blacklist": true, "read-only": true, "read-write": true, "noblacklist": true,
+	"blacklist": true, "blacklist-nolog": true, "read-only": true, "read-write": true, "noblacklist": true,
 	"whitelist": true, "nowhitelist": true, "include": true, "mkdir": true,
 	"mkfile": true, "rmenv": true,
 }
@@ -251,7 +253,9 @@ var IntentionalExclusions = map[string]string{
 // the ratchet that keeps an inexpressible-but-real credential class from silently
 // passing once the concrete-path backlog is cleared.
 var ReviewedGlobs = map[string]string{
-	".*_history": "covered by shielding the named history instances (.bash_history, .zsh_history, .sh_history, ...) as DenyAll files",
+	".*_history":        "covered by shielding the named history instances (.bash_history, .zsh_history, .sh_history, ...) as DenyAll files",
+	".*_history_*":      "rotated/suffixed variants of the same named history instances; the suffix is not expressible as a concrete path",
+	".cache/greenclip*": "greenclip clipboard store; the named instance .cache/greenclip.history is shielded DenyAll and the sibling variants are not expressible as concrete paths",
 	// KeePass databases and bare key files dropped at an arbitrary spot in $HOME. bento
 	// cannot express a home-wide wildcard and shields the known credential stores by name;
 	// a .kdbx is an encrypted database (useless without its master password), and a key
@@ -286,8 +290,6 @@ func relLookup(path, home string, m map[string]string) bool {
 }
 
 // Audit reads firejail profile contents, diffs them against bento's full shield list
-// (Home + Runtime), and partitions the in-scope gaps into: unclassified - concrete
-// paths bento neither shields nor excludes, the hard-fail set a human must resolve; and
 // (Home + Runtime), and partitions the in-scope gaps into: unclassified - concrete
 // paths bento neither shields nor excludes PLUS any glob without a recorded coverage
 // decision, the hard-fail set a human must resolve; and globs - wildcard directives

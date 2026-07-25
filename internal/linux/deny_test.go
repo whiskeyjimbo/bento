@@ -109,11 +109,12 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 	}
 }
 
-// A DenyAll store nested inside a DenyWrite readable tree (the legacy nvim shada
-// stores under ~/.local/share/nvim, kept readable so plugins load) must stay hidden
-// even when a grant fires the parent's read-only bind. A write grant to a subdir - the
-// plugin-install grant the readable tree exists to permit - makes the parent's ro-bind
-// fire, which binds the whole subtree readable and re-exposes the hidden stores.
+// A DenyAll store nested inside a DenyWrite readable tree (fish_history under the
+// readable ~/.local/share/fish, kept readable so fish loads its functions and
+// completions) must stay hidden even when a grant fires the parent's read-only bind. A
+// write grant to a subdir - the kind of grant the readable tree exists to permit - makes
+// the parent's ro-bind fire, which binds the whole subtree readable and would otherwise
+// re-expose the hidden store.
 //
 // The write-granted subdir is pre-populated with every workspace shield target
 // (.git/hooks, .vscode, ...) so each becomes a ro-bind of an existing path rather than
@@ -126,21 +127,21 @@ func TestNestedDenyAllHiddenUnderExposedParent(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	nvim := filepath.Join(home, ".local/share/nvim")
-	shada := filepath.Join(nvim, "shada")
-	if err := os.MkdirAll(shada, 0o700); err != nil {
+	fish := filepath.Join(home, ".local/share/fish")
+	if err := os.MkdirAll(fish, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	const secret = "NVIM-SHADA-SECRET"
-	if err := os.WriteFile(filepath.Join(shada, "main.shada"), []byte(secret), 0o600); err != nil {
+	const secret = "FISH-HISTORY-SECRET"
+	history := filepath.Join(fish, "fish_history")
+	if err := os.WriteFile(history, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sub := filepath.Join(nvim, "lazy")
+	sub := filepath.Join(fish, "functions")
 	populateWorkspaceTargets(t, sub)
 
-	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+filepath.Join(shada, "main.shada")+" 2>&1 || true\n")
+	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+history+" 2>&1 || true\n")
 	if strings.Contains(out, secret) {
-		t.Errorf("the nvim shada store leaked through the parent bind: %q", out)
+		t.Errorf("the fish history store leaked through the parent bind: %q", out)
 	}
 }
 

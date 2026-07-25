@@ -13,7 +13,8 @@ func TestParseFirejailKeepsScopedShields(t *testing.T) {
 	const content = `# a comment
 blacklist ${HOME}/.ssh
 read-only ${HOME}/.bashrc
-blacklist ${HOME}/.*_history
+blacklist-nolog ${HOME}/.*_history
+blacklist-nolog ${HOME}/.viminfo
 blacklist ${RUNUSER}/bus
 blacklist /sbin
 blacklist ${PATH}/sudo
@@ -27,7 +28,10 @@ rmenv GITHUB_TOKEN
 	want := []Candidate{
 		{Path: "/HOME/.ssh", Deny: denylist.DenyAll},
 		{Path: "/HOME/.bashrc", Deny: denylist.DenyWrite},
+		// firejail's whole history/clipboard section uses blacklist-nolog, which shields
+		// identically to blacklist - it must not parse as a no-op.
 		{Path: "/HOME/.*_history", Deny: denylist.DenyAll, Glob: true},
+		{Path: "/HOME/.viminfo", Deny: denylist.DenyAll},
 		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},
 	}
 	if len(got) != len(want) {

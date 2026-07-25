@@ -25,35 +25,30 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.zen",            // Zen browser profile store
 		"/home/u/.config/google-chrome",
 		"/home/u/.config/rclone",
-		"/home/u/.config/keybase",         // Keybase keys/tokens
-		"/home/u/.pki",                    // NSS cert/key DBs
-		"/home/u/.gnome2/keyrings",        // legacy keyring path
-		"/home/u/.git-credential-cache",   // git credential cache
-		"/home/u/.mutt",                   // mutt config (imap_pass) hidden
-		"/home/u/.config/mutt",            // XDG mutt config
-		"/home/u/.subversion/auth",        // SVN plaintext passwords
-		"/home/u/.config/openstack",       // OpenStack clouds.yaml/secure.yaml
-		"/home/u/.thunderbird",            // Thunderbird saved mail passwords
-		"/home/u/.config/evolution",       // Evolution saved mail passwords
-		"/home/u/.cert",                   // 802.1X/VPN client keys (real kind varies by host)
-		"/home/u/.mail",                   // maildir bodies and cached creds
-		"/home/u/.Mail",                   // capitalized maildir variant
-		"/home/u/.local/state/nvim/shada", // nvim registers + command/search history (like .viminfo)
-		"/home/u/.local/state/nvim/undo",  // undo files hold full prior contents of edited files
-		"/home/u/.local/state/nvim/swap",  // live buffer contents, including unsaved edits
-		"/home/u/.local/state/nvim/backup",
-		"/home/u/.local/share/nvim/shada", // pre-0.8 legacy location, abandoned but not deleted on upgrade
-		"/home/u/.local/share/nvim/undo",
-		"/home/u/.local/share/nvim/swap",
-		"/home/u/.config/autostart",    // XDG autostart .desktop entries (hidden, matching firejail)
-		"/home/u/.config/systemd",      // systemd --user unit/timer tree
-		"/home/u/.local/share/systemd", // systemd --user state
-		"/home/u/Mail",                 // mutt default mail folder (no leading dot)
-		"/home/u/mail",                 // mutt default mail folder
-		"/home/u/Private",              // ecryptfs decrypted mount point
-		"/home/u/.config/i3",           // WM config `exec` (hidden, matching firejail)
+		"/home/u/.config/keybase",          // Keybase keys/tokens
+		"/home/u/.pki",                     // NSS cert/key DBs
+		"/home/u/.gnome2/keyrings",         // legacy keyring path
+		"/home/u/.git-credential-cache",    // git credential cache
+		"/home/u/.mutt",                    // mutt config (imap_pass) hidden
+		"/home/u/.config/mutt",             // XDG mutt config
+		"/home/u/.subversion/auth",         // SVN plaintext passwords
+		"/home/u/.config/openstack",        // OpenStack clouds.yaml/secure.yaml
+		"/home/u/.thunderbird",             // Thunderbird saved mail passwords
+		"/home/u/.config/evolution",        // Evolution saved mail passwords
+		"/home/u/.cert",                    // 802.1X/VPN client keys (real kind varies by host)
+		"/home/u/.mail",                    // maildir bodies and cached creds
+		"/home/u/.Mail",                    // capitalized maildir variant
+		"/home/u/.local/state/nvim",        // shada/undo/swap/backup: registers, search history, and full buffer contents
+		"/home/u/.local/share/nvim",        // pre-0.8 legacy location of the same stores, abandoned but not deleted on upgrade
+		"/home/u/.config/autostart",        // XDG autostart .desktop entries (hidden, matching firejail)
+		"/home/u/.config/systemd",          // systemd --user unit/timer tree
+		"/home/u/.local/share/systemd",     // systemd --user state
+		"/home/u/Mail",                     // mutt default mail folder (no leading dot)
+		"/home/u/mail",                     // mutt default mail folder
+		"/home/u/Private",                  // ecryptfs decrypted mount point
+		"/home/u/.config/i3",               // WM config `exec` (hidden, matching firejail)
 		"/home/u/.config/plasma-workspace", // KDE session env/autostart
-		"/home/u/.kde4/Autostart",      // legacy KDE autostart
+		"/home/u/.kde4/Autostart",          // legacy KDE autostart
 	}
 	for _, p := range wantDenyAllDir {
 		r, ok := byPath[p]
@@ -69,30 +64,30 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	wantDenyAllFile := []string{
 		"/home/u/.netrc",
 		"/home/u/.pgpass",
-		"/home/u/.smbcredentials", // SMB mount credentials
-		"/home/u/.config/hub",     // hub OAuth token
-		"/home/u/.msmtprc",        // SMTP passwords (hidden, not just write-denied)
-		"/home/u/.yarnrc.yml",     // yarn npmAuthToken
-		"/home/u/.Renviron",       // plaintext API keys/DB passwords loaded into the R session; hiding also neutralizes its R_PROFILE_USER exec knob
-		"/home/u/.my.cnf",         // MySQL plaintext password
-		"/home/u/.mylogin.cnf",    // MySQL login-path store (obfuscated, not encrypted)
-		"/home/u/.xinitrc",        // X startup script (hidden, matching firejail)
-		"/home/u/.xsession",       // X session script
-		"/home/u/.xprofile",       // X login profile
-		"/home/u/.xsessionrc",     // Debian/Ubuntu Xsession startup
-		"/home/u/.Xauthority",     // X display-access cookie (credential)
-		"/home/u/.signature",      // mail signature (PII/PGP fingerprint)
-		"/home/u/postponed",       // mutt postponed mbox
-		"/home/u/sent",            // mutt sent mbox
-		"/home/u/.zuluCrypt-socket", // zuluCrypt IPC socket
-		"/home/u/.s3cmd",          // s3cmd state
-		"/home/u/.Xresources",     // xrdb resources (hidden, matching firejail)
-		"/home/u/.xserverrc",      // startx X server launch script
-		"/home/u/.config/startupconfig", // KDE generated startup config
-		"/home/u/.history",        // tcsh default history (bento shields .tcshrc, so the shell is in-model)
-		"/home/u/.sh_history",     // ksh default HISTFILE (bento shields .kshrc)
-		"/home/u/.php_history",           // php -a interactive REPL history
-		"/home/u/.python-history",        // dash-spelled Python REPL history variant
+		"/home/u/.smbcredentials",          // SMB mount credentials
+		"/home/u/.config/hub",              // hub OAuth token
+		"/home/u/.msmtprc",                 // SMTP passwords (hidden, not just write-denied)
+		"/home/u/.yarnrc.yml",              // yarn npmAuthToken
+		"/home/u/.Renviron",                // plaintext API keys/DB passwords loaded into the R session; hiding also neutralizes its R_PROFILE_USER exec knob
+		"/home/u/.my.cnf",                  // MySQL plaintext password
+		"/home/u/.mylogin.cnf",             // MySQL login-path store (obfuscated, not encrypted)
+		"/home/u/.xinitrc",                 // X startup script (hidden, matching firejail)
+		"/home/u/.xsession",                // X session script
+		"/home/u/.xprofile",                // X login profile
+		"/home/u/.xsessionrc",              // Debian/Ubuntu Xsession startup
+		"/home/u/.Xauthority",              // X display-access cookie (credential)
+		"/home/u/.signature",               // mail signature (PII/PGP fingerprint)
+		"/home/u/postponed",                // mutt postponed mbox
+		"/home/u/sent",                     // mutt sent mbox
+		"/home/u/.zuluCrypt-socket",        // zuluCrypt IPC socket
+		"/home/u/.s3cmd",                   // s3cmd state
+		"/home/u/.Xresources",              // xrdb resources (hidden, matching firejail)
+		"/home/u/.xserverrc",               // startx X server launch script
+		"/home/u/.config/startupconfig",    // KDE generated startup config
+		"/home/u/.history",                 // tcsh default history (bento shields .tcshrc, so the shell is in-model)
+		"/home/u/.sh_history",              // ksh default HISTFILE (bento shields .kshrc)
+		"/home/u/.php_history",             // php -a interactive REPL history
+		"/home/u/.python-history",          // dash-spelled Python REPL history variant
 		"/home/u/.cache/greenclip.history", // greenclip clipboard history (pasted secrets)
 	}
 	for _, p := range wantDenyAllFile {
@@ -153,13 +148,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// Login-persistence directories: readable, but no new entry may be created,
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
-		"/home/u/.bashrc.d",          // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
-		"/home/u/.config/containers", // podman/skopeo exec-redirect knobs
+		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
+		"/home/u/.config/containers",        // podman/skopeo exec-redirect knobs
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
 		"/home/u/.config/nushell",           // nushell config and autoloads
 		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
 		"/home/u/.config/nvim",              // neovim config tree
-		"/home/u/.local/share/nvim",         // whole nvim data tree (covers the former /site)
 		"/home/u/.emacs.d",                  // emacs init and site-lisp
 		"/home/u/.config/environment.d",     // systemd user-session env
 		"/home/u/.local/share/direnv/allow", // direnv authorization records
@@ -168,7 +162,6 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/mpv",               // mpv autoloaded scripts
 		"/home/u/.xmonad",                   // xmonad.hs compiled+run
 		"/home/u/.local/lib",                // user libraries imported at runtime
-		"/home/u/.local/state/nvim",         // nvim state tree (history stores inside are DenyAll)
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
@@ -248,7 +241,7 @@ func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	for _, p := range []string{
 		"/home/u/.config/gh", "/home/u/cfg/gh", // gh tokens (config)
 		"/home/u/.local/share/keyrings", "/home/u/data/keyrings", // GNOME keyring (data)
-		"/home/u/.local/state/nvim/shada", "/home/u/state/nvim/shada", // nvim history (state)
+		"/home/u/.local/state/nvim", "/home/u/state/nvim", // nvim state tree (state)
 	} {
 		if !byPath[p] {
 			t.Errorf("expected a shield at %q (XDG relocation), missing", p)
