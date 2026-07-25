@@ -448,15 +448,7 @@ func interpreterReadPath(sb sandbox) string {
 	if prefix == "" {
 		return ""
 	}
-	// The prefix comes from the symlink-resolved interpreter, so the home it is
-	// compared against must be resolved too: on a host where $HOME reaches the real
-	// tree through a link (/home -> var/home, or a relocated home), the raw
-	// os.UserHomeDir value names a different path than the prefix and the floor below
-	// would miss it, binding the whole home tree after all.
-	home := sb.resolve(sb.home)
-	if prefix == home || under(home, prefix) {
-		// A ~/bin/python3 wrapper puts the prefix at the home directory itself, which
-		// would bind every file in it into a sandbox whose policy granted none of them.
+	if prefixTooBroad(sb, prefix) {
 		// Naming the interpreter authorizes the interpreter, not the tree it happens to
 		// sit in, so bind just the file - the same way the entrypoint is bound without a
 		// grant. A wrapper script's real interpreter lives in the system paths, and a
@@ -484,6 +476,42 @@ func interpreterReadPath(sb sandbox) string {
 func exposedPaths(sb sandbox, reads, writes []string) []string {
 	paths := append(append([]string{}, reads...), writes...)
 	return append(paths, systemMountPaths(sb)...)
+}
+
+// prefixTooBroad reports whether an interpreter's install prefix covers so much of the
+// host that binding it would expose far more than the interpreter. The interpreter can
+// be derived from the target script's shebang, so this is adversary-influenced input,
+// and nothing under /srv, /opt, or another user's home is covered by any deny-list rule.
+// Every check is a one-way ratchet toward "too broad": refusing only narrows the run to
+// the interpreter file, which still starts a wrapper or a system-linked single-file
+// runtime, while accepting a broad prefix silently exposes a tree nobody granted.
+func prefixTooBroad(sb sandbox, prefix string) bool {
+	// The root itself, and any top-level directory: /srv/bin/python yields /srv, and an
+	// interpreter resolving to /python3 yields "/" - the exact bind compile refuses for a
+	// read grant, since it both over-exposes and stops bwrap creating the top-level mount
+	// points the launcher needs.
+	if prefix == "/" || filepath.Dir(prefix) == "/" {
+		return true
+	}
+	// The prefix comes from the symlink-resolved interpreter, so the home it is compared
+	// against must be resolved too: on a host where $HOME reaches the real tree through a
+	// link (/home -> var/home, or a relocated home), the raw os.UserHomeDir value names a
+	// different path than the prefix and this would miss it, binding the whole home tree.
+	home := sb.resolve(sb.home)
+	if home == "" {
+		return false
+	}
+	// The user's own home, or a subtree of it: a ~/bin/python3 wrapper puts the prefix at
+	// the home directory itself, which would bind every file in it into a sandbox whose
+	// policy granted none of them.
+	if prefix == home || under(home, prefix) {
+		return true
+	}
+	// Another user's home. /home/other/bin/python3 yields /home/other, whose credential
+	// shields do not apply - the deny-list is anchored on sb.home - so its ~/.ssh would
+	// be readable where the running user's is hidden. Same uid, so this is exposure
+	// surface rather than privilege, but it is exposure nobody asked for.
+	return filepath.Dir(prefix) == filepath.Dir(home)
 }
 
 // interpreterPrefix returns the install root of an interpreter that lives

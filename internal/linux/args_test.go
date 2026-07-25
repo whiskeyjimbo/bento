@@ -1608,3 +1608,33 @@ func TestCheckGrantsResolvesGrantsThroughTheSandboxSeam(t *testing.T) {
 		t.Error("a write grant symlinked into ~/.ssh must be refused")
 	}
 }
+
+// The interpreter can come from the target script's shebang, so its install prefix is
+// adversary-influenced. A prefix that covers a top-level host directory or another
+// user's home must narrow the run to the interpreter file rather than exposing the
+// tree - nothing under /srv, /opt, or an alien home is covered by any deny-list rule,
+// which is anchored on the running user's home.
+func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		// broad is the tree the unfloored prefix would have exposed. It is present in
+		// the fake filesystem, so a missing floor binds it rather than failing the
+		// exists check for an unrelated reason.
+		interp, broad, want string
+	}{
+		{"top-level dir", "/srv/bin/python3", "/srv", "/srv/bin/python3"},
+		{"root itself", "/python3", "/", "/python3"},
+		{"another user's home", "/home/other/bin/python3", "/home/other", "/home/other/bin/python3"},
+		{"own home", "/home/u/bin/python3", "/home/u", "/home/u/bin/python3"},
+		{"a genuine install root", "/opt/toolchains/py/3.12/bin/python3", "", "/opt/toolchains/py/3.12"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox(tc.interp, tc.want, tc.broad)
+			sb.interpreter = tc.interp
+			if got := interpreterReadPath(sb); got != tc.want {
+				t.Errorf("interpreterReadPath(%q) = %q, want %q", tc.interp, got, tc.want)
+			}
+		})
+	}
+}
