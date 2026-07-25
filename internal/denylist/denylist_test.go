@@ -767,3 +767,111 @@ func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 		}
 	}
 }
+
+// The completeness ratchet is firejail-shaped, so anything firejail does not list is
+// invisible to it and can only be caught by hand. These entries were found that way:
+// each is a store or plant target whose SIBLING bento already shields, which is what
+// makes the omission an internal inconsistency rather than a scope choice. Guarding
+// them here is what stops the next edit from quietly dropping one again.
+func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
+	rules := Home("/home/u")
+	byPath := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		byPath[r.Path] = r
+	}
+
+	// Credentials: hidden, since a sandboxed run has no reason to read the secret.
+	for _, p := range []string{
+		"/home/u/.ICEauthority",             // session-manager cookie; .Xauthority is DenyAll
+		"/home/u/.terraformrc",              // Terraform Cloud tokens; .terraform.d is an anchor
+		"/home/u/.m2/settings.xml",          // Maven server passwords
+		"/home/u/.gradle/gradle.properties", // signing keys and repo credentials
+		"/home/u/.composer/auth.json",       // Composer registry tokens
+		"/home/u/.bundle/config",            // bundler gem-source credentials
+		"/home/u/.nuget/NuGet/NuGet.Config", // NuGet apikeys
+		"/home/u/.claude/.credentials.json", // coding-agent OAuth token
+		"/home/u/.codex/auth.json",
+	} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Dir {
+			t.Errorf("%s must be a DenyAll file shield, got %+v", p, r)
+		}
+	}
+
+	for _, p := range []string{
+		"/home/u/.config/glab-cli", // GitLab CLI tokens, the .config/gh analog
+		"/home/u/.config/helm",     // repository and OCI registry auth
+	} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyAll || !r.Dir {
+			t.Errorf("%s must be a DenyAll dir shield, got %+v", p, r)
+		}
+	}
+
+	// Plant targets: write-denied, not hidden, because a build or an agent may
+	// legitimately read them from inside the sandbox.
+	for _, p := range []string{
+		"/home/u/.claude", // hooks and MCP server command lines run on the host later
+		"/home/u/.codex",
+		"/home/u/.cursor",
+		"/home/u/.local/bin",     // on $PATH via the distro default profile
+		"/home/u/bin",            // same
+		"/home/u/.gradle/init.d", // every .gradle here runs before each build
+	} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded", p)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s must be a DenyWrite dir shield, got %+v", p, r)
+		}
+	}
+
+	// The package-cache trees stay reachable on purpose: shielding ~/.m2 or ~/.gradle
+	// wholesale to hide one credential file would break ordinary in-sandbox builds, so
+	// the file is shielded and the cache is not. A future edit that promotes the tree
+	// should be a deliberate one, not a silent side effect.
+	for _, p := range []string{"/home/u/.m2", "/home/u/.gradle", "/home/u/.nuget", "/home/u/.composer", "/home/u/.bundle"} {
+		if r, ok := byPath[p]; ok {
+			t.Errorf("%s is shielded as %+v; the credential file inside is shielded instead so builds keep working", p, r)
+		}
+	}
+}
+
+// A DenyWrite directory ro-binds its real subtree, which would re-expose a DenyAll file
+// nested inside it if the shields landed in the wrong order. denyArgs emits DenyWrite
+// before DenyAll for exactly that reason, so the agent trees below are a live instance
+// of the pattern: the tree is readable, the token inside it is not.
+func TestHomeHidesCredentialsInsideWriteShieldedAgentTrees(t *testing.T) {
+	rules := Home("/home/u")
+	for _, tc := range []struct{ tree, secret string }{
+		{"/home/u/.claude", "/home/u/.claude/.credentials.json"},
+		{"/home/u/.codex", "/home/u/.codex/auth.json"},
+	} {
+		var tree, secret *Rule
+		for i := range rules {
+			switch rules[i].Path {
+			case tc.tree:
+				tree = &rules[i]
+			case tc.secret:
+				secret = &rules[i]
+			}
+		}
+		if tree == nil || secret == nil {
+			t.Errorf("%s: expected both the tree and its credential to be shielded", tc.tree)
+			continue
+		}
+		if tree.Deny != DenyWrite || secret.Deny != DenyAll {
+			t.Errorf("%s: want a DenyWrite tree around a DenyAll credential, got %+v and %+v", tc.tree, *tree, *secret)
+		}
+	}
+}

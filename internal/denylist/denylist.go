@@ -67,6 +67,11 @@ func Home(home string) []Rule {
 		".databrickscfg",  // Databricks tokens
 		".smbcredentials", // SMB/CIFS mount credentials
 		".config/hub",     // hub CLI OAuth token
+		// Coding-agent credential files. Their trees are DenyWrite above so the agent can
+		// still read its own configuration; the token inside must not be readable, and
+		// denyArgs emits DenyWrite before DenyAll so this hide lands after that bind.
+		".claude/.credentials.json", // Claude Code OAuth token
+		".codex/auth.json",          // Codex CLI OAuth token
 		// Mail/registry configs whose dominant content is a plaintext credential and
 		// whose tool is rarely a sandboxed target: hidden (not just write-denied) so a
 		// sandboxed run cannot read the secret, which also neutralizes their exec knobs
@@ -96,6 +101,18 @@ func Home(home string) []Rule {
 		".xinitrc",
 		".xsession",
 		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
+
+		// Build-tool credential files. Each sits inside a directory whose bulk is a
+		// package cache a sandboxed build legitimately reads, so the FILE is shielded and
+		// the tree is left alone - shielding ~/.m2 or ~/.gradle wholesale would break
+		// ordinary in-sandbox builds to hide one file. firejail lists none of these, so
+		// the completeness ratchet cannot surface them.
+		".terraformrc",              // credentials blocks with Terraform Cloud/Enterprise tokens
+		".m2/settings.xml",          // Maven <server> passwords, often plaintext
+		".gradle/gradle.properties", // signing keys and repository credentials
+		".composer/auth.json",       // Composer registry/VCS tokens
+		".bundle/config",            // bundler stores gem-source and push credentials here
+		".nuget/NuGet/NuGet.Config", // NuGet apikeys (the ~/.nuget/packages cache stays readable)
 
 		// Credential files various tools read by default.
 		".fetchmailrc",       // fetchmail account password
@@ -141,6 +158,10 @@ func Home(home string) []Rule {
 		// not merely read-only as firejail has it - a bento sandbox has no X display to
 		// authenticate to, so there is no legitimate in-sandbox read.
 		".Xauthority",
+		// The ICE session-manager cookie is the same capability for the session-management
+		// channel (a client authenticating with it can drive session restart/shutdown and
+		// talk to session peers), and a sandbox has no session to join either.
+		".ICEauthority",
 
 		// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
 		// volumes (the .zuluCrypt store dir is shielded above).
@@ -324,6 +345,31 @@ func Home(home string) []Rule {
 		".local/share/mime",            // compiled MIME db: redirects which handler opens a file type
 		".csh_files",                   // csh startup-file collection firejail write-protects
 		".zsh_files",                   // zsh startup-file collection firejail write-protects
+
+		// Coding-agent configuration trees. Their settings declare hooks and MCP servers -
+		// command lines the agent runs on the HOST on a later invocation - so a planted
+		// entry is host code execution, the same threat .mcp.json is shielded for above and
+		// the same shape as .config/Code's git.path. Reads stay allowed: an agent running
+		// inside the sandbox may legitimately consult its own configuration. Any credential
+		// inside is shielded DenyAll separately below, which lands after this bind.
+		".claude",
+		".codex",
+		".cursor",
+
+		// Directories the distro default profile prepends to $PATH when they exist
+		// (/etc/skel/.profile does this for both). A binary planted here is run by the
+		// user's next shell under any bare command name it shadows - squarely the
+		// plant-that-runs-on-the-host-later model, and the sibling .local/lib is already
+		// shielded above for the import-time version of it. firejail write-protects these
+		// under a section bento's scope classifier does not admit, so the ratchet is blind
+		// to them.
+		".local/bin",
+		"bin",
+
+		// Gradle runs every .gradle script in init.d before each build, so a planted file
+		// executes on the next build with the developer's privileges. The credential file
+		// beside it (gradle.properties) is DenyAll above; the caches stay readable.
+		".gradle/init.d",
 	}
 
 	locations := func(entry string) []string { return homeLocations(home, entry) }
@@ -695,6 +741,8 @@ var credentialAnchorDirs = []string{
 	".mutt",             // ~/.mutt/muttrc and sourced files
 	".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
+	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
+	".config/helm",      // repository basic-auth and OCI registry auth (caches live under .cache/.local)
 
 	// pass(1) is genuinely key-bearing and anchors, but it is also a git repo by design.
 	// The alias scan skips VCS object stores inside an anchor separately, so a
