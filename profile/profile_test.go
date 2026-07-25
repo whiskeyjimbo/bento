@@ -361,3 +361,26 @@ func TestIsSystemPathMatchesBareDirectory(t *testing.T) {
 		}
 	}
 }
+
+// A version-managed runtime is reached through a symlinked name, so the target's
+// stdlib reads carry that name while the resolved interpreter path names a store
+// directory the reads never mention. Dropping by the resolved tree alone leaves the
+// whole stdlib in the proposal; both trees must drop, and the script's own file must
+// still survive.
+func TestSynthesizeDropsRuntimeReachedByItsUnresolvedName(t *testing.T) {
+	const named = "/opt/pyenv/versions/3.12"
+	const store = "/nix/store/abc-python3-3.12"
+	obs := Observation{
+		Interpreter:     store + "/bin/python3",
+		InterpreterName: named + "/bin/python3",
+		Reads: []string{
+			named + "/lib/python3.12/os.py",
+			store + "/lib/python3.12/encodings/__init__.py",
+			"/data/input.txt",
+		},
+	}
+	p := Synthesize("/work/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
+		t.Errorf("read = %v, want only the script's own input; both runtime trees are noise", p.Read)
+	}
+}

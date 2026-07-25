@@ -44,6 +44,10 @@ type sandbox struct {
 	// interpreter is empty when the entrypoint is its own interpreter.
 	entrypoint  string
 	interpreter string
+	// interpreterName is the interpreter's absolute path BEFORE symlink resolution -
+	// the name the target actually runs under, and so the prefix its stdlib reads carry.
+	// Empty when there is no interpreter or when resolution changed nothing.
+	interpreterName string
 	// proxySocket is the host path of the egress proxy's unix socket, set when the
 	// policy declares network rules or a supervising gate is present. When set, the
 	// sandbox is funneled through the proxy: the bento binary is re-exec'd inside as

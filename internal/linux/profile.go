@@ -132,6 +132,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	obs.Hosts = hosts
 	mu.Unlock()
 	obs.Interpreter = sb.interpreter
+	obs.InterpreterName = sb.interpreterName
 	return obs, nil
 }
 

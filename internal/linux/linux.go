@@ -289,7 +289,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	}
 
 	// An empty interpreter means the entrypoint runs itself: a compiled binary.
-	var interp string
+	var interp, interpName string
 	if p.Interpreter != "" {
 		found, err := exec.LookPath(p.Interpreter)
 		if err != nil {
@@ -297,6 +297,9 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		}
 		if interp, err = resolve(found); err != nil {
 			return sandbox{}, noop, err
+		}
+		if found != interp {
+			interpName = found
 		}
 	}
 
@@ -325,19 +328,20 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	}
 
 	sb := sandbox{
-		home:         home,
-		emptyFile:    empty,
-		entrypoint:   entrypoint,
-		interpreter:  interp,
-		exists:       hostExists,
-		isDir:        hostIsDir,
-		rootDirs:     hostRootDirs,
-		resolve:      hostResolve,
-		listDir:      hostListDir,
-		fileIDs:      hostFileIDs,
-		aliasesUnder: hostAliasesUnder,
-		mountpoints:  hostMountpoints,
-		statID:       hostStatID,
+		home:            home,
+		emptyFile:       empty,
+		entrypoint:      entrypoint,
+		interpreter:     interp,
+		interpreterName: interpName,
+		exists:          hostExists,
+		isDir:           hostIsDir,
+		rootDirs:        hostRootDirs,
+		resolve:         hostResolve,
+		listDir:         hostListDir,
+		fileIDs:         hostFileIDs,
+		aliasesUnder:    hostAliasesUnder,
+		mountpoints:     hostMountpoints,
+		statID:          hostStatID,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the

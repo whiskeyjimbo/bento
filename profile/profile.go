@@ -34,6 +34,13 @@ type Observation struct {
 	// runtime tree from the proposal - under a version manager that tree lives in
 	// $HOME, so a system-prefix filter alone does not catch it.
 	Interpreter string
+	// InterpreterName is the interpreter's absolute path before symlink resolution,
+	// empty when resolution changed nothing. A version-managed runtime is reached
+	// through a symlinked name (~/.pyenv/versions/3.12 -> a store path, or /home ->
+	// /var/home), and the target's stdlib reads carry THAT prefix, not the resolved
+	// one - so dropping the runtime by the resolved tree alone leaves the whole stdlib
+	// in the proposal as noise.
+	InterpreterName string
 	// ExitCode is the profiled run's exit status (128+signal when Signaled).
 	// Signaled/Signal report a run that died from a signal (crash, OOM, timeout). A
 	// nonzero or signaled run may have stopped partway, so the observations - and any
@@ -101,15 +108,24 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		return filepath.Clean(p)
 	}
 
-	runtime := runtimeTree(obs.Interpreter)
+	// Both the resolved tree and the one the target actually opened through: they differ
+	// under a version manager, and only the latter matches the observed reads. Each goes
+	// through runtimeTree's own safety ratchet, so a name broad enough to enclose a
+	// credential store still drops out rather than hiding one.
+	runtimes := []string{runtimeTree(obs.Interpreter), runtimeTree(obs.InterpreterName)}
 	// The install root itself counts as in-tree, not just the paths beneath it: a read
 	// of the root is the same runtime noise as a read of its stdlib.
 	inRuntime := func(p string) bool {
-		return runtime != "" && (p == runtime || strings.HasPrefix(p, runtime+"/"))
+		for _, r := range runtimes {
+			if r != "" && (p == r || strings.HasPrefix(p, r+"/")) {
+				return true
+			}
+		}
+		return false
 	}
 	skip := func(p string) bool {
-		return p == "" || p == entrypoint || p == obs.Interpreter || isSystemPath(p) ||
-			resolvesIntoProc(p) || inRuntime(p)
+		return p == "" || p == entrypoint || p == obs.Interpreter || p == obs.InterpreterName ||
+			isSystemPath(p) || resolvesIntoProc(p) || inRuntime(p)
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
