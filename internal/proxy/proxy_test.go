@@ -886,3 +886,63 @@ func TestGatekeeperUnderConcurrencyOpensOnlyAdmittedTunnels(t *testing.T) {
 		}
 	}
 }
+
+// The other half of the gate's concurrency story: a run cancelled while every
+// handler sits in the gatekeeper must leave nothing open. TestGatekeeperUnblockedByCancel
+// proves one blocked gate is interrupted; with the whole slot pool blocked, a gate
+// that outlived its context would strand every handler, hold Serve in wg.Wait, and
+// leave the run unable to finish - and a verdict that arrived after cancellation
+// would dial an upstream for a run that no longer exists.
+func TestConcurrentGatesBlockedAtCancelOpenNoTunnels(t *testing.T) {
+	const conns = 64
+
+	var (
+		mu     sync.Mutex
+		dialed []string
+	)
+	arrived := make(chan struct{}, conns)
+
+	p := New(nil,
+		WithGatekeeper(func(ctx context.Context, _, _ string) bool {
+			arrived <- struct{}{}
+			<-ctx.Done() // block as a human prompt would, until the run ends
+			return false
+		}),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			mu.Lock()
+			dialed = append(dialed, addr)
+			mu.Unlock()
+			return fakeDialer("tunnel")(ctx, network, addr)
+		}),
+	)
+	dialProxy, stop := startProxy(t, p)
+
+	for i := range conns {
+		// Dialed here rather than inside the goroutine: dialProxy reports a failure with
+		// t.Fatal, which from a spawned goroutine would kill it silently.
+		c := dialProxy()
+		defer c.Close()
+		go fmt.Fprintf(c, "CONNECT undeclared%d.example.com:443 HTTP/1.1\r\n\r\n", i)
+	}
+	for range conns {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			t.Fatal("not every connection reached the gatekeeper; a handler is stuck before the gate")
+		}
+	}
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve did not return after cancellation; gates blocked in a prompt were not all interrupted")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialed) != 0 {
+		t.Errorf("cancellation left %d upstreams dialed, want none: %v", len(dialed), dialed)
+	}
+}
