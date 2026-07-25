@@ -577,3 +577,71 @@ func TestCredentialFilesReachesAnchorsNestedInABulkStore(t *testing.T) {
 		t.Errorf("chain data %q must not be anchored - that is the walk the narrowing exists to avoid", chain)
 	}
 }
+
+// Every other bind test drives fakes. This one drives the real thing: a real bind mount,
+// the real /proc/self/mountinfo, real stats. It is the only check that the bind half of
+// the scan works at all rather than merely agreeing with a hand-written mount table - and
+// the bind half is the half the hardlink gate cannot cover, since a bind adds no
+// directory entry and so never opens the gate.
+//
+// A bind needs a mount namespace, so the test re-execs itself under unshare and reports
+// the result back through stdout.
+func TestRealBindAliasIsFound(t *testing.T) {
+	const marker, reached = "BIND_ALIAS_FOUND", "BIND_TEST_REACHED_SCAN"
+	// Fixed paths: the bind is established by the outer process and must be at the same
+	// place inside, and the namespace is private so nothing here escapes it.
+	const bindHome, bindBackup = "/tmp/bento-bindtest-home", "/tmp/bento-bindtest-backup"
+	if os.Getenv("BENTO_BIND_INNER") == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Skip(err)
+		}
+		// The outer process creates the content; bwrap only binds it.
+		if err := os.MkdirAll(filepath.Join(bindHome, ".ssh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(bindBackup, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bindHome, ".ssh", "id_rsa"), []byte("PRIVATE KEY"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(bindHome); os.RemoveAll(bindBackup) })
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			t.Skip("bwrap not installed")
+		}
+		// bwrap gives the mount namespace and establishes the bind in one step; the
+		// binary under test then sees it in its own /proc/self/mountinfo.
+		cmd := exec.Command("bwrap", "--dev-bind", "/", "/",
+			"--bind", bindHome, bindBackup,
+			exe, "-test.run", "TestRealBindAliasIsFound", "-test.v")
+		cmd.Env = append(os.Environ(), "BENTO_BIND_INNER=1")
+		out, _ := cmd.CombinedOutput()
+		// A failing inner run also exits non-zero, so the exit status cannot distinguish
+		// "this host has no user namespace" from "the scan missed the alias". The inner
+		// run says when it got far enough to be meaningful; only its silence is a skip.
+		if !strings.Contains(string(out), reached) {
+			t.Skipf("no usable user namespace here:\n%s", out)
+		}
+		if !strings.Contains(string(out), marker) {
+			t.Errorf("the real bind alias was not found by the real scan:\n%s", out)
+		}
+		return
+	}
+
+	home, backup := bindHome, bindBackup
+	key := filepath.Join(home, ".ssh", "id_rsa")
+
+	sb := sandbox{home: home, resolve: hostResolve, fileIDs: hostFileIDs,
+		aliasesUnder: hostAliasesUnder, mountpoints: hostMountpoints, statID: hostStatID}
+	t.Log(reached)
+
+	// The grant names the backup, which mentions no credential path at all - and the key
+	// has a single link, so the hardlink gate stays shut and only the mount scan can see it.
+	got := aliasedCredentials(sb, []string{backup}, nil)
+	want := credentialAlias{Path: filepath.Join(backup, ".ssh/id_rsa"), Credential: key}
+	if !slices.Contains(got, want) {
+		t.Fatalf("real bind scan = %+v, want it to contain %+v", got, want)
+	}
+	t.Log(marker)
+}
