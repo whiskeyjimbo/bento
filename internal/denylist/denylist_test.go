@@ -30,24 +30,27 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.gnome2/keyrings",      // legacy keyring path
 		"/home/u/.git-credential-cache", // git credential cache
 		"/home/u/.mutt",                 // mutt config (imap_pass) hidden
-		"/home/u/.config/mutt",          // XDG mutt config
-		"/home/u/.subversion/auth",      // SVN plaintext passwords
-		"/home/u/.config/openstack",     // OpenStack clouds.yaml/secure.yaml
-		"/home/u/.thunderbird",          // Thunderbird saved mail passwords
-		"/home/u/.config/evolution",     // Evolution saved mail passwords
-		"/home/u/.cert",                 // 802.1X/VPN client keys (real kind varies by host)
-		"/home/u/.mail",                 // maildir bodies and cached creds
-		"/home/u/.Mail",                 // capitalized maildir variant
-		"/home/u/.local/state/nvim",     // shada/undo/swap/backup: registers, search history, and full buffer contents
-		"/home/u/.local/share/nvim",     // pre-0.8 legacy location of the same stores, abandoned but not deleted on upgrade
-		"/home/u/.config/autostart",     // XDG autostart .desktop entries (hidden, matching firejail)
-		"/home/u/.config/systemd",       // systemd --user unit/timer tree
-		"/home/u/.local/share/systemd",  // systemd --user state
-		"/home/u/Mail",                  // mutt default mail folder (no leading dot)
-		"/home/u/mail",                  // mutt default mail folder
-		"/home/u/Private",               // ecryptfs decrypted mount point
-		"/home/u/.keepassxc",            // password-manager vault
-		"/home/u/.config/keepassxc",     // and its config/cache siblings
+		// podman/skopeo/buildah's fallback registry auth store (auth.json), the same
+		// content ~/.docker holds - hidden, not merely write-shielded.
+		"/home/u/.config/containers",
+		"/home/u/.config/mutt",         // XDG mutt config
+		"/home/u/.subversion/auth",     // SVN plaintext passwords
+		"/home/u/.config/openstack",    // OpenStack clouds.yaml/secure.yaml
+		"/home/u/.thunderbird",         // Thunderbird saved mail passwords
+		"/home/u/.config/evolution",    // Evolution saved mail passwords
+		"/home/u/.cert",                // 802.1X/VPN client keys (real kind varies by host)
+		"/home/u/.mail",                // maildir bodies and cached creds
+		"/home/u/.Mail",                // capitalized maildir variant
+		"/home/u/.local/state/nvim",    // shada/undo/swap/backup: registers, search history, and full buffer contents
+		"/home/u/.local/share/nvim",    // pre-0.8 legacy location of the same stores, abandoned but not deleted on upgrade
+		"/home/u/.config/autostart",    // XDG autostart .desktop entries (hidden, matching firejail)
+		"/home/u/.config/systemd",      // systemd --user unit/timer tree
+		"/home/u/.local/share/systemd", // systemd --user state
+		"/home/u/Mail",                 // mutt default mail folder (no leading dot)
+		"/home/u/mail",                 // mutt default mail folder
+		"/home/u/Private",              // ecryptfs decrypted mount point
+		"/home/u/.keepassxc",           // password-manager vault
+		"/home/u/.config/keepassxc",    // and its config/cache siblings
 		"/home/u/.cache/keepassxc",
 		"/home/u/.config/Bitwarden",
 		"/home/u/.config/1Password",
@@ -189,7 +192,6 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
 		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
-		"/home/u/.config/containers",        // podman/skopeo exec-redirect knobs
 		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
 		"/home/u/.config/nushell",           // nushell config and autoloads
 		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs

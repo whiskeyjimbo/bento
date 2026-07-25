@@ -280,7 +280,6 @@ func Home(home string) []Rule {
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
 		".bashrc.d",                 // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
-		".config/containers",        // podman/skopeo/buildah: containers.conf helper_binaries_dir/hooks_dir and registries.conf mirrors redirect a later invocation to attacker binaries/registries
 		".config/environment.d",     // systemd user-session env (LD_PRELOAD, PATH, ...)
 		".config/fish",              // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
 		".config/nushell",           // config.nu/env.nu and autoloads
@@ -650,12 +649,18 @@ func AliasAnchors(home string) []string {
 // are small enough to enumerate on every launch, which is what lets them anchor the
 // alias scan.
 var credentialAnchorDirs = []string{
-	".ssh",              // private keys, authorized_keys
-	".aws",              // credentials, config
-	".config/gcloud",    // application-default credentials, tokens
-	".azure",            // access tokens
-	".kube",             // cluster credentials
-	".docker",           // registry auth
+	".ssh",           // private keys, authorized_keys
+	".aws",           // credentials, config
+	".config/gcloud", // application-default credentials, tokens
+	".azure",         // access tokens
+	".kube",          // cluster credentials
+	".docker",        // registry auth
+	// auth.json here is podman/skopeo/buildah's documented fallback registry auth store
+	// (the XDG_RUNTIME_DIR primary is covered by Runtime()) - the same content .docker
+	// holds for the other toolchain. The tree also carries containers.conf's
+	// helper_binaries_dir/hooks_dir and registries.conf mirrors, which redirect a later
+	// host invocation to attacker binaries or registries; hiding it covers both.
+	".config/containers",
 	".gnupg",            // secret keyrings
 	".terraform.d",      // credentials.tfrc.json
 	".config/gh",        // GitHub CLI tokens
