@@ -86,7 +86,9 @@ func TestForeignABIWithoutTheGuardIsDroppedNotDecoded(t *testing.T) {
 	if !strings.Contains(out, "SECCOMPKILLED=false") {
 		t.Errorf("without the guard nothing marks the run unobservable, which is what makes the ABI check load-bearing here:\n%s", out)
 	}
-	if !strings.Contains(out, "DROPPED=1") {
+	// The trailing newline is part of the match: a bare "DROPPED=1" prefix also accepts
+	// DROPPED=10 and up, so an order-of-magnitude overcount would pass.
+	if !strings.Contains(out, "DROPPED=1\n") {
 		t.Errorf("the foreign syscall should be counted once as a dropped observation, at its entry stop:\n%s", out)
 	}
 }

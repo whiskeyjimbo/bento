@@ -80,6 +80,11 @@ const (
 // be the wrong dependency.
 const auditArchX8664 = 0xC000003E
 
+// x32SyscallBit tags a syscall number issued through the x32 ABI, which shares the
+// amd64 audit arch - so the arch check alone does not tell the two apart, and an x32
+// number means something else in the amd64 table it would be decoded against.
+const x32SyscallBit = 0x40000000
+
 // atFdCwd is openat's dirfd value meaning "relative to the working directory".
 // A real dirfd instead anchors a relative path at that descriptor's directory.
 const atFdCwd = -100
@@ -323,7 +328,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 // was, and a file access it could not read is exactly what Dropped exists to report.
 // Counted once per call, at the entry stop, which is what the op field distinguishes -
 // no dedup needed. A failed read is counted for the same reason: it says nothing about
-// what the stop was.
+// what the stop was. That one is counted per stop rather than per call, because a
+// failure leaves no op field to tell them apart; with the request's availability already
+// established at the initial stop, the only failure left is a tracee that died mid-pair,
+// which has no second stop to count.
+//
+// This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
+// and passes here, and inspect drops it on the tag its syscall numbers carry.
 func nativeSyscall(pid int, dropped *int) bool {
 	op, arch, err := syscallInfo(pid)
 	if err != nil {
@@ -429,10 +440,11 @@ func reapTracees(tracees map[int]bool) {
 // pathnames are unreadable from a loop reports one drop for N lost accesses, which is the
 // undercount this channel exists to prevent.
 //
-// Two keys still outlive their pair, both from stops with no usable registers to release
-// on: a failed register read (which keys on the zero regs) and a syscall the kernel does
-// not implement, whose real -ENOSYS makes both its stops read as entries. Each collapses
-// its repeats into one drop.
+// A key outlives its pair whenever the exit stop never reaches the release: a failed
+// register read (which has no registers to key on, and so keys on the zero regs), a
+// syscall the kernel does not implement, whose real -ENOSYS makes both its stops read as
+// entries, and a tracee that dies mid-pair. Each collapses its repeats into one drop, and
+// the last cannot repeat at all - the process is gone.
 func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*syscall.PtraceRegs)) {
 	key := func(regs *syscall.PtraceRegs) string {
 		return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
@@ -450,8 +462,9 @@ func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*s
 }
 
 // inspect decodes a syscall stop and records file opens / subprocess execs. The numbers
-// below are amd64's; the caller has already established that this stop was dispatched
-// through the amd64 entry point (see nativeSyscall), so they mean what they say.
+// below are amd64's; the caller has established that this stop carries the amd64 audit
+// arch (see nativeSyscall) and the x32 check below rules out the one ABI that shares it,
+// so between them the numbers mean what they say.
 func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
@@ -468,6 +481,15 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 		defer releaseDrop(&regs)
 	}
 	drop := func() { countDrop(&regs) }
+	// The other half of the ABI question nativeSyscall could not answer: x32 shares the
+	// amd64 audit arch, so it arrives here, but its numbers are tagged and mean something
+	// else untagged - x32 openat is 0x40000101. Untagged they would misdecode; tagged they
+	// match no case below and would fall through as an access that silently never happened.
+	// Dropped instead, which says the observation is short by one.
+	if regs.Orig_rax&x32SyscallBit != 0 {
+		drop()
+		return
+	}
 	switch regs.Orig_rax {
 	case sysOpenat:
 		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {

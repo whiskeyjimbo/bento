@@ -20,14 +20,14 @@ import (
 //
 // The foreign-arch guard carries the same completeness argument, which is why this
 // is not the security-fence exception to it. The observer decodes syscall numbers as
-// amd64 unconditionally, so a tracee issuing i386 syscalls - a 32-bit helper, or
-// int 0x80 from a 64-bit process - is decoded against the wrong table: i386 85 is
-// readlink and would be recorded as a write on whatever the first argument points at,
-// while real accesses go unseen. That is a manifest with fabricated grants and missing
-// ones, and it becomes enforcement policy on the next run. seccomp keys on the syscall
-// ABI rather than the code segment, so it catches the int 0x80 case a register check
-// would miss, and it kills rather than filters - a profile that cannot be trusted must
-// not complete. It also closes i386 io_uring_setup, which is 425 there too.
+// amd64 and refuses to decode any other ABI, so a tracee issuing i386 syscalls - a
+// 32-bit helper, or int 0x80 from a 64-bit process - has every one of those accesses
+// dropped rather than recorded. Nothing is fabricated, but the manifest is missing them,
+// and it becomes enforcement policy on the next run. Killing the process is what turns
+// that silent gap into a refused run: seccomp keys on the syscall ABI rather than the
+// code segment, so it catches the int 0x80 case a register check would miss, and a
+// profile that cannot be trusted must not complete. It also closes i386 io_uring_setup,
+// which is 425 there too.
 func BlockIoUring() error {
 	if err := blockForeignArch(); err != nil {
 		return err
