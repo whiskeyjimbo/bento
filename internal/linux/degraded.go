@@ -75,8 +75,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// sysReads + reads + writes. The degraded tier applies none of them (no mount
 	// namespace), so they are exposed, not hidden, and the audit says so rather than
 	// reporting an empty shield set for a run that shielded nothing. Scoping to the real
-	// exposure, not the full tier's exposedPaths, keeps it from warning about a credential
-	// under an interpreter prefix this tier never makes readable.
+	// exposure, not the full tier's exposedPaths, keeps the warning tied to what this tier
+	// actually makes readable - which now includes the interpreter prefix added below, so
+	// a credential store inside one IS reported here. That is the honest answer: the full
+	// tier binds a shield over it, and Landlock cannot carve one out of a granted tree.
 	sysReads, sysWrites := degradedSystemPaths()
 	// An interpreter outside the system paths (pyenv, mise, conda) needs its install
 	// prefix readable or it cannot load its stdlib. The launcher grants the interpreter
@@ -84,6 +86,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// stdlib read. The bwrap tier ro-binds the whole prefix; without the same grant here
 	// a manifest profiled for such a runtime cannot run, and Synthesize strips the
 	// runtime tree from proposals, so the manifest never carries a read grant for it.
+	// Added before the exposure scan below, so a credential under the prefix is reported
+	// rather than silently readable. On a Nix host this repeats the /nix grant
+	// degradedSystemPaths already makes; a duplicate Landlock rule is harmless.
 	if extra := interpreterReadPath(sb); extra != "" {
 		sysReads = append(sysReads, extra)
 	}
