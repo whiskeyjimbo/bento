@@ -859,6 +859,10 @@ func homeLocations(home, entry string) []string {
 // those trees is therefore not an anchor; the tree itself is still shielded.
 var aliasAnchorDirs = []string{
 	".ssh", ".aws", ".config/gcloud", ".azure", ".kube", ".docker", ".gnupg",
+	// .password-store is genuinely key-bearing and stays an anchor, but it is also a git
+	// repo by design; the alias scan skips VCS object stores inside an anchor separately,
+	// so a `git clone --local` of it does not read as an alias. Both narrowings are load-
+	// bearing - this one decides the store counts, that one decides its blobs do not.
 	".password-store", ".terraform.d", ".config/gh", ".local/share/gh",
 	".config/rclone", ".oci", ".config/doctl", ".config/op", ".config/keybase",
 	".pki", ".local/share/pki", ".minisign", ".subversion/auth",
@@ -870,7 +874,8 @@ var aliasAnchorDirs = []string{
 	".git-credential-cache", ".cache/git/credential",
 
 	// Password managers and wallets: the file IS the key.
-	".keepassxc", ".config/keepassxc", ".config/Bitwarden", ".config/1Password",
+	".keepassxc", ".config/keepassxc", ".cache/keepassxc",
+	".config/Bitwarden", ".config/1Password",
 	".local/share/Enpass", ".config/Authenticator", ".smartgit",
 	".bitcoin", ".electrum", ".ethereum", "Monero/wallets",
 }

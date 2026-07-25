@@ -693,3 +693,23 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 		}
 	}
 }
+
+// Every alias anchor must actually be a hidden directory rule in the deny list. The
+// anchors are named as literal strings, so a rename or typo in the dirs list would
+// silently un-anchor a credential store: the alias scan would keep passing while it
+// quietly stopped covering ~/.gnupg. Nothing else would notice, which is exactly the
+// silent-no-op class this guard exists for.
+func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
+	const home = "/home/u"
+	hidden := map[string]bool{}
+	for _, r := range Home(home) {
+		if r.Deny == DenyAll && r.Dir {
+			hidden[r.Path] = true
+		}
+	}
+	for _, a := range AliasAnchors(home) {
+		if !hidden[a] {
+			t.Errorf("alias anchor %q is not a DenyAll directory rule in Home() - renamed or misspelled?", a)
+		}
+	}
+}

@@ -1,12 +1,18 @@
 package linux
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // aliasSandbox returns a sandbox whose alias seams are driven by a hypothetical
@@ -24,7 +30,7 @@ func aliasSandbox(creds map[string][]identifiedFile, matches map[string][]identi
 		}
 		return out
 	}
-	sb.mountpoints = func() []mountPoint { return nil }
+	sb.mountpoints = func([]string) []mountPoint { return nil }
 	return sb
 }
 
@@ -140,7 +146,7 @@ func TestAliasedCredentialsFindsBindAliasWithoutTheWalk(t *testing.T) {
 		"/home/u/project/creds": {{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}},
 	}
 	sb := aliasSandbox(creds, matches)
-	sb.mountpoints = func() []mountPoint {
+	sb.mountpoints = func([]string) []mountPoint {
 		return []mountPoint{
 			{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}, // the bind of the credential
 			{path: "/home/u/project/cache", id: fileID{dev: 9, ino: 99}}, // unrelated, foreign device
@@ -164,7 +170,7 @@ func TestAliasedCredentialsMapsDirectoryBindToTheCredentialPath(t *testing.T) {
 		"/home/u/project/vendor": {{path: "/home/u/project/vendor/credentials", id: fileID{dev: 1, ino: 10}}},
 	}
 	sb := aliasSandbox(creds, matches)
-	sb.mountpoints = func() []mountPoint {
+	sb.mountpoints = func([]string) []mountPoint {
 		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 10}}}
 	}
 	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
@@ -329,4 +335,97 @@ func devOf(t *testing.T, path string) uint64 {
 		t.Fatalf("no Stat_t for %q", path)
 	}
 	return uint64(st.Dev)
+}
+
+// Bulk stores are shielded exactly as hard as credential stores, but they must not
+// IDENTIFY a credential. A maildir holds tens of thousands of files and mail sync tools
+// (mbsync, notmuch) hardlink duplicate messages as a matter of course - so anchoring on
+// one would both enumerate a whole mail spool on every launch and latch the nlink gate
+// permanently open, making every run pay the granted-tree walk and letting a duplicate
+// message refuse a run as though it were a leaked key.
+func TestCredentialFilesDoesNotAnchorOnBulkStores(t *testing.T) {
+	home := t.TempDir()
+	mail := filepath.Join(home, ".mail", "INBOX", "cur")
+	if err := os.MkdirAll(mail, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		msg := filepath.Join(mail, fmt.Sprintf("msg%d", i))
+		if err := os.WriteFile(msg, []byte("m"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The duplicate-message hardlinks mbsync leaves behind.
+		if err := os.Link(msg, filepath.Join(mail, fmt.Sprintf("dup%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.MkdirAll(filepath.Dir(key), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, []byte("KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := testSandbox()
+	sb.home = home
+	sb.resolve = func(p string) string { return p }
+	sb.fileIDs = hostFileIDs
+
+	files, linked := credentialFiles(sb, nil)
+	if linked {
+		t.Error("hardlinked maildir duplicates must not open the nlink gate")
+	}
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.path)
+	}
+	if !slices.Equal(got, []string{key}) {
+		t.Errorf("only key-bearing stores anchor the scan; got %v, want just %q", got, key)
+	}
+}
+
+// The mechanism's entire product is a refusal, so the wiring is the one place a silent
+// no-op could hide: drop the check from Run and every unit test above still passes while
+// the sandbox happily launches over an exposed credential. This drives a real Enforcer
+// against a real home with a real hardlink and asserts the run never starts.
+func TestRunRefusesAnAliasedCredential(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not installed")
+	}
+	// newSandbox takes the home the deny-list anchors on from os.UserHomeDir, i.e. $HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(project, "notes.txt")
+	if err := os.Link(key, alias); err != nil {
+		t.Skipf("no hardlink support: %v", err)
+	}
+	entrypoint := filepath.Join(project, "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\necho ran\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{project}}
+	proc := enforce.Process{Env: map[string]string{"HOME": home}}
+
+	_, err := New().Run(context.Background(), p, proc, nil, false)
+	if err == nil {
+		t.Fatal("Run admitted a policy whose granted tree holds a hardlink to a shielded credential")
+	}
+	for _, want := range []string{alias, key} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q must name %q", err, want)
+		}
+	}
 }

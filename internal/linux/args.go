@@ -97,7 +97,7 @@ type sandbox struct {
 	// of what sits at each. A bind exposes a credential's inode at a second path without
 	// adding a directory entry to it, so no link count reveals one and the mount table is
 	// the only place it shows up.
-	mountpoints func() []mountPoint
+	mountpoints func(trees []string) []mountPoint
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,

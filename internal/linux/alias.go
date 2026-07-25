@@ -122,15 +122,16 @@ func aliasedCredentials(sb sandbox, grants, writes, optIns []string) []credentia
 	// at all - which is what keeps a "read: /" run from walking /proc, /sys and every
 	// removable disk here. It also covers the one tree the granted-tree walk prunes away:
 	// a wanted-device filesystem mounted under a foreign-device directory inside a grant.
+	// mountpoints is asked only about the granted trees, so a mount nobody granted is
+	// never even stat'd: a dead NFS mount elsewhere on the host would block that stat
+	// forever, and hanging before launch over a filesystem the policy never mentioned
+	// would be a worse failure than the one this scan prevents.
 	devs := map[uint64]bool{}
 	for id := range want {
 		devs[id.dev] = true
 	}
-	for _, m := range sb.mountpoints() {
-		if !devs[m.id.dev] {
-			continue
-		}
-		if slices.ContainsFunc(trees, func(t string) bool { return under(m.path, t) }) {
+	for _, m := range sb.mountpoints(trees) {
+		if devs[m.id.dev] {
 			collect(m.path)
 		}
 	}
@@ -204,10 +205,10 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 		if r.Deny != denylist.DenyAll || !under(path, home) || seen[path] {
 			continue
 		}
-		if r.Dir && !anchorDir[path] {
+		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {
 			continue
 		}
-		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {
+		if r.Dir && !anchorDir[path] {
 			continue
 		}
 		seen[path] = true
@@ -318,7 +319,7 @@ func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
 // subvolume layout, and the non-path sources (mnt:[4026532372]) that nsfs mounts report.
 // Unreadable mountinfo yields nothing: this feeds one of two mechanisms, and the
 // hardlink half stands on its own.
-func hostMountpoints() []mountPoint {
+func hostMountpoints(trees []string) []mountPoint {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return nil
@@ -334,6 +335,12 @@ func hostMountpoints() []mountPoint {
 			continue
 		}
 		path := unescapeMount(fields[4])
+		// Containment is pure string work, so it comes before the stat: a mount outside
+		// every granted tree is never touched, and stating a dead hard-mounted NFS
+		// export blocks forever.
+		if !slices.ContainsFunc(trees, func(t string) bool { return under(path, t) }) {
+			continue
+		}
 		fi, err := os.Lstat(path)
 		if err != nil {
 			continue
