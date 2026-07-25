@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func aliasSandbox(creds map[string][]identifiedFile, matches map[string][]identi
 		}
 		return out
 	}
-	sb.bindMounts = func() []bindMount { return nil }
+	sb.mountpoints = func() []mountPoint { return nil }
 	return sb
 }
 
@@ -135,12 +136,15 @@ func TestAliasedCredentialsFindsBindAliasWithoutTheWalk(t *testing.T) {
 	creds := map[string][]identifiedFile{
 		"/home/u/.aws": {{path: "/home/u/.aws/credentials", id: fileID{dev: 1, ino: 10}, links: 1}},
 	}
-	sb := aliasSandbox(creds, nil)
-	sb.bindMounts = func() []bindMount {
-		return []bindMount{
-			{source: "/home/u/.aws/credentials", target: "/home/u/project/creds"}, // the alias
-			{source: "/var/cache", target: "/home/u/project/cache"},               // unrelated
-			{source: "/home/u/.ssh", target: "/mnt/elsewhere"},                    // outside every grant
+	matches := map[string][]identifiedFile{
+		"/home/u/project/creds": {{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}},
+	}
+	sb := aliasSandbox(creds, matches)
+	sb.mountpoints = func() []mountPoint {
+		return []mountPoint{
+			{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}, // the bind of the credential
+			{path: "/home/u/project/cache", id: fileID{dev: 9, ino: 99}}, // unrelated, foreign device
+			{path: "/mnt/elsewhere", id: fileID{dev: 1, ino: 11}},        // wanted device, outside every grant
 		}
 	}
 	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
@@ -156,9 +160,12 @@ func TestAliasedCredentialsMapsDirectoryBindToTheCredentialPath(t *testing.T) {
 	creds := map[string][]identifiedFile{
 		"/home/u/.aws": {{path: "/home/u/.aws/credentials", id: fileID{dev: 1, ino: 10}, links: 1}},
 	}
-	sb := aliasSandbox(creds, nil)
-	sb.bindMounts = func() []bindMount {
-		return []bindMount{{source: "/home/u/.aws", target: "/home/u/project/vendor"}}
+	matches := map[string][]identifiedFile{
+		"/home/u/project/vendor": {{path: "/home/u/project/vendor/credentials", id: fileID{dev: 1, ino: 10}}},
+	}
+	sb := aliasSandbox(creds, matches)
+	sb.mountpoints = func() []mountPoint {
+		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 10}}}
 	}
 	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
 	want := []credentialAlias{{Path: "/home/u/project/vendor/credentials", Credential: "/home/u/.aws/credentials"}}
@@ -275,4 +282,51 @@ func TestCredentialFilesSkipsGitObjectStore(t *testing.T) {
 	if slices.ContainsFunc(files, func(f identifiedFile) bool { return f.path == blob }) {
 		t.Errorf("the git object %q must not be in the credential set", blob)
 	}
+}
+
+// The granted tree's own device says nothing about what is under it. Pruning by device
+// at the walk root hands fs.SkipDir to WalkDir before it descends anywhere, ending the
+// entire walk - so a "read: /" run on a host with /home on its own partition would find
+// no alias in a home full of them, and silently admit what this mechanism exists to
+// refuse. /dev (devtmpfs) and /dev/shm (tmpfs) are different devices on any Linux host,
+// which makes the boundary reproducible without mounting anything.
+func TestHostAliasesUnderCrossesADeviceBoundaryAtTheRoot(t *testing.T) {
+	cred := "/dev/shm/bento_boundary_cred"
+	alias := "/dev/shm/bento_boundary_alias"
+	if err := os.WriteFile(cred, []byte("SECRET"), 0o600); err != nil {
+		t.Skipf("no writable /dev/shm: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(cred) })
+	os.Remove(alias)
+	if err := os.Link(cred, alias); err != nil {
+		t.Skipf("no hardlink support: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(alias) })
+
+	ids := hostFileIDs(cred)
+	if len(ids) != 1 {
+		t.Fatalf("hostFileIDs(%q) = %+v, want one file", cred, ids)
+	}
+	if devOf(t, "/dev") == ids[0].id.dev {
+		t.Skip("/dev and /dev/shm share a device on this host; no boundary to cross")
+	}
+
+	want := map[fileID]string{ids[0].id: cred}
+	got := hostAliasesUnder("/dev", want)
+	if !slices.ContainsFunc(got, func(a credentialAlias) bool { return a.Path == alias }) {
+		t.Errorf("walking /dev must reach the alias at %q on the /dev/shm device; got %+v", alias, got)
+	}
+}
+
+func devOf(t *testing.T, path string) uint64 {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no Stat_t for %q", path)
+	}
+	return uint64(st.Dev)
 }

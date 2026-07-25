@@ -542,32 +542,7 @@ func Home(home string) []Rule {
 		".zsh_files",                   // zsh startup-file collection firejail write-protects
 	}
 
-	// A relocated XDG base moves the real credential/config stores out from under the
-	// default ~/.config etc., so a config/data/cache-relative entry is shielded at
-	// BOTH its default location and the XDG one - a tool that honors XDG_CONFIG_HOME
-	// reads from there, a tool that ignores it from the default, and both are covered.
-	xdgBases := []struct{ prefix, env, def string }{
-		{".config/", "XDG_CONFIG_HOME", ".config"},
-		{".local/share/", "XDG_DATA_HOME", ".local/share"},
-		{".local/state/", "XDG_STATE_HOME", ".local/state"},
-		{".cache/", "XDG_CACHE_HOME", ".cache"},
-	}
-	locations := func(entry string) []string {
-		for _, b := range xdgBases {
-			if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
-				out := []string{join(entry)}
-				// A relative XDG base is invalid per the spec and ignored by conforming
-				// tools, which fall back to the default location - already shielded via
-				// join(entry). Emitting a relative Rule.Path here would shield nothing at
-				// the intended place, so drop it and rely on the default shield.
-				if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
-					out = append(out, filepath.Join(base, rel))
-				}
-				return out
-			}
-		}
-		return []string{join(entry)}
-	}
+	locations := func(entry string) []string { return homeLocations(home, entry) }
 
 	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))
 	emit := func(entry string, deny Deny, dir bool) {
@@ -834,4 +809,79 @@ func Workspace(dir string) []Rule {
 		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
 		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
 	}
+}
+
+// A relocated XDG base moves the real credential/config stores out from under the
+// default ~/.config etc., so a config/data/cache-relative entry is shielded at
+// BOTH its default location and the XDG one - a tool that honors XDG_CONFIG_HOME
+// reads from there, a tool that ignores it from the default, and both are covered.
+var xdgBases = []struct{ prefix, env, def string }{
+	{".config/", "XDG_CONFIG_HOME", ".config"},
+	{".local/share/", "XDG_DATA_HOME", ".local/share"},
+	{".local/state/", "XDG_STATE_HOME", ".local/state"},
+	{".cache/", "XDG_CACHE_HOME", ".cache"},
+}
+
+// homeLocations expands a home-relative deny entry to every absolute path it must be
+// shielded at: its default location, plus the XDG one when the relevant base is
+// relocated.
+func homeLocations(home, entry string) []string {
+	join := func(p string) string { return filepath.Join(home, p) }
+	for _, b := range xdgBases {
+		if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
+			out := []string{join(entry)}
+			// A relative XDG base is invalid per the spec and ignored by conforming
+			// tools, which fall back to the default location - already shielded via
+			// join(entry). Emitting a relative Rule.Path here would shield nothing at
+			// the intended place, so drop it and rely on the default shield.
+			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
+				out = append(out, filepath.Join(base, rel))
+			}
+			return out
+		}
+	}
+	return []string{join(entry)}
+}
+
+// aliasAnchorDirs are the DenyAll directories whose contents are key material - private
+// keys, tokens, keyrings, wallets. Every DenyAll directory is shielded just as hard;
+// this narrower set is only about which files can IDENTIFY a credential when looking for
+// a second name for one.
+//
+// The distinction earns its keep twice. It is an inclusion list rather than an exclusion
+// list because the deny-list grows with privacy and persistence entries far more often
+// than with new key formats, and an exclusion list would silently re-admit each one. And
+// it keeps the bulk stores out: ~/.mail, ~/Mail, ~/.thunderbird, ~/.mozilla and the
+// browser profile trees hold tens of thousands of files, so anchoring on them would mean
+// enumerating a user's whole mail spool on every launch - and mail sync tools (mbsync,
+// notmuch) hardlink duplicate messages as a matter of course, which would trip the alias
+// scan on a mail file rather than a credential. A saved mail password inside one of
+// those trees is therefore not an anchor; the tree itself is still shielded.
+var aliasAnchorDirs = []string{
+	".ssh", ".aws", ".config/gcloud", ".azure", ".kube", ".docker", ".gnupg",
+	".password-store", ".terraform.d", ".config/gh", ".local/share/gh",
+	".config/rclone", ".oci", ".config/doctl", ".config/op", ".config/keybase",
+	".pki", ".local/share/pki", ".minisign", ".subversion/auth",
+	".config/openstack", ".config/mutt", ".mutt", ".config/msmtp", ".cert",
+
+	// OS secret stores: the master keyring behind saved passwords and tokens.
+	".local/share/keyrings", ".local/share/kwalletd", ".gnome2/keyrings",
+	".kde/share/apps/kwallet", ".kde4/share/apps/kwallet",
+	".git-credential-cache", ".cache/git/credential",
+
+	// Password managers and wallets: the file IS the key.
+	".keepassxc", ".config/keepassxc", ".config/Bitwarden", ".config/1Password",
+	".local/share/Enpass", ".config/Authenticator", ".smartgit",
+	".bitcoin", ".electrum", ".ethereum", "Monero/wallets",
+}
+
+// AliasAnchors returns the absolute directories whose files identify a credential, for
+// detecting a second readable name for one. See aliasAnchorDirs for why this is narrower
+// than the full set of hidden directories.
+func AliasAnchors(home string) []string {
+	out := make([]string, 0, len(aliasAnchorDirs))
+	for _, d := range aliasAnchorDirs {
+		out = append(out, homeLocations(home, d)...)
+	}
+	return out
 }

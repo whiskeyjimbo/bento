@@ -34,12 +34,20 @@ type identifiedFile struct {
 	links uint64
 }
 
-// bindMount is one host bind mount: the subtree the kernel exposes and where it is
-// exposed. A bind shares its source's inode without adding a directory entry to it, so
-// no link count ever reflects one.
-type bindMount struct {
-	source string
-	target string
+// mountPoint is one host mount: where it is attached and the identity of the directory
+// attached there. A bind shares its source's inode without adding a directory entry to
+// it, so no link count ever reflects one and the mount table is the only place it shows.
+//
+// Only the mountpoint is recorded, never the mount's source. The kernel reports a
+// mount's source subtree relative to its own filesystem, not to the host namespace: with
+// /home on its own partition a bind of ~/.ssh reports "/u/.ssh", and a btrfs subvolume
+// layout reports "/@home/u/.ssh". Comparing either against a host path silently matches
+// nothing, and a second filesystem whose internal path happens to equal a credential's
+// would match content it does not hold. The mountpoint has no such ambiguity, so the
+// scan asks what is actually at it rather than what the kernel says it came from.
+type mountPoint struct {
+	path string
+	id   fileID
 }
 
 // credentialAlias is a second readable path, inside a tree the policy grants, that
@@ -91,20 +99,41 @@ func aliasedCredentials(sb sandbox, grants, writes, optIns []string) []credentia
 		trees = append(trees, sb.resolve(g))
 	}
 
+	// A grant containing the credential itself walks over the shielded path, whose
+	// identity is by definition wanted. The shield covers that path; only a second name
+	// is a leak.
 	var out []credentialAlias
-	if linked {
-		for _, t := range trees {
-			for _, a := range sb.aliasesUnder(t, want) {
-				// A grant containing the credential itself walks over the shielded path,
-				// whose identity is by definition wanted. The shield covers that path;
-				// only a second name is a leak.
-				if !shielded[a.Path] {
-					out = append(out, a)
-				}
+	collect := func(root string) {
+		for _, a := range sb.aliasesUnder(root, want) {
+			if !shielded[a.Path] {
+				out = append(out, a)
 			}
 		}
 	}
-	out = append(out, bindAliases(sb.bindMounts(), creds, shielded, trees)...)
+	if linked {
+		for _, t := range trees {
+			collect(t)
+		}
+	}
+
+	// Mounts are scanned whether or not the gate fired, because a bind adds no directory
+	// entry and so never opens it. Only a mount on a device some credential lives on can
+	// alias one - a bind shares its source's device, and a hardlink cannot cross devices
+	// at all - which is what keeps a "read: /" run from walking /proc, /sys and every
+	// removable disk here. It also covers the one tree the granted-tree walk prunes away:
+	// a wanted-device filesystem mounted under a foreign-device directory inside a grant.
+	devs := map[uint64]bool{}
+	for id := range want {
+		devs[id.dev] = true
+	}
+	for _, m := range sb.mountpoints() {
+		if !devs[m.id.dev] {
+			continue
+		}
+		if slices.ContainsFunc(trees, func(t string) bool { return under(m.path, t) }) {
+			collect(m.path)
+		}
+	}
 
 	slices.SortFunc(out, func(a, b credentialAlias) int {
 		if a.Path != b.Path {
@@ -138,13 +167,19 @@ func aliasRefusal(aliases []credentialAlias) error {
 // credential no grant reached still has its content reachable through an alias that a
 // grant DID reach, and coupling the scan to engagement would miss exactly that.
 //
-// Two scope limits are deliberate. Only DenyAll shields qualify - a read-only shield
+// Three scope limits are deliberate. Only DenyAll shields qualify - a read-only shield
 // keeps its file readable by design, so a second readable name for it leaks nothing
-// new. And only shields under $HOME: the non-home hidden shields are host service
+// new. Only shields under $HOME: the non-home hidden shields are host service
 // directories like /run, and enumerating those to collect inodes would descend into
-// removable media and FUSE mounts. A credential whose own path is explicitly opted into
-// the sandbox is dropped - its shield never engages, so there is no shield for an alias
-// to defeat.
+// removable media and FUSE mounts. And among the hidden directories only the key-bearing
+// ones anchor the scan (denylist.AliasAnchors); the bulk stores are shielded just as
+// hard but enumerating a mail spool or browser profile on every launch would cost more
+// than the scan saves, and mail sync tools hardlink duplicate messages routinely enough
+// that anchoring on them would trip on mail rather than credentials. Hidden FILE rules
+// all anchor it: a single file is cheap to stat and is named because it holds a secret.
+//
+// A credential whose own path is explicitly opted into the sandbox is dropped - its
+// shield never engages, so there is no shield for an alias to defeat.
 func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linked bool) {
 	if sb.home == "" {
 		return nil, false
@@ -158,10 +193,18 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 		resolvedOptIns = append(resolvedOptIns, sb.resolve(o))
 	}
 
+	anchorDir := map[string]bool{}
+	for _, d := range denylist.AliasAnchors(sb.home) {
+		anchorDir[sb.resolve(d)] = true
+	}
+
 	seen := map[string]bool{}
 	for _, r := range alwaysShields(sb) {
 		path := sb.resolve(r.Path)
 		if r.Deny != denylist.DenyAll || !under(path, home) || seen[path] {
+			continue
+		}
+		if r.Dir && !anchorDir[path] {
 			continue
 		}
 		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {
@@ -177,32 +220,6 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 		}
 	}
 	return files, linked
-}
-
-// bindAliases reports the credentials a host bind mount re-exposes inside a granted
-// tree. A bind of a credential's parent directory exposes every file under it, so the
-// alias is the credential's path rewritten onto the mountpoint, not the mountpoint.
-func bindAliases(mounts []bindMount, creds []identifiedFile, shielded map[string]bool, trees []string) []credentialAlias {
-	var out []credentialAlias
-	for _, m := range mounts {
-		for _, c := range creds {
-			if !under(c.path, m.source) {
-				continue
-			}
-			rel, err := filepath.Rel(m.source, c.path)
-			if err != nil {
-				continue
-			}
-			alias := filepath.Join(m.target, rel)
-			if shielded[alias] {
-				continue
-			}
-			if slices.ContainsFunc(trees, func(t string) bool { return under(alias, t) }) {
-				out = append(out, credentialAlias{Path: alias, Credential: c.path})
-			}
-		}
-	}
-	return out
 }
 
 // hostFileIDs returns the identity of every regular file at or under path. A file path
@@ -238,10 +255,18 @@ func hostFileIDs(path string) []identifiedFile {
 }
 
 // hostAliasesUnder returns the regular files under root whose content identity is one
-// of want's. It never descends into a filesystem none of the wanted files live on: a
-// hardlink cannot cross a device boundary, so another device's subtree - a mounted
-// backup disk, a FUSE mount under a broad grant - cannot hold one and walking it is
-// pure cost.
+// of want's. It does not descend into a filesystem none of the wanted files live on: a
+// hardlink cannot cross a device boundary, so another device's subtree - /proc and /sys
+// under a "read: /" grant, a mounted backup disk, a FUSE mount - cannot hold one and
+// walking it is pure cost.
+//
+// The root itself is never pruned, however far its own device is from the wanted set. A
+// walk of "/" starts on the rootfs while the credentials live on a separate /home, and
+// pruning by device at the root would hand fs.SkipDir to WalkDir before it descended
+// anywhere - ending the whole walk and reporting no alias for a tree full of them. The
+// prune is a statement about a subtree's contents, so it only applies below the root;
+// a wanted-device filesystem mounted under a pruned directory is reached through the
+// mountpoint scan instead.
 func hostAliasesUnder(root string, want map[fileID]string) []credentialAlias {
 	devs := map[uint64]bool{}
 	for id := range want {
@@ -253,7 +278,7 @@ func hostAliasesUnder(root string, want map[fileID]string) []credentialAlias {
 			return nil
 		}
 		if d.IsDir() {
-			if f, ok := identify(p, d); ok && !devs[f.id.dev] {
+			if f, ok := identify(p, d); ok && !devs[f.id.dev] && p != root {
 				return fs.SkipDir
 			}
 			return nil
@@ -285,30 +310,39 @@ func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
 	return identifiedFile{path: path, id: fileID{dev: uint64(st.Dev), ino: st.Ino}, links: uint64(st.Nlink)}, true
 }
 
-// hostBindMounts reads the host's bind mounts from /proc/self/mountinfo. A bind is a
-// mount whose root within its source filesystem is not that filesystem's root: the
-// kernel records the subtree being exposed, which for a filesystem mounted at / is the
-// source path itself. Mounts of a filesystem that is not itself rooted at / (a bind of
-// a path on a separate disk) name a subtree relative to that disk, which no host path
-// matches, so they are read and simply never match a credential - a miss, not a
-// misattribution. Unreadable mountinfo yields nothing: this feeds one of two
-// mechanisms, and the hardlink half stands on its own.
-func hostBindMounts() []bindMount {
+// hostMountpoints reads where the host's filesystems are attached, with the identity of
+// what sits at each one. The mount's own source subtree is deliberately not read: the
+// kernel records it relative to its filesystem rather than to the host namespace, so it
+// cannot be compared against a host path (see mountPoint). Statting the mountpoint asks
+// the filesystem directly instead, which is immune to a separate /home, a btrfs
+// subvolume layout, and the non-path sources (mnt:[4026532372]) that nsfs mounts report.
+// Unreadable mountinfo yields nothing: this feeds one of two mechanisms, and the
+// hardlink half stands on its own.
+func hostMountpoints() []mountPoint {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 
-	var out []bindMount
+	var out []mountPoint
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
-		if len(fields) < 5 || fields[3] == "/" {
+		if len(fields) < 5 {
 			continue
 		}
-		out = append(out, bindMount{source: unescapeMount(fields[3]), target: unescapeMount(fields[4])})
+		path := unescapeMount(fields[4])
+		fi, err := os.Lstat(path)
+		if err != nil {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		out = append(out, mountPoint{path: path, id: fileID{dev: uint64(st.Dev), ino: st.Ino}})
 	}
 	return out
 }

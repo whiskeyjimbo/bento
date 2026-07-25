@@ -93,10 +93,11 @@ type sandbox struct {
 	// are separate seams because the credential trees are small enough to enumerate
 	// whole while a granted tree must be filtered as it is walked.
 	aliasesUnder func(root string, want map[fileID]string) []credentialAlias
-	// bindMounts returns the host's bind mounts. A bind exposes a credential's inode at
-	// a second path without adding a directory entry to it, so no link count reveals
-	// one and the mount table is the only place it shows up.
-	bindMounts func() []bindMount
+	// mountpoints returns where the host's filesystems are attached, with the identity
+	// of what sits at each. A bind exposes a credential's inode at a second path without
+	// adding a directory entry to it, so no link count reveals one and the mount table is
+	// the only place it shows up.
+	mountpoints func() []mountPoint
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -315,6 +316,7 @@ func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.Shie
 	return shieldsApplied(applied)
 }
 
+// execBlockFlags reports the launcher's exec-block flags for execMode, gated on
 // whether the kernel supports seccomp. The exec-block is a hardening layer
 // (TierHardening): where seccomp BPF is absent the probe reports
 // LayerExec=Unavailable and admission proceeds with a warning, so the launcher

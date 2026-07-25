@@ -192,12 +192,21 @@ because the two alias kinds leave different traces:
 - *Hardlinks* are found by identity. A hardlink needs a second directory entry
   pointing at the credential's inode, so `nlink == 1` on every credential *proves*
   no hardlink to any of them exists anywhere on the host. Bento stats the credential
-  set first - dozens of files - and only when that gate fires does it walk the
-  granted trees to find where the alias is, never descending into a filesystem none
-  of the credentials live on. On an ordinary run the walk is provably unnecessary
-  and does not happen.
+  set first - tens of files - and only when that gate fires does it walk the granted
+  trees to find where the alias is. On an ordinary run the walk is provably
+  unnecessary and does not happen. Below the walk root it does not descend into a
+  filesystem none of the credentials live on, since a hardlink cannot cross a device
+  boundary; the root itself is always walked, because a grant of `/` starts on the
+  rootfs while the credentials may live on a separate `/home`, and pruning there
+  would end the walk before it began.
 - *Bind aliases* bump no link count, so the gate correctly skips the walk for them.
-  They are read instead from `/proc/self/mountinfo`, at O(mounts).
+  They are read instead from `/proc/self/mountinfo`, at O(mounts). Only the
+  mountpoint is used, never the mount's recorded source: the kernel reports a source
+  relative to its own filesystem, so with `/home` on its own partition a bind of
+  `~/.ssh` reports `/u/.ssh`, and a btrfs subvolume layout reports `/@home/u/.ssh`.
+  Bento asks what is actually *at* each mountpoint instead, and only for mountpoints
+  on a device some credential lives on - which also reaches a filesystem mounted
+  under a directory the granted-tree walk pruned.
 
 The credential set is built from the deny-list itself rather than from the shields
 a given run engaged: a credential no grant reached is still reachable through an
@@ -206,6 +215,18 @@ read-only shield's file is readable by design, and the non-home hidden shields a
 host service directories like `/run`, which it would be wrong to enumerate. A
 credential's own path being explicitly opted into the sandbox drops it from the
 scan: its shield never engages, so there is no shield for an alias to defeat.
+
+Among the hidden *directories*, only the key-bearing ones anchor the scan - private
+keys, tokens, keyrings, wallets. Every hidden directory is shielded just as hard;
+this narrower set is only about which files can *identify* a credential. It is an
+inclusion list because the deny-list grows with privacy and persistence entries far
+more often than with new key formats, and an exclusion list would silently re-admit
+each one. It also keeps the bulk stores out: `~/.mail`, `~/Mail`, `~/.thunderbird`
+and the browser profile trees hold tens of thousands of files, so anchoring on them
+would mean enumerating a mail spool on every launch - and mail sync tools (mbsync,
+notmuch) hardlink duplicate messages routinely, which would trip the scan on a mail
+file rather than a credential. A saved mail password inside one of those trees is
+therefore not an anchor, and that is a deliberate residual; the tree stays shielded.
 
 Two narrowings keep the refusal honest. A symlinked credential's *target* is not
 followed - a store that deduplicates identical files by hardlinking them (Nix) gives

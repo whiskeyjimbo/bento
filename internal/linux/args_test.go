@@ -70,7 +70,7 @@ func testSandbox(existing ...string) sandbox {
 		// tests override these seams to plant one.
 		fileIDs:      func(string) []identifiedFile { return nil },
 		aliasesUnder: func(string, map[fileID]string) []credentialAlias { return nil },
-		bindMounts:   func() []bindMount { return nil },
+		mountpoints:  func() []mountPoint { return nil },
 	}
 }
 
