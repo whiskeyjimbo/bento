@@ -12,11 +12,16 @@ import (
 
 // buildProbe compiles the probe the way make build ships bento, and returns its path.
 //
-// CGO_ENABLED=0 is the point, not boilerplate: go-landlock selects a different
-// all-threads mechanism per build tag - cgo routes the restrict syscall through
-// libpsx and adds a /proc/$PID/task workaround rule, no-cgo uses
-// syscall.AllThreadsSyscall and adds neither. A probe built with cgo would verify
-// confinement on a code path the shipped binary never runs.
+// CGO_ENABLED=0 is the point, not boilerplate: where go-landlock reaches the other
+// threads from userspace it selects a different mechanism per build tag - cgo routes
+// the restrict syscall through libpsx and adds a /proc/$PID/task workaround rule,
+// no-cgo uses syscall.AllThreadsSyscall and adds neither. A probe built with cgo
+// would verify confinement on a code path the shipped binary never runs.
+//
+// On Landlock ABI 8 and above go-landlock takes neither: it passes the kernel's own
+// TSYNC flag (restrict.go, useTsync := abi.version >= 8) and the build-tag divergence
+// disappears. So this forces the shipped build, but on a new enough kernel there is
+// no userspace mechanism left for it to be the shipped version OF.
 func buildProbe(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -124,13 +129,17 @@ func TestRestrictConfinesReads(t *testing.T) {
 	})
 }
 
-// Landlock is applied per thread, and the Go runtime has several. go-landlock covers
-// them with libpsx under cgo and syscall.AllThreadsSyscall without it - and the
-// shipped binary is the no-cgo one, which nothing exercised until buildProbe started
-// forcing CGO_ENABLED=0. This asserts the property that mechanism exists for: a thread
-// that was already parked when the ruleset was applied is confined too. Started before
-// the restrict call on purpose; one started after would inherit the restriction through
-// clone under either mechanism and prove nothing.
+// Landlock is applied per thread, and the Go runtime has several. This asserts the
+// property every mechanism for covering them exists to deliver: a thread that was
+// already parked when the ruleset was applied is confined too. Started before the
+// restrict call on purpose; one started after would inherit the restriction through
+// clone regardless and prove nothing.
+//
+// It asserts the property, not the mechanism, and cannot tell which one ran: below
+// ABI 8 that is go-landlock's userspace fan-out (the no-cgo AllThreadsSyscall path
+// buildProbe now forces), at ABI 8 and above it is the kernel's own TSYNC and no
+// userspace fan-out happens at all. A pass here is therefore not evidence that the
+// shipped AllThreadsSyscall path was exercised.
 func TestRestrictReachesAPreexistingThread(t *testing.T) {
 	if !landlock.Available() {
 		t.Skip("Landlock not present on this kernel")

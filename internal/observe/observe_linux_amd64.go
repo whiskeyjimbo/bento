@@ -53,7 +53,11 @@ type Result struct {
 	Dropped int
 	// SeccompKilled reports that a tracee - root or any descendant - died on SIGSYS,
 	// i.e. a kill-mode seccomp filter refused one of its syscalls. Everything that
-	// process would have touched is absent from Accesses. Tracked separately from
+	// process would have touched after the refused syscall is absent from Accesses -
+	// and, worse than absent, the refused syscall itself may have ADDED a fabricated
+	// one: the ptrace stop precedes seccomp, so a foreign-ABI syscall is decoded
+	// against the amd64 table before the kill lands (see inspect). A caller must treat
+	// this run's Accesses as unusable rather than merely incomplete. Tracked separately from
 	// Signaled because a script that tolerates its helper dying still exits zero, and
 	// that run's observation is missing everything the helper did with nothing else to
 	// say so. Which filter killed it is the caller's to interpret: for bento's profiling
@@ -362,9 +366,11 @@ func dropOnce(seen map[string]bool, pid int, n *int) func(*syscall.PtraceRegs) {
 // courtesy: a caller that reads Accesses without checking SeccompKilled gets the
 // fabricated write. Pinned by the foreign-ABI tests in internal/launcher.
 //
-// A backstop here would need the dispatch ABI, not the code segment: int 0x80 from a
-// 64-bit process leaves cs at 0x33 (measured), so only PTRACE_GET_SYSCALL_INFO's arch
-// field distinguishes it.
+// A backstop that identified the foreign ABI would need the dispatch arch, not the
+// code segment: int 0x80 from a 64-bit process leaves cs at 0x33 (measured), so only
+// PTRACE_GET_SYSCALL_INFO's arch field distinguishes it. Recording creat only once
+// its exit stop reports success would drop the fabrication without identifying
+// anything, and is the cheaper shape.
 func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {

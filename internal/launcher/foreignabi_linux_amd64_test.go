@@ -24,12 +24,22 @@ const sentinelForeignABI = "BENTO_TEST_FOREIGN_ABI"
 // its presence in a Result can only have come from decoding that syscall.
 const foreignPath = "/bento-foreign-abi-probe"
 
-// runForeignABITracer runs one tracer role and returns the lines it reported.
+// runForeignABITracer runs one tracer role and returns the lines it reported. It
+// skips the calling test on a kernel with no ia32 entry point, where the tracee's
+// `int 0x80` raises SIGSEGV and reaches neither the filter nor the decoder.
+//
+// The skip reads the tracee's runtime dump out of the captured output rather than
+// its wait status: the fault lands inside Go code, so the runtime catches SIGSEGV,
+// prints the dump and exits 2 UNSIGNALED - the Result would say SIGNAL=0, which is
+// indistinguishable from a clean run and would fail these tests on every such host.
 func runForeignABITracer(t *testing.T, role string) string {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestForeignABIChild", "-test.v")
 	cmd.Env = append(os.Environ(), sentinelForeignABI+"="+role)
 	out, err := cmd.CombinedOutput()
+	if strings.Contains(string(out), "signal SIGSEGV") {
+		t.Skip("kernel has no ia32 compat entry point (CONFIG_IA32_EMULATION off or ia32_emulation=0), so no foreign-arch syscall can be issued")
+	}
 	if err != nil {
 		t.Fatalf("%s tracer: %v\n%s", role, err, out)
 	}
@@ -54,9 +64,6 @@ func TestForeignABITraceeIsDecodedButTheRunIsRefused(t *testing.T) {
 		t.Skip("seccomp not supported on this kernel")
 	}
 	out := runForeignABITracer(t, "guarded")
-	if strings.Contains(out, "SIGNAL=11") {
-		t.Skip("kernel has no ia32 compat entry point (CONFIG_IA32_EMULATION off), so no foreign-arch syscall can be issued")
-	}
 	if !strings.Contains(out, "SECCOMPKILLED=true") {
 		t.Fatalf("the foreign-arch guard should have killed the tracee, and only SeccompKilled makes the profiler refuse the run:\n%s", out)
 	}
@@ -74,9 +81,6 @@ func TestForeignABIWithoutTheGuardLooksLikeACleanRun(t *testing.T) {
 		t.Skip("seccomp not supported on this kernel")
 	}
 	out := runForeignABITracer(t, "plain")
-	if strings.Contains(out, "SIGNAL=11") {
-		t.Skip("kernel has no ia32 compat entry point (CONFIG_IA32_EMULATION off), so no foreign-arch syscall can be issued")
-	}
 	if !strings.Contains(out, "ACCESS "+foreignPath+" write=true") {
 		t.Errorf("an unguarded i386 readlink should decode as an amd64 creat and fabricate a write grant:\n%s", out)
 	}
@@ -131,7 +135,11 @@ func foreignABITracee() {
 	const lowAddr = 0x30000000
 	path := foreignPath + "\x00"
 	p, _, errno := unix.Syscall6(unix.SYS_MMAP, lowAddr, uintptr(len(path)),
-		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS|unix.MAP_FIXED, ^uintptr(0), 0)
+		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS|unix.MAP_FIXED_NOREPLACE, ^uintptr(0), 0)
+	// NOREPLACE, not plain MAP_FIXED: MAP_FIXED would silently unmap whatever already
+	// lived at this address, and the address check below could never fail because
+	// MAP_FIXED always returns what it was asked for. On a kernel too old for the flag
+	// it is ignored and the address becomes a hint, which the same check catches.
 	if errno != 0 || p != lowAddr {
 		fmt.Println("MMAP_ERR", errno, p)
 		os.Exit(3)
