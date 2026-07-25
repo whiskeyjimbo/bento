@@ -90,12 +90,12 @@ func WithObserver(observe func(d Decision, host, port string)) Option {
 // crafted hostname can carry terminal escapes or look-alike characters.
 // Sanitize before displaying either to a human.
 //
-// Admission only widens to public hosts and to private IPs a rule already names
-// as an explicit IP literal: guardUpstream still runs on the dial, so a gate can
-// never reach loopback or cloud-metadata space, and a gate-admitted hostname
-// that resolves to a private IP is still refused unless a rule lists that exact
-// IP for the port. A panic in the gate is treated as a denial (the connection
-// gets a 403 and is reported Denied), never swallowed silently.
+// Admission only widens to public hosts: guardUpstream still runs on the dial, so
+// a gate can never reach loopback, cloud-metadata, or private space. The
+// private-IP exemption needs a rule naming the literal the CONNECT asked for, and
+// a gate admission means no rule matched at all. A panic in the gate is treated
+// as a denial (the connection gets a 403 and is reported Denied), never swallowed
+// silently.
 //
 // A pending prompt pins one of the proxy's bounded handler slots with no
 // deadline, so a hostile target can fire many undeclared CONNECTs to flood the
@@ -162,11 +162,13 @@ func (e *blockedUpstreamError) Error() string {
 // 169.254.169.254 cloud metadata, private/ULA, CGNAT, unspecified). Since the
 // allowlist matches on the CONNECT hostname, a permitted name that resolves to
 // such an address would otherwise let a sandboxed script reach services the host
-// can see but the sandbox must not. The exception is an address the rules name
-// as an explicit IP literal: listing 10.0.0.5 is a deliberate choice to reach
-// it, whereas a hostname (or wildcard) resolving there is not.
-func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.RawConn) error {
-	host, port, err := net.SplitHostPort(address)
+// can see but the sandbox must not. The exception is an address the CONNECT
+// target itself named as an IP literal that a rule names for the port: listing
+// 10.0.0.5 and asking for 10.0.0.5 is a deliberate choice to reach it, whereas a
+// hostname (or wildcard) resolving there is not. handle decides that per
+// connection and carries the verdict in the dial context; see literalGrantOf.
+func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		// The dialer hands ControlContext a resolved host:port; an address that does
 		// not even split is anomalous, so refuse it rather than fail open.
@@ -194,26 +196,56 @@ func (p *Proxy) guardUpstream(_ context.Context, _, address string, _ syscall.Ra
 		// so no rule may reach them, not even an explicit IP literal.
 		return &blockedUpstreamError{addr: ip.String()}
 	case ipPrivate:
-		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only when
-		// a rule names the exact IP literal; a permitted hostname resolving there is
-		// the SSRF case and stays blocked.
-		if !p.explicitlyAllowsIP(ip, port) {
+		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only for
+		// the literal grant this connection carries; a permitted hostname resolving
+		// there is the SSRF case and stays blocked. A context with no grant (any
+		// caller but handle) is treated as no grant, so the guard fails closed.
+		if grant := literalGrantOf(ctx); grant == nil || !grant.Equal(ip) {
 			return &blockedUpstreamError{addr: ip.String()}
 		}
 	}
 	return nil
 }
 
-// explicitlyAllowsIP reports whether a rule names this exact IP as a literal (not
-// a hostname or wildcard) for this port. Only such a rule exempts a non-public
-// address from the guard.
-func (p *Proxy) explicitlyAllowsIP(ip net.IP, port string) bool {
+// literalGrantKey names the per-connection literal grant in the dial context.
+type literalGrantKey struct{}
+
+// withLiteralGrant marks a dial as authorized to reach one private IP literal:
+// the CONNECT target was that literal and a rule names it for the port. Passing
+// the IP rather than the CONNECT host keeps the guard from re-deriving policy
+// from an attacker-controlled name - the whole shape of the bug this closes.
+func withLiteralGrant(ctx context.Context, ip net.IP) context.Context {
+	return context.WithValue(ctx, literalGrantKey{}, ip)
+}
+
+// literalGrantOf returns the private IP literal this dial may reach, or nil.
+func literalGrantOf(ctx context.Context) net.IP {
+	ip, _ := ctx.Value(literalGrantKey{}).(net.IP)
+	return ip
+}
+
+// literalGrantFor returns the IP a literal CONNECT target is authorized to
+// reach, or nil. It is non-nil only when host is an IP literal and some rule
+// names that same IP - compared as addresses, so a rule spelled ::ffff:10.0.0.5
+// grants a CONNECT to 10.0.0.5 - with a port pattern covering port. A wildcard or
+// hostname rule matching a literal target grants nothing: the exemption is for a
+// rule that deliberately names the address.
+func (p *Proxy) literalGrantFor(host, port string) net.IP {
+	// Strip an IPv6 zone id, as guardUpstream does, so the two layers agree on the
+	// address a zoned literal names rather than diverging on the spelling.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
 	for _, r := range p.rules {
 		if rip := net.ParseIP(r.Host); rip != nil && rip.Equal(ip) && policy.PortMatches(r.Port, port) {
-			return true
+			return ip
 		}
 	}
-	return false
+	return nil
 }
 
 // ipClass groups a resolved address by how the egress guard treats it.
@@ -413,7 +445,16 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		decision = AdmittedByGate
 	}
 
-	upstream, err := p.dial(ctx, "tcp", net.JoinHostPort(host, port))
+	// The literal grant is decided here, where the CONNECT target and the rules are
+	// both in scope, and never re-derived downstream: guardUpstream sees only which
+	// private address (if any) this connection may reach.
+	dialCtx := ctx
+	if !admittedByGate {
+		if grant := p.literalGrantFor(host, port); grant != nil {
+			dialCtx = withLiteralGrant(ctx, grant)
+		}
+	}
+	upstream, err := p.dial(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		var blocked *blockedUpstreamError
 		if errors.As(err, &blocked) {

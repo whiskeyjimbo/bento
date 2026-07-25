@@ -545,23 +545,70 @@ func TestExplicitLoopbackRuleStillBlocked(t *testing.T) {
 	}
 }
 
-// The explicit-IP-literal exemption applies to private space (a deliberate
-// internal-egress choice) but never to loopback/link-local, which name the host.
-func TestGuardExemptsExplicitPrivateNotLoopback(t *testing.T) {
-	p := New([]policy.NetworkRule{
-		{Host: "10.0.0.5", Port: "443"},
-		{Host: "127.0.0.1", Port: "443"},
-	})
-	guard := func(addr string) error { return p.guardUpstream(context.Background(), "tcp", addr, nil) }
+// The private-IP exemption belongs to the connection whose CONNECT target named
+// the literal, not to the rule set as a whole. Listing 10.0.0.5 must not also let
+// a hostname or wildcard rule reach it through hostile DNS - the resolved address
+// alone cannot tell the two apart, so the grant has to come from the CONNECT.
+//
+// Resolution is faked by the dialer (the guard's verdict is still the production
+// one, as in the concurrency test) because the point is a name resolving somewhere
+// its own rule never named.
+func TestPrivateIPExemptionRequiresLiteralTarget(t *testing.T) {
+	cases := []struct {
+		name    string
+		rules   []policy.NetworkRule
+		connect string
+		// resolved is what the CONNECT host resolves to; empty means it is a literal
+		// the dialer passes through unchanged.
+		resolved string
+		want     string
+	}{
+		{
+			name:     "hostname rule resolving onto another rule's literal",
+			rules:    []policy.NetworkRule{{Host: ".example.com", Port: "*"}, {Host: "10.0.0.5", Port: "443"}},
+			connect:  "x.example.com:443",
+			resolved: "10.0.0.5",
+			want:     "403",
+		},
+		{
+			name:    "the literal's own rule",
+			rules:   []policy.NetworkRule{{Host: ".example.com", Port: "*"}, {Host: "10.0.0.5", Port: "443"}},
+			connect: "10.0.0.5:443",
+			want:    "200",
+		},
+		{
+			name:    "wildcard rule matching a literal target",
+			rules:   []policy.NetworkRule{{Host: "*", Port: "*"}},
+			connect: "10.0.0.5:443",
+			want:    "403",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var p *Proxy
+			p = New(tc.rules, WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				if tc.resolved != "" {
+					host = tc.resolved
+				}
+				if err := p.guardUpstream(ctx, network, net.JoinHostPort(host, port), nil); err != nil {
+					return nil, err
+				}
+				return fakeDialer("tunnel")(ctx, network, addr)
+			}))
+			dialProxy, stop := startProxy(t, p)
+			defer stop()
 
-	if err := guard("10.0.0.5:443"); err != nil {
-		t.Errorf("an explicit private-IP rule should be permitted: %v", err)
-	}
-	if err := guard("10.0.0.6:443"); err == nil {
-		t.Error("a private IP with no rule must be blocked")
-	}
-	if err := guard("127.0.0.1:443"); err == nil {
-		t.Error("loopback must be blocked even with an explicit rule")
+			c := dialProxy()
+			defer c.Close()
+			status, _ := connect(t, c, tc.connect)
+			if !strings.Contains(status, tc.want) {
+				t.Errorf("CONNECT %s: status = %q, want %s", tc.connect, status, tc.want)
+			}
+		})
 	}
 }
 
@@ -681,8 +728,9 @@ func TestGatekeeperNotConsultedWhileProfiling(t *testing.T) {
 }
 
 // A gate can widen to public hosts, but guardUpstream still runs on the dial: a
-// gate-admitted hostname that resolves to a private IP with no explicit IP rule
-// stays blocked. This uses the real guarded dialer (not WithDialer, which would
+// gate-admitted hostname that resolves to a non-public address stays blocked - a
+// gate admission means no rule matched, so it carries no literal grant either.
+// This uses the real guarded dialer (not WithDialer, which would
 // bypass the guard); localhost:9 resolves to loopback and is refused pre-connect.
 func TestGatekeeperCannotReachNonPublic(t *testing.T) {
 	p := New(
