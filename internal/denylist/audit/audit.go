@@ -186,6 +186,13 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 			}
 			continue
 		}
+		// A directive may be gated on a firejail build condition by a leading "?COND:"
+		// token ("?HAS_X11: blacklist ${HOME}/.ICEauthority"). The condition decides
+		// whether FIREJAIL applies it, not whether the path holds a credential, so the
+		// entry is audited like any other; without this the whole conditional block is
+		// silently absent from the diff and reads as "firejail shields nothing here".
+		// isCommentedDirective looks past the same token for the same reason.
+		line = strings.TrimSpace(strings.TrimPrefix(line, buildCondition(line)))
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -235,14 +242,21 @@ var firejailDirectives = map[string]bool{
 // isCommentedDirective reports whether a comment's body is a commented-out firejail
 // directive rather than a section header.
 func isCommentedDirective(comment string) bool {
-	fields := strings.Fields(comment)
-	// firejail gates a directive on a build condition with a leading "?COND:" token
-	// (e.g. "?HAS_X11: blacklist ${HOME}/.ICEauthority"); look past it to the directive
-	// keyword so a commented-out conditional is not mistaken for a section header.
-	if len(fields) > 0 && strings.HasPrefix(fields[0], "?") && strings.HasSuffix(fields[0], ":") {
-		fields = fields[1:]
-	}
+	fields := strings.Fields(strings.TrimPrefix(comment, buildCondition(comment)))
 	return len(fields) > 0 && firejailDirectives[fields[0]]
+}
+
+// buildCondition returns the leading "?COND:" build-condition token of a directive
+// line, or "" when it has none. firejail gates a directive on a compile-time feature
+// with it ("?HAS_X11: blacklist ${HOME}/.ICEauthority"); both the parser and the
+// commented-directive check must look past it to the directive keyword, and they read
+// it here so the two cannot diverge on the syntax again.
+func buildCondition(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "?") && strings.HasSuffix(fields[0], ":") {
+		return fields[0]
+	}
+	return ""
 }
 
 // expand resolves the firejail variables bento cares about and reports whether the

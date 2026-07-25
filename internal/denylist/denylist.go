@@ -347,6 +347,19 @@ func Home(home string) []Rule {
 		emit(d, DenyWrite, true)
 	}
 
+	// A relocation target that is the root, the home itself, or an ancestor of it
+	// cannot be shielded: the rule would hide or ro-bind the entire grant surface, so
+	// nothing the policy granted stays reachable and every other rule is subsumed by
+	// this one. The consumers already drop a rule resolving to "/" for the same reason
+	// (see the Linux backend's denyArgs), and the ZDOTDIR relocation below already
+	// declines the home itself; this applies the rule to the credential relocations
+	// too, where a stray GNUPGHOME=$HOME would otherwise replace the whole deny-list
+	// with one DenyAll on the home - which also silently nullifies the completeness
+	// audit, since it leaves no per-store rule left to compare against firejail's.
+	shieldable := func(p string) bool {
+		return p != "/" && p != home && !strings.HasPrefix(home, p+string(filepath.Separator))
+	}
+
 	// A tool-specific env var can move a whole credential directory off its default
 	// path, the same way an XDG base does. When one is set to an absolute location that
 	// differs from the default (already shielded above), the shield follows to the
@@ -361,8 +374,12 @@ func Home(home string) []Rule {
 		{"AZURE_CONFIG_DIR", ".azure"},
 	}
 	for _, de := range dirEnvs {
-		if base := os.Getenv(de.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(de.def) {
-			rules = append(rules, Rule{Path: filepath.Clean(base), Deny: DenyAll, Dir: true})
+		base := os.Getenv(de.env)
+		if base == "" || !filepath.IsAbs(base) {
+			continue
+		}
+		if c := filepath.Clean(base); c != join(de.def) && shieldable(c) {
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true})
 		}
 	}
 
@@ -389,7 +406,7 @@ func Home(home string) []Rule {
 				continue
 			}
 			p = filepath.Clean(p)
-			if p == store || strings.HasPrefix(p, store+string(filepath.Separator)) {
+			if p == store || strings.HasPrefix(p, store+string(filepath.Separator)) || !shieldable(p) {
 				continue
 			}
 			rules = append(rules, Rule{Path: p, Deny: DenyAll})
@@ -423,7 +440,7 @@ func Home(home string) []Rule {
 			continue
 		}
 		c := filepath.Clean(v)
-		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) {
+		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || !shieldable(c) {
 			continue
 		}
 		rules = append(rules, Rule{Path: c, Deny: DenyAll})
@@ -453,7 +470,7 @@ func Home(home string) []Rule {
 		return false
 	}
 	addWriteShield := func(p string) {
-		if !underDenyAll(p) {
+		if !underDenyAll(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite})
 		}
 	}

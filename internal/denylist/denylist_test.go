@@ -2,6 +2,7 @@ package denylist
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -339,6 +340,42 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	}
 	if !byPath["/home/u/.password-store"] {
 		t.Error("the default password store must stay shielded")
+	}
+}
+
+// A relocation target that swallows the whole home cannot be shielded: one DenyAll on
+// the home hides every granted path, so the run confines nothing it could still do -
+// and it subsumes every other rule, which silently empties the set the completeness
+// audit compares against firejail's. The store's own default stays shielded, and the
+// rest of the deny-list must survive intact.
+func TestHomeIgnoresRelocationsThatSwallowTheHome(t *testing.T) {
+	baseline := len(Home("/home/u"))
+
+	for _, tc := range []struct{ env, value string }{
+		{"GNUPGHOME", "/home/u"},  // the home itself
+		{"GNUPGHOME", "/home"},    // an ancestor of it
+		{"GNUPGHOME", "/"},        // the root
+		{"KUBECONFIG", "/home/u"}, // the same via a file relocation
+		{"AWS_CONFIG_FILE", "/home"},
+		{"PASSWORD_STORE_DIR", "/home/u/"}, // a trailing slash must not evade the check
+	} {
+		t.Run(tc.env+"="+tc.value, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			rules := Home("/home/u")
+			for _, r := range rules {
+				if r.Path == "/" || r.Path == "/home" || r.Path == "/home/u" {
+					t.Fatalf("%s=%s produced a shield at %q, which hides the whole home", tc.env, tc.value, r.Path)
+				}
+			}
+			// Not merely absent: the rest of the list is untouched, so dropping the
+			// unshieldable target did not take the real shields with it.
+			if len(rules) != baseline {
+				t.Errorf("rule count = %d, want the unchanged baseline %d", len(rules), baseline)
+			}
+			if !slices.ContainsFunc(rules, func(r Rule) bool { return r.Path == "/home/u/.gnupg" }) {
+				t.Error("the default ~/.gnupg shield must stay in place")
+			}
+		})
 	}
 }
 

@@ -17,6 +17,7 @@ blacklist-nolog ${HOME}/.*_history
 blacklist-nolog ${HOME}/.viminfo
 blacklist ${HOME}/.config/Ledger Live
 blacklist ${HOME}/Applications # used for storing AppImages
+?HAS_X11: blacklist ${HOME}/.ICEauthority
 blacklist ${RUNUSER}/bus
 blacklist /sbin
 blacklist ${PATH}/sudo
@@ -39,6 +40,11 @@ rmenv GITHUB_TOKEN
 		// instead means a trailing comment would land in the path, so it is cut.
 		{Path: "/HOME/.config/Ledger Live", Deny: denylist.DenyAll},
 		{Path: "/HOME/Applications", Deny: denylist.DenyAll},
+		// A live build-conditional directive. The condition decides whether firejail
+		// applies it, not whether the path holds a credential, so it must be audited like
+		// any other - dropping it leaves the whole conditional block reading as "firejail
+		// shields nothing here", which is how a gap stays invisible.
+		{Path: "/HOME/.ICEauthority", Deny: denylist.DenyAll},
 		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},
 	}
 	if len(got) != len(want) {
