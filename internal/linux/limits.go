@@ -229,6 +229,10 @@ var scopeBusVars = []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
 // names it added. A variable the policy itself declares is left alone: the target must
 // see the policy's value, so it is neither overwritten here nor stripped later.
 //
+// A policy that declares one of these keeps its own value, which systemd-run then
+// reads: a bogus bus address there fails the preflight and refuses the run, loudly,
+// rather than silently overriding what the manifest asked the target to see.
+//
 // The added values are for systemd-run only, which is why the names come back: the
 // launcher drops exactly them before exec, so the target still sees only the policy
 // environment. They travel in the environment rather than in argv because this tier has

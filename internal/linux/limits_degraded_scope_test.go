@@ -36,6 +36,10 @@ func TestWithScopeBusVarsSkipsPolicyDeclared(t *testing.T) {
 
 // A variable neither the policy nor the host sets is not invented.
 func TestWithScopeBusVarsSkipsUnsetHostVars(t *testing.T) {
+	// Prime the scope check before unsetting: it caches behind a sync.Once, and if it
+	// first fired here it would cache "no bus" and every later scope test in the
+	// package would silently skip while still reporting PASS.
+	canCreateScope()
 	for _, name := range scopeBusVars {
 		// t.Setenv cannot unset, but it registers the restore this test needs: without
 		// it the unset leaks into every later test in the package, and the ones that
