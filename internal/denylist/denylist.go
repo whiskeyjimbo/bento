@@ -628,9 +628,10 @@ func homeLocations(home, entry string) []string {
 	return []string{join(entry)}
 }
 
-// AliasAnchors returns the absolute directories whose files identify a credential, for
-// detecting a second readable name for one. See aliasAnchorDirs for why this is narrower
-// than the full set of hidden directories.
+// AliasAnchors returns the absolute paths whose files identify a credential, for detecting
+// a second readable name for one. It is narrower than the full set of hidden directories:
+// see credentialAnchorDirs for which stores count and why, and walletKeyPaths for the
+// full-node clients that anchor only their key subtree.
 func AliasAnchors(home string) []string {
 	anchors := slices.Concat(credentialAnchorDirs, walletKeyPaths)
 	out := make([]string, 0, len(anchors))
