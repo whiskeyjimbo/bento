@@ -65,12 +65,18 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.claws-mail", // saved IMAP/SMTP passwords
 		"/home/u/.remmina",    // recoverable RDP/VNC passwords
 		"/home/u/.anydesk",
-		"/home/u/.gist",      // plaintext GitHub OAuth token
 		"/home/u/.gdfuse",    // Google Drive OAuth tokens
 		"/home/u/.filezilla", // base64-encoded site passwords
 		"/home/u/.purple",    // pidgin plaintext passwords and OTR keys
 		"/home/u/.weechat",   // IRC server passwords
 		"/home/u/.config/coyim",
+		"/home/u/.config/hexchat",        // servlist.conf plaintext server passwords
+		"/home/u/.config/neomutt",        // same imap_pass class as .mutt
+		"/home/u/.local/share/evolution", // message store (only .config/evolution was shielded before)
+		"/home/u/.config/geary",
+		"/home/u/.alpine-smime",    // alpine S/MIME private keys
+		"/home/u/.config/sinew.in", // Enpass under its vendor name
+		"/home/u/.config/Sinew Software Systems",
 		"/home/u/.config/i3",               // WM config `exec` (hidden, matching firejail)
 		"/home/u/.config/plasma-workspace", // KDE session env/autostart
 		"/home/u/.kde4/Autostart",          // legacy KDE autostart
@@ -121,6 +127,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.pinerc",                  // pine/alpine config
 		"/home/u/.config/mailtransports",   // Akonadi SMTP transports, incl. passwords
 		"/home/u/.pine-interrupted-mail",   // draft message body on disk
+		"/home/u/.config/plasmavaultrc",    // names the vaults whose store is shielded
+		"/home/u/.gist",                    // GitHub OAuth token, a file not a dir
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]

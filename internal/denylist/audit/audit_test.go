@@ -34,9 +34,9 @@ rmenv GITHUB_TOKEN
 		// identically to blacklist - it must not parse as a no-op.
 		{Path: "/HOME/.*_history", Deny: denylist.DenyAll, Glob: true},
 		{Path: "/HOME/.viminfo", Deny: denylist.DenyAll},
-		// firejail profiles carry paths with spaces and directives with trailing
-		// comments; taking the second field alone truncates the first and appends the
-		// second to the path, in both cases diffing a name that does not exist.
+		// firejail profiles carry paths with spaces, which taking the second field alone
+		// truncates to a directory that does not exist. Reading the rest of the line
+		// instead means a trailing comment would land in the path, so it is cut.
 		{Path: "/HOME/.config/Ledger Live", Deny: denylist.DenyAll},
 		{Path: "/HOME/Applications", Deny: denylist.DenyAll},
 		{Path: "/run/user/1000/bus", Deny: denylist.DenyAll},

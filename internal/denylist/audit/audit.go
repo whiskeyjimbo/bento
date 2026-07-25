@@ -98,7 +98,7 @@ func credentialName(path string) bool {
 			// password managers and secret stores
 			"keepass", "bitwarden", "1password", "lastpass", "enpass", "gopass",
 			"pwsafe", "password", "passwd", "credential", "keyring", "keychain",
-			"gnupg",
+			"gnupg", "vault", "sinew", // sinew.in / Sinew Software Systems: Enpass's vendor name
 			// crypto-currency wallets: private keys, the same class as an ssh key.
 			// "coin" covers the Core wallets (bitcoin, litecoin, dogecoin); the forks
 			// that dropped the stem need their own token.
@@ -110,6 +110,7 @@ func credentialName(path string) bool {
 			// inScopeSection admits as "mail directories" and bento shields for mutt,
 			// Thunderbird, and Evolution.
 			"mail", "thunderbird", "icedove", "sylpheed", "balsa", "pinerc",
+			"neomutt", "evolution", "geary", "smime",
 			// remote-access clients: saved RDP/VNC passwords, recoverable because the
 			// key sits beside them ("remote access" in inScopeSection).
 			"remmina", "anydesk",
@@ -118,7 +119,7 @@ func credentialName(path string) bool {
 			// chat clients that keep account passwords in plaintext on disk (and, for
 			// pidgin, OTR private keys). Messengers whose store is an encrypted message
 			// database - Signal, Session - are firejail's privacy scope and stay out.
-			"purple", "weechat", "irssi", "mcabber", "coyim",
+			"purple", "weechat", "xchat", "irssi", "mcabber", "coyim",
 		} {
 			if strings.Contains(comp, tok) {
 				return true
@@ -355,9 +356,9 @@ var ReviewedGlobs = map[string]string{
 	// Wallet and token stores whose concrete instances are shielded by name; the
 	// wildcard stands for an open-ended set of forks and per-account files, which is
 	// what bento cannot express - not any single one of them.
-	".electrum*":   "Electrum and its forks; .electrum and .electron-cash are shielded DenyAll, but the fork set (.electrum-ltc and successors) is open-ended",
-	".*coin":       "altcoin Core wallets; the enumerable ones (.bitcoin, .dashcore, .ethereum, .config/Bitcoin) are shielded DenyAll, but the coin set is open-ended",
-	".sendgmail.*": "per-account sendgmail credential files; the .config/sendgmail store is shielded DenyAll and the account suffix is not expressible as a concrete path",
+	".electrum*":   "Electrum wallet data dirs; the base .electrum is shielded DenyAll, but the suffixed fork set (.electrum-ltc and successors) is open-ended",
+	".*coin":       "altcoin Core wallets; .bitcoin is shielded DenyAll, but the coin set (.litecoin, .dogecoin, .namecoin, ...) is open-ended and its members are only knowable from the wildcard",
+	".sendgmail.*": "per-sender sendgmail credential files; the .config/sendgmail store and the suffix-less .sendgmail.json are shielded DenyAll, and the per-sender suffix is not expressible as a concrete path",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.

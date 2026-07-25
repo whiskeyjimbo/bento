@@ -203,6 +203,17 @@ func Home(home string) []Rule {
 		".local/share/local-mail",
 		".local/share/kmail2", // KMail/Akonadi message store
 		".cache/kmail2",
+		".config/neomutt", // same imap_pass class as the .mutt configs above
+		".cache/mutt",     // cached message bodies
+		".local/share/evolution",
+		".cache/evolution",
+		".config/geary",
+		".local/share/geary",
+		".cache/geary",
+		".alpine-smime", // alpine's S/MIME certificate and private-key store
+		// Enpass ships its config under the vendor name rather than the product's.
+		".config/Sinew Software Systems",
+		".config/sinew.in",
 
 		// Remote-access clients: the saved RDP/VNC/SSH passwords are recoverable,
 		// because the key that encrypts them sits beside them in the same tree.
@@ -212,12 +223,12 @@ func Home(home string) []Rule {
 		".anydesk",
 
 		// Hosting and cloud-storage tokens, the class already shielded for rclone.
-		".gist",   // plaintext GitHub OAuth token
 		".gdfuse", // google-drive-ocamlfuse OAuth tokens
 		".config/gdfuse",
 		".cache/gdfuse",
 		".local/share/gdfuse",
-		".filezilla", // sitemanager.xml stores passwords base64-encoded
+		".local/share/emailidentities", // per-identity signature data, one dir per identity
+		".filezilla",                   // sitemanager.xml stores passwords base64-encoded
 		".config/filezilla",
 
 		// Chat clients that keep account passwords in plaintext on disk. pidgin also
@@ -225,6 +236,8 @@ func Home(home string) []Rule {
 		// database (Signal, Session) are firejail's privacy scope and stay out.
 		".purple",
 		".weechat",
+		".config/hexchat", // servlist.conf holds plaintext server passwords
+		".config/xchat",
 		".irssi",
 		".mcabber",
 		".config/coyim",
@@ -312,14 +325,15 @@ func Home(home string) []Rule {
 		// in the shielded store.
 		".config/KeePassXCrc",
 		".config/kwalletrc",
+		".config/plasmavaultrc", // names the vaults whose store is shielded above
 		// Mail-client config and identity files: account passwords (or the pointers to
 		// where they are stored) and the addresses the account sends as.
+		".gist",      // defunkt/gist stores the GitHub OAuth token as the file's whole content
 		".mcabberrc", // mcabber XMPP config, holds the account password
 		".pinerc",    // pine/alpine config
 		".pinercex",  // its per-host companion
 		".config/emaildefaults",
 		".config/emailidentities",
-		".local/share/emailidentities",
 		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
 		".config/kmail2rc",
 		".config/kmailsearchindexingrc",
