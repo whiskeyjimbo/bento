@@ -200,6 +200,8 @@ func parseObservations(path string) (profile.Observation, error) {
 			started = true
 		case line == "EXEC":
 			obs.Execed = true
+		case line == "FOREIGNABI":
+			obs.ForeignABI = true
 		// An unquotable record is a path this run touched and the proposal will not
 		// carry, so it counts as a drop rather than vanishing - the same honesty the
 		// observer's own DROPPED line provides.

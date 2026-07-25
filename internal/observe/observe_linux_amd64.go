@@ -49,6 +49,14 @@ type Result struct {
 	// nonzero count means the manifest below is incomplete - indistinguishable, without
 	// it, from a target that simply touched nothing there.
 	Dropped int
+	// ForeignABI reports that a tracee - root or any descendant - was killed for
+	// issuing a syscall through a non-native ABI, which the launcher's seccomp guard
+	// refuses. The decoder reads amd64 syscall numbers, so such a process cannot be
+	// observed at all; every access it would have made is absent. It is tracked
+	// separately from Signaled because a script that tolerates its 32-bit helper dying
+	// still exits zero, and that run's observation is missing everything the helper did
+	// with nothing else to say so.
+	ForeignABI bool
 }
 
 // amd64 syscall numbers.
@@ -203,6 +211,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		// the trace ends - on the error guard or on the clean exit below; drop it again
 		// when it ends on its own.
 		tracees[wpid] = true
+
+		// SIGSYS from a tracee is the foreign-arch seccomp guard killing it: the launcher
+		// installs no other killing filter for the profiled run. Recorded for every
+		// tracee, not just root, so a helper the script shrugs off is still reported.
+		if ws.Signaled() && ws.Signal() == syscall.SIGSYS {
+			res.ForeignABI = true
+		}
 
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):

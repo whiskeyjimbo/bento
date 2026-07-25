@@ -337,3 +337,20 @@ func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
 		t.Errorf("a signaled AND lossy run must report both reasons; got %v", got)
 	}
 }
+
+// A foreign-ABI refusal is not a partial run to warn about: the observation is missing
+// everything that process did, and profiling again produces the same result. It stops
+// the round rather than proposing a manifest that looks complete - and it must not be
+// downgraded into one of the advisory warnings.
+func TestForeignABIRefusesRatherThanWarns(t *testing.T) {
+	if err := foreignABIRefusal(profile.Observation{Dropped: 3, Signaled: true}); err != nil {
+		t.Errorf("only a foreign ABI refuses the round; got %v", err)
+	}
+	err := foreignABIRefusal(profile.Observation{ForeignABI: true})
+	if err == nil || !strings.Contains(err.Error(), "non-native (32-bit) syscall ABI") {
+		t.Fatalf("foreignABIRefusal = %v, want a refusal naming the foreign ABI", err)
+	}
+	if got := profileWarnings(profile.Observation{ForeignABI: true}); len(got) != 0 {
+		t.Errorf("a foreign ABI must refuse, not warn; got %v", got)
+	}
+}

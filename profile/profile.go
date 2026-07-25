@@ -47,6 +47,11 @@ type Observation struct {
 	// so a manifest synthesized from it is short by an unknown amount; the frontend
 	// warns, because the alternative is a proposal that looks complete and is not.
 	Dropped int
+	// ForeignABI reports that a process in this run was killed for using a non-native
+	// syscall ABI, which the observer cannot decode. Everything that process touched is
+	// absent from this observation, and re-profiling will produce the same result, so a
+	// manifest must not be synthesized from it.
+	ForeignABI bool
 }
 
 // systemDirs are the runtime and OS directory trees every program touches to load

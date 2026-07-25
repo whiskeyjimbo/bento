@@ -166,6 +166,13 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	if err != nil {
 		return nil, err
 	}
+	// A process using a non-native syscall ABI cannot be observed at all, so this
+	// observation is missing everything it did - and unlike a partial run, profiling
+	// again produces the same result. Refuse rather than propose a manifest that looks
+	// complete and would become enforcement policy.
+	if err := foreignABIRefusal(obs); err != nil {
+		return nil, err
+	}
 	// A run that was signaled or exited nonzero may have stopped before exercising all
 	// its code paths, so the observations - and the manifest synthesized from them - can
 	// be silently over-tight. Warn before proposing it.
@@ -460,6 +467,17 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// foreignABIRefusal reports why a run that hit the foreign-ABI guard cannot be
+// profiled at all, or nil for the ordinary run. It is separate from profileWarnings
+// because it is not advice: the observation is missing everything the refused process
+// did, and profiling again produces the same result, so there is nothing to propose.
+func foreignABIRefusal(obs profile.Observation) error {
+	if !obs.ForeignABI {
+		return nil
+	}
+	return fmt.Errorf("a process in this run used a non-native (32-bit) syscall ABI and was refused: bento's profiler decodes amd64 syscalls only, so everything that process touched is unobservable and no manifest can be proposed from this run; build the target for amd64, or write the manifest by hand")
 }
 
 // profileWarnings returns every reason this observation may be short of what the run

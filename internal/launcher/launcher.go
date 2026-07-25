@@ -237,6 +237,9 @@ func runObserve(cfg Config, env []string) (int, error) {
 		if res.Dropped > 0 {
 			fmt.Fprintf(&b, "DROPPED %d\n", res.Dropped)
 		}
+		if res.ForeignABI {
+			b.WriteString("FOREIGNABI\n")
+		}
 		b.WriteString(observe.ReportStart + "\n")
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
