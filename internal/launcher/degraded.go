@@ -105,6 +105,9 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	if err := dropInheritedFDs(); err != nil {
 		return 0, err
 	}
+	if err := refuseNetworkStdio(); err != nil {
+		return 0, err
+	}
 	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
 		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
 	}

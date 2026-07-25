@@ -103,6 +103,9 @@ func Run(cfg Config) (int, error) {
 	if err := dropInheritedFDs(); err != nil {
 		return 0, err
 	}
+	if err := refuseNetworkStdio(); err != nil {
+		return 0, err
+	}
 
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
 	// target, but on the supervise path (exec: all) the launcher does not exec - it
@@ -298,8 +301,58 @@ func runObserve(cfg Config, env []string) (int, error) {
 }
 
 // firstInheritableFD is the lowest descriptor dropInheritedFDs marks close-on-exec.
-// 0/1/2 are the target's stdio and are always kept.
+// 0/1/2 are the target's stdio and are always kept, so whatever they carry reaches the
+// target untouched - see refuseNetworkStdio for the one thing they must not carry.
 const firstInheritableFD = 3
+
+// refuseNetworkStdio refuses the run when fd 0, 1, or 2 is an inherited IP socket.
+//
+// Every other inherited descriptor is dropped by dropInheritedFDs; stdio is kept
+// unconditionally because it is the target's own standard streams. Neither egress fence
+// revokes it: the empty network namespace fences the creation of new connections, and
+// seccomp.BlockEgress filters socket(2) - creation again, not read/write on a
+// description that already exists. So an inherited connected socket on fd 0-2 is a live
+// network channel that read/write reach entirely unfiltered, under policies whose claim
+// is that the target cannot open one at all.
+//
+// It is reachable only through the embedding API: os/exec passes the raw descriptor
+// when enforce.Process.Stdin/Stdout is an *os.File, while a plain io.Reader is funnelled
+// through a pipe and the socket does not survive. Refusing is right rather than
+// harsh - an embedder handing the target a network socket as stdio is supplying exactly
+// the capability the sandbox exists to withhold, and there is no way to confine it
+// afterwards.
+//
+// AF_UNIX stdio is left alone and remains a residual alongside the AF_UNIX and
+// SCM_RIGHTS ones already documented: it reaches no network, and the egress filter
+// deliberately allows AF_UNIX so in-sandbox and bridge sockets keep working.
+func refuseNetworkStdio() error {
+	for fd := range firstInheritableFD {
+		if err := refuseNetworkFD(fd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseNetworkFD reports whether one descriptor is an open IP socket. A descriptor
+// that is not open at all is fine: the target gets the same EBADF the launcher just did.
+func refuseNetworkFD(fd int) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return nil
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return nil
+	}
+	domain, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
+	if err != nil {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a socket whose domain could not be read: %w", fd, err)
+	}
+	if domain == unix.AF_INET || domain == unix.AF_INET6 {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited network socket; no sandbox layer can revoke an already-open network channel", fd)
+	}
+	return nil
+}
 
 // dropInheritedFDs marks every descriptor from firstInheritableFD up close-on-exec,
 // so nothing bento's parent leaked survives the exec into the target. close_range

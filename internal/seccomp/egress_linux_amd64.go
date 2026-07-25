@@ -95,6 +95,11 @@ func egressFilter() []unix.SockFilter {
 // on a no-network manifest in the degraded (no-bwrap) tier, where there is no netns
 // to fence egress: it substitutes a seccomp chokepoint so even a proxy-ignoring
 // static binary cannot open a network socket.
+//
+// It filters socket CREATION, not I/O, so it cannot revoke a socket the target already
+// holds. The two ways to hold one are an inherited stdio descriptor, which the launcher
+// refuses before installing this filter (refuseNetworkStdio), and an AF_UNIX SCM_RIGHTS
+// passing - a documented residual, since the filter allows AF_UNIX by design.
 func BlockEgress() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)
