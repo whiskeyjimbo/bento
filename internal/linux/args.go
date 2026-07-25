@@ -493,26 +493,44 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 	if prefix == "/" || filepath.Dir(prefix) == "/" {
 		return true
 	}
+	// A home-shaped directory: some user's home, whether or not it is this user's.
+	// /home/other/bin/python3 yields /home/other, whose credential shields do not apply -
+	// the deny-list is anchored on sb.home - so its ~/.ssh would be readable where the
+	// running user's is hidden. Same uid, so this is exposure surface rather than
+	// privilege, but it is exposure nobody asked for. Structural rather than keyed on the
+	// running user's home, because that comparison fails exactly when it matters most:
+	// as root, home is /root, so a sibling test would never fire for anything under /home.
+	if slices.Contains(homeContainers, filepath.Dir(prefix)) {
+		return true
+	}
 	// The prefix comes from the symlink-resolved interpreter, so the home it is compared
 	// against must be resolved too: on a host where $HOME reaches the real tree through a
 	// link (/home -> var/home, or a relocated home), the raw os.UserHomeDir value names a
 	// different path than the prefix and this would miss it, binding the whole home tree.
 	home := sb.resolve(sb.home)
 	if home == "" {
-		return false
+		// No home means no deny-list anchor either, so there is no shield over whatever a
+		// prefix might contain. That is the worst moment to widen: refuse and bind the
+		// interpreter file alone.
+		return true
 	}
-	// The user's own home, or a subtree of it: a ~/bin/python3 wrapper puts the prefix at
-	// the home directory itself, which would bind every file in it into a sandbox whose
-	// policy granted none of them.
+	// This user's own home, or any tree containing it: a ~/bin/python3 wrapper puts the
+	// prefix at the home directory itself, which would bind every file in it into a
+	// sandbox whose policy granted none of them. A prefix INSIDE the home (a pyenv or
+	// pipx install root) is allowed - that is the case this whole function exists to
+	// serve, and the deny-list shields the credential stores beside it.
 	if prefix == home || under(home, prefix) {
 		return true
 	}
-	// Another user's home. /home/other/bin/python3 yields /home/other, whose credential
-	// shields do not apply - the deny-list is anchored on sb.home - so its ~/.ssh would
-	// be readable where the running user's is hidden. Same uid, so this is exposure
-	// surface rather than privilege, but it is exposure nobody asked for.
+	// A sibling of this user's home, for a host whose home base is not one of the
+	// containers above. Nested layouts (/home/dept/other) are still missed; the floors
+	// here are a ratchet, not a proof.
 	return filepath.Dir(prefix) == filepath.Dir(home)
 }
+
+// homeContainers are the directories user homes are conventionally created under, so a
+// prefix sitting directly inside one is somebody's home rather than an install root.
+var homeContainers = []string{"/home", "/var/home", "/export/home", "/Users"}
 
 // interpreterPrefix returns the install root of an interpreter that lives
 // outside the system paths (e.g. ~/.pyenv/versions/3.12/bin/python3 →

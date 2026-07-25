@@ -1625,6 +1625,7 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 		{"top-level dir", "/srv/bin/python3", "/srv", "/srv/bin/python3"},
 		{"root itself", "/python3", "/", "/python3"},
 		{"another user's home", "/home/other/bin/python3", "/home/other", "/home/other/bin/python3"},
+		{"alien home on another base", "/var/home/other/bin/python3", "/var/home/other", "/var/home/other/bin/python3"},
 		{"own home", "/home/u/bin/python3", "/home/u", "/home/u/bin/python3"},
 		{"a genuine install root", "/opt/toolchains/py/3.12/bin/python3", "", "/opt/toolchains/py/3.12"},
 	}
@@ -1637,4 +1638,28 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 			}
 		})
 	}
+
+	// As root the home is /root, so a floor that only compared against the running
+	// user's home base would never fire for anything under /home - the case where an
+	// alien home's credentials are least protected, since the deny-list is anchored on
+	// /root and shields nothing under /home/other.
+	t.Run("alien home while running as root", func(t *testing.T) {
+		sb := testSandbox("/home/other/bin/python3", "/home/other")
+		sb.home = "/root"
+		sb.interpreter = "/home/other/bin/python3"
+		if got := interpreterReadPath(sb); got != "/home/other/bin/python3" {
+			t.Errorf("interpreterReadPath = %q, want the interpreter file alone, not another user's home", got)
+		}
+	})
+
+	// With no home there is no deny-list anchor either, so nothing shields whatever a
+	// prefix contains. The ratchet has to close, not open, at that point.
+	t.Run("no home at all", func(t *testing.T) {
+		sb := testSandbox("/srv/rt/py/bin/python3", "/srv/rt/py")
+		sb.home = ""
+		sb.interpreter = "/srv/rt/py/bin/python3"
+		if got := interpreterReadPath(sb); got != "/srv/rt/py/bin/python3" {
+			t.Errorf("interpreterReadPath = %q, want the interpreter file alone when there is no home to anchor shields on", got)
+		}
+	})
 }
