@@ -86,8 +86,8 @@ type credentialAlias struct {
 // engineered against, because the actor here already holds the user's privileges and
 // could read the credential directly; the value delivered is naming where an alias is,
 // not blocking someone who needs no alias.
-func aliasedCredentials(sb sandbox, trees, optIns []string) []credentialAlias {
-	creds, linked := credentialFiles(sb, optIns)
+func aliasedCredentials(sb sandbox, trees, literalOptIns []string) []credentialAlias {
+	creds, linked := credentialFiles(sb, literalOptIns)
 	if len(creds) == 0 {
 		return nil
 	}
@@ -385,16 +385,18 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 // against (/run) are DIRECTORY rules and are not anchors, so they never enter the set.
 //
 // A credential whose own path is explicitly opted into the sandbox is dropped - its
-// shield never engages, so there is no shield for an alias to defeat.
-func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linked bool) {
+// shield never engages, so there is no shield for an alias to defeat. literalOptIns are
+// the LITERAL deny-list paths explicitShieldOptIns matched, not its resolved second
+// return: this resolves them itself, alongside the anchors it resolves anyway.
+func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool) {
 	if sb.home == "" {
 		return nil, false
 	}
 	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
 	// to bind them: on a host where a store sits behind a symlink an unresolved path
 	// matches nothing and the whole scan silently no-ops.
-	resolvedOptIns := make([]string, 0, len(optIns))
-	for _, o := range optIns {
+	resolvedOptIns := make([]string, 0, len(literalOptIns))
+	for _, o := range literalOptIns {
 		resolvedOptIns = append(resolvedOptIns, sb.resolve(o))
 	}
 

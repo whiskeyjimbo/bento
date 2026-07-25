@@ -139,6 +139,28 @@ func TestAliasedCredentialsDropsOptedInCredentials(t *testing.T) {
 	}
 }
 
+// The opt-in set arrives as the literal deny-list paths, while the credential roots are
+// resolved. On a host where a store sits behind a symlink the two forms differ, and an
+// unresolved comparison would refuse a run over a store the policy explicitly opted into.
+func TestAliasedCredentialsResolvesTheOptInBeforeMatching(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/data/aws": {{path: "/data/aws/credentials", id: fileID{dev: 1, ino: 10}, links: 2}},
+	}
+	matches := map[string][]identifiedFile{
+		"/home/u/project": {{path: "/home/u/project/a", id: fileID{dev: 1, ino: 10}}},
+	}
+	sb := aliasSandbox(creds, matches)
+	sb.resolve = func(p string) string {
+		if p == "/home/u/.aws" {
+			return "/data/aws"
+		}
+		return p
+	}
+	if got := aliasedCredentials(sb, []string{"/home/u/project"}, []string{"/home/u/.aws"}); got != nil {
+		t.Errorf("a symlinked store opted in by its literal path has no shield to leak past; got %v", got)
+	}
+}
+
 // A bind alias shares the credential's (dev, inode) but does NOT bump its link count,
 // so the nlink gate correctly skips the walk and would miss it entirely. The mountinfo
 // scan is the second mechanism that covers exactly that case, at O(mounts).
