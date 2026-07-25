@@ -866,3 +866,52 @@ func TestRunProceedsOnAnAcknowledgedAlias(t *testing.T) {
 		t.Errorf("the result must record the acknowledged alias %+v; got %+v", want, res.AcceptedAliases)
 	}
 }
+
+// The suggested acknowledgement has to survive the rotation the triggering tools do. A
+// cp -al backup root holds a dated snapshot per day, each with several credentials, so
+// suggesting each alias's own parent hands back a flag per credential per snapshot that is
+// stale tomorrow - the exact failure a tree-scoped acknowledgement exists to avoid. The
+// shared tree is one stable flag.
+func TestAcknowledgementRootsPrefersTheSharedTree(t *testing.T) {
+	got := acknowledgementRoots([]credentialAlias{
+		{Path: "/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+		{Path: "/home/u/backups/2026-07-24/.aws/credentials", Credential: "/home/u/.aws/credentials"},
+		{Path: "/home/u/backups/2026-07-25/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+	})
+	if !slices.Equal(got, []string{"/home/u/backups"}) {
+		t.Errorf("acknowledgementRoots = %v, want the one shared tree [/home/u/backups]", got)
+	}
+}
+
+// The shared tree must never be suggested when it also contains a shielded credential:
+// aliases scattered across a home share the home as their ancestor, and one
+// "--accept-alias ~" would accept every alias of every credential store - an off-switch,
+// not an acknowledgement. Fall back to the individual parents, which stay narrow.
+func TestAcknowledgementRootsRefusesATreeHoldingACredential(t *testing.T) {
+	aliases := []credentialAlias{
+		{Path: "/home/u/notes/copy", Credential: "/home/u/.ssh/id_rsa"},
+		{Path: "/home/u/build/key", Credential: "/home/u/.aws/credentials"},
+	}
+	got := acknowledgementRoots(aliases)
+	if slices.Contains(got, "/home/u") {
+		t.Errorf("must not suggest a tree containing the credential stores; got %v", got)
+	}
+	if !slices.Equal(got, []string{"/home/u/notes", "/home/u/build"}) {
+		t.Errorf("expected the narrow parents; got %v", got)
+	}
+}
+
+// Aliases with nothing in common share only the root, and "--accept-alias /" would accept
+// every alias anywhere - the same off-switch. Fall back to the parents.
+func TestAcknowledgementRootsNeverSuggestsTheFilesystemRoot(t *testing.T) {
+	got := acknowledgementRoots([]credentialAlias{
+		{Path: "/srv/a/key", Credential: "/home/u/.ssh/id_rsa"},
+		{Path: "/mnt/b/key", Credential: "/home/u/.ssh/id_rsa"},
+	})
+	if slices.Contains(got, "/") {
+		t.Errorf("must never suggest the filesystem root; got %v", got)
+	}
+	if !slices.Equal(got, []string{"/srv/a", "/mnt/b"}) {
+		t.Errorf("expected the narrow parents; got %v", got)
+	}
+}

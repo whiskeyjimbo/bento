@@ -202,19 +202,62 @@ func reportedAliases(accepted []credentialAlias) []enforce.CredentialAlias {
 func aliasRefusal(aliases []credentialAlias) error {
 	var b strings.Builder
 	b.WriteString("linux: a readable path is a second name for a shielded credential, which would read past the shield:")
-	roots := make([]string, 0, len(aliases))
 	for _, a := range aliases {
 		fmt.Fprintf(&b, "\n  %s aliases %s", a.Path, a.Credential)
-		if r := filepath.Dir(a.Path); !slices.Contains(roots, r) {
-			roots = append(roots, r)
-		}
 	}
 	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it.")
 	b.WriteString("\nif these are known to you - a snapshot or deduplicated backup - acknowledge the tree:")
-	for _, r := range roots {
+	for _, r := range acknowledgementRoots(aliases) {
 		fmt.Fprintf(&b, "\n  --accept-alias %s", r)
 	}
 	return errors.New(b.String())
+}
+
+// acknowledgementRoots picks the trees to suggest acknowledging. It prefers the single
+// tree that contains every alias, because that is what survives the rotation these tools
+// do: suggesting each alias's own parent would hand back one flag per credential per
+// dated snapshot, all of them stale tomorrow, which is the exact failure a tree-scoped
+// acknowledgement exists to avoid.
+//
+// It falls back to the individual parents when the shared tree would be too much to
+// acknowledge in one line - the filesystem root, or any tree that contains a shielded
+// credential itself. That second guard is the one that matters: aliases scattered across
+// a home share the home as their ancestor, and suggesting it would turn a targeted
+// acknowledgement into an off-switch covering the credential stores too.
+func acknowledgementRoots(aliases []credentialAlias) []string {
+	parents := make([]string, 0, len(aliases))
+	for _, a := range aliases {
+		if p := filepath.Dir(a.Path); !slices.Contains(parents, p) {
+			parents = append(parents, p)
+		}
+	}
+
+	shared := parents[0]
+	for _, p := range parents[1:] {
+		shared = commonAncestor(shared, p)
+	}
+	if shared == "/" || shared == "." {
+		return parents
+	}
+	for _, a := range aliases {
+		if under(a.Credential, shared) {
+			return parents
+		}
+	}
+	return []string{shared}
+}
+
+// commonAncestor returns the deepest directory containing both paths.
+func commonAncestor(a, b string) string {
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	var shared []string
+	for i := 0; i < len(as) && i < len(bs) && as[i] == bs[i]; i++ {
+		shared = append(shared, as[i])
+	}
+	if len(shared) < 2 {
+		return "/"
+	}
+	return strings.Join(shared, "/")
 }
 
 // mountAliases reports the credentials a host mount re-exposes at a second path inside a
