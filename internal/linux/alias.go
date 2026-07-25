@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -213,7 +214,11 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 						continue
 					}
 					alias := filepath.Join(mp, rel)
-					if alias == c.path || shielded[alias] {
+					// The credential's own path is not an alias of itself: an ordinary
+					// mount names the ancestor the credential already sits under, so the
+					// path this computes IS the credential. shielded holds every
+					// credential path, so it covers that and the cross-credential case.
+					if shielded[alias] {
 						continue
 					}
 					if slices.ContainsFunc(trees, func(t string) bool { return under(alias, t) }) {
@@ -403,23 +408,33 @@ func hostMountpoints(devs []uint64) []mountPoint {
 	}
 	defer f.Close()
 
+	var out []mountPoint
+	for _, path := range mountinfoPaths(f, devs) {
+		if id, ok := hostStatID(path); ok {
+			out = append(out, mountPoint{path: path, id: id})
+		}
+	}
+	return out
+}
+
+// mountinfoPaths returns the mountpoints in a mountinfo stream that sit on one of the
+// given devices. Splitting the parse from the stat is what makes the device filter
+// testable, and the filter is the whole reason nothing outside it is ever touched.
+func mountinfoPaths(r io.Reader, devs []uint64) []string {
 	wanted := make(map[string]bool, len(devs))
 	for _, d := range devs {
 		wanted[fmt.Sprintf("%d:%d", unix.Major(d), unix.Minor(d))] = true
 	}
 
-	var out []mountPoint
-	scan := bufio.NewScanner(f)
+	var out []string
+	scan := bufio.NewScanner(r)
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
 		if len(fields) < 5 || !wanted[fields[2]] {
 			continue
 		}
-		path := unescapeMount(fields[4])
-		if id, ok := hostStatID(path); ok {
-			out = append(out, mountPoint{path: path, id: id})
-		}
+		out = append(out, unescapeMount(fields[4]))
 	}
 	return out
 }

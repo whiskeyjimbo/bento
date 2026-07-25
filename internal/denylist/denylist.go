@@ -632,7 +632,7 @@ func homeLocations(home, entry string) []string {
 // detecting a second readable name for one. See aliasAnchorDirs for why this is narrower
 // than the full set of hidden directories.
 func AliasAnchors(home string) []string {
-	anchors := slices.Concat(credentialAnchorDirs, walletKeyDirs)
+	anchors := slices.Concat(credentialAnchorDirs, walletKeyPaths)
 	out := make([]string, 0, len(anchors))
 	for _, d := range anchors {
 		out = append(out, homeLocations(home, d)...)
@@ -773,15 +773,23 @@ var credentialAnchorDirs = []string{
 	".config/coyim",
 }
 
-// walletKeyDirs are the narrow subdirectories holding spending keys inside a full-node
+// walletKeyPaths are the narrow locations holding spending keys inside a full-node
 // client's data directory. The parent is shielded as a bulk store - a synced node's
 // blocks/ and chainstate/ run to tens of thousands of files, which the alias scan must
-// not enumerate on every launch - so only the wallet subtree anchors it.
-var walletKeyDirs = []string{
+// not enumerate on every launch - so only the key material itself anchors it.
+//
+// Both the modern and the legacy layout are named: Bitcoin Core moved wallets into a
+// wallets/ subdirectory in 0.16, and a host upgraded from an older version keeps the
+// wallet where it was, at the top of the data directory. Anchoring only the modern path
+// would leave the older layout shielded but undetectable behind an alias.
+var walletKeyPaths = []string{
 	".bitcoin/wallets",
+	".bitcoin/wallet.dat", // pre-0.16 layout, kept in place across upgrades
 	".config/Bitcoin/wallets",
+	".config/Bitcoin/wallet.dat",
 	".ethereum/keystore", // geth: the encrypted spending keys
 	".dashcore/wallets",
+	".dashcore/wallet.dat",
 }
 
 // bulkStoreDirs are shielded because they hold secrets, but hold far too many files to

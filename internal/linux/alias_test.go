@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -486,7 +488,38 @@ func TestAliasedCredentialsIgnoresAnOrdinaryMount(t *testing.T) {
 		return []mountPoint{{path: "/", id: fileID{dev: 1, ino: 2}}}
 	}
 
-	if got := aliasedCredentials(sb, []string{"/home/u/project"}, nil); got != nil {
+	// The grant contains the credential, so the computed path lands inside a granted tree
+	// and only the "this is the credential itself" guard can reject it. Granting a sibling
+	// would let the containment filter pass the test without that guard working.
+	if got := aliasedCredentials(sb, []string{"/home/u"}, nil); got != nil {
 		t.Errorf("the root mount names the credential's own path, not an alias; got %v", got)
+	}
+}
+
+// The device filter is what keeps the mount scan from touching a filesystem no credential
+// lives on - which is not an optimization but the defense against blocking forever on an
+// lstat of a dead hard-mounted NFS export. Nothing else pins it: hostMountpoints reads
+// /proc directly, so without a seam on the parse the filter can be deleted with every
+// test still green.
+func TestMountinfoPathsFiltersByDevice(t *testing.T) {
+	// Real mountinfo shape, including an nsfs line whose source is not a path at all.
+	const info = `25 30 0:23 / /proc rw,nosuid - proc proc rw
+26 30 8:2 / / rw,relatime - ext4 /dev/sda2 rw
+27 30 8:2 /home/u/.ssh /srv/backup/.ssh rw,relatime - ext4 /dev/sda2 rw
+28 30 0:44 mnt:[4026532372] /run/snapd/ns/x.mnt rw - nsfs nsfs rw
+29 30 0:99 / /mnt/dead-nfs rw - nfs4 srv:/export rw
+30 30 8:2 / /home/u/with\040space rw,relatime - ext4 /dev/sda2 rw`
+
+	// Device 8:2 is where the credentials live.
+	dev := uint64(unix.Mkdev(8, 2))
+	got := mountinfoPaths(strings.NewReader(info), []uint64{dev})
+	want := []string{"/", "/srv/backup/.ssh", "/home/u/with space"}
+	if !slices.Equal(got, want) {
+		t.Errorf("mountinfoPaths = %v, want %v (only device 8:2, escapes decoded)", got, want)
+	}
+	for _, p := range got {
+		if p == "/mnt/dead-nfs" {
+			t.Error("a mount on another device must never be returned - it would be lstat'd and could hang forever")
+		}
 	}
 }
