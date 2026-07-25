@@ -241,10 +241,11 @@ GOWORK=off go vet ./...
 GOWORK=off CGO_ENABLED=1 go test -race ./internal/proxy/...
 ```
 
-`-race` on `internal/proxy` is a gate, not extra credit: several of the proxy's
+`-race` on `internal/proxy` is a gate, not extra credit: the proxy's
 cross-connection properties - a gate or egress-guard verdict never landing on
-another connection - are enforced only by the race detector, and a mutation that
-breaks them passes hundreds of plain runs.
+another connection - rest on shared state whose narrower breakages pass hundreds
+of plain runs and fail immediately under the race detector. It needs a C toolchain
+(`-race` requires cgo).
 
 The test suite executes real probes inside real bubblewrap sandboxes to verify that security boundaries strictly hold.
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -34,7 +35,16 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	// The resolution the fake dialer stands in for. The non-public half spans the
 	// distinct classes the guard must catch, so a verdict crossing connections cannot
 	// hide behind one address family.
-	nonPublic := []string{"127.0.0.1", "10.0.0.5", "169.254.169.254", "fd00::1", "100.64.0.1"}
+	// The classes classify actually distinguishes, including the transition forms that
+	// wrap a host-reserved v4 address in a public-looking v6 one - those are the ones a
+	// crossed verdict could hide behind.
+	nonPublic := []string{
+		"127.0.0.1", "10.0.0.5", "169.254.169.254", "fd00::1", "100.64.0.1",
+		"64:ff9b::a9fe:a9fe",      // well-known NAT64 prefix wrapping the metadata address
+		"::ffff:169.254.169.254",  // IPv4-mapped metadata
+		"2002:a9fe:a9fe::1",       // 6to4 wrapping the same
+		"198.18.0.1", "240.0.0.1", // benchmarking and reserved v4
+	}
 	resolved := map[string]string{}
 	hosts := make([]string, 0, conns)
 	for i := range conns {
@@ -42,7 +52,8 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		ip := "93.184.216.34"
 		if i%2 == 1 {
 			host = fmt.Sprintf("priv%d.example.com", i)
-			ip = nonPublic[i%len(nonPublic)]
+			// i is odd here, so index on the pair number or half the list is unreachable.
+			ip = nonPublic[(i/2)%len(nonPublic)]
 		}
 		resolved[host] = ip
 		hosts = append(hosts, host)
@@ -97,7 +108,7 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer func() { unblock(); stop() }()
 
-	type result struct{ host, status string }
+	type result struct{ host, status, body string }
 	results := make(chan result, len(hosts))
 	for _, host := range hosts {
 		c := dialProxy()
@@ -105,11 +116,13 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		go func() {
 			c.SetDeadline(time.Now().Add(30 * time.Second))
 			fmt.Fprintf(c, "CONNECT %s:443 HTTP/1.1\r\n\r\n", host)
-			status, err := bufio.NewReader(c).ReadString('\n')
+			br := bufio.NewReader(c)
+			status, err := br.ReadString('\n')
 			if err != nil {
 				status = "read error: " + err.Error()
 			}
-			results <- result{host, strings.TrimSpace(status)}
+			body, _ := io.ReadAll(br)
+			results <- result{host, strings.TrimSpace(status), string(body)}
 		}()
 	}
 
@@ -130,6 +143,15 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		}
 		if !strings.Contains(r.status, want) {
 			t.Errorf("%s got %q, want %s - a guard verdict landed on the wrong connection", r.host, r.status, want)
+			continue
+		}
+		// The refusal names the address that was blocked, so a verdict carrying another
+		// connection's address - the block holding but for the wrong reason - is caught
+		// too, not just a swapped allow/deny.
+		// Compared in canonical form: the guard names the parsed address, so an
+		// IPv4-mapped literal is reported as the plain v4 address it wraps.
+		if blocked := net.ParseIP(resolved[r.host]).String(); want == "403" && !strings.Contains(r.body, blocked) {
+			t.Errorf("%s was refused naming a different address than %s: %q", r.host, blocked, r.body)
 		}
 	}
 
@@ -143,6 +165,9 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		if d != want {
 			t.Errorf("observer reported %s as %q, want %q", host, d, want)
 		}
+	}
+	if len(decisions) != len(hosts) {
+		t.Errorf("observer saw %d decisions, want one per connection (%d)", len(decisions), len(hosts))
 	}
 	// The teeth: a guard-blocked host must never have had a tunnel opened, which the
 	// 403 alone does not show - the same handler writes it either way.

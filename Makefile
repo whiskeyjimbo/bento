@@ -61,12 +61,13 @@ test: ## Run unit and integration tests
 	@printf "$(GREEN)$(BOLD)✓ All tests passed!$(RESET)\n"
 
 # The proxy's concurrency tests hold many connections at the gate and the egress guard
-# at once to prove a verdict never crosses connections. Some of those properties are
-# enforced only by the race detector - a mutation that parks a verdict on the Proxy
-# struct passes hundreds of plain runs and fails immediately under -race - so the gate
-# runs this package with it. CGO_ENABLED=1 because -race needs cgo, and the scope stays
-# narrow: the linux tier tests spawn real bwrap and systemd scopes, which -race would
-# make slow without telling us anything about them.
+# at once to prove a verdict never crosses connections. Whether a broken one is caught
+# without the race detector depends on the window: parking a verdict on the Proxy struct
+# fails plainly when the wrong verdict is acted on, but a narrow write-read window can
+# pass hundreds of plain runs and fail immediately under -race. That is why the gate runs
+# this package with it. CGO_ENABLED=1 because -race needs cgo (so check now wants a C
+# toolchain), and the scope stays narrow: the linux tier tests spawn real bwrap and
+# systemd scopes, which -race would make slow without telling us anything about them.
 race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
