@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -695,6 +696,53 @@ func TestCredentialFilesAnchorsRelocatedStores(t *testing.T) {
 	for _, want := range []string{token, kube} {
 		if !slices.Contains(got, want) {
 			t.Errorf("relocated credential %q must anchor the scan; got %v", want, got)
+		}
+	}
+}
+
+// Every anchor the deny list declares must actually be REACHED by the walk. Being in the
+// anchor list and being walked are different properties, and the gap between them has
+// bitten this mechanism twice: an anchor nested inside a bulk store was declared and
+// walked by nothing, and a relocated anchor was declared and then filtered out. Both were
+// invisible to every test that inspected the list rather than the walk.
+//
+// What this does NOT check is whether an anchor names the right real-world path: it plants
+// its probes at the declared paths, so a misspelled anchor is created misspelled and found
+// misspelled. That claim is about the world outside the repo, and `make audit` is what
+// tests it - cross-referencing firejail's profile list, where a renamed credential
+// directory shows up as an uncovered gap and fails the audit.
+func TestEveryDeclaredAnchorIsReached(t *testing.T) {
+	home := t.TempDir()
+	anchors := denylist.AliasAnchors(home)
+	if len(anchors) < 50 {
+		t.Fatalf("expected the full anchor set, got %d - is AliasAnchors wired up?", len(anchors))
+	}
+
+	want := make([]string, 0, len(anchors))
+	for i, a := range anchors {
+		if err := os.MkdirAll(a, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		probe := filepath.Join(a, fmt.Sprintf("probe%d", i))
+		if err := os.WriteFile(probe, []byte("SECRET"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, probe)
+	}
+
+	sb := testSandbox()
+	sb.home = home
+	sb.resolve = func(p string) string { return p }
+	sb.fileIDs = hostFileIDs
+
+	files, _ := credentialFiles(sb, nil)
+	got := make(map[string]bool, len(files))
+	for _, f := range files {
+		got[f.path] = true
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("declared anchor is never walked, so it protects nothing: %s", filepath.Dir(w))
 		}
 	}
 }

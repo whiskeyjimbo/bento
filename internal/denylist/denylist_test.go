@@ -694,11 +694,15 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 	}
 }
 
-// Every alias anchor must actually be a hidden directory rule in the deny list. The
-// anchors are named as literal strings, so a rename or typo in the dirs list would
-// silently un-anchor a credential store: the alias scan would keep passing while it
-// quietly stopped covering ~/.gnupg. Nothing else would notice, which is exactly the
-// silent-no-op class this guard exists for.
+// Every alias anchor must be covered by a hidden directory rule, so no anchor can point
+// at a tree the sandbox still exposes.
+//
+// For the top-level anchors this now holds by construction - the shielded set is built by
+// concatenating the same three buckets the anchors are drawn from, which is the point of
+// splitting them - so this asserts a structural invariant rather than catching drift.
+// Where it still has teeth is the nested anchors (a wallet client's key subdirectory),
+// which name a path no rule mentions and could be moved under a parent that is not
+// shielded at all.
 func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 	const home = "/home/u"
 	var hidden []string
