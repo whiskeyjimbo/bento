@@ -3,8 +3,6 @@
 package seccomp
 
 import (
-	"fmt"
-
 	seccomp "github.com/elastic/go-seccomp-bpf"
 )
 
@@ -20,18 +18,10 @@ import (
 // manifest complete. A program that hard-requires io_uring instead fails loudly (a
 // nonzero exit the host warns on), which beats a quietly incomplete manifest.
 func BlockIoUring() error {
-	filter := seccomp.Filter{
-		NoNewPrivs: true,
-		Flag:       tsyncFlags,
-		Policy: seccomp.Policy{
-			DefaultAction: seccomp.ActionAllow,
-			Syscalls: []seccomp.SyscallGroup{
-				{Action: seccomp.ActionErrno, Names: []string{"io_uring_setup", "io_uring_enter", "io_uring_register"}},
-			},
+	return installPolicy(seccomp.Policy{
+		DefaultAction: seccomp.ActionAllow,
+		Syscalls: []seccomp.SyscallGroup{
+			{Action: seccomp.ActionErrno, Names: []string{"io_uring_setup", "io_uring_enter", "io_uring_register"}},
 		},
-	}
-	if err := seccomp.LoadFilter(filter); err != nil {
-		return fmt.Errorf("seccomp: installing the io_uring block: %w", err)
-	}
-	return nil
+	}, "io_uring block")
 }

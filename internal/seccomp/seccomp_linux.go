@@ -17,43 +17,69 @@ import (
 	"unsafe"
 
 	seccomp "github.com/elastic/go-seccomp-bpf"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 )
 
 // Supported reports whether this kernel supports seccomp BPF filters.
 func Supported() bool { return seccomp.Supported() }
 
-// tsyncFlags is TSYNC with ESRCH: without ESRCH a partial thread-sync returns the
-// offending TID in the syscall's r1 with errno 0, and the library's LoadFilter
-// checks only errno - so it would report success while installing no filter. ESRCH
-// turns that partial sync into an ESRCH errno the library does surface, so a
-// failed install is refused instead of silently proceeding unfiltered. The
-// hand-rolled sibling filters (strict, egress) check r1 directly for the same
-// reason; the library-backed ones can only reach r1 through this flag.
-const tsyncFlags = seccomp.FilterFlagTSync | seccomp.FilterFlag(unix.SECCOMP_FILTER_FLAG_TSYNC_ESRCH)
+// installPolicy assembles p and attaches it to this process and all of its threads,
+// under no-new-privs so the filter survives the coming execveat.
+//
+// The load is done by hand rather than through the library's LoadFilter because
+// LoadFilter reads only seccomp(2)'s errno, and under TSYNC a partial thread-sync is
+// not an errno: the kernel returns the offending TID in r1 with errno 0 and attaches
+// the filter to nothing, which LoadFilter reports as success. Checking r1 is the only
+// way to refuse that, and it is what the hand-rolled filters in this package already
+// do. SECCOMP_FILTER_FLAG_TSYNC_ESRCH would turn the partial sync into an errno the
+// library surfaces, but it is absent from SECCOMP_FILTER_FLAG_MASK before kernel 5.0,
+// where it makes every filter using it fail with EINVAL on every run - so the degraded
+// tier, which exists to serve exactly those older kernels, could not install its
+// mandatory cross-process block at all. Policy.Assemble emits the AUDIT_ARCH gate and
+// the x32 block, so nothing the library contributed to the filter is lost here.
+func installPolicy(p seccomp.Policy, what string) error {
+	insts, err := p.Assemble()
+	if err != nil {
+		return fmt.Errorf("seccomp: assembling the %s filter: %w", what, err)
+	}
+	raw, err := bpf.Assemble(insts)
+	if err != nil {
+		return fmt.Errorf("seccomp: assembling the %s filter: %w", what, err)
+	}
+	filter := make([]unix.SockFilter, 0, len(raw))
+	for _, i := range raw {
+		filter = append(filter, unix.SockFilter{Code: i.Op, Jt: i.Jt, Jf: i.Jf, K: i.K})
+	}
+
+	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
+		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)
+	}
+	prog := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}
+	r1, _, e := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&prog)))
+	if e != 0 {
+		return fmt.Errorf("seccomp: installing the %s filter: %w", what, e)
+	}
+	if r1 != 0 {
+		return fmt.Errorf("seccomp: the %s filter could not be synced to thread %d; no filter was installed", what, r1)
+	}
+	return nil
+}
 
 // BlockExec installs the exec-blocking filter for this process and all its
 // threads. It sets no-new-privs and uses TSYNC, so the Go runtime's background
 // threads are covered and the filter survives the coming execveat. The syscall
-// numbers and architecture gate are handled by the library per GOARCH.
+// numbers and architecture gate come from the policy assembler, per GOARCH.
 func BlockExec() error {
 	if err := blockForeignArch(); err != nil {
 		return err
 	}
-	filter := seccomp.Filter{
-		NoNewPrivs: true,
-		Flag:       tsyncFlags,
-		Policy: seccomp.Policy{
-			DefaultAction: seccomp.ActionAllow,
-			Syscalls: []seccomp.SyscallGroup{
-				{Action: seccomp.ActionErrno, Names: []string{"execve"}},
-			},
+	return installPolicy(seccomp.Policy{
+		DefaultAction: seccomp.ActionAllow,
+		Syscalls: []seccomp.SyscallGroup{
+			{Action: seccomp.ActionErrno, Names: []string{"execve"}},
 		},
-	}
-	if err := seccomp.LoadFilter(filter); err != nil {
-		return fmt.Errorf("seccomp: installing exec-block filter: %w", err)
-	}
-	return nil
+	}, "exec-block")
 }
 
 // BlockProcessReach installs a filter denying the syscalls that reach into another
@@ -84,23 +110,15 @@ func BlockProcessReach() error {
 	if err := blockForeignArch(); err != nil {
 		return err
 	}
-	filter := seccomp.Filter{
-		NoNewPrivs: true,
-		Flag:       tsyncFlags,
-		Policy: seccomp.Policy{
-			DefaultAction: seccomp.ActionAllow,
-			Syscalls: []seccomp.SyscallGroup{
-				{Action: seccomp.ActionErrno, Names: []string{
-					"ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "kcmp", "pidfd_getfd",
-					"move_pages", "get_robust_list", "perf_event_open",
-				}},
-			},
+	return installPolicy(seccomp.Policy{
+		DefaultAction: seccomp.ActionAllow,
+		Syscalls: []seccomp.SyscallGroup{
+			{Action: seccomp.ActionErrno, Names: []string{
+				"ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "kcmp", "pidfd_getfd",
+				"move_pages", "get_robust_list", "perf_event_open",
+			}},
 		},
-	}
-	if err := seccomp.LoadFilter(filter); err != nil {
-		return fmt.Errorf("seccomp: installing the cross-process block: %w", err)
-	}
-	return nil
+	}, "cross-process block")
 }
 
 // Exec replaces the current process with argv via execveat(2). The exec-block
