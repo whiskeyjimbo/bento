@@ -24,7 +24,7 @@ func TestAwaitBridgeReady(t *testing.T) {
 			t.Fatal("returned before the ready byte was written")
 		case <-time.After(50 * time.Millisecond):
 		}
-		w.Write([]byte{1})
+		_, _ = w.Write([]byte{1})
 		w.Close()
 		if err := <-done; err != nil {
 			t.Fatalf("want nil after the ready byte, got %v", err)

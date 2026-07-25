@@ -52,8 +52,8 @@ func echoSocket(t *testing.T) string {
 			}
 			go func() {
 				defer c.Close()
-				io.WriteString(c, "BANNER\n")
-				io.Copy(c, c) // echo
+				_, _ = io.WriteString(c, "BANNER\n")
+				_, _ = io.Copy(c, c) // echo
 			}()
 		}
 	}()
@@ -186,9 +186,9 @@ func TestBridgeDoesNotTruncateOnClientHalfClose(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		io.ReadAll(io.LimitReader(c, 4)) // read the client's "bye\n"-ish
+		_, _ = io.ReadAll(io.LimitReader(c, 4)) // read the client's "bye\n"-ish
 		time.Sleep(50 * time.Millisecond)
-		io.WriteString(c, "LATE-PAYLOAD\n")
+		_, _ = io.WriteString(c, "LATE-PAYLOAD\n")
 	}()
 
 	tcp, err := net.Listen("tcp", "127.0.0.1:0")
@@ -211,7 +211,9 @@ func TestBridgeDoesNotTruncateOnClientHalfClose(t *testing.T) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(3 * time.Second))
 
-	io.WriteString(c, "bye\n")
+	if _, err := io.WriteString(c, "bye\n"); err != nil {
+		t.Fatal(err)
+	}
 	c.(*net.TCPConn).CloseWrite() // client half-closes after sending
 
 	got, err := io.ReadAll(c)

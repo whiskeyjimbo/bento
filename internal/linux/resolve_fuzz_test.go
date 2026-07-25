@@ -84,14 +84,14 @@ func buildSymlinkTree(root string, data []byte) {
 	for i := range maxResolveNodes {
 		switch kinds[i] {
 		case 0:
-			os.Mkdir(name(i), 0o755)
+			_ = os.Mkdir(name(i), 0o755)
 		case 2:
-			os.WriteFile(name(i), nil, 0o644)
+			_ = os.WriteFile(name(i), nil, 0o644)
 		}
 	}
 	for i := range maxResolveNodes {
 		if kinds[i] == 1 {
-			os.Symlink(targets[i], name(i))
+			_ = os.Symlink(targets[i], name(i))
 		}
 	}
 }

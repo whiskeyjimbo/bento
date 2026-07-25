@@ -117,7 +117,7 @@ func TestEgressAllowlistEndToEnd(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+			_, _ = c.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
 			c.Close()
 		}
 	}()

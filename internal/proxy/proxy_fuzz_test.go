@@ -38,7 +38,7 @@ func FuzzReadConnect(f *testing.F) {
 		go func() {
 			// A partial write is fine: readConnect either parses what arrived or errors.
 			// Closing unblocks it when the request has no terminator.
-			io.WriteString(client, req)
+			_, _ = io.WriteString(client, req)
 			client.Close()
 		}()
 		host, port, _, err := readConnect(server)

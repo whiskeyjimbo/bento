@@ -56,13 +56,14 @@ linters:
       - std-error-handling
       - common-false-positives
     rules:
-      # Test setup discards errors freely (a pipe write, a Kill, a raw syscall in
-      # a fixture). A test that got there and failed says more than a checked
-      # error in its scaffolding would.
+      # A fixture builds the hostile filesystem the sandbox is asked to refuse, so
+      # gosec's mode and taint rules describe test setup as much as they describe
+      # the enforcement path. errcheck is NOT exempted here: a fixture's discard
+      # is written as an explicit _, which keeps a dropped error in an assertion
+      # path visible.
       - path: _test\.go
         linters:
           - gosec
-          - errcheck
 
       # A generated manifest is a project file the user reviews, edits, and
       # commits - it is not sandbox state, so it gets a source file's 0644 rather

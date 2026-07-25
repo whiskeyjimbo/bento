@@ -978,7 +978,7 @@ func TestGitDirShieldsFailsClosedOnUnreadableDir(t *testing.T) {
 	if err := os.Chmod(modules, 0o111); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(modules, 0o755) }) // so t.TempDir cleanup can recurse
+	t.Cleanup(func() { _ = os.Chmod(modules, 0o755) }) // so t.TempDir cleanup can recurse
 	if _, err := os.ReadDir(modules); err == nil {
 		t.Skip("filesystem did not enforce the unreadable mode")
 	}
@@ -1015,7 +1015,7 @@ func TestGitDirShieldsFailsClosedOnUnreadableWorktrees(t *testing.T) {
 	if err := os.Chmod(worktrees, 0o111); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(worktrees, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(worktrees, 0o755) })
 	if _, err := os.ReadDir(worktrees); err == nil {
 		t.Skip("filesystem did not enforce the unreadable mode")
 	}

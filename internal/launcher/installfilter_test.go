@@ -173,8 +173,8 @@ func installFilterChild(mode string) {
 		return
 	}
 	if r == 0 {
-		syscall.RawSyscall(syscall.SYS_EXIT, 0, 0, 0)
+		_, _, _ = syscall.RawSyscall(syscall.SYS_EXIT, 0, 0, 0)
 	}
-	syscall.Wait4(int(r), nil, 0, nil)
+	_, _ = syscall.Wait4(int(r), nil, 0, nil)
 	os.Stdout.WriteString("FORK_OK\n")
 }

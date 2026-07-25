@@ -59,7 +59,7 @@ func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 	// Give the SIGKILL a moment, then confirm the backgrounded sleeper is gone.
 	time.Sleep(200 * time.Millisecond)
 	if err := syscall.Kill(sleeper, 0); err == nil {
-		syscall.Kill(sleeper, syscall.SIGKILL) // cleanup
+		_ = syscall.Kill(sleeper, syscall.SIGKILL) // cleanup
 		t.Fatalf("BROKEN: backgrounded process %d survived the pgroup sweep under systemd-run --scope", sleeper)
 	}
 }

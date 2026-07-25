@@ -127,9 +127,9 @@ func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 	// If an assertion below fails before reapTracees runs (or it misbehaves), do not
 	// leave the stopped child pinned for its whole sleep.
 	defer func() {
-		syscall.Kill(pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 		var ws syscall.WaitStatus
-		syscall.Wait4(pid, &ws, 0, nil)
+		_, _ = syscall.Wait4(pid, &ws, 0, nil)
 	}()
 
 	// Consume the initial execve stop; the child is now suspended in TASK_TRACED,
@@ -332,7 +332,7 @@ func TestTraceReapsBackgroundedMultithreadedDescendant(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		Trace([]string{sh, "-c", script}, os.Environ(), nil, nil, nil)
+		_, _ = Trace([]string{sh, "-c", script}, os.Environ(), nil, nil, nil)
 		close(done)
 	}()
 	select {

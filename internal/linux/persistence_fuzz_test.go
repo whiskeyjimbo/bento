@@ -108,7 +108,7 @@ var persistenceSurfaces = []persistenceSurface{
 		if err := os.Chmod(blind, 0o111); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { os.Chmod(blind, 0o755) }) // let t.TempDir cleanup recurse
+		t.Cleanup(func() { _ = os.Chmod(blind, 0o755) }) // let t.TempDir cleanup recurse
 		if _, err := os.ReadDir(blind); err == nil {
 			t.Skip("filesystem did not enforce the unreadable mode")
 		}

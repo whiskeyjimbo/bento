@@ -82,7 +82,7 @@ vet: ## Run go vet checks
 	@GOWORK=off go vet ./...
 	@printf "$(GREEN)$(BOLD)✓ go vet clean!$(RESET)\n"
 
-lint: ## Run golangci-lint (not part of check: it needs the pinned linter)
+lint: ## Run golangci-lint (pinned; part of check)
 	@printf "$(CYAN)$(BOLD)==> Linting ($(GOLANGCI_LINT_VERSION))...$(RESET)\n"
 	@GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 	@printf "$(GREEN)$(BOLD)✓ Lint clean!$(RESET)\n"
@@ -101,7 +101,7 @@ vuln: ## Scan both modules for known vulnerabilities (needs network)
 repro: ## Verify the binary builds byte-identically from a different source path
 	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" ./scripts/repro-build.sh
 
-check: vet test race audit ## Run all quality gates (vet, test, race, audit)
+check: vet lint test race audit ## Run all quality gates (vet, lint, test, race, audit)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities

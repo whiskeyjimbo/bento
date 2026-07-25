@@ -42,7 +42,7 @@ func startProxy(t *testing.T, p *Proxy) (dialProxy func() net.Conn, stop func())
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { p.Serve(ctx, l); close(done) }()
+	go func() { _ = p.Serve(ctx, l); close(done) }()
 
 	dialProxy = func() net.Conn {
 		c, err := net.Dial("unix", sock)
@@ -384,7 +384,7 @@ func TestOversizedRequestRejected(t *testing.T) {
 	// closing its read side cannot deadlock the writer.
 	go func() {
 		junk := strings.Repeat("A", maxRequestBytes+4096)
-		io.WriteString(c, junk)
+		_, _ = io.WriteString(c, junk)
 	}()
 
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
