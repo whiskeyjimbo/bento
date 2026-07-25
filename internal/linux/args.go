@@ -1280,9 +1280,13 @@ func resolveAll(paths []string) ([]string, error) {
 // yet (a write target) is resolved as far as it does exist, so the parts that
 // could be a symlink are still followed.
 func resolve(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("linux: %q: %w", path, err)
+	abs := path
+	if !filepath.IsAbs(path) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("linux: %q: %w", path, err)
+		}
+		abs = filepath.Clean(wd) + "/" + path
 	}
 	return resolveExisting(abs, 0), nil
 }

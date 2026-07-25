@@ -373,7 +373,7 @@ func parseBytes(s string) (int64, error) {
 		num = s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > math.MaxInt64/mult {
 		return 0, fmt.Errorf("invalid size %q", s)
 	}
 	return n * mult, nil
