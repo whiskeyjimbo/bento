@@ -338,19 +338,26 @@ func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
 	}
 }
 
-// A foreign-ABI refusal is not a partial run to warn about: the observation is missing
+// A seccomp kill is not a partial run to warn about: the observation is missing
 // everything that process did, and profiling again produces the same result. It stops
 // the round rather than proposing a manifest that looks complete - and it must not be
-// downgraded into one of the advisory warnings.
-func TestForeignABIRefusesRatherThanWarns(t *testing.T) {
-	if err := foreignABIRefusal(profile.Observation{Dropped: 3, Signaled: true}); err != nil {
-		t.Errorf("only a foreign ABI refuses the round; got %v", err)
+// downgraded into one of the advisory warnings. The message names both possible causes,
+// since SIGSYS alone does not distinguish bento's arch guard from a self-sandboxing
+// target, and misdiagnosing the second sends that user nowhere.
+func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
+	if err := seccompKilledRefusal(profile.Observation{Dropped: 3, Signaled: true}); err != nil {
+		t.Errorf("only a seccomp kill refuses the round; got %v", err)
 	}
-	err := foreignABIRefusal(profile.Observation{ForeignABI: true})
-	if err == nil || !strings.Contains(err.Error(), "non-native (32-bit) syscall ABI") {
-		t.Fatalf("foreignABIRefusal = %v, want a refusal naming the foreign ABI", err)
+	err := seccompKilledRefusal(profile.Observation{SeccompKilled: true})
+	if err == nil {
+		t.Fatal("a seccomp-killed run must refuse the round")
 	}
-	if got := profileWarnings(profile.Observation{ForeignABI: true}); len(got) != 0 {
-		t.Errorf("a foreign ABI must refuse, not warn; got %v", got)
+	for _, want := range []string{"non-native (32-bit) syscall ABI", "its own sandbox"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal = %q, want it to name %q as a possible cause", err, want)
+		}
+	}
+	if got := profileWarnings(profile.Observation{SeccompKilled: true}); len(got) != 0 {
+		t.Errorf("a seccomp kill must refuse, not warn; got %v", got)
 	}
 }

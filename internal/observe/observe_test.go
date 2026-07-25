@@ -736,3 +736,38 @@ if rc < 0:
 		t.Errorf("RESOLVE_IN_ROOT open not anchored at the dirfd; want %q; accesses: %v", want, res.Accesses)
 	}
 }
+
+// One access the observer cannot name must count as ONE drop. inspect runs on both the
+// entry and the exit stop of the same syscall, and every drop cause is deterministic
+// across the pair - the tracee is frozen in between - so an undeduplicated counter
+// reports every loss twice. A count that is wrong by construction is worse than none:
+// it teaches the reader to discount the warning.
+//
+// The lost access here is an openat whose pathname pointer is unmapped, so the path
+// cannot be read out of the tracee at either stop.
+func TestTraceCountsOneDropPerLostAccess(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	// ctypes calls openat directly with a pointer the process never mapped. The kernel
+	// answers EFAULT and the script carries on; what matters is the observer's count.
+	script := `
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall(257, -100, ctypes.c_void_p(0x1), 0, 0)
+`
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	// Measured against the same interpreter doing nothing, so an interpreter startup
+	// that ever drops something of its own is subtracted rather than mistaken for this.
+	base, err := Trace([]string{py, "-c", "pass"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace (baseline): %v", err)
+	}
+	if got := res.Dropped - base.Dropped; got != 1 {
+		t.Errorf("Dropped = %d (baseline %d), want exactly 1 for the one unreadable pathname; 2 is the signature of counting the entry and exit stop of the same syscall separately", res.Dropped, base.Dropped)
+	}
+}

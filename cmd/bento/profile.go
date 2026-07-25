@@ -166,11 +166,11 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	if err != nil {
 		return nil, err
 	}
-	// A process using a non-native syscall ABI cannot be observed at all, so this
-	// observation is missing everything it did - and unlike a partial run, profiling
-	// again produces the same result. Refuse rather than propose a manifest that looks
-	// complete and would become enforcement policy.
-	if err := foreignABIRefusal(obs); err != nil {
+	// A seccomp-killed process cannot be observed at all, so this observation is missing
+	// everything it did - and unlike a partial run, profiling again produces the same
+	// result. Refuse rather than propose a manifest that looks complete and would become
+	// enforcement policy.
+	if err := seccompKilledRefusal(obs); err != nil {
 		return nil, err
 	}
 	// A run that was signaled or exited nonzero may have stopped before exercising all
@@ -469,15 +469,20 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// foreignABIRefusal reports why a run that hit the foreign-ABI guard cannot be
-// profiled at all, or nil for the ordinary run. It is separate from profileWarnings
-// because it is not advice: the observation is missing everything the refused process
+// seccompKilledRefusal reports why a run in which a process was seccomp-killed cannot
+// be profiled at all, or nil for the ordinary run. It is separate from profileWarnings
+// because it is not advice: the observation is missing everything the killed process
 // did, and profiling again produces the same result, so there is nothing to propose.
-func foreignABIRefusal(obs profile.Observation) error {
-	if !obs.ForeignABI {
+//
+// It names both causes rather than guessing between them. Bento's own foreign-arch
+// guard is the likely one - a 32-bit process, which the amd64 observer would otherwise
+// decode as garbage - but a target that installs its own kill-mode filter dies
+// identically, and telling that user to rebuild for amd64 sends them nowhere.
+func seccompKilledRefusal(obs profile.Observation) error {
+	if !obs.SeccompKilled {
 		return nil
 	}
-	return fmt.Errorf("a process in this run used a non-native (32-bit) syscall ABI and was refused: bento's profiler decodes amd64 syscalls only, so everything that process touched is unobservable and no manifest can be proposed from this run; build the target for amd64, or write the manifest by hand")
+	return fmt.Errorf("a process in this run was killed by a seccomp filter, so everything it touched is unobservable and no manifest can be proposed from this run: either it used a non-native (32-bit) syscall ABI, which bento's profiler refuses because it decodes amd64 syscalls only, or the target installs its own sandbox. Build the target for amd64, run it without its own sandbox, or write the manifest by hand")
 }
 
 // profileWarnings returns every reason this observation may be short of what the run

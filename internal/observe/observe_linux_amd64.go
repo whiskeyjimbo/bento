@@ -49,14 +49,15 @@ type Result struct {
 	// nonzero count means the manifest below is incomplete - indistinguishable, without
 	// it, from a target that simply touched nothing there.
 	Dropped int
-	// ForeignABI reports that a tracee - root or any descendant - was killed for
-	// issuing a syscall through a non-native ABI, which the launcher's seccomp guard
-	// refuses. The decoder reads amd64 syscall numbers, so such a process cannot be
-	// observed at all; every access it would have made is absent. It is tracked
-	// separately from Signaled because a script that tolerates its 32-bit helper dying
-	// still exits zero, and that run's observation is missing everything the helper did
-	// with nothing else to say so.
-	ForeignABI bool
+	// SeccompKilled reports that a tracee - root or any descendant - died on SIGSYS,
+	// i.e. a kill-mode seccomp filter refused one of its syscalls. Everything that
+	// process would have touched is absent from Accesses. Tracked separately from
+	// Signaled because a script that tolerates its helper dying still exits zero, and
+	// that run's observation is missing everything the helper did with nothing else to
+	// say so. Which filter killed it is the caller's to interpret: for bento's profiling
+	// run the only kill-mode filter installed is the foreign-arch guard, but a target
+	// that sandboxes itself dies the same way.
+	SeccompKilled bool
 }
 
 // amd64 syscall numbers.
@@ -212,11 +213,15 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		// when it ends on its own.
 		tracees[wpid] = true
 
-		// SIGSYS from a tracee is the foreign-arch seccomp guard killing it: the launcher
-		// installs no other killing filter for the profiled run. Recorded for every
-		// tracee, not just root, so a helper the script shrugs off is still reported.
+		// SIGSYS means a kill-mode seccomp filter refused a syscall. For the profiled
+		// run that is the launcher's foreign-arch guard - but a target that installs its
+		// OWN kill filter (bwrap, a browser or language runtime sandbox) dies the same
+		// way, so this records only that the process was seccomp-killed and could not be
+		// observed. Naming the ABI as the cause is left to the caller, which knows which
+		// filters it installed. Recorded for every tracee, not just root, so a helper the
+		// script shrugs off is still reported.
 		if ws.Signaled() && ws.Signal() == syscall.SIGSYS {
-			res.ForeignABI = true
+			res.SeccompKilled = true
 		}
 
 		switch {
@@ -245,7 +250,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones; recording on both
 			// entry and exit is deduplicated, so no enter/exit bookkeeping.
-			inspect(wpid, record, func() { res.Dropped++ }, &res)
+			inspect(wpid, record, dropOnce(seen, wpid, &res.Dropped), &res)
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
 			// A fork/clone/vfork event reports the new child's pid here, before that
@@ -320,6 +325,27 @@ func reapTracees(tracees map[int]bool) {
 	}
 }
 
+// dropOnce returns the drop counter for one syscall stop, deduplicated the way record
+// deduplicates paths. inspect runs on both the entry and the exit stop of the same
+// syscall, and every drop cause is deterministic across the pair - the tracee is frozen
+// between them, so an unreadable pathname is unreadable both times. Counting each stop
+// would report every lost access twice, and a count that is wrong by construction is
+// worse than none: it trains a reader to discount the warning.
+//
+// The key is the tracee plus the syscall's number and instruction pointer, which are
+// identical on entry and exit and differ between distinct calls - including two calls
+// to the same syscall from the same site, whose stops cannot interleave.
+func dropOnce(seen map[string]bool, pid int, n *int) func(*syscall.PtraceRegs) {
+	return func(regs *syscall.PtraceRegs) {
+		key := fmt.Sprintf("drop\x00%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		*n++
+	}
+}
+
 // inspect decodes a syscall stop and records file opens / subprocess execs.
 //
 // The numbers below are amd64's, and nothing here checks the tracee's ABI, because
@@ -329,12 +355,17 @@ func reapTracees(tracees map[int]bool) {
 // since seccomp keys on the syscall ABI rather than the code segment. Without it an
 // i386 syscall would decode against the wrong table (i386 85 is readlink, amd64 85 is
 // creat) and fabricate write grants that become enforcement policy on the next run.
-func inspect(pid int, record func(string, bool), drop func(), res *Result) {
+func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
-		drop()
+		// No registers means no syscall number either, so this may not have been a file
+		// access at all - a tracee killed between the stop and this read fails here on
+		// whatever it was running. Counted anyway: an uncounted lost access is the
+		// failure this channel exists to prevent, and the alternative is to guess.
+		countDrop(&regs)
 		return
 	}
+	drop := func() { countDrop(&regs) }
 	switch regs.Orig_rax {
 	case sysOpenat:
 		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {
@@ -348,19 +379,26 @@ func inspect(pid int, record func(string, bool), drop func(), res *Result) {
 		// program using it must not profile as touching nothing.
 		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
 		path, pathOK := readString(pid, uintptr(regs.Rsi))
-		if !ok || !pathOK {
-			// An unreadable open_how leaves the open's intent unknown. Record it as a
-			// write - the conservative half of the pair, matching the anchor choice
-			// openat2Resolve makes - and count the drop, so a manifest that granted
-			// read where the target wanted write is not the silent outcome.
+		if !pathOK {
 			drop()
+			break
 		}
-		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec && pathOK {
-			if anchoredPath, anchorOK := resolveAt(pid, int32(regs.Rdi), anchored); anchorOK {
-				record(anchoredPath, !ok || flags&uint64(writeFlags) != 0)
-			} else {
+		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec {
+			anchoredPath, anchorOK := resolveAt(pid, int32(regs.Rdi), anchored)
+			if !anchorOK {
+				drop()
+				break
+			}
+			// An unreadable open_how leaves the open's intent unknown, and the narrow
+			// answer wins for the same reason openat2Resolve picks the conservative
+			// anchor: under-attribution fails the run closed and is fixed by adding a
+			// grant, over-attribution silently widens the manifest. The drop is what
+			// keeps that from being silent - the path is recorded, but as a read whose
+			// write bit was a guess.
+			if !ok {
 				drop()
 			}
+			record(anchoredPath, ok && flags&uint64(writeFlags) != 0)
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
@@ -493,11 +531,13 @@ func sockaddrUnixPath(pid int, addr uintptr, addrlen uint64) (string, bool) {
 	defer mem.Close()
 
 	buf := make([]byte, addrlen)
-	n, err := mem.ReadAt(buf, int64(addr))
-	if n <= 0 && err != nil {
+	// A short read is not a shorter address: sun_path need not be NUL-terminated, so
+	// parsing the truncated bytes would record a real-looking path that is a prefix of
+	// the one the target used - a misattributed access, worse than a counted loss.
+	if n, err := mem.ReadAt(buf, int64(addr)); err != nil && n < len(buf) {
 		return "", false
 	}
-	return unixSockaddrPath(buf[:max(n, 0)]), true
+	return unixSockaddrPath(buf), true
 }
 
 // unixSockaddrPath extracts the bound filesystem path from a raw sockaddr, or "" when

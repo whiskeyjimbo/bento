@@ -15,11 +15,13 @@ type Access struct {
 
 // Result is what a traced run observed.
 type Result struct {
-	Accesses []Access
-	Execed   bool
-	ExitCode int
-	Signaled bool
-	Signal   int
+	Accesses      []Access
+	Execed        bool
+	ExitCode      int
+	Signaled      bool
+	Signal        int
+	Dropped       int
+	SeccompKilled bool
 }
 
 // Supported reports whether this build has the ptrace observation backend. The

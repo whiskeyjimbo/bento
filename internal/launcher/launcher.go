@@ -237,8 +237,8 @@ func runObserve(cfg Config, env []string) (int, error) {
 		if res.Dropped > 0 {
 			fmt.Fprintf(&b, "DROPPED %d\n", res.Dropped)
 		}
-		if res.ForeignABI {
-			b.WriteString("FOREIGNABI\n")
+		if res.SeccompKilled {
+			b.WriteString("SECCOMPKILLED\n")
 		}
 		b.WriteString(observe.ReportStart + "\n")
 	}
