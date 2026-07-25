@@ -187,3 +187,19 @@ func TestNewSandboxRefusesRelativeHome(t *testing.T) {
 		t.Fatalf("newSandbox with a relative HOME: err = %v, want it to reject a non-absolute home", err)
 	}
 }
+
+// Enforcer.Run is exported and satisfies enforce.Enforcer, so an embedder can reach it
+// without going through enforce.Run's validation. It must refuse a malformed policy
+// itself rather than compile one into a bwrap invocation - Profile already does.
+func TestRunValidatesThePolicyItself(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Env: []string{"NOT A NAME"}}
+	_, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "invalid env name") {
+		t.Fatalf("Run with an invalid policy: err = %v, want the policy validation error", err)
+	}
+}

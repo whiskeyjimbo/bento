@@ -43,6 +43,11 @@ var _ enforce.Enforcer = (*Enforcer)(nil)
 // reserved for a failure to build or start the sandbox, so a script that merely
 // fails is never confused with a sandbox that did not hold.
 func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (enforce.Result, error) {
+	// enforce.Run validates before it gets here, but this is an exported entry point an
+	// embedder can call directly - as Profile already does for the same reason.
+	if err := p.Validate(); err != nil {
+		return enforce.Result{}, err
+	}
 	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
 	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
 	// after admitting the run under --allow-degraded, so this never silently downgrades.
@@ -152,7 +157,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
 	// already been admitted (refused by default, or permitted under
-	// --allow-degraded) - here it simply proceeds unwrapped.
+	// --allow-degraded) - here it simply proceeds unwrapped, and the report says so
+	// without a second check: canCreateScope is memoized for the life of the process,
+	// so the probe above recorded LayerLimits Unavailable from the same answer this
+	// reads. There is no window in which the report can claim a limit nothing applied.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(); ok {
