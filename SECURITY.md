@@ -75,6 +75,52 @@ of these are welcome as issues, but they are not vulnerabilities:
 If you are unsure which side of that line something falls on, report it
 privately and let the triage decide.
 
+## Verifying a release
+
+The threat model trusts the Bento binary itself. Verification is how you earn
+that trust for the copy you downloaded, so do it before running one.
+
+Release archives are built by a tagged run of
+[`.github/workflows/release.yml`](.github/workflows/release.yml). That run
+publishes `checksums.txt` covering every archive and SBOM, and signs the
+checksum file with [cosign](https://github.com/sigstore/cosign) keyless - there
+is no long-lived key, so the certificate names the workflow, repository, and tag
+that produced the artifacts. Verify the signature first, then the archive
+through the checksum file:
+
+```sh
+# 1. The checksum file really came from a tagged release run of this repository.
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp \
+    '^https://github\.com/whiskeyjimbo/bento/\.github/workflows/release\.yml@refs/tags/v'
+
+# 2. The archive you downloaded is the one that file vouches for.
+sha256sum --ignore-missing -c checksums.txt
+```
+
+Pin the identity to an exact tag rather than the `refs/tags/v` prefix if you
+want to accept exactly one release:
+`...release\.yml@refs/tags/v0.1.0$`.
+
+A failure at step 1 means the artifact was not produced by this repository's
+release workflow, whatever the filename says. Report it privately as above.
+
+Builds are reproducible, so you can check the artifacts against the source
+rather than trusting the release run. The binary is stamped from the commit's
+own timestamp, not the clock of the machine that built it, and paths are
+trimmed. Check out the tag and rerun the same build:
+
+```sh
+goreleaser build --clean --single-target -o ./bento
+```
+
+That reproduces the published binary byte for byte. `make build` will not: it
+stamps a different version and a short commit hash, which is a different binary
+by design, not a reproducibility failure.
+
 ## Versioning and the boundary
 
 Semantic versioning here is about the **boundary**, not just the Go API. A
