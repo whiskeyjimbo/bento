@@ -242,16 +242,24 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 // credential no grant reached still has its content reachable through an alias that a
 // grant DID reach, and coupling the scan to engagement would miss exactly that.
 //
-// Three scope limits are deliberate. Only DenyAll shields qualify - a read-only shield
-// keeps its file readable by design, so a second readable name for it leaks nothing
-// new. Only shields under $HOME: the non-home hidden shields are host service
-// directories like /run, and enumerating those to collect inodes would descend into
-// removable media and FUSE mounts. And among the hidden directories only the key-bearing
-// ones anchor the scan (denylist.AliasAnchors); the bulk stores are shielded just as
-// hard but enumerating a mail spool or browser profile on every launch would cost more
-// than the scan saves, and mail sync tools hardlink duplicate messages routinely enough
-// that anchoring on them would trip on mail rather than credentials. Hidden FILE rules
-// all anchor it: a single file is cheap to stat and is named because it holds a secret.
+// Two scope limits are deliberate. Only DenyAll shields qualify - a read-only shield
+// keeps its file readable by design, so a second readable name for it leaks nothing new.
+// And among the hidden directories only the key-bearing ones anchor the scan
+// (denylist.AliasAnchors); the bulk stores are shielded just as hard but enumerating a
+// mail spool or browser profile on every launch would cost more than the scan saves, and
+// mail sync tools hardlink duplicate messages routinely enough that anchoring on them
+// would trip on mail rather than credentials. Hidden FILE rules all anchor it: a single
+// file is cheap to stat and is named because it holds a secret.
+//
+// The set is NOT restricted to paths under $HOME, and must not be: both sources already
+// follow relocation, and a credential store is no less a credential for living
+// elsewhere. denylist.AliasAnchors expands an XDG-relative anchor to the relocated base
+// as well as the default one, and the hidden file rules follow the documented env vars
+// (KUBECONFIG, AWS_SHARED_CREDENTIALS_FILE, the *_HISTFILE family) wherever they point.
+// Filtering on $HOME here would shield those at their own path while silently excusing
+// them from the alias scan - the exact configurations most likely to have moved a store
+// somewhere a grant also reaches. The service directories that filter once guarded
+// against (/run) are DIRECTORY rules and are not anchors, so they never enter the set.
 //
 // A credential whose own path is explicitly opted into the sandbox is dropped - its
 // shield never engages, so there is no shield for an alias to defeat.
@@ -259,10 +267,9 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 	if sb.home == "" {
 		return nil, false
 	}
-	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves
-	// them to bind them: on a host where $HOME sits behind a symlink (/home -> /var/home)
-	// an unresolved prefix matches nothing and the whole scan silently no-ops.
-	home := sb.resolve(sb.home)
+	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
+	// to bind them: on a host where a store sits behind a symlink an unresolved path
+	// matches nothing and the whole scan silently no-ops.
 	resolvedOptIns := make([]string, 0, len(optIns))
 	for _, o := range optIns {
 		resolvedOptIns = append(resolvedOptIns, sb.resolve(o))
@@ -286,7 +293,7 @@ func credentialFiles(sb sandbox, optIns []string) (files []identifiedFile, linke
 
 	seen := map[string]bool{}
 	for _, path := range roots {
-		if !under(path, home) || seen[path] {
+		if seen[path] {
 			continue
 		}
 		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {

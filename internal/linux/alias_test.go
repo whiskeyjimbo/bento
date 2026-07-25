@@ -645,3 +645,56 @@ func TestRealBindAliasIsFound(t *testing.T) {
 	}
 	t.Log(marker)
 }
+
+// A credential store that has been relocated out of $HOME is still a credential store.
+// Both ends of the deny list already follow relocation - AliasAnchors expands an
+// XDG-relative anchor to the relocated base, and the hidden file rules follow the
+// documented env vars - so scoping the scan to $HOME would shield those at their own
+// path while quietly excusing them from alias detection, which is the failure the whole
+// mechanism exists to prevent. Covers both forms: an XDG-relocated directory anchor and
+// an env-relocated file rule.
+func TestCredentialFilesAnchorsRelocatedStores(t *testing.T) {
+	home := t.TempDir()
+	xdg := t.TempDir()       // XDG_CONFIG_HOME, deliberately outside home
+	elsewhere := t.TempDir() // KUBECONFIG target, likewise
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	gh := filepath.Join(xdg, "gh")
+	if err := os.MkdirAll(gh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(gh, "hosts.yml")
+	if err := os.WriteFile(token, []byte("TOKEN"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kube := filepath.Join(elsewhere, "kubeconfig")
+	if err := os.WriteFile(kube, []byte("CLUSTER CREDS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kube)
+	// The second name a host actor would have to create for either to leak.
+	for i, c := range []string{token, kube} {
+		if err := os.Link(c, filepath.Join(home, fmt.Sprintf("leaked%d", i))); err != nil {
+			t.Skipf("no hardlink support: %v", err)
+		}
+	}
+
+	sb := testSandbox()
+	sb.home = home
+	sb.resolve = func(p string) string { return p }
+	sb.fileIDs = hostFileIDs
+
+	files, linked := credentialFiles(sb, nil)
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.path)
+	}
+	if !linked {
+		t.Error("a relocated credential with an extra link must open the gate")
+	}
+	for _, want := range []string{token, kube} {
+		if !slices.Contains(got, want) {
+			t.Errorf("relocated credential %q must anchor the scan; got %v", want, got)
+		}
+	}
+}
