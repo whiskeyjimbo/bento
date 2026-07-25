@@ -56,17 +56,17 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
 	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
-	// A write grant is a directory the target writes into; create a missing one so
-	// Landlock has a path to grant (RWDirs skips a path that does not exist). Landlock
-	// cannot carve a shielded subpath out of an allowed tree, so a read grant that
-	// contains a credential dir still exposes it - the documented cost of the degraded
-	// tier, and the reason a broad read here is weaker than under bwrap.
-	for _, w := range writes {
-		if _, err := os.Stat(w); errors.Is(err, os.ErrNotExist) {
-			if err := os.MkdirAll(w, 0o755); err != nil {
-				return enforce.Result{}, fmt.Errorf("linux: creating write directory %q: %w", w, err)
-			}
-		}
+	// Write grants are prepared exactly as the bwrap tier prepares them, through the
+	// same function: a missing directory is created so Landlock has a path to grant
+	// (its rules skip a path that does not exist), and a grant naming an existing FILE
+	// is refused rather than accepted. Sharing it is what keeps one manifest from
+	// meaning two things - this tier used to accept a file grant the full tier
+	// refuses, and to MkdirAll a directory on the host at a path the policy meant as a
+	// file. Landlock still cannot carve a shielded subpath out of an allowed tree, so a
+	// read grant containing a credential dir exposes it: the documented cost of this
+	// tier, and why a broad read here is weaker than under bwrap.
+	if err := prepareWriteDirs(p, sb); err != nil {
+		return enforce.Result{}, err
 	}
 
 	// With the write dirs now present (so the same Workspace/gitDir shields the full tier

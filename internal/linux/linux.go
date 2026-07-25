@@ -203,7 +203,9 @@ func isExitError(err error) bool {
 // directory can be made writable in a way that supports creating and renaming
 // files inside it - binding a file makes it a mount point, which breaks atomic
 // save-and-rename. A write grant is therefore a directory: a missing one is
-// created, an existing file is refused. The shield check runs first so a grant
+// created, an existing file is refused. Both tiers call this, so a file grant means
+// the same thing under Landlock-only confinement as under bwrap - and the degraded
+// tier never creates a host directory where the policy named a file. The shield check runs first so a grant
 // that lands inside an always-shielded path is rejected before anything is
 // created under it (never mkdir inside ~/.ssh only to reject the grant).
 func prepareWriteDirs(p *policy.Policy, sb sandbox) error {

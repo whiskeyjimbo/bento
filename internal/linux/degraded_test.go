@@ -462,3 +462,42 @@ func TestRealProbeRefusesStrictExecUnderStrictWhenUnsupported(t *testing.T) {
 		t.Errorf("the default posture must run with only the hardening-tier extra missing; got err=%v out=%q", err, out)
 	}
 }
+
+// One manifest must mean one thing in both tiers. The "a write grant naming an
+// existing file is refused" rule lived in the bwrap argv builder and in the full
+// tier's own preparation, never in checkGrants, so the degraded tier accepted the
+// same grant and granted RWFiles. Both tiers now prepare write grants through
+// prepareWriteDirs: an existing file is refused in the same words, and a grant for a
+// path that does not exist yet is created as a directory - which is what a write
+// grant means, in both tiers, rather than each deciding for itself.
+func TestDegradedRefusesFileWriteGrantLikeTheFullTier(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(existing, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: buildDegradedProbe(t), Write: []string{existing}, Exec: policy.ExecNone}
+
+	var out strings.Builder
+	_, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	if err == nil {
+		t.Fatal("the degraded tier accepted a write grant naming an existing file; the full tier refuses it")
+	}
+	if !strings.Contains(err.Error(), "grant its parent directory instead") {
+		t.Errorf("refusal should be the full tier's own message, got %v", err)
+	}
+
+	// The not-yet-existing case: created as a directory, the same as under bwrap.
+	absent := filepath.Join(dir, "unborn.json")
+	p.Write = []string{absent}
+	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}); err != nil {
+		t.Fatalf("a write grant for a not-yet-existing path should still be prepared: %v", err)
+	}
+	if fi, err := os.Stat(absent); err == nil && !fi.IsDir() {
+		t.Errorf("%s exists but is not a directory", absent)
+	} else if err != nil {
+		t.Errorf("the write grant was not created at all: %v", err)
+	}
+}
