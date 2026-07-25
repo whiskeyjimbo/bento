@@ -241,7 +241,17 @@ Two residuals are accepted rather than engineered against:
 - a *reflink* shares content without sharing an inode, so identity comparison never
   sees one; catching it would mean hashing the contents of every file in every
   granted tree;
-- the scan is a *snapshot*, so a host actor can create an alias after it runs.
+- the scan is a *snapshot*, so a host actor can create an alias after it runs. The
+  window is not instantaneous: it opens when the credential set is stat'd and stays
+  open through the tree walk, so an alias created in an already-walked directory is
+  missed - seconds, on a large grant whose gate fired. Between the scan and the
+  launch, a policy that sets resource limits also does a systemd round-trip, which
+  widens it slightly further;
+- the **degraded tier does not run this check at all**. It confines with Landlock,
+  which is path-hierarchy based, so an alias inside a granted tree is readable there
+  for the same reason it would be past a shield - and the exposure report cannot
+  name it, since that list holds shield paths and an alias path is not one. Running
+  under `--allow-degraded` therefore proceeds where the full tier refuses.
 
 Both are bounded by the same fact: the actor who could exploit either already holds
 the user's privileges and could read the credential directly without an alias. What

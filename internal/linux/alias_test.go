@@ -30,7 +30,8 @@ func aliasSandbox(creds map[string][]identifiedFile, matches map[string][]identi
 		}
 		return out
 	}
-	sb.mountpoints = func([]string) []mountPoint { return nil }
+	sb.mountpoints = func([]uint64) []mountPoint { return nil }
+	sb.statID = func(string) (fileID, bool) { return fileID{}, false }
 	return sb
 }
 
@@ -50,7 +51,7 @@ func TestAliasedCredentialsSkipsWalkWhenNoCredentialIsLinked(t *testing.T) {
 		walked = true
 		return nil
 	}
-	if got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil); got != nil {
+	if got := aliasedCredentials(sb, []string{"/home/u/project"}, nil); got != nil {
 		t.Errorf("aliasedCredentials = %v, want none when no credential carries an extra link", got)
 	}
 	if walked {
@@ -68,7 +69,7 @@ func TestAliasedCredentialsNamesTheAliasAndItsCredential(t *testing.T) {
 	matches := map[string][]identifiedFile{
 		"/home/u/project": {{path: "/home/u/project/notes.txt", id: fileID{dev: 1, ino: 10}}},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u/project"}, nil, nil)
+	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/notes.txt", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("aliasedCredentials = %v, want %v", got, want)
@@ -84,7 +85,7 @@ func TestAliasedCredentialsCoversWriteGrants(t *testing.T) {
 	matches := map[string][]identifiedFile{
 		"/home/u/build": {{path: "/home/u/build/key", id: fileID{dev: 1, ino: 11}}},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), nil, []string{"/home/u/build"}, nil)
+	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u/build"}, nil)
 	want := []credentialAlias{{Path: "/home/u/build/key", Credential: "/home/u/.ssh/id_rsa"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("write grants must be walked too; got %v want %v", got, want)
@@ -105,7 +106,7 @@ func TestAliasedCredentialsIgnoresTheShieldedPathItself(t *testing.T) {
 			{path: "/home/u/copy", id: fileID{dev: 1, ino: 10}},             // the actual alias
 		},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u"}, nil, nil)
+	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u"}, nil)
 	want := []credentialAlias{{Path: "/home/u/copy", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("the shielded path is not its own alias; got %v want %v", got, want)
@@ -128,7 +129,7 @@ func TestAliasedCredentialsDropsOptedInCredentials(t *testing.T) {
 		},
 	}
 	sb := aliasSandbox(creds, matches)
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, []string{"/home/u/.aws"})
+	got := aliasedCredentials(sb, []string{"/home/u/project"}, []string{"/home/u/.aws"})
 	want := []credentialAlias{{Path: "/home/u/project/b", Credential: "/home/u/.ssh/id_rsa"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("an opted-in credential has no shield to leak past; got %v want %v", got, want)
@@ -142,18 +143,21 @@ func TestAliasedCredentialsFindsBindAliasWithoutTheWalk(t *testing.T) {
 	creds := map[string][]identifiedFile{
 		"/home/u/.aws": {{path: "/home/u/.aws/credentials", id: fileID{dev: 1, ino: 10}, links: 1}},
 	}
-	matches := map[string][]identifiedFile{
-		"/home/u/project/creds": {{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}},
+	sb := aliasSandbox(creds, nil)
+	sb.statID = func(p string) (fileID, bool) {
+		if p == "/home/u/.aws/credentials" {
+			return fileID{dev: 1, ino: 10}, true
+		}
+		return fileID{}, false
 	}
-	sb := aliasSandbox(creds, matches)
-	sb.mountpoints = func([]string) []mountPoint {
+	sb.mountpoints = func([]uint64) []mountPoint {
 		return []mountPoint{
 			{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}, // the bind of the credential
 			{path: "/home/u/project/cache", id: fileID{dev: 9, ino: 99}}, // unrelated, foreign device
-			{path: "/mnt/elsewhere", id: fileID{dev: 1, ino: 11}},        // wanted device, outside every grant
+			{path: "/mnt/elsewhere", id: fileID{dev: 1, ino: 10}},        // same bind, outside every grant
 		}
 	}
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
+	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/creds", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("a bind alias bumps no link count and must be caught from mountinfo; got %v want %v", got, want)
@@ -166,14 +170,19 @@ func TestAliasedCredentialsMapsDirectoryBindToTheCredentialPath(t *testing.T) {
 	creds := map[string][]identifiedFile{
 		"/home/u/.aws": {{path: "/home/u/.aws/credentials", id: fileID{dev: 1, ino: 10}, links: 1}},
 	}
-	matches := map[string][]identifiedFile{
-		"/home/u/project/vendor": {{path: "/home/u/project/vendor/credentials", id: fileID{dev: 1, ino: 10}}},
+	sb := aliasSandbox(creds, nil)
+	// The bind is of the credential's parent directory, so the mount matches that
+	// ancestor and the credential's remaining path rides along onto the mountpoint.
+	sb.statID = func(p string) (fileID, bool) {
+		if p == "/home/u/.aws" {
+			return fileID{dev: 1, ino: 7}, true
+		}
+		return fileID{}, false
 	}
-	sb := aliasSandbox(creds, matches)
-	sb.mountpoints = func([]string) []mountPoint {
-		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 10}}}
+	sb.mountpoints = func([]uint64) []mountPoint {
+		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 7}}}
 	}
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
+	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/vendor/credentials", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("a directory bind aliases each credential under it; got %v want %v", got, want)
@@ -193,7 +202,7 @@ func TestAliasedCredentialsResolvesBothSidesBeforeComparing(t *testing.T) {
 	}
 	sb := aliasSandbox(creds, matches)
 	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil, nil)
+	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/var/home/u/project/copy", Credential: "/var/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("grants and deny paths must be compared resolved; got %v want %v", got, want)
@@ -297,8 +306,8 @@ func TestCredentialFilesSkipsGitObjectStore(t *testing.T) {
 // refuse. /dev (devtmpfs) and /dev/shm (tmpfs) are different devices on any Linux host,
 // which makes the boundary reproducible without mounting anything.
 func TestHostAliasesUnderCrossesADeviceBoundaryAtTheRoot(t *testing.T) {
-	cred := "/dev/shm/bento_boundary_cred"
-	alias := "/dev/shm/bento_boundary_alias"
+	stem := fmt.Sprintf("/dev/shm/bento_boundary_%d", os.Getpid())
+	cred, alias := stem+"_cred", stem+"_alias"
 	if err := os.WriteFile(cred, []byte("SECRET"), 0o600); err != nil {
 		t.Skipf("no writable /dev/shm: %v", err)
 	}
@@ -427,5 +436,57 @@ func TestRunRefusesAnAliasedCredential(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q must name %q", err, want)
 		}
+	}
+}
+
+// A bind whose mountpoint sits ABOVE the granted tree is the case path arithmetic loses
+// and the one that leaks most: bind the whole home to /srv/backup, grant
+// "read: /srv/backup/.ssh", and the key is reachable through a path that names no
+// credential bento shields. The mountpoint is not inside the grant, so a containment
+// filter drops it; a bind adds no directory entry, so the hardlink gate never opens and no
+// walk happens. Only matching the mount against the credential's ancestors finds it.
+func TestAliasedCredentialsFindsABindMountedAboveTheGrant(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/home/u/.ssh": {{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 1}},
+	}
+	sb := aliasSandbox(creds, nil)
+	sb.statID = func(p string) (fileID, bool) {
+		if p == "/home/u" {
+			return fileID{dev: 1, ino: 2}, true
+		}
+		return fileID{}, false
+	}
+	sb.mountpoints = func([]uint64) []mountPoint {
+		return []mountPoint{{path: "/srv/backup", id: fileID{dev: 1, ino: 2}}}
+	}
+
+	got := aliasedCredentials(sb, []string{"/srv/backup/.ssh"}, nil)
+	want := []credentialAlias{{Path: "/srv/backup/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("a bind above the grant must still be found; got %v want %v", got, want)
+	}
+}
+
+// The counterpart that keeps the mechanism affordable: an ordinary, non-bind mount matches
+// the credential's own ancestor at that same path, so the alias it computes IS the
+// credential and drops out. Without this the root filesystem's own mount would report every
+// credential as aliased - and refuse every run on every host.
+func TestAliasedCredentialsIgnoresAnOrdinaryMount(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/home/u/.ssh": {{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 1}},
+	}
+	sb := aliasSandbox(creds, nil)
+	sb.statID = func(p string) (fileID, bool) {
+		if p == "/" {
+			return fileID{dev: 1, ino: 2}, true
+		}
+		return fileID{}, false
+	}
+	sb.mountpoints = func([]uint64) []mountPoint {
+		return []mountPoint{{path: "/", id: fileID{dev: 1, ino: 2}}}
+	}
+
+	if got := aliasedCredentials(sb, []string{"/home/u/project"}, nil); got != nil {
+		t.Errorf("the root mount names the credential's own path, not an alias; got %v", got)
 	}
 }

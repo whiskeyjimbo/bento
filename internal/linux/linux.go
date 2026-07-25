@@ -114,10 +114,19 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// inode: the user granted that tree, not the credential, so proceeding would hand
 	// over a store they never opted into. An explicit opt-in is honored - those
 	// credentials are dropped from the scan - so this refuses only what nobody asked for.
-	// The degraded tier returns above without reaching here, and correctly: it applies no
-	// shields at all, so there is no shield for an alias to defeat and its exposure is
-	// already reported in full through the Report.
-	if aliases := aliasedCredentials(sb, p.Read, p.Write, optedIn); len(aliases) > 0 {
+	// The degraded tier returns above without reaching here, and that is a real gap, not
+	// a clean exemption: it confines with Landlock, which is path-hierarchy based, so an
+	// alias inside a granted tree is readable there for exactly the reason it would be
+	// past a shield - Landlock never consults an inode's other names. Nor is it reported:
+	// the exposure list can only name built-in shield paths that fall in the visible set,
+	// and an arbitrary alias path is not one. So --allow-degraded proceeds where the full
+	// tier refuses. It is opt-in and already the weaker tier, which is why this is
+	// documented rather than fixed here.
+	reads, writes, err := resolveGrants(p)
+	if err != nil {
+		return enforce.Result{}, err
+	}
+	if aliases := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn); len(aliases) > 0 {
 		return enforce.Result{}, aliasRefusal(aliases)
 	}
 
@@ -269,6 +278,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		fileIDs:         hostFileIDs,
 		aliasesUnder:    hostAliasesUnder,
 		mountpoints:     hostMountpoints,
+		statID:          hostStatID,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the

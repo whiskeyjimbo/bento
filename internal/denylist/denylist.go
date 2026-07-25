@@ -10,6 +10,7 @@ package denylist
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -48,223 +49,7 @@ type Rule struct {
 func Home(home string) []Rule {
 	join := func(p string) string { return filepath.Join(home, p) }
 
-	dirs := []string{
-		".ssh",              // private keys, authorized_keys
-		".aws",              // credentials, config
-		".config/gcloud",    // application-default credentials, tokens
-		".azure",            // access tokens
-		".kube",             // cluster credentials
-		".docker",           // registry auth
-		".gnupg",            // secret keyrings
-		".password-store",   // pass(1)
-		".terraform.d",      // credentials.tfrc.json
-		".config/gh",        // GitHub CLI tokens
-		".local/share/gh",   // GitHub CLI tokens
-		".config/rclone",    // remote storage tokens
-		".oci",              // Oracle Cloud keys
-		".config/doctl",     // DigitalOcean tokens
-		".config/op",        // 1Password CLI
-		".config/keybase",   // Keybase keys and tokens
-		".pki",              // NSS certificate/key databases
-		".local/share/pki",  // XDG location for the same
-		".minisign",         // minisign secret keys
-		".config/mutt",      // XDG mutt config (imap_pass, exec knobs)
-		".config/msmtp",     // XDG msmtp config
-		".mutt",             // ~/.mutt/muttrc and sourced files
-		".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
-		".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
-
-		// OS secret stores: the master keyring behind saved passwords and tokens.
-		".local/share/keyrings",    // GNOME Keyring
-		".local/share/kwalletd",    // KDE Wallet
-		".gnome2/keyrings",         // GNOME Keyring (legacy path)
-		".kde/share/apps/kwallet",  // KDE Wallet (legacy path)
-		".kde4/share/apps/kwallet", // KDE Wallet (legacy KDE4 path)
-		".git-credential-cache",    // git credential-cache helper socket dir
-		".cache/git/credential",    // modern git credential-cache socket location
-
-		".cert", // NetworkManager / 802.1X / VPN client certificates and private keys
-
-		// Graphical-login and user-service persistence trees. These run code on the host at
-		// the next login/session, and hiding them (not merely denying writes) both blocks
-		// planting and keeps a sandboxed run from reading a session layout that aids a later
-		// attack; firejail blacklists them and there is no in-sandbox need to read them.
-		".config/autostart",    // XDG autostart .desktop entries
-		".config/systemd",      // systemd --user units/timers (whole tree: user/ and drop-ins)
-		".local/share/systemd", // systemd --user timer/service state
-		// Window-manager and desktop-session trees firejail blacklists: their config runs
-		// commands at session start (i3/sway `exec`, awesome rc.lua, openbox autostart), so
-		// they are host-exec persistence surfaces. Hidden to match firejail and the
-		// login-script class above; a sandboxed build has no need to read a WM config.
-		".blackbox",                 // Blackbox WM
-		".config/autostart-scripts", // KDE autostart scripts
-		".config/awesome",           // awesome rc.lua (Lua run at start)
-		".config/i3",                // i3 config `exec` lines
-		".config/openbox",           // openbox autostart + rc.xml
-		".config/plasma-workspace",  // KDE Plasma env/ and autostart scripts
-		".config/sway",              // sway config `exec` lines
-		".fluxbox",                  // Fluxbox startup/apps
-		".kde/Autostart",            // legacy KDE autostart
-		".kde/env",                  // legacy KDE login env scripts
-		".kde/share/autostart",      // legacy KDE autostart
-		".kde/shutdown",             // legacy KDE shutdown scripts
-		".kde4/Autostart",           // KDE4 autostart
-		".kde4/env",                 // KDE4 login env scripts
-		".kde4/share/autostart",     // KDE4 autostart
-		".kde4/shutdown",            // KDE4 shutdown scripts
-		".local/share/autostart",    // XDG autostart .desktop entries (data dir)
-		".local/share/xorg",         // Xorg session logs/state
-
-		// Mail clients: saved IMAP/SMTP passwords in the profile store.
-		".thunderbird",      // Thunderbird
-		".config/evolution", // GNOME Evolution
-		".mail",             // mutt/notmuch maildir; message bodies and cached credentials
-		".Mail",             // same, capitalized variant used by some setups
-		"Mail",              // mutt default mail folder at ~/Mail (no leading dot)
-		"mail",              // mutt default mail folder at ~/mail
-
-		// Browser profiles: cookies, session tokens, and saved-password databases.
-		".mozilla",               // Firefox
-		".config/mozilla",        // XDG Firefox profile location (cookies, key4.db, logins.json)
-		".zen",                   // Zen (Firefox fork): same profile store contents
-		".config/google-chrome",  // Chrome
-		".config/chromium",       // Chromium
-		".config/BraveSoftware",  // Brave
-		".config/microsoft-edge", // Edge
-
-		// Crypto containers and encrypted-home stores: headers, config, and keys.
-		".TrueCrypt",
-		".VeraCrypt",
-		".zuluCrypt",
-		".Private",                  // ecryptfs private directory (encrypted underlay)
-		"Private",                   // ecryptfs DECRYPTED mount point at ~/Private: holds cleartext when mounted
-		".ecryptfs",                 // ecryptfs config and wrapped passphrase
-		".fscrypt",                  // fscrypt policies and protectors
-		".local/share/plasma-vault", // KDE Plasma Vault
-		".vaults",                   // generic encrypted vault store
-		".caff",                     // caff (GnuPG) signing material
-		".nyx",                      // nyx Tor controller (control-port password)
-
-		// Password managers and OTP stores: the local vault database, plus the caches
-		// and per-app config that record its path and recently-opened entries. Same
-		// class as ~/.password-store, which is shielded above.
-		".keepass",
-		".keepassx",
-		".keepassxc",
-		".config/keepass",
-		".config/keepassx",
-		".config/keepassxc",
-		".config/KeePass",  // the .NET KeePass uses the capitalized name
-		".cache/keepassxc", // last-opened database paths and search history
-		".local/share/keepass",
-		".local/share/KeePass",
-		".config/Bitwarden",
-		".config/1Password",
-		".lastpass",
-		".local/share/Enpass",
-		".cache/Enpass",
-		".config/Authenticator", // GNOME Authenticator: TOTP seeds
-		".cache/Authenticator",
-		".local/share/authenticator-rs", // authenticator-rs: TOTP seeds
-		// SmartGit keeps the passwords for its configured remotes under a per-version
-		// subdirectory (~/.smartgit/<version>/passwords), so the version is not
-		// expressible as a concrete path and the whole tree is shielded instead.
-		".smartgit",
-
-		// Crypto-currency wallets: a wallet holds the private keys that spend its
-		// funds, the same class as an ssh key rather than the app-privacy scope.
-		".bitcoin",
-		".config/Bitcoin",
-		".electrum",
-		".electron-cash", // Electrum's BCH fork, same seed-file layout
-		".ethereum",      // geth keystore: the encrypted spending keys
-		".dashcore",
-		".config/monero-project",
-		"Monero/wallets",
-		".config/Exodus",
-		".config/Ledger Live",
-		".config/cointop", // portfolio tracker: exchange API keys
-
-		// Mail clients beyond the ones shielded above: the profile store holds saved
-		// IMAP/SMTP passwords, and the message bodies carry reset links and 2FA codes.
-		".icedove",       // Debian-rebranded Thunderbird, identical profile format
-		".cache/icedove", // the caches hold message bodies too
-		".cache/thunderbird",
-		".claws-mail",
-		".cache/claws-mail",
-		".fossamail",
-		".cache/fossamail",
-		".sylpheed-2.0",
-		".balsa",
-		".nylas-mail",
-		".config/Nylas Mail",
-		".config/electron-mail",
-		".config/sendgmail", // sendgmail OAuth credentials
-		".local/share/local-mail",
-		".local/share/kmail2", // KMail/Akonadi message store
-		".cache/kmail2",
-		".config/neomutt", // same imap_pass class as the .mutt configs above
-		".cache/mutt",     // cached message bodies
-		".local/share/evolution",
-		".cache/evolution",
-		".config/geary",
-		".local/share/geary",
-		".cache/geary",
-		".alpine-smime", // alpine's S/MIME certificate and private-key store
-		// Enpass ships its config under the vendor name rather than the product's.
-		".config/Sinew Software Systems",
-		".config/sinew.in",
-
-		// Remote-access clients: the saved RDP/VNC/SSH passwords are recoverable,
-		// because the key that encrypts them sits beside them in the same tree.
-		".remmina",
-		".config/remmina",
-		".local/share/remmina",
-		".anydesk",
-
-		// Hosting and cloud-storage tokens, the class already shielded for rclone.
-		".gdfuse", // google-drive-ocamlfuse OAuth tokens
-		".config/gdfuse",
-		".cache/gdfuse",
-		".local/share/gdfuse",
-		".local/share/emailidentities", // per-identity signature data, one dir per identity
-		".filezilla",                   // sitemanager.xml stores passwords base64-encoded
-		".config/filezilla",
-
-		// Chat clients that keep account passwords in plaintext on disk. pidgin also
-		// holds OTR private keys. Messengers whose store is an encrypted message
-		// database (Signal, Session) are firejail's privacy scope and stay out.
-		".purple",
-		".weechat",
-		".config/hexchat", // servlist.conf holds plaintext server passwords
-		".config/xchat",
-		".irssi",
-		".mcabber",
-		".config/coyim",
-
-		// History and clipboard stores: can hold pasted or typed secrets. Under bento's
-		// default-deny a program that legitimately needs its own history opts in per-path.
-		".adobe",      // Flash local storage (LSO)
-		".macromedia", // Flash local storage (legacy)
-		".ne",         // ne editor state, incl. history
-		// nvim's state tree holds shada (registers plus command/search history, the
-		// .viminfo equivalent), undo files (full prior contents of edited files), swap
-		// (live buffer contents, including unsaved edits, of every open file), and backup.
-		// Pre-0.8 nvim kept the same stores under stdpath('data'), and an upgraded host
-		// keeps the abandoned files - nvim never migrates or deletes them - so the legacy
-		// location holds the same secrets. Both trees are shielded whole rather than
-		// per-store: the write-only alternative left the secrets readable, and nvim's own
-		// plugin trees live under the data dir, so a sandboxed nvim reads neither. That
-		// costs in-sandbox nvim its plugins and state; a session that needs them opts in
-		// per-path.
-		".local/state/nvim",
-		".local/share/nvim",
-		".cache/xfce4/clipman",             // clipboard history
-		".kde/share/apps/klipper",          // clipboard history
-		".kde4/share/apps/klipper",         // clipboard history (KDE4)
-		".local/share/klipper",             // clipboard history (KDE5+)
-		".local/share/ibus-typing-booster", // learned typing history
-	}
+	dirs := slices.Concat(credentialAnchorDirs, bulkStoreDirs, persistenceDirs)
 	files := []string{
 		".git-credentials",
 		".config/git/credentials", // XDG location for the same
@@ -843,50 +628,268 @@ func homeLocations(home, entry string) []string {
 	return []string{join(entry)}
 }
 
-// aliasAnchorDirs are the DenyAll directories whose contents are key material - private
-// keys, tokens, keyrings, wallets. Every DenyAll directory is shielded just as hard;
-// this narrower set is only about which files can IDENTIFY a credential when looking for
-// a second name for one.
-//
-// The distinction earns its keep twice. It is an inclusion list rather than an exclusion
-// list because the deny-list grows with privacy and persistence entries far more often
-// than with new key formats, and an exclusion list would silently re-admit each one. And
-// it keeps the bulk stores out: ~/.mail, ~/Mail, ~/.thunderbird, ~/.mozilla and the
-// browser profile trees hold tens of thousands of files, so anchoring on them would mean
-// enumerating a user's whole mail spool on every launch - and mail sync tools (mbsync,
-// notmuch) hardlink duplicate messages as a matter of course, which would trip the alias
-// scan on a mail file rather than a credential. A saved mail password inside one of
-// those trees is therefore not an anchor; the tree itself is still shielded.
-var aliasAnchorDirs = []string{
-	".ssh", ".aws", ".config/gcloud", ".azure", ".kube", ".docker", ".gnupg",
-	// .password-store is genuinely key-bearing and stays an anchor, but it is also a git
-	// repo by design; the alias scan skips VCS object stores inside an anchor separately,
-	// so a `git clone --local` of it does not read as an alias. Both narrowings are load-
-	// bearing - this one decides the store counts, that one decides its blobs do not.
-	".password-store", ".terraform.d", ".config/gh", ".local/share/gh",
-	".config/rclone", ".oci", ".config/doctl", ".config/op", ".config/keybase",
-	".pki", ".local/share/pki", ".minisign", ".subversion/auth",
-	".config/openstack", ".config/mutt", ".mutt", ".config/msmtp", ".cert",
-
-	// OS secret stores: the master keyring behind saved passwords and tokens.
-	".local/share/keyrings", ".local/share/kwalletd", ".gnome2/keyrings",
-	".kde/share/apps/kwallet", ".kde4/share/apps/kwallet",
-	".git-credential-cache", ".cache/git/credential",
-
-	// Password managers and wallets: the file IS the key.
-	".keepassxc", ".config/keepassxc", ".cache/keepassxc",
-	".config/Bitwarden", ".config/1Password",
-	".local/share/Enpass", ".config/Authenticator", ".smartgit",
-	".bitcoin", ".electrum", ".ethereum", "Monero/wallets",
-}
-
 // AliasAnchors returns the absolute directories whose files identify a credential, for
 // detecting a second readable name for one. See aliasAnchorDirs for why this is narrower
 // than the full set of hidden directories.
 func AliasAnchors(home string) []string {
-	out := make([]string, 0, len(aliasAnchorDirs))
-	for _, d := range aliasAnchorDirs {
+	anchors := slices.Concat(credentialAnchorDirs, walletKeyDirs)
+	out := make([]string, 0, len(anchors))
+	for _, d := range anchors {
 		out = append(out, homeLocations(home, d)...)
 	}
 	return out
+}
+
+// The hidden home directories, split by what the contents ARE. Every bucket is shielded
+// identically - DenyAll, the whole tree; the split exists so the alias scan knows which
+// files can IDENTIFY a credential (see AliasAnchors), and so that adding a deny entry
+// forces that judgement instead of leaving it to a second list that silently drifts.
+
+// credentialAnchorDirs hold key material: private keys, tokens, keyrings, vaults. They
+// are small enough to enumerate on every launch, which is what lets them anchor the
+// alias scan.
+var credentialAnchorDirs = []string{
+	".ssh",              // private keys, authorized_keys
+	".aws",              // credentials, config
+	".config/gcloud",    // application-default credentials, tokens
+	".azure",            // access tokens
+	".kube",             // cluster credentials
+	".docker",           // registry auth
+	".gnupg",            // secret keyrings
+	".terraform.d",      // credentials.tfrc.json
+	".config/gh",        // GitHub CLI tokens
+	".local/share/gh",   // GitHub CLI tokens
+	".config/rclone",    // remote storage tokens
+	".oci",              // Oracle Cloud keys
+	".config/doctl",     // DigitalOcean tokens
+	".config/op",        // 1Password CLI
+	".config/keybase",   // Keybase keys and tokens
+	".pki",              // NSS certificate/key databases
+	".local/share/pki",  // XDG location for the same
+	".minisign",         // minisign secret keys
+	".config/mutt",      // XDG mutt config (imap_pass, exec knobs)
+	".config/msmtp",     // XDG msmtp config
+	".mutt",             // ~/.mutt/muttrc and sourced files
+	".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
+	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
+
+	// pass(1) is genuinely key-bearing and anchors, but it is also a git repo by design.
+	// The alias scan skips VCS object stores inside an anchor separately, so a
+	// `git clone --local` of the store does not read as an alias. Both narrowings are
+	// load-bearing: this one decides the store counts, that one decides its blobs do not.
+	".password-store",
+
+	// OS secret stores: the master keyring behind saved passwords and tokens.
+	".local/share/keyrings",    // GNOME Keyring
+	".local/share/kwalletd",    // KDE Wallet
+	".gnome2/keyrings",         // GNOME Keyring (legacy path)
+	".kde/share/apps/kwallet",  // KDE Wallet (legacy path)
+	".kde4/share/apps/kwallet", // KDE Wallet (legacy KDE4 path)
+	".git-credential-cache",    // git credential-cache helper socket dir
+	".cache/git/credential",    // modern git credential-cache socket location
+
+	".cert", // NetworkManager / 802.1X / VPN client certificates and private keys
+
+	// Crypto containers: headers, config, and wrapped passphrases. The encrypted and
+	// decrypted home trees themselves are bulk and live in the other bucket.
+	".TrueCrypt",
+	".VeraCrypt",
+	".zuluCrypt",
+	".ecryptfs",                 // ecryptfs config and wrapped passphrase
+	".fscrypt",                  // fscrypt policies and protectors
+	".local/share/plasma-vault", // KDE Plasma Vault
+	".vaults",                   // generic encrypted vault store
+	".caff",                     // caff (GnuPG) signing material
+	".nyx",                      // nyx Tor controller (control-port password)
+
+	// Password managers and OTP stores: the local vault database, plus the caches and
+	// per-app config that record its path and recently-opened entries.
+	".keepass",
+	".keepassx",
+	".keepassxc",
+	".config/keepass",
+	".config/keepassx",
+	".config/keepassxc",
+	".config/KeePass",  // the .NET KeePass uses the capitalized name
+	".cache/keepassxc", // last-opened database paths and search history
+	".local/share/keepass",
+	".local/share/KeePass",
+	".config/Bitwarden",
+	".config/1Password",
+	".lastpass",
+	".local/share/Enpass",
+	".cache/Enpass",
+	".config/Authenticator", // GNOME Authenticator: TOTP seeds
+	".cache/Authenticator",
+	".local/share/authenticator-rs", // authenticator-rs: TOTP seeds
+	// SmartGit keeps the passwords for its configured remotes under a per-version
+	// subdirectory (~/.smartgit/<version>/passwords), so the version is not expressible
+	// as a concrete path and the whole tree is shielded instead.
+	".smartgit",
+
+	// Wallets whose directory is the keys. The full-node clients, whose directory is
+	// mostly chain data, are shielded as bulk and anchored at their wallet subdir only.
+	".electrum",
+	".electron-cash", // Electrum's BCH fork, same seed-file layout
+	".config/monero-project",
+	"Monero/wallets",
+	".config/Exodus",
+	".config/Ledger Live",
+	".config/cointop", // portfolio tracker: exchange API keys
+
+	// Mail and messaging CONFIG (not message stores): the file is a credential.
+	".config/neomutt", // same imap_pass class as the .mutt configs above
+	".config/sendgmail",
+	".alpine-smime", // alpine's S/MIME certificate and private-key store
+	// Enpass ships its config under the vendor name rather than the product's.
+	".config/Sinew Software Systems",
+	".config/sinew.in",
+
+	// Remote-access clients: the saved RDP/VNC/SSH passwords are recoverable, because
+	// the key that encrypts them sits beside them in the same tree.
+	".remmina",
+	".config/remmina",
+	".local/share/remmina",
+	".anydesk",
+
+	// Hosting and cloud-storage tokens, the class already shielded for rclone.
+	".gdfuse", // google-drive-ocamlfuse OAuth tokens
+	".config/gdfuse",
+	".cache/gdfuse",
+	".local/share/gdfuse",
+	".local/share/emailidentities", // per-identity signature data, one dir per identity
+	".filezilla",                   // sitemanager.xml stores passwords base64-encoded
+	".config/filezilla",
+
+	// Chat clients that keep account passwords in plaintext on disk. pidgin also holds
+	// OTR private keys. Messengers whose store is an encrypted message database (Signal,
+	// Session) are firejail's privacy scope and stay out.
+	".purple",
+	".weechat",
+	".config/hexchat", // servlist.conf holds plaintext server passwords
+	".config/xchat",
+	".irssi",
+	".mcabber",
+	".config/coyim",
+}
+
+// walletKeyDirs are the narrow subdirectories holding spending keys inside a full-node
+// client's data directory. The parent is shielded as a bulk store - a synced node's
+// blocks/ and chainstate/ run to tens of thousands of files, which the alias scan must
+// not enumerate on every launch - so only the wallet subtree anchors it.
+var walletKeyDirs = []string{
+	".bitcoin/wallets",
+	".config/Bitcoin/wallets",
+	".ethereum/keystore", // geth: the encrypted spending keys
+	".dashcore/wallets",
+}
+
+// bulkStoreDirs are shielded because they hold secrets, but hold far too many files to
+// enumerate on every launch - and some are routinely hardlinked by the tools that manage
+// them (mail sync deduplicates identical messages), which would trip the alias scan on a
+// message rather than a credential. A saved mail password or browser login inside one of
+// these is therefore not an alias anchor; the tree is still hidden from the sandbox.
+var bulkStoreDirs = []string{
+	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
+	// that carry reset links and 2FA codes.
+	".thunderbird",
+	".config/evolution",
+	".mail", // mutt/notmuch maildir; message bodies and cached credentials
+	".Mail", // same, capitalized variant used by some setups
+	"Mail",  // mutt default mail folder at ~/Mail (no leading dot)
+	"mail",  // mutt default mail folder at ~/mail
+	".icedove",
+	".cache/icedove",
+	".cache/thunderbird",
+	".claws-mail",
+	".cache/claws-mail",
+	".fossamail",
+	".cache/fossamail",
+	".sylpheed-2.0",
+	".balsa",
+	".nylas-mail",
+	".config/Nylas Mail",
+	".config/electron-mail",
+	".local/share/local-mail",
+	".local/share/kmail2", // KMail/Akonadi message store
+	".cache/kmail2",
+	".cache/mutt", // cached message bodies
+	".local/share/evolution",
+	".cache/evolution",
+	".config/geary",
+	".local/share/geary",
+	".cache/geary",
+
+	// Browser profiles: cookies, session tokens, and saved-password databases.
+	".mozilla",               // Firefox
+	".config/mozilla",        // XDG Firefox profile location (cookies, key4.db, logins.json)
+	".zen",                   // Zen (Firefox fork): same profile store contents
+	".config/google-chrome",  // Chrome
+	".config/chromium",       // Chromium
+	".config/BraveSoftware",  // Brave
+	".config/microsoft-edge", // Edge
+
+	// Encrypted-home trees: the whole home in either form, so bulk by construction.
+	".Private", // ecryptfs private directory (encrypted underlay)
+	"Private",  // ecryptfs DECRYPTED mount point at ~/Private: holds cleartext when mounted
+
+	// Full-node wallet clients: the spending keys anchor via walletKeyDirs, but the data
+	// directory as a whole is chain data.
+	".bitcoin",
+	".config/Bitcoin",
+	".ethereum",
+	".dashcore",
+
+	// History and clipboard stores: can hold pasted or typed secrets. Under bento's
+	// default-deny a program that legitimately needs its own history opts in per-path.
+	".adobe",      // Flash local storage (LSO)
+	".macromedia", // Flash local storage (legacy)
+	".ne",         // ne editor state, incl. history
+	// nvim's state tree holds shada (registers plus command/search history, the .viminfo
+	// equivalent), undo files (full prior contents of edited files), swap (live buffer
+	// contents, including unsaved edits, of every open file), and backup. Pre-0.8 nvim
+	// kept the same stores under stdpath('data'), and an upgraded host keeps the
+	// abandoned files - nvim never migrates or deletes them - so the legacy location
+	// holds the same secrets. Both trees are shielded whole rather than per-store: the
+	// write-only alternative left the secrets readable, and nvim's own plugin trees live
+	// under the data dir, so a sandboxed nvim reads neither. That costs in-sandbox nvim
+	// its plugins and state; a session that needs them opts in per-path.
+	".local/state/nvim",
+	".local/share/nvim",
+	".cache/xfce4/clipman",             // clipboard history
+	".kde/share/apps/klipper",          // clipboard history
+	".kde4/share/apps/klipper",         // clipboard history (KDE4)
+	".local/share/klipper",             // clipboard history (KDE5+)
+	".local/share/ibus-typing-booster", // learned typing history
+}
+
+// persistenceDirs run code on the host at the next login or session. Hiding them (not
+// merely denying writes) both blocks planting and keeps a sandboxed run from reading a
+// session layout that aids a later attack; firejail blacklists them and there is no
+// in-sandbox need to read them. They hold no key material, so they anchor nothing.
+var persistenceDirs = []string{
+	".config/autostart",    // XDG autostart .desktop entries
+	".config/systemd",      // systemd --user units/timers (whole tree: user/ and drop-ins)
+	".local/share/systemd", // systemd --user timer/service state
+	// Window-manager and desktop-session trees firejail blacklists: their config runs
+	// commands at session start (i3/sway `exec`, awesome rc.lua, openbox autostart), so
+	// they are host-exec persistence surfaces.
+	".blackbox",                 // Blackbox WM
+	".config/autostart-scripts", // KDE autostart scripts
+	".config/awesome",           // awesome rc.lua (Lua run at start)
+	".config/i3",                // i3 config `exec` lines
+	".config/openbox",           // openbox autostart + rc.xml
+	".config/plasma-workspace",  // KDE Plasma env/ and autostart scripts
+	".config/sway",              // sway config `exec` lines
+	".fluxbox",                  // Fluxbox startup/apps
+	".kde/Autostart",            // legacy KDE autostart
+	".kde/env",                  // legacy KDE login env scripts
+	".kde/share/autostart",      // legacy KDE autostart
+	".kde/shutdown",             // legacy KDE shutdown scripts
+	".kde4/Autostart",           // KDE4 autostart
+	".kde4/env",                 // KDE4 login env scripts
+	".kde4/share/autostart",     // KDE4 autostart
+	".kde4/shutdown",            // KDE4 shutdown scripts
+	".local/share/autostart",    // XDG autostart .desktop entries (data dir)
+	".local/share/xorg",         // Xorg session logs/state
 }

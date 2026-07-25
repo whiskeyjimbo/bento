@@ -701,15 +701,26 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 // silent-no-op class this guard exists for.
 func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 	const home = "/home/u"
-	hidden := map[string]bool{}
+	var hidden []string
 	for _, r := range Home(home) {
 		if r.Deny == DenyAll && r.Dir {
-			hidden[r.Path] = true
+			hidden = append(hidden, r.Path)
 		}
 	}
+	// An anchor is normally a hidden directory itself, but a full-node wallet client
+	// anchors only its key subdirectory while the shield covers the whole data dir, so
+	// the invariant is coverage, not equality.
+	covered := func(a string) bool {
+		for _, h := range hidden {
+			if a == h || strings.HasPrefix(a, h+"/") {
+				return true
+			}
+		}
+		return false
+	}
 	for _, a := range AliasAnchors(home) {
-		if !hidden[a] {
-			t.Errorf("alias anchor %q is not a DenyAll directory rule in Home() - renamed or misspelled?", a)
+		if !covered(a) {
+			t.Errorf("alias anchor %q is not covered by any DenyAll directory rule in Home() - renamed or misspelled?", a)
 		}
 	}
 }

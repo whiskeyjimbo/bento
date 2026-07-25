@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
@@ -57,8 +59,12 @@ type credentialAlias struct {
 	Credential string
 }
 
-// aliasedCredentials reports the paths inside this run's granted trees that alias a
-// shielded credential. A shield binds a path, so any other name for the same content
+// aliasedCredentials reports the paths inside the trees this run exposes that alias a
+// shielded credential. The trees are everything bwrap will bind, not only the paths the
+// policy names: an out-of-FHS interpreter has its whole install prefix bound read-only so
+// its stdlib comes along, and for a pyenv or nvm interpreter that prefix sits under the
+// user's home - a tree the policy never mentions and an alias planted there would be read
+// straight past the shield. A shield binds a path, so any other name for the same content
 // under a grant stays readable: a hardlink (a second directory entry for the inode) or
 // a bind mount (the same inode exposed at a second mountpoint).
 //
@@ -77,7 +83,7 @@ type credentialAlias struct {
 // engineered against, because the actor here already holds the user's privileges and
 // could read the credential directly; the value delivered is naming where an alias is,
 // not blocking someone who needs no alias.
-func aliasedCredentials(sb sandbox, grants, writes, optIns []string) []credentialAlias {
+func aliasedCredentials(sb sandbox, trees, optIns []string) []credentialAlias {
 	creds, linked := credentialFiles(sb, optIns)
 	if len(creds) == 0 {
 		return nil
@@ -94,10 +100,11 @@ func aliasedCredentials(sb sandbox, grants, writes, optIns []string) []credentia
 		shielded[c.path] = true
 	}
 
-	trees := make([]string, 0, len(grants)+len(writes))
-	for _, g := range slices.Concat(grants, writes) {
-		trees = append(trees, sb.resolve(g))
+	resolved := make([]string, 0, len(trees))
+	for _, t := range trees {
+		resolved = append(resolved, sb.resolve(t))
 	}
+	trees = resolved
 
 	// A grant containing the credential itself walks over the shielded path, whose
 	// identity is by definition wanted. The shield covers that path; only a second name
@@ -116,24 +123,16 @@ func aliasedCredentials(sb sandbox, grants, writes, optIns []string) []credentia
 		}
 	}
 
-	// Mounts are scanned whether or not the gate fired, because a bind adds no directory
-	// entry and so never opens it. Only a mount on a device some credential lives on can
-	// alias one - a bind shares its source's device, and a hardlink cannot cross devices
-	// at all - which is what keeps a "read: /" run from walking /proc, /sys and every
-	// removable disk here. It also covers the one tree the granted-tree walk prunes away:
-	// a wanted-device filesystem mounted under a foreign-device directory inside a grant.
-	// mountpoints is asked only about the granted trees, so a mount nobody granted is
-	// never even stat'd: a dead NFS mount elsewhere on the host would block that stat
-	// forever, and hanging before launch over a filesystem the policy never mentioned
-	// would be a worse failure than the one this scan prevents.
-	devs := map[uint64]bool{}
+	// Mounts are examined whether or not the gate fired, because a bind adds no directory
+	// entry and so never opens it.
+	devs := make([]uint64, 0, 2)
 	for id := range want {
-		devs[id.dev] = true
-	}
-	for _, m := range sb.mountpoints(trees) {
-		if devs[m.id.dev] {
-			collect(m.path)
+		if !slices.Contains(devs, id.dev) {
+			devs = append(devs, id.dev)
 		}
+	}
+	for _, a := range mountAliases(sb, creds, shielded, trees, devs) {
+		out = append(out, a)
 	}
 
 	slices.SortFunc(out, func(a, b credentialAlias) int {
@@ -159,6 +158,76 @@ func aliasRefusal(aliases []credentialAlias) error {
 	}
 	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it")
 	return errors.New(b.String())
+}
+
+// mountAliases reports the credentials a host mount re-exposes at a second path inside a
+// granted tree. A bind shares its source's inode without adding a directory entry to it,
+// so no link count ever reflects one and the hardlink gate never opens for a bind.
+//
+// It asks the question by identity rather than by path arithmetic. For each credential it
+// walks up the ancestors of the credential's own path, and where an ancestor turns out to
+// BE what a mount is attached to, the credential is reachable a second time at that
+// mountpoint plus the rest of the path. This needs nothing from the kernel's record of
+// where a mount came from - which is unusable, being relative to the source filesystem
+// rather than the host namespace (see mountPoint) - and it catches a bind whose mountpoint
+// sits ANYWHERE relative to the granted tree: inside it, equal to it, or above it. A
+// mountpoint above the grant is the case that matters most and is easiest to miss: a bind
+// of the whole home to /srv/backup, granted as "read: /srv/backup/project", exposes every
+// credential under a path the grant never mentions.
+//
+// It also costs no tree walk. For an ordinary, non-bind mount the mountpoint matches the
+// credential's own ancestor at that same path, so the alias it computes is the credential
+// itself and drops out as the shielded path - which is why the root filesystem's mount
+// does not make every launch walk the whole home.
+func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, trees []string, devs []uint64) []credentialAlias {
+	byID := map[fileID][]string{}
+	for _, m := range sb.mountpoints(devs) {
+		byID[m.id] = append(byID[m.id], m.path)
+	}
+	if len(byID) == 0 {
+		return nil
+	}
+
+	// Credentials share ancestors (~/.ssh and ~/.aws both sit under home), so each
+	// directory is stat'd once however many credentials hang below it.
+	ids := map[string]fileID{}
+	idOf := func(path string) (fileID, bool) {
+		if id, done := ids[path]; done {
+			return id, id != fileID{}
+		}
+		id, ok := sb.statID(path)
+		if !ok {
+			id = fileID{}
+		}
+		ids[path] = id
+		return id, ok
+	}
+
+	var out []credentialAlias
+	for _, c := range creds {
+		for a := c.path; ; a = filepath.Dir(a) {
+			if id, ok := idOf(a); ok {
+				for _, mp := range byID[id] {
+					rel, err := filepath.Rel(a, c.path)
+					if err != nil {
+						continue
+					}
+					alias := filepath.Join(mp, rel)
+					if alias == c.path || shielded[alias] {
+						continue
+					}
+					if slices.ContainsFunc(trees, func(t string) bool { return under(alias, t) }) {
+						out = append(out, credentialAlias{Path: alias, Credential: c.path})
+					}
+				}
+			}
+			if parent := filepath.Dir(a); parent != a {
+				continue
+			}
+			break
+		}
+	}
+	return out
 }
 
 // credentialFiles returns the identified files behind this host's hidden home
@@ -312,46 +381,61 @@ func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
 }
 
 // hostMountpoints reads where the host's filesystems are attached, with the identity of
-// what sits at each one. The mount's own source subtree is deliberately not read: the
-// kernel records it relative to its filesystem rather than to the host namespace, so it
-// cannot be compared against a host path (see mountPoint). Statting the mountpoint asks
-// the filesystem directly instead, which is immune to a separate /home, a btrfs
-// subvolume layout, and the non-path sources (mnt:[4026532372]) that nsfs mounts report.
-// Unreadable mountinfo yields nothing: this feeds one of two mechanisms, and the
-// hardlink half stands on its own.
-func hostMountpoints(trees []string) []mountPoint {
+// what sits at each one, for the devices given. The mount's own source subtree is
+// deliberately not read: the kernel records it relative to its filesystem rather than to
+// the host namespace, so it cannot be compared against a host path (see mountPoint).
+// Statting the mountpoint asks the filesystem directly instead, which is immune to a
+// separate /home, a btrfs subvolume layout, and the non-path sources (mnt:[4026532372])
+// that nsfs mounts report.
+//
+// The device filter comes from the mountinfo line itself, before any stat. Only a mount on
+// a device a credential lives on can alias one, so everything else is skipped without
+// being touched - which matters because os.Lstat on a dead hard-mounted NFS export blocks
+// forever, and hanging before launch over a filesystem holding no credential would be a
+// worse failure than the one this scan prevents. A device the kernel reports under a
+// number that does not match the credential's st_dev (some btrfs anonymous devices) is a
+// miss, not a misattribution. Unreadable mountinfo yields nothing: this feeds one of two
+// mechanisms, and the hardlink half stands on its own.
+func hostMountpoints(devs []uint64) []mountPoint {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 
+	wanted := make(map[string]bool, len(devs))
+	for _, d := range devs {
+		wanted[fmt.Sprintf("%d:%d", unix.Major(d), unix.Minor(d))] = true
+	}
+
 	var out []mountPoint
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
-		if len(fields) < 5 {
+		if len(fields) < 5 || !wanted[fields[2]] {
 			continue
 		}
 		path := unescapeMount(fields[4])
-		// Containment is pure string work, so it comes before the stat: a mount outside
-		// every granted tree is never touched, and stating a dead hard-mounted NFS
-		// export blocks forever.
-		if !slices.ContainsFunc(trees, func(t string) bool { return under(path, t) }) {
-			continue
+		if id, ok := hostStatID(path); ok {
+			out = append(out, mountPoint{path: path, id: id})
 		}
-		fi, err := os.Lstat(path)
-		if err != nil {
-			continue
-		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok {
-			continue
-		}
-		out = append(out, mountPoint{path: path, id: fileID{dev: uint64(st.Dev), ino: st.Ino}})
 	}
 	return out
+}
+
+// hostStatID returns a single path's content identity, without following a final symlink -
+// a symlink named as a credential's ancestor must not redirect the comparison.
+func hostStatID(path string) (fileID, bool) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return fileID{}, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileID{}, false
+	}
+	return fileID{dev: uint64(st.Dev), ino: st.Ino}, true
 }
 
 // unescapeMount decodes the octal escapes the kernel writes for the characters that

@@ -97,7 +97,11 @@ type sandbox struct {
 	// of what sits at each. A bind exposes a credential's inode at a second path without
 	// adding a directory entry to it, so no link count reveals one and the mount table is
 	// the only place it shows up.
-	mountpoints func(trees []string) []mountPoint
+	mountpoints func(devs []uint64) []mountPoint
+	// statID returns a single host path's content identity. Injected beside the walking
+	// seams: the mount scan compares a credential's ancestor directories against what a
+	// mount is attached to, which is one stat per directory, not a walk.
+	statID func(string) (fileID, bool)
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
