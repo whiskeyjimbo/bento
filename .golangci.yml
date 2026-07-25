@@ -49,11 +49,6 @@ linters:
         # Fires on a const holding the words "credential store", which is a
         # denylist section label, not a secret.
         - G101
-        # The 0755 write-grant directories and the 0444 sentinel file are chosen,
-        # not defaults - but whether a granted write directory should be 0700 is
-        # a real question, so this is deferred rather than settled here.
-        - G301
-        - G306
 
   exclusions:
     generated: lax
@@ -68,6 +63,14 @@ linters:
         linters:
           - gosec
           - errcheck
+
+      # A generated manifest is a project file the user reviews, edits, and
+      # commits - it is not sandbox state, so it gets a source file's 0644 rather
+      # than the owner-only mode G306 wants.
+      - path: cmd/bento/profile\.go
+        linters:
+          - gosec
+        text: "G306"
 
       # Malformed manifests are the fixture: a misspelled key and an embedded
       # bidi override are what these cases assert the parser rejects. Scoped to

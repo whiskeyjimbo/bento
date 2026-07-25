@@ -261,7 +261,12 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		case err == nil:
 			return fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", w)
 		case os.IsNotExist(err):
-			if err := os.MkdirAll(w, 0o755); err != nil {
+			// 0700: only the invoking user's own target writes here (bwrap unshares
+			// the user namespace without remapping the uid), so nothing needs group
+			// or other access to a directory that exists because a sandbox asked
+			// for it. Applies to any missing parent MkdirAll creates too; an
+			// already-existing directory keeps whatever mode the user gave it.
+			if err := os.MkdirAll(w, 0o700); err != nil {
 				return fmt.Errorf("linux: creating write directory %q: %w", w, err)
 			}
 		case errors.Is(err, syscall.ELOOP):
@@ -413,9 +418,11 @@ func bentoSelfPath(selfPath string) (string, error) {
 
 // writeEmptyFile creates the empty file the deny-list binds over paths that must
 // be shielded even though they do not exist on the host yet. It lives in the
-// per-run temp directory, so it is created fresh and removed with it.
+// per-run temp directory, so it is created fresh and removed with it. Its parent
+// is already 0700, and the target reads it as the invoking user, so owner-only
+// read is all the mode has to carry.
 func writeEmptyFile(path string) error {
-	if err := os.WriteFile(path, nil, 0o444); err != nil {
+	if err := os.WriteFile(path, nil, 0o400); err != nil {
 		return fmt.Errorf("linux: creating deny-list shield: %w", err)
 	}
 	return nil
