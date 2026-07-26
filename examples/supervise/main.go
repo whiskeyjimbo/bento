@@ -112,7 +112,14 @@ func run(scriptArg string) int {
 	// failure returns happen AFTER the approval prompts, where the human has already
 	// answered - dropping those answers on the floor loses a deny a human made, which
 	// is the one outcome the exit code exists to never hide.
-	return persistDecisions(s, supervised(ctx, s, script), os.Stderr)
+	code := supervised(ctx, s, script)
+	// Hand SIGINT back to the kernel before the save. While the notifier is installed a
+	// second Ctrl-C is swallowed, so a save parked on the store's flock behind another
+	// process would be unkillable from the terminal that started the run. The store's
+	// write is a temp file and a rename, so aborting here cannot leave a torn store -
+	// only the answers this run would have added, which is the user asking twice to quit.
+	stop()
+	return persistDecisions(s, code, os.Stderr)
 }
 
 // persistDecisions saves the run's decisions and folds the outcome into the exit code.

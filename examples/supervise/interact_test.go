@@ -111,6 +111,44 @@ func TestGateAsksOnceWhenTwoConnectionsRaceTheSameDest(t *testing.T) {
 	}
 }
 
+// Two connections to different hosts both need the human, and the prompts share one
+// terminal reader: they must be asked one at a time, or the second prompt's question is
+// on screen while the first is still waiting and one answer decides the wrong host.
+func TestGateSerializesPromptsForDifferentHosts(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	out := &syncWriter{}
+	sup := &supervisor{p: newPrompter(pr, out), s: newTestStore(), key: "k", name: "agent",
+		session: make(map[string]bool)}
+
+	hosts := []string{"a.example", "b.example"}
+	verdicts := make(chan bool, len(hosts))
+	for _, host := range hosts {
+		go func() { verdicts <- sup.gate(t.Context(), host, "443") }()
+	}
+
+	// Whichever host wins the terminal, the other must not be on screen until this one
+	// has been answered.
+	waitFor(t, "the first prompt", func() bool { return strings.Contains(out.String(), ".example") })
+	first, second := hosts[0], hosts[1]
+	if !strings.Contains(out.String(), first) {
+		first, second = second, first
+	}
+	time.Sleep(50 * time.Millisecond) // long enough for a lockless second prompt to print
+	if strings.Contains(out.String(), second) {
+		t.Errorf("%s was prompted while %s was still waiting for an answer; the two share one reader", second, first)
+	}
+
+	io.WriteString(pw, "y\n")
+	waitFor(t, "the second prompt", func() bool { return strings.Contains(out.String(), second) })
+	io.WriteString(pw, "y\n")
+	for range hosts {
+		if !<-verdicts {
+			t.Error("both hosts were answered y and must be admitted")
+		}
+	}
+}
+
 // Ctrl-C during the approval prompts used to kill the process where it stood,
 // discarding every answer the human had already given. It now cancels the run, which
 // denies the remaining items silently - without printing a prompt it then answers
