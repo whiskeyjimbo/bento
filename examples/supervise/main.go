@@ -95,8 +95,9 @@ func run(scriptArg string) int {
 	// Ctrl-C at a prompt used to kill the process where it stood, discarding every deny
 	// and standing block the run had recorded. Catching it instead cancels the run's
 	// context, which unwinds the normal path (prompts return a non-answer, the enforced
-	// child is killed) down to the single save below. Nothing saves from a handler: the
-	// store's flock would then race the main path's own save.
+	// child is killed) down to the single save below. Nothing saves from the handler: the
+	// in-memory store has no lock of its own, so a save racing the approval prompts or a
+	// gate handler would be reading maps they are still writing.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -534,22 +535,30 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 	if admitted, asked := s.recall(dest); asked {
 		return admitted
 	}
+	// A remembered decision (deny-wins across global + per-app) applies with no prompt.
+	// A remembered ALLOW needs the terminal for nothing at all, so answer it before
+	// taking promptMu: it is the common case in a run whose hosts are already known, and
+	// making it wait on someone else's keyboard is the stall this lock split exists to
+	// remove. A stored deny is printed - so a silent block is never a mystery - which
+	// does need the terminal.
+	if d, ok := s.decide(host, port); ok {
+		if d == allow {
+			return s.record(dest, true)
+		}
+		s.promptMu.Lock()
+		defer s.promptMu.Unlock()
+		fmt.Fprintf(s.p.out, "\n  %s %s reaching %s port %s - denied by the permission store\n",
+			s.p.t.markDeny(), s.name, s.p.t.bold(strconv.Quote(host)), port)
+		return s.record(dest, false)
+	}
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 	// Another handler may have answered this dest while this one waited for the
 	// terminal. Its answer is the run's answer, so honor it rather than asking twice
-	// for a host the human has already ruled on.
+	// for a host the human has already ruled on. A decision persisted by that handler
+	// is covered too: it recorded the dest in the session before releasing the lock.
 	if admitted, asked := s.recall(dest); asked {
 		return admitted
-	}
-	// A remembered decision (deny-wins across global + per-app) applies with no
-	// prompt; a stored deny is printed so a silent block is never a mystery.
-	if d, ok := s.decide(host, port); ok {
-		if d == deny {
-			fmt.Fprintf(s.p.out, "\n  %s %s reaching %s port %s - denied by the permission store\n",
-				s.p.t.markDeny(), s.name, s.p.t.bold(strconv.Quote(host)), port)
-		}
-		return s.record(dest, d == allow)
 	}
 	// host is attacker-controlled (the sandboxed target chose it), so quote it to
 	// neutralize terminal escapes before showing it to a human.

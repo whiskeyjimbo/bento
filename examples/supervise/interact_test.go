@@ -111,6 +111,39 @@ func TestGateAsksOnceWhenTwoConnectionsRaceTheSameDest(t *testing.T) {
 	}
 }
 
+// A host the store already allows needs the terminal for nothing - it prints no verdict
+// and asks no question - so it must not wait behind a human parked at an unrelated
+// prompt. This is the first connection to it, so the session cache cannot cover it.
+func TestGateAdmitsAStoredAllowWhileAHumanThinks(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	out := &syncWriter{}
+	s := newTestStore()
+	s.rememberNetwork("k", "known.example", "443", allow, false)
+	sup := &supervisor{p: newPrompter(pr, out), s: s, key: "k", name: "agent",
+		session: make(map[string]bool)}
+
+	parked := make(chan bool, 1)
+	go func() { parked <- sup.gate(t.Context(), "slow.example", "443") }()
+	waitFor(t, "the prompt for slow.example", func() bool {
+		return strings.Contains(out.String(), "slow.example")
+	})
+
+	done := make(chan bool, 1)
+	go func() { done <- sup.gate(t.Context(), "known.example", "443") }()
+	select {
+	case admitted := <-done:
+		if !admitted {
+			t.Error("a stored allow must admit the connection")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stored allow, which needs no terminal, blocked behind another connection's human prompt")
+	}
+
+	io.WriteString(pw, "y\n")
+	<-parked
+}
+
 // Two connections to different hosts both need the human, and the prompts share one
 // terminal reader: they must be asked one at a time, or the second prompt's question is
 // on screen while the first is still waiting and one answer decides the wrong host.
