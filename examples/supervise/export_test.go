@@ -213,3 +213,36 @@ func TestImportKeepsDenyAndSkipsWildcards(t *testing.T) {
 		t.Errorf("import should report the skipped and kept-deny rules; got %q", out.String())
 	}
 }
+
+// Export is the one place a store decision leaves the wrapper's shielding: the
+// exported manifest runs under plain `bento run`, with no approve() refusal and no
+// enforced-run backstop behind it. A remembered allow covering the permission store
+// therefore has to be refused here too, or it graduates into a real grant (bv2-yc8g).
+func TestExportRefusesGrantCoveringTheStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _ := loadStore()
+	key := "sha256:bbbb"
+	a := s.app(key)
+	a.Entrypoint = "/home/u/agent.py"
+	// Written straight into the record rather than through rememberPath: the routes
+	// that record a decision now refuse such a path, so this is the store as an older
+	// build (or a hand edit) could have left it.
+	a.Read = map[string]decision{filepath.Join(s.dir, "permissions.json"): allow}
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(dir, "out.yaml")
+	var out strings.Builder
+	if rc := exportPerms(s, []string{shortKey(key), "-o", outPath}, &out); rc == 0 {
+		t.Fatalf("export must refuse a grant covering the store; out=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "permission store") {
+		t.Errorf("the refusal must say why: %q", out.String())
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		got, _ := os.ReadFile(outPath)
+		t.Errorf("a refused export must write no manifest; found:\n%s", got)
+	}
+}

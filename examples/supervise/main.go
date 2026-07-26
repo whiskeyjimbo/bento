@@ -244,7 +244,7 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// path other than consider/coversStore cannot silently expose the store. Reaching
 	// here with a covering grant is a bug, so fail closed rather than run.
 	if err := assertStoreShielded(approved, s.dir); err != nil {
-		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		fmt.Fprintf(os.Stderr, "supervise: refusing to run: %v\n", err)
 		return 1
 	}
 
@@ -315,14 +315,16 @@ func finalExitCode(targetExit int, saveErr error, recordedDeny bool) int {
 	return targetExit
 }
 
-// assertStoreShielded refuses a final policy that grants any path covering the
-// permission store. It is the backstop described where it is called: the enforced run
-// carries no DenyPaths, so this is the last check that a copyist widening the approval
-// path cannot expose the store to the supervised script.
+// assertStoreShielded refuses a policy that grants any path covering the permission
+// store. It backstops the enforced run, which carries no DenyPaths, so this is the last
+// check that a copyist widening the approval path cannot expose the store to the
+// supervised script; `perms export` runs it too, since a manifest leaves the wrapper's
+// shielding behind entirely. Both callers word the refusal, so this names only the
+// grant.
 func assertStoreShielded(final *policy.Policy, storeDir string) error {
 	for _, g := range append(append([]string{}, final.Read...), final.Write...) {
 		if coversStore(g, storeDir) {
-			return fmt.Errorf("refusing to run: the approved policy grants %q, which covers the permission store %q", g, storeDir)
+			return fmt.Errorf("the policy grants %q, which covers the permission store %q", g, storeDir)
 		}
 	}
 	return nil

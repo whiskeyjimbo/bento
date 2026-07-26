@@ -397,6 +397,15 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 		pol.Network = append(pol.Network, policy.NetworkRule{Host: host, Port: port})
 	}
 
+	// Export is where a store decision leaves the wrapper's own shielding: under plain
+	// `bento run` there is no approve() refusal and no enforced-run backstop, so a
+	// remembered allow covering the store would graduate into a real grant. Refuse with
+	// the same predicate the other two use, before anything is written.
+	if err := assertStoreShielded(pol, s.dir); err != nil {
+		fmt.Fprintf(out, "supervise: cannot export: %v; forget it first.\n", err)
+		return 1
+	}
+
 	if err := pol.Validate(); err != nil {
 		fmt.Fprintf(out, "supervise: exported policy is invalid: %v\n", err)
 		return 1
