@@ -1,10 +1,13 @@
 #!/bin/sh
 # Cross-references bento's credential/exec deny-list against firejail's upstream
 # disable-common.inc and reports any secret- or exec-scope shield firejail has that
-# bento does not cover (see cmd/denylist-audit and internal/denylist/audit). This is
-# the dev-time / CI half of keeping the list complete without hand-hunting: run it,
-# and every in-scope upstream entry bento lacks is printed for a human to classify
-# into internal/denylist/denylist.go (DenyAll credential vs DenyWrite exec) or dismiss.
+# bento does not cover (see cmd/denylist-audit and internal/denylist/audit). Run it, and
+# every in-scope upstream entry bento lacks is printed for a human to classify into
+# internal/denylist/denylist.go (DenyAll credential vs DenyWrite exec) or dismiss.
+#
+# A green run means PARITY WITH FIREJAIL, not a complete deny-list: firejail is the only
+# corpus, so a store it does not list cannot surface here. Paths in bento's model but
+# outside firejail's still have to be found by review - see the audit package doc.
 #
 # GPL note: firejail's data is GPLv2. It is fetched over the network and read as a
 # diff reference only - never vendored into the binary; bento ships its own entries.

@@ -3,11 +3,24 @@
 // does not surfaces as a candidate rather than waiting for an adversarial review to
 // find it.
 //
-// It is a dev-time completeness check, not part of the sandbox: the mapping from
-// firejail's directives to bento's DenyAll/DenyWrite classes is a hint, and the
-// final classification (per the credential-vs-exec rule in the denylist package)
-// stays a human call. firejail's profile data is GPLv2; this reads it as a
-// reference/diff input and never vendors it into the binary.
+// It is a dev-time check, not part of the sandbox: the mapping from firejail's
+// directives to bento's DenyAll/DenyWrite classes is a hint, and the final
+// classification (per the credential-vs-exec rule in the denylist package) stays a human
+// call. firejail's profile data is GPLv2; this reads it as a reference/diff input and
+// never vendors it into the binary.
+//
+// WHAT A GREEN RUN MEANS, since the shape invites reading more into it: this establishes
+// PARITY WITH FIREJAIL, not completeness. It has exactly one source, so a store firejail
+// does not list cannot surface here no matter how squarely it sits in bento's own
+// credential/exec model - and firejail's coverage is shaped by firejail's scope, not
+// bento's. That is a structural limit of a single-corpus diff, not a gap in this code.
+//
+// It is not hypothetical: the 21 paths shielded for bv2-2k6y - the agent config trees,
+// ~/.local/bin and ~/bin, .terraformrc, .m2/settings.xml, .gradle/gradle.properties,
+// .config/glab-cli, .config/helm, .nuget, .composer/auth.json, .bundle/config,
+// .ICEauthority - were all found by hand, because firejail lists none of them. This
+// audit was green throughout. Treat a clean run as "no firejail-known gap", and keep
+// hunting the rest by review until a second corpus with a different shape exists.
 package audit
 
 import (

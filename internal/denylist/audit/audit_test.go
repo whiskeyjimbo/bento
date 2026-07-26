@@ -349,7 +349,7 @@ blacklist ${HOME}/.audit_test_privacy_app
 	}
 }
 
-// The live completeness gate: diff bento's shield list against the firejail profiles
+// The live firejail-parity gate: diff bento's shield list against the firejail profiles
 // installed on this host (or FIREJAIL_DIR). It skips where firejail is absent - the
 // profile data is GPLv2 and read only as a dev-time diff input, never vendored - so on
 // a host with firejail it fails loudly listing any upstream in-scope path bento neither

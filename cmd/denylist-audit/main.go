@@ -1,5 +1,7 @@
 // Command denylist-audit reports the home/runtime paths firejail shields that
-// bento does not, so denylist gaps surface on a cycle instead of in a review.
+// bento does not, so firejail-known denylist gaps surface on a cycle instead of in a
+// review. A clean run means parity with firejail, not a complete deny-list - see the
+// audit package doc for what that does and does not rule out.
 //
 // It fetches firejail's disable-common.inc and disable-programs.inc (GPLv2, read as a
 // reference/diff input, never vendored), maps their blacklist/read-only directives to
