@@ -297,8 +297,16 @@ func printFlooredWrites(writes []string) {
 // marshal that ends the run. Like the floored writes above, they are dropped inside
 // Synthesize, so without this the reviewer has no trace of the access at all.
 func printUnrepresentable(obs profile.Observation) {
+	// A write collapses to its parent before Synthesize screens it, so the write side is
+	// judged and reported at that same granularity: a bad filename in a clean directory
+	// still yields the directory grant, and warning about the file would name a grant
+	// that was in fact proposed.
+	names := append([]string{}, obs.Reads...)
+	for _, w := range obs.Writes {
+		names = append(names, filepath.Dir(w))
+	}
 	seen := map[string]bool{}
-	for _, p := range append(append([]string{}, obs.Reads...), obs.Writes...) {
+	for _, p := range names {
 		if !profile.Unrepresentable(p) || seen[p] {
 			continue
 		}
@@ -314,7 +322,10 @@ func printUnrepresentable(obs profile.Observation) {
 			continue
 		}
 		seenHosts[key] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing network access to %s:%s - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
+		// Quoted, not %s: the proxy's CONNECT screen rejects only C0 and DEL, so a bidi
+		// override or an 8-bit C1 byte in a target-chosen host reaches here, and this is
+		// the one place such a value is echoed to the operator's terminal.
+		fmt.Fprintf(os.Stderr, "[bento] not proposing network access to %q port %q - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
 	}
 }
 

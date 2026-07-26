@@ -16,8 +16,10 @@ import (
 // whatever it proposes marshals.
 func TestSynthesizeProposesOnlyWhatAManifestCanHold(t *testing.T) {
 	obs := Observation{
-		Reads:  []string{"/work/data.txt", "/work/re\x1b[2Kport.txt", "/work/no\u202ete"},
-		Writes: []string{"/work/out.txt", "/work/o\x00ut.txt"},
+		Reads: []string{"/work/data.txt", "/work/re\x1b[2Kport.txt", "/work/no\u202ete"},
+		// A write collapses to its parent, so the second is dropped by its own name while
+		// the third is not: its directory is clean, and the grant is /work either way.
+		Writes: []string{"/work/out.txt", "/work/ba\x00d/out.txt", "/work/o\x00ut.txt"},
 		Hosts: []HostPort{
 			{Host: "ok.example.com", Port: "443"},
 			{Host: "a_b.com", Port: "443"},
@@ -42,5 +44,8 @@ func TestSynthesizeProposesOnlyWhatAManifestCanHold(t *testing.T) {
 	// run's whole read or write set.
 	if !slices.Contains(p.Read, "/work/data.txt") || !slices.Contains(p.Write, "/work") {
 		t.Errorf("read = %v, write = %v, want the clean grants kept", p.Read, p.Write)
+	}
+	if len(p.Write) != 1 {
+		t.Errorf("write = %v, want only /work - the unrepresentable write directory must be dropped", p.Write)
 	}
 }
