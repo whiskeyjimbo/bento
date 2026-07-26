@@ -22,11 +22,14 @@ func New() (enforce.Enforcer, error) {
 	return linux.New(), nil
 }
 
-// DispatchReexec runs bento's in-sandbox re-exec stages. To confine a target the
-// linux backend binds the running binary into the sandbox and re-invokes it as a
-// hidden launch stage (and, from inside, an egress-bridge stage), so an embedder
-// that hosts the backend must give those invocations somewhere to land. Call it as
-// the first statement in main(), before any flag parsing:
+// DispatchReexec runs bento's launch stages. To confine a target the linux backend
+// re-invokes the running binary as a hidden stage, so an embedder that hosts the
+// backend must give those invocations somewhere to land. There are three: the
+// enforced launch stage (bound into the sandbox), the egress-bridge stage (run from
+// inside it), and the degraded launch stage, which is a DIRECT host child - it runs
+// outside any sandbox, because the degraded tier is what --allow-degraded selects on
+// a host that cannot create the namespace at all. Call it as the first statement in
+// main(), before any flag parsing:
 //
 //	func main() {
 //		backend.DispatchReexec()
@@ -41,8 +44,16 @@ func New() (enforce.Enforcer, error) {
 // back unenforced, naming the exit code. An embedder reads that rather than parsing
 // stderr. Otherwise it returns and the program's own startup proceeds.
 //
-// The whole binary re-executes inside the sandbox, so every package init() runs
-// again there, under a cleared environment. Keep package init cheap and free of
+// A stage is selected by argv[1] alone and carries no proof of who invoked it, so
+// whoever controls the argv of a bento-embedding binary reaches all three - including
+// the degraded stage, which confines a target of their choosing outside the sandbox.
+// That is not a hole in bento's boundary: a stage runs with exactly the privileges of
+// the process that started it, which are the caller's own. It becomes one if the
+// binary is installed across a privilege boundary, so don't: no setuid bit, no
+// sudoers rule, and no wrapper that forwards a less-privileged caller's arguments.
+//
+// Every stage re-executes the whole binary, so every package init() runs again in
+// the stage, under a cleared environment. Keep package init cheap and free of
 // environment or other side-effect dependencies, and (for tests) call this from
 // TestMain, before the testing package parses flags.
 func DispatchReexec() {
