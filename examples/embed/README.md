@@ -1,11 +1,17 @@
 # embed - hosting bento in-process
 
-A minimal program that runs an untrusted script under bento's sandbox by calling
-bento's public Go API directly, instead of shelling out to the `bento` binary and
-parsing its output. It is the reference for an embedder such as a supervising CLI
-wrapper.
+A minimal program that runs a script under bento's sandbox by calling bento's public
+Go API directly, instead of shelling out to the `bento` binary and parsing its output.
+It is the reference for an embedder such as a supervising CLI wrapper.
 
-It does two things worth studying:
+It runs with the zero-value `enforce.Options`, which refuses only on a **core**-tier
+shortfall: a hardening gap (exec-blocking unavailable, say, so the target can spawn
+subprocesses) is reported but the run proceeds, and that report necessarily prints
+*after* the target has run. That is the right default for a demo you want to run on any
+host, and the wrong one for genuinely untrusted code - for that, set `Strict: true`,
+which refuses up front unless every layer, hardening included, is enforced.
+
+It does three things worth studying:
 
 1. **In-process enforcement.** Load a manifest to a `policy.Policy`, get an
    enforcer from `backend.New()`, call `enforce.Run(...)`, and read a structured
@@ -15,6 +21,12 @@ It does two things worth studying:
    run - the model an editor agent uses. bento provides the seam and the honesty
    accounting; the prompt and the session memory are the wrapper's, and they live
    in the `supervisor` type in `main.go`.
+3. **Surfacing every honesty field.** A `Result` carries what the run could not
+   guarantee and what it exposed anyway - degradations, gate-admitted egress,
+   granted credential paths, unshieldable paths, credential aliases read past a
+   shield, and the egress count. An embedder who reads only some of them ships a
+   frontend that is silent about the rest, so this example prints them all, including
+   the ones that stay empty under its own options (see "Every honesty surface").
 
 ## Prerequisites
 
@@ -102,6 +114,33 @@ agent's "allow once / allow for session / always allow":
 | Allow session   | the `supervisor`'s session cache, remembered for the run    |
 | Always allow    | persist the host into the manifest (approve/fingerprint)    |
 
+## Every honesty surface
+
+`run()` prints all of these, in this order, from one `enforce.Result`. Most stay empty
+on a healthy host with an ordinary manifest - they are printed unconditionally so an
+embedder who copies this file inherits the warning rather than the silence:
+
+| Field                | What its absence would hide                                            |
+| -------------------- | ---------------------------------------------------------------------- |
+| `Report.Degradations()` | a layer the host could only partly enforce                           |
+| `GateAdmitted`       | egress a human waved through beyond the manifest                       |
+| `ShieldedGrants`     | a credential store the manifest granted, so the target could read it   |
+| `AcceptedAliases`    | a credential read under a second name, past its shield                 |
+| `Exposed`            | what a full run would shield but this tier could not                   |
+| `EgressConnections`  | a proxy bypass: a network run that reached nothing through the proxy    |
+
+Two more come from outside the `Result`: the names `enforce.ResolveEnv` reports as
+allowed-but-unset (a manifest that permits `GITHUB_TOKEN` on a host that does not set
+it), and `enforce.Refusal`'s `Short`, which is what names *which* layer fell short -
+printing `Reason` alone gives a generic posture string. Printing `%v` on the error
+covers both parts.
+
+`enforce.Shortfall` is the one an embedder is likeliest to mishandle. It means the
+target **ran** and then a guarantee `Strict` required lapsed, so the `Result` is
+complete and must not be discarded like a failure - but its exit code is no longer the
+answer. It is unreachable under this example's options and handled anyway, because
+setting `Strict: true` is exactly what a copyist does first.
+
 ## What is *not* here: filesystem prompts
 
 The gate is network-only, on purpose. A denied file read is refused inside the
@@ -115,5 +154,13 @@ run) then `bento approve`. See `docs/network-gate-seam.md` for the full rational
 - `main.go` `run()` - the in-process enforcement flow, end to end.
 - `main.go` `supervisor` - the interactive layer: prompt, session cache, ctx-aware
   cancellation, hostname sanitization.
+- `main.go` `writeResult()` - every honesty field of a `Result`, in one place.
 - `supervisor_test.go` - proves prompt-once-per-host, pre-approval, and that a
   prompt returns (as a denial) when the run's context is cancelled.
+- `result_test.go` - proves every honesty field reaches the output, that host-supplied
+  paths are quoted, and - the guard that matters for a template - fails if a new field
+  is added to `enforce.Result` and left unprinted here.
+- `verify.sh` - the check that keeps this example honest: it greps for any
+  `bento/internal/...` import (which its separate `go.mod` already makes a compile
+  error), then builds, vets, and tests. If it passes, bento's public packages are
+  self-sufficient for an embedder.

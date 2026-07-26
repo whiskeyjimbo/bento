@@ -1,9 +1,14 @@
 // Command embed hosts bento's enforcement backend in-process, using only bento's
 // public packages - backend, enforce, manifest - and nothing under internal/. It
 // takes a manifest path, runs the script it describes under the sandbox, prints
-// what the structured Result reports - any enforcement shortfall and any shielded
-// credential path the manifest exposed to the target - and passes the target's
-// exit code through.
+// every honesty field the structured Result carries - what the host could not
+// enforce, what the gate let out, and every credential path the run exposed or
+// could not shield - and passes the target's exit code through.
+//
+// It prints all of them, including the ones that stay empty under its own options: an
+// example is a template, and a field a frontend never reads is a silence an operator
+// reads as nothing to report. writeResult below is that surface, and its test guards
+// it against a new Result field arriving unprinted.
 //
 // It also demonstrates the interactive supervision seam: a NetworkGate that
 // prompts a human to admit egress the manifest did not declare, remembering the
@@ -28,6 +33,7 @@ import (
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func main() {
@@ -92,7 +98,7 @@ func run(manifestPath string) int {
 	// manifest.Load -> a validated *policy.Policy. The whole enforcement API takes
 	// domain values like this; a library embedder never shells out or parses CLI
 	// text.
-	policy, err := manifest.Load(f)
+	p, err := manifest.Load(f)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
@@ -101,10 +107,17 @@ func run(manifestPath string) int {
 	// The policy names which env vars may pass through; resolving those names
 	// against the host is the core's job, exposed here so the values a target sees
 	// are explicit.
-	env, _, err := enforce.ResolveEnv(policy, nil, os.LookupEnv)
+	env, unset, err := enforce.ResolveEnv(p, nil, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
+	}
+	// A variable the manifest allows but the host does not set is the difference between
+	// "the target read it" and "the target saw nothing" - a missing GITHUB_TOKEN that
+	// fails the script deep inside its own logic. ResolveEnv reports those names; a
+	// frontend that drops them leaves the user debugging silence.
+	for _, name := range unset {
+		fmt.Fprintf(os.Stderr, "embed: note: env %s is allowed by the manifest but not set on this host; the target will not see it\n", name)
 	}
 
 	e, err := backend.New()
@@ -148,45 +161,112 @@ func run(manifestPath string) int {
 	// (e.g. exec-block unavailable, so the target can spawn subprocesses) is reported
 	// but the run proceeds. An embedder confining genuinely untrusted code wants
 	// Strict: true, which refuses unless every layer, hardening included, is enforced.
-	res, err := enforce.Run(context.Background(), e, policy, proc, enforce.Options{NetworkGate: gate})
+	res, err := enforce.Run(context.Background(), e, p, proc, enforce.Options{NetworkGate: gate})
 
 	var refusal *enforce.Refusal
+	var shortfall *enforce.Shortfall
 	switch {
 	case errors.As(err, &refusal):
-		// The host cannot enforce a guarantee the policy needs; Refusal names which.
-		fmt.Fprintf(os.Stderr, "embed: refused: %s\n", refusal.Reason)
+		// The host cannot enforce a guarantee the policy needs. Print the error, not
+		// refusal.Reason: Reason is the posture ("a core guarantee cannot be fully
+		// enforced on this host") and Error() appends Short, which is the part that names
+		// whether Landlock, the mount namespace, or userns is what fell short.
+		fmt.Fprintf(os.Stderr, "embed: refused: %v\n", err)
 		return 125
-	case err != nil:
+	case errors.As(err, &shortfall):
+		// Strict admitted the run and then a guarantee it required lapsed while the target
+		// ran. Unreachable under the zero-value Options below, but an embedder who copies
+		// this and sets Strict: true reaches it - and it is a COMPLETED run, so the report
+		// and the target's own exit code below still hold and must not be discarded. The
+		// exit code is overridden at the end instead: a lapsed posture must not be
+		// reported as a clean run.
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+	case err != nil:
+		// res carries a populated Report even here, so name any shortfall the run did
+		// reach before the failure rather than only the error.
+		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+		for _, d := range res.Report.Degradations() {
+			fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
+		}
 		return 125
 	}
 
-	// A structured Result, not scraped output: report what the host could only
-	// partially enforce, then pass the target's own exit code through.
-	for _, d := range res.Report.Degradations() {
-		fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
-	}
-	// GateAdmitted is the honesty surface: hosts the gate let out beyond the
-	// manifest. A wrapper would offer to persist these into the manifest via the
-	// normal approve/fingerprint path, turning ad-hoc runtime approvals back into
-	// declared, attested policy.
-	for _, hp := range res.GateAdmitted {
-		fmt.Fprintf(os.Stderr, "embed: gate admitted undeclared egress to %s:%s\n", hp.Host, hp.Port)
-	}
-	// ShieldedGrants are always-shielded credential stores the manifest explicitly
-	// granted, so the backend exposed them to the target. The backend does not refuse
-	// this - the operator chose it - so the frontend must surface it loudly, or the
-	// exposure is silent.
-	for _, path := range res.ShieldedGrants {
-		fmt.Fprintf(os.Stderr, "embed: WARNING: exposed shielded credential path to the target: %s\n", path)
-	}
-	// Exposed names what a full run would have shielded but this tier could not (the
-	// degraded, no-mount-namespace tier). Same honesty contract as ShieldedGrants: the
-	// backend does not refuse, so a frontend that stays silent hides the exposure.
-	for _, s := range res.Exposed {
-		fmt.Fprintf(os.Stderr, "embed: WARNING: host cannot shield %s (%s), left exposed to the target\n", s.Path, s.Kind)
+	// A structured Result, not scraped output: report everything the run could not
+	// guarantee and everything it exposed anyway, then pass the target's exit code
+	// through.
+	writeResult(os.Stderr, p, res)
+	if shortfall != nil {
+		// The target ran, but under Strict its guarantees lapsed partway. Passing its own
+		// code through would report a clean run over a posture that did not hold, so it
+		// gets its own code - 124, the same one the bento CLI uses for this, distinct from
+		// both a refusal (125) and any code the target can return itself.
+		fmt.Fprintln(os.Stderr, "embed: the target ran, but the guarantees above did not hold for the whole run, so its exit code is not reported.")
+		return 124
 	}
 	return res.ExitCode
+}
+
+// writeResult prints every honesty field of a Result. A frontend's job is not to
+// summarize the run: it is to say what the run could not guarantee and what it exposed
+// anyway, and any field left unread is a silence an operator reads as "nothing to
+// report". So each of these prints unconditionally, including the ones that stay empty
+// under this example's own Options - an embedder copying this file inherits the warning
+// rather than having to discover the field.
+//
+// It takes the writer and the policy rather than reaching for os.Stderr, so the whole
+// surface is exercised by a test with a synthetic Result. The bento CLI's own renderer
+// (cmd/bento/render.go) is the same shape, and TestWriteResultSurfacesEveryField guards
+// this one against a new Result field arriving unprinted.
+func writeResult(w io.Writer, p *policy.Policy, res enforce.Result) {
+	// Degradations: what the host could only partially enforce.
+	for _, d := range res.Report.Degradations() {
+		fmt.Fprintf(w, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
+	}
+	// Shields is the positive evidence: the credential and host-service paths the
+	// sandbox actually hid or froze for this policy. An empty list is not proof nothing
+	// sensitive was in scope - the degraded tier shields nothing at all and reports that
+	// through the Report - so this is a count, not a guarantee.
+	if len(res.Shields) > 0 {
+		fmt.Fprintf(w, "embed: sandbox engaged: %d credential/host-service path(s) shielded from the target\n", len(res.Shields))
+	}
+	// GateAdmitted: hosts the gate let out beyond the manifest. A wrapper would offer to
+	// persist these into the manifest via the normal approve/fingerprint path, turning
+	// ad-hoc runtime approvals back into declared, attested policy.
+	for _, hp := range res.GateAdmitted {
+		fmt.Fprintf(w, "embed: gate admitted undeclared egress to %s:%s\n", hp.Host, hp.Port)
+	}
+	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
+	// so the backend honored the grant over its own shield. bento does not refuse this -
+	// the operator chose it - so a frontend that stays quiet makes the exposure silent.
+	for _, path := range res.ShieldedGrants {
+		fmt.Fprintf(w, "embed: WARNING: exposed shielded credential path to the target: %q\n", path)
+	}
+	// AcceptedAliases: paths the run could read as a second name for a shielded
+	// credential, because AcceptAliasesUnder acknowledged the tree they sit in. That
+	// acknowledgement is per-invocation and easily left behind in a wrapper script, so
+	// printing it only sometimes is how a real leak hides behind a flag someone added for
+	// a backup directory.
+	for _, a := range res.AcceptedAliases {
+		fmt.Fprintf(w, "embed: WARNING: %q was readable as a second name for the shielded credential %q\n", a.Path, a.Credential)
+	}
+	// Exposed: what a full run would have shielded but this tier could not (the degraded,
+	// no-mount-namespace tier). The mirror image of Shields, and the same contract as
+	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.
+	for _, s := range res.Exposed {
+		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
+	}
+	// EgressConnections, read as a bypass signature. bento intercepts egress
+	// cooperatively through HTTP_PROXY, so a target that ignores proxy settings dials
+	// into the empty network namespace and fails closed; a network run that failed having
+	// reached nothing through the proxy is what that looks like, and a bare "connection
+	// refused" leaves the user with no idea why. It is a heuristic, not proof - a target
+	// can make no connections and fail for its own reasons - so it is worded as a
+	// possibility.
+	if len(p.Network) > 0 && res.ExitCode != 0 && res.EgressConnections == 0 {
+		fmt.Fprintln(w, "embed: the target exited non-zero having made no connection through the egress proxy;")
+		fmt.Fprintln(w, "embed: if it needs network, note that bento intercepts egress via HTTP_PROXY, so a target")
+		fmt.Fprintln(w, "embed: that ignores proxy settings cannot reach even its allowlisted hosts.")
+	}
 }
 
 // parseAllow reads a comma-separated allowlist of "host" or "host:port" entries
