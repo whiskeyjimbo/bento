@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +9,18 @@ import (
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
+
+// mustSynthesize is Synthesize for the cases that must succeed, so a test asserting on
+// the proposal does not restate the error check each time. The refusal itself has its
+// own test.
+func mustSynthesize(t *testing.T, entrypoint, interpreter string, obs Observation) *policy.Policy {
+	t.Helper()
+	p, err := Synthesize(entrypoint, interpreter, obs)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	return p
+}
 
 func TestSynthesizeDropsInterpreterTree(t *testing.T) {
 	// A version-managed interpreter lives under $HOME, so a system-prefix filter
@@ -22,7 +35,7 @@ func TestSynthesizeDropsInterpreterTree(t *testing.T) {
 			"/data/input.txt",
 		},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
 		t.Fatalf("read = %v, want just the script's own input", p.Read)
 	}
@@ -35,7 +48,7 @@ func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
 		Reads:  []string{"/tmp/tmp8f3k/data", "/data/input.txt"},
 		Writes: []string{"/tmp/tmpq1/scratch"},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
 		t.Fatalf("read = %v, want /tmp scratch dropped", p.Read)
 	}
@@ -52,7 +65,7 @@ func TestSynthesizeKeepsAbsolutePathsAndDirGranularWrites(t *testing.T) {
 		Reads:  []string{"/work/input.txt"},
 		Writes: []string{"/work/out/result.txt"},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/work/input.txt"}) {
 		t.Fatalf("read = %v, want /work/input.txt", p.Read)
 	}
@@ -71,7 +84,7 @@ func TestSynthesizeDropsRelativePaths(t *testing.T) {
 		Reads:  []string{"input.txt", "/work/real.txt"},
 		Writes: []string{"out/result.txt"},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/work/real.txt"}) {
 		t.Errorf("read = %v, want only the absolute /work/real.txt (the relative one dropped)", p.Read)
 	}
@@ -89,7 +102,7 @@ func TestSynthesizeKeepsReadCoveredByBroadWrite(t *testing.T) {
 		Reads:  []string{"/home/u/.ssh/id_rsa"},
 		Writes: []string{"/home/u/results.csv"}, // -> writeDir /home/u, which covers the read
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	found := false
 	for _, r := range p.Read {
 		if r == "/home/u/.ssh/id_rsa" {
@@ -110,7 +123,7 @@ func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
 		Reads:  []string{"/data/shared.txt", "/data/nested/in.txt"},
 		Writes: []string{"/data/out.txt"},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Write, []string{"/data"}) {
 		t.Fatalf("write = %v, want the directory /data", p.Write)
 	}
@@ -139,7 +152,7 @@ func TestSynthesizeDropsSystemWriteGrants(t *testing.T) {
 		"/srv/www/index.html",
 		"/root/.bashrc",
 	} {
-		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 0 {
 			t.Errorf("write %s proposed the grant %v, want none (a writable system tree must not be proposed)", w, p.Write)
 		}
@@ -152,7 +165,7 @@ func TestSynthesizeDropsSystemWriteGrants(t *testing.T) {
 // isSystemPath follows for /etc/sslkeys vs /etc/ssl.
 func TestSystemWriteFloorsDoNotOvermatchSiblings(t *testing.T) {
 	for _, w := range []string{"/vartmp/out", "/etcetera/out", "/bootleg/out", "/opta/out", "/srvx/out", "/rootkit/out"} {
-		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 1 {
 			t.Errorf("write %s proposed %v, want the grant kept - a name-stem sibling is not a system tree", w, p.Write)
 		}
@@ -207,7 +220,7 @@ func TestSynthesizeFloorsWritesThroughASymlink(t *testing.T) {
 		filepath.Join(proj, "cfg", "not-there-yet", "sub", "evil"),
 		filepath.Join(proj, "sys", "local", "bin", "evil"),
 	} {
-		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 0 {
 			t.Errorf("write %s proposed the grant %v, want none - the floor must follow the symlink", w, p.Write)
 		}
@@ -219,17 +232,17 @@ func TestSynthesizeFloorsWritesThroughASymlink(t *testing.T) {
 	if err := os.Symlink(dest, filepath.Join(proj, "data")); err != nil {
 		t.Fatal(err)
 	}
-	p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{filepath.Join(proj, "data", "out.txt")}})
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{filepath.Join(proj, "data", "out.txt")}})
 	if len(p.Write) != 1 {
 		t.Errorf("write through a link to an ordinary directory proposed %v, want the grant kept", p.Write)
 	}
 }
 
 func TestSynthesizeExecOnlyWhenObserved(t *testing.T) {
-	if got := Synthesize("/work/run.py", "", Observation{}).Exec; got != policy.ExecNone {
+	if got := mustSynthesize(t, "/work/run.py", "", Observation{}).Exec; got != policy.ExecNone {
 		t.Errorf("exec = %q, want none when nothing was spawned", got)
 	}
-	if got := Synthesize("/work/run.py", "", Observation{Execed: true}).Exec; got != policy.ExecAll {
+	if got := mustSynthesize(t, "/work/run.py", "", Observation{Execed: true}).Exec; got != policy.ExecAll {
 		t.Errorf("exec = %q, want all when a subprocess was spawned", got)
 	}
 }
@@ -240,7 +253,7 @@ func TestSynthesizeDedupesHostsAndSorts(t *testing.T) {
 		{Host: "a.example", Port: "443"},
 		{Host: "b.example", Port: "443"},
 	}}
-	p := Synthesize("/work/run.py", "", obs)
+	p := mustSynthesize(t, "/work/run.py", "", obs)
 	want := []policy.NetworkRule{
 		{Host: "a.example", Port: "443"},
 		{Host: "b.example", Port: "443"},
@@ -298,7 +311,7 @@ func TestSynthesizeDropsMtabViaSkipWiring(t *testing.T) {
 		t.Skip("this host's /etc/mtab is not a symlink into procfs")
 	}
 	obs := Observation{Reads: []string{"/etc/mtab", "/srv/app/config.yaml"}}
-	p := Synthesize("/srv/app/run.py", "python3", obs)
+	p := mustSynthesize(t, "/srv/app/run.py", "python3", obs)
 	for _, r := range p.Read {
 		if r == "/etc/mtab" {
 			t.Errorf("/etc/mtab was proposed as a grant; skip is not wired to resolvesIntoProc: %v", p.Read)
@@ -320,7 +333,7 @@ func TestSynthesizeDropsRuntimeDirGrants(t *testing.T) {
 		Reads:  []string{"/run/docker.sock", "/var/run/nscd/socket", "/data/keep.txt"},
 		Writes: []string{"/run/app.pid", "/var/run/app/lock"},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/keep.txt"}) {
 		t.Errorf("read = %v, want only the non-runtime path kept", p.Read)
 	}
@@ -343,7 +356,7 @@ func TestSynthesizeDropsRuntimeRootItself(t *testing.T) {
 		Reads:       []string{root, root + "/lib/python3.14/os.py", "/data/input.txt"},
 		Writes:      []string{root + "/scratch.log", root},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
 		t.Errorf("read = %v, want just the script's own input (the runtime root is noise)", p.Read)
 	}
@@ -395,7 +408,7 @@ func TestSynthesizeDoesNotDropHomeAsRuntimeTree(t *testing.T) {
 		Interpreter: filepath.Join(home, "bin", "python"),
 		Reads:       []string{secret, filepath.Join(home, "project", "input.txt")},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	found := false
 	for _, r := range p.Read {
 		if r == secret {
@@ -465,8 +478,73 @@ func TestSynthesizeDropsRuntimeReachedByItsUnresolvedName(t *testing.T) {
 			"/data/input.txt",
 		},
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
 		t.Errorf("read = %v, want only the script's own input; both runtime trees are noise", p.Read)
+	}
+}
+
+// An observation with a seccomp kill is missing everything the killed process did, and
+// re-profiling reproduces it exactly, so there is no proposal to make - only one that
+// would look complete and then become enforcement policy. Refusing in Synthesize rather
+// than in a frontend is what makes that true for every caller: the check used to live
+// in cmd/bento alone, so an embedder assembling its own proposal got a full policy,
+// Exec:all included, out of a run it could not see.
+func TestSynthesizeRefusesASeccompKilledObservation(t *testing.T) {
+	obs := Observation{
+		Reads:         []string{"/work/data.txt"},
+		Writes:        []string{"/work/out.txt"},
+		Execed:        true,
+		SeccompKilled: true,
+	}
+	p, err := Synthesize("/work/run.py", "python3", obs)
+	if !errors.Is(err, ErrSeccompKilled) {
+		t.Fatalf("err = %v, want ErrSeccompKilled", err)
+	}
+	if p != nil {
+		t.Errorf("policy = %+v, want none - a refused observation must not yield a proposal to use by mistake", p)
+	}
+
+	// Every other shortfall leaves an observation that is merely incomplete, which the
+	// frontend warns about and a human fixes by profiling again. Refusing those too
+	// would stop `bento profile` on any script that exits nonzero.
+	for _, partial := range []Observation{{ExitCode: 1}, {Signaled: true, Signal: 9}, {Dropped: 3}} {
+		if _, err := Synthesize("/work/run.py", "python3", partial); err != nil {
+			t.Errorf("Synthesize(%+v) = %v, want a proposal - an incomplete run is a warning, not a refusal", partial, err)
+		}
+	}
+}
+
+// A write collapses to its parent directory, so one touched file in another user's home
+// proposes that whole account - including the rc files that run as them at their next
+// login. Nothing downstream catches it: the caller's broad clamp knows only the root, a
+// top-level directory, and the profiler's OWN home, and the credential shields are built
+// from the profiler's home too, so a second user's stores are not in the list at all.
+func TestSynthesizeDropsForeignHomeWriteGrants(t *testing.T) {
+	for _, w := range []string{"/home/other/.bashrc", "/var/home/other/.profile", "/Users/other/.zshrc", "/root/.bashrc"} {
+		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
+		if len(p.Write) != 0 {
+			t.Errorf("write %s proposed the grant %v, want none - a whole foreign account must not be proposed", w, p.Write)
+		}
+	}
+
+	// A directory INSIDE another user's home is not floored here: it is an ordinary
+	// grant the reviewer can judge, and the enforcer's own shields still cover the
+	// credential stores under it. Only the account root is the over-broad collapse.
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/home/other/shared/out.txt"}})
+	if len(p.Write) != 1 {
+		t.Errorf("write inside a foreign home proposed %v, want the grant kept", p.Write)
+	}
+
+	// The profiler's own home stays, because the caller's broad clamp drops it AND
+	// reports it to the reviewer as over-broad; flooring it here would take it away
+	// silently and show the reviewer less than they see today.
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		t.Skip("no usable home directory to distinguish own from foreign")
+	}
+	p = mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{filepath.Join(home, "out.txt")}})
+	if len(p.Write) != 1 || p.Write[0] != filepath.Clean(home) {
+		t.Errorf("write = %v, want the profiler's own home kept for the caller's broad clamp to report", p.Write)
 	}
 }

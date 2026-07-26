@@ -439,10 +439,10 @@ func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
 // since SIGSYS alone does not distinguish bento's arch guard from a self-sandboxing
 // target, and misdiagnosing the second sends that user nowhere.
 func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
-	if err := seccompKilledRefusal(profile.Observation{Dropped: 3, Signaled: true}); err != nil {
+	if _, err := profile.Synthesize("/w/s.py", "python3", profile.Observation{Dropped: 3, Signaled: true}); err != nil {
 		t.Errorf("only a seccomp kill refuses the round; got %v", err)
 	}
-	err := seccompKilledRefusal(profile.Observation{SeccompKilled: true})
+	_, err := profile.Synthesize("/w/s.py", "python3", profile.Observation{SeccompKilled: true})
 	if err == nil {
 		t.Fatal("a seccomp-killed run must refuse the round")
 	}

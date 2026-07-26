@@ -143,7 +143,11 @@ func run(scriptArg string) int {
 		}
 		return 1
 	}
-	proposal := profile.Synthesize(script, interp, obs)
+	proposal, err := profile.Synthesize(script, interp, obs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		return 1
+	}
 	// Allowlist the discovery anchors so the enforced run resolves the same
 	// $HOME-relative paths the trial recorded and the human approved.
 	proposal.Env = sortedEnvNames(trialEnv)

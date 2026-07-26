@@ -55,8 +55,8 @@ func runForeignABITracer(t *testing.T, role string) string {
 //
 // Both halves are pinned, because either alone leaves the hole: the ABI check keeps the
 // fabricated grant from being synthesized at all, and SeccompKilled is what makes the
-// profile command refuse the run (seccompKilledRefusal) as incomplete rather than
-// synthesizing from what the killed process managed to touch.
+// profile command refuse the run (profile.Synthesize returns ErrSeccompKilled) rather
+// than synthesizing from what the killed process managed to touch.
 func TestForeignABITraceeIsNotDecodedAndTheRunIsRefused(t *testing.T) {
 	if !seccomp.Supported() {
 		t.Skip("seccomp not supported on this kernel")

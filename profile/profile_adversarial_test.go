@@ -133,7 +133,7 @@ func TestAdversarialSynthesize(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := Synthesize(tc.entrypoint, tc.interpreter, tc.obs)
+			p := mustSynthesize(t, tc.entrypoint, tc.interpreter, tc.obs)
 			if p == nil {
 				t.Fatal("Synthesize returned nil policy")
 			}
@@ -217,7 +217,7 @@ func FuzzProfileSynthesize(f *testing.F) {
 			Hosts:  []HostPort{{Host: host, Port: port}},
 			Execed: execed,
 		}
-		p := Synthesize(entry, interp, obs)
+		p := mustSynthesize(t, entry, interp, obs)
 		if p == nil {
 			t.Fatal("Synthesize returned nil Policy")
 		}

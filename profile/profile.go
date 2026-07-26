@@ -8,6 +8,7 @@
 package profile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,12 @@ import (
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
+
+// ErrSeccompKilled is returned by Synthesize for an observation in which a process
+// died on SIGSYS. It names both causes because they are not distinguishable from the
+// observation: bento's own foreign-arch guard (the amd64 observer cannot decode a
+// 32-bit process's syscalls) and a target that installs its own sandbox both land here.
+var ErrSeccompKilled = errors.New("a process in this run was killed by a seccomp filter, so everything it touched is unobservable and no manifest can be proposed from this run: either it used a non-native (32-bit) syscall ABI, which bento's profiler refuses because it decodes amd64 syscalls only, or the target installs its own sandbox. Build the target for amd64, run it without its own sandbox, or write the manifest by hand")
 
 // HostPort is one observed outbound destination.
 type HostPort struct {
@@ -98,7 +105,18 @@ const ldSoPrefix = "/etc/ld.so"
 // and interpreter themselves, keeping the reads and writes that describe what
 // *this* script needs. Exec is proposed as `all` only if the script actually
 // spawned a subprocess; otherwise the default deny stands.
-func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy {
+//
+// It refuses an observation that recorded a seccomp kill, because everything that
+// process touched is absent from it and profiling again produces the same result - so
+// there is no proposal to make, only one that would look complete. The refusal lives
+// here rather than in a frontend because the proposal becomes enforcement policy
+// whoever assembles it; every other shortfall (a nonzero exit, a signal, dropped
+// accesses) leaves an observation that is merely incomplete, which a frontend warns
+// about and a human can act on by profiling again.
+func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy, error) {
+	if obs.SeccompKilled {
+		return nil, ErrSeccompKilled
+	}
 	// The observer emits absolute paths - it anchors a relative open at the process's
 	// real working directory - so a path that is still relative here has no anchor we
 	// can trust. Guessing one (the run's starting directory) produced grants that named
@@ -170,8 +188,11 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		if skip(dir) || isSystemWriteDir(dir) {
 			return true
 		}
+		if isForeignHomeTree(dir) {
+			return true
+		}
 		resolved := resolveWriteDir(dir)
-		return resolved != dir && (isSystemPath(resolved) || isSystemWriteDir(resolved))
+		return resolved != dir && (isSystemPath(resolved) || isSystemWriteDir(resolved) || isForeignHomeTree(resolved))
 	}
 
 	p := &policy.Policy{
@@ -206,7 +227,7 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 		// serialized manifest and invalidating a prior approval.
 		return p.Network[i].Host+":"+p.Network[i].Port < p.Network[j].Host+":"+p.Network[j].Port
 	})
-	return p
+	return p, nil
 }
 
 // systemWriteRoots are trees under which a proposed writable-directory grant is a
@@ -273,6 +294,38 @@ func resolvesIntoProc(p string) bool {
 		return false
 	}
 	return resolved == "/proc" || strings.HasPrefix(resolved, "/proc/")
+}
+
+// isForeignHomeTree reports whether a collapsed write-grant directory is another user's
+// home. The collapse is what makes this reachable: an observed write to a single file
+// becomes a grant of its directory, so a target that touches /home/other/.bashrc
+// proposes a writable /home/other - their whole account, including the rc files that
+// run as them at their next login. Nothing downstream catches it. The caller's broad
+// clamp only knows the root, a top-level directory, and the profiler's OWN home, and
+// the credential shields are built from the profiler's home too, so a second user's
+// stores are not in the list at all.
+//
+// The profiler's own home is deliberately NOT floored here. It is already dropped by
+// that broad clamp, which also REPORTS it to the reviewer as an over-broad grant;
+// dropping it earlier would take the grant away silently and leave the reviewer with
+// less than they see today.
+func isForeignHomeTree(dir string) bool {
+	if !isHomeShapedTree(dir) || !slices.Contains(homeContainers, filepath.Dir(dir)) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !filepath.IsAbs(home) {
+		// With no usable home to compare against, every home is foreign - the fail-safe
+		// direction, since the alternative proposes a whole account.
+		return true
+	}
+	if dir == filepath.Clean(home) {
+		return false
+	}
+	// A symlinked home (/home -> /var/home) reaches the same account under two names,
+	// and only one of them compares equal above.
+	resolved, err := filepath.EvalSymlinks(home)
+	return err != nil || dir != resolved
 }
 
 // resolveWriteDir follows the symlinks in a collapsed write-grant directory, so the
