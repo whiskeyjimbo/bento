@@ -313,3 +313,42 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 		t.Errorf("envelope = %+v, want the target's own code and output", env)
 	}
 }
+
+// A refusal raised before enforce.Run was ever reached - a bad --env, an unparseable
+// or unapproved manifest - used to return bare, leaving --json's stdout empty so jq
+// could not tell a refusal from a crash (bv2-w4n5). It must produce the SAME refusal
+// envelope the enforcement layer's own refusals produce, not a fourth shape.
+func TestRefuseJSONUsesTheRefusalEnvelope(t *testing.T) {
+	var buf bytes.Buffer
+	err := refuseJSON(&buf, true, errors.New("refusing to run: the manifest is not approved"))
+
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != bentoFailed {
+		t.Fatalf("err = %v, want exitError{%d}", err, bentoFailed)
+	}
+	var got refusalJSON
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, buf.String())
+	}
+	if !got.Refused || !strings.Contains(got.Reason, "not approved") {
+		t.Errorf("envelope = %+v, want refused with the error as the reason", got)
+	}
+	// No sandbox was ever built, so claiming every layer held would report a clean
+	// posture on a run that never had one.
+	if got.Report.FullyEnforced {
+		t.Error("a pre-run refusal must not report fully_enforced")
+	}
+}
+
+// Without --json the error is the frontend's own, rendered by main; refuseJSON must
+// not swallow it into an exit code that loses the message.
+func TestRefuseJSONPassesHumanErrorThrough(t *testing.T) {
+	want := errors.New("boom")
+	var buf bytes.Buffer
+	if got := refuseJSON(&buf, false, want); !errors.Is(got, want) {
+		t.Errorf("err = %v, want the original error", got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("human mode must write no envelope; got %q", buf.String())
+	}
+}

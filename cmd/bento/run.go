@@ -39,19 +39,26 @@ func newRunCmd() *cobra.Command {
 			"gate should read --json, where the outcome is a field rather than a code.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Every refusal raised before enforce.Run - a bad --env, an unparseable or
+			// unapproved manifest, an env that cannot be resolved, a backend this host
+			// cannot provide - goes through refuse, so --json always leaves an envelope
+			// on stdout. Returning these bare wrote nothing there, and a machine gate
+			// could not tell a refusal from a crash.
+			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
+
 			overrides, err := parseEnvFlags(envFlags)
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			// Parse the manifest once: the same bytes are approval-checked and executed,
 			// so a swap between two opens cannot run a different policy than the one
 			// approved.
 			doc, err := loadDocument(args[0])
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			if err := requireApproval(doc, allowUnapproved); err != nil {
-				return err
+				return refuse(err)
 			}
 			// Resolve paths for execution only after the fingerprint check above, which
 			// must see the manifest as written.
@@ -59,7 +66,7 @@ func newRunCmd() *cobra.Command {
 			resolveManifestPaths(p, args[0])
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			for _, name := range unset {
 				fmt.Fprintf(os.Stderr, "[bento] note: env %s is allowed by the manifest but not set on this host; "+
@@ -68,7 +75,7 @@ func newRunCmd() *cobra.Command {
 
 			e, err := backend.New()
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 
 			// In --json mode the script's streams are captured into the envelope
@@ -98,6 +105,19 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
+// refuseJSON reports a refusal raised before enforce.Run was ever reached in the same
+// envelope enforcement's own refusals use, so --json never answers a refusal with an
+// empty stdout. Outside --json the error is returned untouched and main renders it;
+// inside it, the message is the envelope's reason and the exit code is bentoFailed,
+// mirroring the enforcement path exactly - including that nothing is written to stderr.
+func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
+	if err == nil || !asJSON {
+		return err
+	}
+	_ = writeJSON(stdout, refusalJSON{true, err.Error(), noReport})
+	return &exitError{code: bentoFailed}
+}
+
 // writeRunResult turns the outcome of enforce.Run into the frontend's contract: it
 // writes the human or --json output and returns the error the command propagates. The
 // exit-code mapping is the load-bearing invariant - a refusal (bento could not run the
@@ -113,11 +133,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
-			_ = writeJSON(stdout, struct {
-				Refused bool       `json:"refused"`
-				Reason  string     `json:"reason"`
-				Report  reportJSON `json:"report"`
-			}{true, refusal.Reason, toReportJSON(refusal.Report)})
+			_ = writeJSON(stdout, refusalJSON{true, refusal.Reason, toReportJSON(refusal.Report)})
 			return &exitError{code: bentoFailed}
 		}
 		return runErr

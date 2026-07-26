@@ -54,7 +54,11 @@ func newProfileCmd() *cobra.Command {
 			"this same script is resumed: its grants are listed and mounted from the first\n" +
 			"round instead of being asked again, so quitting mid-session and re-running\n" +
 			"picks up where you left off. An unapproved or stale manifest mounts nothing\n" +
-			"and every path is asked again.",
+			"and every path is asked again.\n\n" +
+			"The manifest is always written, but profile exits 4 when it cannot vouch for\n" +
+			"it: the profiled run did not finish, the observer dropped accesses it could\n" +
+			"not name, or the granting session ended before it converged. That is what\n" +
+			"keeps `profile && approve` from stamping a manifest built on a crashed run.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := filepath.Abs(args[0])
@@ -84,6 +88,12 @@ func newProfileCmd() *cobra.Command {
 
 			var proposed *policy.Policy
 			var seed *policy.Policy
+			// partial says a profiling round could not see everything the target did (it
+			// was killed, exited nonzero, or the observer dropped accesses); stop says the
+			// granting session itself did not finish. Either way the manifest below is
+			// written but not vouched for - see the exit code at the end.
+			partial := false
+			stop := convergeDone
 			if interactiveStdin() {
 				// A content-branching target reads a config to decide what to do next; under
 				// default-deny that read fails and it never attempts the downstream paths, so
@@ -105,8 +115,12 @@ func newProfileCmd() *cobra.Command {
 					return seedErr
 				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
-				round := func(d *policy.Policy) (*policy.Policy, error) { return profileRound(cfg, d) }
-				proposed, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
+				round := func(d *policy.Policy) (*policy.Policy, error) {
+					p, roundPartial, err := profileRound(cfg, d)
+					partial = partial || roundPartial
+					return p, err
+				}
+				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
 				// one default-deny pass and write. A content-branching target under-reports;
@@ -117,7 +131,7 @@ func newProfileCmd() *cobra.Command {
 				} else {
 					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
 				}
-				proposed, err = profileRound(cfg, base)
+				proposed, partial, err = profileRound(cfg, base)
 			}
 			if err != nil {
 				return err
@@ -149,6 +163,15 @@ func newProfileCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "\n[bento] wrote %s - review it, then run `bento validate %s` and `bento approve %s`.\n", out, out, out)
 			fmt.Fprintf(os.Stderr, "[bento] it reflects only this run; profile again with other inputs to widen it.\n")
+
+			// The manifest is written either way - it is where the next pass starts from -
+			// but a proposal built on a partial observation, or on a session the user left
+			// before it converged, is not what the target needs. Exiting 0 would let
+			// `profile && approve` stamp it as though it were.
+			if reason := incompleteReason(partial, stop); reason != "" {
+				fmt.Fprintf(os.Stderr, "[bento] the proposal is incomplete (%s), so this exits %d rather than 0 - review and widen it before approving.\n", reason, profileIncomplete)
+				return &exitError{code: profileIncomplete}
+			}
 			return nil
 		},
 	}
@@ -156,6 +179,22 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// incompleteReason names why a profiling session cannot vouch for the manifest it
+// wrote, or "" when it can. The specific warnings are already on stderr; this is the
+// one line that ties them to the exit code.
+func incompleteReason(partial bool, stop convergeStop) string {
+	switch {
+	case partial:
+		return "a profiling round did not observe everything the target did"
+	case stop == convergeQuit:
+		return "you quit before it converged"
+	case stop == convergeMaxRounds:
+		return "it hit the round cap without converging"
+	default:
+		return ""
+	}
 }
 
 // profileConfig carries the inputs a profiling round needs that do not change between
@@ -175,12 +214,15 @@ type profileConfig struct {
 // round's shield and broad-grant warnings. It is the unit the convergence loop repeats
 // with a widening grant set; discovery carries the grants accepted so far, mounted with
 // real content so the target proceeds past accesses it already has.
-func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, error) {
+// It also reports whether the observation was partial - the run did not finish, or the
+// observer could not name every access - which is the same condition the warnings below
+// print, returned so the command can exit nonzero over a proposal it cannot vouch for.
+func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, bool, error) {
 	obs, err := backend.Profile(cfg.ctx, discovery,
 		enforce.Process{Stdin: cfg.targetStdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: cfg.env},
 		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Synthesize refuses the observation nothing can be proposed from (a seccomp kill).
 	// It runs before the warnings below so that refusal is not preceded by advice that
@@ -189,12 +231,13 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// refusal alone.
 	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, obs)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// A run that was signaled or exited nonzero may have stopped before exercising all
 	// its code paths, so the observations - and the manifest synthesized from them - can
 	// be silently over-tight. Warn before proposing it.
-	for _, w := range profileWarnings(obs) {
+	warnings := profileWarnings(obs)
+	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, w)
 	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
@@ -202,7 +245,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	proposed.Env = sortedKeys(cfg.env)
 	printFlooredWrites(obs.Writes)
 	printProposalWarnings(proposed)
-	return proposed, nil
+	return proposed, len(warnings) > 0, nil
 }
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or
@@ -269,7 +312,8 @@ const maxConvergeRounds = 25
 // continues where it left off rather than re-asking every path; only its Read and Write
 // are read, and nil starts fresh. It
 // returns the final proposal with reads/writes narrowed to exactly the accepted set.
-func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
+func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, convergeStop, error) {
+	stop := convergeDone
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
 	acceptedExec := false
@@ -303,7 +347,7 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 			}
 			c, err := prompt(it.kind, it.path)
 			if err != nil {
-				return nil, err
+				return nil, convergeQuit, err
 			}
 			switch c {
 			// [a]ll here accepts only this seeded path. In the loop below it answers for
@@ -313,7 +357,7 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 			case grantAll, grantYes:
 				accept(it)
 			case grantQuit:
-				return nil, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
+				return nil, convergeQuit, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
 			default:
 				declined[it.key()] = true
 			}
@@ -329,6 +373,7 @@ loop:
 		// grants any remaining paths by hand.
 		if r > maxConvergeRounds {
 			fmt.Fprintf(out, "[bento] stopped after %d rounds without converging - the tool may touch a new path each run; review the manifest and grant any remaining paths by hand.\n", maxConvergeRounds)
+			stop = convergeMaxRounds
 			break
 		}
 		discovery := &policy.Policy{
@@ -342,7 +387,7 @@ loop:
 		}
 		proposal, err := round(discovery)
 		if err != nil {
-			return nil, err
+			return nil, convergeQuit, err
 		}
 		last = proposal
 		// exec: all is broader than any single path - it lets the target spawn anything
@@ -353,12 +398,13 @@ loop:
 			fmt.Fprintf(out, "[bento] round %d: the target spawned a subprocess.\n", r)
 			c, err := prompt(execGrant.kind, execGrant.path)
 			if err != nil {
-				return nil, err
+				return nil, convergeQuit, err
 			}
 			switch c {
 			case grantAll, grantYes:
 				accept(execGrant)
 			case grantQuit:
+				stop = convergeQuit
 				break loop
 			default:
 				declined[execGrant.key()] = true
@@ -382,7 +428,7 @@ loop:
 			}
 			c, err := prompt(it.kind, it.path)
 			if err != nil {
-				return nil, err
+				return nil, convergeQuit, err
 			}
 			switch c {
 			case grantAll:
@@ -391,6 +437,7 @@ loop:
 			case grantYes:
 				accept(it)
 			case grantQuit:
+				stop = convergeQuit
 				break loop
 			default: // grantNo and any unrecognized answer: decline, do not re-ask
 				declined[it.key()] = true
@@ -405,8 +452,19 @@ loop:
 	if acceptedExec {
 		final.Exec = policy.ExecAll
 	}
-	return final, nil
+	return final, stop, nil
 }
+
+// convergeStop says why the loop ended. Anything but convergeDone means the user was
+// still being asked about paths when it stopped, so the proposal is what had been
+// granted so far rather than what the target needs.
+type convergeStop int
+
+const (
+	convergeDone      convergeStop = iota // a round surfaced nothing new
+	convergeQuit                          // the user quit mid-session
+	convergeMaxRounds                     // the round cap was hit without converging
+)
 
 // foreignShielded reports whether granting path would expose a credential or
 // persistence store in a home directory the enforced run will not re-shield - the

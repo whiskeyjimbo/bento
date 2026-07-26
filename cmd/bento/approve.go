@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,15 +49,58 @@ func newApproveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			info, err := os.Stat(path)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(path, out, info.Mode().Perm()); err != nil {
+			if err := writeManifestAtomically(path, out, os.Stderr); err != nil {
 				return err
 			}
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
 			return nil
 		},
 	}
+}
+
+// writeManifestAtomically replaces the manifest through a temporary file in its own
+// directory and a rename, so an interrupted approve cannot leave a truncated manifest
+// where a complete one was - os.WriteFile opens the real file for truncation, and the
+// stamp it is mid-way through writing is the thing every other command reads.
+//
+// It writes at the symlink-resolved location, since a manifest kept in a dotfiles repo
+// and linked into place is ordinary here; renaming onto the link itself would replace
+// the link with a regular file and silently detach it from its source.
+//
+// The mode carries forward from the file being replaced, minus group and world write:
+// approval is drift detection whose whole value is that the permissions cannot change
+// without the stamp going stale, and a manifest anyone can edit gives that away.
+func writeManifestAtomically(path string, data []byte, warn io.Writer) error {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode().Perm()
+	if shared := mode & 0o022; shared != 0 {
+		mode &^= 0o022
+		fmt.Fprintf(warn, "[bento] %s was group/world-writable (%#o); writing it back as %#o - a manifest others can edit makes its approval stamp meaningless.\n", path, info.Mode().Perm(), mode)
+	}
+
+	f, err := os.CreateTemp(filepath.Dir(target), ".bento-approve-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once the rename below has moved it away
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, target)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -50,7 +51,7 @@ func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 	// One prompt per new path: config in round 1, data in round 2. Round 3 sees both
 	// granted and nothing new, so it converges without prompting.
 	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
-	final, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestConvergeDeclineNeverMountsOrReveals(t *testing.T) {
 	// "y" is never consumed. A broken converge that mounts a declined path would reveal
 	// dataPath, prompt it, and the "y" would accept it, failing the assertions below.
 	prompt := newGrantPrompter(strings.NewReader("n\ny\n"), io.Discard)
-	final, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 		prompts++
 		return grantAll, nil
 	}
-	final, err := converge(baseDiscovery(), nil, branchingRound, counting, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, branchingRound, counting, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 func TestConvergeQuitKeepsAcceptedSoFar(t *testing.T) {
 	// A round-1 prompt: quit before accepting anything.
 	prompt := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
-	final, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestConvergeNoAttemptsConvergesImmediately(t *testing.T) {
 		t.Fatalf("must not prompt when there is nothing to grant (%s %s)", kind, path)
 		return grantNo, nil
 	}
-	final, err := converge(baseDiscovery(), nil, empty, fail, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, empty, fail, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestConvergeAllStillPromptsRiskyPaths(t *testing.T) {
 		}
 		return grantAll, nil // [a]ll on the innocuous path
 	}
-	final, err := converge(baseDiscovery(), nil, round, prompt, risky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, round, prompt, risky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
 		return &policy.Policy{Entrypoint: "/x", Read: []string{"/p/" + string(rune('a'+rounds%26)) + string(rune('0'+rounds))}}, nil
 	}
 	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
-	if _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil {
+	if _, _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if rounds > maxConvergeRounds+1 {
@@ -241,7 +242,7 @@ func TestConvergeDoesNotReaskDeclined(t *testing.T) {
 		}
 		return grantNo, nil // decline /b
 	}
-	final, err := converge(baseDiscovery(), nil, twoPaths, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), nil, twoPaths, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestConvergeSeedMountsGrantsWithoutReasking(t *testing.T) {
 		return grantYes, nil
 	}
 	seed := &policy.Policy{Read: []string{cfgPath}}
-	final, err := converge(baseDiscovery(), seed, recording, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), seed, recording, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestConvergeSeedPromptsRiskyPaths(t *testing.T) {
 		return grantNo, nil
 	}
 	seed := &policy.Policy{Read: []string{cfgPath, cred}}
-	final, err := converge(baseDiscovery(), seed, recording, prompt, func(p string) bool { return p == cred }, io.Discard)
+	final, _, err := converge(baseDiscovery(), seed, recording, prompt, func(p string) bool { return p == cred }, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -336,7 +337,7 @@ func TestConvergeSeedAllDoesNotCoverLaterRounds(t *testing.T) {
 		return grantAll, nil
 	}
 	seed := &policy.Policy{Read: []string{cred}}
-	if _, err := converge(baseDiscovery(), seed, branchingRound, prompt, func(p string) bool { return p == cred }, io.Discard); err != nil {
+	if _, _, err := converge(baseDiscovery(), seed, branchingRound, prompt, func(p string) bool { return p == cred }, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if asked[cfgPath] != 1 {
@@ -396,7 +397,7 @@ func TestConvergeExecNeedsConsent(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			prompt := newGrantPrompter(strings.NewReader(tc.answers), io.Discard)
-			final, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
+			final, _, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
 			if err != nil {
 				t.Fatalf("converge: %v", err)
 			}
@@ -414,7 +415,7 @@ func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
 	// An empty prompt input returns grantQuit on EOF, so any prompt at all would end
 	// the loop before it converged - the tripwire that exec was not re-asked.
 	prompt := newGrantPrompter(strings.NewReader(""), io.Discard)
-	final, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
+	final, _, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -432,5 +433,50 @@ func TestDropDeclinedSeedsDropsExec(t *testing.T) {
 	merged := &policy.Policy{Exec: policy.ExecAll}
 	if got := dropDeclinedSeeds(merged, seed, accepted).Exec; got != policy.ExecNone {
 		t.Errorf("Exec = %q, want %q - a declined exec must not merge back", got, policy.ExecNone)
+	}
+}
+
+// converge must say why it stopped, so profile can exit nonzero over a manifest built
+// from a session the user never finished rather than let `profile && approve` stamp it
+// (bv2-w4n5). A quit and a hit round cap are both "not converged".
+func TestConvergeReportsWhyItStopped(t *testing.T) {
+	prompt := newGrantPrompter(strings.NewReader("y\ny\ny\n"), io.Discard)
+	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard); err != nil || stop != convergeDone {
+		t.Errorf("a converged session: stop = %v, err = %v; want convergeDone", stop, err)
+	}
+
+	quitting := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
+	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, quitting, noRisky, io.Discard); err != nil || stop != convergeQuit {
+		t.Errorf("a quit session: stop = %v, err = %v; want convergeQuit", stop, err)
+	}
+
+	// A new path every round never converges, so [a]ll runs it into the round cap.
+	round := 0
+	everNew := func(*policy.Policy) (*policy.Policy, error) {
+		round++
+		return &policy.Policy{Entrypoint: "/x", Read: []string{fmt.Sprintf("/p/%d", round)}}, nil
+	}
+	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
+	if _, stop, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil || stop != convergeMaxRounds {
+		t.Errorf("a capped session: stop = %v, err = %v; want convergeMaxRounds", stop, err)
+	}
+}
+
+// The exit code is the honest signal, so every not-converged outcome has to reach it.
+func TestIncompleteReason(t *testing.T) {
+	if got := incompleteReason(false, convergeDone); got != "" {
+		t.Errorf("a clean converged session must be vouched for; got %q", got)
+	}
+	for _, tc := range []struct {
+		partial bool
+		stop    convergeStop
+	}{
+		{true, convergeDone},
+		{false, convergeQuit},
+		{false, convergeMaxRounds},
+	} {
+		if incompleteReason(tc.partial, tc.stop) == "" {
+			t.Errorf("partial=%v stop=%v must be reported as incomplete", tc.partial, tc.stop)
+		}
 	}
 }

@@ -31,6 +31,21 @@ type reportJSON struct {
 	FullyEnforced bool `json:"fully_enforced"`
 }
 
+// refusalJSON is the envelope for a run bento would not perform. It is the one shape
+// every refusal uses - the enforcement layer's own and the frontend's alike - so a
+// machine consumer never has to tell an empty stdout from a crash.
+type refusalJSON struct {
+	Refused bool       `json:"refused"`
+	Reason  string     `json:"reason"`
+	Report  reportJSON `json:"report"`
+}
+
+// noReport is the report for a refusal raised before any sandbox was built, where no
+// layer was ever evaluated. toReportJSON of a zero Report would answer
+// fully_enforced:true - literally "no layer degraded" - which reads as a clean posture
+// on a run that never had one.
+var noReport = reportJSON{Layers: []layerJSON{}, FullyEnforced: false}
+
 // doctorJSON is the doctor command's machine-readable output: the full host report
 // plus a readiness bool that mirrors doctor's exit code, so a CI consumer can gate on
 // one field rather than the process status or the matrix.

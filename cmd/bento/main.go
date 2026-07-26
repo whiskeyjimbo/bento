@@ -22,6 +22,15 @@ const bentoFailed = 125
 // readiness. A hardening-only gap, where runs still proceed, stays exit 0.
 const doctorCoreShortfall = 3
 
+// profileIncomplete is `bento profile`'s exit code when it wrote a manifest it cannot
+// vouch for: the profiled run was killed or exited nonzero, the observer dropped
+// accesses it could not name, the convergence loop hit its round cap, or the user quit
+// before it converged. The manifest is still written - it is the starting point for the
+// next pass - but `profile && approve` must not stamp it. It sits beside
+// doctorCoreShortfall as a per-command outcome code rather than reusing 125 (bento did
+// run the target and did write the file) or 124 (which is run --strict's verdict).
+const profileIncomplete = 4
+
 // strictShortfall is `run --strict`'s exit code when the target ran but a guarantee
 // strict required lapsed during the run (a proxy listener that died mid-run). It sits
 // next to bentoFailed because it is the same kind of answer - bento's verdict on the

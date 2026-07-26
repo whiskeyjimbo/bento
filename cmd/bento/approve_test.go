@@ -2,6 +2,9 @@ package main
 
 import (
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/manifest"
@@ -101,5 +104,77 @@ func TestReportApprovalStrictness(t *testing.T) {
 				t.Errorf("--strict should have passed; got %v", err)
 			}
 		})
+	}
+}
+
+// approve rewrites the manifest others read, so a world-writable one gives away the
+// only thing the stamp is worth: that the permissions cannot change without the
+// approval going stale. It is written back with the shared write bits removed
+// (bv2-w4n5).
+func TestApproveDropsSharedWriteBits(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got&0o022 != 0 {
+		t.Errorf("mode = %#o, want the group/world write bits cleared", got)
+	}
+}
+
+// A manifest kept in a dotfiles repo and symlinked into place is ordinary. Renaming
+// onto the link would replace it with a regular file and detach it from its source, so
+// approve writes at the resolved location and the link survives.
+func TestApproveWritesThroughASymlink(t *testing.T) {
+	target := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	link := filepath.Join(t.TempDir(), "link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCapturingStdout(t, newApproveCmd(), link); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink must survive approve; lstat = %v, %v", fi, err)
+	}
+	doc, err := loadDocument(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkApproval(doc) != approvalCurrent {
+		t.Error("the stamp must land on the link's target, not on a file replacing the link")
+	}
+}
+
+// A failed write must not leave a truncated manifest where a complete one was: the
+// replacement goes through a temporary file and a rename, so the manifest is only ever
+// the old bytes or the new ones - and no temp file is left behind.
+func TestWriteManifestAtomicallyLeavesNoTempFiles(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	dir := filepath.Dir(path)
+	if err := writeManifestAtomically(path, []byte("entrypoint: ./y\n"), io.Discard); err != nil {
+		t.Fatalf("writeManifestAtomically: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".bento-") {
+			t.Errorf("left a temporary file behind: %s", e.Name())
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "entrypoint: ./y\n" {
+		t.Errorf("manifest = %q, want the new bytes", data)
 	}
 }

@@ -99,7 +99,7 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 
 	// Round 1: default-deny. The config read fails, so the downstream path is never
 	// attempted and must not appear in the proposal.
-	round1, err := profileRound(cfgRun, base)
+	round1, _, err := profileRound(cfgRun, base)
 	if err != nil {
 		t.Fatalf("round 1: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 		Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll,
 		Network: base.Network, Read: append(append([]string{}, base.Read...), cfg),
 	}
-	round2, err := profileRound(cfgRun, granted)
+	round2, _, err := profileRound(cfgRun, granted)
 	if err != nil {
 		t.Fatalf("round 2: %v", err)
 	}
