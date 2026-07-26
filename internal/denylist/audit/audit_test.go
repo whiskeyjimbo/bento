@@ -442,25 +442,28 @@ func TestInScopeSectionAdmitsPathSections(t *testing.T) {
 
 // The Tier-2 vocabulary: each token names a store holding an account password or private
 // key. The counter-cases matter as much - the classifier must not quietly widen into
-// message content or into the Electron messengers, whose exclusion is a scope decision
-// recorded in credentialName's doc rather than an accident of the token list.
+// message content or into the synced document folders, and Signal/Session must stay out
+// on the stated rule (their key lives in the OS keyring), not on the app's name.
 func TestCredentialNameTierTwoTokens(t *testing.T) {
 	for _, p := range []string{
 		"/home/u/.local/share/dino", "/home/u/.config/gajim", "/home/u/.config/psi+",
 		"/home/u/.config/profanity", "/home/u/.local/share/telepathy", "/home/u/.nicotine",
 		"/home/u/.linphonerc", "/home/u/.config/Mumble", "/home/u/.config/kdeconnect",
 		"/home/u/.parsec", "/home/u/.hashcat",
+		// Electron messengers: a live account token recoverable from the local store,
+		// which is the credential class regardless of the app's packaging.
+		"/home/u/.config/discord", "/home/u/.config/discordcanary", "/home/u/.config/Slack",
+		"/home/u/.config/skypeforlinux", "/home/u/.cache/ms-skype-online",
+		"/home/u/.TelegramDesktop", "/home/u/.local/share/telegram-desktop",
 	} {
 		if !credentialName(p) {
 			t.Errorf("%s holds an account password or private key and must classify as a credential store", p)
 		}
 	}
 	for _, p := range []string{
-		// Encrypted message databases: the stated boundary.
+		// Encrypted message databases whose key lives in the OS keyring: the stated
+		// boundary is recoverable-credential vs key-held-elsewhere, not app shape.
 		"/home/u/.config/Signal", "/home/u/.config/Session",
-		// Electron messengers: excluded as browser-shaped scope, NOT because their
-		// tokens are safe. If one of these starts matching, it is a scope change.
-		"/home/u/.config/discord", "/home/u/.config/Slack", "/home/u/.TelegramDesktop",
 		// Cloud-sync: shielded by name in the denylist precisely so no token here
 		// catches the synced document folders too.
 		"/home/u/.config/Nextcloud", "/home/u/Nextcloud/Notes", "/home/u/.config/Seafile",

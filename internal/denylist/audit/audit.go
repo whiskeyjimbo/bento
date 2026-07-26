@@ -89,15 +89,20 @@ const credentialSection = "credential store (name-classified)"
 // names no messaging class: the ones matched here keep an account password, a private
 // key, or both in plaintext on disk, which is the credential class by bento's own rule.
 //
-// The boundary is drawn at the CLIENT'S OWN account credential, not at message content
-// and not at every recoverable token. So Signal and Session stay out - their store is an
-// encrypted message database. The Electron messengers stay out too, and this is the part
-// worth stating plainly rather than implying: Discord, Slack, Skype, and Telegram Desktop
-// hold plaintext-recoverable auth tokens and session keys, and are the standard
-// infostealer target set, so the "encrypted database" rationale does NOT cover them. They
-// are excluded because shielding a browser-profile-shaped Electron tree is browser scope,
-// which bento leaves to the profile shields above, not because their tokens are safe. A
-// deliberate decision to widen into that class is a scope change, not a token addition.
+// The boundary is drawn at the CLIENT'S OWN account credential and at whether the store
+// yields it without a key the host holds elsewhere - not at message content, and not at
+// the app's shape. Discord, Slack, Skype, and Telegram Desktop are in on that rule: each
+// keeps a live account token recoverable from the local store, which is the browser
+// session-cookie class bento already shields wholesale, so an app being a large Electron
+// tree is not a reason to leave its credential exposed. (An earlier version of this
+// comment excluded them as "browser-shaped Electron scope"; that drew the line at the
+// packaging rather than the credential, and did not survive being written down.)
+//
+// Signal and Session stay out, and the rule says why rather than the app name: their
+// store is an encrypted message database whose key lives in the OS keyring, so the files
+// alone yield neither messages nor a usable account credential - and the keyring itself
+// is shielded. The line is therefore recoverable-credential vs key-held-elsewhere, which
+// is checkable against a new client instead of being a list of decisions.
 //
 // This trades away one guarantee that inScopeSection has: a header-less file cannot make
 // "unrecognised = in-scope" work, since that would hard-fail on the ~1300 ordinary app
@@ -141,6 +146,11 @@ func credentialName(path string) bool {
 			// database - Signal, Session - are firejail's privacy scope and stay out.
 			"purple", "weechat", "xchat", "irssi", "mcabber", "coyim",
 			"dino", "profanity", "psi", "gajim", "telepathy", "nicotine",
+			// Electron messengers: a live account token recoverable from the local
+			// store. "psi" above already matches nothing of theirs, so each needs its
+			// own token; measured against upstream, these four match exactly the nine
+			// store paths and nothing else.
+			"discord", "slack", "skype", "telegram",
 			// SIP/VoIP account passwords, a client certificate INCLUDING its private key,
 			// and a device-pairing RSA key: key material, not message history.
 			"linphone", "mumble", "kdeconnect",

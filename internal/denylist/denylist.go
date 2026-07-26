@@ -987,6 +987,23 @@ var bulkStoreDirs = []string{
 	".config/BraveSoftware",  // Brave
 	".config/microsoft-edge", // Edge
 
+	// Electron messenger stores. Each keeps the client's own auth token - the credential
+	// that authenticates the account, not the message history - recoverable in plaintext
+	// or under a key sitting beside it, which is the same class as a browser's session
+	// cookie store above and the standard infostealer target set. Shielded whole for the
+	// usual reason: naming the token file leaves siblings exposed and does not stop a new
+	// one being created. Signal and Session are still out - see credentialName for where
+	// the line falls and why these fall on this side of it.
+	".config/discord",
+	".config/discordcanary",
+	".config/discordptb",
+	".config/Slack",
+	".config/skypeforlinux",
+	".cache/ms-skype-online",
+	".TelegramDesktop",
+	".local/share/TelegramDesktop",
+	".local/share/telegram-desktop",
+
 	// Encrypted-home trees: the whole home in either form, so bulk by construction.
 	".Private", // ecryptfs private directory (encrypted underlay)
 	"Private",  // ecryptfs DECRYPTED mount point at ~/Private: holds cleartext when mounted

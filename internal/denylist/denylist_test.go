@@ -26,6 +26,18 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.config/mozilla", // XDG Firefox profile store
 		"/home/u/.zen",            // Zen browser profile store
 		"/home/u/.config/google-chrome",
+		// Electron messengers: a live account token recoverable from the local store,
+		// the browser session-cookie class rather than message content. All nine, since
+		// each is a separate install location and missing one re-exposes that account.
+		"/home/u/.config/discord",
+		"/home/u/.config/discordcanary",
+		"/home/u/.config/discordptb",
+		"/home/u/.config/Slack",
+		"/home/u/.config/skypeforlinux",
+		"/home/u/.cache/ms-skype-online",
+		"/home/u/.TelegramDesktop",
+		"/home/u/.local/share/TelegramDesktop",
+		"/home/u/.local/share/telegram-desktop",
 		"/home/u/.config/rclone",
 		"/home/u/.config/keybase",       // Keybase keys/tokens
 		"/home/u/.pki",                  // NSS cert/key DBs
