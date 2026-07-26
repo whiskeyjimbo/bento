@@ -200,9 +200,12 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 // over-broad grants from the auto-proposal) and prints why each was withheld, so a
 // path the tool wants but bento will not auto-grant is never silently missing.
 func printProposalWarnings(p *policy.Policy) {
-	shielded, broadReads, broadWrites := clampProposal(p)
+	shielded, writeShielded, broadReads, broadWrites := clampProposal(p)
 	for _, d := range shielded {
 		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
+	}
+	for _, d := range writeShielded {
+		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is always write-shielded, because a file planted there is run by the host later. Unlike a credential path there is no hand-added opt-in: a write: grant for it is refused, not warned. The path stays readable; if the script must install there, run it outside bento.\n", d)
 	}
 	for _, d := range broadReads {
 		fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
@@ -547,13 +550,13 @@ func partialRunWarning(obs profile.Observation) string {
 // quality filter, not a security check. A grant that merely CONTAINS a shield (read: ~
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
 // shield goes.
-func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped []string) {
+func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped, writeShielded []string) {
 	home, _ := os.UserHomeDir()
 	// A relative home yields relative shield paths that never match the absolute grants
 	// below, silently keeping a grant this filter meant to drop. Treat it like an unset
 	// home and skip the clamp; the run-time refusal is the backstop either way.
 	if home == "" || !filepath.IsAbs(home) {
-		return reads, writes, nil
+		return reads, writes, nil, nil
 	}
 	// Build shields against both the home as configured and its symlink-resolved form.
 	// A symlinked home (Fedora Silverblue's /home -> /var/home) means an observed
@@ -593,7 +596,45 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 		}
 		return kept
 	}
-	return filter(reads), filter(writes), dropped
+	keptReads = filter(reads)
+	keptWrites, writeShielded = clampWriteShieldedGrants(homes, filter(writes))
+	return keptReads, keptWrites, dropped, writeShielded
+}
+
+// clampWriteShieldedGrants drops write grants at or inside a DenyWrite home shield
+// (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). checkWriteNotUnderReadOnlyShield
+// hard-refuses these at run time and there is no opt-in, so proposing one would hand the
+// reviewer a manifest that cannot be approved into a working run. Reads are untouched:
+// a DenyWrite shield leaves its content readable, so a read grant there is honored.
+//
+// Unlike clampShieldedGrants this is not merely a proposal-quality filter - it is what
+// keeps the profiler's output and the enforcer's refusal from disagreeing.
+func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
+	seen := map[string]bool{}
+	var shields []string
+	for _, h := range homes {
+		for _, r := range denylist.Home(h) {
+			if r.Deny == denylist.DenyWrite && !seen[r.Path] {
+				seen[r.Path] = true
+				shields = append(shields, r.Path)
+			}
+		}
+	}
+	for _, g := range writes {
+		shielded := false
+		for _, s := range shields {
+			if g == s || underDir(s, g) {
+				shielded = true
+				break
+			}
+		}
+		if shielded {
+			dropped = append(dropped, g)
+		} else {
+			kept = append(kept, g)
+		}
+	}
+	return kept, dropped
 }
 
 // foreignHomeShields returns the proposed grants that reach a shielded path under a home
@@ -678,12 +719,12 @@ func underDir(parent, child string) bool {
 // credential the deny-list misses; the specific sub-paths the script read are proposed
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
 // the shielded, over-broad read, and over-broad write paths to warn about.
-func clampProposal(p *policy.Policy) (shielded, broadReads, broadWrites []string) {
-	p.Read, p.Write, shielded = clampShieldedGrants(p.Read, p.Write)
+func clampProposal(p *policy.Policy) (shielded, writeShielded, broadReads, broadWrites []string) {
+	p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(p.Read, p.Write)
 	p.Write, broadWrites = clampBroadWrites(p.Write)
 	p.Read, broadReads = clampBroadReads(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
-	return shielded, broadReads, broadWrites
+	return shielded, writeShielded, broadReads, broadWrites
 }
 
 func clampBroadWrites(writes []string) (kept, dropped []string) {

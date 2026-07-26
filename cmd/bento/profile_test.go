@@ -22,7 +22,7 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
 		Write: []string{"/srv/app", "/etc"}, // /srv/app is narrow (kept); /etc is top-level (dropped)
 	}
-	_, _, broadWrites := clampProposal(p)
+	_, _, _, broadWrites := clampProposal(p)
 
 	if !slices.Contains(broadWrites, "/etc") {
 		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broadWrites)
@@ -52,7 +52,7 @@ func TestClampProposalDropsBroadReads(t *testing.T) {
 	underHome := home + "/.config/app/config" // a specific path the script really read
 	p := &policy.Policy{Read: []string{home, "/", "/etc", underHome, "/srv/app/data"}}
 
-	_, broadReads, _ := clampProposal(p)
+	_, _, broadReads, _ := clampProposal(p)
 
 	for _, want := range []string{home, "/", "/etc"} {
 		if !slices.Contains(broadReads, want) {
@@ -235,7 +235,7 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 
 	resolvedSSH := filepath.Join(real, ".ssh", "id_rsa") // observed via the resolved home
 	linkSSH := filepath.Join(link, ".ssh", "id_rsa")     // observed via $HOME as configured
-	_, _, dropped := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	_, _, dropped, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
 	for _, p := range []string{resolvedSSH, linkSSH} {
 		if !slices.Contains(dropped, p) {
 			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
@@ -321,7 +321,7 @@ func TestClampShieldedGrants(t *testing.T) {
 	reads := []string{ssh, sshDir, netrc, home, ordinary, underHome}
 	writes := []string{home + "/.gnupg/x", ordinary}
 
-	keptR, keptW, dropped := clampShieldedGrants(reads, writes)
+	keptR, keptW, dropped, _ := clampShieldedGrants(reads, writes)
 
 	// A grant AT or INSIDE a shield is dropped, whether the shield is a directory
 	// (~/.ssh) or a file (~/.netrc); the run refuses all of them.
@@ -340,6 +340,45 @@ func TestClampShieldedGrants(t *testing.T) {
 	}
 	if !slices.Contains(keptW, ordinary) {
 		t.Errorf("ordinary write must be kept; keptWrites=%v", keptW)
+	}
+}
+
+// The profiler must not propose a write grant the enforcer hard-refuses. A DenyWrite
+// shield has no opt-in, so a proposal naming one could not be approved into a working
+// run - the reviewer would accept a manifest that fails at compile. This is the one
+// clamp that is not merely proposal quality: it is what keeps the two halves agreeing.
+func TestClampDropsWritesUnderWriteShieldButKeepsReads(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home directory on this host")
+	}
+	pathBin := home + "/.local/bin"       // a $PATH plant target: DenyWrite directory
+	installed := home + "/.cargo/bin/rg"  // strictly inside another one
+	bashrc := home + "/.bashrc"           // a DenyWrite shield that is itself a FILE
+	ordinary := home + "/project/out.txt" // no shield involved
+
+	reads := []string{pathBin, bashrc}
+	writes := []string{pathBin, installed, bashrc, ordinary}
+
+	keptR, keptW, _, writeShielded := clampShieldedGrants(reads, writes)
+
+	for _, w := range []string{pathBin, installed, bashrc} {
+		if !slices.Contains(writeShielded, w) {
+			t.Errorf("write %q is at/inside a DenyWrite shield and must be dropped, or the proposal cannot be approved into a working run; dropped=%v", w, writeShielded)
+		}
+		if slices.Contains(keptW, w) {
+			t.Errorf("write %q must not survive into the proposal; keptWrites=%v", w, keptW)
+		}
+	}
+	if !slices.Contains(keptW, ordinary) {
+		t.Errorf("an ordinary write must be kept; keptWrites=%v", keptW)
+	}
+	// Reads of the same paths stay: a DenyWrite shield leaves its content readable, so
+	// dropping the read would withhold access the shield never took.
+	for _, r := range []string{pathBin, bashrc} {
+		if !slices.Contains(keptR, r) {
+			t.Errorf("read of write-shielded %q must be KEPT - the shield only blocks writes; keptReads=%v", r, keptR)
+		}
 	}
 }
 

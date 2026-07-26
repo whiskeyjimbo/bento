@@ -746,6 +746,16 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// namespace op, but creating a new mount point there is EROFS and aborts the run
 	// (which is also why an absent DenyAll under an exposed parent needs no shield -
 	// there is nothing to hide).
+	//
+	// No policy that survives checkGrants can currently reach the forced-child branch:
+	// firing an exposed DenyWrite parent needs a write grant at, under, or above it, and
+	// for a parent with a DenyAll child all three are refused - under by
+	// checkWriteNotUnderReadOnlyShield, at and above by checkWriteNotAboveShield
+	// (measured: instrumenting the branch panics under the full suite only with the
+	// former check removed). It is kept because the ordering property is what makes the
+	// refusals safe to relax: whichever of them a later rule shape loosens, the hidden
+	// child must still land after the readable parent. Pinned directly against denyArgs
+	// by the carve tests, which can no longer reach it through compile.
 	var args []string
 	var applied []denylist.Rule
 	emit := func(want denylist.Deny) {
@@ -820,8 +830,10 @@ func removeCreatedShieldDirs(dirs []string) {
 func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) bool {
 	// An exact opt-in grant (yz3.2) wins over the shield: skip it so the grant binds
 	// the real content instead of being overmounted. r.Path is already resolved by the
-	// caller, matching the resolved paths in optIns. Only DenyAll shields are opt-in-able
-	// (checkNotShielded only ever refused those); a DenyWrite shield is untouched.
+	// caller, matching the resolved paths in optIns. Only DenyAll shields are opt-in-able:
+	// the opt-in is a READ escape, and a DenyWrite shield's content is readable already,
+	// so there is nothing for it to grant but the write it exists to refuse. A write grant
+	// under one is rejected by checkWriteNotUnderReadOnlyShield rather than reaching here.
 	if r.Deny == denylist.DenyAll && slices.Contains(optIns, r.Path) {
 		return false
 	}
@@ -904,6 +916,9 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	if err := checkNotShielded(sb, writes, nil); err != nil {
 		return err
 	}
+	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
+		return err
+	}
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
 		return err
 	}
@@ -949,6 +964,45 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// reading the shield directory itself.
 			if under(g, rp) && !slices.Contains(optInShields, rp) {
 				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
+			}
+		}
+	}
+	return nil
+}
+
+// checkWriteNotUnderReadOnlyShield rejects a write grant at or inside a DenyWrite
+// shield (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). The shield's ro-bind
+// is emitted after the grant's bind and wins, so such a grant is a silent no-op: the
+// policy compiles, the bind appears in argv, and every write still fails EROFS. Refusing
+// says so at the one moment the author can act on it.
+//
+// There is deliberately no opt-in, unlike the DenyAll shields. That escape (yz3.2) is
+// READ-only by construction - explicitShieldOptIns takes the policy's reads, and a write
+// grant to a shielded store is the key-planting threat the deny-list exists to stop. A
+// DenyWrite shield is nothing BUT that write surface: its whole content is readable
+// already, so an opt-in could only ever grant the plant. Extending the mechanism here
+// would not be symmetry with DenyAll, it would be the case DenyAll's own opt-in refuses.
+//
+// The consequence is real and intended: `rustup update`, `nvm install`, `npm i -g`,
+// `gem install --user-install` and `cargo install` cannot be granted, because each
+// mutates the host's $PATH from inside a sandbox. The registry and build caches
+// (~/.cargo/registry, ~/.m2, ~/.gradle) are not shielded, so an ordinary build is
+// unaffected.
+//
+// Only the always-on shields are checked, never the workspace ones: those derive from
+// the write grants themselves (.git/hooks and .vscode under a granted checkout), so
+// refusing a grant that contains them would refuse every project write grant.
+func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
+	for _, g := range writes {
+		for _, r := range alwaysShields(sb) {
+			if r.Deny != denylist.DenyWrite {
+				continue
+			}
+			// Resolved as the grants are, so a write naming a symlinked shield's real
+			// target is caught rather than silently no-op'd.
+			rp := sb.resolve(r.Path)
+			if under(g, rp) {
+				return fmt.Errorf("linux: write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
 			}
 		}
 	}

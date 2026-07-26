@@ -111,18 +111,16 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 
 // A DenyAll store nested inside a DenyWrite readable tree (fish_history under the
 // readable ~/.local/share/fish, kept readable so fish loads its functions and
-// completions) must stay hidden even when a grant fires the parent's read-only bind. A
-// write grant to a subdir - the kind of grant the readable tree exists to permit - makes
-// the parent's ro-bind fire, which binds the whole subtree readable and would otherwise
-// re-expose the hidden store.
+// completions) must not be reachable by a write grant to a subdir - the grant that fires
+// the parent's read-only bind, binding the whole subtree readable.
 //
-// The write-granted subdir is pre-populated with every workspace shield target
-// (.git/hooks, .vscode, ...) so each becomes a ro-bind of an existing path rather than
-// a tmpfs that would need mkdir inside the now-readonly parent (which aborts the run):
-// this is the shape that reaches the exposure instead of failing closed by accident.
-// With no read grant, the DenyAll child is not independently reachable, so the shield
-// is emitted only because a DenyWrite ancestor's bind would otherwise expose it.
-func TestNestedDenyAllHiddenUnderExposedParent(t *testing.T) {
+// That exposure is now closed one step earlier than it used to be: the write grant is
+// refused outright, because a DenyWrite shield has no opt-in. The refusal is the stronger
+// guarantee (nothing runs at all), so this asserts it rather than the leak. denyArgs'
+// carve still orders the child's shield after the parent bind for the case where some
+// future rule shape makes the parent reachable again - pinned by
+// TestDenyAllChildEmittedAfterExposedDenyWriteParent, which drives denyArgs directly.
+func TestNestedDenyAllUnderExposedParentIsRefused(t *testing.T) {
 	requireSandbox(t)
 
 	home := t.TempDir()
@@ -131,26 +129,28 @@ func TestNestedDenyAllHiddenUnderExposedParent(t *testing.T) {
 	if err := os.MkdirAll(fish, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	const secret = "FISH-HISTORY-SECRET"
 	history := filepath.Join(fish, "fish_history")
-	if err := os.WriteFile(history, []byte(secret), 0o600); err != nil {
+	if err := os.WriteFile(history, []byte("FISH-HISTORY-SECRET"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(fish, "functions")
 	populateWorkspaceTargets(t, sub)
 
-	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+history+" 2>&1 || true\n")
-	if strings.Contains(out, secret) {
-		t.Errorf("the fish history store leaked through the parent bind: %q", out)
+	err := runScriptExpectingRefusal(t, &policy.Policy{Write: []string{sub}}, "cat "+history+" 2>&1 || true\n")
+	if err == nil {
+		t.Fatal("a write grant under the DenyWrite fish tree must be refused, not run")
+	}
+	if !strings.Contains(err.Error(), "no opt-in") {
+		t.Errorf("the refusal must name the missing opt-in so the author knows it is not addable; got %v", err)
 	}
 }
 
-// A DenyWrite rule whose real target is a directory (an env relocation like
-// GIT_CONFIG_GLOBAL pointed at ~/.local) ro-binds that whole tree read-only, so a
-// DenyAll store nested inside it (the gh OAuth token dir at ~/.local/share/gh) must stay
-// hidden. The carve keys on the real filesystem kind, not the declared Rule.Dir, so this
-// file-declared rule is treated as the directory bind it actually is.
-func TestFileRuleOverDirDoesNotExposeNestedStore(t *testing.T) {
+// The same refusal reached through an env relocation rather than a built-in rule:
+// GIT_CONFIG_GLOBAL pointed at ~/.local makes a DenyWrite rule whose real target is that
+// whole directory, so a write anywhere under ~/.local is refused on this host and would
+// be honored on one without the variable set. That environment-dependence is the point
+// worth pinning - it is how the refusal reaches furthest beyond the built-in shields.
+func TestRelocatedDenyWriteRefusesWriteUnderIt(t *testing.T) {
 	requireSandbox(t)
 
 	home := t.TempDir()
@@ -160,16 +160,19 @@ func TestFileRuleOverDirDoesNotExposeNestedStore(t *testing.T) {
 	if err := os.MkdirAll(gh, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	const secret = "GH-OAUTH-TOKEN-SECRET"
-	if err := os.WriteFile(filepath.Join(gh, "hosts.yml"), []byte(secret), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gh, "hosts.yml"), []byte("GH-OAUTH-TOKEN-SECRET"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(home, ".local", "foo")
 	populateWorkspaceTargets(t, sub)
 
-	_, out := runScript(t, &policy.Policy{Write: []string{sub}}, "cat "+filepath.Join(gh, "hosts.yml")+" 2>&1 || true\n")
-	if strings.Contains(out, secret) {
-		t.Errorf("the gh token store leaked through the relocated-config parent bind: %q", out)
+	script := "cat " + filepath.Join(gh, "hosts.yml") + " 2>&1 || true\n"
+	err := runScriptExpectingRefusal(t, &policy.Policy{Write: []string{sub}}, script)
+	if err == nil {
+		t.Fatal("a write under the relocated DenyWrite tree must be refused, not run")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(home, ".local")) {
+		t.Errorf("the refusal must name the relocated shield, or the author cannot tell why an ordinary path is refused; got %v", err)
 	}
 }
 

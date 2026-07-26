@@ -374,9 +374,11 @@ func Home(home string) []Rule {
 		// These are whole trees, matching firejail, and the cost is real: a DenyWrite
 		// shield has no opt-out (the yz3.2 opt-in covers DenyAll shields only, see
 		// shieldNeeded), so `rustup update`, `nvm install`, `npm i -g`, `gem install
-		// --user-install` and `cargo install` fail EROFS in-sandbox even under an explicit
-		// write grant. That is the intended trade - each of those mutates the host's $PATH
-		// from inside a sandbox - but it is a trade, not a free shield. The registry and
+		// --user-install` and `cargo install` cannot run in-sandbox at all - a policy
+		// granting write here is refused outright by checkWriteNotUnderReadOnlyShield
+		// rather than silently failing EROFS. That is the intended trade - each of those
+		// mutates the host's $PATH from inside a sandbox - but it is a trade, not a free
+		// shield; run them outside bento. The registry and
 		// build caches (~/.cargo/registry, ~/.m2, ~/.gradle) are deliberately NOT here, so
 		// an ordinary build still writes what it needs.
 		".bin",

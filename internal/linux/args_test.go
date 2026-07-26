@@ -179,6 +179,15 @@ func compileOrFail(t *testing.T, p *policy.Policy, sb sandbox) []string {
 	return args
 }
 
+// shieldArgs builds just the deny-list arguments for a set of grants, the way compile
+// does, skipping the checkGrants refusals. The carve tests need it because the policies
+// that reach the forced-child branch are exactly the ones checkGrants now rejects; the
+// argv property they pin is still the one a run depends on.
+func shieldArgs(sb sandbox, reads, writes []string) []string {
+	args, _ := denyArgs(sb, exposedPaths(sb, reads, writes), writes, nil)
+	return args
+}
+
 // pairIndex returns the index of the first occurrence of `flag target` in args.
 func pairIndex(args []string, flag, target string) int {
 	for i := 0; i+1 < len(args); i++ {
@@ -526,8 +535,14 @@ func TestNestedDenyAllHiddenUnderReadGrantWriteRefused(t *testing.T) {
 // A DenyAll child under a shielded DenyWrite dir must be emitted AFTER the parent bind
 // (bwrap last-wins), and must be emitted even when only the parent is grant-reachable -
 // a write to a sibling subdir fires the parent's ro-bind, which would otherwise re-expose
-// the hidden child. The real-bwrap counterpart is TestNestedDenyAllHiddenUnderExposedParent;
-// this pins the argv the run relies on.
+// the hidden child.
+//
+// Driven through denyArgs rather than compile: every write grant that fires an exposed
+// DenyWrite parent holding a DenyAll child is now refused by checkGrants (under it by
+// checkWriteNotUnderReadOnlyShield, at or above it by checkWriteNotAboveShield), so no
+// accepted policy reaches this branch. The ordering property is kept, and pinned here,
+// because it is what makes those refusals safe to relax: whichever one a later rule
+// shape loosens, the hidden child must still land after the readable parent.
 func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	sb := testSandbox(
 		"/home/u/.local/share/fish",
@@ -539,10 +554,7 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 
 	// Sibling write only, no read: the child is not independently reachable, yet is
 	// force-emitted because the parent's bind would expose it - and after that bind.
-	args := compileOrFail(t, &policy.Policy{
-		Entrypoint: "/work/run.py",
-		Write:      []string{"/home/u/.local/share/fish/functions"},
-	}, sb)
+	args := shieldArgs(sb, nil, []string{"/home/u/.local/share/fish/functions"})
 	p, c := pairIndex(args, "--ro-bind", parent), pairIndex(args, sb.emptyFile, child)
 	if p < 0 || c < 0 {
 		t.Fatalf("sibling write must shield both parent (ro-bind idx=%d) and force the child (idx=%d)", p, c)
@@ -553,10 +565,7 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 
 	// Home read + sibling write: the child is reachable and emitted normally, but must
 	// still land after the parent bind.
-	args2 := compileOrFail(t, &policy.Policy{
-		Entrypoint: "/work/run.py",
-		Read:       []string{"/home/u"}, Write: []string{"/home/u/.local/share/fish/functions"},
-	}, sb)
+	args2 := shieldArgs(sb, []string{"/home/u"}, []string{"/home/u/.local/share/fish/functions"})
 	p2, c2 := pairIndex(args2, "--ro-bind", parent), pairIndex(args2, sb.emptyFile, child)
 	if p2 < 0 || c2 < 0 || c2 < p2 {
 		t.Errorf("read+write: child (idx %d) must follow parent (idx %d), both present", c2, p2)
@@ -566,10 +575,7 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	// the same nesting - the carve must follow.
 	t.Setenv("XDG_DATA_HOME", "/xdg")
 	sbx := testSandbox("/xdg/fish", "/xdg/fish/functions/ls.fish", "/xdg/fish/fish_history")
-	args3 := compileOrFail(t, &policy.Policy{
-		Entrypoint: "/work/run.py",
-		Write:      []string{"/xdg/fish/functions"},
-	}, sbx)
+	args3 := shieldArgs(sbx, nil, []string{"/xdg/fish/functions"})
 	p3, c3 := pairIndex(args3, "--ro-bind", "/xdg/fish"), pairIndex(args3, sbx.emptyFile, "/xdg/fish/fish_history")
 	if p3 < 0 || c3 < 0 || c3 < p3 {
 		t.Errorf("relocated pair: child (idx %d) must follow parent (idx %d), both present", c3, p3)
@@ -582,6 +588,11 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 // read-only and would re-expose a DenyAll store nested inside it. Here the gh token dir
 // (~/.local/share/gh) sits under the relocated config path; a sibling write must not let
 // the parent bind re-expose it.
+//
+// Driven through denyArgs for the same reason as the test above: checkGrants refuses the
+// sibling write that fires this parent. The relocation makes that refusal reach further
+// than the built-in shields do - GIT_CONFIG_GLOBAL pointed at a directory write-shields
+// that whole tree - which is exactly why the ordering must stay pinned.
 func TestCarveKeysOnRealKindNotDeclaredDir(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/home/u/.local") // a directory: produces a DenyWrite file-rule over a dir
 	sb := testSandbox(
@@ -590,10 +601,7 @@ func TestCarveKeysOnRealKindNotDeclaredDir(t *testing.T) {
 		"/home/u/.local/share/gh",
 		"/home/u/.local/share/gh/hosts.yml",
 	)
-	args := compileOrFail(t, &policy.Policy{
-		Entrypoint: "/work/run.py",
-		Write:      []string{"/home/u/.local/foo"},
-	}, sb)
+	args := shieldArgs(sb, nil, []string{"/home/u/.local/foo"})
 	parent := pairIndex(args, "--ro-bind", "/home/u/.local")
 	child := pairIndex(args, "--tmpfs", "/home/u/.local/share/gh")
 	if parent < 0 || child < 0 {
@@ -1425,21 +1433,61 @@ func TestInterpreterUnderHomeBindsOnlyItself(t *testing.T) {
 // read-write one - letting the target rewrite the binary it is running, host
 // persistence. The interpreter must be re-bound read-only after the write grant, so
 // the shield wins by argv order, just as the entrypoint is.
+// The interpreter sits in a project virtualenv rather than ~/bin: ~/bin is itself a
+// write-shielded $PATH directory, so a write grant naming it is refused outright and
+// never reaches the ordering this test is about. A venv is the case where the grant is
+// legitimate and the re-bind is the only thing protecting the binary.
 func TestWriteGrantDoesNotLeaveInterpreterWritable(t *testing.T) {
-	sb := testSandbox("/home/u", "/home/u/bin", "/home/u/bin/python3", "/work")
-	sb.interpreter = "/home/u/bin/python3"
-	args := compileOrFail(t, &policy.Policy{Write: []string{"/home/u/bin"}}, sb)
+	sb := testSandbox("/work", "/work/venv/bin", "/work/venv/bin/python3")
+	sb.interpreter = "/work/venv/bin/python3"
+	args := compileOrFail(t, &policy.Policy{Write: []string{"/work/venv/bin"}}, sb)
 
-	rw := pairIndex(args, "--bind-try", "/home/u/bin")
-	ro := lastPairIndex(args, "--ro-bind", "/home/u/bin/python3")
+	rw := pairIndex(args, "--bind-try", "/work/venv/bin")
+	ro := lastPairIndex(args, "--ro-bind", "/work/venv/bin/python3")
 	if rw < 0 {
-		t.Fatalf("the write grant should bind /home/u/bin read-write; got %v", args)
+		t.Fatalf("the write grant should bind /work/venv/bin read-write; got %v", args)
 	}
 	if ro < 0 {
 		t.Fatalf("the interpreter must be re-bound read-only; got %v", args)
 	}
 	if ro < rw {
 		t.Errorf("the interpreter re-bind (at %d) must come after the write grant (at %d) so it wins", ro, rw)
+	}
+}
+
+// The $PATH shields have no opt-in: a write grant naming one is refused at compile,
+// not silently overmounted by the shield and left to fail EROFS at run time. ~/bin and
+// ~/.local/bin are the distro-default $PATH entries, and ~/.cargo/bin the toolchain
+// case (`cargo install`), so each is what an author would most plausibly try to grant.
+func TestWriteGrantUnderPathShieldIsRefused(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/bin", "/home/u/.local/bin", "/home/u/.cargo/bin", "/work")
+	for _, w := range []string{
+		"/home/u/bin",
+		"/home/u/.local/bin",
+		"/home/u/.cargo/bin",
+		"/home/u/.cargo/bin/nested", // strictly inside, not just the shield itself
+	} {
+		_, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{w}}, enforce.Process{}, sb)
+		if err == nil {
+			t.Errorf("write: %q must be refused - the shield would silently win and every write fail EROFS", w)
+			continue
+		}
+		if !strings.Contains(err.Error(), "no opt-in") {
+			t.Errorf("write: %q refused, but the message must say there is no opt-in (unlike a credential shield); got %v", w, err)
+		}
+	}
+	// A read of the same path stays honored: a DenyWrite shield leaves its content
+	// readable, so refusing the read would remove access the shield never took.
+	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.cargo/bin"}}, enforce.Process{}, sb); err != nil {
+		t.Errorf("a READ of a write-shielded path must still be honored: %v", err)
+	}
+	// A write ABOVE the shield is not this refusal's business - the shield covers the
+	// interior and still lands on top. (~/.cargo would be the natural case but is
+	// refused by checkWriteNotAboveShield for the DenyAll credentials.toml inside it,
+	// which is a different check; coursier's tree holds no credential store.)
+	sb2 := testSandbox("/home/u", "/home/u/.local/share/coursier", "/home/u/.local/share/coursier/bin", "/work")
+	if _, _, err := compile(&policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.local/share/coursier"}}, enforce.Process{}, sb2); err != nil {
+		t.Errorf("a write grant containing a write-shielded path must not be refused by it: %v", err)
 	}
 }
 

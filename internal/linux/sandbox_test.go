@@ -38,6 +38,26 @@ func requireSandbox(t *testing.T) {
 
 // runScript writes sh source to a temp file and runs it under the given policy,
 // returning its exit code and combined output.
+// runScriptExpectingRefusal is runScript for the policies compile rejects: it returns
+// Run's error instead of failing the test on it, so a refusal can be asserted as the
+// behavior rather than showing up as an unexplained fatal.
+func runScriptExpectingRefusal(t *testing.T, p *policy.Policy, src string) error {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p.Entrypoint = script
+	p.Interpreter = "sh"
+	p.Read = append(p.Read, dir)
+	p.Exec = policy.ExecAll
+
+	var out bytes.Buffer
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
+	return err
+}
+
 func runScript(t *testing.T, p *policy.Policy, src string) (int, string) {
 	t.Helper()
 	dir := t.TempDir()
