@@ -18,6 +18,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,6 +89,15 @@ const (
 	exitContentRefused = 4
 )
 
+// errRefuse marks a fetch failure that is a judgement about the RESPONSE rather than a
+// transport condition, so it carries exitContentRefused and the wrapper fails on it. A
+// 4xx says the URL is wrong or the file was renamed, which is permanent - left on the
+// pass-over status it would print "offline?" and green the gate forever, the same lie the
+// sentinel exists to prevent. So does a body past the size ceiling: that check is about
+// what arrived, not whether it arrived. Only a transport error, a 5xx, and the two 4xx
+// codes that do mean "try later" reach the pass-over arm.
+var errRefuse = errors.New("the response is not the upstream profile")
+
 func main() {
 	sources, status := collect(fetch, os.Stderr)
 	if status != 0 {
@@ -112,6 +122,9 @@ func collect(fetch func(url string) (string, error), w io.Writer) ([]audit.Sourc
 		content, err := fetch(src.url)
 		if err != nil {
 			fmt.Fprintf(w, "denylist-audit: fetching %s: %v\n", src.url, err)
+			if errors.Is(err, errRefuse) {
+				return nil, exitContentRefused
+			}
 			return nil, exitFetchFailed
 		}
 		if !isProfile(content, src.sentinel) {
@@ -216,6 +229,18 @@ func reportOutOfScope(w io.Writer, gaps []audit.Gap) {
 	}
 }
 
+// permanentStatus reports whether an HTTP status means the resource is not there to be
+// had, as opposed to a server that is having a bad day. 408 and 429 are 4xx by number but
+// both mean "try later", so they stay on the pass-over side with the 5xx codes.
+func permanentStatus(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	default:
+		return code >= 400 && code < 500
+	}
+}
+
 func fetch(url string) (string, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
@@ -224,6 +249,9 @@ func fetch(url string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if permanentStatus(resp.StatusCode) {
+			return "", fmt.Errorf("%w: unexpected status %s", errRefuse, resp.Status)
+		}
 		return "", fmt.Errorf("unexpected status %s", resp.Status)
 	}
 	// Read one byte past the cap so a body that hit it is detected rather than
@@ -236,7 +264,7 @@ func fetch(url string) (string, error) {
 		return "", err
 	}
 	if len(body) > maxBytes {
-		return "", fmt.Errorf("firejail profile exceeds %d bytes, which is not expected; refusing to audit a truncated file", maxBytes)
+		return "", fmt.Errorf("%w: it exceeds %d bytes, so the body is not the profile and auditing a truncated copy of it would hide the gaps in its tail", errRefuse, maxBytes)
 	}
 	return string(body), nil
 }

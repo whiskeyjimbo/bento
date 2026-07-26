@@ -93,8 +93,9 @@ func TestProfileRefusesBadInput(t *testing.T) {
 	ok := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
 
 	t.Run("invalid policy", func(t *testing.T) {
-		if _, err := Profile(context.Background(), &policy.Policy{}, enforce.Process{}, ProfileOptions{}); err == nil {
-			t.Error("a policy with no entrypoint must be refused, not profiled")
+		_, err := Profile(context.Background(), &policy.Policy{}, enforce.Process{}, ProfileOptions{})
+		if err == nil || !strings.Contains(err.Error(), "entrypoint is required") {
+			t.Errorf("a policy with no entrypoint must be refused by validation; got %v", err)
 		}
 	})
 
@@ -111,13 +112,19 @@ func TestProfileRefusesBadInput(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		skipMissingDep(t, "bwrap not installed, so the deny-path refusals cannot be reached")
 	}
-	for name, deny := range map[string]string{
-		"relative deny path":       "relative/store",
-		"root-resolving deny path": "/",
+	// Each case asserts the error TEXT, not merely that one came back. On a host with
+	// bwrap present but unprivileged user namespaces disabled, a valid deny path also
+	// errors - the run fails later with "profiling did not complete" - so an any-error
+	// assertion would still pass with the validation deleted, on exactly the host class
+	// this test exists for.
+	for name, tc := range map[string]struct{ deny, want string }{
+		"relative deny path":       {"relative/store", "must be absolute"},
+		"root-resolving deny path": {"/", "resolves to the root"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Profile(context.Background(), ok, enforce.Process{}, ProfileOptions{DenyPaths: []string{deny}}); err == nil {
-				t.Errorf("%q must be refused as a deny path, not shielded", deny)
+			_, err := Profile(context.Background(), ok, enforce.Process{}, ProfileOptions{DenyPaths: []string{tc.deny}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("%q must be refused with %q; got %v", tc.deny, tc.want, err)
 			}
 		})
 	}
@@ -188,7 +195,7 @@ func TestProfileForwardsDenyPaths(t *testing.T) {
 func TestProfileWithoutAllowNetworkRecordsButDoesNotForward(t *testing.T) {
 	requireSandbox(t)
 	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl not available")
+		skipMissingDep(t, "curl not available")
 	}
 	host := outboundIP(t)
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))

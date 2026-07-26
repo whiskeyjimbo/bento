@@ -21,7 +21,7 @@ import (
 func TestTraceCapturesOutputThroughANonFileWriter(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	// Enough output to exceed a pipe buffer, so a copier that is not joined cannot
 	// have finished by the time Trace returns.
@@ -56,7 +56,7 @@ func TestTraceCapturesOutputThroughANonFileWriter(t *testing.T) {
 func TestConcurrentTracesDoNotStealEachOthersStops(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	dir := t.TempDir()
 

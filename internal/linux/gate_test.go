@@ -48,7 +48,7 @@ func runGated(t *testing.T, p *policy.Policy, script string, gate enforce.Networ
 func TestGateConsultedButGuardBlocksHostReserved(t *testing.T) {
 	requireSandbox(t)
 	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl not available")
+		skipMissingDep(t, "curl not available")
 	}
 
 	// 169.254.254.254 is link-local: guardUpstream refuses it regardless of the

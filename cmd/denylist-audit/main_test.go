@@ -106,6 +106,43 @@ func TestCollectRefusalStatuses(t *testing.T) {
 	}
 }
 
+// Not every fetch error is an infrastructure condition. A 404 (the profile was renamed)
+// and an oversize body are judgements about what came back, and on the pass-over status
+// they would print "offline?" and green the gate permanently - the failure this whole
+// group of fixes is about. A 5xx or a transport error is the flakiness the wrapper is
+// meant to ride over, and stays there.
+func TestCollectSeparatesPermanentFetchFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"renamed upstream", fmt.Errorf("%w: unexpected status 404 Not Found", errRefuse), exitContentRefused},
+		{"oversize body", fmt.Errorf("%w: it exceeds 1048576 bytes", errRefuse), exitContentRefused},
+		{"server error", errors.New("unexpected status 503 Service Unavailable"), exitFetchFailed},
+		{"no route", errors.New("dial tcp: no route to host"), exitFetchFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			if _, code := collect(func(string) (string, error) { return "", tc.err }, &b); code != tc.want {
+				t.Errorf("%v must exit %d; got %d", tc.err, tc.want, code)
+			}
+		})
+	}
+	// The rate-limit and request-timeout codes are 4xx by number and transient in
+	// meaning, so they must not fail the gate.
+	for _, code := range []int{408, 429} {
+		if permanentStatus(code) {
+			t.Errorf("status %d means try later, not a wrong URL", code)
+		}
+	}
+	for _, code := range []int{403, 404, 410} {
+		if !permanentStatus(code) {
+			t.Errorf("status %d will not fix itself; it must fail the gate, not skip it", code)
+		}
+	}
+}
+
 // fullBody synthesizes a profile that carries sentinel and parses to exactly n
 // candidates, in the syntax of whichever format the sentinel comes from. The floor is
 // about volume, so the fixtures need volume; the paths themselves are never diffed here.

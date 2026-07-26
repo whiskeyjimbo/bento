@@ -427,7 +427,7 @@ func TestCredentialFilesDoesNotAnchorOnBulkStores(t *testing.T) {
 // against a real home with a real hardlink and asserts the run never starts.
 func TestRunRefusesAnAliasedCredential(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap not installed")
+		skipMissingDep(t, "bwrap not installed")
 	}
 	// newSandbox takes the home the deny-list anchors on from os.UserHomeDir, i.e. $HOME.
 	home := t.TempDir()
@@ -646,7 +646,7 @@ func TestRealBindAliasIsFound(t *testing.T) {
 		}
 		t.Cleanup(func() { os.RemoveAll(bindHome); os.RemoveAll(bindBackup) })
 		if _, err := exec.LookPath("bwrap"); err != nil {
-			t.Skip("bwrap not installed")
+			skipMissingDep(t, "bwrap not installed")
 		}
 		// bwrap gives the mount namespace and establishes the bind in one step; the
 		// binary under test then sees it in its own /proc/self/mountinfo.
@@ -869,7 +869,7 @@ func TestAliasRefusalPrintsThePasteableAcknowledgement(t *testing.T) {
 // run that proceeds over a known gap has to report the gap rather than look clean.
 func TestRunProceedsOnAnAcknowledgedAlias(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap not installed")
+		skipMissingDep(t, "bwrap not installed")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)

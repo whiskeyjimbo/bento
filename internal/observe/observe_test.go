@@ -13,6 +13,19 @@ import (
 	"time"
 )
 
+// skipMissingDep skips for a missing host dependency, or fails when
+// BENTO_REQUIRE_TEST_DEPS is set. These tests drive a real interpreter under the
+// observation backend; without one they report a pass having asserted nothing, which is
+// the same output as a run that exercised it. The variable is how a host that is supposed
+// to have the interpreters - CI, and `make test` - says so.
+func skipMissingDep(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func find(res Result, path string) (Access, bool) {
 	for _, a := range res.Accesses {
 		if a.Path == path {
@@ -32,7 +45,7 @@ func find(res Result, path string) (Access, bool) {
 func TestTraceRecordsUnixConnect(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "svc.sock")
@@ -65,7 +78,7 @@ c.close()
 
 func TestTraceObservesOpensAndExec(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 
 	dir := t.TempDir()
@@ -111,7 +124,7 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	// ptrace is per-thread: the tracer must start, wait on, and reap the child from
 	// the same OS thread, as Trace does.
@@ -156,7 +169,7 @@ func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 func TestTraceReapsDescendantOnLoopWaitError(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 
 	var root, descendant int
@@ -240,7 +253,7 @@ func traceeAliveStopped(pid int) bool {
 func TestTraceReapsBackgroundedDescendantOnCleanExit(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	// Fork a long-lived child, print its pid, then exit 0 - root completes while the
 	// child is still alive. The 30s sleep keeps the pid stable (no recycling) so a
@@ -317,11 +330,11 @@ func parseChildPID(t *testing.T, out string) int {
 func TestTraceReapsBackgroundedMultithreadedDescendant(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	// Background a multithreaded child, then keep root alive briefly (a short sleep,
 	// itself a transient child) so the loop tracks the child's thread tids before root
@@ -348,7 +361,7 @@ func TestTraceReapsBackgroundedMultithreadedDescendant(t *testing.T) {
 func TestTraceResolvesOpenatDirfd(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "viadir.txt"), []byte("x"), 0o644); err != nil {
@@ -386,7 +399,7 @@ func TestTraceAnchorsRawOpenAfterChdir(t *testing.T) {
 	}
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	sub := filepath.Join(t.TempDir(), "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -430,7 +443,7 @@ os.close(fd)
 func TestTraceDecodesOpenat2(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "via_openat2.txt")
@@ -497,7 +510,7 @@ func TestResolveAtAnchorsAndDrops(t *testing.T) {
 func TestTraceAnchorsRelativeOpenAfterChdir(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	sub := filepath.Join(t.TempDir(), "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -527,7 +540,7 @@ func TestTraceAnchorsRelativeOpenAfterChdir(t *testing.T) {
 func TestTracePropagatesExitCode(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	res, err := Trace([]string{sh, "-c", "exit 5"}, os.Environ(), nil, nil, nil)
 	if err != nil {
@@ -550,7 +563,7 @@ func TestTracePropagatesExitCode(t *testing.T) {
 func TestTraceForwardsDeliveredSignal(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	res, err := Trace([]string{sh, "-c", "kill -TERM $$; sleep 5; exit 0"}, os.Environ(), nil, nil, nil)
 	if err != nil {
@@ -575,7 +588,7 @@ func TestTraceForwardsDeliveredSignal(t *testing.T) {
 func TestTraceForkExecSurvivesSignalForwarding(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	res, err := Trace([]string{sh, "-c", "cat /dev/null; exit $?"}, os.Environ(), nil, nil, nil)
 	if err != nil {
@@ -598,7 +611,7 @@ func TestTraceForkExecSurvivesSignalForwarding(t *testing.T) {
 func TestTraceDeliversSignalToHandler(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sh not available")
+		skipMissingDep(t, "sh not available")
 	}
 	res, err := Trace([]string{sh, "-c", "trap 'exit 7' TERM; kill -TERM $$; sleep 3; exit 0"}, os.Environ(), nil, nil, nil)
 	if err != nil {
@@ -617,7 +630,7 @@ func TestTraceDeliversSignalToHandler(t *testing.T) {
 func TestTraceRecordsMutatingSyscalls(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	// The ctypes renameat2 call exercises the newdirfd/newpath registers (Rdx, R10)
@@ -692,7 +705,7 @@ libc.syscall(280, -100, (d+'/m_utime').encode(), 0, 0)       # utimensat: dirfd/
 func TestTraceOpenat2ResolveInRoot(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
@@ -748,7 +761,7 @@ if rc < 0:
 func TestTraceCountsOneDropPerLostAccess(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	// ctypes calls openat directly with a pointer the process never mapped. The kernel
 	// answers EFAULT and the script carries on; what matters is the observer's count.
@@ -782,7 +795,7 @@ libc.syscall(257, -100, ctypes.c_void_p(0x1), 0, 0)
 func TestTraceCountsEveryDropFromOneCallSite(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	const iterations = 5
 	// One ctypes call site, so every iteration stops at the same instruction pointer -

@@ -17,7 +17,7 @@ import (
 func TestTraceRecordsSuccessfulExistenceProbes(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	statted := filepath.Join(dir, "config.toml")
@@ -65,7 +65,7 @@ except FileNotFoundError:
 func TestTraceAnchorsRelativeChdirBeforeTheMove(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not available")
+		skipMissingDep(t, "python3 not available")
 	}
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub")

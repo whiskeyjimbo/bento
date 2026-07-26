@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 func testBento(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not available")
+		skipMissingDep(t, "go toolchain not available")
 	}
 	bentoOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "bento-test-bin-")
@@ -96,7 +96,7 @@ func sandboxEnforcer(t *testing.T) *Enforcer { return enforcerUsing(testBento(t)
 func TestEgressAllowlistEndToEnd(t *testing.T) {
 	requireSandbox(t)
 	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl not available")
+		skipMissingDep(t, "curl not available")
 	}
 	// The upstream must be bound on a NON-loopback address: the proxy runs on the
 	// host, so a loopback target names the host's own loopback, which the resolved-IP

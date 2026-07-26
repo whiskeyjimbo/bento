@@ -98,7 +98,7 @@ func TestRunReportRefusesToClaimLayersWhenTheChildIsSilent(t *testing.T) {
 func silentLauncher(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not available")
+		skipMissingDep(t, "go toolchain not available")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")

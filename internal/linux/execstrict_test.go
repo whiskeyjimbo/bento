@@ -45,7 +45,7 @@ func TestNoneStrictBlocksForkAllowsThreads(t *testing.T) {
 func buildForkProbe(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not available to build the probe")
+		skipMissingDep(t, "go toolchain not available to build the probe")
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "fork.go")
