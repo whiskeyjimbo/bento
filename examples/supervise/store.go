@@ -94,6 +94,24 @@ func (s *store) clone() *store {
 	return cp
 }
 
+// normalizeApps makes a decoded app map safe to use: it supplies the map when the
+// JSON omitted it, and drops any entry decoded as null. Every read path treats an app
+// entry as a record and dereferences it, so a hand-edited `"apps": {"sha256:...": null}`
+// would panic on load, on list, on export. A null entry records no decision, so
+// dropping it loses nothing - unlike bytes that will not parse at all, which stay fatal
+// because a deny could be hiding in them.
+func normalizeApps(apps map[string]*appPerms) map[string]*appPerms {
+	if apps == nil {
+		return map[string]*appPerms{}
+	}
+	for k, a := range apps {
+		if a == nil {
+			delete(apps, k)
+		}
+	}
+	return apps
+}
+
 func cloneDecisions(m map[string]decision) map[string]decision {
 	if m == nil {
 		return nil
@@ -151,9 +169,7 @@ func loadStore() (*store, error) {
 	// A store predating the version field is this format; stamp it so the write back
 	// carries the version it is actually in.
 	s.Version = storeVersion
-	if s.Apps == nil {
-		s.Apps = map[string]*appPerms{}
-	}
+	s.Apps = normalizeApps(s.Apps)
 	s.base = s.clone()
 	return s, nil
 }
@@ -232,9 +248,7 @@ func (s *store) write(merge bool) error {
 			if err := checkVersion(target.Version, s.path); err != nil {
 				return err
 			}
-			if target.Apps == nil {
-				target.Apps = map[string]*appPerms{}
-			}
+			target.Apps = normalizeApps(target.Apps)
 		case !os.IsNotExist(err):
 			return err
 		}

@@ -413,3 +413,54 @@ func TestSaveLeavesNoTempFile(t *testing.T) {
 		t.Errorf("store mode = %v (%v), want 0600", fi, err)
 	}
 }
+
+// A hand-edited or truncated store can carry an app entry decoded as null. Every read
+// path treats an entry as a record and dereferences it, so before loadStore dropped
+// them a single `"apps": {"sha256:...": null}` panicked the tool on startup - including
+// `perms list` and `perms reset`, the two commands a human reaches for to fix it
+// (bv2-fnk2).
+func TestLoadStoreDropsNullAppEntries(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rememberPath("sha256:real", "read", "/data", allow, false)
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["apps"].(map[string]any)["sha256:null"] = nil
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadStore()
+	if err != nil {
+		t.Fatalf("loadStore: %v", err)
+	}
+	if _, ok := loaded.Apps["sha256:null"]; ok {
+		t.Error("a null app entry must be dropped, not kept as a nil record")
+	}
+	if a := loaded.Apps["sha256:real"]; a == nil || a.Read["/data"] != allow {
+		t.Errorf("the real app's decisions must survive: %+v", a)
+	}
+	// The read paths that dereference an entry: list, and the save merge's re-read.
+	listPerms(loaded, &strings.Builder{})
+	loaded.rememberPath("sha256:real", "read", "/other", allow, false)
+	if err := loaded.save(); err != nil {
+		t.Fatalf("save over a store holding a null entry: %v", err)
+	}
+}
