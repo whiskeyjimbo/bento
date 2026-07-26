@@ -1434,7 +1434,7 @@ func TestSymlinkChainHopUnderShieldStaysShielded(t *testing.T) {
 }
 
 // A grant that names a symlink loop must be refused by bento, not left to abort
-// bwrap. resolveExisting leaves a loop unresolved on purpose (a shield on one
+// bwrap. pathresolve.Existing leaves a loop unresolved on purpose (a shield on one
 // still fails closed), so the grant would be bound at the looping path itself and
 // --ro-bind-try - which tolerates only a missing source, not ELOOP - killed the
 // run with an error naming bwrap instead of the grant. Read and write find this

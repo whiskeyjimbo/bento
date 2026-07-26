@@ -40,7 +40,7 @@ func TestWorkspaceShieldRedirectRefused(t *testing.T) {
 	}
 }
 
-// The redirect check must run against the real resolveExisting, which is identity on
+// The redirect check must run against the real pathresolve.Existing, which is identity on
 // a symlink-free path - so a normal project checkout is NOT over-refused (the trap:
 // a check that fired on every clean grant would pass the identity-double tests while
 // breaking production). And a real symlinked .git that escapes the grant IS refused.

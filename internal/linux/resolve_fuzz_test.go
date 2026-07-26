@@ -10,13 +10,13 @@ import (
 	"testing"
 )
 
-// Fuzz resolve()/resolveExisting against a REAL symlink tree built under a temp dir.
+// Fuzz resolve()/pathresolve.Existing against a REAL symlink tree built under a temp dir.
 // Both functions hit the kernel (filepath.EvalSymlinks + os.Readlink), NOT the fake-FS
 // testSandbox seam, so the fuzzer builds a real tree of dirs, files, symlink chains,
 // dangling leaves, "..-after-symlink" targets, and loops.
 //
-// The oracle is LOOP-AWARE, and it has to be: under a symlink loop resolveExisting
-// deliberately bails at maxSymlinkDepth and returns a still-symlink path (a shield bound
+// The oracle is LOOP-AWARE, and it has to be: under a symlink loop pathresolve.Existing
+// deliberately bails at pathresolve.MaxDepth and returns a still-symlink path (a shield bound
 // there fails closed), so the naive "the resolved leaf is never a symlink" and
 // fixed-point invariants are false BY DESIGN on a loop and would flake. So the oracle
 // splits on whether the result still holds an unresolved symlink in ANY component (not
@@ -141,10 +141,10 @@ func assertResolveOracle(t *testing.T, start string) (looped bool) {
 		t.Fatalf("resolve is not a fixed point: resolve(%q) = %q, resolve(%q) = %q", start, r1, r1, r2)
 	}
 
-	// The real oracle for the dangling walk: resolveExisting promises r1 is "the target a
+	// The real oracle for the dangling walk: pathresolve.Existing promises r1 is "the target a
 	// write through start would actually reach", following each symlink (even a dangling
 	// one) before a later "..". filepath.EvalSymlinks cannot validate that directly - it
-	// errors on the first missing component, and where start fully exists resolveExisting
+	// errors on the first missing component, and where start fully exists pathresolve.Existing
 	// just returns EvalSymlinks verbatim, so agreeing there proves nothing about the walk.
 	// So confirm the prediction the way a real write would: populate the missing pieces and
 	// see where the kernel lands. This catches any bug that resolves start to the wrong path
@@ -167,7 +167,7 @@ func assertResolveOracle(t *testing.T, start string) (looped bool) {
 // each time the kernel reports a missing component, creates that component as a directory -
 // exactly the chain a write through start would create, following each (now-real) symlink
 // before a later "..". It returns where the kernel finally resolves start, or ok=false when
-// start routes through a real file (ENOTDIR, which resolveExisting handles lexically but the
+// start routes through a real file (ENOTDIR, which pathresolve.Existing handles lexically but the
 // kernel cannot) so there is no kernel resolution to compare against. Bounded so a
 // pathological input cannot spin; start is symlink-free-resolved here, so it holds no loop.
 func kernelResolveByPopulating(start string) (string, bool) {
@@ -200,7 +200,7 @@ func FuzzResolveSymlinkTree(f *testing.F) {
 // so the loop-aware and fixed-point branches are proven reachable without depending on a
 // fuzz run finding them (a fuzzer that never hits a loop would leave that branch vacuous).
 func TestResolveOracleLoopAndChainControls(t *testing.T) {
-	// A two-hop symlink loop: resolveExisting must bail at maxSymlinkDepth and return a
+	// A two-hop symlink loop: pathresolve.Existing must bail at pathresolve.MaxDepth and return a
 	// still-symlink path, taking the fail-closed branch.
 	loop := canonTempDir(t)
 	mustLink(t, filepath.Join(loop, "b"), filepath.Join(loop, "a"))

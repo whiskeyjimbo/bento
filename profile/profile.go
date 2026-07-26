@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -183,16 +184,15 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	// unresolved name, which no floor matches, while bwrap resolves at bind time and
 	// the reviewer approves a grant whose text says ~/proj. Resolving is only ever
 	// additive - a grant is never kept because of it - and it stays on the write side:
-	// resolving reads would change which name the reviewer is shown.
+	// resolving reads would change which name the reviewer is shown. It resolves through
+	// the same function the backend binds with, so the two cannot answer differently
+	// about where a grant lands.
 	writeSkip := func(dir string) bool {
-		if skip(dir) || isSystemWriteDir(dir) {
+		if skip(dir) || FlooredWrite(dir) {
 			return true
 		}
-		if isForeignHomeTree(dir) {
-			return true
-		}
-		resolved := resolveWriteDir(dir)
-		return resolved != dir && (isSystemPath(resolved) || isSystemWriteDir(resolved) || isForeignHomeTree(resolved))
+		resolved := pathresolve.Existing(dir)
+		return resolved != dir && (isSystemPath(resolved) || FlooredWrite(resolved))
 	}
 
 	p := &policy.Policy{
@@ -296,20 +296,60 @@ func resolvesIntoProc(p string) bool {
 	return resolved == "/proc" || strings.HasPrefix(resolved, "/proc/")
 }
 
-// isForeignHomeTree reports whether a collapsed write-grant directory is another user's
-// home. The collapse is what makes this reachable: an observed write to a single file
-// becomes a grant of its directory, so a target that touches /home/other/.bashrc
-// proposes a writable /home/other - their whole account, including the rc files that
-// run as them at their next login. Nothing downstream catches it. The caller's broad
-// clamp only knows the root, a top-level directory, and the profiler's OWN home, and
-// the credential shields are built from the profiler's home too, so a second user's
-// stores are not in the list at all.
+// FlooredWrite reports whether a collapsed write-grant directory is one Synthesize
+// withholds from a proposal: a system tree, the container every user's home sits in, or
+// another user's home. It is exported so a frontend can tell the reviewer which
+// observed writes were withheld and why - a grant that vanishes with no message leaves
+// the script failing EACCES at enforce time with nothing to read.
 //
-// The profiler's own home is deliberately NOT floored here. It is already dropped by
-// that broad clamp, which also REPORTS it to the reviewer as an over-broad grant;
-// dropping it earlier would take the grant away silently and leave the reviewer with
-// less than they see today.
+// Callers pass the DIRECTORY a write collapses to (filepath.Dir of an observed path),
+// which is the granularity a write grant has.
+func FlooredWrite(dir string) bool {
+	// A home container that lives under a system root (/var/home on an ostree layout,
+	// where the user's own home IS /var/home/u) holds accounts, not system state, so the
+	// home rules judge what is inside it rather than the system floor - which would
+	// otherwise drop every write grant the profiler's own user makes on that layout.
+	// The container itself is not exempt: a grant of it is every account at once.
+	if inHomeContainer(dir) {
+		return isForeignHomeTree(dir)
+	}
+	return isSystemWriteDir(dir) || isForeignHomeTree(dir)
+}
+
+// inHomeContainer reports whether dir sits strictly under a directory that user homes
+// live in, so it names something within somebody's account rather than the container.
+func inHomeContainer(dir string) bool {
+	for _, c := range homeContainers {
+		if strings.HasPrefix(dir, c+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// isForeignHomeTree reports whether a collapsed write-grant directory is a home
+// directory the profiler does not own - another user's account, or the container
+// holding every account.
+//
+// The collapse is what makes this reachable: an observed write to a single file becomes
+// a grant of its directory, so a target that touches /home/other/.bashrc proposes a
+// writable /home/other - their whole account, including the rc files that run as them
+// at their next login. Nothing downstream catches it. The caller's broad clamp knows
+// only the root, a top-level directory, and the profiler's OWN home, and the credential
+// shields are built from the profiler's home too, so a second user's stores are not in
+// the list at all.
+//
+// The profiler's own home is deliberately NOT floored. It is already dropped by that
+// broad clamp, which also REPORTS it to the reviewer as an over-broad grant; dropping
+// it earlier would take the grant away silently and leave the reviewer with less than
+// they see today. The one exception is /root, which systemWriteRoots floors outright:
+// under `sudo bento profile` that is the profiler's own home, but it is also root's
+// account, and a proposal that hands a target write access to root's shell rc files is
+// not one to soften for the convenience of seeing it reported.
 func isForeignHomeTree(dir string) bool {
+	if slices.Contains(homeContainers, dir) {
+		return true
+	}
 	if !isHomeShapedTree(dir) || !slices.Contains(homeContainers, filepath.Dir(dir)) {
 		return false
 	}
@@ -326,33 +366,6 @@ func isForeignHomeTree(dir string) bool {
 	// and only one of them compares equal above.
 	resolved, err := filepath.EvalSymlinks(home)
 	return err != nil || dir != resolved
-}
-
-// resolveWriteDir follows the symlinks in a collapsed write-grant directory, so the
-// floors judge where the grant would actually land rather than what it is spelled as.
-//
-// A write grant routinely names a directory that does not exist yet - the run attempted
-// a write the sandbox denied, or would create the directory itself - and EvalSymlinks
-// fails outright on those. Falling back to the observed name there would leave the
-// escape open through one more path component (~/proj/link/sub, where link is the
-// symlink), and the enforced run creates missing write directories, so the grant would
-// land inside the target tree for real. Resolving the nearest existing ancestor and
-// re-appending the rest closes that: the link is followed even though the leaf is not
-// there yet. A path whose ancestors resolve to themselves comes back unchanged, which
-// the caller reads as "nothing to add".
-func resolveWriteDir(dir string) string {
-	rest := ""
-	for p := dir; ; {
-		if resolved, err := filepath.EvalSymlinks(p); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		parent := filepath.Dir(p)
-		if parent == p {
-			return dir
-		}
-		rest = filepath.Join(filepath.Base(p), rest)
-		p = parent
-	}
 }
 
 // runtimeTree returns the install root of the interpreter (…/bin/python3 → …),

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -551,5 +552,44 @@ func TestSeedGrants(t *testing.T) {
 	}
 	if !slices.Contains(seed.Write, "/w/out") {
 		t.Errorf("write grants must seed too; got %v", seed.Write)
+	}
+}
+
+// A grant Synthesize floors is withheld before the proposal the clamps report on, so
+// without its own message it is the one withheld class that leaves no trace: the script
+// fails EACCES at enforce time and the reviewer has nothing to read. Every other
+// withheld class prints; this must too.
+func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
+	stderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	printFlooredWrites([]string{
+		"/var/lib/app/state.db",
+		"/var/lib/app/other.db", // same collapsed dir: reported once
+		"/home/other/.bashrc",
+		"relative/path", // no absolute anchor, nothing to name
+		"/work/ok.txt",  // an ordinary grant, reported by the clamps instead
+	})
+	w.Close()
+	os.Stderr = stderr
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+
+	for _, want := range []string{`"/var/lib/app"`, `"/home/other"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output does not name the withheld grant %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "/work") {
+		t.Errorf("an ordinary grant must not be reported as floored:\n%s", got)
+	}
+	if n := strings.Count(got, "not proposing write access"); n != 2 {
+		t.Errorf("printed %d messages, want 2 (the duplicate directory is reported once):\n%s", n, got)
 	}
 }

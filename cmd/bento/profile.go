@@ -182,22 +182,51 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	if err != nil {
 		return nil, err
 	}
-	// A run that was signaled or exited nonzero may have stopped before exercising all
-	// its code paths, so the observations - and the manifest synthesized from them - can
-	// be silently over-tight. Warn before proposing it. Synthesize itself refuses the
-	// observation that cannot be proposed from at all (a seccomp kill).
-	for _, w := range profileWarnings(obs) {
-		fmt.Fprintln(os.Stderr, w)
-	}
+	// Synthesize refuses the observation nothing can be proposed from (a seccomp kill).
+	// It runs before the warnings below so that refusal is not preceded by advice that
+	// contradicts it: a SIGSYS kill also sets Signaled and Dropped, and telling the user
+	// twice to profile again, then that profiling again is pointless, is worse than the
+	// refusal alone.
 	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, obs)
 	if err != nil {
 		return nil, err
 	}
+	// A run that was signaled or exited nonzero may have stopped before exercising all
+	// its code paths, so the observations - and the manifest synthesized from them - can
+	// be silently over-tight. Warn before proposing it.
+	for _, w := range profileWarnings(obs) {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
 	// the same names profiling recorded and granted.
 	proposed.Env = sortedKeys(cfg.env)
+	printFlooredWrites(obs.Writes)
 	printProposalWarnings(proposed)
 	return proposed, nil
+}
+
+// printFlooredWrites names the observed writes Synthesize withheld as system trees or
+// another user's home. Those are dropped inside Synthesize, before the proposal the
+// clamps below report on, so without this they are the one withheld class that leaves
+// no trace: the script fails EACCES at enforce time and the reviewer has nothing to
+// read. It reports the collapsed directory, which is the granularity the grant would
+// have had.
+func printFlooredWrites(writes []string) {
+	var seen map[string]bool
+	for _, w := range writes {
+		if !filepath.IsAbs(w) {
+			continue
+		}
+		dir := filepath.Dir(w)
+		if !profile.FlooredWrite(dir) || seen[dir] {
+			continue
+		}
+		if seen == nil {
+			seen = map[string]bool{}
+		}
+		seen[dir] = true
+		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
+	}
 }
 
 // printProposalWarnings clamps p in place (dropping shielded credential paths and

@@ -215,10 +215,29 @@ func TestSynthesizeFloorsWritesThroughASymlink(t *testing.T) {
 	if err := os.Symlink("/usr", filepath.Join(proj, "sys")); err != nil {
 		t.Fatal(err)
 	}
+	// A link whose TARGET does not exist is the one that matters most: EvalSymlinks
+	// fails outright on it, so a resolver that only walks up to the nearest resolvable
+	// ancestor sees nothing to follow and floors nothing - while the enforcer follows it
+	// and MkdirAll's the target for real, creating the very directory under a system
+	// tree the floor exists to prevent.
+	if err := os.Symlink("/var/tmp/bento-does-not-exist", filepath.Join(proj, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	// A RELATIVE target, which must resolve against the directory holding the link
+	// rather than against the path being walked: sub/rel -> ../cfg, and cfg -> /etc.
+	if err := os.Mkdir(filepath.Join(proj, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../cfg", filepath.Join(proj, "sub", "rel")); err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range []string{
 		filepath.Join(proj, "cfg", "cron.d", "evil"),
 		filepath.Join(proj, "cfg", "not-there-yet", "sub", "evil"),
 		filepath.Join(proj, "sys", "local", "bin", "evil"),
+		filepath.Join(proj, "dangling", "evil"),
+		filepath.Join(proj, "dangling", "not-there-yet", "evil"),
+		filepath.Join(proj, "sub", "rel", "cron.d", "evil"),
 	} {
 		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 0 {
@@ -521,30 +540,57 @@ func TestSynthesizeRefusesASeccompKilledObservation(t *testing.T) {
 // top-level directory, and the profiler's OWN home, and the credential shields are built
 // from the profiler's home too, so a second user's stores are not in the list at all.
 func TestSynthesizeDropsForeignHomeWriteGrants(t *testing.T) {
-	for _, w := range []string{"/home/other/.bashrc", "/var/home/other/.profile", "/Users/other/.zshrc", "/root/.bashrc"} {
+	// Pin a home that is not any of the accounts below, so each case is judged foreign
+	// by the home rules rather than by whatever the test host's real home happens to be.
+	t.Setenv("HOME", "/home/profiler")
+
+	for _, w := range []string{"/home/other/.bashrc", "/var/home/other/.profile", "/Users/other/.zshrc"} {
 		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 0 {
 			t.Errorf("write %s proposed the grant %v, want none - a whole foreign account must not be proposed", w, p.Write)
 		}
 	}
+	// The container itself is every account at once. Nothing else catches it inside
+	// Synthesize: it is not home-shaped, and the caller's broad clamp is a frontend.
+	for _, c := range []string{"/home", "/var/home", "/Users"} {
+		if !isForeignHomeTree(c) {
+			t.Errorf("isForeignHomeTree(%s) = false, want true - a grant of the container is every account", c)
+		}
+	}
+	// /root is root's account and systemWriteRoots owns it, so it is floored whether or
+	// not `sudo bento profile` makes it the profiler's own home.
+	if !FlooredWrite("/root") {
+		t.Error("a write grant of /root must be floored - it holds root's shell rc files")
+	}
 
-	// A directory INSIDE another user's home is not floored here: it is an ordinary
-	// grant the reviewer can judge, and the enforcer's own shields still cover the
-	// credential stores under it. Only the account root is the over-broad collapse.
+	// A directory INSIDE another user's home is not floored: it is an ordinary grant the
+	// reviewer can judge, and the enforcer's shields still cover the credential stores
+	// under it. Only the account root is the over-broad collapse.
 	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/home/other/shared/out.txt"}})
 	if len(p.Write) != 1 {
 		t.Errorf("write inside a foreign home proposed %v, want the grant kept", p.Write)
 	}
+}
 
-	// The profiler's own home stays, because the caller's broad clamp drops it AND
-	// reports it to the reviewer as over-broad; flooring it here would take it away
-	// silently and show the reviewer less than they see today.
-	home, err := os.UserHomeDir()
-	if err != nil || !filepath.IsAbs(home) {
-		t.Skip("no usable home directory to distinguish own from foreign")
+// On an ostree layout (/home -> /var/home) the profiler's OWN home is /var/home/u, so a
+// system floor on /var would drop every write grant its own user makes - silently, with
+// the script then failing EACCES at enforce time. A home container is judged by the home
+// rules, not the system floor, wherever it lives.
+func TestSynthesizeKeepsOwnHomeWritesOnAnOstreeLayout(t *testing.T) {
+	t.Setenv("HOME", "/var/home/u")
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/var/home/u/proj/out.txt"}})
+	if len(p.Write) != 1 || p.Write[0] != "/var/home/u/proj" {
+		t.Errorf("write = %v, want [/var/home/u/proj] - a home under /var is an account, not system state", p.Write)
 	}
-	p = mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{filepath.Join(home, "out.txt")}})
-	if len(p.Write) != 1 || p.Write[0] != filepath.Clean(home) {
+	// The account root itself still goes to the caller's broad clamp, which drops it AND
+	// reports it, so the reviewer sees more than a silent disappearance.
+	p = mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/var/home/u/out.txt"}})
+	if len(p.Write) != 1 || p.Write[0] != "/var/home/u" {
 		t.Errorf("write = %v, want the profiler's own home kept for the caller's broad clamp to report", p.Write)
+	}
+	// A genuine system tree under /var is still floored.
+	p = mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/var/lib/app/state.db"}})
+	if len(p.Write) != 0 {
+		t.Errorf("write = %v, want none - the container exemption must not reopen /var itself", p.Write)
 	}
 }

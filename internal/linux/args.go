@@ -13,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -1170,7 +1171,7 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 	return nil
 }
 
-// checkGrantNotLooped refuses a grant whose symlinks loop. resolveExisting leaves
+// checkGrantNotLooped refuses a grant whose symlinks loop. pathresolve.Existing leaves
 // a loop unresolved on purpose - a shield on one still fails closed - but a grant
 // is then bound at the looping path itself, and --ro-bind-try tolerates only a
 // missing source (ENOENT), not ELOOP, so bwrap aborts the run naming itself
@@ -1351,7 +1352,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 // symlink trees instead (TestGrantSymlinksMultiHopRealFilesystem).
 func missingHop(sb sandbox, abs, real string, filled []string) string {
 	cur := abs
-	for range maxSymlinkDepth {
+	for range pathresolve.MaxDepth {
 		if !coveredBy(cur, filled) {
 			return cur
 		}
@@ -1436,59 +1437,7 @@ func resolve(path string) (string, error) {
 		}
 		abs = filepath.Clean(wd) + "/" + path
 	}
-	return resolveExisting(abs, 0), nil
-}
-
-// maxSymlinkDepth bounds symlink following, matching the kernel's ELOOP limit, so
-// a self-referential or cyclic deny-list symlink cannot spin forever.
-const maxSymlinkDepth = 40
-
-// resolveExisting resolves abs where it exists via the kernel (EvalSymlinks,
-// which is accurate through parent symlinks, "..", and chains). Where a component
-// does not exist - including a *dangling* leaf symlink pointing into a not-yet-
-// populated store - it walks the components against a fully-resolved prefix,
-// following each symlink before any later "..", so the result is the target a
-// write through the path would actually reach (not the unmountable symlink, and
-// not the wrong sibling filepath.Join's lexical ".." cleaning would produce).
-func resolveExisting(abs string, depth int) string {
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		return real
-	}
-	if depth >= maxSymlinkDepth {
-		return abs // a symlink loop; leave it - a shield here fails closed
-	}
-
-	resolved := "/"
-	parts := strings.Split(strings.Trim(abs, "/"), "/")
-	for i, c := range parts {
-		switch c {
-		case "", ".":
-			continue
-		case "..":
-			resolved = filepath.Dir(resolved)
-			continue
-		}
-		next := filepath.Join(resolved, c)
-		target, err := os.Readlink(next)
-		if err != nil {
-			// A real directory/file, or a not-yet-existing component: take it as is.
-			// Since resolved is already symlink-free, a later ".." on it is safe.
-			resolved = next
-			continue
-		}
-		// A symlink: rebuild the path as its target followed by the not-yet-walked
-		// remainder - raw, not lexically joined, so a ".." *inside* the target still
-		// follows its own leading symlink - and resolve that from the top.
-		rebuilt := target
-		if !filepath.IsAbs(target) {
-			rebuilt = resolved + "/" + target
-		}
-		if rem := parts[i+1:]; len(rem) > 0 {
-			rebuilt += "/" + strings.Join(rem, "/")
-		}
-		return resolveExisting(rebuilt, depth+1)
-	}
-	return resolved
+	return pathresolve.Existing(abs), nil
 }
 
 // envArgs clears the inherited environment and sets only what the policy allowed
