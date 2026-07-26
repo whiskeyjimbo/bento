@@ -169,3 +169,76 @@ func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
 		t.Errorf("Dropped = %d, want 4 (the observer's 3 plus the unquotable record)", obs.Dropped)
 	}
 }
+
+// A profiled policy that requests resource limits must run under the same transient
+// scope the enforced run uses. Profiling is by construction the untrusted-code case -
+// the target has not been reviewed yet - so it is the last path that should run with
+// the manifest's memory caps silently dropped. `bento profile` on an existing limited
+// manifest carries those limits into the discovery policy, so this is the shape that
+// reaches it.
+//
+// The proof is the cap biting: the target allocates well past it and is killed before
+// it can write its marker. The unlimited half of the pair is what keeps that from
+// passing for a target that simply never ran.
+func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
+	requireSandbox(t)
+	if ok, reason := canCreateScope(); !ok {
+		t.Skip("no usable systemd user scope: " + reason)
+	}
+
+	profileAllocating := func(t *testing.T, limits policy.Limits) bool {
+		t.Helper()
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "done")
+		script := filepath.Join(dir, "alloc.sh")
+		// base64 of 96MB of urandom, held in a shell variable: past a 32M cap, under
+		// none.
+		body := "x=$(head -c 96000000 /dev/urandom | base64)\ntouch " + marker + "\n"
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := &policy.Policy{
+			Entrypoint:  script,
+			Interpreter: "sh",
+			Read:        []string{dir},
+			Write:       []string{dir},
+			Exec:        policy.ExecAll,
+			Limits:      limits,
+		}
+		var out strings.Builder
+		_, err := sandboxEnforcer(t).Profile(context.Background(), p,
+			enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+		// The kernel picks its OOM victim by size, so it usually takes the allocating
+		// shell and the observer still reports - but it can take the observer instead,
+		// which surfaces as a truncated report. Both are the cap biting; any other error
+		// is a broken test.
+		if err != nil && !strings.Contains(err.Error(), "did not complete") {
+			t.Fatalf("Profile with limits %+v failed: %v\noutput:\n%s", limits, err, out.String())
+		}
+		_, statErr := os.Stat(marker)
+		return statErr == nil
+	}
+
+	if !profileAllocating(t, policy.Limits{}) {
+		t.Fatal("the unlimited profiling run never reached its marker, so the limited half below would prove nothing")
+	}
+	if profileAllocating(t, policy.Limits{Memory: "32M"}) {
+		t.Error("a target allocating far past the manifest's memory limit ran to completion - profiling applied no scope")
+	}
+}
+
+// A host that cannot create a scope at all refuses the profiling run instead of
+// profiling unbounded. Run may proceed unwrapped in the same spot because enforce.Run
+// already ruled on that shortfall and the Report carries it; profiling has neither, so
+// dropping the cap silently here would be the one place an unreviewed target runs with
+// no ceiling on the host's memory.
+func TestProfileRefusesLimitsItCannotEnforce(t *testing.T) {
+	if ok, _ := canCreateScope(); ok {
+		t.Skip("this host can create a transient scope; the refusal is unreachable here")
+	}
+	p := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{Memory: "256M"}}
+	_, err := New().Profile(context.Background(), p, enforce.Process{}, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot enforce") {
+		t.Fatalf("profiling must refuse limits this host cannot enforce; got err=%v", err)
+	}
+}

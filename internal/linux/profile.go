@@ -34,6 +34,13 @@ var observeSupported = observe.Supported
 // bare IPs. By default the proxy records those hosts but refuses to forward the
 // traffic, so profiling untrusted code cannot exfiltrate; allowNetwork forwards
 // it for a faithful run of code whose later behavior depends on the response.
+//
+// It has no admission seam ahead of it the way Run has enforce.Run, and it needs none:
+// there is no weaker tier to substitute (a host without bwrap or the observation
+// backend is refused outright, not degraded), and the layers admission judges do not
+// describe this run - profiling observes exec rather than blocking it, and its proxy
+// records rather than allowlisting. What it does share with Run is that a requested
+// resource limit protects the host, so that one is enforced and refused here directly.
 func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths []string) (profile.Observation, error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
@@ -49,6 +56,18 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return profile.Observation{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
+	}
+	// A limit the policy requests protects the host, and the profiled target is by
+	// construction the untrusted one, so a host that cannot apply the limits refuses
+	// here rather than profiling unbounded. Run can proceed unwrapped in the same spot
+	// because enforce.Run already admitted that shortfall and the Report carries it;
+	// profiling has neither an admission seam ahead of it nor a Report to say so, so
+	// the refusal has to be its own. Refused up here with the other prerequisites, so
+	// nothing is launched first; canCreateScope is memoized, so asking early is free.
+	if !p.Limits.IsZero() {
+		if ok, reason := canCreateScope(); !ok {
+			return profile.Observation{}, fmt.Errorf("linux: the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+		}
 	}
 
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
@@ -104,10 +123,23 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	if err != nil {
 		return profile.Observation{}, err
 	}
-	cmd := exec.CommandContext(ctx, bwrap, args...)
+	// Run the profiling pass under the same transient scope the enforced run uses, so a
+	// limited manifest is profiled under its own caps. The prerequisite check above
+	// already refused a host that cannot create the scope; the preflight here turns a
+	// failure to apply these particular limits into a clear error rather than the
+	// target's exit code, as Run does. Env is nil for the same reason Run passes nil:
+	// the profiling command inherits bento's environment.
+	exe, cargs := bwrap, args
+	if !p.Limits.IsZero() {
+		if err := preflightLimits(p.Limits, nil); err != nil {
+			return profile.Observation{}, fmt.Errorf("linux: %w", err)
+		}
+		exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+	}
+	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
-	// The open report file becomes FD observeReportFD in the bwrap child, which bwrap
-	// passes through to the launcher. The launcher writes observations there and marks
+	// The open report file becomes FD observeReportFD in the bwrap child, surviving the
+	// systemd-run scope wrapper above, and bwrap passes it through to the launcher. The launcher writes observations there and marks
 	// it close-on-exec, so the profiled target never inherits the channel - though a
 	// descendant can still reach it via /proc/<launcher>/fd, so the report is
 	// trustworthy only to the degree the profiled code is (see the launcher's
