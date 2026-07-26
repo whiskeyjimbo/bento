@@ -36,9 +36,13 @@ func newApproveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The trust is reported below rather than by loadDocument, so a manifest
+			// approve is about to clamp is not also warned about as if it were staying
+			// that way. What approve cannot fix refuses here; the rest it acts on.
 			if err := requireApprovableLocation(path, trust); err != nil {
 				return err
 			}
+			warnUntrusted(cmd.ErrOrStderr(), trust.locationFlaws(uint32(os.Geteuid())))
 
 			if checkApproval(doc) == approvalCurrent {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)

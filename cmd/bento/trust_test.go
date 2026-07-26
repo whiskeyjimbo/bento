@@ -143,6 +143,24 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 	}
 }
 
+// approve announces the clamp it applies to the manifest's own mode, so the warnings it
+// prints alongside must describe only where the manifest lives - otherwise one loose
+// mode is reported twice, once as a problem and once as the fix.
+func TestLocationFlawsExcludeTheManifestItself(t *testing.T) {
+	const me = 1000
+	trust := manifestTrust{
+		file: fileFacts{path: "/w/m.yaml", mode: 0o666, uid: me},
+		dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+	}
+	if got := trust.flaws(me); len(got) != 2 {
+		t.Fatalf("flaws = %+v, want the manifest's mode and the directory's", got)
+	}
+	got := trust.locationFlaws(me)
+	if len(got) != 1 || strings.Contains(got[0].reason, "m.yaml") {
+		t.Errorf("locationFlaws must not repeat the manifest's own mode; got %+v", got)
+	}
+}
+
 func manifestIn(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "bento.yaml")
@@ -207,32 +225,54 @@ func TestRequireApprovableLocation(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := approvable(t, path)
-		if err == nil || !strings.Contains(err.Error(), "an ancestor of its directory") {
+		if err == nil || !strings.Contains(err.Error(), "a directory on the path to it") {
 			t.Fatalf("a writable ancestor must not be stamped over; got %v", err)
 		}
 		if !strings.Contains(err.Error(), outer) {
-			t.Errorf("the refusal must name the offending ancestor; got %v", err)
+			t.Errorf("the refusal must name the offending directory; got %v", err)
 		}
 	})
 
-	// Whoever can replace the symlink chooses which file every command reads, however
-	// private the file it currently points at.
-	t.Run("refuses a world-writable directory holding the symlink", func(t *testing.T) {
-		target := t.TempDir()
-		links := t.TempDir()
-		real := manifestIn(t, target)
-		link := filepath.Join(links, "link.yaml")
-		if err := os.Symlink(real, link); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(links, 0o777); err != nil {
-			t.Fatal(err)
-		}
-		err := approvable(t, link)
-		if err == nil || !strings.Contains(err.Error(), "the directory holding the symlink") {
-			t.Fatalf("a swappable symlink must not be stamped through; got %v", err)
-		}
-	})
+	// Whoever can replace a symlink chooses which file every command reads, however
+	// private the file it currently points at. The link can be the manifest's own name
+	// or any directory along the way, and the directories above it are as good as the
+	// one holding it - so every level of the name as given has to be inspected, not
+	// only the resolved location.
+	symlinked := map[string]func(t *testing.T, links, real string) string{
+		"the manifest's own name": func(t *testing.T, links, real string) string {
+			link := filepath.Join(links, "sub", "link.yaml")
+			if err := os.Symlink(real, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+		"a directory along the way": func(t *testing.T, links, real string) string {
+			link := filepath.Join(links, "sub", "proj")
+			if err := os.Symlink(filepath.Dir(real), link); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(link, filepath.Base(real))
+		},
+	}
+	for name, makeLink := range symlinked {
+		t.Run("refuses a world-writable directory above a symlink at "+name, func(t *testing.T) {
+			real := manifestIn(t, t.TempDir())
+			links := t.TempDir()
+			// The link sits one level down, so only walking up from it finds the
+			// world-writable directory that lets anyone rename sub aside.
+			if err := os.Mkdir(filepath.Join(links, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := makeLink(t, links, real)
+			if err := os.Chmod(links, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			err := approvable(t, path)
+			if err == nil || !strings.Contains(err.Error(), links) {
+				t.Fatalf("a swappable symlink must not be stamped through; got %v", err)
+			}
+		})
+	}
 
 	t.Run("allows a group/world-writable manifest the rewrite will clamp", func(t *testing.T) {
 		dir := t.TempDir()

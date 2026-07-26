@@ -56,12 +56,12 @@ func (f fileFacts) foreignOwner(euid uint32) bool {
 type manifestTrust struct {
 	file fileFacts
 	dir  fileFacts
-	// link is the directory holding the symlink, when the manifest is reached through
-	// one. Whoever can replace the link chooses which file every command reads.
-	link *fileFacts
-	// ancestors are the directories above dir, nearest first. Renaming one of them
-	// aside substitutes the manifest just as surely as replacing the file.
-	ancestors []fileFacts
+	// chain is every other directory that can decide which file the manifest's name
+	// reaches, nearest first: the ones above dir, since renaming one of them aside
+	// substitutes the manifest as surely as replacing the file, and - when the name
+	// goes through a symlink anywhere along it - the unresolved path's own directories,
+	// since whoever can replace a link repoints it at a file of their choosing.
+	chain []fileFacts
 }
 
 // trustFlaw is one way someone other than this user could change the manifest. fatal
@@ -75,8 +75,8 @@ type trustFlaw struct {
 
 // inspectManifest reads the trust facts for an already-open manifest. The file half
 // comes from the open handle so nothing can be swapped in between the check and the
-// parse; the directory halves are taken at the symlink-resolved location, which is
-// where approve writes, plus the link's own directory when there is one.
+// parse; the directory half is taken at the symlink-resolved location, which is where
+// approve writes, and the chain covers everything else that leads there.
 //
 // The reasoning is mode bits only. A POSIX ACL granting a named user write appears in
 // the group-class bits and is indistinguishable here, so a clean report means "nothing
@@ -90,13 +90,13 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	target, err := filepath.EvalSymlinks(path)
+	// Absolute, so the walks below terminate at / rather than at "." - a manifest named
+	// relatively leads through the same directories as one named in full.
+	given, err := filepath.Abs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	// Absolute, so the ancestor walk below terminates at / rather than at "." - a
-	// manifest named relatively has the same ancestors as one named in full.
-	target, err = filepath.Abs(target)
+	target, err := filepath.EvalSymlinks(given)
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -107,25 +107,57 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	}
 	trust := manifestTrust{file: file, dir: dir}
 
-	if li, err := os.Lstat(path); err == nil && li.Mode()&fs.ModeSymlink != 0 {
-		linkDir, err := statFacts(filepath.Dir(path))
-		if err != nil {
-			return manifestTrust{}, err
-		}
-		trust.link = &linkDir
+	above, err := dirsUpward(filepath.Dir(dirPath))
+	if err != nil {
+		return manifestTrust{}, err
 	}
+	// skip dirPath: for a manifest sitting directly in /, walking up from it starts at
+	// / again, and reporting it as both the holding directory and an ancestor is noise.
+	trust.chain = appendUnseen(nil, above, dirPath)
 
-	for p := filepath.Dir(dirPath); ; p = filepath.Dir(p) {
-		a, err := statFacts(p)
+	// Both paths are cleaned and absolute, so they differ only when a symlink was
+	// resolved - at the manifest itself or at any component along the way. Every
+	// directory of the name as given then decides which file that name reaches, so all
+	// of them are inspected, not just the one holding a final link.
+	if given != target {
+		linked, err := dirsUpward(filepath.Dir(given))
 		if err != nil {
 			return manifestTrust{}, err
 		}
-		trust.ancestors = append(trust.ancestors, a)
-		if p == filepath.Dir(p) {
-			break
-		}
+		trust.chain = appendUnseen(trust.chain, linked, dirPath)
 	}
 	return trust, nil
+}
+
+// dirsUpward returns facts for dir and every directory above it, nearest first.
+func dirsUpward(dir string) ([]fileFacts, error) {
+	var out []fileFacts
+	for p := dir; ; p = filepath.Dir(p) {
+		facts, err := statFacts(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, facts)
+		if p == filepath.Dir(p) {
+			return out, nil
+		}
+	}
+}
+
+// appendUnseen adds the directories of add that are not already in chain and are not
+// skip, so a path and its resolved target - which share every level above the point
+// they diverge - do not report the same directory twice.
+func appendUnseen(chain, add []fileFacts, skip string) []fileFacts {
+	seen := map[string]bool{skip: true}
+	for _, d := range chain {
+		seen[d.path] = true
+	}
+	for _, d := range add {
+		if !seen[d.path] {
+			chain = append(chain, d)
+		}
+	}
+	return chain
 }
 
 // flaws lists what euid cannot vouch for about the manifest's location, most specific
@@ -144,15 +176,21 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 			fatal:  true,
 		})
 	}
-	out = append(out, locationFlaws(t.dir, "the directory holding it", euid)...)
-	if t.link != nil {
-		out = append(out, locationFlaws(*t.link, "the directory holding the symlink to it", euid)...)
-	}
-	// Only the nearest fatal ancestor is reported. A group-writable one is as ordinary
-	// as a group-writable directory, and naming every level up to / would bury the one
-	// that actually lets someone else choose which manifest is read.
-	for _, a := range t.ancestors {
-		for _, f := range locationFlaws(a, "an ancestor of its directory", euid) {
+	return append(out, t.locationFlaws(euid)...)
+}
+
+// locationFlaws is the half of flaws that is about where the manifest lives rather than
+// the manifest itself. approve reports these on their own: the file's own mode is
+// something its rewrite corrects and announces, so warning about it here as well would
+// describe a state approve is in the middle of leaving.
+func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
+	out := dirFlaws(t.dir, "the directory holding it", euid)
+	// Only the nearest fatal link in the chain is reported. A group-writable directory
+	// up the tree is as ordinary as a group-writable one holding the manifest, and
+	// naming every level to / would bury the one that actually lets someone else choose
+	// which manifest is read.
+	for _, d := range t.chain {
+		for _, f := range dirFlaws(d, "a directory on the path to it", euid) {
 			if f.fatal {
 				return append(out, f)
 			}
@@ -161,9 +199,9 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 	return out
 }
 
-// locationFlaws reports what a directory on the way to the manifest lets someone other
-// than euid do with it. role names the directory in the message.
-func locationFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
+// dirFlaws reports what a directory on the way to the manifest lets someone other than
+// euid do with it. role names the directory in the message.
+func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 	var out []trustFlaw
 	if shared := d.sharedWrite(); shared != 0 {
 		// Only world-writable is fatal. Group write is what a umask of 002 leaves on
