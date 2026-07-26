@@ -1,4 +1,4 @@
-package landlock_test
+package landlock
 
 import (
 	"os"
@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
 // buildProbe compiles the probe the way make build ships bento, and returns its path.
@@ -21,7 +19,9 @@ import (
 // On Landlock ABI 8 and above go-landlock takes neither: it passes the kernel's own
 // TSYNC flag (restrict.go, useTsync := abi.version >= 8) and the build-tag divergence
 // disappears. So this forces the shipped build, but on a new enough kernel there is
-// no userspace mechanism left for it to be the shipped version OF.
+// no userspace mechanism left for it to be the shipped version OF - which is why
+// TestRestrictReachesAPreexistingThread reports which side of that line the host fell
+// on rather than letting a green run stand in for fan-out coverage.
 func buildProbe(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -37,7 +37,7 @@ func buildProbe(t *testing.T) string {
 }
 
 func TestAvailableOnLinux(t *testing.T) {
-	if !landlock.Available() {
+	if !Available() {
 		t.Skip("Landlock not present on this kernel")
 	}
 }
@@ -48,7 +48,7 @@ func TestAvailableOnLinux(t *testing.T) {
 // reporting "no backstop" while the syscalls worked. This masks that path with a
 // tmpfs under bwrap and asserts Available() still says true.
 func TestAvailableWithoutSecurityfs(t *testing.T) {
-	if !landlock.Available() {
+	if !Available() {
 		t.Skip("Landlock not present on this kernel")
 	}
 	bwrap, err := exec.LookPath("bwrap")
@@ -78,7 +78,7 @@ func TestAvailableWithoutSecurityfs(t *testing.T) {
 // one directory in a fresh process; a path inside must stay readable and a path
 // outside must be denied.
 func TestRestrictConfinesReads(t *testing.T) {
-	if !landlock.Available() {
+	if !Available() {
 		t.Skip("Landlock not present on this kernel")
 	}
 	bin := buildProbe(t)
@@ -135,13 +135,19 @@ func TestRestrictConfinesReads(t *testing.T) {
 // restrict call on purpose; one started after would inherit the restriction through
 // clone regardless and prove nothing.
 //
-// It asserts the property, not the mechanism, and cannot tell which one ran: below
-// ABI 8 that is go-landlock's userspace fan-out (the no-cgo AllThreadsSyscall path
-// buildProbe now forces), at ABI 8 and above it is the kernel's own TSYNC and no
-// userspace fan-out happens at all. A pass here is therefore not evidence that the
-// shipped AllThreadsSyscall path was exercised.
+// The property holds under either mechanism, so it is asserted unconditionally. WHICH
+// one delivered it is the part a pass cannot show - the end state is identical - so the
+// subtest below reports that separately rather than leaving a green run to be misread as
+// coverage of the userspace fan-out. That distinction is the whole subject of the
+// CGO_ENABLED=0 flip in buildProbe: forcing the shipped no-cgo mechanism means nothing
+// on a kernel where go-landlock uses neither userspace mechanism.
+//
+// This test lives in the internal package for one reason: effectiveABI is what decides
+// it, and re-deriving the ABI here - the raw syscall plus go-landlock's errata downgrade
+// plus the build-tag floor - would put a second copy of security-relevant detection logic
+// in a test, which is how a test comes to validate a hybrid nothing ships.
 func TestRestrictReachesAPreexistingThread(t *testing.T) {
-	if !landlock.Available() {
+	if !Available() {
 		t.Skip("Landlock not present on this kernel")
 	}
 	bin := buildProbe(t)
@@ -167,4 +173,33 @@ func TestRestrictReachesAPreexistingThread(t *testing.T) {
 	if !strings.Contains(got, "otherthread_inside=OK") {
 		t.Errorf("the granted tree stopped being readable from the other thread: %q", got)
 	}
+
+	// Reaching this subtest without a skip is the record that the assertions above ran
+	// against the userspace fan-out. It cannot observe the syscall path directly - both
+	// mechanisms leave the same end state - so it gates on the same version go-landlock
+	// gates on and says which side of it this host fell.
+	t.Run("delivered by the shipped userspace fan-out", func(t *testing.T) {
+		if abi := effectiveABI(); abi >= tsyncABI {
+			t.Skipf("effective ABI %d: go-landlock passes the kernel's own TSYNC flag on "+
+				"LandlockRestrictSelf (restrict.go, useTsync := abi.version >= %d) and never calls "+
+				"AllThreadsLandlockRestrictSelf, so the no-cgo syscall.AllThreadsSyscall path "+
+				"buildProbe forces did not run and the assertions above do not cover it",
+				abi, tsyncABI)
+		}
+	})
 }
+
+// tsyncABI is the Landlock ABI at which go-landlock stops fanning the restrict syscall
+// out across threads from userspace and passes the kernel's own TSYNC flag instead
+// (v0.9.0 restrict.go: useTsync := abi.version >= 8). Below it the mechanism is the one
+// buildProbe's CGO_ENABLED=0 selects; at or above it neither userspace mechanism runs.
+//
+// Under the landlocktsync build tag the fan-out is unreachable in every configuration,
+// so that build never covers it: minRequiredABI is 8 there, so a kernel below 8 floors
+// to 0 and Available() sends the test to its skip before the probe is built, while 8 and
+// above takes the kernel's TSYNC. That also contains a divergence worth naming: the probe
+// is built without propagating build tags, so under that tag the test binary floors at 8
+// while the probe floors at 0. The two views can only disagree below ABI 8, and there
+// Available() skips before the probe is ever built - so the disagreement never reaches a
+// running probe.
+const tsyncABI = 8
