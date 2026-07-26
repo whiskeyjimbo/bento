@@ -27,10 +27,10 @@ import (
 // not code identity.
 //
 // A nil policy fingerprints as the empty string rather than panicking. That is not a
-// sentinel to compare against: it is not valid hex, so it matches no stored approval,
-// and checkApproval reads an empty stamp as unapproved. Hashing the zero Policy
-// instead would make nil collide with an empty-but-real policy, which is the one
-// answer a fingerprint must never give.
+// sentinel to compare against: it is not valid hex, so it can never equal a real
+// fingerprint or a stored approval. Hashing the zero Policy instead would make nil
+// collide with an empty-but-real policy, which is the one answer a fingerprint must
+// never give.
 func (p *Policy) Fingerprint() string {
 	if p == nil {
 		return ""
