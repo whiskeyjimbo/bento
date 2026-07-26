@@ -16,6 +16,9 @@ linters:
       ignore-rules:
         # A hard link, hardlinked - the dictionary wants "hardline".
         - hardlinked
+        # The XDG directory ~/.local/share/thumbnailers, spelled the way the spec
+        # spells it - the dictionary wants "thumbnails", which names no real path.
+        - thumbnailers
 
     errcheck:
       # An advisory deadline and a half-close on a connection that is being torn

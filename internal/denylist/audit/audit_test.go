@@ -3,6 +3,7 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -313,7 +314,7 @@ blacklist ${HOME}/.*_history
 # gnome
 blacklist ${HOME}/.audit_test_privacy_app
 `
-	unclassified, globs, out := Audit([]string{content}, "/HOME", "/run/user/1000")
+	unclassified, globs, out := Audit([]Source{{Content: content, Parse: ParseFirejail}}, "/HOME", "/run/user/1000")
 
 	got := map[string]bool{}
 	for _, g := range unclassified {
@@ -395,7 +396,7 @@ func TestFirejailCompleteness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unclassified, globs, outBySection := Audit(contents, home, "/run/user/1000")
+	unclassified, globs, outBySection := Audit(firejailSources(contents), home, "/run/user/1000")
 
 	// Globs and out-of-scope totals are surfaced (not silently dropped) so a whole
 	// class or the app/privacy scope stays visible for periodic manual review.
@@ -474,4 +475,112 @@ func TestCredentialNameTierTwoTokens(t *testing.T) {
 			t.Errorf("%s must stay out of the name classifier; widening it is a deliberate scope change", p)
 		}
 	}
+}
+
+// firejailSources wraps profile bodies as firejail-parsed sources, so the tests that
+// predate the second corpus keep reading as one profile set rather than restating the
+// parser at every call.
+func firejailSources(contents []string) []Source {
+	out := make([]Source, 0, len(contents))
+	for _, c := range contents {
+		out = append(out, Source{Content: c, Parse: ParseFirejail})
+	}
+	return out
+}
+
+// The AppArmor abstractions are written almost entirely as patterns and mode letters,
+// so the parser's job is turning that into paths bento's rule list can be diffed
+// against. Each case here is one way the format differs from firejail's.
+func TestParseAppArmor(t *testing.T) {
+	const content = `# vim:ft=apparmor
+  abi <abi/5.0>,
+
+  deny @{HOME}/.*history mrwkl,
+  audit deny @{HOME}/bin/{,**} wl,
+  audit deny @{HOME}/.config/ w,
+  deny @{HOME}/.{,z}log{in,out} mrk,
+  audit deny owner @{HOME}/.ssh/{,**} mrwkl,
+  audit deny @{run}/user/[0-9]*/keyring** mrwkl,
+  deny /etc/shadow r,
+  allow @{HOME}/.cache/{,**} rw,
+`
+	got := map[string]Candidate{}
+	for _, c := range ParseAppArmor(content, "/HOME", "/run/user/1000") {
+		got[c.Path] = c
+	}
+
+	// Alternation is finite, so it expands to concrete paths rather than being punted
+	// to the glob review bucket.
+	for _, p := range []string{"/HOME/.login", "/HOME/.logout", "/HOME/.zlogin", "/HOME/.zlogout"} {
+		c, ok := got[p]
+		if !ok {
+			t.Errorf("brace alternation must expand to %s; got %v", p, keysOf(got))
+			continue
+		}
+		if c.Glob {
+			t.Errorf("%s is a concrete path, not a glob", p)
+		}
+	}
+	// "and everything under it" is a bento directory rule, not a wildcard.
+	if c, ok := got["/HOME/bin"]; !ok || c.Glob {
+		t.Errorf("a /{,**} subtree rule must collapse to the directory itself; got %+v (ok=%v)", c, ok)
+	}
+	// A write-only rule on the directory itself guards creation; bento has no equivalent
+	// and reporting it would demand shielding the whole of ~/.config.
+	if _, ok := got["/HOME/.config"]; ok {
+		t.Error("a write-only create-guard on a directory must not become a candidate")
+	}
+	// Mode letters carry the class: no r/m/k means writes only.
+	if c := got["/HOME/bin"]; c.Deny != denylist.DenyWrite {
+		t.Errorf("wl modes are DenyWrite; got %v", c.Deny)
+	}
+	if c := got["/HOME/.ssh"]; c.Deny != denylist.DenyAll {
+		t.Errorf("mrwkl modes hide the content, so DenyAll; got %v", c.Deny)
+	}
+	// A real wildcard still reports as one.
+	if c, ok := got["/HOME/.*history"]; !ok || !c.Glob {
+		t.Errorf(".*history is a genuine wildcard and must report as a glob; got %+v (ok=%v)", c, ok)
+	}
+	// The runtime dir's uid wildcard resolves, or it could never match a bento rule.
+	if _, ok := got["/run/user/1000/keyring**"]; !ok {
+		t.Errorf("@{run}/user/[0-9]* must resolve to the runtime dir; got %v", keysOf(got))
+	}
+	// Out of bento's home/runtime scope, and the wrong polarity, respectively.
+	if _, ok := got["/etc/shadow"]; ok {
+		t.Error("a system path is outside bento's shield scope")
+	}
+	if _, ok := got["/HOME/.cache"]; ok {
+		t.Error("an allow rule is not a shield; reading one as a deny inverts the corpus")
+	}
+}
+
+// The parser must substitute @{HOME} before expanding alternation. Doing it the other
+// way round consumes the variable's own braces as a one-branch group, leaving paths
+// rooted at a literal "@HOME" that match no rule - which silently drops the entire
+// corpus from the diff while the gate still reports a pass.
+func TestParseAppArmorSubstitutesBeforeExpanding(t *testing.T) {
+	got := ParseAppArmor("  deny @{HOME}/.ssh/{,**} mrwkl,\n", "/HOME", "/run/user/1000")
+	if len(got) != 1 || got[0].Path != "/HOME/.ssh" {
+		t.Errorf("ParseAppArmor = %+v, want exactly /HOME/.ssh", got)
+	}
+}
+
+// Both abstractions exist only to enumerate sensitive $HOME entries, so their candidates
+// are in scope by the source rather than by a header. Without this every AppArmor gap
+// lands in the out-of-scope summary and the second corpus contributes nothing.
+func TestAppArmorCandidatesAreInScope(t *testing.T) {
+	gaps := []Gap{{Candidate: Candidate{Path: "/HOME/.newthing", Section: appArmorSection}}}
+	inScope, out := SplitByScope(gaps)
+	if len(inScope) != 1 {
+		t.Errorf("an AppArmor candidate must be in scope; got inScope=%v out=%v", inScope, out)
+	}
+}
+
+func keysOf(m map[string]Candidate) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

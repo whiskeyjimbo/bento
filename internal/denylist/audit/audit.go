@@ -1,26 +1,38 @@
-// Package audit cross-references bento's shield list against firejail's
-// disable-common and disable-programs profiles, so a path firejail shields but bento
-// does not surfaces as a candidate rather than waiting for an adversarial review to
-// find it.
+// Package audit cross-references bento's shield list against two upstream corpora -
+// firejail's disable-common/disable-programs profiles and AppArmor's private-files
+// abstractions - so a path they shield but bento does not surfaces as a candidate rather
+// than waiting for an adversarial review to find it.
 //
-// It is a dev-time check, not part of the sandbox: the mapping from firejail's
+// The formats share no syntax, so each carries its own parser (ParseFirejail,
+// ParseAppArmor) and Audit takes a Source per profile. They were chosen to be
+// independently maintained and deny-shaped: a deny list states what must not be reached,
+// which is bento's own polarity, whereas an allow-shaped confinement profile would have
+// to be inverted to say anything here.
+//
+// It is a dev-time check, not part of the sandbox: the mapping from upstream
 // directives to bento's DenyAll/DenyWrite classes is a hint, and the final
 // classification (per the credential-vs-exec rule in the denylist package) stays a human
-// call. firejail's profile data is GPLv2; this reads it as a reference/diff input and
-// never vendors it into the binary.
+// call. Both corpora are GPLv2; this reads them as reference/diff input and never
+// vendors them into the binary.
 //
 // WHAT A GREEN RUN MEANS, since the shape invites reading more into it: this establishes
-// PARITY WITH FIREJAIL, not completeness. It has exactly one source, so a store firejail
-// does not list cannot surface here no matter how squarely it sits in bento's own
-// credential/exec model - and firejail's coverage is shaped by firejail's scope, not
-// bento's. That is a structural limit of a single-corpus diff, not a gap in this code.
+// PARITY WITH ITS CORPORA, not completeness. A store none of them lists cannot surface
+// here no matter how squarely it sits in bento's own credential/exec model, because each
+// corpus's coverage is shaped by that project's scope rather than bento's.
 //
-// It is not hypothetical: the 21 paths shielded for bv2-2k6y - the agent config trees,
-// ~/.local/bin and ~/bin, .terraformrc, .m2/settings.xml, .gradle/gradle.properties,
-// .config/glab-cli, .config/helm, .nuget, .composer/auth.json, .bundle/config,
-// .ICEauthority - were all found by hand, because firejail lists none of them. This
-// audit was green throughout. Treat a clean run as "no firejail-known gap", and keep
-// hunting the rest by review until a second corpus with a different shape exists.
+// A second corpus narrows that, and does not close it. Both sources are DESKTOP
+// APPLICATION sandboxes, which is the shared blind spot: the developer token stores
+// (.terraformrc, .m2/settings.xml, .gradle/gradle.properties, .npmrc, .composer/auth.json)
+// are outside firejail's list and AppArmor's alike. The 21 paths shielded for bv2-2k6y
+// were all found by hand while this audit was green, and re-measuring against AppArmor
+// put its recall on that same set at 2 of 21 - so the class that motivated the second
+// corpus is still the class neither corpus covers.
+//
+// What the second source does buy is the failure mode a single source cannot detect at
+// all: an entry one project overlooks now has a second chance to surface. Adding it
+// found .local/share/thumbnailers, .config/upstart, .init, .gnome2_private, ~/.evolution,
+// .mozilla-thunderbird and the legacy KDE KMail stores. Treat a clean run as "no
+// upstream-known gap", and keep hunting the developer-tool class by review.
 package audit
 
 import (
@@ -31,33 +43,53 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
-// Candidate is one firejail directive mapped into bento's terms.
+// Source is one upstream profile's content paired with the parser for its format.
+// Formats differ enough that a single parser cannot serve both - firejail's scope comes
+// from section headers, AppArmor's from mode letters and the file's purpose - so each
+// corpus carries its own, and Audit diffs their combined candidates against one rule
+// list. A plain function value rather than an interface: there is one method's worth of
+// behavior here, and both parsers already have this shape.
+type Source struct {
+	Content string
+	Parse   func(content, home, runUser string) []Candidate
+}
+
+// Candidate is one upstream directive mapped into bento's terms.
 type Candidate struct {
-	// Path is the shielded path with firejail's variables expanded.
+	// Path is the shielded path with the source format's variables expanded.
 	Path string
-	// Deny is the class the directive maps to: blacklist and blacklist-nolog ->
-	// DenyAll, read-only -> DenyWrite.
+	// Deny is the class the directive maps to: firejail's blacklist and
+	// blacklist-nolog, and any AppArmor rule denying reads, become DenyAll; firejail's
+	// read-only and a write-only AppArmor rule become DenyWrite.
 	Deny denylist.Deny
 	// Glob reports that the source directive used a wildcard, which bento does not
 	// express (it shields directories instead). A glob candidate needs a human to
 	// decide the covering directory shield, so it is reported separately.
 	Glob bool
-	// Section is the firejail section-header comment the directive fell under, used
-	// to separate bento's secret/exec threat model from firejail's broader privacy
-	// and other-app scope.
+	// Section is what scope classification keys off: firejail's section-header comment
+	// for a headed profile, or a constant naming the source where the format has no
+	// headers. It separates bento's secret/exec threat model from an upstream's broader
+	// privacy and other-app scope.
 	Section string
-	// Raw is the original firejail line, for the report.
+	// Raw is the original upstream line, for the report.
 	Raw string
 }
 
-// inScopeSection reports whether a firejail section is within bento's host-exec /
-// secret-read threat model - as opposed to firejail's broader privacy, other-app,
-// and system-hardening scope, which bento's empty-root default already covers and
-// deliberately does not enumerate. Matching is by substring on the distinctive words
-// of the secret and exec sections; an unrecognised section is out of scope, so a
-// firejail reorganization can only make the audit quieter, never silently in-scope.
+// inScopeSection reports whether a section is within bento's host-exec / secret-read
+// threat model - as opposed to an upstream's broader privacy, other-app, and
+// system-hardening scope, which bento's empty-root default already covers and
+// deliberately does not enumerate. Matching is by substring on the distinctive words of
+// firejail's secret and exec sections; an unrecognised section is out of scope, so an
+// upstream reorganization can only make the audit quieter, never silently in-scope.
 func inScopeSection(section string) bool {
 	s := strings.ToLower(section)
+	// The AppArmor abstractions are wholly in scope by construction: both files exist
+	// only to enumerate sensitive $HOME entries, so there is nothing to separate. That
+	// is a property of the source, which is why ParseAppArmor stamps one section on
+	// every candidate instead of reading the surrounding prose as a header.
+	if section == appArmorSection {
+		return true
+	}
 	for _, kw := range []string{
 		// secret / credential sections
 		"top secret", "cloud provider", "ssh-agent", "remote access", "pass utility",
@@ -394,6 +426,36 @@ var IntentionalExclusions = map[string]string{
 	"_exrc":   "a Windows-only ex rc name, dead on Linux",
 }
 
+// AcceptedWeaker are paths an upstream hides outright while bento deliberately shields
+// them DenyWrite, keyed by ${HOME}-relative path with the reason bento's weaker class is
+// the right one. Without this the diff reports each as a candidate DenyAll forever,
+// which is a standing instruction to make a change that was already considered and
+// rejected.
+//
+// Every entry here is one scope difference, not many: AppArmor's private-files is
+// explicitly a privacy abstraction, so it denies READING a shell startup file, while
+// bento's model treats those as a plant-that-runs-later surface and keeps reads open
+// because a sandboxed build legitimately sources them (see the writeOnly block in the
+// denylist package). Hiding them would break ordinary runs to close a channel bento
+// does not claim to close.
+//
+// The residual is real and stated rather than papered over: a user who pastes an
+// export SECRET=... into .zshenv has put a secret somewhere a sandboxed run can read.
+// That is the accepted cost of the readable-rc decision, not an oversight of it.
+//
+// Only paths an upstream has actually reported concretely are listed. Siblings that
+// today reach the diff inside a wildcard (.bash_profile under .bash*) are deliberately
+// absent: pre-silencing a finding no one has seen in that form is how an exclusion list
+// starts hiding real gaps, which is the warning IntentionalExclusions carries too.
+var AcceptedWeaker = map[string]string{
+	".inputrc": "readline init: a macro binding is the plant; reading it exposes no secret",
+	".login":   "csh login script: same plant-not-read rule as the other shell startup files",
+	".logout":  "csh logout script: same plant-not-read rule",
+	".zlogin":  "zsh login script: same plant-not-read rule",
+	".zlogout": "zsh logout script: same plant-not-read rule",
+	".zshenv":  "read on EVERY zsh invocation; shielded DenyWrite so a build can still source it",
+}
+
 // ReviewedGlobs are firejail wildcard directives a human has already decided about,
 // keyed by ${HOME}-relative pattern with how the class is covered. bento cannot express
 // a wildcard shield, so a glob cannot be diffed against the rule list mechanically. A
@@ -424,6 +486,30 @@ var ReviewedGlobs = map[string]string{
 	".electrum*":   "Electrum wallet data dirs; the base .electrum is shielded DenyAll, but the suffixed fork set (.electrum-ltc and successors) is open-ended",
 	".*coin":       "altcoin Core wallets; .bitcoin is shielded DenyAll, but the coin set (.litecoin, .dogecoin, .namecoin, ...) is open-ended and its members are only knowable from the wildcard",
 	".sendgmail.*": "per-sender sendgmail credential files; the .config/sendgmail store and the suffix-less .sendgmail.json are shielded DenyAll, and the per-sender suffix is not expressible as a concrete path",
+
+	// AppArmor's abstractions are written almost entirely as patterns, so its half of
+	// the diff arrives here rather than as concrete paths. Each is covered by bento
+	// shielding the named instances the pattern stands for.
+	".*rc":        "any dotfile rc; bento shields the named rc files it models (.bashrc, .zshrc, .muttrc, .fetchmailrc, .inputrc, ...) and cannot express a home-root wildcard",
+	".*history":   "unprefixed history variants of the .*_history class already reviewed above; the named instances are shielded DenyAll",
+	".bash*":      "bash startup and history files; .bashrc, .bash_profile, .bash_login, .bash_aliases, .bash_logout and .bash_history are each shielded by name",
+	".profile*":   "the base .profile is shielded DenyWrite; the suffixed variants are not expressible as concrete paths",
+	".zprofile*":  "the base .zprofile is shielded DenyWrite; the suffixed variants are not expressible as concrete paths",
+	".fetchmail*": "fetchmail state and rc; .fetchmailrc, which holds the account password, is shielded DenyAll",
+	".viminfo*":   ".viminfo is shielded DenyAll; the .viminfo.tmp/.viminfo-<n> siblings vim writes are not expressible as concrete paths",
+	".mutt**":     "the .mutt tree is shielded DenyAll, which covers everything the pattern reaches",
+
+	// Editor leavings of ANY dotfile: a .swp of ~/.ssh/config or a .bak of
+	// ~/.aws/credentials holds the same secret as the original under a name bento
+	// cannot enumerate. The stores themselves are directory shields, so a temp file
+	// written BESIDE the original inside one is already covered; what is not is a copy
+	// an editor leaves at the home root. Named here so the residual is on the record
+	// rather than implied - re-check if a shape-based scan (see the hunting-tool bead)
+	// makes the class enumerable.
+	".*~":    "editor backup of an arbitrary dotfile; covered inside shielded directories, not at the home root, and not expressible as a concrete path",
+	".*~1~":  "numbered emacs backup, same class as .*~",
+	".*.swp": "vim swap file of an arbitrary dotfile, same class as .*~",
+	".*.bak": "generic backup copy of an arbitrary dotfile, same class as .*~",
 }
 
 // excluded reports whether path is an intentional exclusion at the given home.
@@ -455,15 +541,20 @@ func relLookup(path, home string, m map[string]string) bool {
 // concrete backlog clears. outBySection summarizes the out-of-scope firejail sections
 // bento does not enumerate, so they stay accountable. home and runUser expand firejail's
 // ${HOME}/${RUNUSER}; the profile files are a dev-time diff input, never vendored.
-func Audit(contents []string, home, runUser string) (unclassified, globs []Gap, outBySection map[string]int) {
+func Audit(sources []Source, home, runUser string) (unclassified, globs []Gap, outBySection map[string]int) {
 	var candidates []Candidate
-	for _, c := range contents {
-		candidates = append(candidates, ParseFirejail(c, home, runUser)...)
+	for _, s := range sources {
+		candidates = append(candidates, s.Parse(s.Content, home, runUser)...)
 	}
 	rules := append(denylist.Home(home), denylist.Runtime()...)
 	inScope, outBySection := SplitByScope(Diff(candidates, rules))
 	for _, g := range inScope {
 		if excluded(g.Path, home) {
+			continue
+		}
+		// A recorded weaker-class decision clears only the Weaker report. If the same
+		// path later goes missing entirely, that is a different finding and still fails.
+		if g.Weaker && relLookup(g.Path, home, AcceptedWeaker) {
 			continue
 		}
 		if g.Glob && reviewedGlob(g.Path, home) {

@@ -906,11 +906,12 @@ var bulkStoreDirs = []string{
 	".thunderbird",
 	".config/evolution",
 	".evolution", // pre-3.6 Evolution store, still present on upgraded systems
-	".mail", // mutt/notmuch maildir; message bodies and cached credentials
-	".Mail", // same, capitalized variant used by some setups
-	"Mail",  // mutt default mail folder at ~/Mail (no leading dot)
-	"mail",  // mutt default mail folder at ~/mail
+	".mail",      // mutt/notmuch maildir; message bodies and cached credentials
+	".Mail",      // same, capitalized variant used by some setups
+	"Mail",       // mutt default mail folder at ~/Mail (no leading dot)
+	"mail",       // mutt default mail folder at ~/mail
 	".icedove",
+	".mozilla-thunderbird", // Debian's legacy Thunderbird profile root, same saved-password store
 	".cache/icedove",
 	".cache/thunderbird",
 	".claws-mail",
@@ -925,6 +926,13 @@ var bulkStoreDirs = []string{
 	".local/share/local-mail",
 	".local/share/kmail2", // KMail/Akonadi message store
 	".cache/kmail2",
+	// Legacy KDE/KDE4 KMail stores, the pre-Akonadi siblings of .local/share/kmail2.
+	// The KDE-era autostart paths beside them are already shielded, so the mail store
+	// at the same roots being readable was an inconsistency rather than a decision.
+	".kde/share/apps/kmail",
+	".kde/share/apps/kmail2",
+	".kde4/share/apps/kmail",
+	".kde4/share/apps/kmail2",
 	".cache/mutt", // cached message bodies
 	".local/share/evolution",
 	".cache/evolution",

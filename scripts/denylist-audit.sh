@@ -1,16 +1,19 @@
 #!/bin/sh
-# Cross-references bento's credential/exec deny-list against firejail's upstream
-# disable-common.inc and reports any secret- or exec-scope shield firejail has that
+# Cross-references bento's credential/exec deny-list against two upstream corpora -
+# firejail's disable-common.inc/disable-programs.inc and AppArmor's private-files
+# abstractions - and reports any secret- or exec-scope shield they have that
 # bento does not cover (see cmd/denylist-audit and internal/denylist/audit). Run it, and
 # every in-scope upstream entry bento lacks is printed for a human to classify into
 # internal/denylist/denylist.go (DenyAll credential vs DenyWrite exec) or dismiss.
 #
-# A green run means PARITY WITH FIREJAIL, not a complete deny-list: firejail is the only
-# corpus, so a store it does not list cannot surface here. Paths in bento's model but
-# outside firejail's still have to be found by review - see the audit package doc.
+# A green run means PARITY WITH THESE CORPORA, not a complete deny-list: a store neither
+# lists cannot surface here. Both are desktop-application sandboxes, so the developer
+# token stores (.terraformrc, .m2/settings.xml, .npmrc) are outside BOTH of them and
+# still have to be found by review - see the audit package doc.
 #
-# GPL note: firejail's data is GPLv2. It is fetched over the network and read as a
-# diff reference only - never vendored into the binary; bento ships its own entries.
+# GPL note: firejail's and AppArmor's data are both GPLv2. They are fetched over the
+# network and read as a diff reference only - never vendored into the binary; bento
+# ships its own entries.
 #
 # The underlying command's exit codes drive a CI gate: 1 means a real gap (fail the
 # build - fix the list or file a bead), 2 means the upstream fetch failed (offline or
@@ -40,12 +43,12 @@ case "$status" in
 	exit 0
 	;;
 1)
-	echo "denylist-audit: in-scope firejail shields are missing from bento's list above." >&2
+	echo "denylist-audit: in-scope upstream shields are missing from bento's list above." >&2
 	echo "denylist-audit: classify each into internal/denylist/denylist.go, or file a bead." >&2
 	exit 1
 	;;
 2)
-	echo "denylist-audit: could not fetch firejail upstream (offline?); skipping the check." >&2
+	echo "denylist-audit: could not fetch an upstream corpus (offline?); skipping the check." >&2
 	exit 0
 	;;
 *)

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/whiskeyjimbo/bento/internal/denylist/audit"
 )
 
 // The gate's contract: exit 1 (and name the path) when an in-scope firejail shield is
@@ -16,7 +18,7 @@ func TestReportFlagsUncoveredInScopeShield(t *testing.T) {
 	content := "# top secret\nblacklist ${HOME}/.some-new-secret-store\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []string{content}, "/home/u", "/run/user/1000"); code != 1 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 1 {
 		t.Fatalf("an uncovered in-scope shield must exit 1; got %d (%q)", code, b.String())
 	}
 	if !strings.Contains(b.String(), "/home/u/.some-new-secret-store") {
@@ -30,7 +32,7 @@ func TestReportPassesWhenShieldCovered(t *testing.T) {
 	content := "# top secret\nblacklist ${HOME}/.ssh\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []string{content}, "/home/u", "/run/user/1000"); code != 0 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
 		t.Fatalf("a covered shield must exit 0; got %d (%q)", code, b.String())
 	}
 }
@@ -66,15 +68,22 @@ func TestIsProfile(t *testing.T) {
 // sentinel exists to prevent. Asserting mutual exclusion catches that; asserting the
 // sentinels merely differ does not.
 func TestFirejailSourceSentinelsIdentifyOneProfileEach(t *testing.T) {
-	if len(firejailSources) != 2 {
-		t.Fatalf("expected the two upstream profiles, got %d", len(firejailSources))
+	var firejail []int
+	for i, src := range upstreamSources {
+		if strings.Contains(src.url, "firejail") {
+			firejail = append(firejail, i)
+		}
+	}
+	if len(firejail) != 2 {
+		t.Fatalf("expected the two firejail profiles, got %d", len(firejail))
 	}
 	dir := os.Getenv("FIREJAIL_DIR")
 	if dir == "" {
 		dir = "/etc/firejail"
 	}
-	bodies := make([]string, len(firejailSources))
-	for i, src := range firejailSources {
+	bodies := make([]string, len(firejail))
+	for i, si := range firejail {
+		src := upstreamSources[si]
 		name := src.url[strings.LastIndexByte(src.url, '/')+1:]
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
@@ -82,7 +91,8 @@ func TestFirejailSourceSentinelsIdentifyOneProfileEach(t *testing.T) {
 		}
 		bodies[i] = string(b)
 	}
-	for i, src := range firejailSources {
+	for i, si := range firejail {
+		src := upstreamSources[si]
 		for j, body := range bodies {
 			got := isProfile(body, src.sentinel)
 			if want := i == j; got != want {
@@ -99,7 +109,7 @@ func TestReportIgnoresOutOfScopeSection(t *testing.T) {
 	content := "# KDE config\nblacklist ${HOME}/.config/some-kde-thing\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []string{content}, "/home/u", "/run/user/1000"); code != 0 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
 		t.Fatalf("an out-of-scope shield must not fail the gate; got %d (%q)", code, b.String())
 	}
 	if !strings.Contains(b.String(), "out-of-scope") {

@@ -1,11 +1,12 @@
-// Command denylist-audit reports the home/runtime paths firejail shields that
-// bento does not, so firejail-known denylist gaps surface on a cycle instead of in a
-// review. A clean run means parity with firejail, not a complete deny-list - see the
-// audit package doc for what that does and does not rule out.
+// Command denylist-audit reports the home/runtime paths an upstream sandbox project
+// shields that bento does not, so known denylist gaps surface on a cycle instead of in a
+// review. A clean run means parity with the corpora below, not a complete deny-list -
+// see the audit package doc for what that does and does not rule out.
 //
-// It fetches firejail's disable-common.inc and disable-programs.inc (GPLv2, read as a
-// reference/diff input, never vendored), maps their blacklist/read-only directives to
-// bento's shield classes, and prints the gaps. Classification of each gap - DenyAll vs
+// It fetches firejail's disable-common.inc and disable-programs.inc (GPLv2) and
+// AppArmor's private-files abstractions (GPLv2), reads them as diff input only and never
+// vendors them, maps their deny directives to bento's shield classes, and prints the
+// gaps. Classification of each gap - DenyAll vs
 // DenyWrite - stays a human call. Exit status is 1 when any gap is found, so CI can gate
 // on it.
 //
@@ -39,12 +40,22 @@ import (
 // directive prefix and a trailing newline rather than a bare path - disable-common has a
 // "read-only ${HOME}/.mozilla/firefox/profiles.ini" line, so a bare ${HOME}/.mozilla
 // matches both files and would wave the mixup through.
-var firejailSources = []struct {
+//
+// The AppArmor abstractions are the second corpus, added because a single-source diff
+// can only ever establish parity with that source. They are deny-shaped like firejail's
+// (so the polarity matches bento's list), single-file, and maintained by an unrelated
+// project, which is the property that matters: a store one of them overlooks is not
+// automatically invisible to the other. Their parser is ParseAppArmor, not ParseFirejail
+// - the formats share no syntax.
+var upstreamSources = []struct {
 	url      string
 	sentinel string
+	parse    func(content, home, runUser string) []audit.Candidate
 }{
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh\n"},
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla\n"},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh\n", audit.ParseFirejail},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla\n", audit.ParseFirejail},
+	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", audit.ParseAppArmor},
+	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", audit.ParseAppArmor},
 }
 
 // The paths the parser expands firejail's variables to; any absolute value works,
@@ -59,20 +70,20 @@ func main() {
 	// because a missing profile silently narrows the diff: the entries it would have
 	// contributed simply are not gaps, and the gate reports a pass over a comparison it
 	// never made. That is the failure this command exists to prevent.
-	var contents []string
-	for _, src := range firejailSources {
+	var sources []audit.Source
+	for _, src := range upstreamSources {
 		content, err := fetch(src.url)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "denylist-audit: fetching %s: %v\n", src.url, err)
 			os.Exit(2)
 		}
 		if !isProfile(content, src.sentinel) {
-			fmt.Fprintf(os.Stderr, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected firejail profile; refusing to report a pass\n", src.url, src.sentinel)
+			fmt.Fprintf(os.Stderr, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected upstream profile; refusing to report a pass\n", src.url, src.sentinel)
 			os.Exit(2)
 		}
-		contents = append(contents, content)
+		sources = append(sources, audit.Source{Content: content, Parse: src.parse})
 	}
-	os.Exit(report(os.Stdout, contents, home, runUser))
+	os.Exit(report(os.Stdout, sources, home, runUser))
 }
 
 // isProfile reports whether content is plausibly the firejail profile that sentinel
@@ -83,15 +94,15 @@ func isProfile(content, sentinel string) bool {
 	return strings.Contains(content, sentinel)
 }
 
-// report parses the firejail profile, diffs it against bento's deny-list, writes the
+// report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
 // in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
 // 1 when any in-scope gap remains, 0 when the list already covers them. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
-func report(w io.Writer, contents []string, home, runUser string) int {
+func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	// One diff logic, two triggers: this CLI and the completeness test both go through
 	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
-	unclassified, globs, outBySection := audit.Audit(contents, home, runUser)
+	unclassified, globs, outBySection := audit.Audit(sources, home, runUser)
 
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.
@@ -100,12 +111,12 @@ func report(w io.Writer, contents []string, home, runUser string) int {
 	}
 
 	if len(unclassified) == 0 {
-		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec firejail shield is covered or excluded")
+		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec upstream shield is covered or excluded")
 		reportOutOfScope(w, outBySection)
 		return 0
 	}
 
-	fmt.Fprintf(w, "%d in-scope firejail-shielded path(s) bento neither shields nor excludes:\n\n", len(unclassified))
+	fmt.Fprintf(w, "%d in-scope upstream-shielded path(s) bento neither shields nor excludes:\n\n", len(unclassified))
 	section := ""
 	for _, g := range unclassified {
 		if g.Section != section {
@@ -114,7 +125,7 @@ func report(w io.Writer, contents []string, home, runUser string) int {
 		}
 		note := "missing"
 		if g.Weaker {
-			note = "present but DenyWrite; firejail blacklists (candidate DenyAll)"
+			note = "present but DenyWrite; upstream denies reads too (candidate DenyAll)"
 		}
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}
