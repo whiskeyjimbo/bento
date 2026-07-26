@@ -282,7 +282,7 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 	if got := asExitError(t, err).code; got != strictShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, strictShortfall)
 	}
-	if !strings.Contains(stderr.String(), "did not hold") {
+	if !strings.Contains(stderr.String(), "did not hold for the whole run") {
 		t.Errorf("a strict shortfall must be named on stderr; got %q", stderr.String())
 	}
 

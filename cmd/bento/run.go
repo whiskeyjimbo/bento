@@ -35,7 +35,8 @@ func newRunCmd() *cobra.Command {
 			"exits 125, following the convention env(1) and docker use for \"the command\n" +
 			"could not be executed\", so it is distinct from any code the script itself returns.\n" +
 			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
-			"126, distinct from both.",
+			"124, reserved the same way. A script can return any code itself, so a machine\n" +
+			"gate should read --json, where the outcome is a field rather than a code.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			overrides, err := parseEnvFlags(envFlags)
@@ -165,7 +166,10 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 	// it gets its own code, distinct from both.
 	if shortfall != nil {
 		if !asJSON {
-			fmt.Fprintf(stderr, "[bento] %v\n", shortfall)
+			// writeDegradations above already named each layer that fell short, so this
+			// says only what the report cannot: the script ran anyway, and under --strict
+			// that makes its exit code no longer the answer.
+			fmt.Fprintln(stderr, "[bento] --strict: the script ran, but the guarantees above did not hold for the whole run, so its exit code is not reported.")
 		}
 		return &exitError{code: strictShortfall}
 	}

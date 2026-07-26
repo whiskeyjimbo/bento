@@ -177,22 +177,23 @@ func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
 // manifest carries those limits into the discovery policy, so this is the shape that
 // reaches it.
 //
-// The proof is the cap biting: the target allocates well past it and is killed before
-// it can write its marker. The unlimited half of the pair is what keeps that from
-// passing for a target that simply never ran.
+// Three runs of one allocating target pin both halves of that. The generous limit is
+// the load-bearing one: it proves the scope wrapper carries the observation FD and the
+// target through intact, so the tight limit's dead target is the cap biting rather than
+// a wrapper that broke profiling outright - which, on its own, would look identical.
 func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
 	requireSandbox(t)
 	if ok, reason := canCreateScope(); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 
-	profileAllocating := func(t *testing.T, limits policy.Limits) bool {
+	// profileAllocating profiles a target that holds ~96MB, reporting whether it
+	// reached its marker and what the observer saw.
+	profileAllocating := func(t *testing.T, limits policy.Limits) (profile.Observation, bool) {
 		t.Helper()
 		dir := t.TempDir()
 		marker := filepath.Join(dir, "done")
 		script := filepath.Join(dir, "alloc.sh")
-		// base64 of 96MB of urandom, held in a shell variable: past a 32M cap, under
-		// none.
 		body := "x=$(head -c 96000000 /dev/urandom | base64)\ntouch " + marker + "\n"
 		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -206,23 +207,37 @@ func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
 			Limits:      limits,
 		}
 		var out strings.Builder
-		_, err := sandboxEnforcer(t).Profile(context.Background(), p,
+		obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
 			enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
 		// The kernel picks its OOM victim by size, so it usually takes the allocating
 		// shell and the observer still reports - but it can take the observer instead,
-		// which surfaces as a truncated report. Both are the cap biting; any other error
-		// is a broken test.
-		if err != nil && !strings.Contains(err.Error(), "did not complete") {
+		// which surfaces as a truncated report. Both are the cap biting, and only the
+		// tight run below tolerates it; any other error is a broken test.
+		if err != nil && (limits.Memory != "32M" || !strings.Contains(err.Error(), "did not complete")) {
 			t.Fatalf("Profile with limits %+v failed: %v\noutput:\n%s", limits, err, out.String())
 		}
 		_, statErr := os.Stat(marker)
-		return statErr == nil
+		return obs, statErr == nil
 	}
 
-	if !profileAllocating(t, policy.Limits{}) {
-		t.Fatal("the unlimited profiling run never reached its marker, so the limited half below would prove nothing")
+	unlimited, reached := profileAllocating(t, policy.Limits{})
+	if !reached {
+		t.Fatal("the unlimited profiling run never reached its marker, so the limited runs below would prove nothing")
 	}
-	if profileAllocating(t, policy.Limits{Memory: "32M"}) {
+
+	// A cap the target fits under must change nothing: the run completes and the
+	// observation is as rich as the unwrapped one. This is what a wrapper that silently
+	// broke the observation FD or never launched bwrap would fail.
+	generous, reached := profileAllocating(t, policy.Limits{Memory: "512M"})
+	if !reached {
+		t.Error("a target well under its memory limit was stopped anyway - the scope wrapper is not passing the run through")
+	}
+	if len(generous.Reads) == 0 {
+		t.Errorf("a scoped profiling run observed no file accesses (unscoped saw %d) - the observation report does not survive the scope wrapper", len(unlimited.Reads))
+	}
+
+	// And a cap the target blows past must stop it.
+	if _, reached := profileAllocating(t, policy.Limits{Memory: "32M"}); reached {
 		t.Error("a target allocating far past the manifest's memory limit ran to completion - profiling applied no scope")
 	}
 }

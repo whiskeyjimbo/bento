@@ -23,10 +23,12 @@ const bentoFailed = 125
 const doctorCoreShortfall = 3
 
 // strictShortfall is `run --strict`'s exit code when the target ran but a guarantee
-// strict required lapsed during the run (a proxy listener that died mid-run). It is
-// distinct from bentoFailed, which says the target never ran, and from the target's
-// own code, which must not stand in for a posture that did not hold.
-const strictShortfall = 126
+// strict required lapsed during the run (a proxy listener that died mid-run). It sits
+// next to bentoFailed because it is the same kind of answer - bento's verdict on the
+// run rather than the script's own code, which must not stand in for a posture that
+// did not hold. It stays out of the shell's reserved 126/127/128+n band, where a
+// script that merely failed to exec something returns 126 on its own.
+const strictShortfall = 124
 
 // exitError carries a target's exit code up to main so all deferred cleanup runs
 // before the process exits. Returning it instead of calling os.Exit inside a
