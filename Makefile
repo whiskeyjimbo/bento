@@ -59,9 +59,15 @@ clean: ## Remove built binaries
 	@printf "$(GREEN)$(BOLD)✓ Clean complete.$(RESET)\n"
 
 ## @category Testing & Quality Gates
-test: ## Run unit and integration tests
+# BENTO_REQUIRE_TEST_DEPS turns a missing host dependency from a skip into a failure.
+# The behavioral tests run a real bwrap and diff against the locally installed firejail
+# and AppArmor profiles; without it, a host lacking bwrap, unprivileged user namespaces,
+# or those profiles reports a green run over tests that asserted nothing - which is the
+# same output as a run that exercised the shield. A bare `go test ./...` still skips, so
+# the knob is on the gate rather than on the tests.
+test: ## Run unit and integration tests (requires bwrap, userns, firejail and apparmor profiles)
 	@printf "$(CYAN)$(BOLD)==> Running tests...$(RESET)\n"
-	@GOWORK=off go test ./...
+	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test ./...
 	@printf "$(GREEN)$(BOLD)✓ All tests passed!$(RESET)\n"
 
 # The proxy's concurrency tests hold many connections at the gate and the egress guard

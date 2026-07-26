@@ -49,14 +49,77 @@ func requireSandbox(t *testing.T) {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		t.Skip("bwrap not installed")
+		skipMissingDep(t, "bwrap not installed")
 	}
 	// bwrap alone is not enough: a host with unprivileged user namespaces disabled has
 	// bwrap in PATH but cannot create the namespace, so Profile fails to complete rather
 	// than shielding anything. Probe the same way the enforcer's admission does, so this
 	// test skips (not fails) on that supported-but-degraded host class.
 	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
-		t.Skip("unprivileged user namespaces unavailable on this host")
+		skipMissingDep(t, "unprivileged user namespaces unavailable on this host")
+	}
+}
+
+// skipMissingDep skips for a missing host dependency, or fails when
+// BENTO_REQUIRE_TEST_DEPS is set. A behavioral test that self-skips reports a pass having
+// asserted nothing, so on a host without bwrap or unprivileged user namespaces a run is
+// indistinguishable from one that exercised the shield; the variable is how a host that
+// is supposed to have them - CI, and `make test` - says so.
+func skipMissingDep(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
+// Profile's refusals, which run on any Linux host: the two tests below need a real
+// sandbox and skip without one, so on a box with no bwrap or no unprivileged user
+// namespaces these are all that is left of this file. They are deliberately not guarded
+// by requireSandbox - the refusals happen before a namespace is ever created, and
+// guarding them would put the whole file behind the condition they exist to survive.
+//
+// The DenyPath cases reach the enforcer's shield construction, which reads the host
+// filesystem but creates no namespace, so they need bwrap on PATH and nothing more. A
+// relative path is refused because the shield would bind somewhere that depends on the
+// caller's working directory, and a path resolving to the root because shielding it would
+// hide the whole filesystem from the run.
+func TestProfileRefusesBadInput(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ok := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
+
+	t.Run("invalid policy", func(t *testing.T) {
+		if _, err := Profile(context.Background(), &policy.Policy{}, enforce.Process{}, ProfileOptions{}); err == nil {
+			t.Error("a policy with no entrypoint must be refused, not profiled")
+		}
+	})
+
+	// An absent bwrap has to be named, not discovered as a launch failure inside the
+	// sandbox that reads as a broken target.
+	t.Run("bwrap not in PATH", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		_, err := Profile(context.Background(), ok, enforce.Process{}, ProfileOptions{})
+		if err == nil || !strings.Contains(err.Error(), "bwrap") {
+			t.Errorf("a missing bwrap must be reported by name; got %v", err)
+		}
+	})
+
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		skipMissingDep(t, "bwrap not installed, so the deny-path refusals cannot be reached")
+	}
+	for name, deny := range map[string]string{
+		"relative deny path":       "relative/store",
+		"root-resolving deny path": "/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Profile(context.Background(), ok, enforce.Process{}, ProfileOptions{DenyPaths: []string{deny}}); err == nil {
+				t.Errorf("%q must be refused as a deny path, not shielded", deny)
+			}
+		})
 	}
 }
 

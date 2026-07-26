@@ -26,11 +26,24 @@ func requireSandbox(t *testing.T) {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		t.Skip("bwrap not installed")
+		skipMissingDep(t, "bwrap not installed")
 	}
 	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
-		t.Skip("unprivileged user namespaces unavailable on this host")
+		skipMissingDep(t, "unprivileged user namespaces unavailable on this host")
 	}
+}
+
+// skipMissingDep skips for a missing host dependency, or fails when
+// BENTO_REQUIRE_TEST_DEPS is set. A behavioral test that self-skips reports a pass having
+// asserted nothing, so on a host without bwrap or unprivileged user namespaces a run is
+// indistinguishable from one that exercised the shield; the variable is how a host that
+// is supposed to have them - CI, and `make test` - says so.
+func skipMissingDep(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // The mechanism the whole convergence loop rests on, end to end under real bwrap: a
