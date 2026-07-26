@@ -23,11 +23,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/whiskeyjimbo/bento/backend"
@@ -90,6 +92,14 @@ func run(scriptArg string) int {
 		return 2
 	}
 
+	// Ctrl-C at a prompt used to kill the process where it stood, discarding every deny
+	// and standing block the run had recorded. Catching it instead cancels the run's
+	// context, which unwinds the normal path (prompts return a non-answer, the enforced
+	// child is killed) down to the single save below. Nothing saves from a handler: the
+	// store's flock would then race the main path's own save.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// The permission store is this wrapper's memory of past answers. Loading it lets
 	// the run auto-apply known decisions and prompt only for the unknown; the app is
 	// keyed by the SHA of its entrypoint bytes, so changed code re-prompts.
@@ -102,7 +112,7 @@ func run(scriptArg string) int {
 	// failure returns happen AFTER the approval prompts, where the human has already
 	// answered - dropping those answers on the floor loses a deny a human made, which
 	// is the one outcome the exit code exists to never hide.
-	return persistDecisions(s, supervised(s, script), os.Stderr)
+	return persistDecisions(s, supervised(ctx, s, script), os.Stderr)
 }
 
 // persistDecisions saves the run's decisions and folds the outcome into the exit code.
@@ -125,7 +135,7 @@ func persistDecisions(s *store, code int, out io.Writer) int {
 // supervised is the run itself: trial, approval, enforced run. Its caller persists
 // whatever it recorded, so every return here - including a failure - keeps the human's
 // answers.
-func supervised(s *store, script string) int {
+func supervised(ctx context.Context, s *store, script string) int {
 	interp := guessInterpreter(script)
 	name := filepath.Base(script)
 
@@ -157,9 +167,14 @@ func supervised(s *store, script string) int {
 	// approved policy's env allowlist so the enforced run rebuilds them.
 	trialEnv := discoveryEnv()
 	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(default-deny - nothing leaves the host)"))
-	obs, err := trialProfile(context.Background(), s, discoveryPolicy(script, interp),
+	obs, err := trialProfile(ctx, s, discoveryPolicy(script, interp),
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv})
 	if err != nil {
+		// A cancelled trial fails with whatever the killed child left behind, which is a
+		// teardown artifact rather than a diagnosis; report the interrupt instead.
+		if ctx.Err() != nil {
+			return reportInterrupt()
+		}
 		fmt.Fprintf(os.Stderr, "supervise: trial run: %v\n", err)
 		// A script in or beside its permission store makes discoveryPolicy's script-dir
 		// grant cover the store, which trialProfile's store deny path refuses fail-closed
@@ -180,10 +195,18 @@ func supervised(s *store, script string) int {
 	// Allowlist the discovery anchors so the enforced run resolves the same
 	// $HOME-relative paths the trial recorded and the human approved.
 	proposal.Env = sortedEnvNames(trialEnv)
-	approved := approve(p, s, key, script, interp, proposal)
+	approved := approve(ctx, p, s, key, script, interp, proposal)
 	// Record identity for a faithful future manifest export.
 	s.app(key).Entrypoint = script
 	s.app(key).Interpreter = interp
+
+	// An interrupt during the approval prompts leaves the rest of the proposal
+	// unanswered, so the assembled policy is narrower than anything the human agreed
+	// to. Stop here rather than enforcing it: the caller still saves the answers that
+	// were given.
+	if ctx.Err() != nil {
+		return reportInterrupt()
+	}
 
 	// Drop anything typed past the approval prompts, so a stray keystroke during
 	// Act 1 cannot silently answer the first live gate prompt in Act 2 (both phases
@@ -217,9 +240,15 @@ func supervised(s *store, script string) int {
 		return 1
 	}
 	sup := &supervisor{p: p, s: s, key: key, name: name, session: make(map[string]bool)}
-	res, err := enforce.Run(context.Background(), e, approved,
+	res, err := enforce.Run(ctx, e, approved,
 		enforce.Process{Stdout: os.Stdout, Stderr: os.Stderr, Env: env},
 		enforce.Options{NetworkGate: sup.gate})
+	// An interrupt kills the sandboxed child, so the run's outcome - a signal-killed
+	// exit code, or an error from the teardown - describes the cancel, not the target.
+	// Checked before err so the interrupt is not reported as a sandbox failure.
+	if ctx.Err() != nil {
+		return reportInterrupt()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 1
@@ -236,6 +265,16 @@ func supervised(s *store, script string) int {
 		}
 	}
 	return res.ExitCode
+}
+
+// reportInterrupt is the exit for a signalled run: it is supervise's own failure code,
+// not the target's, because the target never got to finish. It deliberately does not
+// use 130 - the target dies on the same Ctrl-C and can report 130 itself, so reusing it
+// here would make the two indistinguishable. The stderr line is what tells the human;
+// the code just keeps the run from being reported as clean.
+func reportInterrupt() int {
+	fmt.Fprintln(os.Stderr, "\nsupervise: interrupted - the answers given so far are being saved")
+	return 1
 }
 
 // finalExitCode is the process exit code. It is the target's own code untouched,
@@ -362,7 +401,7 @@ func sortedEnvNames(m map[string]string) []string {
 // applies silently, an unknown one prompts and (for y/n) is remembered. A grant
 // that would expose the store is refused outright. Synthesize has already dropped
 // the noise (the interpreter's runtime, /proc, /dev, the script itself).
-func approve(p *prompter, s *store, key, script, interp string, proposal *policy.Policy) *policy.Policy {
+func approve(ctx context.Context, p *prompter, s *store, key, script, interp string, proposal *policy.Policy) *policy.Policy {
 	// Carry the discovery env allowlist through unprompted: HOME and the XDG anchors
 	// are low-risk name bindings, and the enforced run needs them to rebuild the same
 	// $HOME-relative paths the trial recorded. They name variables, not grants; a path
@@ -377,6 +416,12 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 	// decides per-script - standing rules for every script are a deliberate `perms
 	// global` act, never a keystroke away from a routine yes.
 	consider := func(kind, display, path string, remembered func() (decision, bool), persist func(decision)) bool {
+		// Once the run is cancelled, deny the rest silently. ask() prints its prompt
+		// before it notices the cancel, so without this every remaining item would print
+		// a prompt and answer itself, burying the interrupt in a wall of dead questions.
+		if ctx.Err() != nil {
+			return false
+		}
 		if path != "" && coversStore(path, s.dir) {
 			p.row(p.t.markDeny(), kind, display, p.t.dim("refused - would expose the permission store"))
 			return false
@@ -391,7 +436,7 @@ func approve(p *prompter, s *store, key, script, interp string, proposal *policy
 		}
 		keys := p.t.dim("[y]es [n]o [o]nce")
 		prompt := fmt.Sprintf("    %s %s %s %s ", p.t.kindLabel(pad(kind, 5)), pad(display, 38), keys, p.t.caret())
-		switch p.ask(context.Background(), prompt) {
+		switch p.ask(ctx, prompt) {
 		case choiceAllow:
 			persist(allow)
 			return true
@@ -467,27 +512,37 @@ type supervisor struct {
 	key  string
 	name string
 
-	mu      sync.Mutex      // serializes prompts and guards session (handlers are concurrent)
-	session map[string]bool // dest -> admitted, remembered for the run
+	// promptMu, not mu, is what a parked human holds. It serializes everything that
+	// touches the terminal - the prompts share one reader, and two handlers printing
+	// at once would interleave a verdict into another's prompt - while mu covers only
+	// the short session and store accesses, so the connections that do not need to ask
+	// are not blocked behind someone's keyboard.
+	promptMu sync.Mutex
+	mu       sync.Mutex      // guards session and the store (handlers are concurrent)
+	session  map[string]bool // dest -> admitted, remembered for the run
 }
 
 func (s *supervisor) gate(ctx context.Context, host, port string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	dest := net.JoinHostPort(host, port)
-	if admitted, asked := s.session[dest]; asked {
+	if admitted, asked := s.recall(dest); asked {
+		return admitted
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	// Another handler may have answered this dest while this one waited for the
+	// terminal. Its answer is the run's answer, so honor it rather than asking twice
+	// for a host the human has already ruled on.
+	if admitted, asked := s.recall(dest); asked {
 		return admitted
 	}
 	// A remembered decision (deny-wins across global + per-app) applies with no
 	// prompt; a stored deny is printed so a silent block is never a mystery.
-	if d, ok := s.s.decideNetwork(s.key, host, port); ok {
+	if d, ok := s.decide(host, port); ok {
 		if d == deny {
 			fmt.Fprintf(s.p.out, "\n  %s %s reaching %s port %s - denied by the permission store\n",
 				s.p.t.markDeny(), s.name, s.p.t.bold(strconv.Quote(host)), port)
 		}
-		admitted := d == allow
-		s.session[dest] = admitted
-		return admitted
+		return s.record(dest, d == allow)
 	}
 	// host is attacker-controlled (the sandboxed target chose it), so quote it to
 	// neutralize terminal escapes before showing it to a human.
@@ -497,18 +552,46 @@ func (s *supervisor) gate(ctx context.Context, host, port string) bool {
 	admitted := false
 	switch c {
 	case choiceAllow:
-		s.s.rememberNetwork(s.key, host, port, allow, false)
+		s.remember(host, port, allow, false)
 		admitted = true
 	case choiceOnce:
 		admitted = true
 	case choiceDeny:
-		s.s.rememberNetwork(s.key, host, port, deny, false)
+		s.remember(host, port, deny, false)
 	case choiceBlock:
 		// The standing block: deny this host for EVERY script, surviving code changes.
 		// It is an explicit, distinctly-labeled key (no shift-pair to slip into), and a
 		// mistaken block is undone with `perms forget global`.
-		s.s.rememberNetwork(s.key, host, port, deny, true)
+		s.remember(host, port, deny, true)
 	}
+	return s.record(dest, admitted)
+}
+
+// recall reports this run's answer for dest, if one has been recorded.
+func (s *supervisor) recall(dest string) (admitted, asked bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	admitted, asked = s.session[dest]
+	return admitted, asked
+}
+
+func (s *supervisor) decide(host, port string) (decision, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.s.decideNetwork(s.key, host, port)
+}
+
+func (s *supervisor) remember(host, port string, d decision, global bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.s.rememberNetwork(s.key, host, port, d, global)
+}
+
+// record fixes dest's answer for the rest of the run and returns it, so the gate's
+// verdict and what a later connection recalls cannot diverge.
+func (s *supervisor) record(dest string, admitted bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.session[dest] = admitted
 	return admitted
 }

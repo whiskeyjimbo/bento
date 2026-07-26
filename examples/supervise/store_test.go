@@ -64,7 +64,7 @@ func TestApproveRefusesStoreCoveringGrant(t *testing.T) {
 	p := newPrompter(strings.NewReader(""), &out)
 	proposal := &policy.Policy{Read: []string{"/home/u/.config"}} // contains the store dir
 
-	got := approve(p, s, "k", "/s", "sh", proposal)
+	got := approve(t.Context(), p, s, "k", "/s", "sh", proposal)
 	if len(got.Read) != 0 {
 		t.Errorf("a grant covering the store must be refused; got Read=%v", got.Read)
 	}
@@ -82,7 +82,7 @@ func TestApproveQuotesAttackerPath(t *testing.T) {
 	var out strings.Builder
 	// "y" grants it; the display must not contain the raw ESC byte.
 	p := newPrompter(strings.NewReader("y\n"), &out)
-	got := approve(p, s, "k", "/s", "sh", &policy.Policy{Read: []string{evil}})
+	got := approve(t.Context(), p, s, "k", "/s", "sh", &policy.Policy{Read: []string{evil}})
 
 	if len(got.Read) != 1 || got.Read[0] != evil {
 		t.Fatalf("the literal path must be granted; got %v", got.Read)
@@ -179,7 +179,7 @@ func TestApproveRemembersAcrossRuns(t *testing.T) {
 	}
 
 	// First run: allow /data, deny /secret, allow exec, allow the host.
-	first := approve(newPrompter(strings.NewReader("y\nn\ny\ny\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
+	first := approve(t.Context(), newPrompter(strings.NewReader("y\nn\ny\ny\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
 	if len(first.Read) != 1 || first.Read[0] != "/data" {
 		t.Fatalf("first run Read = %v, want just /data", first.Read)
 	}
@@ -187,7 +187,7 @@ func TestApproveRemembersAcrossRuns(t *testing.T) {
 	// Second run: no input at all. Every item is remembered, so nothing prompts and
 	// the same policy is produced.
 	var out strings.Builder
-	second := approve(newPrompter(strings.NewReader(""), &out), s, "k", "/s", "sh", proposal)
+	second := approve(t.Context(), newPrompter(strings.NewReader(""), &out), s, "k", "/s", "sh", proposal)
 	if len(second.Read) != 1 || second.Read[0] != "/data" || second.Exec != policy.ExecAll || len(second.Network) != 1 {
 		t.Errorf("second run did not reproduce the approved policy from memory: %+v", second)
 	}

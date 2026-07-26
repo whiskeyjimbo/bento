@@ -35,7 +35,7 @@ func TestApproveKeepsAnswers(t *testing.T) {
 	answers := "y\nn\ny\ny\ny\nn\n"
 	p := newPrompter(strings.NewReader(answers), &strings.Builder{})
 
-	got := approve(p, newTestStore(), "k", "/script.sh", "sh", proposal)
+	got := approve(t.Context(), p, newTestStore(), "k", "/script.sh", "sh", proposal)
 
 	if len(got.Read) != 1 || got.Read[0] != "/data.csv" {
 		t.Errorf("Read = %v, want just /data.csv (secret.txt denied)", got.Read)

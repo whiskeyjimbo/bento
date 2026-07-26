@@ -139,7 +139,9 @@ worth knowing:
   a newer build wrote - stops the run rather than being replaced with an empty one; a
   wrongly-forgotten deny is worse than a refusal. Writes are atomic and flushed, and
   the run persists what it recorded even when it fails partway, so an answer you gave
-  is never lost to a later error.
+  is never lost to a later error. Ctrl-C is part of that: it cancels the run - stopping
+  the remaining prompts and killing the sandboxed child - and still saves the answers
+  you had already given.
 - **Two layers, deny-wins across both.** Per-app decisions live under the script's
   hash; global decisions apply to every app and survive a code change, since a fresh
   hash still sees them. Global rules are set deliberately - `perms global ...`, or
