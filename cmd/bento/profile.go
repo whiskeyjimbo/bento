@@ -272,13 +272,17 @@ const maxConvergeRounds = 25
 func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
+	acceptedExec := false
 	declined := map[string]bool{} // key() -> asked and refused, so it is not re-asked
 	acceptAll := false
 	accept := func(it grantItem) {
-		if it.kind == "read" {
+		switch it.kind {
+		case "read":
 			acceptedR[it.path] = true
-		} else {
+		case "write":
 			acceptedW[it.path] = true
+		case "exec":
+			acceptedExec = true
 		}
 	}
 
@@ -289,6 +293,9 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 	// fingerprint. Those are asked here, before any content is mounted, for the same
 	// reason [a]ll never covers them below. The rest resume without a prompt.
 	if seed != nil {
+		// exec has no path, so it cannot be risky in the foreign-home sense; the stamp
+		// resumes it exactly as a non-risky read or write resumes.
+		acceptedExec = seed.Exec == policy.ExecAll
 		for _, it := range seedItems(seed) {
 			if !risky(it.path) {
 				accept(it)
@@ -338,6 +345,25 @@ loop:
 			return nil, err
 		}
 		last = proposal
+		// exec: all is broader than any single path - it lets the target spawn anything
+		// the rest of the policy permits - so it gets its own prompt rather than riding
+		// along with the proposal. It is never covered by [a]ll, for the same reason a
+		// foreign-home shield is not: it is a decision the reviewer must make explicitly.
+		if proposal.Exec == policy.ExecAll && !acceptedExec && !declined[execGrant.key()] {
+			fmt.Fprintf(out, "[bento] round %d: the target spawned a subprocess.\n", r)
+			c, err := prompt(execGrant.kind, execGrant.path)
+			if err != nil {
+				return nil, err
+			}
+			switch c {
+			case grantAll, grantYes:
+				accept(execGrant)
+			case grantQuit:
+				break loop
+			default:
+				declined[execGrant.key()] = true
+			}
+		}
 		items := newGrants(proposal, acceptedR, acceptedW, declined)
 		if len(items) == 0 {
 			fmt.Fprintf(out, "[bento] round %d: no new attempted paths - converged.\n", r)
@@ -375,6 +401,10 @@ loop:
 	final := last
 	final.Read = sortedBoolKeys(acceptedR)
 	final.Write = sortedBoolKeys(acceptedW)
+	final.Exec = policy.ExecNone
+	if acceptedExec {
+		final.Exec = policy.ExecAll
+	}
 	return final, nil
 }
 
@@ -407,6 +437,12 @@ func dropDeclinedSeeds(merged, seed, accepted *policy.Policy) *policy.Policy {
 	}
 	merged.Read = keep(merged.Read, seed.Read, accepted.Read)
 	merged.Write = keep(merged.Write, seed.Write, accepted.Write)
+	// mergePolicies promotes exec: all whenever either side carries it, so a seeded
+	// exec grant the user declined this session would come back through the union the
+	// same way a declined path would.
+	if seed.Exec == policy.ExecAll && accepted.Exec != policy.ExecAll {
+		merged.Exec = accepted.Exec
+	}
 	return merged
 }
 
@@ -424,8 +460,11 @@ func seedItems(seed *policy.Policy) []grantItem {
 	return out
 }
 
-// grantItem is one filesystem access the target attempted but has not been granted yet.
-type grantItem struct{ kind, path string } // kind is "read" or "write"
+// grantItem is one access the target attempted but has not been granted yet.
+type grantItem struct{ kind, path string } // kind is "read", "write", or "exec"
+
+// execGrant is the whole-policy exec: all grant, which has no path of its own.
+var execGrant = grantItem{kind: "exec"}
 
 func (g grantItem) key() string { return g.kind + "\x00" + g.path }
 
@@ -463,7 +502,13 @@ const (
 func newGrantPrompter(in io.Reader, out io.Writer) func(kind, path string) (grantChoice, error) {
 	r := bufio.NewReader(in)
 	return func(kind, path string) (grantChoice, error) {
-		fmt.Fprintf(out, "[bento]   grant %s %s? [y]es / [n]o / [a]ll / [q]uit > ", kind, path)
+		// exec carries no path, so it is named by what it permits rather than left with
+		// a dangling argument.
+		what := kind + " " + path
+		if path == "" {
+			what = kind + " (let the target spawn subprocesses)"
+		}
+		fmt.Fprintf(out, "[bento]   grant %s? [y]es / [n]o / [a]ll / [q]uit > ", what)
 		line, err := r.ReadString('\n')
 		if err != nil && line == "" {
 			return grantQuit, nil
@@ -501,8 +546,7 @@ func confirmNetworkExfil(in io.Reader, out io.Writer) error {
 // interactive convergence loop only when there is a human to answer its prompts; a
 // pipe or CI run falls back to a single non-interactive pass.
 func interactiveStdin() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return isTerminal(os.Stdin)
 }
 
 // openTTY returns the controlling terminal for reading the convergence prompts, kept

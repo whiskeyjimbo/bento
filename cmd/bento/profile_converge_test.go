@@ -372,3 +372,65 @@ func TestDropDeclinedSeedsKeepsEverythingWithoutASeed(t *testing.T) {
 		t.Errorf("without a seed the merge must be untouched; got Read=%v", got.Read)
 	}
 }
+
+// execRound models a target that shells out: it attempts one path and one subprocess.
+func execRound(*policy.Policy) (*policy.Policy, error) {
+	return &policy.Policy{Entrypoint: "/x", Read: []string{cfgPath}, Exec: policy.ExecAll}, nil
+}
+
+// exec: all lets the target spawn anything the rest of the policy permits, so it is a
+// grant like any other and must pass through the prompt. Before bv2-0exv one observed
+// exec put exec: all in the stamped manifest even if the reviewer declined everything.
+func TestConvergeExecNeedsConsent(t *testing.T) {
+	cases := map[string]struct {
+		answers string
+		want    policy.ExecMode
+	}{
+		// exec is asked first, then the path; the second answer is the path's.
+		"declined": {"n\nn\n", policy.ExecNone},
+		"accepted": {"y\nn\n", policy.ExecAll},
+		// [a]ll answers the paths, never exec: the exec prompt comes first, so an [a]ll
+		// meant for the paths must not silently carry exec with it.
+		"all after declining exec": {"n\na\n", policy.ExecNone},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			prompt := newGrantPrompter(strings.NewReader(tc.answers), io.Discard)
+			final, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
+			if err != nil {
+				t.Fatalf("converge: %v", err)
+			}
+			if final.Exec != tc.want {
+				t.Errorf("Exec = %q, want %q", final.Exec, tc.want)
+			}
+		})
+	}
+}
+
+// A resumed session must not re-ask for an exec grant the approved manifest already
+// carries, the same way it does not re-ask for a non-risky path.
+func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
+	seed := &policy.Policy{Read: []string{cfgPath}, Exec: policy.ExecAll}
+	// An empty prompt input returns grantQuit on EOF, so any prompt at all would end
+	// the loop before it converged - the tripwire that exec was not re-asked.
+	prompt := newGrantPrompter(strings.NewReader(""), io.Discard)
+	final, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if final.Exec != policy.ExecAll {
+		t.Errorf("Exec = %q, want the seeded %q back without a prompt", final.Exec, policy.ExecAll)
+	}
+}
+
+// The merge re-reads the manifest the seed came from, so a declined exec grant would
+// come back through the union. dropDeclinedSeeds has to hold it down in the artifact,
+// not only in the session.
+func TestDropDeclinedSeedsDropsExec(t *testing.T) {
+	seed := &policy.Policy{Exec: policy.ExecAll}
+	accepted := &policy.Policy{Exec: policy.ExecNone}
+	merged := &policy.Policy{Exec: policy.ExecAll}
+	if got := dropDeclinedSeeds(merged, seed, accepted).Exec; got != policy.ExecNone {
+		t.Errorf("Exec = %q, want %q - a declined exec must not merge back", got, policy.ExecNone)
+	}
+}
