@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -113,6 +114,26 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 		})
 	}
 
+	// The two halves of the split in one trust: the file's foreign owner refuses, the
+	// group-writable directory around it only reports. Asserting counts alone would let
+	// the two fatality bits swap without failing.
+	t.Run("fatal and reported together", func(t *testing.T) {
+		mixed := manifestTrust{
+			file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: 1001},
+			dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+		}
+		flaws := mixed.flaws(me)
+		if len(flaws) != 2 {
+			t.Fatalf("flaws = %+v, want the foreign owner and the group-writable directory", flaws)
+		}
+		if !flaws[0].fatal || !strings.Contains(flaws[0].reason, "/w/m.yaml is owned by uid 1001") {
+			t.Errorf("a manifest owned by someone else must refuse the approve; got %+v", flaws[0])
+		}
+		if flaws[1].fatal || !strings.Contains(flaws[1].reason, "group-writable") {
+			t.Errorf("a group-writable directory is reported, not refused; got %+v", flaws[1])
+		}
+	})
+
 	clean := manifestTrust{
 		file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
 		dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me},
@@ -141,12 +162,23 @@ func TestLoadDocumentWarnsAboutAWorldWritableDirectory(t *testing.T) {
 	}
 
 	var warn bytes.Buffer
-	if _, err := loadDocument(path, &warn); err != nil {
+	if _, _, err := loadDocument(path, &warn); err != nil {
 		t.Fatalf("loadDocument: %v", err)
 	}
 	if !strings.Contains(warn.String(), "the directory holding it") {
 		t.Errorf("a world-writable directory must be reported; got %q", warn.String())
 	}
+}
+
+// approvable runs the check the way approve does, on the trust from the same open that
+// read the manifest.
+func approvable(t *testing.T, path string) error {
+	t.Helper()
+	_, trust, err := loadDocument(path, io.Discard)
+	if err != nil {
+		t.Fatalf("loadDocument: %v", err)
+	}
+	return requireApprovableLocation(path, trust)
 }
 
 func TestRequireApprovableLocation(t *testing.T) {
@@ -156,9 +188,49 @@ func TestRequireApprovableLocation(t *testing.T) {
 		if err := os.Chmod(dir, 0o777); err != nil {
 			t.Fatal(err)
 		}
-		err := requireApprovableLocation(path)
+		err := approvable(t, path)
 		if err == nil || !strings.Contains(err.Error(), "the directory holding it") {
 			t.Fatalf("a manifest anyone can replace must not be stamped; got %v", err)
+		}
+	})
+
+	// A private directory under a world-writable one is no safer: renaming the parent
+	// aside substitutes the whole tree, so the check cannot stop at the first level.
+	t.Run("refuses a world-writable ancestor", func(t *testing.T) {
+		outer := t.TempDir()
+		inner := filepath.Join(outer, "proj")
+		if err := os.Mkdir(inner, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := manifestIn(t, inner)
+		if err := os.Chmod(outer, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		err := approvable(t, path)
+		if err == nil || !strings.Contains(err.Error(), "an ancestor of its directory") {
+			t.Fatalf("a writable ancestor must not be stamped over; got %v", err)
+		}
+		if !strings.Contains(err.Error(), outer) {
+			t.Errorf("the refusal must name the offending ancestor; got %v", err)
+		}
+	})
+
+	// Whoever can replace the symlink chooses which file every command reads, however
+	// private the file it currently points at.
+	t.Run("refuses a world-writable directory holding the symlink", func(t *testing.T) {
+		target := t.TempDir()
+		links := t.TempDir()
+		real := manifestIn(t, target)
+		link := filepath.Join(links, "link.yaml")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(links, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		err := approvable(t, link)
+		if err == nil || !strings.Contains(err.Error(), "the directory holding the symlink") {
+			t.Fatalf("a swappable symlink must not be stamped through; got %v", err)
 		}
 	})
 
@@ -168,7 +240,7 @@ func TestRequireApprovableLocation(t *testing.T) {
 		if err := os.Chmod(path, 0o666); err != nil {
 			t.Fatal(err)
 		}
-		if err := requireApprovableLocation(path); err != nil {
+		if err := approvable(t, path); err != nil {
 			t.Fatalf("the mode on the manifest itself is approve's to fix; got %v", err)
 		}
 	})
@@ -179,7 +251,7 @@ func TestRequireApprovableLocation(t *testing.T) {
 		if err := os.Chmod(dir, fs.ModeSticky|0o777); err != nil {
 			t.Fatal(err)
 		}
-		if err := requireApprovableLocation(path); err != nil {
+		if err := approvable(t, path); err != nil {
 			t.Fatalf("nobody else can replace a file in a sticky directory; got %v", err)
 		}
 	})

@@ -32,11 +32,11 @@ func newApproveCmd() *cobra.Command {
 			path := args[0]
 			// io.Discard, not stderr: approve reports the same facts itself below, as a
 			// refusal for what it cannot fix and as the clamp warning for what it can.
-			doc, err := loadDocument(path, io.Discard)
+			doc, trust, err := loadDocument(path, io.Discard)
 			if err != nil {
 				return err
 			}
-			if err := requireApprovableLocation(path); err != nil {
+			if err := requireApprovableLocation(path, trust); err != nil {
 				return err
 			}
 
@@ -69,16 +69,7 @@ func newApproveCmd() *cobra.Command {
 // whether on the manifest or on the directory it can be renamed within, gives away for
 // free. Only what approve cannot fix and what is unambiguously shared is fatal; see
 // manifestTrust.flaws for which is which.
-func requireApprovableLocation(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	trust, err := inspectManifest(f, path)
-	if err != nil {
-		return err
-	}
+func requireApprovableLocation(path string, trust manifestTrust) error {
 	for _, flaw := range trust.flaws(uint32(os.Geteuid())) {
 		if flaw.fatal {
 			return fmt.Errorf("refusing to approve %s: %s", path, flaw.reason)

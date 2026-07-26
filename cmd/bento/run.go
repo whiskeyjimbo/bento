@@ -53,7 +53,7 @@ func newRunCmd() *cobra.Command {
 			// Parse the manifest once: the same bytes are approval-checked and executed,
 			// so a swap between two opens cannot run a different policy than the one
 			// approved.
-			doc, err := loadDocument(args[0], cmd.ErrOrStderr())
+			doc, _, err := loadDocument(args[0], cmd.ErrOrStderr())
 			if err != nil {
 				return refuse(err)
 			}

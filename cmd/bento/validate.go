@@ -32,7 +32,7 @@ func newValidateCmd() *cobra.Command {
 			"--json carries the same verdict as an `approval` field and honors --strict too.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			doc, err := loadDocument(args[0], cmd.ErrOrStderr())
+			doc, _, err := loadDocument(args[0], cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -99,21 +99,24 @@ func resolveAgainst(base, path string) string {
 // written. (run resolves paths for execution; the fingerprint attests the
 // manifest, so it must not depend on where bento was invoked.)
 //
-// Anyone else who can write the manifest or the directory holding it is reported to
+// Anyone else who can write the manifest or a directory leading to it is reported to
 // warn, since the approval it carries is only worth what its location is; callers that
-// report the same thing themselves pass io.Discard.
-func loadDocument(path string, warn io.Writer) (*manifest.Document, error) {
+// report the same thing themselves pass io.Discard. The trust is returned alongside so
+// approve can refuse on it without a second open - the facts must describe the same
+// inode these bytes came from.
+func loadDocument(path string, warn io.Writer) (*manifest.Document, manifestTrust, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, manifestTrust{}, err
 	}
 	defer f.Close()
 	trust, err := inspectManifest(f, path)
 	if err != nil {
-		return nil, err
+		return nil, manifestTrust{}, err
 	}
 	warnUntrusted(warn, trust.flaws(uint32(os.Geteuid())))
-	return manifest.Parse(f)
+	doc, err := manifest.Parse(f)
+	return doc, trust, err
 }
 
 // approvalState describes how a manifest's stored approval relates to its current
