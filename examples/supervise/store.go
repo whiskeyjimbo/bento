@@ -737,8 +737,16 @@ func (s *store) app(key string) *appPerms {
 // cannot slip past. The wrapper refuses such a grant so the target can never read
 // or tamper with the store through an approved path.
 func coversStore(grant, dir string) bool {
-	return underComponent(resolveSymlinks(dir), resolveSymlinks(grant)) ||
-		underComponent(resolveSymlinks(grant), resolveSymlinks(dir))
+	g, d := resolveSymlinks(grant), resolveSymlinks(dir)
+	// Both sides must be absolute for the comparison to mean anything: filepath.Rel
+	// errors out on a relative/absolute pair and underComponent reads that error as
+	// "not under", which answers "this grant does not touch the store" about a path
+	// that does. resolveSymlinks absolutizes, so a spelling that survives it is one
+	// there is no cwd to anchor to - unjudgeable, and the store is what is at stake.
+	if !filepath.IsAbs(g) || !filepath.IsAbs(d) {
+		return true
+	}
+	return underComponent(d, g) || underComponent(g, d)
 }
 
 // resolveSymlinks resolves p through its deepest EXISTING ancestor, rejoining the
@@ -748,9 +756,14 @@ func coversStore(grant, dir string) bool {
 // location while a file that does not exist inside it keeps the link spelling, and
 // coversStore finds no overlap between them - answering "this grant does not touch
 // the store" about a path directly inside it. Resolving the ancestor keeps both sides
-// in one namespace whether or not the leaf exists.
+// in one namespace whether or not the leaf exists. A relative path is anchored to the
+// working directory first, for the same one-namespace reason: EvalSymlinks resolves a
+// relative path to a relative result, which no absolute store dir can be compared against.
 func resolveSymlinks(p string) string {
 	cleaned := filepath.Clean(p)
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		cleaned = abs
+	}
 	rest := ""
 	for cur := cleaned; ; {
 		if r, err := filepath.EvalSymlinks(cur); err == nil {

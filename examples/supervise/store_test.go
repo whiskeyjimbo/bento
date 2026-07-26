@@ -464,3 +464,38 @@ func TestLoadStoreDropsNullAppEntries(t *testing.T) {
 		t.Fatalf("save over a store holding a null entry: %v", err)
 	}
 }
+
+// coversStore compared a relative grant against the absolute store dir, and
+// filepath.Rel errors on that pair - which underComponent reads as "not under". A
+// remembered grant spelled relatively (a manifest's read path, seeded by `perms
+// import`; nothing validates it as absolute) therefore reported false and reached the
+// store it names (bv2-tr2u).
+func TestCoversStoreJudgesRelativeGrants(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{s.dir, filepath.Join(s.dir, "permissions.json"), dir} {
+		rel, err := filepath.Rel(cwd, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !coversStore(rel, s.dir) {
+			t.Errorf("coversStore(%q, %q) = false; a relative grant reaching the store must be refused", rel, s.dir)
+		}
+	}
+	// A relative spelling of an unrelated directory is still judged on its merits.
+	sibling, err := filepath.Rel(cwd, filepath.Join(dir, "elsewhere"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coversStore(sibling, s.dir) {
+		t.Errorf("coversStore(%q, %q) = true; a relative grant outside the store must not be refused", sibling, s.dir)
+	}
+}
