@@ -475,7 +475,7 @@ func TestSeedGrants(t *testing.T) {
 	// which is what checkApproval fingerprints.
 	approve := func(path string) {
 		t.Helper()
-		doc, err := loadDocument(path)
+		doc, err := loadDocument(path, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -515,7 +515,7 @@ func TestSeedGrants(t *testing.T) {
 	// the grants the file now holds.
 	stale := write("stale.yaml", &policy.Policy{Entrypoint: "/w/run.py"}, manifest.Provenance{})
 	approve(stale)
-	staleDoc, err := loadDocument(stale)
+	staleDoc, err := loadDocument(stale, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

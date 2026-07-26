@@ -30,8 +30,13 @@ func newApproveCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
-			doc, err := loadDocument(path)
+			// io.Discard, not stderr: approve reports the same facts itself below, as a
+			// refusal for what it cannot fix and as the clamp warning for what it can.
+			doc, err := loadDocument(path, io.Discard)
 			if err != nil {
+				return err
+			}
+			if err := requireApprovableLocation(path); err != nil {
 				return err
 			}
 
@@ -56,6 +61,30 @@ func newApproveCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// requireApprovableLocation refuses to stamp a manifest whose location leaves someone
+// else able to change it. The stamp is unkeyed drift detection, so its whole value is
+// that the permissions cannot move without it going stale - which a second writer,
+// whether on the manifest or on the directory it can be renamed within, gives away for
+// free. Only what approve cannot fix and what is unambiguously shared is fatal; see
+// manifestTrust.flaws for which is which.
+func requireApprovableLocation(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	trust, err := inspectManifest(f, path)
+	if err != nil {
+		return err
+	}
+	for _, flaw := range trust.flaws(uint32(os.Geteuid())) {
+		if flaw.fatal {
+			return fmt.Errorf("refusing to approve %s: %s", path, flaw.reason)
+		}
+	}
+	return nil
 }
 
 // writeManifestAtomically replaces the manifest through a temporary file in its own
@@ -85,9 +114,10 @@ func writeManifestAtomically(path string, data []byte, warn io.Writer) error {
 		fmt.Fprintf(warn, "[bento] %s was group/world-writable (%#o); writing it back as %#o - a manifest others can edit makes its approval stamp meaningless.\n", path, info.Mode().Perm(), mode)
 	}
 
-	f, err := os.CreateTemp(filepath.Dir(target), ".bento-approve-*")
+	dir := filepath.Dir(target)
+	f, err := os.CreateTemp(dir, ".bento-approve-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("approve rewrites the manifest through a temporary file in %s, so it needs write and search permission on that directory, not only on the manifest: %w", dir, err)
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp) // a no-op once the rename below has moved it away

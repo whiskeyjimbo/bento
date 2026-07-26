@@ -1010,7 +1010,7 @@ func guessInterpreter(path string) string {
 // for a different entrypoint is not honored here, and why converge still prompts for a
 // seeded path the enforced run will not re-shield. A missing path is the first run.
 func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
-	doc, err := loadDocument(path)
+	doc, err := loadDocument(path, out)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, nil
@@ -1051,7 +1051,7 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 // it held - contradicting the merge-not-overwrite contract the help text promises -
 // so it is refused rather than clobbered.
 func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, error) {
-	existing, err := loadDocument(path)
+	existing, err := loadDocument(path, io.Discard) // seedGrants already reported this manifest
 	switch {
 	case err == nil:
 		// Resolve before the union: a proposal names absolute paths, so a relative grant

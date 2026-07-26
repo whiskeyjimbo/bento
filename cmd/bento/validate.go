@@ -32,7 +32,7 @@ func newValidateCmd() *cobra.Command {
 			"--json carries the same verdict as an `approval` field and honors --strict too.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			doc, err := loadDocument(args[0])
+			doc, err := loadDocument(args[0], cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -98,12 +98,21 @@ func resolveAgainst(base, path string) string {
 // paths, so approval and the fingerprint check see the manifest exactly as
 // written. (run resolves paths for execution; the fingerprint attests the
 // manifest, so it must not depend on where bento was invoked.)
-func loadDocument(path string) (*manifest.Document, error) {
+//
+// Anyone else who can write the manifest or the directory holding it is reported to
+// warn, since the approval it carries is only worth what its location is; callers that
+// report the same thing themselves pass io.Discard.
+func loadDocument(path string, warn io.Writer) (*manifest.Document, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	trust, err := inspectManifest(f, path)
+	if err != nil {
+		return nil, err
+	}
+	warnUntrusted(warn, trust.flaws(uint32(os.Geteuid())))
 	return manifest.Parse(f)
 }
 
