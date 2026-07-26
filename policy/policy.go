@@ -157,10 +157,7 @@ func (p *Policy) Validate() error {
 		return err
 	}
 	for i, r := range p.Network {
-		if err := validateHostPattern(r.Host); err != nil {
-			return fmt.Errorf("policy: network rule %d: %w", i, err)
-		}
-		if err := validatePort(r.Port); err != nil {
+		if err := r.Validate(); err != nil {
 			return fmt.Errorf("policy: network rule %d: %w", i, err)
 		}
 	}
@@ -249,6 +246,18 @@ func (m ExecMode) validate() error {
 	default:
 		return fmt.Errorf("policy: invalid exec mode %q: want one of none, none-strict, all", string(m))
 	}
+}
+
+// Validate reports whether the rule can appear in a policy: its host must be a
+// hostname, a ".suffix" wildcard, a canonical IP literal, or "*", and its port a
+// literal, a range, or "*". Exported so a producer of rules - the profiler, turning an
+// observed CONNECT into a proposal - can screen one before it builds a policy, instead
+// of discovering it at the final marshal with the whole run's work already done.
+func (r NetworkRule) Validate() error {
+	if err := validateHostPattern(r.Host); err != nil {
+		return err
+	}
+	return validatePort(r.Port)
 }
 
 // validateHostPattern accepts a network-rule host: a literal hostname, a

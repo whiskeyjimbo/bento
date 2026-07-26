@@ -252,6 +252,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// the same names profiling recorded and granted.
 	proposed.Env = sortedKeys(cfg.env)
 	printFlooredWrites(obs.Writes)
+	printUnrepresentable(obs)
 	printProposalWarnings(proposed)
 	return proposed, roundStatus{unfinished: partialRunWarning(obs) != "", dropped: obs.Dropped > 0}, nil
 }
@@ -285,6 +286,35 @@ func printFlooredWrites(writes []string) {
 		}
 		seen[dir] = true
 		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
+	}
+}
+
+// printUnrepresentable names the observations Synthesize withheld because a manifest
+// cannot hold them: a path carrying a character the policy grammar refuses in a path
+// field, or a CONNECT host that is not a hostname, a canonical address, or a wildcard.
+// Both are values the TARGET chose - a filename it created, a host it dialed - so a
+// hostile or merely sloppy one can produce them, and proposing one would fail the
+// marshal that ends the run. Like the floored writes above, they are dropped inside
+// Synthesize, so without this the reviewer has no trace of the access at all.
+func printUnrepresentable(obs profile.Observation) {
+	seen := map[string]bool{}
+	for _, p := range append(append([]string{}, obs.Reads...), obs.Writes...) {
+		if !profile.Unrepresentable(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, or invisible one), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
+	}
+	seenHosts := map[string]bool{}
+	for _, h := range obs.Hosts {
+		rule := policy.NetworkRule{Host: h.Host, Port: h.Port}
+		key := h.Host + ":" + h.Port
+		err := rule.Validate()
+		if err == nil || seenHosts[key] {
+			continue
+		}
+		seenHosts[key] = true
+		fmt.Fprintf(os.Stderr, "[bento] not proposing network access to %s:%s - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
 	}
 }
 

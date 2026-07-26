@@ -147,7 +147,7 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	}
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || p == obs.InterpreterName ||
-			isSystemPath(p) || resolvesIntoProc(p) || inRuntime(p)
+			Unrepresentable(p) || isSystemPath(p) || resolvesIntoProc(p) || inRuntime(p)
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
@@ -214,7 +214,15 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	seen := map[string]bool{}
 	for _, h := range obs.Hosts {
 		key := h.Host + ":" + h.Port
-		if h.Host == "" || seen[key] {
+		rule := policy.NetworkRule{Host: h.Host, Port: h.Port}
+		// The recording proxy screens a CONNECT target for control bytes and a canonical
+		// port, but not the host against the policy grammar, so a target can reach an
+		// underscore hostname or a shorthand literal like 127.1 and have it observed. A
+		// rule naming one cannot be written to a manifest at all, so proposing it fails
+		// the whole profiling run at the final marshal, with the session's work already
+		// spent. Drop it here the way an unanchored relative path is dropped above; the
+		// frontend names what was withheld.
+		if rule.Validate() != nil || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -294,6 +302,20 @@ func resolvesIntoProc(p string) bool {
 		return false
 	}
 	return resolved == "/proc" || strings.HasPrefix(resolved, "/proc/")
+}
+
+// Unrepresentable reports whether an observed path cannot be written to a manifest,
+// because it carries a character policy refuses in a path field - a control byte, a
+// bidi override, an invisible rune. A target creates its own filenames, so it can
+// produce one; a proposal naming it fails validation at the marshal that ends the
+// profiling run, discarding the whole session's work. Synthesize drops it instead, and
+// this is exported so a frontend can name what was withheld.
+//
+// It defers to the same screen policy.Validate applies, so the two cannot disagree
+// about which paths a manifest can hold.
+func Unrepresentable(path string) bool {
+	_, bad := policy.FirstUnsafeRune(path)
+	return bad
 }
 
 // FlooredWrite reports whether a collapsed write-grant directory is one Synthesize
