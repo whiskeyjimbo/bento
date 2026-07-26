@@ -47,13 +47,14 @@ func New() (enforce.Enforcer, error) {
 // A stage is selected by argv[1] alone and carries no proof of who invoked it, so
 // whoever controls the argv of a bento-embedding binary reaches all three - including
 // the degraded stage, which confines a target of their choosing outside the sandbox.
-// That is not a hole in bento's boundary: a stage runs with exactly the privileges of
-// the process that started it, which are the caller's own. It becomes one if the
+// That is not a hole in bento's boundary: a stage runs with no more privilege than the
+// process that started it, which holds the caller's own. It becomes one if the
 // binary is installed across a privilege boundary, so don't: no setuid bit, no
 // sudoers rule, and no wrapper that forwards a less-privileged caller's arguments.
 //
-// Every stage re-executes the whole binary, so every package init() runs again in
-// the stage, under a cleared environment. Keep package init cheap and free of
+// Every stage re-executes the whole binary, so every package init() runs again in the
+// stage, under an environment bento constructed rather than the one the embedder was
+// started with. Keep package init cheap and free of
 // environment or other side-effect dependencies, and (for tests) call this from
 // TestMain, before the testing package parses flags.
 func DispatchReexec() {

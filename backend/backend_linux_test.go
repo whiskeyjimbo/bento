@@ -57,9 +57,10 @@ func TestDispatchReexecFailsSetupWith125(t *testing.T) {
 			if !strings.HasPrefix(stderr.String(), "bento: ") {
 				t.Errorf("stderr = %q, want the failure named on bento's own prefix", stderr.String())
 			}
-			// This binary's own startup is the test suite, which announces itself on
-			// stdout - so its silence is what proves the stage did not fall through.
-			if strings.Contains(stdout.String(), "PASS") || strings.Contains(stdout.String(), "RUN") {
+			// A backstop, not the primary check: the exit code above is what actually
+			// pins the fall-through, since this binary's own startup is the test suite
+			// and a suite that ran would not exit 125.
+			if strings.Contains(stdout.String(), "PASS") {
 				t.Errorf("a stage that failed setup fell through to the embedding program's startup: %q", stdout.String())
 			}
 		})
