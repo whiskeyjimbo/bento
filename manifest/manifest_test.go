@@ -322,3 +322,58 @@ func TestScreenSourceHandlesMalformedInput(t *testing.T) {
 		}()
 	}
 }
+
+// Marshal is the write side of the gate Parse applies on the way in, so a manifest bento
+// writes is one bento can read back. Before this it wrote whatever it was handed: an ESC
+// in a profiled target's pathname became a file the profile footer tells the operator to
+// read, and the artifact was unloadable afterward because Parse screens what Marshal did
+// not. A nil policy panicked in fromPolicy and an empty one marshalled to "{}" with no
+// error at all.
+func TestMarshalValidatesBeforeWriting(t *testing.T) {
+	t.Run("nil policy", func(t *testing.T) {
+		if _, err := Marshal(nil, Provenance{}); err == nil {
+			t.Error("a nil policy must be refused, not dereferenced")
+		}
+	})
+	t.Run("empty policy", func(t *testing.T) {
+		if b, err := Marshal(&policy.Policy{}, Provenance{}); err == nil {
+			t.Errorf("an empty policy must be refused, not written as %q", string(b))
+		}
+	})
+	t.Run("control character in a path", func(t *testing.T) {
+		p := &policy.Policy{Entrypoint: "/x.py", Read: []string{"/data/\x1b]0;PWNED\x07"}}
+		b, err := Marshal(p, Provenance{})
+		if err == nil {
+			t.Fatalf("a path carrying an escape must not be written: %q", string(b))
+		}
+		// The refusal is printed to the same terminal the escape targeted.
+		if strings.ContainsRune(err.Error(), 0x1b) {
+			t.Errorf("error echoed a raw escape byte: %q", err.Error())
+		}
+	})
+	t.Run("unsafe provenance", func(t *testing.T) {
+		p := &policy.Policy{Entrypoint: "/x.py"}
+		if _, err := Marshal(p, Provenance{GeneratedBy: "bento\x1b[31m"}); err == nil {
+			t.Error("provenance must be screened on the way out as it is on the way in")
+		}
+	})
+}
+
+// Whatever Marshal writes, Parse must accept: the two gates are the same one, and a
+// divergence means bento can emit an artifact it cannot load.
+func TestMarshalOutputParses(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "/app/run.py", Interpreter: "python3",
+		Args: []string{"--x", "a&b", "!y"}, Env: []string{"HOME"},
+		Read: []string{"/data/*"}, Write: []string{"/out"},
+		Network: []policy.NetworkRule{{Host: ".example.com", Port: "443"}},
+		Exec:    policy.ExecNone, Limits: policy.Limits{Memory: "128M", CPU: "100%", PIDs: 32},
+	}
+	b, err := Marshal(p, Provenance{GeneratedBy: "bento profile", GeneratedAt: "2026-07-26T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := Parse(strings.NewReader(string(b))); err != nil {
+		t.Fatalf("Parse rejected what Marshal wrote:\n%s\nerror: %v", b, err)
+	}
+}
