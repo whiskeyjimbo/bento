@@ -28,7 +28,8 @@ func newValidateCmd() *cobra.Command {
 			"anything inside it.\n\n" +
 			"It also checks the approval: a manifest whose permissions changed since it was\n" +
 			"approved is reported. --strict makes a stale or missing approval a failure (exit\n" +
-			"non-zero), for use as a CI gate; without it, a stale approval is only a warning.",
+			"non-zero), for use as a CI gate; without it, a stale approval is only a warning.\n" +
+			"--json carries the same verdict as an `approval` field and honors --strict too.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			doc, err := loadDocument(args[0])
@@ -36,7 +37,15 @@ func newValidateCmd() *cobra.Command {
 				return err
 			}
 			if asJSON {
-				return writeJSON(os.Stdout, toPolicyJSON(doc.Policy))
+				out := toPolicyJSON(doc.Policy)
+				out.Approval = approvalName(checkApproval(doc))
+				if err := writeJSON(os.Stdout, out); err != nil {
+					return err
+				}
+				// The envelope is written first so a strict failure still leaves the
+				// machine consumer a parseable answer on stdout; the error goes to
+				// stderr and the non-zero exit, exactly as the human mode's does.
+				return strictApprovalError(doc, strict)
 			}
 			writePolicySummary(os.Stdout, args[0], doc.Policy)
 			return reportApproval(os.Stdout, doc, strict)
@@ -55,12 +64,27 @@ func newValidateCmd() *cobra.Command {
 func resolveManifestPaths(p *policy.Policy, manifestPath string) {
 	base := filepath.Dir(manifestPath)
 	p.Entrypoint = resolveAgainst(base, p.Entrypoint)
+	p.Interpreter = resolveInterpreter(base, p.Interpreter)
 	for i, r := range p.Read {
 		p.Read[i] = resolveAgainst(base, r)
 	}
 	for i, w := range p.Write {
 		p.Write[i] = resolveAgainst(base, w)
 	}
+}
+
+// resolveInterpreter anchors a path-shaped interpreter to the manifest's directory,
+// following exec.LookPath's own rule: a name carrying a separator is a path, and a
+// bare name is a PATH search. Without this, `interpreter: venv/bin/python` resolves
+// against whatever directory bento was invoked from - a different interpreter per
+// caller, fingerprinting identically. A bare `python3` is left alone: it means "the
+// host's python3" and joining it to the manifest directory would name a file that
+// almost never exists.
+func resolveInterpreter(base, interp string) string {
+	if !strings.ContainsRune(interp, filepath.Separator) {
+		return interp
+	}
+	return resolveAgainst(base, interp)
 }
 
 func resolveAgainst(base, path string) string {
@@ -111,20 +135,42 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 	switch checkApproval(doc) {
 	case approvalCurrent:
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
-		return nil
 	case approvalUnstamped:
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
-		if strict {
-			return fmt.Errorf("manifest is not approved")
-		}
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              re-review and run `bento approve` to re-stamp it\n")
-		if strict {
-			return fmt.Errorf("manifest approval is stale: permissions changed since it was approved")
-		}
 	}
-	return nil
+	return strictApprovalError(doc, strict)
+}
+
+// strictApprovalError is the strict verdict on its own, shared by the human and
+// --json paths so the gate cannot hold in one output mode and lapse in the other.
+func strictApprovalError(doc *manifest.Document, strict bool) error {
+	if !strict {
+		return nil
+	}
+	switch checkApproval(doc) {
+	case approvalUnstamped:
+		return fmt.Errorf("manifest is not approved")
+	case approvalStale:
+		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved")
+	default:
+		return nil
+	}
+}
+
+// approvalName is the machine-readable spelling of an approval state, so --json
+// can express the same verdict the human summary prints.
+func approvalName(s approvalState) string {
+	switch s {
+	case approvalCurrent:
+		return "current"
+	case approvalStale:
+		return "stale"
+	default:
+		return "unapproved"
+	}
 }
 
 type policyJSON struct {
@@ -137,6 +183,10 @@ type policyJSON struct {
 	Network     []string    `json:"network"`
 	Exec        string      `json:"exec"`
 	Limits      *limitsJSON `json:"limits,omitempty"`
+	// Approval is "current", "stale", or "unapproved" - the same verdict the human
+	// summary prints, so a machine gate can read the outcome as a field rather than
+	// inferring it from the exit code.
+	Approval string `json:"approval,omitempty"`
 }
 
 type limitsJSON struct {

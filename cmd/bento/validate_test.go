@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -30,5 +37,109 @@ func TestValidateShowsLimits(t *testing.T) {
 	// A no-limits policy must omit the limits entirely (no empty struct in JSON).
 	if toPolicyJSON(&policy.Policy{Entrypoint: "./x"}).Limits != nil {
 		t.Error("a no-limits policy must not emit a limits object in JSON")
+	}
+}
+
+// runCapturingStdout executes cmd with args while os.Stdout is redirected, and returns
+// what the command wrote there. The commands print to os.Stdout directly rather than
+// through cobra's writer, so exercising RunE - which is where the --json/--strict
+// interaction lives - means capturing the real file.
+func runCapturingStdout(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	cmd.SetArgs(args)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runErr := cmd.Execute()
+	os.Stdout = saved
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	return string(out), runErr
+}
+
+func writeManifest(t *testing.T, p *policy.Policy, prov manifest.Provenance) string {
+	t.Helper()
+	data, err := manifest.Marshal(p, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// --strict is the documented CI drift gate, and a machine gate reads --json. The two
+// must not disagree: --json --strict on a stale approval has to fail AND still leave a
+// parseable envelope naming the state (bv2-fglb). Executing RunE is the point - the
+// bug lived in the early `return writeJSON(...)`, which a direct reportApproval test
+// never reached.
+func TestValidateJSONHonorsStrict(t *testing.T) {
+	cases := map[string]struct {
+		approves     string
+		approve      bool // stamp it through `bento approve`, as a real current manifest is
+		wantApproval string
+		wantErr      bool
+	}{
+		"stale":     {approves: "a-stale-fingerprint", wantApproval: "stale", wantErr: true},
+		"unstamped": {wantApproval: "unapproved", wantErr: true},
+		"current":   {approve: true, wantApproval: "current"},
+	}
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeManifest(t, p, manifest.Provenance{Approves: tc.approves})
+			if tc.approve {
+				if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+					t.Fatalf("approve: %v", err)
+				}
+			}
+			out, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
+			if tc.wantErr && err == nil {
+				t.Error("--json --strict must fail on a non-current approval")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("--json --strict must pass on a current approval; got %v", err)
+			}
+			var got policyJSON
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+			}
+			if got.Approval != tc.wantApproval {
+				t.Errorf("approval = %q, want %q", got.Approval, tc.wantApproval)
+			}
+		})
+	}
+}
+
+// An interpreter naming a path must mean the same file regardless of the directory
+// bento was invoked from, since the backend LookPaths it on the host and the
+// fingerprint cannot tell two invocations apart (bv2-ubip). A bare name stays a PATH
+// search: it means "the host's python3", not a file beside the manifest.
+func TestResolveManifestPathsResolvesInterpreter(t *testing.T) {
+	cases := map[string]string{
+		"venv/bin/python": "/work/proj/venv/bin/python",
+		"./py":            "/work/proj/py",
+		"python3":         "python3",
+		"/usr/bin/python": "/usr/bin/python",
+		"":                "",
+	}
+	for interp, want := range cases {
+		p := &policy.Policy{Entrypoint: "run.py", Interpreter: interp}
+		resolveManifestPaths(p, "/work/proj/m.yaml")
+		if p.Interpreter != want {
+			t.Errorf("interpreter %q resolved to %q, want %q", interp, p.Interpreter, want)
+		}
 	}
 }
