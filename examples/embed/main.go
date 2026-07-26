@@ -120,18 +120,27 @@ func run(manifestPath string) int {
 	// nor a pre-approval the gate stays nil - the declarative default, denying any
 	// undeclared egress exactly as the box does.
 	preApproved := parseAllow(os.Getenv("BENTO_GATE_ALLOW"))
-	// Prompt on the controlling terminal, not the target's stdin. os.OpenFile
-	// returns a nil *os.File on failure; assign it into the io.Reader only when
-	// real, so newSupervisor sees a true nil (a typed-nil *os.File in an interface
-	// is non-nil and would be read as a live but broken reader).
+	// The prompt owns the controlling terminal in BOTH directions, not the target's
+	// stdin and not its stderr. Prompting on os.Stderr would put the security dialogue
+	// on a stream the confined target also holds, so it could print a lookalike prompt
+	// while the real gate blocks on an attacker-chosen host, or flood stderr to scroll
+	// the genuine one away - undoing the quoting that neutralizes escapes in the
+	// hostname the prompt displays. os.OpenFile returns a nil *os.File on failure;
+	// assign it into the interfaces only when real, so newSupervisor sees a true nil (a
+	// typed-nil *os.File in an interface is non-nil and would be read as a live but
+	// broken reader).
 	var promptIn io.Reader
+	// With no terminal the gate exists only for BENTO_GATE_ALLOW, and the only prompt
+	// it can reach is one no human will read (an unapproved host, answered by the
+	// closed reader as a denial), so stderr is a harmless place for that dead text.
+	promptOut := io.Writer(os.Stderr)
 	if tty, _ := os.OpenFile("/dev/tty", os.O_RDWR, 0); tty != nil {
 		defer tty.Close()
-		promptIn = tty
+		promptIn, promptOut = tty, tty
 	}
 	var gate enforce.NetworkGate
 	if len(preApproved) > 0 || promptIn != nil {
-		gate = newSupervisor(preApproved, promptIn, os.Stderr).gate
+		gate = newSupervisor(preApproved, promptIn, promptOut).gate
 	}
 
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}

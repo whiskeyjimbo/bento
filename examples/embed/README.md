@@ -82,7 +82,10 @@ embed: gate admitted undeclared egress to example.com:443
 
 Answer `y` and it is admitted; answer anything else and it is denied. The answer
 is cached for the run, so the same host is asked only once. The hostname is quoted
-before display because it is attacker-controlled (the sandboxed target chose it).
+before display because it is attacker-controlled (the sandboxed target chose it), and
+the prompt is written to `/dev/tty`, not to the target's stderr: sharing that stream
+with the confined program would let it print a lookalike prompt while the real gate
+blocks, or flood stderr to scroll the real one away - which would defeat the quoting.
 
 ## The honesty loop
 

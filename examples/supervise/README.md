@@ -56,7 +56,10 @@ three keys: **[y]es** allows it and remembers that for this script, **[n]o** den
 and remembers, **[o]nce** allows just this run without remembering. That is the whole
 per-access choice - a standing rule for *every* script is a deliberate `perms global`
 act (below), never a keystroke away from a routine yes. Attacker-chosen paths are
-quoted, since a filename can carry terminal escapes. Output is colorized on a terminal
+quoted, since a filename can carry terminal escapes, and the whole dialogue is read
+from and written to `/dev/tty` rather than the target's own stdin and stderr - a
+confined script that shares those streams could otherwise print a lookalike prompt, or
+flood them to scroll the real one away. The run's banners and summary stay on stderr. Output is colorized on a terminal
 (the access kind, a `✓`/`✗` verdict); set `NO_COLOR` or pipe it for plain text.
 
 ```

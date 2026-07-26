@@ -158,16 +158,23 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// different from what supervise remembers.
 	warnManifestDrift(os.Stderr, s, key, script)
 
-	// Prompts read the controlling terminal, kept separate from the target's own
-	// stdin. Fall back to stdin when there is no tty, so the demo is still drivable
-	// through a pipe or pty.
-	termIn := io.Reader(os.Stdin)
+	// The prompts own the controlling terminal in BOTH directions, kept separate from
+	// the target's own stdin and stderr. Writing them to os.Stderr would put the
+	// security dialogue on a stream the confined target also holds: it could print a
+	// lookalike prompt while the real gate blocks on an attacker-chosen host, or flood
+	// stderr to scroll the genuine one away - which would undo the quoting that
+	// neutralizes escapes in the paths and hosts these prompts display. Fall back to
+	// stdin/stderr when there is no tty, so the demo is still drivable through a pipe.
+	termIn, termOut := io.Reader(os.Stdin), io.Writer(os.Stderr)
 	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 		defer tty.Close()
-		termIn = tty
+		termIn, termOut = tty, tty
 	}
-	p := newPrompter(termIn, os.Stderr)
-	t := p.t // one theme, detected on os.Stderr, shared by the banners below
+	p := newPrompter(termIn, termOut)
+	// The banners and the run summary below are the run's report, not the dialogue, so
+	// they stay on stderr - and their theme is detected there, not on the prompt stream,
+	// so a redirected stderr does not collect ANSI meant for the terminal.
+	t := newTheme(os.Stderr)
 
 	// Act 1: trial run under default-deny observation, then approve what it wants.
 	// The target runs with the real HOME (and its config anchors) so a $HOME-relative
