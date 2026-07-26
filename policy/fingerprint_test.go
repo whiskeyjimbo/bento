@@ -56,43 +56,95 @@ func TestFingerprintChangesWithPermissions(t *testing.T) {
 }
 
 // TestFingerprintChangesWithPermissions names its cases by hand, so a field added
-// to Policy later is silently uncovered. Walk the struct instead: every field must
-// move the fingerprint, including one that does not exist yet.
+// to Policy later is silently uncovered. Walk the struct instead, one leaf at a
+// time: a leaf mutated on its own must move the fingerprint, so a sibling that is
+// hashed cannot cover for one that is not.
+//
+// The base is fully populated on purpose. Every leaf is mutated in place rather
+// than appended, because appending to an empty slice moves the fingerprint on the
+// strength of the record existing at all - which is how NetworkRule.Port escaped
+// the hash undetected.
 func TestFingerprintCoversEveryPolicyField(t *testing.T) {
-	base := Policy{Entrypoint: "./x", Read: []string{"/data"}}
-	fp := base.Fingerprint()
+	// A fresh policy per case: copying one would share its slice backing arrays, and
+	// an in-place leaf mutation writes through to every later case.
+	base := func() Policy {
+		return Policy{
+			Entrypoint:  "./x",
+			Interpreter: "python3",
+			Args:        []string{"--flag"},
+			Env:         []string{"PATH"},
+			Read:        []string{"/data"},
+			Write:       []string{"/out"},
+			Network:     []NetworkRule{{Host: "a.com", Port: "443"}},
+			Exec:        ExecAll,
+			Limits:      Limits{Memory: "1M", CPU: "50%", PIDs: 128},
+		}
+	}
+	unchanged := base()
+	fp := unchanged.Fingerprint()
 
-	for f := range reflect.ValueOf(base).Fields() {
-		t.Run(f.Name, func(t *testing.T) {
-			p := base
-			p.Read = []string{"/data"}
-			mutate(t, reflect.ValueOf(&p).Elem().FieldByIndex(f.Index))
+	for _, leaf := range leaves(t, reflect.TypeFor[Policy]()) {
+		t.Run(leaf.name, func(t *testing.T) {
+			p := base()
+			leaf.mutate(reflect.ValueOf(&p).Elem())
 			if p.Fingerprint() == fp {
-				t.Errorf("Policy.%s is not covered by the fingerprint", f.Name)
+				t.Errorf("Policy.%s is not covered by the fingerprint", leaf.name)
 			}
 		})
 	}
 }
 
-// mutate sets v to a value distinct from the one it holds, descending into a
-// struct field so each sub-field (Limits.Memory/CPU/PIDs) is exercised.
-func mutate(t *testing.T, v reflect.Value) {
+// join names a nested leaf: the outer step, then the inner path if there is one.
+func join(outer, inner string) string {
+	if inner == "" {
+		return outer
+	}
+	return outer + "." + inner
+}
+
+// leaf is one scalar reachable from a Policy, and the mutation that changes it
+// and nothing else.
+type leaf struct {
+	name   string
+	mutate func(reflect.Value)
+}
+
+// leaves enumerates every scalar under t, descending through structs and slice
+// element types. A slice leaf mutates element zero, so the base must supply one.
+func leaves(t *testing.T, typ reflect.Type) []leaf {
 	t.Helper()
-	switch v.Kind() {
+	switch typ.Kind() {
 	case reflect.String:
-		v.SetString(v.String() + "-changed")
+		return []leaf{{mutate: func(v reflect.Value) { v.SetString(v.String() + "-changed") }}}
 	case reflect.Int, reflect.Int64:
-		v.SetInt(v.Int() + 1)
+		return []leaf{{mutate: func(v reflect.Value) { v.SetInt(v.Int() + 1) }}}
 	case reflect.Slice:
-		e := reflect.New(v.Type().Elem()).Elem()
-		mutate(t, e)
-		v.Set(reflect.Append(v, e))
-	case reflect.Struct:
-		for _, sub := range v.Fields() {
-			mutate(t, sub)
+		var out []leaf
+		for _, l := range leaves(t, typ.Elem()) {
+			out = append(out, leaf{name: join("[0]", l.name), mutate: func(v reflect.Value) {
+				if v.Len() == 0 {
+					t.Fatalf("the base policy leaves a %s empty; give it an element", typ)
+				}
+				l.mutate(v.Index(0))
+			}})
 		}
+		return out
+	case reflect.Struct:
+		var out []leaf
+		for _, f := range reflect.VisibleFields(typ) {
+			if !f.IsExported() {
+				t.Fatalf("cannot mutate unexported field %s; teach leaves this shape", f.Name)
+			}
+			for _, l := range leaves(t, f.Type) {
+				out = append(out, leaf{name: join(f.Name, l.name), mutate: func(v reflect.Value) {
+					l.mutate(v.FieldByIndex(f.Index))
+				}})
+			}
+		}
+		return out
 	default:
-		t.Fatalf("cannot mutate a %s field; teach mutate this kind", v.Kind())
+		t.Fatalf("cannot mutate a %s field; teach leaves this kind", typ.Kind())
+		return nil
 	}
 }
 
