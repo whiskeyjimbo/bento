@@ -119,12 +119,13 @@ func Run(cfg Config) (int, error) {
 	// one by path through /proc/<launcher>/fd reaches the inode directly, so the file
 	// living on a host mount absent from the sandbox namespace is no barrier - and a
 	// readlink of the same entry discloses the host path behind the descriptor even
-	// without opening it. What closes both is making this process non-dumpable: that
-	// reparents its /proc entry to root, so the same-uid target can neither traverse
-	// /proc/<launcher>/fd nor read its links. runObserve does not rely on this alone
-	// for the report descriptor - it truncates before writing - but this is what stops
-	// the reopen rather than any namespace check. execve resets dumpable, so the
-	// exec: none path (which replaces this process with the target) is unaffected.
+	// without opening it. Making this process non-dumpable closes both: its /proc entry
+	// reparents to root, so the same-uid target can neither traverse /proc/<launcher>/fd
+	// nor read its links. This is not the only thing denying that access today - a probe
+	// with the call removed still met EACCES, since crossing into bwrap's user namespace
+	// clears dumpable of its own accord - but that is bwrap's behavior to change, and
+	// this is the one place bento can make the guarantee its own. execve resets dumpable,
+	// so the exec: none path (which replaces this process with the target) is unaffected.
 	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
 		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
 	}
@@ -281,8 +282,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 	//
 	// The truncate is defense in depth against a threat nothing can reach today:
 	// PR_SET_DUMPABLE(0) runs in Run before any tracee exists, so /proc/<launcher>/fd is
-	// root-owned by the time the target could look, and the report's file lives on a host
-	// mount absent from the sandbox namespace, which fails a reopen regardless. Were a
+	// root-owned by the time the target could look. Were a
 	// descendant to get there, the residual would remain: an mmap'd MAP_SHARED report
 	// keeps taking forged records through plain memory stores, which raise no syscall for
 	// ptrace to stop and survive this truncate. That bound is acceptable because a
