@@ -99,6 +99,13 @@ func TestValidateRejects(t *testing.T) {
 		{"cpu bare dot", func(p *Policy) { p.Limits = Limits{CPU: ".5%"} }, "plain decimal percentage"},
 		// A digit string long enough to overflow float64 is decimal but not a real bound.
 		{"cpu overflowing", func(p *Policy) { p.Limits = Limits{CPU: strings.Repeat("9", 400) + "%"} }, "too large"},
+		// systemd parses a quota into permyriad, so a third fractional digit is invalid to
+		// it and a zero quota is "too small". Both were verified against systemd directly;
+		// accepting them here is the late-failure contract this validation exists to remove.
+		{"cpu three fractional digits", func(p *Policy) { p.Limits = Limits{CPU: "12.345%"} }, "plain decimal percentage"},
+		{"cpu zero", func(p *Policy) { p.Limits = Limits{CPU: "0%"} }, "is zero"},
+		{"cpu zero with fraction", func(p *Policy) { p.Limits = Limits{CPU: "0.00%"} }, "is zero"},
+		{"cpu leading zero", func(p *Policy) { p.Limits = Limits{CPU: "07%"} }, "plain decimal percentage"},
 		// parseBytes used to trim, so this validated and then failed in systemd.
 		{"memory with surrounding space", func(p *Policy) { p.Limits = Limits{Memory: " 128M "} }, "limits.memory"},
 		{"memory with inner space", func(p *Policy) { p.Limits = Limits{Memory: "128 M"} }, "limits.memory"},

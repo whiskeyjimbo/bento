@@ -86,14 +86,23 @@ func (l Limits) IsZero() bool { return l == Limits{} }
 
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// cpuPercentRe is the percentage spelling systemd's CPUQuota accepts, matched against
-// the value with its "%" removed. Validate forwards Limits.CPU to systemd verbatim, so a
-// spelling Go's ParseFloat takes and systemd does not - "0x1p4%", "1e3%", "+50%" - passed
-// validation and then failed at scope creation, long after the operator was told the
-// policy was well-formed. Restricting the spelling here makes the accepted set the one
-// that will actually run. Plain decimal only: ".5%" and "50.%" are refused with the rest
-// rather than carried as a spelling that may or may not survive the next systemd.
-var cpuPercentRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+// cpuPercentRe is the percentage spelling accepted for Limits.CPU, matched against the
+// value with its "%" removed. Validate forwards the string to systemd verbatim, so a
+// spelling Go's ParseFloat takes and systemd's CPUQuota does not - "0x1p4%", "1e3%",
+// "+50%" - passed validation and then failed at scope creation, long after the operator
+// was told the policy was well-formed.
+//
+// The two-digit fraction is not cosmetic: systemd parses a quota into permyriad
+// (hundredths of a percent), so it rejects "12.345%" outright. Matching that bound here
+// is what makes the difference between an early refusal and a late one.
+//
+// This is deliberately NARROWER than systemd rather than identical to it. systemd takes
+// "07%"; bento refuses the leading zero, as it does for a port, so one quota has one
+// spelling - two policies that mean the same thing but differ textually would otherwise
+// carry different fingerprints and need separate approvals. ".5%" and "50.%" are refused
+// on the same principle. The direction is what matters: narrower means a policy that
+// validates will run, wider means the false contract this exists to remove.
+var cpuPercentRe = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$`)
 
 // Validate reports whether the policy is well-formed. It is the one gate every
 // construction path passes through, so a Go embedder building a Policy directly
@@ -381,8 +390,14 @@ func (l Limits) validate() error {
 		// overflows to +Inf, and a quota systemd cannot read may be ignored outright -
 		// running the target with no cpu cap at all, which is the failure a limit exists
 		// to prevent. NaN and a negative are unreachable past the pattern.
-		if pct, err := strconv.ParseFloat(num, 64); err != nil || math.IsInf(pct, 0) {
+		pct, err := strconv.ParseFloat(num, 64)
+		if err != nil || math.IsInf(pct, 0) {
 			return fmt.Errorf("policy: limits.cpu %q is too large to be a real bound", l.CPU)
+		}
+		// systemd's floor is one permyriad, so it refuses "0%" and "0.00%" as too small.
+		// The fraction is at most two digits by here, which makes this comparison exact.
+		if pct == 0 {
+			return fmt.Errorf("policy: limits.cpu %q is zero; the smallest quota is \"0.01%%\" (omit limits.cpu for no cap)", l.CPU)
 		}
 	}
 	if l.Memory != "" {
