@@ -389,8 +389,8 @@ func TestProfileTargetCannotReachReport(t *testing.T) {
 	// (a) the report path must be gone; (b) FD 3 must be closed in the target;
 	// (c) a well-formed forged report the target CAN write must not become the
 	// observations.
-	forge := "printf 'R \"/FORGED-BY-TARGET\"\\n" + observe.ReportStart + "\\n'"
-	procForge := "printf 'R \"/PROCFS-FORGE\"\\n" + observe.ReportStart + "\\n'"
+	forge := "printf 'R \"/FORGED-BY-TARGET\"\\n" + observe.ReportEnd + "\\n'"
+	procForge := "printf 'R \"/PROCFS-FORGE\"\\n" + observe.ReportEnd + "\\n'"
 	body := "#!/bin/sh\n" +
 		"[ -e /observe.report ] && echo REPORT_EXISTS || echo REPORT_ABSENT\n" +
 		"echo forged >&3 2>/dev/null && echo FD3_WRITABLE || echo FD3_CLOSED\n" +

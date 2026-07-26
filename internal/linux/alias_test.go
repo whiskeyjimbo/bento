@@ -1,7 +1,9 @@
 package linux
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -535,7 +537,10 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 
 	// Device 8:2 is where the credentials live.
 	dev := uint64(unix.Mkdev(8, 2))
-	got := mountinfoPaths(strings.NewReader(info), []uint64{dev})
+	got, err := mountinfoPaths(strings.NewReader(info), []uint64{dev})
+	if err != nil {
+		t.Fatalf("mountinfoPaths: %v", err)
+	}
 	want := []string{"/", "/srv/backup/.ssh", "/home/u/with space"}
 	if !slices.Equal(got, want) {
 		t.Errorf("mountinfoPaths = %v, want %v (only device 8:2, escapes decoded)", got, want)
@@ -544,6 +549,16 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 		if p == "/mnt/dead-nfs" {
 			t.Error("a mount on another device must never be returned - it would be lstat'd and could hang forever")
 		}
+	}
+}
+
+// A mountinfo line past the Scanner's buffer stops the scan early. Reporting that as an
+// error is what keeps a partial mount list from being read as the whole one.
+func TestMountinfoPathsRefusesATruncatedScan(t *testing.T) {
+	dev := uint64(unix.Mkdev(8, 2))
+	huge := "26 30 8:2 / /" + strings.Repeat("a", bufio.MaxScanTokenSize) + " rw - ext4 /dev/sda2 rw\n"
+	if _, err := mountinfoPaths(strings.NewReader(huge), []uint64{dev}); !errors.Is(err, bufio.ErrTooLong) {
+		t.Errorf("mountinfoPaths on an over-long line = %v, want bufio.ErrTooLong", err)
 	}
 }
 

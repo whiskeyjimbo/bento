@@ -18,7 +18,7 @@ import (
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	// A complete report (records then the trailing marker) parses.
 	good := filepath.Join(t.TempDir(), "report")
-	content := fmt.Sprintf("R %q\nW %q\nEXEC\n%s\n", "/a", "/b", observe.ReportStart)
+	content := fmt.Sprintf("R %q\nW %q\nEXEC\n%s\n", "/a", "/b", observe.ReportEnd)
 	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 // single write, so the report must be rejected as tampered, not parsed.
 func TestParseObservationsRejectsContentAfterMarker(t *testing.T) {
 	report := filepath.Join(t.TempDir(), "r")
-	content := fmt.Sprintf("R %q\n%s\nR %q\n", "/real", observe.ReportStart, "/appended-forgery")
+	content := fmt.Sprintf("R %q\n%s\nR %q\n", "/real", observe.ReportEnd, "/appended-forgery")
 	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestParseObservationsRejectsContentAfterMarker(t *testing.T) {
 func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
 	evil := "/tmp/x\nW /etc/ssh\nEXEC"
 	report := filepath.Join(t.TempDir(), "r")
-	content := fmt.Sprintf("R %q\n%s\n", evil, observe.ReportStart)
+	content := fmt.Sprintf("R %q\n%s\n", evil, observe.ReportEnd)
 	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
 func TestParseObservationsReadsExitStatus(t *testing.T) {
 	report := func(t *testing.T, statusLine string) profile.Observation {
 		p := filepath.Join(t.TempDir(), "report")
-		content := fmt.Sprintf("R %q\n%s\n%s\n", "/a", statusLine, observe.ReportStart)
+		content := fmt.Sprintf("R %q\n%s\n%s\n", "/a", statusLine, observe.ReportEnd)
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestProfileRefusesWithoutAnObservationBackend(t *testing.T) {
 // same kind of loss and counts too, rather than vanishing.
 func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report")
-	content := fmt.Sprintf("R %q\nR not-a-quoted-path\nDROPPED 3\nEXIT 0\n%s\n", "/a", observe.ReportStart)
+	content := fmt.Sprintf("R %q\nR not-a-quoted-path\nDROPPED 3\nEXIT 0\n%s\n", "/a", observe.ReportEnd)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

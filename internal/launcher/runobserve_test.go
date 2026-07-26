@@ -57,7 +57,7 @@ func TestRunObserve(t *testing.T) {
 		if !bytes.HasPrefix(got, []byte("R ")) && !bytes.HasPrefix(got, []byte("W ")) && !bytes.HasPrefix(got, []byte("EXIT ")) {
 			t.Errorf("the report does not start with a record:\n%s", firstBytes(got))
 		}
-		if !bytes.Contains(got, []byte(observe.ReportStart)) {
+		if !bytes.Contains(got, []byte(observe.ReportEnd)) {
 			t.Errorf("the report has no completion marker:\n%s", firstBytes(got))
 		}
 	})
@@ -91,7 +91,7 @@ func TestRunObserve(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(got, []byte(observe.ReportStart)) {
+		if bytes.Contains(got, []byte(observe.ReportEnd)) {
 			t.Errorf("a failed trace still wrote the completion marker:\n%s", got)
 		}
 	})

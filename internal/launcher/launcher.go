@@ -116,15 +116,15 @@ func Run(cfg Config) (int, error) {
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
 	// target, but on the supervise path (exec: all) the launcher does not exec - it
 	// stays alive as the sandbox's pid 2 with those descriptors still open. Reopening
-	// one by path through /proc/<launcher>/fd already fails: the descriptor's file
-	// lives on a host mount absent from the sandbox namespace, so the kernel's
-	// cross-namespace reopen check denies it regardless of file mode (this is the same
-	// barrier runObserve relies on for the report descriptor). What that barrier does
-	// NOT stop is a plain readlink of /proc/<launcher>/fd, which still discloses the
-	// host path behind the descriptor. Making this process non-dumpable reparents its
-	// /proc entry to root, closing that path-disclosure channel to the same-uid target.
-	// execve resets dumpable, so the exec: none path (which replaces this process with
-	// the target) is unaffected.
+	// one by path through /proc/<launcher>/fd reaches the inode directly, so the file
+	// living on a host mount absent from the sandbox namespace is no barrier - and a
+	// readlink of the same entry discloses the host path behind the descriptor even
+	// without opening it. What closes both is making this process non-dumpable: that
+	// reparents its /proc entry to root, so the same-uid target can neither traverse
+	// /proc/<launcher>/fd nor read its links. runObserve does not rely on this alone
+	// for the report descriptor - it truncates before writing - but this is what stops
+	// the reopen rather than any namespace check. execve resets dumpable, so the
+	// exec: none path (which replaces this process with the target) is unaffected.
 	if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
 		return 0, fmt.Errorf("launcher: making the launcher non-dumpable: %w", errno)
 	}
@@ -135,10 +135,12 @@ func Run(cfg Config) (int, error) {
 			return 0, err
 		}
 		// Drop any inherited proxy variables first: glibc getenv returns the first
-		// occurrence, so an HTTP_PROXY leaked from the host env would otherwise win over
-		// bento's, pointing the target's egress at a host-chosen proxy instead of the
-		// in-sandbox bridge. Fail-closed today (empty netns), but the intercept model
-		// requires bento's values to be authoritative.
+		// occurrence, so an HTTP_PROXY already in this environment would otherwise win
+		// over bento's, pointing the target's egress at a chosen proxy instead of the
+		// in-sandbox bridge. The host's own environment cannot reach here - args.go
+		// emits --clearenv - so the case this covers is a POLICY-declared proxy variable.
+		// Fail-closed today (empty netns), but the intercept model requires bento's
+		// values to be authoritative.
 		env = dropEnv(env, "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")
 		env = append(env, proxyEnv()...)
 	}
@@ -262,7 +264,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 		if res.SeccompKilled {
 			b.WriteString("SECCOMPKILLED\n")
 		}
-		b.WriteString(observe.ReportStart + "\n")
+		b.WriteString(observe.ReportEnd + "\n")
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
 	// Truncate before writing, to discard anything a descendant wrote to this file
@@ -468,10 +470,12 @@ func proxyEnv() []string {
 //
 // reapUntil waits on all of this process's children until the target exits, so
 // the egress bridge started alongside it is reaped too. Orphaned *grandchildren*
-// of a subprocess-spawning target are not this process's concern: bwrap runs its
-// own init as PID 1 (this launcher is PID 2), so an orphan reparents to bwrap's
-// init, which reaps it. The whole pid namespace is torn down at the end of the
-// run regardless.
+// of a subprocess-spawning target reparent to whichever ancestor is reaping: under
+// bwrap that is its own init as PID 1 (this launcher is PID 2), and the whole pid
+// namespace is torn down at the end of the run regardless. RunDegraded calls this
+// with no pid namespace at all, so there an orphan reparents to the host's init
+// and is reaped there instead; the degraded tier's own leaked-process cleanup is
+// the process-group sweep, not this loop.
 func superviseTarget(target, env []string) (int, error) {
 	// exec.Command does a $PATH lookup when target[0] has no slash, resolving against
 	// the target's own (policy-supplied) PATH - a different binary than intended. The

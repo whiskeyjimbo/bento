@@ -549,8 +549,13 @@ func hostMountpoints(devs []uint64) []mountPoint {
 	}
 	defer f.Close()
 
+	paths, err := mountinfoPaths(f, devs)
+	if err != nil {
+		return nil
+	}
+
 	var out []mountPoint
-	for _, path := range mountinfoPaths(f, devs) {
+	for _, path := range paths {
 		if id, ok := hostStatID(path); ok {
 			out = append(out, mountPoint{path: path, id: id})
 		}
@@ -561,7 +566,7 @@ func hostMountpoints(devs []uint64) []mountPoint {
 // mountinfoPaths returns the mountpoints in a mountinfo stream that sit on one of the
 // given devices. Splitting the parse from the stat is what makes the device filter
 // testable, and the filter is the whole reason nothing outside it is ever touched.
-func mountinfoPaths(r io.Reader, devs []uint64) []string {
+func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
 	wanted := make(map[string]bool, len(devs))
 	for _, d := range devs {
 		wanted[fmt.Sprintf("%d:%d", unix.Major(d), unix.Minor(d))] = true
@@ -577,7 +582,12 @@ func mountinfoPaths(r io.Reader, devs []uint64) []string {
 		}
 		out = append(out, unescapeMount(fields[4]))
 	}
-	return out
+	// A truncated read leaves out mountpoints, and a caller that treats the short list
+	// as the whole picture would miss an alias for a shielded path.
+	if err := scan.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // hostStatID returns a single path's content identity, without following a final symlink -

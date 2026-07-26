@@ -181,11 +181,11 @@ func parseObservations(path string) (profile.Observation, error) {
 	defer f.Close()
 
 	var obs profile.Observation
-	var started bool
+	var ended bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
-		if started {
+		if ended {
 			// The completion marker is written last, in the launcher's single write.
 			// Anything after it did not come from that write, so treat the report as
 			// tampered rather than parse records from an appended tail. This is defense
@@ -197,8 +197,8 @@ func parseObservations(path string) (profile.Observation, error) {
 			continue
 		}
 		switch {
-		case line == observe.ReportStart:
-			started = true
+		case line == observe.ReportEnd:
+			ended = true
 		case line == "EXEC":
 			obs.Execed = true
 		case line == "SECCOMPKILLED":
@@ -241,7 +241,7 @@ func parseObservations(path string) (profile.Observation, error) {
 	// failed to start, tracing failed, or the report was truncated. Surfacing an
 	// error here is what stops the profiler from proposing a silently-empty or
 	// partial manifest instead of the run's real accesses.
-	if !started {
+	if !ended {
 		return profile.Observation{}, fmt.Errorf("linux: profiling did not complete (the observation report is empty or truncated); the sandbox may have failed to start")
 	}
 	return obs, nil

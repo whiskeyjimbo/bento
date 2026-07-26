@@ -34,7 +34,9 @@ func TestAvailableMatchesEffectiveABI(t *testing.T) {
 // The degraded tier's sole filesystem guarantee is Landlock, so it must refuse rather
 // than run unconfined when the effective ABI is unavailable. Only the refusal branch is
 // exercised here: applying a real ruleset would irreversibly Landlock the test process
-// and poison every later test, so the confinement path lives in the probe-based tests.
+// and poison every later test. The probe binary covers RestrictTo only, so the
+// confinement half of RestrictDegraded is reached solely through the end-to-end
+// degraded-tier runs, never from this package.
 func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 	if effectiveABI() >= 1 {
 		t.Skip("Landlock available; the refusal guard fires only when it is not")

@@ -2,8 +2,8 @@
 // grants.
 //
 // The list is data, not code: it is platform-independent and testable on its
-// own, while each backend decides how to enforce a rule (bind mounts on Linux,
-// SBPL rules on macOS). A policy that grants a broad path - say all of $HOME -
+// own, while the backend decides how to enforce a rule (bind mounts on Linux,
+// the only backend today). A policy that grants a broad path - say all of $HOME -
 // must never expose these.
 package denylist
 
@@ -528,10 +528,9 @@ func Home(home string) []Rule {
 	// call. A relative value is dropped (an absolute bind cannot cover it), as is the
 	// default location (already shielded) and git's /dev/null "no config" idiom.
 	//
-	// A relocation landing at or under a DenyAll rule is skipped: emitting a DenyWrite
-	// there would stack a readable ro-bind after the DenyAll hide, and bwrap's
-	// last-wins ordering would expose the credential the DenyAll rule is hiding (see
-	// the ordering note in the Linux backend's denyArgs).
+	// A relocation landing at or under a DenyAll rule is skipped: the DenyAll rule
+	// already hides the whole subtree, so a DenyWrite there grants nothing further and
+	// only adds a redundant rule for a backend to enforce and a reader to reconcile.
 	underDenyAll := func(p string) bool {
 		for _, r := range rules {
 			if r.Deny != DenyAll {
