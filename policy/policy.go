@@ -239,6 +239,15 @@ func isInvisible(r rune) bool {
 		r == 0xFEFF
 }
 
+// canonical resolves the zero value to the default it stands for, so a policy that
+// omits the mode and one that spells it out are one mode, not two.
+func (m ExecMode) canonical() ExecMode {
+	if m == "" {
+		return ExecNone
+	}
+	return m
+}
+
 func (m ExecMode) validate() error {
 	switch m {
 	case "", ExecNone, ExecNoneStrict, ExecAll:

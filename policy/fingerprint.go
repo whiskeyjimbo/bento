@@ -17,6 +17,10 @@ import (
 // are sorted so reordering them is not a change; args are kept in order because
 // their order is meaningful to the program.
 //
+// Exec is hashed in canonical form: the zero value hashes as "none", because the
+// enforcer treats the two identically. Two policies that permit the same thing but
+// spell it differently would otherwise need separate approvals.
+//
 // The fingerprint says nothing about the *contents* of the entrypoint file: it
 // attests the policy, not the code. Swapping the script body under an approved
 // manifest still matches - by design, since the manifest governs permissions,
@@ -42,7 +46,7 @@ func (p *Policy) Fingerprint() string {
 	for _, r := range sortedRules(p.Network) {
 		line("net\x00%s\x00%s", r.Host, r.Port)
 	}
-	line("exec\x00%s", p.Exec)
+	line("exec\x00%s", p.Exec.canonical())
 	line("limits\x00%s\x00%s\x00%d", p.Limits.Memory, p.Limits.CPU, p.Limits.PIDs)
 
 	return hex.EncodeToString(h.Sum(nil))

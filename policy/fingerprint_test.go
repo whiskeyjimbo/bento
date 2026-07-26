@@ -148,6 +148,16 @@ func leaves(t *testing.T, typ reflect.Type) []leaf {
 	}
 }
 
+// An omitted exec mode and an explicit "none" are the same permission to the
+// enforcer, so they must not need two approvals.
+func TestFingerprintTreatsEmptyExecAsNone(t *testing.T) {
+	omitted := &Policy{Entrypoint: "./x"}
+	spelled := &Policy{Entrypoint: "./x", Exec: ExecNone}
+	if omitted.Fingerprint() != spelled.Fingerprint() {
+		t.Error("an omitted exec mode must fingerprint as none")
+	}
+}
+
 // Arg order is meaningful and must affect the fingerprint.
 func TestFingerprintArgOrderMatters(t *testing.T) {
 	a := &Policy{Entrypoint: "./x", Args: []string{"--a", "--b"}}
