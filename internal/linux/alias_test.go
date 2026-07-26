@@ -556,7 +556,7 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 // error is what keeps a partial mount list from being read as the whole one.
 func TestMountinfoPathsRefusesATruncatedScan(t *testing.T) {
 	dev := uint64(unix.Mkdev(8, 2))
-	huge := "26 30 8:2 / /" + strings.Repeat("a", bufio.MaxScanTokenSize) + " rw - ext4 /dev/sda2 rw\n"
+	huge := "26 30 8:2 / /" + strings.Repeat("a", 1<<20) + " rw - ext4 /dev/sda2 rw\n"
 	if _, err := mountinfoPaths(strings.NewReader(huge), []uint64{dev}); !errors.Is(err, bufio.ErrTooLong) {
 		t.Errorf("mountinfoPaths on an over-long line = %v, want bufio.ErrTooLong", err)
 	}

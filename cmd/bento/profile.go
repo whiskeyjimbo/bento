@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -82,6 +83,7 @@ func newProfileCmd() *cobra.Command {
 			base := discoveryPolicy(script, interpreter, args[1:])
 
 			var proposed *policy.Policy
+			var seed *policy.Policy
 			if interactiveStdin() {
 				// A content-branching target reads a config to decide what to do next; under
 				// default-deny that read fails and it never attempts the downstream paths, so
@@ -98,8 +100,8 @@ func newProfileCmd() *cobra.Command {
 						return err
 					}
 				}
-				seed, seedErr := seedGrants(out, script, os.Stderr)
-				if seedErr != nil {
+				var seedErr error
+				if seed, seedErr = seedGrants(out, script, os.Stderr); seedErr != nil {
 					return seedErr
 				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
@@ -123,10 +125,15 @@ func newProfileCmd() *cobra.Command {
 
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
+			accepted := proposed
 			proposed, err = mergeExisting(out, proposed)
 			if err != nil {
 				return err
 			}
+			// The merge re-reads the same file the seed came from, so a seeded grant the
+			// user declined this session would come back through the union. Drop it: a
+			// refusal at the prompt has to hold in the artifact, not only in the mount.
+			proposed = dropDeclinedSeeds(proposed, seed, accepted)
 
 			doc := manifest.Provenance{
 				GeneratedBy: "bento profile",
@@ -266,10 +273,11 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 				return nil, err
 			}
 			switch c {
-			case grantAll:
-				acceptAll = true
-				accept(it)
-			case grantYes:
+			// [a]ll here accepts only this seeded path. In the loop below it answers for
+			// a list the user has just been shown; at seed time no round has run, so
+			// carrying it forward would grant every path the whole session goes on to
+			// discover, unseen - a wider consent than the prompt asked for.
+			case grantAll, grantYes:
 				accept(it)
 			case grantQuit:
 				return nil, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
@@ -350,6 +358,30 @@ loop:
 // home). Such a path is never auto-accepted under [a]ll; the reviewer decides it.
 func foreignShielded(path string) bool {
 	return len(foreignHomeShields([]string{path})) > 0
+}
+
+// dropDeclinedSeeds removes from merged any seed grant missing from accepted - the
+// convergence loop's final set, which holds exactly what the user said yes to. Only a
+// path the seed itself carried is eligible, so an unrelated grant already in the
+// manifest still merges through. A nil seed means nothing was prompted, so nothing is
+// dropped.
+func dropDeclinedSeeds(merged, seed, accepted *policy.Policy) *policy.Policy {
+	if seed == nil {
+		return merged
+	}
+	keep := func(all, seeded, ok []string) []string {
+		out := make([]string, 0, len(all))
+		for _, p := range all {
+			if slices.Contains(seeded, p) && !slices.Contains(ok, p) {
+				continue
+			}
+			out = append(out, p)
+		}
+		return out
+	}
+	merged.Read = keep(merged.Read, seed.Read, accepted.Read)
+	merged.Write = keep(merged.Write, seed.Write, accepted.Write)
+	return merged
 }
 
 // seedItems flattens a seed manifest's reads and writes into the same items the

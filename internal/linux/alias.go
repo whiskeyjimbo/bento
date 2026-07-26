@@ -540,8 +540,10 @@ func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
 // forever, and hanging before launch over a filesystem holding no credential would be a
 // worse failure than the one this scan prevents. A device the kernel reports under a
 // number that does not match the credential's st_dev (some btrfs anonymous devices) is a
-// miss, not a misattribution. Unreadable mountinfo yields nothing: this feeds one of two
-// mechanisms, and the hardlink half stands on its own.
+// miss, not a misattribution. Unreadable mountinfo yields nothing, as does a scan that
+// could not finish - a partial mount list is the more dangerous shape, since it reads as
+// a complete one. Either way this feeds one of two mechanisms, and the hardlink half
+// stands on its own.
 func hostMountpoints(devs []uint64) []mountPoint {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
@@ -574,6 +576,10 @@ func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
 
 	var out []string
 	scan := bufio.NewScanner(r)
+	// A mountinfo line carries a path plus the filesystem's options, and an overlayfs
+	// lowerdir= list runs well past the 64 KiB default - on which the scan would stop
+	// early and hide every mount after it.
+	scan.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
@@ -582,8 +588,9 @@ func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
 		}
 		out = append(out, unescapeMount(fields[4]))
 	}
-	// A truncated read leaves out mountpoints, and a caller that treats the short list
-	// as the whole picture would miss an alias for a shielded path.
+	// A scan that stopped early leaves out mountpoints, and a caller that treats the
+	// short list as the whole picture would miss an alias for a shielded path. Report
+	// it rather than return the prefix, so the caller decides instead of guessing.
 	if err := scan.Err(); err != nil {
 		return nil, err
 	}

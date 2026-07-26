@@ -325,3 +325,50 @@ func TestConvergeSeedPromptsRiskyPaths(t *testing.T) {
 		t.Errorf("an ordinary seeded grant must still be mounted in round 1; got %v", round1Reads)
 	}
 }
+
+// [a]ll answered at a seed prompt covers that path only. No round has run yet, so
+// carrying it forward would grant the whole session's discoveries unseen.
+func TestConvergeSeedAllDoesNotCoverLaterRounds(t *testing.T) {
+	const cred = "/home/other/.ssh/id_rsa"
+	asked := map[string]int{}
+	prompt := func(kind, path string) (grantChoice, error) {
+		asked[path]++
+		return grantAll, nil
+	}
+	seed := &policy.Policy{Read: []string{cred}}
+	if _, err := converge(baseDiscovery(), seed, branchingRound, prompt, func(p string) bool { return p == cred }, io.Discard); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if asked[cfgPath] != 1 {
+		t.Errorf("[a]ll at a seed prompt must not pre-accept round 1's discoveries; %s asked %d time(s)", cfgPath, asked[cfgPath])
+	}
+}
+
+// The merge re-reads the manifest the seed came from, so without the drop a declined
+// seed would be written back out - a refusal that held for the mount and not the file.
+func TestDropDeclinedSeedsRemovesRefusedGrants(t *testing.T) {
+	const cred = "/home/other/.ssh/id_rsa"
+	merged := &policy.Policy{Read: []string{cred, cfgPath, "/discovered"}, Write: []string{"/w"}}
+	seed := &policy.Policy{Read: []string{cred, cfgPath}, Write: []string{"/w"}}
+	accepted := &policy.Policy{Read: []string{cfgPath, "/discovered"}}
+
+	got := dropDeclinedSeeds(merged, seed, accepted)
+	if hasPath(got.Read, cred) {
+		t.Errorf("a declined seed must not survive the merge; got Read=%v", got.Read)
+	}
+	if !hasPath(got.Read, cfgPath) || !hasPath(got.Read, "/discovered") {
+		t.Errorf("an accepted seed and a fresh discovery must both survive; got Read=%v", got.Read)
+	}
+	if hasPath(got.Write, "/w") {
+		t.Errorf("a declined seeded write must not survive either; got Write=%v", got.Write)
+	}
+}
+
+// With no seed nothing was prompted, so the merge must widen exactly as it always did.
+func TestDropDeclinedSeedsKeepsEverythingWithoutASeed(t *testing.T) {
+	merged := &policy.Policy{Read: []string{"/a", "/b"}}
+	got := dropDeclinedSeeds(merged, nil, &policy.Policy{})
+	if !hasPath(got.Read, "/a") || !hasPath(got.Read, "/b") {
+		t.Errorf("without a seed the merge must be untouched; got Read=%v", got.Read)
+	}
+}
