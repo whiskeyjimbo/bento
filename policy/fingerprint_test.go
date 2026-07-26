@@ -156,6 +156,10 @@ func TestFingerprintTreatsEmptyExecAsNone(t *testing.T) {
 	if omitted.Fingerprint() != spelled.Fingerprint() {
 		t.Error("an omitted exec mode must fingerprint as none")
 	}
+	strict := &Policy{Entrypoint: "./x", Exec: ExecNoneStrict}
+	if strict.Fingerprint() == spelled.Fingerprint() {
+		t.Error("none and none-strict are different permissions and must fingerprint apart")
+	}
 }
 
 // Arg order is meaningful and must affect the fingerprint.
