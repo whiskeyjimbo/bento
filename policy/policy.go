@@ -86,6 +86,15 @@ func (l Limits) IsZero() bool { return l == Limits{} }
 
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// cpuPercentRe is the percentage spelling systemd's CPUQuota accepts, matched against
+// the value with its "%" removed. Validate forwards Limits.CPU to systemd verbatim, so a
+// spelling Go's ParseFloat takes and systemd does not - "0x1p4%", "1e3%", "+50%" - passed
+// validation and then failed at scope creation, long after the operator was told the
+// policy was well-formed. Restricting the spelling here makes the accepted set the one
+// that will actually run. Plain decimal only: ".5%" and "50.%" are refused with the rest
+// rather than carried as a spelling that may or may not survive the next systemd.
+var cpuPercentRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
 // Validate reports whether the policy is well-formed. It is the one gate every
 // construction path passes through, so a Go embedder building a Policy directly
 // gets the same guarantees as a manifest parsed from YAML.
@@ -252,13 +261,22 @@ func validateHostPattern(host string) error {
 		return fmt.Errorf("host %q too long", host)
 	}
 	match := host
-	if strings.HasPrefix(host, ".") {
+	wildcard := strings.HasPrefix(host, ".")
+	if wildcard {
 		match = host[1:]
 		if match == "" {
 			return fmt.Errorf("host %q: suffix wildcard needs a domain after the dot", host)
 		}
 	}
 	if ip := net.ParseIP(match); ip != nil {
+		// A suffix wildcard is a subdomain match, and an address has no subdomains. The
+		// rule is not merely redundant: matchHost would apply it as a string suffix, so
+		// it can only ever match a hostname that happens to end in those characters -
+		// never the address the author meant to allow. Refuse it rather than let a rule
+		// that reads like "the 10.0.0.1 network" authorize nothing it names.
+		if wildcard {
+			return fmt.Errorf("host %q: a suffix wildcard cannot be written over an IP address (an address has no subdomains; write %s to allow it)", host, match)
+		}
 		if ip.String() != match {
 			return fmt.Errorf("host %q is not canonical (write it as %s)", match, ip.String())
 		}
@@ -356,15 +374,15 @@ func (l Limits) validate() error {
 		if !ok {
 			return fmt.Errorf("policy: limits.cpu %q must be a percentage (e.g. \"100%%\")", l.CPU)
 		}
-		pct, err := strconv.ParseFloat(num, 64)
-		if err != nil {
-			return fmt.Errorf("policy: limits.cpu %q must be a numeric percentage (e.g. \"100%%\"); %q is not a number", l.CPU, num)
+		if !cpuPercentRe.MatchString(num) {
+			return fmt.Errorf("policy: limits.cpu %q must be a plain decimal percentage (e.g. \"100%%\" or \"12.5%%\"); %q is not one", l.CPU, num)
 		}
-		// ParseFloat accepts NaN, Inf, and negatives; a garbage quota forwarded to
-		// systemd may be silently ignored, running the target with no cpu cap at all.
-		// Reject them here so the value the backend receives is always a real bound.
-		if math.IsNaN(pct) || math.IsInf(pct, 0) || pct < 0 {
-			return fmt.Errorf("policy: limits.cpu %q must be a non-negative, finite percentage", l.CPU)
+		// The spelling is decimal by here, but an arbitrarily long digit string still
+		// overflows to +Inf, and a quota systemd cannot read may be ignored outright -
+		// running the target with no cpu cap at all, which is the failure a limit exists
+		// to prevent. NaN and a negative are unreachable past the pattern.
+		if pct, err := strconv.ParseFloat(num, 64); err != nil || math.IsInf(pct, 0) {
+			return fmt.Errorf("policy: limits.cpu %q is too large to be a real bound", l.CPU)
 		}
 	}
 	if l.Memory != "" {
@@ -379,7 +397,9 @@ func (l Limits) validate() error {
 // bare byte count. Validate uses it to reject an unparseable Limits.Memory; the
 // backend passes the original string to systemd, which parses it again.
 func parseBytes(s string) (int64, error) {
-	s = strings.TrimSpace(s)
+	// No whitespace trimming, here or around the number: the backend hands the ORIGINAL
+	// string to systemd, so a value this accepts and systemd rejects (" 128M ") is a
+	// policy that validates and then fails at scope creation.
 	if s == "" {
 		return 0, fmt.Errorf("empty size")
 	}
@@ -396,7 +416,7 @@ func parseBytes(s string) (int64, error) {
 	if mult != 1 {
 		num = s[:len(s)-1]
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
+	n, err := strconv.ParseInt(num, 10, 64)
 	if err != nil || n < 0 || n > math.MaxInt64/mult {
 		return 0, fmt.Errorf("invalid size %q", s)
 	}

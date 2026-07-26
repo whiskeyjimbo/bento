@@ -69,6 +69,11 @@ func TestValidateRejects(t *testing.T) {
 		{"non-canonical ip", func(p *Policy) { p.Network = []NetworkRule{{Host: "127.1", Port: "80"}} }, "canonical IP"},
 		{"integer ip", func(p *Policy) { p.Network = []NetworkRule{{Host: "2852039166", Port: "80"}} }, "canonical IP"},
 		{"bad hostname", func(p *Policy) { p.Network = []NetworkRule{{Host: "a_b.com", Port: "80"}} }, "not a valid hostname"},
+		// An address has no subdomains, so matchHost would apply this as a string suffix:
+		// it can only ever match a hostname ending in those characters, never the address
+		// the author meant to allow.
+		{"suffix wildcard over an ipv4 literal", func(p *Policy) { p.Network = []NetworkRule{{Host: ".10.0.0.1", Port: "80"}} }, "cannot be written over an IP address"},
+		{"suffix wildcard over an ipv6 literal", func(p *Policy) { p.Network = []NetworkRule{{Host: ".::1", Port: "80"}} }, "cannot be written over an IP address"},
 		{"host with newline", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com\nb", Port: "80"}} }, "control or reserved"},
 		{"empty port", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: ""}} }, "empty port"},
 		{"port out of range", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "70000"}} }, "out of range"},
@@ -80,11 +85,23 @@ func TestValidateRejects(t *testing.T) {
 		{"signed port", func(p *Policy) { p.Network = []NetworkRule{{Host: "a.com", Port: "+443"}} }, "plain decimal"},
 		{"negative pids", func(p *Policy) { p.Limits = Limits{PIDs: -1} }, "pids must not be negative"},
 		{"cpu without percent", func(p *Policy) { p.Limits = Limits{CPU: "100"} }, "must be a percentage"},
-		{"cpu non-numeric", func(p *Policy) { p.Limits = Limits{CPU: "abc%"} }, "not a number"},
-		{"cpu control char", func(p *Policy) { p.Limits = Limits{CPU: "50\n%"} }, "not a number"},
-		{"cpu NaN", func(p *Policy) { p.Limits = Limits{CPU: "NaN%"} }, "non-negative, finite"},
-		{"cpu Inf", func(p *Policy) { p.Limits = Limits{CPU: "Inf%"} }, "non-negative, finite"},
-		{"cpu negative", func(p *Policy) { p.Limits = Limits{CPU: "-50%"} }, "non-negative, finite"},
+		{"cpu non-numeric", func(p *Policy) { p.Limits = Limits{CPU: "abc%"} }, "plain decimal percentage"},
+		{"cpu control char", func(p *Policy) { p.Limits = Limits{CPU: "50\n%"} }, "plain decimal percentage"},
+		{"cpu NaN", func(p *Policy) { p.Limits = Limits{CPU: "NaN%"} }, "plain decimal percentage"},
+		{"cpu Inf", func(p *Policy) { p.Limits = Limits{CPU: "Inf%"} }, "plain decimal percentage"},
+		{"cpu negative", func(p *Policy) { p.Limits = Limits{CPU: "-50%"} }, "plain decimal percentage"},
+		// Spellings Go's ParseFloat takes and systemd's CPUQuota does not: they used to
+		// validate and then fail at scope creation, after the operator was told the policy
+		// was well-formed.
+		{"cpu hex float", func(p *Policy) { p.Limits = Limits{CPU: "0x1p4%"} }, "plain decimal percentage"},
+		{"cpu exponent", func(p *Policy) { p.Limits = Limits{CPU: "1e3%"} }, "plain decimal percentage"},
+		{"cpu signed", func(p *Policy) { p.Limits = Limits{CPU: "+50%"} }, "plain decimal percentage"},
+		{"cpu bare dot", func(p *Policy) { p.Limits = Limits{CPU: ".5%"} }, "plain decimal percentage"},
+		// A digit string long enough to overflow float64 is decimal but not a real bound.
+		{"cpu overflowing", func(p *Policy) { p.Limits = Limits{CPU: strings.Repeat("9", 400) + "%"} }, "too large"},
+		// parseBytes used to trim, so this validated and then failed in systemd.
+		{"memory with surrounding space", func(p *Policy) { p.Limits = Limits{Memory: " 128M "} }, "limits.memory"},
+		{"memory with inner space", func(p *Policy) { p.Limits = Limits{Memory: "128 M"} }, "limits.memory"},
 		{"unparseable memory", func(p *Policy) { p.Limits = Limits{Memory: "lots"} }, "limits.memory"},
 		// An empty grant renders as "read: []" in the validate summary but resolves to
 		// the working directory in the enforcer, so it reads as no grant and is not one.

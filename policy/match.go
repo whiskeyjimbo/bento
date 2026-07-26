@@ -11,6 +11,19 @@ import "strings"
 //
 // An empty rule set denies everything, matching the manifest semantics that no
 // `network:` block means no egress.
+//
+// PRECONDITIONS, which this function does not restate and a caller must meet:
+//
+//   - rules have passed Validate, so every Host is canonical and every Port is plain
+//     decimal.
+//   - host and port come from a screened CONNECT target - no control bytes, and a
+//     canonically spelled port.
+//
+// Neither is a formality. A target carrying a NUL ("evil.com\x00.example.com") matches
+// the suffix rule ".example.com" here, while a resolver that truncates at the NUL dials
+// evil.com - the name checked and the name dialed differ. bento's proxy rejects such a
+// target when it parses the CONNECT line, which is why this is a precondition rather
+// than a hole; a second caller that skips that screen reopens it.
 func Allows(rules []NetworkRule, host, port string) bool {
 	host = normalizeHost(host)
 	for _, r := range rules {
@@ -59,6 +72,14 @@ func asciiLower(host string) string {
 //     bare domain (example.com); that asymmetry is deliberate, so granting
 //     ".example.com" does not silently also grant the apex.
 //   - literal      matches exactly.
+//
+// Comparison is textual, while the proxy's resolved-IP guard compares addresses with
+// net.IP.Equal. The two cannot disagree about a rule, because validateHostPattern accepts
+// an IP literal only in its canonical spelling and net.ParseIP("::ffff:10.0.0.1").String()
+// is "10.0.0.1" - so a rule naming an address in v4-mapped form cannot be written at all.
+// A v4-mapped TARGET simply does not match a v4 rule here, which is the safe direction:
+// it denies rather than grants. Making this IP-aware would widen what a rule reaches
+// beyond what its author wrote.
 func matchHost(pattern, host string) bool {
 	// host is already normalized by Allows; normalize the pattern too so a rule
 	// written with uppercase (DNS is case-insensitive) matches the same targets.
@@ -94,7 +115,11 @@ func matchPort(pattern, port string) bool {
 }
 
 // atoiPort parses a port string without pulling in strconv's error handling for
-// a hot path where the input was already validated at load time.
+// a hot path where the input was already validated at load time. It is lenient about
+// spelling where strconv would not be - "0443" parses as 443 - which is safe only
+// because both the rule (validatePort) and the CONNECT target (the proxy's
+// canonicalPort) are required to be plain decimal before they reach here. It affects
+// only the range branch in any case: the literal branch compares the strings.
 func atoiPort(s string) (int, bool) {
 	if s == "" {
 		return 0, false

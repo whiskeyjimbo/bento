@@ -258,21 +258,21 @@ func TestAdversarialPolicyValidation(t *testing.T) {
 			mutate: func(p *Policy) {
 				p.Limits = Limits{CPU: "NaN%"}
 			},
-			errSubstr: "non-negative, finite",
+			errSubstr: "plain decimal percentage",
 		},
 		{
 			name: "reject_limits_cpu_inf",
 			mutate: func(p *Policy) {
 				p.Limits = Limits{CPU: "Inf%"}
 			},
-			errSubstr: "non-negative, finite",
+			errSubstr: "plain decimal percentage",
 		},
 		{
 			name: "reject_limits_cpu_negative",
 			mutate: func(p *Policy) {
 				p.Limits = Limits{CPU: "-10%"}
 			},
-			errSubstr: "non-negative, finite",
+			errSubstr: "plain decimal percentage",
 		},
 		{
 			name: "reject_limits_memory_invalid_unit",
