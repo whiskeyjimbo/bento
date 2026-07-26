@@ -121,21 +121,107 @@ func TestSynthesizeWriteIsDirGranularAndCoversReads(t *testing.T) {
 
 func TestSynthesizeDropsSystemWriteGrants(t *testing.T) {
 	// A write collapses to its parent directory. A target need only attempt a write
-	// to a system config tree for the observer to record it, so Synthesize must not
-	// propose a writable /etc/cron.d (and friends): approved, it is root code
-	// execution. Neither isSystemPath (a hand-list of specific /etc files) nor the
-	// caller's top-level-dir clamp catches these second-level directories.
-	obs := Observation{
-		Writes: []string{
-			"/etc/cron.d/evil",
-			"/etc/sudoers.d/x",
-			"/etc/systemd/system/y.service",
-			"/etc/profile.d/z.sh",
-		},
+	// to a system tree for the observer to record it, so Synthesize must not propose a
+	// writable one: approved, /etc/cron.d and /etc/sudoers.d are root code execution,
+	// /var/spool/cron/crontabs is the cron spool, /boot is the kernel, and /opt and
+	// /srv hold trees that get executed or served. Neither isSystemPath (a hand-list of
+	// specific /etc files) nor the caller's top-level-dir clamp catches these.
+	for _, w := range []string{
+		"/etc/cron.d/evil",
+		"/etc/sudoers.d/x",
+		"/etc/systemd/system/y.service",
+		"/etc/profile.d/z.sh",
+		"/var/spool/cron/crontabs/user",
+		"/var/lib/app/state.db",
+		"/var/tmp/persist",
+		"/boot/grub/grub.cfg",
+		"/opt/app/run.sh",
+		"/srv/www/index.html",
+		"/root/.bashrc",
+	} {
+		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		if len(p.Write) != 0 {
+			t.Errorf("write %s proposed the grant %v, want none (a writable system tree must not be proposed)", w, p.Write)
+		}
 	}
-	p := Synthesize("/work/run.py", "python3", obs)
-	if len(p.Write) != 0 {
-		t.Fatalf("write = %v, want none (writable system config dirs must not be proposed)", p.Write)
+}
+
+// The floors match a tree and what is under it, never a sibling that shares a name
+// stem. /vartmp and /etcetera are ordinary paths, and silently dropping a write to one
+// would hide from the reviewer a grant the run actually needs - the same rule
+// isSystemPath follows for /etc/sslkeys vs /etc/ssl.
+func TestSystemWriteFloorsDoNotOvermatchSiblings(t *testing.T) {
+	for _, w := range []string{"/vartmp/out", "/etcetera/out", "/bootleg/out", "/opta/out", "/srvx/out", "/rootkit/out"} {
+		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		if len(p.Write) != 1 {
+			t.Errorf("write %s proposed %v, want the grant kept - a name-stem sibling is not a system tree", w, p.Write)
+		}
+	}
+}
+
+// A lexical floor is one symlink away from useless. converge mounts each accepted
+// grant for the following round, so a target granted write:~/proj can drop a symlink
+// to a system tree inside it and write through the link: the observer records the
+// unresolved name, no floor matches it, and bwrap resolves at bind time - the reviewer
+// approves a grant whose text says ~/proj and whose effect is a writable /etc. The
+// floors must judge where the grant lands, not what it is spelled as.
+// nonSystemTempDir returns a scratch directory that is NOT under a system tree.
+// t.TempDir sits under /tmp, which Synthesize drops wholesale as sandbox scratch, so a
+// symlink test rooted there passes no matter what the floors do - the containing grant
+// was already skipped lexically. Anchoring at the test's own working directory keeps
+// the path ordinary, so the floor is the only thing that can drop it.
+func nonSystemTempDir(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(wd, "profiletest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	// The floors judge resolved paths, and a working directory reached through a
+	// symlink would otherwise make the "ordinary link is kept" case compare two
+	// spellings of the same place.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func TestSynthesizeFloorsWritesThroughASymlink(t *testing.T) {
+	proj := nonSystemTempDir(t)
+	// Two shapes, because they fail differently: a link straight to the system tree,
+	// and a link whose target is reached only through a path that does not exist yet -
+	// EvalSymlinks fails outright on the latter, and the enforced run would create it.
+	if err := os.Symlink("/etc", filepath.Join(proj, "cfg")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	if err := os.Symlink("/usr", filepath.Join(proj, "sys")); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		filepath.Join(proj, "cfg", "cron.d", "evil"),
+		filepath.Join(proj, "cfg", "not-there-yet", "sub", "evil"),
+		filepath.Join(proj, "sys", "local", "bin", "evil"),
+	} {
+		p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{w}})
+		if len(p.Write) != 0 {
+			t.Errorf("write %s proposed the grant %v, want none - the floor must follow the symlink", w, p.Write)
+		}
+	}
+
+	// A link that lands somewhere ordinary is untouched: resolving is only ever
+	// additive, so an honest grant is never dropped by it.
+	dest := nonSystemTempDir(t)
+	if err := os.Symlink(dest, filepath.Join(proj, "data")); err != nil {
+		t.Fatal(err)
+	}
+	p := Synthesize("/work/run.py", "python3", Observation{Writes: []string{filepath.Join(proj, "data", "out.txt")}})
+	if len(p.Write) != 1 {
+		t.Errorf("write through a link to an ordinary directory proposed %v, want the grant kept", p.Write)
 	}
 }
 

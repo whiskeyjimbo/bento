@@ -157,8 +157,21 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 	// isSystemPath's /etc coverage is a hand-list of specific runtime files, not a
 	// directory prefix, so it misses these subdirectories; floor writes to them here.
 	// Reads under /etc still surface unchanged - the reviewer needs to see them.
+	//
+	// The floors run against the resolved name as well as the observed one, because a
+	// lexical floor is one symlink away from useless: converge mounts each accepted
+	// grant for the following round, so a target granted write:~/proj can drop a
+	// symlink to /etc inside it and write through the link. The observer records the
+	// unresolved name, which no floor matches, while bwrap resolves at bind time and
+	// the reviewer approves a grant whose text says ~/proj. Resolving is only ever
+	// additive - a grant is never kept because of it - and it stays on the write side:
+	// resolving reads would change which name the reviewer is shown.
 	writeSkip := func(dir string) bool {
-		return skip(dir) || isSystemWriteDir(dir)
+		if skip(dir) || isSystemWriteDir(dir) {
+			return true
+		}
+		resolved := resolveWriteDir(dir)
+		return resolved != dir && (isSystemPath(resolved) || isSystemWriteDir(resolved))
 	}
 
 	p := &policy.Policy{
@@ -197,18 +210,28 @@ func Synthesize(entrypoint, interpreter string, obs Observation) *policy.Policy 
 }
 
 // systemWriteRoots are trees under which a proposed writable-directory grant is a
-// privilege-escalation vector rather than a legitimate need: /etc/cron.d,
-// /etc/sudoers.d, /etc/systemd/system, /etc/profile.d and the like all run code as
-// root or another user. Only writes are floored here; reads under these trees are
-// still proposed so the reviewer sees them.
-var systemWriteRoots = []string{"/etc/"}
+// privilege-escalation or system-integrity vector rather than a legitimate need.
+// /etc/cron.d, /etc/sudoers.d, /etc/systemd/system and /etc/profile.d run code as
+// root or another user; /var covers the cron spool, the service state under
+// /var/lib, and /var/tmp, which is a persistent world-writable tree rather than the
+// sandbox's private scratch; /boot is the kernel and bootloader; /opt and /srv hold
+// software and service trees that are executed or served. /root is root's home, so a
+// write there reaches its shell rc files.
+//
+// A machine-local script that genuinely needs one of these is not blocked - the grant
+// is left out of the PROPOSAL, and a reviewer who wants it writes it into the manifest
+// themselves, which is the deliberate act flooring exists to require. Only writes are
+// floored; reads under these trees are still proposed so the reviewer sees them.
+var systemWriteRoots = []string{"/etc", "/var", "/boot", "/opt", "/srv", "/root"}
 
 // isSystemWriteDir reports whether a collapsed write-grant directory lands in a
-// system config tree. It matches the tree ("/etc/cron.d") and the bare root
-// ("/etc") itself.
+// system tree. It matches the bare root ("/etc") and anything strictly beneath it
+// ("/etc/cron.d"), but never a sibling that merely shares a name stem - /etcetera and
+// /vartmp are ordinary paths the reviewer must still see, the same rule isSystemPath
+// applies.
 func isSystemWriteDir(dir string) bool {
 	for _, root := range systemWriteRoots {
-		if strings.HasPrefix(dir, root) || dir == root[:len(root)-1] {
+		if dir == root || strings.HasPrefix(dir, root+"/") {
 			return true
 		}
 	}
@@ -250,6 +273,33 @@ func resolvesIntoProc(p string) bool {
 		return false
 	}
 	return resolved == "/proc" || strings.HasPrefix(resolved, "/proc/")
+}
+
+// resolveWriteDir follows the symlinks in a collapsed write-grant directory, so the
+// floors judge where the grant would actually land rather than what it is spelled as.
+//
+// A write grant routinely names a directory that does not exist yet - the run attempted
+// a write the sandbox denied, or would create the directory itself - and EvalSymlinks
+// fails outright on those. Falling back to the observed name there would leave the
+// escape open through one more path component (~/proj/link/sub, where link is the
+// symlink), and the enforced run creates missing write directories, so the grant would
+// land inside the target tree for real. Resolving the nearest existing ancestor and
+// re-appending the rest closes that: the link is followed even though the leaf is not
+// there yet. A path whose ancestors resolve to themselves comes back unchanged, which
+// the caller reads as "nothing to add".
+func resolveWriteDir(dir string) string {
+	rest := ""
+	for p := dir; ; {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return dir
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 // runtimeTree returns the install root of the interpreter (…/bin/python3 → …),
