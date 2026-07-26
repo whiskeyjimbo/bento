@@ -88,13 +88,13 @@ func newProfileCmd() *cobra.Command {
 
 			var proposed *policy.Policy
 			var seed *policy.Policy
-			// partial says a profiling round could not see everything the target did (it
-			// was killed, exited nonzero, or the observer dropped accesses); stop says the
-			// granting session itself did not finish. Either way the manifest below is
+			// status says what the profiling rounds could not see, and stop says whether
+			// the granting session itself finished. Either way the manifest below is
 			// written but not vouched for - see the exit code at the end.
-			partial := false
+			var status roundStatus
 			stop := convergeDone
-			if interactiveStdin() {
+			interactive := interactiveStdin()
+			if interactive {
 				// A content-branching target reads a config to decide what to do next; under
 				// default-deny that read fails and it never attempts the downstream paths, so
 				// one pass under-reports. Loop: mount what the user grants, re-profile so the
@@ -116,8 +116,11 @@ func newProfileCmd() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
 				round := func(d *policy.Policy) (*policy.Policy, error) {
-					p, roundPartial, err := profileRound(cfg, d)
-					partial = partial || roundPartial
+					p, s, err := profileRound(cfg, d)
+					// The proposal comes from the last round, so that round's completion is
+					// the one that matters; a dropped access from any round is gone for good.
+					status.unfinished = s.unfinished
+					status.dropped = status.dropped || s.dropped
 					return p, err
 				}
 				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
@@ -131,7 +134,7 @@ func newProfileCmd() *cobra.Command {
 				} else {
 					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
 				}
-				proposed, partial, err = profileRound(cfg, base)
+				proposed, status, err = profileRound(cfg, base)
 			}
 			if err != nil {
 				return err
@@ -148,6 +151,11 @@ func newProfileCmd() *cobra.Command {
 			// user declined this session would come back through the union. Drop it: a
 			// refusal at the prompt has to hold in the artifact, not only in the mount.
 			proposed = dropDeclinedSeeds(proposed, seed, accepted)
+			// Only when a session actually asked: a non-interactive pass prompts for
+			// nothing, so it has no answer to hold against the merge.
+			if interactive {
+				proposed = applyExecAnswer(proposed, accepted)
+			}
 
 			doc := manifest.Provenance{
 				GeneratedBy: "bento profile",
@@ -168,7 +176,7 @@ func newProfileCmd() *cobra.Command {
 			// but a proposal built on a partial observation, or on a session the user left
 			// before it converged, is not what the target needs. Exiting 0 would let
 			// `profile && approve` stamp it as though it were.
-			if reason := incompleteReason(partial, stop); reason != "" {
+			if reason := incompleteReason(status, stop); reason != "" {
 				fmt.Fprintf(os.Stderr, "[bento] the proposal is incomplete (%s), so this exits %d rather than 0 - review and widen it before approving.\n", reason, profileIncomplete)
 				return &exitError{code: profileIncomplete}
 			}
@@ -184,10 +192,12 @@ func newProfileCmd() *cobra.Command {
 // incompleteReason names why a profiling session cannot vouch for the manifest it
 // wrote, or "" when it can. The specific warnings are already on stderr; this is the
 // one line that ties them to the exit code.
-func incompleteReason(partial bool, stop convergeStop) string {
+func incompleteReason(status roundStatus, stop convergeStop) string {
 	switch {
-	case partial:
-		return "a profiling round did not observe everything the target did"
+	case status.unfinished:
+		return "the profiled run did not finish"
+	case status.dropped:
+		return "the observer could not name every access the target made"
 	case stop == convergeQuit:
 		return "you quit before it converged"
 	case stop == convergeMaxRounds:
@@ -214,15 +224,14 @@ type profileConfig struct {
 // round's shield and broad-grant warnings. It is the unit the convergence loop repeats
 // with a widening grant set; discovery carries the grants accepted so far, mounted with
 // real content so the target proceeds past accesses it already has.
-// It also reports whether the observation was partial - the run did not finish, or the
-// observer could not name every access - which is the same condition the warnings below
-// print, returned so the command can exit nonzero over a proposal it cannot vouch for.
-func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, bool, error) {
+// It also reports what the round could not see, so the command can exit nonzero over a
+// proposal it cannot vouch for.
+func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, roundStatus, error) {
 	obs, err := backend.Profile(cfg.ctx, discovery,
 		enforce.Process{Stdin: cfg.targetStdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: cfg.env},
 		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork})
 	if err != nil {
-		return nil, false, err
+		return nil, roundStatus{}, err
 	}
 	// Synthesize refuses the observation nothing can be proposed from (a seccomp kill).
 	// It runs before the warnings below so that refusal is not preceded by advice that
@@ -231,13 +240,12 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// refusal alone.
 	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, obs)
 	if err != nil {
-		return nil, false, err
+		return nil, roundStatus{}, err
 	}
 	// A run that was signaled or exited nonzero may have stopped before exercising all
 	// its code paths, so the observations - and the manifest synthesized from them - can
 	// be silently over-tight. Warn before proposing it.
-	warnings := profileWarnings(obs)
-	for _, w := range warnings {
+	for _, w := range profileWarnings(obs) {
 		fmt.Fprintln(os.Stderr, w)
 	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
@@ -245,8 +253,16 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	proposed.Env = sortedKeys(cfg.env)
 	printFlooredWrites(obs.Writes)
 	printProposalWarnings(proposed)
-	return proposed, len(warnings) > 0, nil
+	return proposed, roundStatus{unfinished: partialRunWarning(obs) != "", dropped: obs.Dropped > 0}, nil
 }
+
+// roundStatus says what a profiling round could not see. The two accumulate
+// differently across a convergence loop: unfinished is per-round and a later round
+// supersedes it, because the early rounds of a loop routinely exit nonzero - a target
+// failing on the config it has not been granted yet is the premise of the loop, not a
+// defect. dropped is cumulative: an access the observer could not name in round 1 is
+// simply absent from the proposal, and no later round puts it back.
+type roundStatus struct{ unfinished, dropped bool }
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or
 // another user's home. Those are dropped inside Synthesize, before the proposal the
@@ -495,11 +511,18 @@ func dropDeclinedSeeds(merged, seed, accepted *policy.Policy) *policy.Policy {
 	}
 	merged.Read = keep(merged.Read, seed.Read, accepted.Read)
 	merged.Write = keep(merged.Write, seed.Write, accepted.Write)
-	// mergePolicies promotes exec: all whenever either side carries it, so a seeded
-	// exec grant the user declined this session would come back through the union the
-	// same way a declined path would.
-	if seed.Exec == policy.ExecAll && accepted.Exec != policy.ExecAll {
-		merged.Exec = accepted.Exec
+	return merged
+}
+
+// applyExecAnswer holds the session's exec answer against the merge. mergePolicies
+// promotes exec: all from EITHER side and dropDeclinedSeeds only reaches a seeded
+// manifest, so without this an existing unapproved or stale manifest at --out
+// reinstates the grant the reviewer just declined - the hole the prompt exists to
+// close. It only ever narrows, and only from exec: all, so a hand-written none-strict
+// is left alone rather than being widened to plain none.
+func applyExecAnswer(merged, accepted *policy.Policy) *policy.Policy {
+	if accepted.Exec != policy.ExecAll && merged.Exec == policy.ExecAll {
+		merged.Exec = policy.ExecNone
 	}
 	return merged
 }

@@ -424,15 +424,28 @@ func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
 	}
 }
 
-// The merge re-reads the manifest the seed came from, so a declined exec grant would
-// come back through the union. dropDeclinedSeeds has to hold it down in the artifact,
-// not only in the session.
-func TestDropDeclinedSeedsDropsExec(t *testing.T) {
-	seed := &policy.Policy{Exec: policy.ExecAll}
-	accepted := &policy.Policy{Exec: policy.ExecNone}
-	merged := &policy.Policy{Exec: policy.ExecAll}
-	if got := dropDeclinedSeeds(merged, seed, accepted).Exec; got != policy.ExecNone {
-		t.Errorf("Exec = %q, want %q - a declined exec must not merge back", got, policy.ExecNone)
+// mergePolicies promotes exec: all from either side, so an existing manifest at --out
+// that already carries it would reinstate the grant the reviewer just declined - the
+// exact hole the prompt exists to close, and one dropDeclinedSeeds cannot reach because
+// an unapproved or stale manifest seeds nothing. The session's answer has to win in the
+// artifact, and it must narrow only from exec: all so a hand-written none-strict is not
+// widened to plain none.
+func TestMergeExecRespectsTheSessionAnswer(t *testing.T) {
+	cases := map[string]struct {
+		existing, accepted, want policy.ExecMode
+	}{
+		"declined against an existing exec: all": {policy.ExecAll, policy.ExecNone, policy.ExecNone},
+		"accepted":                               {policy.ExecAll, policy.ExecAll, policy.ExecAll},
+		"hand-written none-strict is left alone": {policy.ExecNoneStrict, policy.ExecNone, policy.ExecNoneStrict},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			accepted := &policy.Policy{Exec: tc.accepted}
+			merged := applyExecAnswer(mergePolicies(&policy.Policy{Exec: tc.existing}, accepted), accepted)
+			if merged.Exec != tc.want {
+				t.Errorf("Exec = %q, want %q", merged.Exec, tc.want)
+			}
+		})
 	}
 }
 
@@ -464,19 +477,20 @@ func TestConvergeReportsWhyItStopped(t *testing.T) {
 
 // The exit code is the honest signal, so every not-converged outcome has to reach it.
 func TestIncompleteReason(t *testing.T) {
-	if got := incompleteReason(false, convergeDone); got != "" {
+	if got := incompleteReason(roundStatus{}, convergeDone); got != "" {
 		t.Errorf("a clean converged session must be vouched for; got %q", got)
 	}
 	for _, tc := range []struct {
-		partial bool
-		stop    convergeStop
+		status roundStatus
+		stop   convergeStop
 	}{
-		{true, convergeDone},
-		{false, convergeQuit},
-		{false, convergeMaxRounds},
+		{roundStatus{unfinished: true}, convergeDone},
+		{roundStatus{dropped: true}, convergeDone},
+		{roundStatus{}, convergeQuit},
+		{roundStatus{}, convergeMaxRounds},
 	} {
-		if incompleteReason(tc.partial, tc.stop) == "" {
-			t.Errorf("partial=%v stop=%v must be reported as incomplete", tc.partial, tc.stop)
+		if incompleteReason(tc.status, tc.stop) == "" {
+			t.Errorf("status=%+v stop=%v must be reported as incomplete", tc.status, tc.stop)
 		}
 	}
 }
