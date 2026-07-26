@@ -8,6 +8,7 @@
 package observe
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -263,7 +264,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 				res.Signaled = true
 				res.Signal = int(ws.Signal())
 			}
-			sort.Slice(res.Accesses, func(i, j int) bool { return res.Accesses[i].Path < res.Accesses[j].Path })
+			// Sort on the same path+write key the dedup uses. One path can legitimately
+			// appear twice, once read and once written, and sorting on path alone leaves
+			// that pair's order to an unstable sort - changing the observation report's
+			// bytes run to run.
+			slices.SortFunc(res.Accesses, func(a, b Access) int {
+				return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(boolKey(a.Write), boolKey(b.Write)))
+			})
 			return res, nil
 		case ws.Exited() || ws.Signaled():
 			// A subprocess ended and is reaped; drop it so the guard does not wait on a
