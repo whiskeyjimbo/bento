@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,62 @@ func TestIsProfile(t *testing.T) {
 		if isProfile(content, "${HOME}/.ssh") {
 			t.Errorf("%s: must not be accepted as the firejail profile", name)
 		}
+	}
+}
+
+// The two refusals must not share a status: the wrapper script passes over a fetch
+// failure (network flakiness is not a deny-list regression) and fails on everything
+// else, so a corpus that arrived and is not the profile has to be distinguishable. The
+// statuses also have to stay off 2, which Go's runtime uses for a panic - the pass-over
+// arm would otherwise report a crash inside the audit as a green gate.
+func TestCollectRefusalStatuses(t *testing.T) {
+	bodies := map[string]string{}
+	for _, src := range upstreamSources {
+		bodies[src.url] = src.sentinel
+	}
+
+	var b bytes.Buffer
+	if _, code := collect(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b); code != exitFetchFailed {
+		t.Errorf("a fetch failure must exit %d; got %d", exitFetchFailed, code)
+	}
+	b.Reset()
+	if _, code := collect(func(string) (string, error) { return "<html>404 Not Found</html>", nil }, &b); code != exitContentRefused {
+		t.Errorf("a 200 whose body is not the profile must exit %d; got %d", exitContentRefused, code)
+	}
+	b.Reset()
+	sources, code := collect(func(url string) (string, error) { return bodies[url], nil }, &b)
+	if code != 0 {
+		t.Errorf("every source arriving intact must not stop the run; got %d (%q)", code, b.String())
+	}
+	if len(sources) != len(upstreamSources) {
+		t.Errorf("all %d sources must reach the audit; got %d", len(upstreamSources), len(sources))
+	}
+	for _, code := range []int{exitGap, exitFetchFailed, exitContentRefused} {
+		if code == 2 {
+			t.Error("no status may be 2: the wrapper must be able to tell a panic from a skip")
+		}
+	}
+}
+
+// One source failing refuses the whole run rather than auditing a narrowed corpus: the
+// entries the missing profile would have contributed simply would not be gaps, and the
+// gate would pass over a comparison it never made.
+func TestCollectRefusesAPartialSet(t *testing.T) {
+	var b bytes.Buffer
+	last := upstreamSources[len(upstreamSources)-1].url
+	sources, code := collect(func(url string) (string, error) {
+		if url == last {
+			return "", errors.New("unexpected status 404 Not Found")
+		}
+		for _, src := range upstreamSources {
+			if src.url == url {
+				return src.sentinel, nil
+			}
+		}
+		return "", nil
+	}, &b)
+	if code == 0 || sources != nil {
+		t.Errorf("a partial set must not be audited; got %d sources, code %d", len(sources), code)
 	}
 }
 

@@ -16,9 +16,14 @@
 # ships its own entries.
 #
 # The underlying command's exit codes drive a CI gate: 1 means a real gap (fail the
-# build - fix the list or file a bead), 2 means the upstream fetch failed (offline or
+# build - fix the list or file a bead), 3 means the upstream fetch failed (offline or
 # GitHub down), which is an infrastructure condition, not a deny-list regression, so
-# this wrapper reports it and passes rather than turning network flakiness into red.
+# this wrapper reports it and passes rather than turning network flakiness into red, and
+# 4 means a corpus arrived but is not the profile it should be, which is a real red.
+#
+# Only the fetch failure passes, and it has a status of its own so that nothing else can
+# reach that arm. In particular Go's runtime exits 2 on panic: were the pass-over status
+# still 2, a crash inside the audit would print the skip banner and report success.
 set -u
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -47,9 +52,13 @@ case "$status" in
 	echo "denylist-audit: classify each into internal/denylist/denylist.go, or file a bead." >&2
 	exit 1
 	;;
-2)
+3)
 	echo "denylist-audit: could not fetch an upstream corpus (offline?); skipping the check." >&2
 	exit 0
+	;;
+4)
+	echo "denylist-audit: an upstream corpus is not the profile it should be (see above); the audit proved nothing." >&2
+	exit 1
 	;;
 *)
 	echo "denylist-audit: unexpected failure (exit $status)." >&2

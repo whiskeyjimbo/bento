@@ -8,7 +8,7 @@
 // vendors them, maps their deny directives to bento's shield classes, and prints the
 // gaps. Classification of each gap - DenyAll vs
 // DenyWrite - stays a human call. Exit status is 1 when any gap is found, so CI can gate
-// on it.
+// on it; see the exit constants for the rest.
 //
 // Both profiles are fetched because they are classified by different halves of the audit
 // package: disable-common.inc carries the section headers inScopeSection keys off, while
@@ -65,25 +65,52 @@ const (
 	runUser = "/run/user/1000"
 )
 
+// Exit statuses. scripts/denylist-audit.sh maps each to a CI verdict, so a fetch
+// failure - an infrastructure condition it deliberately passes over - must not share a
+// status with anything that means the deny-list or the corpus is wrong.
+//
+// 2 is deliberately unused: Go's runtime exits 2 on panic, so any status the wrapper
+// treats as "skip, pass" would turn a crash inside the audit into a green gate. The
+// wrapper's unexpected-failure arm catches 2 instead.
+const (
+	exitGap            = 1
+	exitFetchFailed    = 3
+	exitContentRefused = 4
+)
+
 func main() {
-	// Every source must arrive intact. A partial set is refused rather than audited,
-	// because a missing profile silently narrows the diff: the entries it would have
-	// contributed simply are not gaps, and the gate reports a pass over a comparison it
-	// never made. That is the failure this command exists to prevent.
+	sources, status := collect(fetch, os.Stderr)
+	if status != 0 {
+		os.Exit(status)
+	}
+	os.Exit(report(os.Stdout, sources, home, runUser))
+}
+
+// collect fetches every upstream profile and checks each is the file it claims to be,
+// returning the sources to audit or the exit status to stop on. Every source must arrive
+// intact: a partial set is refused rather than audited, because a missing profile
+// silently narrows the diff - the entries it would have contributed simply are not gaps,
+// and the gate reports a pass over a comparison it never made. That is the failure this
+// command exists to prevent.
+//
+// The fetcher is a parameter so the two refusals - a source that did not arrive versus
+// one that arrived and is not the profile - are asserted without the network. They carry
+// different statuses because CI treats them differently.
+func collect(fetch func(url string) (string, error), w io.Writer) ([]audit.Source, int) {
 	var sources []audit.Source
 	for _, src := range upstreamSources {
 		content, err := fetch(src.url)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "denylist-audit: fetching %s: %v\n", src.url, err)
-			os.Exit(2)
+			fmt.Fprintf(w, "denylist-audit: fetching %s: %v\n", src.url, err)
+			return nil, exitFetchFailed
 		}
 		if !isProfile(content, src.sentinel) {
-			fmt.Fprintf(os.Stderr, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected upstream profile; refusing to report a pass\n", src.url, src.sentinel)
-			os.Exit(2)
+			fmt.Fprintf(w, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected upstream profile; refusing to report a pass\n", src.url, src.sentinel)
+			return nil, exitContentRefused
 		}
 		sources = append(sources, audit.Source{Content: content, Parse: src.parse})
 	}
-	os.Exit(report(os.Stdout, sources, home, runUser))
+	return sources, 0
 }
 
 // isProfile reports whether content is plausibly the firejail profile that sentinel
@@ -96,7 +123,7 @@ func isProfile(content, sentinel string) bool {
 
 // report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
 // in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
-// 1 when any in-scope gap remains, 0 when the list already covers them. It is separated
+// exitGap when any in-scope gap remains, 0 when the list already covers them. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
 func report(w io.Writer, sources []audit.Source, home, runUser string) int {
@@ -130,7 +157,7 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}
 	reportOutOfScope(w, outBySection)
-	return 1
+	return exitGap
 }
 
 // reportOutOfScope summarizes the firejail sections bento deliberately does not
