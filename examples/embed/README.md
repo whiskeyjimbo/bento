@@ -22,11 +22,12 @@ It does three things worth studying:
    accounting; the prompt and the session memory are the wrapper's, and they live
    in the `supervisor` type in `main.go`.
 3. **Surfacing every honesty field.** A `Result` carries what the run could not
-   guarantee and what it exposed anyway - degradations, gate-admitted egress,
-   granted credential paths, unshieldable paths, credential aliases read past a
-   shield, and the egress count. An embedder who reads only some of them ships a
-   frontend that is silent about the rest, so this example prints them all, including
-   the ones that stay empty under its own options (see "Every honesty surface").
+   guarantee and what it exposed anyway - degradations, the shields that engaged,
+   gate-admitted egress, granted credential paths, unshieldable paths, credential
+   aliases read past a shield, and the egress count. An embedder who reads only some
+   of them ships a frontend that is silent about the rest, so this example reads them
+   all, including the ones that stay empty under its own options (see "Every honesty
+   surface").
 
 ## Prerequisites
 
@@ -71,7 +72,7 @@ BENTO_GATE_ALLOW=example.com ./embed demo/reach.yaml
 
 ```
 reaching example.com ... HTTP 200 (reached)
-embed: gate admitted undeclared egress to example.com:443
+embed: gate admitted undeclared egress to "example.com" port 443
 ```
 
 `BENTO_GATE_ALLOW` seeds the gate's "already decided" set, so the host is admitted
@@ -89,15 +90,19 @@ Run it attached to a terminal, with no pre-approval:
 ```
 bento: allow egress to "example.com" port 443? [y/N] y
 reaching example.com ... HTTP 200 (reached)
-embed: gate admitted undeclared egress to example.com:443
+embed: gate admitted undeclared egress to "example.com" port 443
 ```
 
 Answer `y` and it is admitted; answer anything else and it is denied. The answer
 is cached for the run, so the same host is asked only once. The hostname is quoted
 before display because it is attacker-controlled (the sandboxed target chose it), and
-the prompt is written to `/dev/tty`, not to the target's stderr: sharing that stream
-with the confined program would let it print a lookalike prompt while the real gate
-blocks, or flood stderr to scroll the real one away - which would defeat the quoting.
+the prompt is read from and written to `/dev/tty` rather than the target's own stdin and
+stderr, so the dialogue is on no descriptor the confined program holds. Redirect or
+capture the target's output - what an embedder wrapping this does - and it cannot reach
+the dialogue at all. Share a bare terminal with it, as this demo does, and it can still
+print convincing lines to the same screen through its inherited stderr; what it cannot
+do is read your keystrokes or inject into the terminal, since the sandbox starts a new
+session.
 
 ## The honesty loop
 
@@ -116,18 +121,24 @@ agent's "allow once / allow for session / always allow":
 
 ## Every honesty surface
 
-`run()` prints all of these, in this order, from one `enforce.Result`. Most stay empty
-on a healthy host with an ordinary manifest - they are printed unconditionally so an
+`writeResult()` reads all of these from one `enforce.Result`, in this order. Most stay
+empty on a healthy host with an ordinary manifest; every one of them is read, so an
 embedder who copies this file inherits the warning rather than the silence:
 
 | Field                | What its absence would hide                                            |
 | -------------------- | ---------------------------------------------------------------------- |
 | `Report.Degradations()` | a layer the host could only partly enforce                           |
+| `Shields`            | *(positive evidence)* that the boundary engaged, and for how many paths |
 | `GateAdmitted`       | egress a human waved through beyond the manifest                       |
 | `ShieldedGrants`     | a credential store the manifest granted, so the target could read it   |
 | `AcceptedAliases`    | a credential read under a second name, past its shield                 |
 | `Exposed`            | what a full run would shield but this tier could not                   |
 | `EgressConnections`  | a proxy bypass: a network run that reached nothing through the proxy    |
+
+Each line prints only when it has something to say - an empty list prints nothing, and
+the last row is a count read in context rather than a list. `Shields` being empty is
+not proof nothing sensitive was in scope: the degraded tier shields nothing at all and
+reports that through the report instead.
 
 Two more come from outside the `Result`: the names `enforce.ResolveEnv` reports as
 allowed-but-unset (a manifest that permits `GITHUB_TOKEN` on a host that does not set

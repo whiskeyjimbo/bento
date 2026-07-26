@@ -57,9 +57,11 @@ and remembers, **[o]nce** allows just this run without remembering. That is the 
 per-access choice - a standing rule for *every* script is a deliberate `perms global`
 act (below), never a keystroke away from a routine yes. Attacker-chosen paths are
 quoted, since a filename can carry terminal escapes, and the whole dialogue is read
-from and written to `/dev/tty` rather than the target's own stdin and stderr - a
-confined script that shares those streams could otherwise print a lookalike prompt, or
-flood them to scroll the real one away. The run's banners and summary stay on stderr. Output is colorized on a terminal
+from and written to `/dev/tty` rather than the target's own stdin and stderr, so it is on
+no descriptor the confined script holds - redirect the script's output and it cannot
+reach the dialogue at all, while on a shared bare terminal it can still print convincing
+lines to the same screen but can never read your keystrokes. The run's banners and
+summary stay on stderr, so `2>log` keeps the report and leaves the dialogue on screen. Output is colorized on a terminal
 (the access kind, a `✓`/`✗` verdict); set `NO_COLOR` or pipe it for plain text.
 
 ```
@@ -103,8 +105,8 @@ case it applies silently and a remembered *deny* is printed). Answer `y` and it 
 admitted, and the run reports it:
 
 ```
-supervise: the live gate admitted egress beyond the manifest:
-  ads.tracker.example:443   (a real wrapper would offer to add this to the manifest)
+the live gate admitted egress beyond the manifest:
+  "ads.tracker.example" port 443   (a real wrapper would offer to add this to the manifest)
 ```
 
 ## Remembering decisions

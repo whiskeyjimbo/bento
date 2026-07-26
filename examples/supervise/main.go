@@ -158,13 +158,20 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// different from what supervise remembers.
 	warnManifestDrift(os.Stderr, s, key, script)
 
-	// The prompts own the controlling terminal in BOTH directions, kept separate from
-	// the target's own stdin and stderr. Writing them to os.Stderr would put the
-	// security dialogue on a stream the confined target also holds: it could print a
-	// lookalike prompt while the real gate blocks on an attacker-chosen host, or flood
-	// stderr to scroll the genuine one away - which would undo the quoting that
-	// neutralizes escapes in the paths and hosts these prompts display. Fall back to
-	// stdin/stderr when there is no tty, so the demo is still drivable through a pipe.
+	// The prompts take the controlling terminal in BOTH directions, so the security
+	// dialogue is on no fd the target holds. Writing them to os.Stderr would hand the
+	// confined target the same stream the human reads, where it could print a lookalike
+	// prompt while the real gate blocks on an attacker-chosen host, or flood the stream
+	// to scroll the genuine one away - undoing the quoting that neutralizes escapes in
+	// the paths and hosts these prompts display.
+	//
+	// How much that buys depends on where the target's own output goes: redirected or
+	// captured, it cannot reach the dialogue at all; sharing a bare terminal with it, it
+	// still writes to the same screen through its inherited stderr and can forge lines
+	// there. What it cannot do either way is read the human's keystrokes, and on the
+	// full tier it cannot inject into the terminal (the sandbox starts a new session;
+	// the degraded tier only starts a new process group). Fall back to stdin/stderr when
+	// there is no tty, so the demo is still drivable through a pipe.
 	termIn, termOut := io.Reader(os.Stdin), io.Writer(os.Stderr)
 	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 		defer tty.Close()
@@ -276,7 +283,10 @@ func supervised(ctx context.Context, s *store, script string) int {
 	if len(res.GateAdmitted) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%s\n", t.warn("the live gate admitted egress beyond the manifest:"))
 		for _, hp := range res.GateAdmitted {
-			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(hp.Host+":"+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
+			// Quoted for the same reason the gate prompt quotes it: the target chose the
+			// host, and a human approving the quoted form does not make the raw bytes safe
+			// to replay in the summary.
+			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
 	return res.ExitCode

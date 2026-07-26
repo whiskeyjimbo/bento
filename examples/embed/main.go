@@ -133,15 +133,25 @@ func run(manifestPath string) int {
 	// nor a pre-approval the gate stays nil - the declarative default, denying any
 	// undeclared egress exactly as the box does.
 	preApproved := parseAllow(os.Getenv("BENTO_GATE_ALLOW"))
-	// The prompt owns the controlling terminal in BOTH directions, not the target's
-	// stdin and not its stderr. Prompting on os.Stderr would put the security dialogue
-	// on a stream the confined target also holds, so it could print a lookalike prompt
-	// while the real gate blocks on an attacker-chosen host, or flood stderr to scroll
-	// the genuine one away - undoing the quoting that neutralizes escapes in the
-	// hostname the prompt displays. os.OpenFile returns a nil *os.File on failure;
-	// assign it into the interfaces only when real, so newSupervisor sees a true nil (a
-	// typed-nil *os.File in an interface is non-nil and would be read as a live but
-	// broken reader).
+	// The prompt takes the controlling terminal in BOTH directions, so the security
+	// dialogue is on no fd the target holds. Prompting on os.Stderr would hand the
+	// confined target the same stream the human reads, where it could print a lookalike
+	// prompt while the real gate blocks on an attacker-chosen host, or flood the stream
+	// to scroll the genuine one away - undoing the quoting that neutralizes escapes in
+	// the hostname the prompt displays.
+	//
+	// How much that buys depends on where the target's own output goes. Redirected or
+	// captured - what an embedder wrapping this does - the target cannot reach the
+	// dialogue at all. Sharing a bare terminal with it, as the demo does, the target
+	// still writes to the same screen through its inherited stderr and can forge
+	// convincing lines there; what it cannot do is read the human's keystrokes or
+	// inject into the terminal, because the sandbox starts a new session. (The degraded
+	// tier does not: it only starts a new process group, so a target there keeps the
+	// controlling terminal.)
+	//
+	// os.OpenFile returns a nil *os.File on failure; assign it into the interfaces only
+	// when real, so newSupervisor sees a true nil (a typed-nil *os.File in an interface
+	// is non-nil and would be read as a live but broken reader).
 	var promptIn io.Reader
 	// With no terminal the gate exists only for BENTO_GATE_ALLOW, and the only prompt
 	// it can reach is one no human will read (an unapproved host, answered by the
@@ -170,8 +180,9 @@ func run(manifestPath string) int {
 		// The host cannot enforce a guarantee the policy needs. Print the error, not
 		// refusal.Reason: Reason is the posture ("a core guarantee cannot be fully
 		// enforced on this host") and Error() appends Short, which is the part that names
-		// whether Landlock, the mount namespace, or userns is what fell short.
-		fmt.Fprintf(os.Stderr, "embed: refused: %v\n", err)
+		// whether Landlock, the mount namespace, or userns is what fell short. Error()
+		// already opens with "refusing to run", so this adds no second word for it.
+		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 125
 	case errors.As(err, &shortfall):
 		// Strict admitted the run and then a guarantee it required lapsed while the target
@@ -179,8 +190,9 @@ func run(manifestPath string) int {
 		// this and sets Strict: true reaches it - and it is a COMPLETED run, so the report
 		// and the target's own exit code below still hold and must not be discarded. The
 		// exit code is overridden at the end instead: a lapsed posture must not be
-		// reported as a clean run.
-		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+		// reported as a clean run. Nothing is printed here: Shortfall.Error() enumerates
+		// the layers that fell short, and writeResult below names those same layers from
+		// the report - so the note at the end says only what the report cannot.
 	case err != nil:
 		// res carries a populated Report even here, so name any shortfall the run did
 		// reach before the failure rather than only the error.
@@ -194,7 +206,7 @@ func run(manifestPath string) int {
 	// A structured Result, not scraped output: report everything the run could not
 	// guarantee and everything it exposed anyway, then pass the target's exit code
 	// through.
-	writeResult(os.Stderr, p, res)
+	writeResult(os.Stderr, p, gate != nil, res)
 	if shortfall != nil {
 		// The target ran, but under Strict its guarantees lapsed partway. Passing its own
 		// code through would report a clean run over a posture that did not hold, so it
@@ -217,7 +229,7 @@ func run(manifestPath string) int {
 // surface is exercised by a test with a synthetic Result. The bento CLI's own renderer
 // (cmd/bento/render.go) is the same shape, and TestWriteResultSurfacesEveryField guards
 // this one against a new Result field arriving unprinted.
-func writeResult(w io.Writer, p *policy.Policy, res enforce.Result) {
+func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) {
 	// Degradations: what the host could only partially enforce.
 	for _, d := range res.Report.Degradations() {
 		fmt.Fprintf(w, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
@@ -231,9 +243,11 @@ func writeResult(w io.Writer, p *policy.Policy, res enforce.Result) {
 	}
 	// GateAdmitted: hosts the gate let out beyond the manifest. A wrapper would offer to
 	// persist these into the manifest via the normal approve/fingerprint path, turning
-	// ad-hoc runtime approvals back into declared, attested policy.
+	// ad-hoc runtime approvals back into declared, attested policy. The host is quoted
+	// for the same reason the prompt quotes it: the sandboxed target chose it, and a
+	// human approving the quoted form does not make the raw bytes safe to replay here.
 	for _, hp := range res.GateAdmitted {
-		fmt.Fprintf(w, "embed: gate admitted undeclared egress to %s:%s\n", hp.Host, hp.Port)
+		fmt.Fprintf(w, "embed: gate admitted undeclared egress to %q port %s\n", hp.Host, hp.Port)
 	}
 	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
 	// so the backend honored the grant over its own shield. bento does not refuse this -
@@ -262,7 +276,12 @@ func writeResult(w io.Writer, p *policy.Policy, res enforce.Result) {
 	// refused" leaves the user with no idea why. It is a heuristic, not proof - a target
 	// can make no connections and fail for its own reasons - so it is worded as a
 	// possibility.
-	if len(p.Network) > 0 && res.ExitCode != 0 && res.EgressConnections == 0 {
+	//
+	// A gate makes the count meaningful even over a manifest with no network rules,
+	// which is precisely this example's demo: reach.yaml declares none and relies on the
+	// gate, so gating only on the declared rules would skip the hint in the one scenario
+	// the example is built around.
+	if (len(p.Network) > 0 || gated) && res.ExitCode != 0 && res.EgressConnections == 0 {
 		fmt.Fprintln(w, "embed: the target exited non-zero having made no connection through the egress proxy;")
 		fmt.Fprintln(w, "embed: if it needs network, note that bento intercepts egress via HTTP_PROXY, so a target")
 		fmt.Fprintln(w, "embed: that ignores proxy settings cannot reach even its allowlisted hosts.")

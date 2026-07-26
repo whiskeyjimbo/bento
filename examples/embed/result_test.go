@@ -10,10 +10,12 @@ import (
 )
 
 // populatedResult is a Result with every honesty field non-empty, so one call to
-// writeResult exercises every surface. The paths carry a terminal escape and a quote:
-// a Result's paths can hold bytes a previous run influenced (a git submodule directory
-// name), and enforce.ShieldApplied's own documentation says a consumer rendering one to
-// a terminal must quote it.
+// writeResult exercises every surface. Every host- or target-supplied string in it
+// carries a terminal escape or a quote: a Result's paths can hold bytes a previous run
+// influenced (a git submodule directory name) and enforce.ShieldApplied's own
+// documentation says a consumer rendering one must quote it, while the gate-admitted
+// host is chosen by the target outright. A clean value in any of these fields would let
+// an unquoted render pass the escape scan below.
 func populatedResult() (enforce.Result, *policy.Policy) {
 	var report enforce.Report
 	report.Set(enforce.LayerNetwork, enforce.Degraded, "the egress proxy stopped accepting mid-run")
@@ -22,7 +24,7 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		ExitCode:          3,
 		Report:            report,
 		EgressConnections: 0, // with p.Network below and a non-zero exit, the bypass hint fires
-		GateAdmitted:      []enforce.HostPort{{Host: "ads.example", Port: "443"}},
+		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		ShieldedGrants:    []string{"/home/u/.ssh"},
 		Shields:           []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
@@ -37,15 +39,15 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 	res, p := populatedResult()
 	var out strings.Builder
-	writeResult(&out, p, res)
+	writeResult(&out, p, true, res)
 	got := out.String()
 
 	for _, want := range []string{
 		"the egress proxy stopped accepting mid-run", // Report.Degradations
-		"ads.example:443", // GateAdmitted
+		`"ads.example\x1b[2K"`,                       // GateAdmitted, quoted
 		"1 credential/host-service path(s) shielded", // Shields
-		`"/home/u/.ssh"`, // ShieldedGrants
-		"second name for the shielded credential", // AcceptedAliases
+		`"/home/u/.ssh"`,                             // ShieldedGrants
+		"second name for the shielded credential",    // AcceptedAliases
 		"read-only",                              // Exposed
 		"no connection through the egress proxy", // EgressConnections read as a bypass
 	} {
@@ -60,7 +62,7 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 func TestWriteResultQuotesPathsFromTheHost(t *testing.T) {
 	res, p := populatedResult()
 	var out strings.Builder
-	writeResult(&out, p, res)
+	writeResult(&out, p, true, res)
 
 	if strings.ContainsRune(out.String(), '\x1b') {
 		t.Errorf("an escape byte from a Result path reached the terminal unquoted: %q", out.String())
@@ -74,6 +76,12 @@ func TestWriteResultQuotesPathsFromTheHost(t *testing.T) {
 // silently unaware of it: a new honesty surface that no frontend prints is exactly the
 // hole the printed ones exist to close. Either print it in writeResult and name it
 // here, or record why it needs no warning.
+//
+// What it does NOT cover, so it is not read as more than it is: a field added to a
+// nested type (ShieldApplied, CredentialAlias, Report) is invisible to it, as is an
+// exported field promoted from an UNEXPORTED embedded struct. Naming a field in warned
+// without printing it also passes here - TestWriteResultSurfacesEveryHonestyField is
+// what catches that, since a field named but unprinted fails its output assertions.
 func TestWriteResultSurfacesEveryField(t *testing.T) {
 	// The two fields writeResult does not warn about, and why.
 	notWarnings := map[string]string{
