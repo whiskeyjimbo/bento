@@ -376,7 +376,8 @@ func Home(home string) []Rule {
 		// shieldNeeded), so `rustup update`, `nvm install`, `npm i -g`, `gem install
 		// --user-install` and `cargo install` cannot run in-sandbox at all - a policy
 		// granting write here is refused outright by checkWriteNotUnderReadOnlyShield
-		// rather than silently failing EROFS. That is the intended trade - each of those
+		// rather than being honored in argv and then losing to the shield. That is the
+		// intended trade - each of those
 		// mutates the host's $PATH from inside a sandbox - but it is a trade, not a free
 		// shield; run them outside bento. The registry and
 		// build caches (~/.cargo/registry, ~/.m2, ~/.gradle) are deliberately NOT here, so

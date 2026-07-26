@@ -382,6 +382,41 @@ func TestClampDropsWritesUnderWriteShieldButKeepsReads(t *testing.T) {
 	}
 }
 
+// The clamp must match a symlinked shield by its TARGET, because that is what both the
+// observer and the enforcer see. home-manager and stow both make ~/.local/bin a symlink
+// into a dotfiles tree or the nix store; a write there is observed at the resolved path,
+// and the enforcer refuses it (it resolves the shield too). A clamp that only compared
+// literal paths would keep the grant, propose it, and let compile reject the approved
+// manifest - the exact disagreement this clamp exists to prevent.
+func TestClampWriteShieldMatchesSymlinkedShieldTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store := filepath.Join(t.TempDir(), "dotfiles", "bin")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(home, ".local", "bin")); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+	// EvalSymlinks the temp root too: on macOS and some CI images /tmp is itself a
+	// symlink, so the store path the observer would record is the resolved one.
+	resolvedStore, err := filepath.EvalSymlinks(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, kept, _, dropped := clampShieldedGrants(nil, []string{filepath.Join(resolvedStore, "mytool")})
+	if slices.Contains(kept, filepath.Join(resolvedStore, "mytool")) {
+		t.Errorf("a write observed at the symlinked shield's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
+	}
+	if len(dropped) == 0 {
+		t.Errorf("the write must be reported as write-shielded so the user is told why; dropped=%v", dropped)
+	}
+}
+
 // A clean exit says nothing about whether the observer could name everything it saw, so
 // the two warnings are independent and a run that is both signaled and lossy reports both.
 func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {

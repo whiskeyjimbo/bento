@@ -612,11 +612,27 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 	seen := map[string]bool{}
 	var shields []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			shields = append(shields, p)
+		}
+	}
 	for _, h := range homes {
 		for _, r := range denylist.Home(h) {
-			if r.Deny == denylist.DenyWrite && !seen[r.Path] {
-				seen[r.Path] = true
-				shields = append(shields, r.Path)
+			if r.Deny != denylist.DenyWrite {
+				continue
+			}
+			add(r.Path)
+			// The enforcer compares against the shield's RESOLVED path, and the observer
+			// records resolved paths, so a symlinked shield (~/.local/bin or ~/.bashrc
+			// pointing into a dotfiles repo or the nix store, which home-manager and stow
+			// both produce) is observed at its target. Matching only the literal path
+			// would keep that write in the proposal and let compile refuse it - the
+			// disagreement this clamp exists to prevent. Resolving here closes it; a path
+			// that does not resolve is simply not added.
+			if resolved, err := filepath.EvalSymlinks(r.Path); err == nil {
+				add(resolved)
 			}
 		}
 	}

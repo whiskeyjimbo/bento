@@ -971,10 +971,18 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 }
 
 // checkWriteNotUnderReadOnlyShield rejects a write grant at or inside a DenyWrite
-// shield (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). The shield's ro-bind
-// is emitted after the grant's bind and wins, so such a grant is a silent no-op: the
-// policy compiles, the bind appears in argv, and every write still fails EROFS. Refusing
-// says so at the one moment the author can act on it.
+// shield (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). Such a grant never
+// reached the host, and refusing says so at the one moment the author can act on it.
+//
+// It failed three different ways before, which is why the refusal is worth more than any
+// of them: where the shield path exists, its ro-bind is emitted after the grant's bind
+// and wins, so every write fails EROFS; where it does NOT exist, the shield is a tmpfs,
+// so writes SUCCEED into a discarded scratch mount and the script exits zero having
+// written nothing - the worst of the three, since nothing fails at all; and in the
+// degraded Landlock-only tier there are no binds, so the write landed on the real host
+// path. That last one is the reason this sits in checkGrants rather than beside the bind
+// logic: both tiers share it, so --allow-degraded cannot accept what the full tier only
+// pretended to honor.
 //
 // There is deliberately no opt-in, unlike the DenyAll shields. That escape (yz3.2) is
 // READ-only by construction - explicitShieldOptIns takes the policy's reads, and a write
@@ -999,8 +1007,13 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 				continue
 			}
 			// Resolved as the grants are, so a write naming a symlinked shield's real
-			// target is caught rather than silently no-op'd.
+			// target is caught rather than silently no-op'd. A rule resolving to "/" is
+			// skipped for the same reason denyArgs never shields it: it would swallow
+			// every write grant and blame an unrelated dotfile for it.
 			rp := sb.resolve(r.Path)
+			if rp == "/" {
+				continue
+			}
 			if under(g, rp) {
 				return fmt.Errorf("linux: write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
 			}
