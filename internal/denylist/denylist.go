@@ -781,6 +781,7 @@ var credentialAnchorDirs = []string{
 	".local/share/keyrings",    // GNOME Keyring
 	".local/share/kwalletd",    // KDE Wallet
 	".gnome2/keyrings",         // GNOME Keyring (legacy path)
+	".gnome2_private",          // legacy GNOME private store, the sibling of .gnome2/keyrings above
 	".kde/share/apps/kwallet",  // KDE Wallet (legacy path)
 	".kde4/share/apps/kwallet", // KDE Wallet (legacy KDE4 path)
 	".git-credential-cache",    // git credential-cache helper socket dir
@@ -904,6 +905,7 @@ var bulkStoreDirs = []string{
 	// that carry reset links and 2FA codes.
 	".thunderbird",
 	".config/evolution",
+	".evolution", // pre-3.6 Evolution store, still present on upgraded systems
 	".mail", // mutt/notmuch maildir; message bodies and cached credentials
 	".Mail", // same, capitalized variant used by some setups
 	"Mail",  // mutt default mail folder at ~/Mail (no leading dot)
@@ -1046,6 +1048,12 @@ var persistenceDirs = []string{
 	".config/autostart",    // XDG autostart .desktop entries
 	".config/systemd",      // systemd --user units/timers (whole tree: user/ and drop-ins)
 	".local/share/systemd", // systemd --user timer/service state
+	".config/upstart",      // Upstart user session jobs, run at login where Upstart is the session init
+	".init",                // Upstart user jobs at the legacy location
+	// A thumbnailer is a .desktop-shaped file carrying an Exec= line that the file
+	// manager runs, unprompted, the moment a directory holding a matching file is
+	// browsed - the same plant-and-wait surface as .local/share/applications.
+	".local/share/thumbnailers",
 	// Window-manager and desktop-session trees firejail blacklists: their config runs
 	// commands at session start (i3/sway `exec`, awesome rc.lua, openbox autostart), so
 	// they are host-exec persistence surfaces.
