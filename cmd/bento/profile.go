@@ -231,24 +231,14 @@ const maxConvergeRounds = 25
 // leaves it recorded-only and never mounts it - the consent that keeps real content off
 // a path the user did not approve. risky reports a path that would be exposed at enforce
 // time (a foreign-home shield the run will not re-shield); those always prompt, never
-// auto-accepted under [a]ll. seed carries the grants of an approved manifest to accept
-// before round 1, so a session resumed after a quit continues where it left off rather
-// than re-asking every path; only its Read and Write are read, and nil starts fresh. It
+// auto-accepted under [a]ll, and are prompted in a seed too. seed carries the grants of
+// an approved manifest to accept before round 1, so a session resumed after a quit
+// continues where it left off rather than re-asking every path; only its Read and Write
+// are read, and nil starts fresh. It
 // returns the final proposal with reads/writes narrowed to exactly the accepted set.
 func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, error) {
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
-	// A seed's grants are mounted in round 1 and never prompted, so it must come from
-	// a manifest whose approval stamp is current - the reviewer's recorded consent
-	// standing in for this session's prompt, including for a foreignShielded path.
-	if seed != nil {
-		for _, p := range seed.Read {
-			acceptedR[p] = true
-		}
-		for _, p := range seed.Write {
-			acceptedW[p] = true
-		}
-	}
 	declined := map[string]bool{} // key() -> asked and refused, so it is not re-asked
 	acceptAll := false
 	accept := func(it grantItem) {
@@ -256,6 +246,36 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 			acceptedR[it.path] = true
 		} else {
 			acceptedW[it.path] = true
+		}
+	}
+
+	// A seed's grants are mounted in round 1 with the approval stamp standing in for
+	// this session's prompt. The stamp is unkeyed drift detection rather than a
+	// signature, so for a risky path - one the enforced run will not re-shield - it is
+	// not enough on its own: anyone able to write the manifest can compute a current
+	// fingerprint. Those are asked here, before any content is mounted, for the same
+	// reason [a]ll never covers them below. The rest resume without a prompt.
+	if seed != nil {
+		for _, it := range seedItems(seed) {
+			if !risky(it.path) {
+				accept(it)
+				continue
+			}
+			c, err := prompt(it.kind, it.path)
+			if err != nil {
+				return nil, err
+			}
+			switch c {
+			case grantAll:
+				acceptAll = true
+				accept(it)
+			case grantYes:
+				accept(it)
+			case grantQuit:
+				return nil, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
+			default:
+				declined[it.key()] = true
+			}
 		}
 	}
 
@@ -330,6 +350,20 @@ loop:
 // home). Such a path is never auto-accepted under [a]ll; the reviewer decides it.
 func foreignShielded(path string) bool {
 	return len(foreignHomeShields([]string{path})) > 0
+}
+
+// seedItems flattens a seed manifest's reads and writes into the same items the
+// convergence loop prompts with, so a seeded path and a discovered one are decided
+// through one code path.
+func seedItems(seed *policy.Policy) []grantItem {
+	out := make([]grantItem, 0, len(seed.Read)+len(seed.Write))
+	for _, p := range seed.Read {
+		out = append(out, grantItem{"read", p})
+	}
+	for _, p := range seed.Write {
+		out = append(out, grantItem{"write", p})
+	}
+	return out
 }
 
 // grantItem is one filesystem access the target attempted but has not been granted yet.
@@ -805,9 +839,9 @@ func guessInterpreter(path string) string {
 // the consent the prompt otherwise gives: an unstamped or stale manifest seeds nothing
 // and every path is asked again. The stamp is unkeyed drift detection, not a signature
 // (see `bento approve`), so it does not by itself prove the file is one the user wrote -
-// which is why the seeded grants are listed as they are mounted, and why a manifest
-// approved for a different entrypoint is not honored here. A missing path is the first
-// run.
+// which is why the seeded grants are listed as they are mounted, why a manifest approved
+// for a different entrypoint is not honored here, and why converge still prompts for a
+// seeded path the enforced run will not re-shield. A missing path is the first run.
 func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 	doc, err := loadDocument(path)
 	switch {
@@ -831,11 +865,14 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 		fmt.Fprintf(out, "[bento] %s is approved for %s, not %s, so its grants are not mounted.\n", path, doc.Policy.Entrypoint, script)
 		return nil, nil
 	}
-	for _, r := range doc.Policy.Read {
-		fmt.Fprintf(out, "[bento] resuming from %s: mounting approved read %s\n", path, r)
-	}
-	for _, w := range doc.Policy.Write {
-		fmt.Fprintf(out, "[bento] resuming from %s: mounting approved write %s\n", path, w)
+	// A path the enforced run will not re-shield is not listed as mounted: converge
+	// prompts for it rather than taking the stamp as consent, so announcing it here
+	// would name a mount that may never happen.
+	for _, it := range seedItems(doc.Policy) {
+		if foreignShielded(it.path) {
+			continue
+		}
+		fmt.Fprintf(out, "[bento] resuming from %s: mounting approved %s %s\n", path, it.kind, it.path)
 	}
 	return doc.Policy, nil
 }

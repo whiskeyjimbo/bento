@@ -286,3 +286,42 @@ func TestConvergeSeedMountsGrantsWithoutReasking(t *testing.T) {
 		t.Errorf("final must keep the seeded grant and the path it unlocked; got Read=%v", final.Read)
 	}
 }
+
+// A seed's approval stamp is unkeyed drift detection, not a signature, so it cannot
+// stand in for consent to mount a path the enforced run will not re-shield. Those are
+// asked before round 1; a declined one must never reach the discovery policy.
+func TestConvergeSeedPromptsRiskyPaths(t *testing.T) {
+	const cred = "/home/other/.ssh/id_rsa"
+	var round1Reads []string
+	recording := func(d *policy.Policy) (*policy.Policy, error) {
+		if round1Reads == nil {
+			round1Reads = append([]string{}, d.Read...)
+		}
+		return branchingRound(d)
+	}
+	asked := map[string]int{}
+	prompt := func(kind, path string) (grantChoice, error) {
+		asked[path]++
+		return grantNo, nil
+	}
+	seed := &policy.Policy{Read: []string{cfgPath, cred}}
+	final, err := converge(baseDiscovery(), seed, recording, prompt, func(p string) bool { return p == cred }, io.Discard)
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if asked[cred] != 1 {
+		t.Errorf("a risky seeded grant must be asked once; asked %d time(s)", asked[cred])
+	}
+	if asked[cfgPath] != 0 {
+		t.Errorf("an ordinary seeded grant must still resume without a prompt; %s asked %d time(s)", cfgPath, asked[cfgPath])
+	}
+	if hasPath(round1Reads, cred) {
+		t.Errorf("a declined risky seed must not be mounted in round 1; round 1 discovery Read=%v", round1Reads)
+	}
+	if hasPath(final.Read, cred) {
+		t.Errorf("a declined risky seed must not survive into the final policy; got Read=%v", final.Read)
+	}
+	if !hasPath(round1Reads, cfgPath) {
+		t.Errorf("an ordinary seeded grant must still be mounted in round 1; got %v", round1Reads)
+	}
+}
