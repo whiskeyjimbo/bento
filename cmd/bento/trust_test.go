@@ -193,7 +193,12 @@ func TestLoadDocumentWarnsAboutAWorldWritableDirectory(t *testing.T) {
 // not one in w. Resolving the path in userspace got this wrong and described a directory
 // the manifest was not in, which is the whole verdict computed against the wrong tree.
 func TestInspectManifestFollowsTheKernelThroughDotDot(t *testing.T) {
-	root := t.TempDir()
+	// Resolved, because the assertion below compares against the kernel's name for the
+	// directory and a TMPDIR reached through a symlink would otherwise fail spuriously.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	elsewhere := filepath.Join(root, "elsewhere")
 	w := filepath.Join(root, "w")
 	for _, d := range []string{elsewhere, w} {
@@ -220,6 +225,17 @@ func TestInspectManifestFollowsTheKernelThroughDotDot(t *testing.T) {
 	}
 	if trust.dir.path != root {
 		t.Errorf("the manifest lives in %s, but its location reads as %s", root, trust.dir.path)
+	}
+}
+
+// The kernel names a pipe or device descriptor `pipe:[N]` or /dev/null, whose directory
+// is either meaningless or the process's own working directory. Parsing would succeed
+// and the verdict would describe somewhere the manifest never came from, so the load
+// fails instead.
+func TestLoadDocumentRefusesANonRegularFile(t *testing.T) {
+	_, _, err := loadDocument(os.DevNull, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("a manifest with no location on disk must not load; got %v", err)
 	}
 }
 

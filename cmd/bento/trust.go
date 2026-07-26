@@ -58,10 +58,11 @@ type manifestTrust struct {
 	file fileFacts
 	dir  fileFacts
 	// chain is every other directory that can decide which file the manifest's name
-	// reaches, nearest first: the ones above dir, since renaming one of them aside
-	// substitutes the manifest as surely as replacing the file, and - when the name
-	// goes through a symlink anywhere along it - the unresolved path's own directories,
-	// since whoever can replace a link repoints it at a file of their choosing.
+	// reaches: the ones above dir, since renaming one of them aside substitutes the
+	// manifest as surely as replacing the file, followed by those leading to a symlink
+	// named as the manifest, since whoever can replace a link repoints it at a file of
+	// their choosing. Each run is nearest-first, but the second follows the whole of
+	// the first rather than being interleaved by distance.
 	chain []fileFacts
 }
 
@@ -87,6 +88,13 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return manifestTrust{}, err
+	}
+	// A manifest read from a pipe or a device has no location to judge: the kernel names
+	// the descriptor `pipe:[N]`, whose directory reads back as the process's own working
+	// directory, and a verdict about that describes nothing the manifest came from.
+	// Approve could not rewrite it either.
+	if !fi.Mode().IsRegular() {
+		return manifestTrust{}, fmt.Errorf("%s is not a regular file, so there is nothing to vouch for its permissions", path)
 	}
 	file, err := factsOf(path, fi)
 	if err != nil {
