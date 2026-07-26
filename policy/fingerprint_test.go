@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestFingerprintStableAcrossReordering(t *testing.T) {
 	a := &Policy{
@@ -49,6 +52,47 @@ func TestFingerprintChangesWithPermissions(t *testing.T) {
 				t.Error("a permission change must change the fingerprint")
 			}
 		})
+	}
+}
+
+// TestFingerprintChangesWithPermissions names its cases by hand, so a field added
+// to Policy later is silently uncovered. Walk the struct instead: every field must
+// move the fingerprint, including one that does not exist yet.
+func TestFingerprintCoversEveryPolicyField(t *testing.T) {
+	base := Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	fp := base.Fingerprint()
+
+	for f := range reflect.ValueOf(base).Fields() {
+		t.Run(f.Name, func(t *testing.T) {
+			p := base
+			p.Read = []string{"/data"}
+			mutate(t, reflect.ValueOf(&p).Elem().FieldByIndex(f.Index))
+			if p.Fingerprint() == fp {
+				t.Errorf("Policy.%s is not covered by the fingerprint", f.Name)
+			}
+		})
+	}
+}
+
+// mutate sets v to a value distinct from the one it holds, descending into a
+// struct field so each sub-field (Limits.Memory/CPU/PIDs) is exercised.
+func mutate(t *testing.T, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(v.String() + "-changed")
+	case reflect.Int, reflect.Int64:
+		v.SetInt(v.Int() + 1)
+	case reflect.Slice:
+		e := reflect.New(v.Type().Elem()).Elem()
+		mutate(t, e)
+		v.Set(reflect.Append(v, e))
+	case reflect.Struct:
+		for _, sub := range v.Fields() {
+			mutate(t, sub)
+		}
+	default:
+		t.Fatalf("cannot mutate a %s field; teach mutate this kind", v.Kind())
 	}
 }
 
