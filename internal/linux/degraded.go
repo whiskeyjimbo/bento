@@ -19,8 +19,9 @@ import (
 // as a DIRECT child (no bubblewrap) that applies Landlock filesystem confinement plus
 // the seccomp exec- and egress-blocks. It is selected only for a run admitted under
 // --allow-degraded on a userns-blocked host; the caller (enforce.admit) has already
-// refused a network manifest (LayerNetwork is Unavailable without a netns), so this
-// path only ever runs a no-network policy.
+// refused anything that needs egress - a network manifest or a supervising gate, both
+// of which require LayerNetwork, which is Unavailable without a netns - so this path
+// only ever runs a policy with no egress at all.
 //
 // Without a mount namespace the whole host filesystem is visible, so the Landlock
 // read set must name everything the target may touch: the interpreter's runtime and

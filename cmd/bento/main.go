@@ -22,6 +22,12 @@ const bentoFailed = 125
 // readiness. A hardening-only gap, where runs still proceed, stays exit 0.
 const doctorCoreShortfall = 3
 
+// strictShortfall is `run --strict`'s exit code when the target ran but a guarantee
+// strict required lapsed during the run (a proxy listener that died mid-run). It is
+// distinct from bentoFailed, which says the target never ran, and from the target's
+// own code, which must not stand in for a posture that did not hold.
+const strictShortfall = 126
+
 // exitError carries a target's exit code up to main so all deferred cleanup runs
 // before the process exits. Returning it instead of calling os.Exit inside a
 // command keeps the frontend from bypassing the sandbox's own teardown.

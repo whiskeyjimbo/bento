@@ -547,3 +547,24 @@ func TestDegradedRunsInterpreterOutsideSystemPaths(t *testing.T) {
 		t.Errorf("the runtime could not read its own stdlib; exit=%d output:\n%s", res.ExitCode, out.String())
 	}
 }
+
+// The degraded tier has no network namespace and no proxy, so it has nothing to
+// consult a gate with. enforce.Run cannot pair the two - a gate requires LayerNetwork,
+// which is Unavailable exactly where this tier is selected - but Run is an exported
+// entry point an embedder reaches directly, and running with the gate silently dropped
+// would tell a supervising caller its prompt was never needed when it was never
+// possible.
+func TestDegradedRefusesANetworkGate(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Exec: policy.ExecNone}
+	_, err := enforcerUsing("/bin/true").Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{
+		Degraded: true,
+		Gate:     func(context.Context, string, string) bool { return true },
+	})
+	if err == nil || !strings.Contains(err.Error(), "network gate cannot be honored") {
+		t.Fatalf("the degraded tier must refuse a gate it cannot consult; got err=%v", err)
+	}
+}

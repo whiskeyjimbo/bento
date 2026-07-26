@@ -106,14 +106,26 @@ func (r *Report) Add(layer Layer, state State, reason string) {
 // Set replaces a layer's status, or adds it if absent. A backend uses it to
 // refine what the policy-independent Probe reported with policy-specific facts -
 // e.g. that a requested cgroup controller is not actually delegated.
+//
+// Any further entry for the layer is dropped, so Set leaves exactly one. A probe that
+// emitted the layer twice would otherwise keep a stale duplicate that StateOf and the
+// admission scans still see, and a report can then refuse on one entry while rendering
+// the other as enforced.
 func (r *Report) Set(layer Layer, state State, reason string) {
-	for i := range r.Layers {
-		if r.Layers[i].Layer == layer {
-			r.Layers[i] = LayerStatus{Layer: layer, State: state, Reason: reason}
-			return
+	out, replaced := r.Layers[:0], false
+	for _, l := range r.Layers {
+		switch {
+		case l.Layer != layer:
+			out = append(out, l)
+		case !replaced:
+			out = append(out, LayerStatus{Layer: layer, State: state, Reason: reason})
+			replaced = true
 		}
 	}
-	r.Add(layer, state, reason)
+	r.Layers = out
+	if !replaced {
+		r.Add(layer, state, reason)
+	}
 }
 
 // StateOf returns the recorded state of a layer. A layer the report does not

@@ -265,3 +265,51 @@ func (failWriter) Write([]byte) (int, error) { return 0, errors.New("stdout is g
 // validPolicy is the minimal policy writeRunResult needs (writeEgressHint reads its
 // Network); no network means the hint stays quiet.
 func validPolicy() *policy.Policy { return &policy.Policy{Entrypoint: "./x"} }
+
+// A strict run whose guarantee lapsed while the target ran is neither a refusal (the
+// script did run, and its output is reported) nor a clean run (the posture strict was
+// asked for did not hold). Passing the script's own code through would report a clean
+// run over a lapsed guarantee, so it gets its own code, and --json says so in the
+// envelope rather than leaving a machine consumer reading an ordinary completed run.
+func TestWriteRunResultStrictShortfall(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerNetwork, enforce.Degraded, "the egress proxy stopped serving")
+	shortfall := &enforce.Shortfall{Report: report, Short: report.Degradations()}
+
+	var stdout, stderr bytes.Buffer
+	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
+		enforce.Result{ExitCode: 0, Report: report}, "", "", shortfall)
+	if got := asExitError(t, err).code; got != strictShortfall {
+		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, strictShortfall)
+	}
+	if !strings.Contains(stderr.String(), "did not hold") {
+		t.Errorf("a strict shortfall must be named on stderr; got %q", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err = writeRunResult(&stdout, &stderr, true, validPolicy(),
+		enforce.Result{ExitCode: 7, Report: report}, "out", "", shortfall)
+	if got := asExitError(t, err).code; got != strictShortfall {
+		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, strictShortfall)
+	}
+	var env struct {
+		ExitCode        int    `json:"exit_code"`
+		Stdout          string `json:"stdout"`
+		Refused         bool   `json:"refused"`
+		StrictShortfall bool   `json:"strict_shortfall"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if !env.StrictShortfall {
+		t.Error("the envelope must mark the strict shortfall")
+	}
+	if env.Refused {
+		t.Error("a shortfall is not a refusal: the target ran")
+	}
+	// The run happened, so the envelope still reports what it produced.
+	if env.ExitCode != 7 || env.Stdout != "out" {
+		t.Errorf("envelope = %+v, want the target's own code and output", env)
+	}
+}

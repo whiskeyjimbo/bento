@@ -45,6 +45,11 @@ type RunOptions struct {
 	// tier rather than assume its full mechanism is available. A backend never decides
 	// this itself: the refuse-versus-degrade choice lives in enforce.Run, so a backend
 	// can never silently downgrade.
+	//
+	// It selects a filesystem mechanism and nothing else, so it is derived from the
+	// filesystem layer alone: another core layer the probe judged Degraded is admitted
+	// or refused on its own terms and reported in the Report, and never reaches a
+	// backend through this flag.
 	Degraded bool
 
 	// AcceptAliasesUnder are host trees whose credential aliases the caller has
@@ -61,9 +66,11 @@ type RunOptions struct {
 	// carry one machine's backup layout to every other. Whatever it admits is reported in
 	// Result.AcceptedAliases, the same way a gate admission is.
 	//
-	// It has no effect on a Degraded run: that tier applies no shields, so it never scans
-	// for an alias and has nothing to acknowledge. Its exposure is reported through the
-	// Report instead.
+	// It has no effect on a Degraded run, and not because there is nothing to
+	// acknowledge: that tier applies no shields and never scans for an alias, so an
+	// alias inside a granted tree is readable there and the run proceeds where the full
+	// tier refuses. The guarantee is absent rather than waived, and what the tier does
+	// expose is reported through the Report.
 	AcceptAliasesUnder []string
 }
 
@@ -119,8 +126,10 @@ type Result struct {
 	// manifest, deduped and sorted. A host appears once the gate approved it, even
 	// if the subsequent dial then failed - EXCEPT a dial the upstream guard blocked
 	// (a gate-approved host resolving to a non-public address): that reports Denied
-	// and is not listed, since it was never admitted past the guard. Empty when no
-	// gate is set, so the count and this list keep the run honest about egress it
+	// and is not listed, since it was never admitted past the guard. Empty means no
+	// destination was admitted beyond the manifest, which is also what a run with no
+	// gate at all reports - it is not evidence a gate was present, only that nothing
+	// went through one. Together with the count it keeps the run honest about egress it
 	// permitted beyond the declared policy.
 	GateAdmitted []HostPort
 	// AcceptedAliases lists the credential aliases this run was allowed to read past a

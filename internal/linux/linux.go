@@ -52,6 +52,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
 	// after admitting the run under --allow-degraded, so this never silently downgrades.
 	if opts.Degraded {
+		// This tier has no network namespace and no proxy, so there is nothing to
+		// consult a gate. enforce.Run cannot pair the two (a gate requires LayerNetwork,
+		// which is Unavailable on the userns-blocked host this tier is for), but Run is
+		// reachable without it, and silently running with the gate dropped would tell a
+		// supervising caller its prompt was never needed when it was never possible.
+		if opts.Gate != nil {
+			return enforce.Result{}, fmt.Errorf("linux: a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in")
+		}
 		return e.runDegraded(ctx, p, proc)
 	}
 

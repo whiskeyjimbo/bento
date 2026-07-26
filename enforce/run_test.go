@@ -658,3 +658,114 @@ func TestMissingRequiredCoreLayerRefused(t *testing.T) {
 		t.Error("the enforcer must not run when a required core layer is unreported")
 	}
 }
+
+// A gate brings the egress stack up even over a zero-rule manifest - the proxy is
+// what consults it - so the run needs LayerNetwork whether or not the manifest asked
+// for egress. A host that cannot provide it must refuse the gated run rather than run
+// a live proxy on a run enforce judged as having no network concern.
+func TestGatedRunRequiresTheNetworkLayer(t *testing.T) {
+	gate := func(context.Context, string, string) bool { return true }
+
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerNetwork, Unavailable, "no network namespace")
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{NetworkGate: gate}); err == nil {
+		t.Error("a gated run was admitted on a host that cannot enforce the network layer")
+	}
+	if f.ran {
+		t.Error("the enforcer ran despite the refusal")
+	}
+
+	// Where the host does provide it, the gated run is admitted and the layer it was
+	// judged on reaches the caller: a report that dropped it would claim the run had no
+	// egress concern while a proxy was serving one.
+	f = &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerNetwork, Enforced, "")
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{NetworkGate: gate})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := res.Report.StateOf(LayerNetwork); got != Enforced {
+		t.Errorf("gated run reports network %s, want enforced - the layer it was admitted on must be in the report", got)
+	}
+}
+
+// A gated zero-rule run whose proxy dies mid-run is the case the pre-run probe cannot
+// see. The backend's worse verdict must survive the overlay, and under --strict the
+// run must not hand back the target's own exit code as if the posture had held.
+func TestGatedRunSurfacesAMidRunNetworkDegradation(t *testing.T) {
+	newFake := func() *fakeEnforcer {
+		f := &fakeEnforcer{result: Result{ExitCode: 7}}
+		f.probe.Add(LayerFilesystem, Enforced, "")
+		f.probe.Add(LayerNetwork, Enforced, "")
+		f.probe.Add(LayerExec, Enforced, "")
+		f.result.Report.Add(LayerNetwork, Degraded, "the egress proxy stopped serving")
+		return f
+	}
+
+	f := newFake()
+	res, err := Run(context.Background(), f, validPolicy(), Process{},
+		Options{NetworkGate: func(context.Context, string, string) bool { return true }})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := res.Report.StateOf(LayerNetwork); got != Degraded {
+		t.Errorf("network state = %s, want degraded - the backend's mid-run verdict must survive the overlay", got)
+	}
+
+	f = newFake()
+	res, err = Run(context.Background(), f, validPolicy(), Process{}, Options{
+		Strict:      true,
+		NetworkGate: func(context.Context, string, string) bool { return true },
+	})
+	var short *Shortfall
+	if !errors.As(err, &short) {
+		t.Fatalf("Run under --strict returned %v, want a *Shortfall for a guarantee that lapsed mid-run", err)
+	}
+	// The target ran, so its code and report still reach the caller: a Shortfall
+	// describes a completed run, unlike a Refusal.
+	if res.ExitCode != 7 {
+		t.Errorf("exit code = %d, want the target's own 7 alongside the shortfall", res.ExitCode)
+	}
+	if len(short.Short) != 1 || short.Short[0].Layer != LayerNetwork {
+		t.Errorf("shortfall names %v, want just the network layer", short.Short)
+	}
+}
+
+// A strict run whose layers all held returns no error, so the shortfall above is a
+// verdict about this run and not a blanket strict-mode failure.
+func TestStrictRunThatHoldsReturnsNoError(t *testing.T) {
+	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{ExitCode: 3}}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ExitCode != 3 {
+		t.Errorf("exit code = %d, want the target's own 3", res.ExitCode)
+	}
+}
+
+// Set leaves exactly one entry for a layer. A probe that emitted a layer twice would
+// otherwise keep the stale duplicate that StateOf and the admission scans still see,
+// letting a report refuse on one entry and render the other as enforced.
+func TestSetCollapsesDuplicateLayers(t *testing.T) {
+	var r Report
+	r.Add(LayerNetwork, Enforced, "")
+	r.Add(LayerFilesystem, Enforced, "")
+	r.Add(LayerNetwork, Degraded, "stale")
+
+	r.Set(LayerNetwork, Enforced, "")
+	if got := r.StateOf(LayerNetwork); got != Enforced {
+		t.Errorf("StateOf(network) = %s after Set, want enforced - a duplicate survived", got)
+	}
+	if len(r.Layers) != 2 {
+		t.Errorf("report has %d layers, want 2: %v", len(r.Layers), r.Layers)
+	}
+	if len(r.Degradations()) != 0 {
+		t.Errorf("Degradations() = %v, want none - the rendered lines must agree with StateOf", r.Degradations())
+	}
+	if r.StateOf(LayerFilesystem) != Enforced {
+		t.Error("Set dropped an unrelated layer")
+	}
+}

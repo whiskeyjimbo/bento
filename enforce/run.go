@@ -43,7 +43,11 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := p.Validate(); err != nil {
 		return Result{}, err
 	}
-	required := e.Probe(ctx).forLayers(requiredLayers(p))
+	// One required set for both the admission below and the report overlay further
+	// down: judging admission on one set and reporting on another is how a layer gets
+	// admitted on and then erased from the report.
+	wanted := requiredLayers(p, opts)
+	required := e.Probe(ctx).forLayers(wanted)
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
@@ -51,7 +55,9 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// --allow-degraded (default and strict both refuse it); the backend cannot run
 	// its full mechanism, so tell it to take its reduced-confinement tier. Selecting
 	// on the probed state, not on the flag, keeps the decision tied to what the host
-	// can actually do.
+	// can actually do. It reads only the filesystem layer because that flag selects a
+	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
+	// degradation travels to the caller in the Report, not here.
 	degraded := required.StateOf(LayerFilesystem) == Degraded
 	res, err := e.Run(ctx, p, proc, RunOptions{
 		Gate:               opts.NetworkGate,
@@ -73,7 +79,6 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// filesystem the probe called Degraded and that was admitted under
 	// --allow-degraded - would mask a degradation the admission relied on, making the
 	// returned report assert a guarantee the run never had.
-	wanted := requiredLayers(p)
 	want := make(map[Layer]bool, len(wanted))
 	for _, l := range wanted {
 		want[l] = true
@@ -84,7 +89,21 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		}
 	}
 	res.Report = required
-	return res, err
+	if err != nil {
+		return res, err
+	}
+	// Strict admitted this run against the pre-run probe, but the overlay above can
+	// have worsened a layer with what the backend learned while running - a proxy
+	// listener that died mid-run leaves the egress guarantee strict required unmet. A
+	// nil error here would hand back the target's own exit code as if the posture had
+	// held for the whole run, so report the lapse. It is deliberately not a Refusal:
+	// the target ran, and a caller that retried on it would run it twice.
+	if opts.Strict {
+		if short := res.Report.Degradations(); len(short) > 0 {
+			return res, &Shortfall{Report: res.Report, Short: short}
+		}
+	}
+	return res, nil
 }
 
 // BaselineLayers returns the layers every policy requires regardless of its contents -
@@ -93,19 +112,24 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 // actually requires: a host short only on a conditionally-required layer still runs the
 // manifests that never asked for it, so failing it wholesale would be a false verdict.
 func BaselineLayers() []Layer {
-	return requiredLayers(&policy.Policy{Exec: policy.ExecAll})
+	return requiredLayers(&policy.Policy{Exec: policy.ExecAll}, Options{})
 }
 
-// requiredLayers returns the layers a policy actually depends on.
+// requiredLayers returns the layers a run actually depends on - what the policy
+// declares plus what the caller's Options bring.
 //
 // A policy with no network rules denies all egress, which namespace isolation
 // alone provides - it does not need the egress-allowlist stack, so a host that
 // cannot run that stack must not block it. Likewise a policy that permits
 // subprocesses does not need exec-blocking, and one with no limits does not need
 // cgroups.
-func requiredLayers(p *policy.Policy) []Layer {
+//
+// A gate is the one thing outside the policy that adds a layer: it brings the egress
+// stack up even over a zero-rule manifest, because the proxy is what consults it. So
+// the run needs LayerNetwork whether or not the manifest asked for egress.
+func requiredLayers(p *policy.Policy, opts Options) []Layer {
 	layers := []Layer{LayerFilesystem}
-	if len(p.Network) > 0 {
+	if len(p.Network) > 0 || opts.NetworkGate != nil {
 		layers = append(layers, LayerNetwork)
 	}
 	if p.Exec != policy.ExecAll {
@@ -183,6 +207,26 @@ type Refusal struct {
 	Reason string
 	// Short is the set of layers that fell short.
 	Short []LayerStatus
+}
+
+// Shortfall is returned when a run that strict mode admitted did not hold its
+// posture for the whole run: the backend reported a layer worse than the pre-run
+// probe did. Unlike a Refusal the target ran and Result carries its exit code, so a
+// caller must treat it as a completed run whose guarantees lapsed, never retry it.
+type Shortfall struct {
+	// Report is the final report, covering only the layers the run required.
+	Report Report
+	// Short is the set of layers that fell short.
+	Short []LayerStatus
+}
+
+func (e *Shortfall) Error() string {
+	var b strings.Builder
+	b.WriteString("the run completed but strict mode's guarantees did not hold for it")
+	for _, l := range e.Short {
+		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Reason)
+	}
+	return b.String()
 }
 
 func (e *Refusal) Error() string {

@@ -33,7 +33,9 @@ func newRunCmd() *cobra.Command {
 			"The script's exit code is passed through untouched. If bento itself could not\n" +
 			"run the script - a bad manifest, or a guarantee this host cannot enforce - it\n" +
 			"exits 125, following the convention env(1) and docker use for \"the command\n" +
-			"could not be executed\", so it is distinct from any code the script itself returns.",
+			"could not be executed\", so it is distinct from any code the script itself returns.\n" +
+			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
+			"126, distinct from both.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			overrides, err := parseEnvFlags(envFlags)
@@ -88,7 +90,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&strict, "strict", false, "refuse to run unless every guarantee the policy needs is fully enforced")
 	cmd.Flags().BoolVar(&allowDegraded, "allow-degraded", false, "run even when a core guarantee can only be partially enforced")
-	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable, ignored under --allow-degraded")
+	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output instead of the script's own streams being summarized")
@@ -103,7 +105,10 @@ func newRunCmd() *cobra.Command {
 // target's streams, captured only in --json mode (empty otherwise, where they went
 // straight to the real streams).
 func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, capturedOut, capturedErr string, runErr error) error {
-	var refusal *enforce.Refusal
+	var (
+		refusal   *enforce.Refusal
+		shortfall *enforce.Shortfall
+	)
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
@@ -115,6 +120,9 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			return &exitError{code: bentoFailed}
 		}
 		return runErr
+	case errors.As(runErr, &shortfall):
+		// The target ran, so its output and report are reported exactly as a clean run's
+		// are; only the exit code differs, below.
 	case runErr != nil:
 		return runErr
 	}
@@ -134,7 +142,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			Exposed           []shieldJSON `json:"exposed,omitempty"`
 			AcceptedAliases   []aliasJSON  `json:"accepted_aliases,omitempty"`
 			Report            reportJSON   `json:"report"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report)}); err != nil {
+			// StrictShortfall says the run was admitted under --strict but a guarantee it
+			// required lapsed while the target ran, so exit_code below is the code of a run
+			// whose posture did not hold. Without it a machine consumer reading the envelope
+			// alone would see an ordinary completed run.
+			StrictShortfall bool `json:"strict_shortfall,omitempty"`
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
@@ -146,6 +159,16 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		writeEgressHint(stderr, p, res)
 	}
 
+	// The script ran under --strict, but a guarantee strict required lapsed during the
+	// run. Passing the script's own code through would report a clean run over a
+	// posture that did not hold, which is the one thing strict exists to prevent - so
+	// it gets its own code, distinct from both.
+	if shortfall != nil {
+		if !asJSON {
+			fmt.Fprintf(stderr, "[bento] %v\n", shortfall)
+		}
+		return &exitError{code: strictShortfall}
+	}
 	// The script ran; its exit code is the result, passed up so cleanup
 	// unwinds before the process exits.
 	return &exitError{code: res.ExitCode}
