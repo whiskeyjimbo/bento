@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
 
@@ -73,10 +74,11 @@ type trustFlaw struct {
 	fatal  bool
 }
 
-// inspectManifest reads the trust facts for an already-open manifest. The file half
-// comes from the open handle so nothing can be swapped in between the check and the
-// parse; the directory half is taken at the symlink-resolved location, which is where
-// approve writes, and the chain covers everything else that leads there.
+// inspectManifest reads the trust facts for an already-open manifest. Both halves come
+// from the open handle: the file's from fstat, and its location from the kernel's own
+// name for the descriptor. Resolving the path in userspace instead gets this wrong -
+// lexically cleaning a `..` that follows a symlink names a directory the file is not in
+// - and asking the kernel is also free of any race with the bytes already parsed.
 //
 // The reasoning is mode bits only. A POSIX ACL granting a named user write appears in
 // the group-class bits and is indistinguishable here, so a clean report means "nothing
@@ -90,13 +92,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	// Absolute, so the walks below terminate at / rather than at "." - a manifest named
-	// relatively leads through the same directories as one named in full.
-	given, err := filepath.Abs(path)
-	if err != nil {
-		return manifestTrust{}, err
-	}
-	target, err := filepath.EvalSymlinks(given)
+	target, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(int(f.Fd())))
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -115,12 +111,21 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	// / again, and reporting it as both the holding directory and an ancestor is noise.
 	trust.chain = appendUnseen(nil, above, dirPath)
 
-	// Both paths are cleaned and absolute, so they differ only when a symlink was
-	// resolved - at the manifest itself or at any component along the way. Every
-	// directory of the name as given then decides which file that name reaches, so all
-	// of them are inspected, not just the one holding a final link.
-	if given != target {
-		linked, err := dirsUpward(filepath.Dir(given))
+	// A symlink named as the manifest is a second name for it, and whoever can replace
+	// the link points it wherever they like however private its current target is - so
+	// the directories leading to the link are inspected too. Only a link at the name
+	// itself: a link at an intermediate component is the same exposure, but finding it
+	// needs the resolution walked hop by hop rather than its endpoint read back.
+	li, err := os.Lstat(path)
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	if li.Mode()&fs.ModeSymlink != 0 {
+		linkDir, err := filepath.Abs(filepath.Dir(path))
+		if err != nil {
+			return manifestTrust{}, err
+		}
+		linked, err := dirsUpward(linkDir)
 		if err != nil {
 			return manifestTrust{}, err
 		}

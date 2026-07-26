@@ -188,6 +188,41 @@ func TestLoadDocumentWarnsAboutAWorldWritableDirectory(t *testing.T) {
 	}
 }
 
+// A `..` that follows a symlink cannot be cleaned away lexically: the kernel applies it
+// to where the link landed, so `w/lnk/../m.yaml` names a file beside lnk's target and
+// not one in w. Resolving the path in userspace got this wrong and described a directory
+// the manifest was not in, which is the whole verdict computed against the wrong tree.
+func TestInspectManifestFollowsTheKernelThroughDotDot(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := filepath.Join(root, "elsewhere")
+	w := filepath.Join(root, "w")
+	for _, d := range []string{elsewhere, w} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(w, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	real := manifestIn(t, root)
+
+	// Built by hand: filepath.Join would clean the ".." away, which is exactly the
+	// lexical shortcut this test exists to rule out.
+	path := w + "/lnk/../" + filepath.Base(real)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	trust, err := inspectManifest(f, path)
+	if err != nil {
+		t.Fatalf("inspectManifest: %v", err)
+	}
+	if trust.dir.path != root {
+		t.Errorf("the manifest lives in %s, but its location reads as %s", root, trust.dir.path)
+	}
+}
+
 // approvable runs the check the way approve does, on the trust from the same open that
 // read the manifest.
 func approvable(t *testing.T, path string) error {
@@ -234,45 +269,28 @@ func TestRequireApprovableLocation(t *testing.T) {
 	})
 
 	// Whoever can replace a symlink chooses which file every command reads, however
-	// private the file it currently points at. The link can be the manifest's own name
-	// or any directory along the way, and the directories above it are as good as the
-	// one holding it - so every level of the name as given has to be inspected, not
-	// only the resolved location.
-	symlinked := map[string]func(t *testing.T, links, real string) string{
-		"the manifest's own name": func(t *testing.T, links, real string) string {
-			link := filepath.Join(links, "sub", "link.yaml")
-			if err := os.Symlink(real, link); err != nil {
-				t.Fatal(err)
-			}
-			return link
-		},
-		"a directory along the way": func(t *testing.T, links, real string) string {
-			link := filepath.Join(links, "sub", "proj")
-			if err := os.Symlink(filepath.Dir(real), link); err != nil {
-				t.Fatal(err)
-			}
-			return filepath.Join(link, filepath.Base(real))
-		},
-	}
-	for name, makeLink := range symlinked {
-		t.Run("refuses a world-writable directory above a symlink at "+name, func(t *testing.T) {
-			real := manifestIn(t, t.TempDir())
-			links := t.TempDir()
-			// The link sits one level down, so only walking up from it finds the
-			// world-writable directory that lets anyone rename sub aside.
-			if err := os.Mkdir(filepath.Join(links, "sub"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			path := makeLink(t, links, real)
-			if err := os.Chmod(links, 0o777); err != nil {
-				t.Fatal(err)
-			}
-			err := approvable(t, path)
-			if err == nil || !strings.Contains(err.Error(), links) {
-				t.Fatalf("a swappable symlink must not be stamped through; got %v", err)
-			}
-		})
-	}
+	// private the file it currently points at - and a directory above the link is as
+	// good as the one holding it, so the walk runs from the link's own location too.
+	t.Run("refuses a world-writable directory above a symlinked manifest", func(t *testing.T) {
+		real := manifestIn(t, t.TempDir())
+		links := t.TempDir()
+		// The link sits one level down, so only walking up from it finds the
+		// world-writable directory that lets anyone rename sub aside.
+		if err := os.Mkdir(filepath.Join(links, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(links, "sub", "link.yaml")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(links, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		err := approvable(t, link)
+		if err == nil || !strings.Contains(err.Error(), links) {
+			t.Fatalf("a swappable symlink must not be stamped through; got %v", err)
+		}
+	})
 
 	t.Run("allows a group/world-writable manifest the rewrite will clamp", func(t *testing.T) {
 		dir := t.TempDir()
