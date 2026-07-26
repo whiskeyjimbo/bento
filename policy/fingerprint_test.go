@@ -170,3 +170,16 @@ func TestFingerprintArgOrderMatters(t *testing.T) {
 		t.Error("arg order is significant and must change the fingerprint")
 	}
 }
+
+// A nil policy fingerprints as empty rather than panicking, and must not collide
+// with the empty-but-real policy - an approval stamped for one would otherwise read
+// as current for the other.
+func TestFingerprintNilPolicy(t *testing.T) {
+	var p *Policy
+	if fp := p.Fingerprint(); fp != "" {
+		t.Errorf("nil policy fingerprint = %q, want empty", fp)
+	}
+	if (&Policy{}).Fingerprint() == "" {
+		t.Error("the zero policy must fingerprint distinctly from nil")
+	}
+}

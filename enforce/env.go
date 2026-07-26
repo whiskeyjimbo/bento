@@ -26,6 +26,12 @@ type Lookup func(name string) (string, bool)
 // passed as an empty string, so a frontend can tell the user why their script saw
 // nothing instead of letting it fail obscurely.
 func ResolveEnv(p *policy.Policy, overrides map[string]string, lookup Lookup) (env map[string]string, unset []string, err error) {
+	// Reported rather than defaulted to an always-missing lookup: that would resolve
+	// every allowed name to unset and hand the target an empty environment, which reads
+	// to the caller as "the host has none of these" instead of "you passed no seam".
+	if lookup == nil {
+		return nil, nil, fmt.Errorf("enforce: nil Lookup; pass os.LookupEnv to read the host environment")
+	}
 	allowed := make(map[string]bool, len(p.Env))
 	for _, name := range p.Env {
 		allowed[name] = true

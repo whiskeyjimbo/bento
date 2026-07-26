@@ -74,3 +74,14 @@ func TestResolveEnvReportsUnsetNames(t *testing.T) {
 		t.Errorf("unset = %v, want [MISSING]", unset)
 	}
 }
+
+// A nil lookup is a caller mistake, reported as an error rather than resolving every
+// allowed name to unset and handing the target a silently empty environment.
+func TestResolveEnvRejectsNilLookup(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}
+
+	_, _, err := ResolveEnv(p, nil, nil)
+	if err == nil {
+		t.Fatal("expected a nil lookup to be refused")
+	}
+}

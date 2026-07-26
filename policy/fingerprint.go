@@ -25,7 +25,16 @@ import (
 // attests the policy, not the code. Swapping the script body under an approved
 // manifest still matches - by design, since the manifest governs permissions,
 // not code identity.
+//
+// A nil policy fingerprints as the empty string rather than panicking. That is not a
+// sentinel to compare against: it is not valid hex, so it matches no stored approval,
+// and checkApproval reads an empty stamp as unapproved. Hashing the zero Policy
+// instead would make nil collide with an empty-but-real policy, which is the one
+// answer a fingerprint must never give.
 func (p *Policy) Fingerprint() string {
+	if p == nil {
+		return ""
+	}
 	h := sha256.New()
 	line := func(format string, args ...any) { fmt.Fprintf(h, format+"\n", args...) }
 
