@@ -112,6 +112,24 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("policy: value %q contains %s (U+%04X), which is not allowed in a path or argument", f, UnsafeRuneKind(r), r)
 		}
 	}
+	// An empty path grant is not a grant of nothing. It survives the manifest-dir
+	// anchoring untouched, renders as "read: []" in the validate summary - so an operator
+	// reviewing the run sees no grant at all - and then the enforcer joins it onto the
+	// working directory, handing the target everything under it. A manifest carrying
+	// write: [""] and run from $HOME grants the whole home directory under a value that
+	// reads as absent. Read and Write are the only fields where empty means that: an
+	// absent Interpreter and an empty argv element (sh -c '') are both legitimate, which
+	// is why this cannot fold into the character screen above.
+	for _, l := range []struct {
+		name  string
+		paths []string
+	}{{"read", p.Read}, {"write", p.Write}} {
+		for i, path := range l.paths {
+			if path == "" {
+				return fmt.Errorf("policy: %s[%d] is empty; a grant must name a path (an empty value reads as no grant but resolves to the working directory)", l.name, i)
+			}
+		}
+	}
 	for _, name := range p.Env {
 		if !envNameRe.MatchString(name) {
 			return fmt.Errorf("policy: invalid env name %q: must match [A-Za-z_][A-Za-z0-9_]* (env is an allowlist of variable names, not values)", name)

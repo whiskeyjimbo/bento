@@ -86,6 +86,10 @@ func TestValidateRejects(t *testing.T) {
 		{"cpu Inf", func(p *Policy) { p.Limits = Limits{CPU: "Inf%"} }, "non-negative, finite"},
 		{"cpu negative", func(p *Policy) { p.Limits = Limits{CPU: "-50%"} }, "non-negative, finite"},
 		{"unparseable memory", func(p *Policy) { p.Limits = Limits{Memory: "lots"} }, "limits.memory"},
+		// An empty grant renders as "read: []" in the validate summary but resolves to
+		// the working directory in the enforcer, so it reads as no grant and is not one.
+		{"empty read grant", func(p *Policy) { p.Read = []string{""} }, "read[0] is empty"},
+		{"empty write grant", func(p *Policy) { p.Write = []string{"/out", ""} }, "write[1] is empty"},
 		{"escape in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/true\x1b]0;PWNED\x07" }, "control character"},
 		{"escape in interpreter", func(p *Policy) { p.Interpreter = "python3\x1b[31m" }, "control character"},
 		{"escape in arg", func(p *Policy) { p.Args = []string{"--flag\x07"} }, "control character"},
