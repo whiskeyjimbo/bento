@@ -3,6 +3,7 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -225,8 +226,8 @@ func TestSplitByScopeClassifiesHeaderlessProfileByName(t *testing.T) {
 	if inScope[0].Section != credentialSection {
 		t.Errorf("a name-classified gap must be relabelled, got section %q", inScope[0].Section)
 	}
-	if out["This file is overwritten during software install."] != 1 {
-		t.Errorf("the ordinary app dir must be counted out-of-scope, got %+v", out)
+	if bySection(out)["This file is overwritten during software install."] != 1 {
+		t.Errorf("the ordinary app dir must be reported out-of-scope, got %+v", out)
 	}
 }
 
@@ -278,11 +279,42 @@ func TestSplitByScopeUsesFirejailSections(t *testing.T) {
 	if inScope[0].Section != "X11 session autostart" {
 		t.Errorf("first in-scope section = %q, want X11 autostart", inScope[0].Section)
 	}
-	if out["gnome"] != 1 || out["var"] != 1 {
+	if counts := bySection(out); counts["gnome"] != 1 || counts["var"] != 1 {
 		t.Errorf("out-of-scope counts wrong: %+v", out)
 	}
-	if _, isIn := out["top secret"]; isIn {
+	if _, isIn := bySection(out)["top secret"]; isIn {
 		t.Error("a secret section must not be counted out-of-scope")
+	}
+}
+
+// bySection counts the out-of-scope gaps per section, the summary the tests above assert
+// on. SplitByScope returns the entries themselves because a count is not diffable between
+// runs; the count is still the right assertion for a fixture of three.
+func bySection(gaps []Gap) map[string]int {
+	counts := map[string]int{}
+	for _, g := range gaps {
+		counts[g.Section]++
+	}
+	return counts
+}
+
+// The out-of-scope bucket is what a human diffs two runs of the audit on to notice a new
+// upstream entry, so it has to carry the paths and come back in a stable order. Map
+// iteration would reorder the sections on every run and bury the one line that changed.
+func TestSplitByScopeOrdersOutOfScopeForDiffing(t *testing.T) {
+	gaps := []Gap{
+		{Candidate: Candidate{Path: "/HOME/.zzz", Section: "var"}},
+		{Candidate: Candidate{Path: "/HOME/.mozilla", Section: "gnome"}},
+		{Candidate: Candidate{Path: "/HOME/.aaa", Section: "var"}},
+	}
+	_, out := SplitByScope(gaps)
+	var got []string
+	for _, g := range out {
+		got = append(got, g.Section+" "+g.Path)
+	}
+	want := []string{"gnome /HOME/.mozilla", "var /HOME/.aaa", "var /HOME/.zzz"}
+	if !slices.Equal(got, want) {
+		t.Errorf("out-of-scope order = %v, want %v", got, want)
 	}
 }
 
@@ -345,8 +377,8 @@ blacklist ${HOME}/.audit_test_privacy_app
 	}
 	// The gnome entry is firejail's other-app privacy scope: accounted for out-of-scope,
 	// never a gap.
-	if out["gnome"] != 1 {
-		t.Errorf("the out-of-scope gnome entry must be counted, got %+v", out)
+	if bySection(out)["gnome"] != 1 {
+		t.Errorf("the out-of-scope gnome entry must be reported, got %+v", out)
 	}
 }
 
@@ -381,6 +413,12 @@ func TestFirejailCompleteness(t *testing.T) {
 				if explicit {
 					t.Fatalf("FIREJAIL_DIR names %s but it has no %s; the completeness gate cannot run against the directory you pointed it at", dir, name)
 				}
+				// A skipped completeness gate is a pass that proved nothing.
+				// BENTO_REQUIRE_TEST_DEPS is how a host that is supposed to have the
+				// corpus installed - CI, and `make test` - says so.
+				if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+					t.Fatalf("no firejail profile at %s and BENTO_REQUIRE_TEST_DEPS is set; the completeness gate cannot run without the corpus", path)
+				}
 				t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
 			}
 			t.Logf("no profile at %s; auditing the profiles present", path)
@@ -396,18 +434,14 @@ func TestFirejailCompleteness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unclassified, globs, outBySection := Audit(firejailSources(contents), home, "/run/user/1000")
+	unclassified, globs, outOfScope := Audit(firejailSources(contents), home, "/run/user/1000")
 
 	// Globs and out-of-scope totals are surfaced (not silently dropped) so a whole
 	// class or the app/privacy scope stays visible for periodic manual review.
 	for _, g := range globs {
 		t.Logf("glob for review (bento covers by named instance - verify the set is current): %s [%s]", g.Path, g.Section)
 	}
-	total := 0
-	for _, n := range outBySection {
-		total += n
-	}
-	t.Logf("%d out-of-scope firejail entries in %d section(s) (firejail's privacy/other-app/system scope, not enumerated by bento)", total, len(outBySection))
+	t.Logf("%d out-of-scope firejail entries in %d section(s) (firejail's privacy/other-app/system scope, not enumerated by bento)", len(outOfScope), len(bySection(outOfScope)))
 
 	if len(unclassified) == 0 {
 		return

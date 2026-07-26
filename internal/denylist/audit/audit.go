@@ -381,14 +381,15 @@ func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 	return gaps
 }
 
-// SplitByScope partitions gaps into the ones inside bento's secret/exec threat model
-// (returned sorted by section, ready to list) and a count-by-section of the rest -
-// firejail's privacy/other-app/system scope, which bento does not enumerate. A gap is
-// in scope by its firejail section, or - for the header-less profiles where that says
-// nothing - by naming a known secret store. The out-of-scope set is summarized rather
-// than dropped so it stays accountable.
-func SplitByScope(gaps []Gap) (inScope []Gap, outBySection map[string]int) {
-	outBySection = map[string]int{}
+// SplitByScope partitions gaps into the ones inside bento's secret/exec threat model and
+// the rest - firejail's privacy/other-app/system scope, which bento does not enumerate.
+// A gap is in scope by its firejail section, or - for the header-less profiles where that
+// says nothing - by naming a known secret store. The out-of-scope set is returned in full
+// rather than counted, because a count cannot be read: the great majority of it is
+// attributed to one file-header comment that classifies nothing, so a newly-added
+// credential path there moves a number by one and is invisible even against a previous
+// run. Both halves come back sorted by section then path so two runs diff.
+func SplitByScope(gaps []Gap) (inScope, outOfScope []Gap) {
 	for _, g := range gaps {
 		switch {
 		case inScopeSection(g.Section):
@@ -397,16 +398,24 @@ func SplitByScope(gaps []Gap) (inScope []Gap, outBySection map[string]int) {
 			g.Section = credentialSection
 			inScope = append(inScope, g)
 		default:
-			outBySection[g.Section]++
+			outOfScope = append(outOfScope, g)
 		}
 	}
-	sort.SliceStable(inScope, func(i, j int) bool {
-		if inScope[i].Section != inScope[j].Section {
-			return inScope[i].Section < inScope[j].Section
+	bySectionThenPath(inScope)
+	bySectionThenPath(outOfScope)
+	return inScope, outOfScope
+}
+
+// bySectionThenPath orders gaps for a report that has to be diffable between runs: map
+// iteration order is randomized, so anything grouped by section has to be sorted before
+// it is printed or the diff is noise.
+func bySectionThenPath(gaps []Gap) {
+	sort.SliceStable(gaps, func(i, j int) bool {
+		if gaps[i].Section != gaps[j].Section {
+			return gaps[i].Section < gaps[j].Section
 		}
-		return inScope[i].Path < inScope[j].Path
+		return gaps[i].Path < gaps[j].Path
 	})
-	return inScope, outBySection
 }
 
 // IntentionalExclusions are firejail in-scope entries bento deliberately does NOT
@@ -538,16 +547,17 @@ func relLookup(path, home string, m map[string]string) bool {
 // listed in ReviewedGlobs, reported for periodic re-check but not hard-failed. An
 // unreviewed glob hard-fails rather than becoming a note, so an inexpressible credential
 // class (a bare *.key/*.kdbx in the top-secret section) cannot silently pass once the
-// concrete backlog clears. outBySection summarizes the out-of-scope firejail sections
-// bento does not enumerate, so they stay accountable. home and runUser expand firejail's
-// ${HOME}/${RUNUSER}; the profile files are a dev-time diff input, never vendored.
-func Audit(sources []Source, home, runUser string) (unclassified, globs []Gap, outBySection map[string]int) {
+// concrete backlog clears. outOfScope lists the gaps in the upstream scopes bento does
+// not enumerate, so they stay accountable and a new entry among them is readable. home
+// and runUser expand firejail's ${HOME}/${RUNUSER}; the profile files are a dev-time diff
+// input, never vendored.
+func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfScope []Gap) {
 	var candidates []Candidate
 	for _, s := range sources {
 		candidates = append(candidates, s.Parse(s.Content, home, runUser)...)
 	}
 	rules := append(denylist.Home(home), denylist.Runtime()...)
-	inScope, outBySection := SplitByScope(Diff(candidates, rules))
+	inScope, outOfScope := SplitByScope(Diff(candidates, rules))
 	for _, g := range inScope {
 		if excluded(g.Path, home) {
 			continue
@@ -563,7 +573,7 @@ func Audit(sources []Source, home, runUser string) (unclassified, globs []Gap, o
 			unclassified = append(unclassified, g)
 		}
 	}
-	return unclassified, globs, outBySection
+	return unclassified, globs, outOfScope
 }
 
 // cover finds a rule that shields path, returning it and true. An exact match wins;

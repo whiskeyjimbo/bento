@@ -34,12 +34,21 @@ import (
 // page all return 200 with content that parses to zero candidates, which would read as
 // "everything covered" and exit 0, a false pass on a CI safety gate.
 //
-// Each sentinel must identify ONE profile, so a URL serving the other file's body is
+// Each sentinel must identify ONE profile, so a URL serving another file's body is
 // caught rather than accepted: the two would then be audited as one and the missing
-// profile's entries would silently not be gaps. That is why these carry the "blacklist "
-// directive prefix and a trailing newline rather than a bare path - disable-common has a
+// profile's entries would silently not be gaps. That is why these are whole directive
+// LINES rather than bare paths, matched as such by isProfile - disable-common has a
 // "read-only ${HOME}/.mozilla/firefox/profiles.ini" line, so a bare ${HOME}/.mozilla
-// matches both files and would wave the mixup through.
+// matches both files and would wave the mixup through, and AppArmor's private-files and
+// its strict sibling differ only by an "audit " prefix on otherwise identical rules, so a
+// substring sentinel of the one is satisfied by the other.
+//
+// minCandidates is the floor each profile's parse must clear. The fetch has a ceiling but
+// nothing asserted a lower bound, so a complete-but-short body - a truncated CDN
+// response, or an upstream that moved most of its rules behind an include directive
+// neither format's parser follows - passed with the corpus tail simply absent from the
+// diff, which reads as "no gaps there". The values sit below the current counts with
+// headroom, so ordinary upstream churn does not trip them and a collapse does.
 //
 // The AppArmor abstractions are the second corpus, added because a single-source diff
 // can only ever establish parity with that source. They are deny-shaped like firejail's
@@ -48,14 +57,15 @@ import (
 // automatically invisible to the other. Their parser is ParseAppArmor, not ParseFirejail
 // - the formats share no syntax.
 var upstreamSources = []struct {
-	url      string
-	sentinel string
-	parse    func(content, home, runUser string) []audit.Candidate
+	url           string
+	sentinel      string
+	minCandidates int
+	parse         func(content, home, runUser string) []audit.Candidate
 }{
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh\n", audit.ParseFirejail},
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla\n", audit.ParseFirejail},
-	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", audit.ParseAppArmor},
-	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", audit.ParseAppArmor},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh", 250, audit.ParseFirejail},
+	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla", 1000, audit.ParseFirejail},
+	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", 20, audit.ParseAppArmor},
+	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", 12, audit.ParseAppArmor},
 }
 
 // The paths the parser expands firejail's variables to; any absolute value works,
@@ -108,17 +118,39 @@ func collect(fetch func(url string) (string, error), w io.Writer) ([]audit.Sourc
 			fmt.Fprintf(w, "denylist-audit: content fetched from %s does not carry %s, so it is not the expected upstream profile; refusing to report a pass\n", src.url, src.sentinel)
 			return nil, exitContentRefused
 		}
+		// A body can carry the sentinel and still be most of a profile short: the
+		// directive the sentinel names sits near the top of both formats, so a truncation
+		// or an upstream that moved the bulk of its rules behind an include leaves the
+		// check satisfied and the tail missing. Refusing on the count is the same
+		// judgement as refusing on the sentinel - this is not the corpus - so it shares
+		// the status.
+		if n := len(src.parse(content, home, runUser)); n < src.minCandidates {
+			fmt.Fprintf(w, "denylist-audit: %s parsed to %d in-scope directives, below the floor of %d; the body is not the whole profile, so refusing to report a pass\n", src.url, n, src.minCandidates)
+			return nil, exitContentRefused
+		}
 		sources = append(sources, audit.Source{Content: content, Parse: src.parse})
 	}
 	return sources, 0
 }
 
-// isProfile reports whether content is plausibly the firejail profile that sentinel
-// identifies - a directive that file has carried for years. Absent it, the fetch did not
-// return the profile and the audit cannot conclude anything, so a zero-gap diff over it
-// must not be reported as a pass.
+// isProfile reports whether content is plausibly the upstream profile that sentinel
+// identifies - a directive line that file has carried for years. Absent it, the fetch did
+// not return the profile and the audit cannot conclude anything, so a zero-gap diff over
+// it must not be reported as a pass.
+//
+// The match is on a whole line, with the surrounding whitespace trimmed off (AppArmor
+// indents its rules, firejail does not). A substring match would let one profile satisfy
+// another's sentinel wherever one file's directive is a prefix or an extension of the
+// other's, which is the ordinary case between siblings: private-files-strict writes the
+// same rules as private-files with an "audit " prefix. Matching the line closes that
+// without depending on how either project happens to indent today.
 func isProfile(content, sentinel string) bool {
-	return strings.Contains(content, sentinel)
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.TrimSpace(line) == sentinel {
+			return true
+		}
+	}
+	return false
 }
 
 // report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
@@ -129,7 +161,7 @@ func isProfile(content, sentinel string) bool {
 func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	// One diff logic, two triggers: this CLI and the completeness test both go through
 	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
-	unclassified, globs, outBySection := audit.Audit(sources, home, runUser)
+	unclassified, globs, outOfScope := audit.Audit(sources, home, runUser)
 
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.
@@ -139,7 +171,7 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 
 	if len(unclassified) == 0 {
 		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec upstream shield is covered or excluded")
-		reportOutOfScope(w, outBySection)
+		reportOutOfScope(w, outOfScope)
 		return 0
 	}
 
@@ -156,24 +188,31 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 		}
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}
-	reportOutOfScope(w, outBySection)
+	reportOutOfScope(w, outOfScope)
 	return exitGap
 }
 
-// reportOutOfScope summarizes the firejail sections bento deliberately does not
-// cover (privacy, other-app, system hardening), so they are accounted for, not
-// silently dropped, but do not bury the in-scope gaps.
-func reportOutOfScope(w io.Writer, bySection map[string]int) {
-	if len(bySection) == 0 {
+// reportOutOfScope lists the upstream entries bento deliberately does not cover
+// (privacy, other-app, system hardening), grouped under their section, after the in-scope
+// gaps so they do not bury them.
+//
+// It prints every path rather than a per-section count because the count is unreadable:
+// the bulk of this bucket comes from disable-programs.inc, whose "section" is the file's
+// own install-time header comment, so a newly-added credential store lands there and only
+// moves one number by one - which two runs cannot be diffed to notice. The paths can be.
+// The gaps arrive sorted, so the diff is the change and nothing else.
+func reportOutOfScope(w io.Writer, gaps []audit.Gap) {
+	if len(gaps) == 0 {
 		return
 	}
-	total := 0
-	for _, n := range bySection {
-		total += n
-	}
-	fmt.Fprintf(w, "\n%d out-of-scope gap(s) skipped (firejail's privacy/other-app/system scope), by section:\n", total)
-	for s, n := range bySection {
-		fmt.Fprintf(w, "  %3d  %s\n", n, s)
+	fmt.Fprintf(w, "\n%d out-of-scope gap(s) skipped (upstream's privacy/other-app/system scope), by section:\n", len(gaps))
+	section := ""
+	for _, g := range gaps {
+		if g.Section != section {
+			section = g.Section
+			fmt.Fprintf(w, "\n[%s]\n", section)
+		}
+		fmt.Fprintf(w, "  %s\n", g.Path)
 	}
 }
 

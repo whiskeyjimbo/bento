@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,17 +47,27 @@ func TestReportPassesWhenShieldCovered(t *testing.T) {
 // disable-programs would reject a good fetch.
 func TestIsProfile(t *testing.T) {
 	real := "# Home\nblacklist ${HOME}/.ssh\nblacklist ${HOME}/.gnupg\n"
-	if !isProfile(real, "${HOME}/.ssh") {
+	if !isProfile(real, "blacklist ${HOME}/.ssh") {
 		t.Error("the real profile must be recognized")
+	}
+	// AppArmor indents its rules; the sentinel is the directive, not the layout.
+	if !isProfile("# vim:syntax=apparmor\n  deny @{HOME}/.*history mrwkl,\n", "deny @{HOME}/.*history mrwkl,") {
+		t.Error("an indented rule must be recognized")
 	}
 	for name, content := range map[string]string{
 		"empty":           "",
 		"html error page": "<html><body>404 Not Found</body></html>",
 		"include-only":    "# moved\ninclude disable-home.inc\n",
 		"unrelated 200":   "just some other text file\n",
+		// The sibling problem: private-files-strict writes private-files' rules with an
+		// "audit " prefix, so a substring sentinel of the one is satisfied by the other and
+		// the mixup that the sentinel exists to catch passes as a good fetch.
+		"the sibling profile": "# strict\n  audit deny @{HOME}/.ssh mrwkl,\n",
+		// The converse: a longer path must not satisfy a sentinel naming its parent.
+		"a longer path": "blacklist ${HOME}/.ssh/authorized_keys\n",
 	} {
-		if isProfile(content, "${HOME}/.ssh") {
-			t.Errorf("%s: must not be accepted as the firejail profile", name)
+		if isProfile(content, "blacklist ${HOME}/.ssh") || isProfile(content, "deny @{HOME}/.ssh mrwkl,") {
+			t.Errorf("%s: must not be accepted as the profile", name)
 		}
 	}
 }
@@ -69,7 +80,7 @@ func TestIsProfile(t *testing.T) {
 func TestCollectRefusalStatuses(t *testing.T) {
 	bodies := map[string]string{}
 	for _, src := range upstreamSources {
-		bodies[src.url] = src.sentinel
+		bodies[src.url] = fullBody(src.sentinel, src.minCandidates)
 	}
 
 	var b bytes.Buffer
@@ -95,6 +106,42 @@ func TestCollectRefusalStatuses(t *testing.T) {
 	}
 }
 
+// fullBody synthesizes a profile that carries sentinel and parses to exactly n
+// candidates, in the syntax of whichever format the sentinel comes from. The floor is
+// about volume, so the fixtures need volume; the paths themselves are never diffed here.
+func fullBody(sentinel string, n int) string {
+	var b strings.Builder
+	b.WriteString(sentinel)
+	b.WriteString("\n")
+	for i := range n - 1 {
+		if strings.HasPrefix(sentinel, "blacklist") {
+			fmt.Fprintf(&b, "blacklist ${HOME}/.fill%d\n", i)
+		} else {
+			fmt.Fprintf(&b, "  deny @{HOME}/.fill%d mrwkl,\n", i)
+		}
+	}
+	return b.String()
+}
+
+// A body can carry the sentinel and still be a fraction of the profile - a truncated
+// response, or an upstream that moved most of its rules behind an include. Nothing
+// asserted a lower bound, so the corpus tail was simply absent from the diff and the gate
+// read that as "no gaps there".
+func TestCollectRefusesAShortProfile(t *testing.T) {
+	var b bytes.Buffer
+	_, code := collect(func(url string) (string, error) {
+		for _, src := range upstreamSources {
+			if src.url == url {
+				return fullBody(src.sentinel, src.minCandidates-1), nil
+			}
+		}
+		return "", nil
+	}, &b)
+	if code != exitContentRefused {
+		t.Errorf("a profile below its floor must exit %d; got %d (%q)", exitContentRefused, code, b.String())
+	}
+}
+
 // One source failing refuses the whole run rather than auditing a narrowed corpus: the
 // entries the missing profile would have contributed simply would not be gaps, and the
 // gate would pass over a comparison it never made.
@@ -107,7 +154,7 @@ func TestCollectRefusesAPartialSet(t *testing.T) {
 		}
 		for _, src := range upstreamSources {
 			if src.url == url {
-				return src.sentinel, nil
+				return fullBody(src.sentinel, src.minCandidates), nil
 			}
 		}
 		return "", nil
@@ -124,40 +171,60 @@ func TestCollectRefusesAPartialSet(t *testing.T) {
 // ~1300 entries of the missing profile would silently not be gaps - the false pass the
 // sentinel exists to prevent. Asserting mutual exclusion catches that; asserting the
 // sentinels merely differ does not.
-func TestFirejailSourceSentinelsIdentifyOneProfileEach(t *testing.T) {
-	var firejail []int
+//
+// This runs over ALL FOUR sources, not just firejail's pair. AppArmor's two abstractions
+// are the closer call of the two pairs: private-files-strict restates private-files' rules
+// with an "audit " prefix, so any substring sentinel taken from the one is satisfied by
+// the other, and the pair had no mutual-exclusion check at all.
+func TestSourceSentinelsIdentifyOneProfileEach(t *testing.T) {
+	// The local copy of each corpus, by the file name its URL ends in. A distro package
+	// is not the upstream master these URLs serve, which is the point: a sentinel that
+	// only holds for the exact revision in CI is not a sentinel.
+	dirs := map[string]string{
+		"firejail": envDir("FIREJAIL_DIR", "/etc/firejail"),
+		"apparmor": envDir("APPARMOR_DIR", "/etc/apparmor.d/abstractions"),
+	}
+	bodies := make([]string, len(upstreamSources))
 	for i, src := range upstreamSources {
+		corpus := "apparmor"
 		if strings.Contains(src.url, "firejail") {
-			firejail = append(firejail, i)
+			corpus = "firejail"
 		}
-	}
-	if len(firejail) != 2 {
-		t.Fatalf("expected the two firejail profiles, got %d", len(firejail))
-	}
-	dir := os.Getenv("FIREJAIL_DIR")
-	if dir == "" {
-		dir = "/etc/firejail"
-	}
-	bodies := make([]string, len(firejail))
-	for i, si := range firejail {
-		src := upstreamSources[si]
 		name := src.url[strings.LastIndexByte(src.url, '/')+1:]
-		b, err := os.ReadFile(filepath.Join(dir, name))
+		b, err := os.ReadFile(filepath.Join(dirs[corpus], name))
 		if err != nil {
-			t.Skipf("no local %s to check the sentinels against: %v", name, err)
+			skipMissingDep(t, "no local %s to check the sentinels against: %v", name, err)
 		}
 		bodies[i] = string(b)
 	}
-	for i, si := range firejail {
-		src := upstreamSources[si]
+	for i, src := range upstreamSources {
 		for j, body := range bodies {
 			got := isProfile(body, src.sentinel)
 			if want := i == j; got != want {
-				t.Errorf("sentinel %q of source %d matched profile %d = %v, want %v; a sentinel that matches the other profile lets a URL mixup pass as a good fetch",
-					src.sentinel, i, j, got, want)
+				t.Errorf("sentinel %q of source %d matched profile %d (%s) = %v, want %v; a sentinel that matches another profile lets a URL mixup pass as a good fetch",
+					src.sentinel, i, j, upstreamSources[j].url, got, want)
 			}
 		}
 	}
+}
+
+func envDir(name, fallback string) string {
+	if dir := os.Getenv(name); dir != "" {
+		return dir
+	}
+	return fallback
+}
+
+// skipMissingDep skips for a missing host dependency, or fails when
+// BENTO_REQUIRE_TEST_DEPS is set. A gate that self-skips reports a pass having proved
+// nothing, which is indistinguishable from a run that checked something; the variable is
+// how a host that is supposed to have the dependency (CI, and `make test`) says so.
+func skipMissingDep(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // An out-of-scope section (firejail's privacy/system scope, which bento's empty-root
