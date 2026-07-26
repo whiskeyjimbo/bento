@@ -24,8 +24,24 @@ import (
 func perms(args []string, in io.Reader, out io.Writer) int {
 	s, err := loadStore()
 	if err != nil {
+		// reset is the recovery path, so it must survive the state it recovers from: a
+		// corrupt or unreadable store is exactly when a human needs to clear it, and
+		// refusing here would leave `rm` as the only way out of a state the code
+		// deliberately fails closed on. It discards the file wholesale by design, so it
+		// needs nothing from the unreadable contents. Every other subcommand reads what
+		// is there and must not act on bytes it could not parse.
+		if len(args) == 0 || args[0] != "reset" {
+			fmt.Fprintf(out, "supervise: %v\n", err)
+			return 1
+		}
 		fmt.Fprintf(out, "supervise: %v\n", err)
-		return 1
+		fmt.Fprintln(out, "supervise: clearing it is the way out of this - reset does not need to read it.")
+		s, err := emptyStore()
+		if err != nil {
+			fmt.Fprintf(out, "supervise: %v\n", err)
+			return 1
+		}
+		return resetPerms(s, in, out, true)
 	}
 	if len(args) == 0 {
 		permsUsage(out)
@@ -38,7 +54,7 @@ func perms(args []string, in io.Reader, out io.Writer) int {
 	case "forget":
 		return forgetPerms(s, args[1:], out)
 	case "reset":
-		return resetPerms(s, in, out)
+		return resetPerms(s, in, out, false)
 	case "export":
 		return exportPerms(s, args[1:], out)
 	case "import":
@@ -272,13 +288,21 @@ func globalPermsCmd(s *store, args []string, out io.Writer) int {
 	return 0
 }
 
-func resetPerms(s *store, in io.Reader, out io.Writer) int {
+// unreadable says the store on disk could not be parsed, so s is a stand-in empty one
+// rather than its contents. Reset still has work to do then - the file itself is what
+// is being discarded - and there is nothing to count, so the usual empty-store
+// shortcut and the itemized confirmation both have to give way.
+func resetPerms(s *store, in io.Reader, out io.Writer, unreadable bool) int {
 	globals := globalCount(s)
-	if len(s.Apps) == 0 && globals == 0 {
+	if !unreadable && len(s.Apps) == 0 && globals == 0 {
 		fmt.Fprintln(out, "the permission store is already empty")
 		return 0
 	}
-	fmt.Fprintf(out, "clear the entire permission store (%d app(s), %d global rule(s))? [y/N] ", len(s.Apps), globals)
+	if unreadable {
+		fmt.Fprint(out, "replace the unreadable permission store with an empty one? [y/N] ")
+	} else {
+		fmt.Fprintf(out, "clear the entire permission store (%d app(s), %d global rule(s))? [y/N] ", len(s.Apps), globals)
+	}
 	if !confirmed(in) {
 		fmt.Fprintln(out, "cancelled")
 		return 0

@@ -217,11 +217,24 @@ func TestLoadStoreCreatesDirSoShieldsResolve(t *testing.T) {
 	if fi, err := os.Stat(s.dir); err != nil || !fi.IsDir() {
 		t.Fatalf("loadStore must create the store dir; stat = %v, %v", fi, err)
 	}
-	// The same directory named through the resolved path - what a grant of it looks
-	// like once the backend or the user spells it the other way.
-	resolved := filepath.Join(real, "bento-supervise")
-	if !coversStore(resolved, s.dir) {
-		t.Errorf("coversStore(%q, %q) = false; a grant of the store's own directory must be refused however it is spelled", resolved, s.dir)
+	// A grant must be refused however it is spelled, and whether or not it exists yet:
+	// coversStore compares through resolveSymlinks, and resolving only fully-existing
+	// paths would put the store dir in the real namespace and a not-yet-created file
+	// inside it in the link namespace, where neither contains the other.
+	for _, grant := range []string{
+		filepath.Join(real, "bento-supervise"), // resolved spelling of the dir
+		filepath.Join(link, "bento-supervise"), // link spelling of the dir
+		filepath.Join(real, "bento-supervise", "perms.json"),
+		filepath.Join(link, "bento-supervise", "perms.json"), // does not exist yet
+		link, real, // a grant enclosing the store
+	} {
+		if !coversStore(grant, s.dir) {
+			t.Errorf("coversStore(%q, %q) = false; a grant reaching the permission store must be refused", grant, s.dir)
+		}
+	}
+	// A sibling that merely shares a prefix is not the store.
+	if coversStore(filepath.Join(real, "bento-supervise-other"), s.dir) {
+		t.Error("a sibling directory must not read as covering the store")
 	}
 }
 

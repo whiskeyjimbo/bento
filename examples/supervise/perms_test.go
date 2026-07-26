@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -249,5 +251,56 @@ func TestPermsGlobalDenyFoldsButAllowOverwrites(t *testing.T) {
 				t.Errorf("concurrent block survived = %v, want %v", ok, tc.wantOther)
 			}
 		})
+	}
+}
+
+// A corrupt store is exactly when a human needs to clear it, and every perms
+// subcommand loads before dispatch - so refusing there left `rm` as the only way out
+// of a state the code deliberately fails closed on. reset does not read the contents
+// it discards, so it must survive them.
+func TestPermsResetRecoversFromACorruptStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "bento-supervise", "permissions.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything that reads the store still refuses it.
+	var out bytes.Buffer
+	if code := perms([]string{"list"}, strings.NewReader(""), &out); code != 1 {
+		t.Errorf("perms list on a corrupt store = %d, want 1: %s", code, out.String())
+	}
+
+	out.Reset()
+	if code := perms([]string{"reset"}, strings.NewReader("y\n"), &out); code != 0 {
+		t.Fatalf("perms reset on a corrupt store = %d, want 0: %s", code, out.String())
+	}
+	if _, err := loadStore(); err != nil {
+		t.Errorf("the store must be readable after reset; got %v", err)
+	}
+}
+
+// Declining the confirmation leaves the corrupt store alone rather than clearing it.
+func TestPermsResetDeclinedKeepsTheCorruptStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "bento-supervise", "permissions.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := perms([]string{"reset"}, strings.NewReader("n\n"), &out); code != 0 {
+		t.Fatalf("perms reset = %d: %s", code, out.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "{not json" {
+		t.Errorf("a declined reset must not touch the store; got %q, %v", data, err)
 	}
 }

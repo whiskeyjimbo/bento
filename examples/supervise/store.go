@@ -124,16 +124,13 @@ func loadStore() (*store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Create the store directory now rather than at first write. Both store shields -
-	// approve's grant refusal and assertStoreShielded - compare through
-	// EvalSymlinks, which fails on a path that does not exist yet and falls back to
-	// the raw string. With a symlinked ~/.config that fallback compares two spellings
-	// of the same directory and finds no overlap, so on run one a grant of the store's
-	// own directory passes both checks and a permissions.json planted in that window
-	// is trusted forever. The trial's DenyPaths shield resolves the same way.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
+	// Create the store directory now rather than at first write, so the shields and
+	// the trial's DenyPaths compare a directory that really exists rather than one
+	// spelling of a path that does not. Best-effort on purpose: reading the store must
+	// not require permission to create it, or `perms list` on a read-only config home
+	// fails where it used to print what is there. resolveSymlinks keeps the shields
+	// correct either way, and the write path below reports the failure loudly.
+	_ = os.MkdirAll(dir, 0o700)
 	s := &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
 	if err := requireRegular(s.path); err != nil {
 		return nil, err
@@ -159,6 +156,17 @@ func loadStore() (*store, error) {
 	}
 	s.base = s.clone()
 	return s, nil
+}
+
+// emptyStore is a store with no decisions, pointed at the real store location. It is
+// what `perms reset` recovers with when the file on disk cannot be read: reset
+// discards the contents wholesale, so it needs nothing from them.
+func emptyStore() (*store, error) {
+	dir, err := storeDir()
+	if err != nil {
+		return nil, err
+	}
+	return &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}, nil
 }
 
 // save persists the decisions this run changed, applied onto the current on-disk
@@ -273,12 +281,19 @@ func writeFileDurably(path string, data []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
+	// The rename has already succeeded, so the data IS on disk; a directory that will
+	// not flush only means it might not survive a power loss. Reporting that as a
+	// failed save would tell the caller a deny was lost when it was not, and that one
+	// message has to stay trustworthy.
 	d, err := os.Open(dir)
-	if err != nil {
-		return err
+	if err == nil {
+		defer d.Close()
+		err = d.Sync()
 	}
-	defer d.Close()
-	return d.Sync()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "supervise: could not flush %s; the store is written but may not survive a power loss: %v\n", dir, err)
+	}
+	return nil
 }
 
 // tightenStoreDir removes group and world access from an existing store directory,
@@ -712,9 +727,26 @@ func coversStore(grant, dir string) bool {
 		underComponent(resolveSymlinks(grant), resolveSymlinks(dir))
 }
 
+// resolveSymlinks resolves p through its deepest EXISTING ancestor, rejoining the
+// part that does not exist yet. EvalSymlinks alone fails on any path that is not
+// fully present, and falling back to the raw string then compares two different
+// namespaces: with a symlinked config home, the store dir resolves to its real
+// location while a file that does not exist inside it keeps the link spelling, and
+// coversStore finds no overlap between them - answering "this grant does not touch
+// the store" about a path directly inside it. Resolving the ancestor keeps both sides
+// in one namespace whether or not the leaf exists.
 func resolveSymlinks(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
+	cleaned := filepath.Clean(p)
+	rest := ""
+	for cur := cleaned; ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return cleaned // nothing along the path exists; the raw spelling is all there is
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
 	}
-	return p
 }
