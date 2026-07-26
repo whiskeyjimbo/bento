@@ -15,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/lexer"
+	"github.com/goccy/go-yaml/token"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -119,6 +121,9 @@ func Parse(r io.Reader) (*Document, error) {
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("manifest: input is not valid UTF-8 text, so it is not a manifest")
 	}
+	if err := screenSource(string(data)); err != nil {
+		return nil, err
+	}
 	var m manifest
 	dec := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField())
 	if err := dec.Decode(&m); err != nil && !errors.Is(err, io.EOF) {
@@ -153,6 +158,51 @@ func Parse(r io.Reader) (*Document, error) {
 		}
 	}
 	return &Document{Policy: p, Provenance: prov}, nil
+}
+
+// screenSource rejects the YAML constructs that let a manifest's decoded meaning differ
+// from the text a reviewer read, or let a small input expand without bound. It runs on the
+// source because both failures happen inside the decoder, so nothing downstream of the
+// decode can see them.
+//
+// It lexes with the decoder's own lexer rather than searching for the indicator bytes.
+// '&', '*' and '!' are ordinary characters inside a quoted scalar, a comment, or a path -
+// "read: [/data/*]" is a manifest someone writes on purpose - so a byte scan would refuse
+// legitimate input. Lexing is linear in the source and expands nothing: the alias bomb
+// that exhausts memory in Decode tokenizes in well under a millisecond, which is what
+// makes it safe to run this on the untrusted input it exists to screen.
+//
+// Only the line number is reported, never the offending token. The source is
+// attacker-controlled - the reason sanitizeControl exists below - so echoing an anchor
+// name or tag string into an error the operator's terminal renders would reopen at a new
+// site exactly what this file is careful about everywhere else.
+func screenSource(data string) error {
+	for _, tok := range lexer.Tokenize(data) {
+		switch tok.Type {
+		case token.TagType:
+			// A tag makes the decoded value differ from the bytes on the line: read:
+			// [!!binary "L2V0Yy9zaGFkb3c="] decodes to /etc/shadow. approve fingerprints
+			// the DECODED policy, so the approval would be genuine for a grant no reviewer
+			// could see. Every tag is refused, not just !!binary - a custom !foo tag is the
+			// same divergence between what was read and what runs.
+			return fmt.Errorf("manifest: line %d uses an explicit YAML tag; a tag decodes to a value the line does not show, so an approval would attest a grant no reviewer saw", lineOf(tok))
+		case token.AnchorType, token.AliasType, token.MergeKeyType:
+			// Nested aliases expand geometrically at decode time, and maxManifestBytes
+			// caps the SOURCE, not the expansion - a few hundred bytes exhausts memory.
+			// Refusing the construct outright also keeps a manifest readable as written:
+			// a merge key means the grants in force are not the grants on the page.
+			return fmt.Errorf("manifest: line %d uses a YAML anchor, alias, or merge key; these expand without bound at decode time and hide what a manifest grants, so a manifest must spell its values out", lineOf(tok))
+		}
+	}
+	return nil
+}
+
+// lineOf reports a token's 1-based source line, or 0 when the lexer left no position.
+func lineOf(tok *token.Token) int {
+	if tok.Position == nil {
+		return 0
+	}
+	return tok.Position.Line
 }
 
 // sanitizeControl drops the control characters an untrusted manifest could smuggle

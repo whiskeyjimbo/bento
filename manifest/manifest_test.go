@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -222,5 +224,101 @@ func TestParseRejectsMultipleDocuments(t *testing.T) {
 	src := "entrypoint: ./x\nexec: none\n---\nentrypoint: ./y\nexec: all\n"
 	if _, err := Parse(strings.NewReader(src)); err == nil {
 		t.Fatal("a manifest with two YAML documents must be rejected")
+	}
+}
+
+// An explicit tag decodes to a value the line does not show: read:
+// [!!binary "L2V0Yy9zaGFkb3c="] yielded Read: [/etc/shadow]. approve fingerprints the
+// DECODED policy, so the approval was genuine for a grant no reviewer could see. Every
+// tag is refused, not only !!binary - a custom tag is the same divergence.
+func TestParseRejectsExplicitTags(t *testing.T) {
+	for name, src := range map[string]string{
+		"binary hides a path":  "entrypoint: ./x\nread: [!!binary \"L2V0Yy9zaGFkb3c=\"]\n",
+		"binary in entrypoint": "entrypoint: !!binary \"L2V0Yy9zaGFkb3c=\"\n",
+		"str tag":              "entrypoint: !!str ./x\n",
+		"custom tag":           "entrypoint: ./x\nargs: [!foo bar]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, err := Parse(strings.NewReader(src))
+			if err == nil {
+				t.Fatalf("a tagged value must be rejected; got policy %+v", doc.Policy)
+			}
+			if !strings.Contains(err.Error(), "explicit YAML tag") {
+				t.Errorf("error should name the cause; got %q", err)
+			}
+		})
+	}
+}
+
+// Nested aliases expand geometrically inside the decoder, and maxManifestBytes caps the
+// source, not the expansion - this input is ~1.3KB and exhausted memory before the scan.
+// The scan lexes instead of decoding, which is linear, so the refusal is immediate.
+func TestParseRejectsAnchorsAndAliases(t *testing.T) {
+	var bomb strings.Builder
+	bomb.WriteString("a0: &a0 [x]\n")
+	for i := 1; i < 60; i++ {
+		fmt.Fprintf(&bomb, "a%d: &a%d [*a%d, *a%d]\n", i, i, i-1, i-1)
+	}
+	bomb.WriteString("entrypoint: *a59\n")
+
+	for name, src := range map[string]string{
+		"alias bomb": bomb.String(),
+		"anchor":     "entrypoint: &e ./x\n",
+		"merge key":  "base: {exec: all}\nentrypoint: ./x\n<<: *base\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { _, err := Parse(strings.NewReader(src)); done <- err }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("an anchor, alias, or merge key must be rejected")
+				}
+				if !strings.Contains(err.Error(), "anchor, alias, or merge key") {
+					t.Errorf("error should name the cause; got %q", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Parse did not return: the input reached the decoder and is expanding")
+			}
+		})
+	}
+}
+
+// The scan must not refuse what people legitimately write: '&', '*' and '!' are ordinary
+// characters in a path, an argument, or a comment, and a byte scan for the indicators
+// would reject every one of these.
+func TestParseAcceptsIndicatorCharactersInValues(t *testing.T) {
+	for name, src := range map[string]string{
+		"glob in a read path":   "entrypoint: ./x\nread: [\"/data/*\"]\n",
+		"ampersand in an arg":   "entrypoint: ./x\nargs: [\"a&b\"]\n",
+		"bang in an arg":        "entrypoint: ./x\nargs: [\"--x=!y\"]\n",
+		"indicators in comment": "# see *this and &that and !those\nentrypoint: ./x\n",
+		"star inside a quote":   "entrypoint: \"./x*\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(strings.NewReader(src)); err != nil {
+				t.Errorf("a legitimate manifest must not be refused: %v", err)
+			}
+		})
+	}
+}
+
+// The scan runs on untrusted input before the decoder does, so it must fail rather than
+// panic on anything - the lexer has no error return, which leaves its behavior on
+// malformed source unstated by its signature.
+func TestScreenSourceHandlesMalformedInput(t *testing.T) {
+	for _, src := range []string{
+		"", "!", "&", "*", "\"unterminated", "'unterminated", "[unclosed",
+		"{unclosed", "a: [1, 2", "- - - -", "!!", "&&&", "***", ": :", "\t\t",
+		strings.Repeat("[", 500), strings.Repeat("&a ", 200),
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("screenSource panicked on %q: %v", src, r)
+				}
+			}()
+			_ = screenSource(src)
+		}()
 	}
 }
