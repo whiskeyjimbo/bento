@@ -124,7 +124,20 @@ func loadStore() (*store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &store{Version: 1, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
+	// Create the store directory now rather than at first write. Both store shields -
+	// approve's grant refusal and assertStoreShielded - compare through
+	// EvalSymlinks, which fails on a path that does not exist yet and falls back to
+	// the raw string. With a symlinked ~/.config that fallback compares two spellings
+	// of the same directory and finds no overlap, so on run one a grant of the store's
+	// own directory passes both checks and a permissions.json planted in that window
+	// is trusted forever. The trial's DenyPaths shield resolves the same way.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	s := &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
+	if err := requireRegular(s.path); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
 		return s, nil
@@ -135,6 +148,12 @@ func loadStore() (*store, error) {
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, fmt.Errorf("permission store %s is corrupt: %w", s.path, err)
 	}
+	if err := checkVersion(s.Version, s.path); err != nil {
+		return nil, err
+	}
+	// A store predating the version field is this format; stamp it so the write back
+	// carries the version it is actually in.
+	s.Version = storeVersion
 	if s.Apps == nil {
 		s.Apps = map[string]*appPerms{}
 	}
@@ -164,7 +183,18 @@ func (s *store) write(merge bool) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(s.dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	// MkdirAll is a no-op on a directory that already exists, so a store dir created
+	// with a permissive umask (or by an earlier version) keeps whatever mode it has.
+	// It holds the persisted record of human approvals; anyone who can write there can
+	// grant themselves an allow the next run applies without prompting.
+	if err := tightenStoreDir(s.dir); err != nil {
+		return err
+	}
+	lockPath := filepath.Join(s.dir, ".lock")
+	if err := requireRegular(lockPath); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -180,10 +210,25 @@ func (s *store) write(merge bool) error {
 		// so finishing last preserves both a concurrent run's additions and a concurrent
 		// edit command's deletions. A key this run merely read is left as disk has it.
 		target = &store{Version: s.Version, Apps: map[string]*appPerms{}}
-		if disk, err := os.ReadFile(s.path); err == nil {
-			if json.Unmarshal(disk, target) == nil && target.Apps == nil {
+		// A store that cannot be read or parsed must NOT be merged onto: doing so writes
+		// this run's delta alone over decisions that are still on disk, so an unreadable
+		// store silently becomes an empty one and every remembered deny is gone. Only a
+		// missing file is tolerable - that is the genuine first write. loadStore treats
+		// these same bytes as fatal; the write path has to agree.
+		disk, err := os.ReadFile(s.path)
+		switch {
+		case err == nil:
+			if err := json.Unmarshal(disk, target); err != nil {
+				return fmt.Errorf("permission store %s is corrupt: %w", s.path, err)
+			}
+			if err := checkVersion(target.Version, s.path); err != nil {
+				return err
+			}
+			if target.Apps == nil {
 				target.Apps = map[string]*appPerms{}
 			}
+		case !os.IsNotExist(err):
+			return err
 		}
 		target.mergeChanges(s, s.base)
 	}
@@ -192,11 +237,99 @@ func (s *store) write(merge bool) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	return writeFileDurably(s.path, data)
+}
+
+// writeFileDurably replaces path with data atomically and durably: the content is
+// written to a temporary file in the same directory, flushed, and renamed over the
+// target, then the directory itself is flushed so the rename survives too. Without the
+// flushes the rename is atomic against a torn write but not against power loss - the
+// store could come back with stale content, which silently reverts a deny. A
+// zero-length store fails closed on the next load, which is the tolerable outcome;
+// stale content is not.
+func writeFileDurably(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once the rename below has moved it away
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// tightenStoreDir removes group and world access from an existing store directory,
+// warning when it does. The store is the record of what a human approved, so a
+// directory others can write is one where they can plant an allow this tool then
+// applies without prompting.
+func tightenStoreDir(dir string) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	mode := fi.Mode().Perm()
+	if mode&0o077 == 0 {
+		return nil
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "supervise: permission store %s was group/world-accessible (%#o); tightened to 0700 - it records what you approved.\n", dir, mode)
+	return nil
+}
+
+// requireRegular refuses a store file that is not a regular file, for the reason
+// appKey refuses a non-regular entrypoint: a FIFO or device at permissions.json or
+// .lock blocks in ReadFile or OpenFile before anything is prompted, so the tool hangs
+// instead of failing. A path that does not exist yet is the first-write case.
+func requireRegular(path string) error {
+	fi, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("permission store %s is not a regular file", path)
+	}
+	return nil
+}
+
+// storeVersion is the format this build writes and understands. A store written by a
+// newer build is refused rather than reinterpreted: its decisions may mean something
+// this build would apply wrongly, and applying a deny wrongly is the failure that
+// matters. Version 0 is a store written before the field existed.
+const storeVersion = 1
+
+func checkVersion(v int, path string) error {
+	if v > storeVersion {
+		return fmt.Errorf("permission store %s is version %d, newer than this build understands (%d); upgrade supervise rather than letting it reinterpret your decisions", path, v, storeVersion)
+	}
+	return nil
 }
 
 // mergeChanges applies onto the on-disk store (the receiver) the decisions mem

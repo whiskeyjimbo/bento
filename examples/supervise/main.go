@@ -89,8 +89,6 @@ func run(scriptArg string) int {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 2
 	}
-	interp := guessInterpreter(script)
-	name := filepath.Base(script)
 
 	// The permission store is this wrapper's memory of past answers. Loading it lets
 	// the run auto-apply known decisions and prompt only for the unknown; the app is
@@ -100,6 +98,37 @@ func run(scriptArg string) int {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 1
 	}
+	// Every way out of the supervised run persists what it recorded. Most of its
+	// failure returns happen AFTER the approval prompts, where the human has already
+	// answered - dropping those answers on the floor loses a deny a human made, which
+	// is the one outcome the exit code exists to never hide.
+	return persistDecisions(s, supervised(s, script), os.Stderr)
+}
+
+// persistDecisions saves the run's decisions and folds the outcome into the exit code.
+// The run's own code wins whenever it is already non-zero: it is the more specific
+// answer, and a lost deny does not make a failed run more informative. A failed save
+// that dropped a deny or standing block turns an otherwise clean run non-zero, so a
+// lost security decision is never reported as success.
+func persistDecisions(s *store, code int, out io.Writer) int {
+	err := s.save()
+	if err == nil {
+		return code
+	}
+	fmt.Fprintf(out, "supervise: saving permission store: %v\n", err)
+	if s.recordedDeny {
+		fmt.Fprintln(out, "supervise: a deny or standing block from this run was NOT persisted; exiting non-zero so the loss is not silent.")
+	}
+	return finalExitCode(code, err, s.recordedDeny)
+}
+
+// supervised is the run itself: trial, approval, enforced run. Its caller persists
+// whatever it recorded, so every return here - including a failure - keeps the human's
+// answers.
+func supervised(s *store, script string) int {
+	interp := guessInterpreter(script)
+	name := filepath.Base(script)
+
 	key, err := appKey(script)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
@@ -196,16 +225,6 @@ func run(scriptArg string) int {
 		return 1
 	}
 
-	// Persist the run's decisions so the next run of this app prompts only for what
-	// is new.
-	saveErr := s.save()
-	if saveErr != nil {
-		fmt.Fprintf(os.Stderr, "supervise: saving permission store: %v\n", saveErr)
-		if s.recordedDeny {
-			fmt.Fprintln(os.Stderr, "supervise: a deny or standing block from this run was NOT persisted; exiting non-zero so the loss is not silent.")
-		}
-	}
-
 	// Summary: what the live gate let out beyond the manifest, and any shortfall.
 	for _, d := range res.Report.Degradations() {
 		fmt.Fprintf(os.Stderr, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, d.Reason)
@@ -216,7 +235,7 @@ func run(scriptArg string) int {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(hp.Host+":"+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
-	return finalExitCode(res.ExitCode, saveErr, s.recordedDeny)
+	return res.ExitCode
 }
 
 // finalExitCode is the process exit code. It is the target's own code untouched,

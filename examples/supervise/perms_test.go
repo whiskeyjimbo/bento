@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -197,5 +198,56 @@ func TestListQuotesAttackerStrings(t *testing.T) {
 	perms([]string{"list"}, strings.NewReader(""), &out)
 	if strings.ContainsRune(out.String(), '\x1b') {
 		t.Errorf("list leaked a raw escape byte: %q", out.String())
+	}
+}
+
+// `perms global deny` used the non-folding write, so it clobbered whatever a
+// concurrent run had recorded since this command loaded. A deny has no conflict with
+// the merge - the merge is deny-preferring - so folding gets the operator's rule AND
+// keeps the concurrent block. An explicit `global allow` still overwrites, or the
+// deny-preference would override the allow the operator just typed (bv2-brc0 item 5).
+func TestPermsGlobalDenyFoldsButAllowOverwrites(t *testing.T) {
+	cases := map[string]struct {
+		verb      string
+		wantOther bool // does a concurrent run's block survive?
+	}{
+		"deny folds":       {"deny", true},
+		"allow overwrites": {"allow", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", dir)
+			s, err := loadStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// A concurrent run records its own standing block after this command loaded.
+			other, err := loadStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			other.rememberNetwork("", "tracker.example", "443", deny, true)
+			if err := other.save(); err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			if code := globalPermsCmd(s, []string{tc.verb, "read", "/data"}, &out); code != 0 {
+				t.Fatalf("globalPerm = %d: %s", code, out.String())
+			}
+			reloaded, err := loadStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d, ok := reloaded.decidePath("", "read", "/data"); !ok || string(d) != tc.verb {
+				t.Errorf("the operator's rule did not stick; decidePath = %v,%v", d, ok)
+			}
+			_, ok := reloaded.decideNetwork("", "tracker.example", "443")
+			if ok != tc.wantOther {
+				t.Errorf("concurrent block survived = %v, want %v", ok, tc.wantOther)
+			}
+		})
 	}
 }

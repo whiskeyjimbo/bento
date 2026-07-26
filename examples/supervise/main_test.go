@@ -330,3 +330,51 @@ func TestGateRemembersPerHost(t *testing.T) {
 		t.Errorf("prompted %d times, want 2 (once per unique host)", got)
 	}
 }
+
+// Every failure return from the supervised run happens after the approval prompts,
+// where the human has already answered. Those answers used to be discarded: only the
+// success path reached save(), so a failed enforced run threw away every deny and
+// standing block the trial recorded (bv2-q5qm).
+func TestPersistDecisionsSavesOnAFailedRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rememberNetwork("", "tracker.example", "443", deny, true)
+
+	// The run failed for its own reason; the deny it recorded must still land.
+	if got := persistDecisions(s, 1, io.Discard); got != 1 {
+		t.Errorf("exit code = %d, want the run's own 1 - a successful save must not change it", got)
+	}
+	reloaded, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := reloaded.decideNetwork("", "tracker.example", "443"); !ok || d != deny {
+		t.Errorf("the standing block from a failed run was lost; decideNetwork = %v,%v", d, ok)
+	}
+}
+
+// A save that fails after a deny was recorded turns a clean run non-zero, but never
+// overwrites a more specific failure code the run already returned.
+func TestPersistDecisionsExitCodes(t *testing.T) {
+	cases := map[string]struct {
+		code, want int
+	}{
+		"clean run, lost deny":          {0, 1},
+		"failed run keeps its own code": {2, 2},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// A store whose directory cannot be created is one whose save always fails.
+			s := &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: "/proc/nonexistent/store"}
+			s.path = filepath.Join(s.dir, "permissions.json")
+			s.rememberPath("k", "read", "/tmp/x", deny, false)
+			if got := persistDecisions(s, tc.code, io.Discard); got != tc.want {
+				t.Errorf("persistDecisions(code=%d) = %d, want %d", tc.code, got, tc.want)
+			}
+		})
+	}
+}

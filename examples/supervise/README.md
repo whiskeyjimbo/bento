@@ -135,6 +135,11 @@ worth knowing:
   `read ~/.config` when the store lives under it).
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
   is printed so a silent block is never a mystery.
+- **It fails closed, never quietly.** A store that cannot be read or parsed - or that
+  a newer build wrote - stops the run rather than being replaced with an empty one; a
+  wrongly-forgotten deny is worse than a refusal. Writes are atomic and flushed, and
+  the run persists what it recorded even when it fails partway, so an answer you gave
+  is never lost to a later error.
 - **Two layers, deny-wins across both.** Per-app decisions live under the script's
   hash; global decisions apply to every app and survive a code change, since a fresh
   hash still sees them. Global rules are set deliberately - `perms global ...`, or

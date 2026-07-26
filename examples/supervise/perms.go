@@ -255,10 +255,16 @@ func globalPermsCmd(s *store, args []string, out io.Writer) int {
 		permsUsage(out)
 		return 2
 	}
-	// A deliberate edit uses the non-folding write so it sticks, the same as forget
-	// and reset - the concurrent-merge deny-preference must not override an explicit
-	// `global allow` the operator just typed.
-	if err := s.overwrite(); err != nil {
+	// An explicit `global allow` uses the non-folding write so it sticks, the same as
+	// forget and reset: the concurrent-merge deny-preference would otherwise override
+	// the allow the operator just typed. A deny has no such conflict - the merge is
+	// deny-preferring, so folding it in gets the operator's rule AND keeps a
+	// concurrent run's recorded block, which overwrite would clobber.
+	write := s.overwrite
+	if d == deny {
+		write = s.save
+	}
+	if err := write(); err != nil {
 		fmt.Fprintf(out, "supervise: %v\n", err)
 		return 1
 	}

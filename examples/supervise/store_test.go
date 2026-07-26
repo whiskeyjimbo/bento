@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -192,5 +193,210 @@ func TestApproveRemembersAcrossRuns(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "[y]es") {
 		t.Errorf("second run must not prompt; output was %q", out.String())
+	}
+}
+
+// The store shields (approve's grant refusal and assertStoreShielded) compare through
+// EvalSymlinks, which falls back to the raw string on a path that does not exist. With
+// a symlinked config home that fallback compares two spellings of the same directory
+// and finds no overlap, so on run one a grant of the store's own directory sailed past
+// both checks and a permissions.json planted in that window was trusted forever.
+// loadStore creating the directory is what closes it (bv2-yb1n).
+func TestLoadStoreCreatesDirSoShieldsResolve(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "config")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", link)
+
+	s, err := loadStore()
+	if err != nil {
+		t.Fatalf("loadStore: %v", err)
+	}
+	if fi, err := os.Stat(s.dir); err != nil || !fi.IsDir() {
+		t.Fatalf("loadStore must create the store dir; stat = %v, %v", fi, err)
+	}
+	// The same directory named through the resolved path - what a grant of it looks
+	// like once the backend or the user spells it the other way.
+	resolved := filepath.Join(real, "bento-supervise")
+	if !coversStore(resolved, s.dir) {
+		t.Errorf("coversStore(%q, %q) = false; a grant of the store's own directory must be refused however it is spelled", resolved, s.dir)
+	}
+}
+
+// The merge re-read used to swallow both the read and the parse error and then write
+// this run's delta ALONE - so an unreadable store was silently replaced by an empty
+// one and every remembered deny was destroyed. loadStore treats the same bytes as
+// fatal; the write path has to agree (bv2-96ud).
+func TestSaveRefusesToMergeOntoAnUnreadableStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rememberNetwork("", "tracker.example", "443", deny, true)
+	if err := s.save(); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	before, err := os.ReadFile(s.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, corrupt := range map[string]func(){
+		"unreadable": func() {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads through mode 0000")
+			}
+			if err := os.Chmod(s.path, 0o000); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"corrupt": func() {
+			if err := os.WriteFile(s.path, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.Chmod(s.path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(s.path, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			corrupt()
+			t.Cleanup(func() { _ = os.Chmod(s.path, 0o600) })
+			// Whatever state corrupt() left, the save must not replace it - the
+			// destructive half of the bug is what matters, not just the swallowed error.
+			untouched, readErr := os.ReadFile(s.path)
+
+			next := &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: s.dir, path: s.path}
+			next.rememberPath("", "read", "/tmp/x", deny, true)
+			if err := next.save(); err == nil {
+				t.Error("save must fail rather than write this run's delta over a store it could not read")
+			}
+			if readErr != nil {
+				return // unreadable to the test too; the no-clobber check below cannot run
+			}
+			after, err := os.ReadFile(s.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(untouched) {
+				t.Errorf("the store was rewritten over content the save could not read:\n%s", after)
+			}
+		})
+	}
+	// The remembered deny must have survived both attempts.
+	if err := os.Chmod(s.path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := reloaded.decideNetwork("", "tracker.example", "443"); !ok || d != deny {
+		t.Errorf("the standing block did not survive; decideNetwork = %v,%v", d, ok)
+	}
+}
+
+// A store written by a newer build is refused rather than reinterpreted: applying a
+// deny under the wrong semantics is the failure that matters (bv2-brc0 item 6).
+func TestLoadStoreRefusesANewerVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path, []byte(`{"version":99,"apps":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadStore(); err == nil {
+		t.Error("loadStore must refuse a store newer than this build understands")
+	}
+
+	// A store predating the version field is this format, not a newer one.
+	if err := os.WriteFile(s.path, []byte(`{"apps":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadStore(); err != nil {
+		t.Errorf("a version-less legacy store must still load; got %v", err)
+	}
+}
+
+// A FIFO at permissions.json blocks in ReadFile before anything is prompted, so the
+// tool hangs instead of failing. appKey already refuses a non-regular entrypoint for
+// this reason; the store files get the same treatment (bv2-brc0 item 3).
+func TestLoadStoreRefusesANonRegularStoreFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "bento-supervise", "permissions.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+	if _, err := loadStore(); err == nil {
+		t.Error("loadStore must refuse a non-regular permissions.json rather than block on it")
+	}
+}
+
+// MkdirAll is a no-op on an existing directory, so a store dir created under a
+// permissive umask kept its mode forever - and anyone who could write there could
+// plant an allow the next run applies without prompting (bv2-brc0 item 2).
+func TestWriteTightensAPermissiveStoreDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	fi, err := os.Stat(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got&0o077 != 0 {
+		t.Errorf("store dir mode = %#o, want group/world access removed", got)
+	}
+}
+
+// The write is atomic AND durable, and leaves no temporary file behind - a stale
+// store that comes back after power loss silently reverts a deny (bv2-brc0 item 1).
+func TestSaveLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rememberPath("k", "read", "/tmp/x", deny, false)
+	if err := s.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("left a temporary file behind: %s", e.Name())
+		}
+	}
+	if fi, err := os.Stat(s.path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("store mode = %v (%v), want 0600", fi, err)
 	}
 }
