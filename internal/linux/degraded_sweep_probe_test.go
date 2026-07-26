@@ -63,3 +63,12 @@ func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 		t.Fatalf("BROKEN: backgrounded process %d survived the pgroup sweep under systemd-run --scope", sleeper)
 	}
 }
+
+// A zero pid must not reach Kill: -0 addresses the caller's own process group, so an
+// unguarded sweep SIGKILLs the launcher (here, this test binary) instead of the
+// target. The assertion is that this test survives to make it.
+func TestProcessGroupSweepIgnoresZeroPid(t *testing.T) {
+	if err := killProcessGroup(&os.Process{}); err != nil {
+		t.Fatalf("killProcessGroup: %v", err)
+	}
+}

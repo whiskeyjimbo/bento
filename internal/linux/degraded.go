@@ -214,9 +214,11 @@ func exitCodeOf(st *os.ProcessState) int {
 // killProcessGroup SIGKILLs every process still in the launcher's group. The
 // negative pid targets the group (the launcher is its leader via Setpgid). ESRCH -
 // the group is already empty, the common case where the target left nothing behind -
-// is expected and ignored.
+// is expected and ignored. A missing or zero pid means there is no group to sweep,
+// and must not reach Kill: -0 is the *caller's* group, so the launcher would SIGKILL
+// itself and everything sharing its group.
 func killProcessGroup(p *os.Process) error {
-	if p == nil {
+	if p == nil || p.Pid <= 0 {
 		return nil
 	}
 	if err := syscall.Kill(-p.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
