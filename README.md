@@ -78,7 +78,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 
 ### Built-in Shields & Exceptions
 - **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: "~"`) are strictly refused.
-- **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh/id_rsa`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
+- **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
 - **Fail-Closed Principle:** Any ambiguity, missing permission, unhandled network request, or missing kernel feature fails closed by default.
 
 ---
@@ -111,9 +111,10 @@ provenance:
   approves: <sha256-fingerprint-over-policy-fields>
 ```
 
-Read and write paths accept a leading `~` for your home directory (`~/.ssh/id_rsa`,
+Read and write paths accept a leading `~` for your home directory (`~/projects/api`,
 or `"~"` for home itself). Quote the bare tilde: unquoted, YAML reads `~` as null,
 not as a path. Another user's home (`~operator/...`) is not expanded - write it out.
+A `~` grant resolves against `$HOME` at run time, not at approval time.
 
 ---
 

@@ -69,6 +69,14 @@ A few things Bento trusts rather than defends:
   and you get a warning, then Bento takes you at your word. What it defends
   against is a *broad* grant pulling in a secret you didn't think about - not a
   deliberate handover.
+- **`$HOME` at the time of the run.** A `~` grant expands against the invoking
+  environment, and the approval fingerprint covers the manifest as written, not
+  the environment it is run in. So an approved `read: "~"` grants whichever tree
+  `$HOME` names at run time - which matters where a semi-trusted caller controls
+  the environment but not the manifest, such as CI or an agent harness. The
+  credential shields are computed from the same `$HOME`, so this redirects the
+  grant rather than unshielding anything. Name the directory outright in a
+  manifest that has to mean one fixed tree.
 
 ## 4. The defenses
 

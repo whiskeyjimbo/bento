@@ -53,6 +53,12 @@ naming an exact shield path is honored as a deliberate, warned exception.
   It reads syscall registers via ptrace rather than opening host files, so a
   hostile program cannot use profiling to probe secrets. Egress is recorded but
   still blocked.
+- Manifest paths resolve against the manifest's own directory, and a leading `~`
+  expands to the invoking user's home - so a `read: "~"` grant means home and is
+  shielded accordingly, rather than naming a file beside the manifest. Another
+  user's home (`~operator/...`) is refused rather than guessed at. Because the
+  fingerprint attests the manifest as written, a `~` grant resolves against
+  `$HOME` at run time; see the threat model.
 - `bento validate` parses a manifest, rejects malformed fields, and prints the
   requested permissions and resource limits (`--json` for machine output).
 - `bento approve` stamps a fingerprint over the policy fields. `bento run`

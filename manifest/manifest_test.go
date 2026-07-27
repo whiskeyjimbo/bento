@@ -517,7 +517,6 @@ func TestResolveExpandsHomeCleanly(t *testing.T) {
 // refused for the same reason: the grant would land wherever the enforcing process's
 // cwd points, which is the silent misplacement the expansion exists to fix.
 func TestResolveRefusesUnexpandableTilde(t *testing.T) {
-	t.Setenv("HOME", "/home/jrose")
 	for _, path := range []string{"~operator/keys", "~backup"} {
 		p := &policy.Policy{Entrypoint: "run.py", Read: []string{path}}
 		if err := Resolve(p, "/work/proj/m.yaml"); err == nil {
