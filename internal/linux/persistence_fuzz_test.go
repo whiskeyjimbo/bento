@@ -122,7 +122,7 @@ var persistenceSurfaces = []persistenceSurface{
 // construction the TestGitDirShields* tests use.
 func persistenceSandbox(root string) sandbox {
 	return sandbox{
-		home:      "/home/u", // unrelated to the temp grant, so no home shield sits above it
+		homes:     []string{"/home/u"}, // unrelated to the temp grant, so no home shield sits above it
 		emptyFile: filepath.Join(root, ".shield-empty"),
 		exists:    hostExists,
 		isDir:     hostIsDir,

@@ -2,8 +2,10 @@ package linux
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +23,7 @@ func testSandbox(existing ...string) sandbox {
 		set[p] = true
 	}
 	return sandbox{
-		home:       "/home/u",
+		homes:      []string{"/home/u"},
 		emptyFile:  "/tmp/shield",
 		entrypoint: "/work/run.py",
 		exists:     func(p string) bool { return set[p] },
@@ -279,6 +281,61 @@ func TestDenyListIsAppliedAfterGrants(t *testing.T) {
 	}
 }
 
+// The shields anchor on $HOME and on the passwd entry, so a caller-chosen environment
+// cannot relocate them off the real credential stores: HOME=/ moves one anchor to the
+// root and the passwd anchor still shields /home/u/.ssh inside the grant.
+func TestShieldsAnchorOnEveryHome(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa")
+	sb.homes = []string{"/", "/home/u"}
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
+	args := compileOrFail(t, p, sb)
+
+	grant := lastPairIndex(args, "--ro-bind-try", "/home/u")
+	shield := pairIndex(args, "--tmpfs", "/home/u/.ssh")
+	if grant < 0 || shield < 0 || shield < grant {
+		t.Errorf("a relocated $HOME dropped the passwd home's credential shield; grant=%d shield=%d", grant, shield)
+	}
+}
+
+// The passwd anchor is what a caller-chosen $HOME cannot move, so it must survive any
+// value of $HOME - including one that is itself a valid home directory.
+func TestHomeAnchorsKeepsPasswdHome(t *testing.T) {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skip("no passwd entry for this uid")
+	}
+	t.Setenv("HOME", "/")
+
+	homes, err := homeAnchors()
+	if err != nil {
+		t.Fatalf("homeAnchors: %v", err)
+	}
+	if !slices.Contains(homes, filepath.Clean(u.HomeDir)) {
+		t.Errorf("homeAnchors() = %v, want it to contain the passwd home %q whatever $HOME says", homes, u.HomeDir)
+	}
+	if !slices.Contains(homes, "/") {
+		t.Errorf("homeAnchors() = %v, want it to contain $HOME", homes)
+	}
+}
+
+// $HOME agreeing with passwd is the common case and must not shield everything twice -
+// including when the two differ only in a trailing slash.
+func TestHomeAnchorsDeduplicates(t *testing.T) {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skip("no passwd entry for this uid")
+	}
+	t.Setenv("HOME", u.HomeDir+"/")
+
+	homes, err := homeAnchors()
+	if err != nil {
+		t.Fatalf("homeAnchors: %v", err)
+	}
+	if want := []string{filepath.Clean(u.HomeDir)}; !slices.Equal(homes, want) {
+		t.Errorf("homeAnchors() = %v, want %v", homes, want)
+	}
+}
+
 // v1's allow_exec disabled seccomp AND Landlock AND the FD limit at once, so asking
 // for subprocesses silently surrendered filesystem confinement too. In v2 the exec
 // policy is an independent layer: exec: all drops only the exec-block, and the
@@ -425,7 +482,7 @@ func TestReadOptInDoesNotLiftSymlinkedShieldForWrite(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.exists = func(p string) bool { _, err := os.Lstat(p); return err == nil }
 	sb.isDir = func(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 	sb.resolve = hostResolve
@@ -825,7 +882,7 @@ func TestGitDirShieldsRealFilesystem(t *testing.T) {
 	// Deliberately no hooks/ dir: the shield must be emitted regardless.
 
 	sb := sandbox{
-		home:      "/home/u",
+		homes:     []string{"/home/u"},
 		emptyFile: "/tmp/shield",
 		exists:    hostExists,
 		isDir:     hostIsDir,
@@ -873,7 +930,7 @@ func TestGitDirShieldsConfigNamedSubmoduleDoesNotMaskSiblings(t *testing.T) {
 		}
 	}
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	got := make(map[string]bool)
@@ -920,7 +977,7 @@ func TestGitDirShieldsPlantedConfigDoesNotMaskSiblings(t *testing.T) {
 		t.Fatal(err)
 	}
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	got := make(map[string]bool)
@@ -955,7 +1012,7 @@ func TestGitDirShieldsDoesNotFollowSymlinkedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	for _, r := range gitDirShields(sb, root) {
@@ -992,7 +1049,7 @@ func TestGitDirShieldsFailsClosedOnUnreadableDir(t *testing.T) {
 	}
 
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	shieldsModules := false
@@ -1029,7 +1086,7 @@ func TestGitDirShieldsFailsClosedOnUnreadableWorktrees(t *testing.T) {
 	}
 
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	shielded := false
@@ -1056,7 +1113,7 @@ func TestGitDirShieldsTerminatesOnSymlinkLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	sb := sandbox{
-		home: "/home/u", emptyFile: "/tmp/shield",
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
 	done := make(chan struct{})
@@ -1516,7 +1573,7 @@ func TestWriteGrantDoesNotLeavePyenvInterpreterWritable(t *testing.T) {
 // the two on the same footing, or it misses and binds the whole home tree.
 func TestInterpreterUnderSymlinkedHomeBindsOnlyItself(t *testing.T) {
 	sb := testSandbox("/var/home/u", "/var/home/u/bin", "/var/home/u/bin/python3", "/work")
-	sb.home = "/home/u"
+	sb.homes = []string{"/home/u"}
 	sb.interpreter = "/var/home/u/bin/python3"
 	sb.resolve = func(p string) string {
 		if p == "/home/u" || under(p, "/home/u") {
@@ -1693,7 +1750,7 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 	// /root and shields nothing under /home/other.
 	t.Run("alien home while running as root", func(t *testing.T) {
 		sb := testSandbox("/home/other/bin/python3", "/home/other")
-		sb.home = "/root"
+		sb.homes = []string{"/root"}
 		sb.interpreter = "/home/other/bin/python3"
 		if got := interpreterReadPath(sb); got != "/home/other/bin/python3" {
 			t.Errorf("interpreterReadPath = %q, want the interpreter file alone, not another user's home", got)
@@ -1704,7 +1761,7 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 	// prefix contains. The ratchet has to close, not open, at that point.
 	t.Run("no home at all", func(t *testing.T) {
 		sb := testSandbox("/srv/rt/py/bin/python3", "/srv/rt/py")
-		sb.home = ""
+		sb.homes = nil
 		sb.interpreter = "/srv/rt/py/bin/python3"
 		if got := interpreterReadPath(sb); got != "/srv/rt/py/bin/python3" {
 			t.Errorf("interpreterReadPath = %q, want the interpreter file alone when there is no home to anchor shields on", got)

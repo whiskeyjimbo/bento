@@ -47,7 +47,7 @@ func TestWorkspaceShieldRedirectRefused(t *testing.T) {
 func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 	realSB := func(entrypoint string) sandbox {
 		return sandbox{
-			home:       "/home/does-not-exist",
+			homes:      []string{"/home/does-not-exist"},
 			emptyFile:  "/dev/null",
 			bentoPath:  "/dev/null",
 			entrypoint: entrypoint,

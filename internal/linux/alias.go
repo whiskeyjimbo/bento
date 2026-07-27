@@ -389,7 +389,7 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 // the LITERAL deny-list paths explicitShieldOptIns matched, not its resolved second
 // return: this resolves them itself, alongside the anchors it resolves anyway.
 func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool) {
-	if sb.home == "" {
+	if len(sb.homes) == 0 {
 		return nil, false
 	}
 	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
@@ -407,8 +407,10 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 	// it. Hidden FILE rules are anchors too - a single file is cheap to stat and is named
 	// because it holds a secret.
 	roots := make([]string, 0, 128)
-	for _, a := range denylist.AliasAnchors(sb.home) {
-		roots = append(roots, sb.resolve(a))
+	for _, h := range sb.homes {
+		for _, a := range denylist.AliasAnchors(h) {
+			roots = append(roots, sb.resolve(a))
+		}
 	}
 	for _, r := range alwaysShields(sb) {
 		if r.Deny == denylist.DenyAll && !r.Dir {

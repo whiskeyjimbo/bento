@@ -30,8 +30,11 @@ var systemReadPaths = []string{
 // compiler a pure function, so every security-critical decision it makes is
 // testable without launching anything.
 type sandbox struct {
-	// home is the host's home directory, which anchors the deny-list.
-	home string
+	// homes are the host home directories the deny-list anchors on: $HOME and the
+	// current uid's passwd entry, which legitimately disagree under containers, nix
+	// shells, sudo and CI. Every one is shielded, so moving either does not relocate
+	// the shields off the other.
+	homes []string
 	// extraDeny are caller-supplied shields applied on top of the built-in deny-list
 	// (a supervising embedder shielding its own state during a profiling trial; see
 	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads
@@ -496,7 +499,7 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 	}
 	// A home-shaped directory: some user's home, whether or not it is this user's.
 	// /home/other/bin/python3 yields /home/other, whose credential shields do not apply -
-	// the deny-list is anchored on sb.home - so its ~/.ssh would be readable where the
+	// the deny-list is anchored on sb.homes - so its ~/.ssh would be readable where the
 	// running user's is hidden. Same uid, so this is exposure surface rather than
 	// privilege, but it is exposure nobody asked for. Structural rather than keyed on the
 	// running user's home, because that comparison fails exactly when it matters most:
@@ -508,25 +511,33 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 	// against must be resolved too: on a host where $HOME reaches the real tree through a
 	// link (/home -> var/home, or a relocated home), the raw os.UserHomeDir value names a
 	// different path than the prefix and this would miss it, binding the whole home tree.
-	home := sb.resolve(sb.home)
-	if home == "" {
+	if len(sb.homes) == 0 {
 		// No home means no deny-list anchor either, so there is no shield over whatever a
 		// prefix might contain. That is the worst moment to widen: refuse and bind the
 		// interpreter file alone.
 		return true
 	}
-	// This user's own home, or any tree containing it: a ~/bin/python3 wrapper puts the
-	// prefix at the home directory itself, which would bind every file in it into a
-	// sandbox whose policy granted none of them. A prefix INSIDE the home (a pyenv or
-	// pipx install root) is allowed - that is the case this whole function exists to
-	// serve, and the deny-list shields the credential stores beside it.
-	if prefix == home || under(home, prefix) {
-		return true
+	for _, h := range sb.homes {
+		home := sb.resolve(h)
+		if home == "" {
+			return true
+		}
+		// This user's own home, or any tree containing it: a ~/bin/python3 wrapper puts the
+		// prefix at the home directory itself, which would bind every file in it into a
+		// sandbox whose policy granted none of them. A prefix INSIDE the home (a pyenv or
+		// pipx install root) is allowed - that is the case this whole function exists to
+		// serve, and the deny-list shields the credential stores beside it.
+		if prefix == home || under(home, prefix) {
+			return true
+		}
+		// A sibling of this user's home, for a host whose home base is not one of the
+		// containers above. Nested layouts (/home/dept/other) are still missed; the floors
+		// here are a ratchet, not a proof.
+		if filepath.Dir(prefix) == filepath.Dir(home) {
+			return true
+		}
 	}
-	// A sibling of this user's home, for a host whose home base is not one of the
-	// containers above. Nested layouts (/home/dept/other) are still missed; the floors
-	// here are a ratchet, not a proof.
-	return filepath.Dir(prefix) == filepath.Dir(home)
+	return false
 }
 
 // homeContainers are the directories user homes are conventionally created under, so a
@@ -566,8 +577,17 @@ func interpreterPrefix(interp string) string {
 // all derive from this, so a caller deny can never reach one and miss another
 // (which would leak a host artifact or leave a path unshielded).
 func alwaysShields(sb sandbox) []denylist.Rule {
-	rules := append(denylist.Home(sb.home), denylist.Runtime()...)
+	rules := append(homeShields(sb), denylist.Runtime()...)
 	return append(rules, sb.extraDeny...)
+}
+
+// homeShields is the credential deny-list anchored on every home the run knows about.
+func homeShields(sb sandbox) []denylist.Rule {
+	var rules []denylist.Rule
+	for _, h := range sb.homes {
+		rules = append(rules, denylist.Home(h)...)
+	}
+	return rules
 }
 
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
@@ -1042,7 +1062,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 // path (which checkNotShielded and denyArgs key off, since grants and shields are
 // compared resolved). Both sorted.
 func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved []string) {
-	builtin := append(denylist.Home(sb.home), denylist.Runtime()...)
+	builtin := append(homeShields(sb), denylist.Runtime()...)
 	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {
 			continue

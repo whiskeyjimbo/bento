@@ -95,7 +95,7 @@ func TestGrantSymlinksMultiHopRealFilesystem(t *testing.T) {
 	mustLink(t, mid, head)
 
 	sb := sandbox{
-		home:       root,
+		homes:      []string{root},
 		entrypoint: filepath.Join(root, "probe.sh"),
 		exists:     hostExists,
 		isDir:      hostIsDir,
@@ -137,7 +137,7 @@ func TestGrantSymlinksSkipsChainAlreadyMounted(t *testing.T) {
 	mustLink(t, mid, head)
 
 	sb := sandbox{
-		home:       root,
+		homes:      []string{root},
 		entrypoint: filepath.Join(root, "probe.sh"),
 		exists:     hostExists,
 		isDir:      hostIsDir,

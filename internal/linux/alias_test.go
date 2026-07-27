@@ -310,7 +310,7 @@ func TestCredentialFilesSkipsGitObjectStore(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
@@ -404,7 +404,7 @@ func TestCredentialFilesDoesNotAnchorOnBulkStores(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
@@ -594,7 +594,7 @@ func TestCredentialFilesReachesAnchorsNestedInABulkStore(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
@@ -670,7 +670,7 @@ func TestRealBindAliasIsFound(t *testing.T) {
 	home, backup := bindHome, bindBackup
 	key := filepath.Join(home, ".ssh", "id_rsa")
 
-	sb := sandbox{home: home, resolve: hostResolve, fileIDs: hostFileIDs,
+	sb := sandbox{homes: []string{home}, resolve: hostResolve, fileIDs: hostFileIDs,
 		aliasesUnder: hostAliasesUnder, mountpoints: hostMountpoints, statID: hostStatID}
 	t.Log(reached)
 
@@ -718,7 +718,7 @@ func TestCredentialFilesAnchorsRelocatedStores(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
@@ -768,7 +768,7 @@ func TestEveryDeclaredAnchorIsReached(t *testing.T) {
 	}
 
 	sb := testSandbox()
-	sb.home = home
+	sb.homes = []string{home}
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 

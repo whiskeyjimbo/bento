@@ -69,18 +69,17 @@ A few things Bento trusts rather than defends:
   and you get a warning, then Bento takes you at your word. What it defends
   against is a *broad* grant pulling in a secret you didn't think about - not a
   deliberate handover.
-- **`$HOME` at the time of the run.** The credential shields are anchored on
-  `$HOME`, so whoever sets the environment decides where they land: under
-  `HOME=/` the shields cover `/.ssh`, `/.aws` and so on, while the real
-  `~/.ssh` sits inside any grant broad enough to reach it and is not shielded
-  at all (verified: a `read: /` grant under `HOME=/` reads a private key that
-  the same grant under a normal `$HOME` refuses). This is independent of how
-  the grant was spelled - a `~` grant additionally *retargets* under the same
-  lever, since the fingerprint attests the manifest as written and not the
-  environment it runs in. Bento's model already places the invoking user
-  outside the adversary set, but a harness that runs bento with a caller-chosen
-  environment - CI, an agent supervisor - puts them back in it, and there the
-  shields are not a boundary.
+- **`$HOME` at the time of the run, for grant *spelling*.** The shields
+  themselves no longer move with the environment: they are anchored on the union
+  of `$HOME` and the running uid's passwd entry, so `HOME=/` adds `/.ssh`,
+  `/.aws` and so on without dropping the real ones (verified: a `read: /` grant
+  under `HOME=/` reads a private key before that change and refuses it after).
+  What the environment still decides is where a `~` grant *points*, since the
+  fingerprint attests the manifest as written and not the environment it runs
+  in - a harness with a caller-chosen environment can retarget the grant, though
+  the shields inside whatever it lands on stay engaged. Where the passwd entry
+  is missing entirely (an LDAP host whose module is not loaded, an unmapped
+  container uid) `$HOME` is the only anchor left and the original lever returns.
 
 ## 4. The defenses
 
