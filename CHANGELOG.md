@@ -68,9 +68,11 @@ naming an exact shield path is honored as a deliberate, warned exception.
   `validate` and `approve`, not left for `run`: a `~operator/...` path, and a
   write grant of the home directory itself (whatever `$HOME` is, the credential
   stores sit inside it, so such a grant would make their parent writable). Both
-  were already refused at run; the gate moved earlier, so no manifest that used
-  to run stops running. The same grant spelled absolutely (`write: /home/u`)
-  still needs `$HOME` to recognize and is still refused at run.
+  were already refused at run, so on an ordinary host the gate simply moved
+  earlier. The one manifest this newly stops is `write: ["~/.."]` on a host
+  whose home directory is itself a symlink, which the enforcer accepted and
+  should not have. The same grant spelled absolutely (`write: /home/u`) still
+  needs `$HOME` to recognize and is still refused at run.
 - `bento approve` stamps a fingerprint over the policy fields. `bento run`
   refuses an unapproved or since-edited manifest unless `--allow-unapproved` is
   passed, and re-checks the fingerprint at run time rather than trusting an
