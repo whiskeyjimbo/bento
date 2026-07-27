@@ -181,9 +181,9 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	target, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(int(f.Fd())))
+	target, err := os.Readlink(procFD(int(f.Fd())))
 	if err != nil {
-		return manifestTrust{}, err
+		return manifestTrust{}, noProcError(err)
 	}
 	// The kernel's name is not always usable as a path: a manifest unlinked between the
 	// open and the readlink reads back as "/w/m.yaml (deleted)", and one replaced in that
@@ -416,12 +416,33 @@ func fdFacts(fd int, path string) (fileFacts, error) {
 		return fileFacts{}, err
 	}
 	facts := fileFacts{path: path, mode: statMode(st.Mode), uid: st.Uid}
-	aclWrite, err := aclNamedWrite("/proc/self/fd/" + strconv.Itoa(fd))
+	aclWrite, err := aclNamedWrite(procFD(fd))
 	if err != nil {
-		return fileFacts{}, err
+		return fileFacts{}, noProcError(err)
 	}
 	facts.aclWrite = aclWrite
 	return facts, nil
+}
+
+// procFD names an open descriptor the way the kernel does. Both halves of the trust check
+// read through such a name - the manifest's real location, and each directory's ACL, which
+// fgetxattr will not read from an O_PATH descriptor - so every manifest load needs /proc
+// mounted. Stricter than the advisory check it serves, and deliberately not softened: the
+// only fallback is to resolve the path lexically, which is what produced a wrong verdict
+// before it was removed. Nothing usable is refused by it either, since the userns probe,
+// the mount table and the bridge's re-exec all read /proc too.
+func procFD(fd int) string {
+	return "/proc/self/fd/" + strconv.Itoa(fd)
+}
+
+// noProcError restates ENOENT from a procFD read as the unmounted /proc it can only mean -
+// the descriptor is open, so nothing else makes its own name in /proc missing. The raw
+// error names a descriptor number the caller never asked about.
+func noProcError(err error) error {
+	if errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("/proc must be mounted to check where a manifest lives: %w", err)
+	}
+	return err
 }
 
 // statMode is st_mode as an fs.FileMode, carrying the bits the trust check reads: the type,
