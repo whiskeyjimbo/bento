@@ -99,11 +99,6 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 		}
 	}
 
-	// An ordinary opt-in names a path that is its own target, so it stays one line.
-	if strings.Contains(out, "on this host") {
-		t.Errorf("a grant that resolves to itself must not print a second line; got %q", out)
-	}
-
 	var empty bytes.Buffer
 	writeShieldedGrantWarning(&empty, enforce.Result{})
 	if empty.Len() != 0 {
@@ -131,6 +126,16 @@ func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
 
 	if out := b.String(); !strings.Contains(out, "on this host: "+store) {
 		t.Errorf("the notice must name the store the grant lands on; %q missing from %q", store, out)
+	}
+
+	// The same store granted by its own name has nothing more to say about it. This is
+	// the assertion that keeps the second line from becoming unconditional noise; the
+	// grant has to EXIST for it to mean anything, since EvalSymlinks fails silently on a
+	// path that does not.
+	var direct bytes.Buffer
+	writeShieldedGrantWarning(&direct, enforce.Result{ShieldedGrants: []string{store}})
+	if out := direct.String(); strings.Contains(out, "on this host") {
+		t.Errorf("a grant that resolves to itself must not print a second line; got %q", out)
 	}
 }
 

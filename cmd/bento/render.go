@@ -187,8 +187,10 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 		// built from $HOME - so where $HOME reaches the real home through a symlink, the
 		// grant names one path and the script reads another. Naming the store the exposure
 		// actually lands on is the difference between reviewing a path and reviewing a
-		// credential. Printed only where the two differ, so an ordinary opt-in stays one
-		// line (the same rule validate uses for a resolved grant).
+		// credential. Printed wherever the two differ, the same rule validate uses for a
+		// resolved grant - which on a host whose home root is itself a link (Silverblue's
+		// /home -> /var/home) is every opt-in, since EvalSymlinks resolves every component.
+		// That is the right side to err on: the line is accurate there too.
 		if real, err := filepath.EvalSymlinks(g); err == nil && real != g {
 			fmt.Fprintf(w, "[bento]     on this host: %s\n", real)
 		}
