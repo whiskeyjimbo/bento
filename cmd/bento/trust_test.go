@@ -57,6 +57,10 @@ func TestDirFlawsFatality(t *testing.T) {
 		"an ACL names a writer":  {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me, aclWrite: true}, true},
 		"sticky world-writable":  {fileFacts{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}, false},
 		"setgid sticky and open": {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | fs.ModeSticky | 0o775, uid: me}, false},
+		// Sticky is the same exemption whichever way the write was granted: a named user who
+		// cannot unlink our manifest cannot replace it either, and refusing every approve
+		// under a /tmp that carries an ACL would leave the user no remedy.
+		"sticky, an ACL names a writer": {fileFacts{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0, aclWrite: true}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -332,8 +336,8 @@ func TestWriteManifestAtomicallyCreatesAPrivateManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fi.Mode().Perm(); got&0o022 != 0 {
-		t.Errorf("mode = %#o, want the group/world write bits clear", got)
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode = %#o, want 0600 - narrower than the umask, since nobody else's write can be attested", got)
 	}
 }
 

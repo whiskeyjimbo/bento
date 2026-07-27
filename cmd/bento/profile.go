@@ -148,15 +148,15 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Only when the manifest is new: seedGrants already reported an existing one's
-			// location, and the first run - which seedGrants leaves entirely unexamined - is
-			// exactly the case where nothing has said anything yet.
+			// A manifest that does not exist yet still has a location to judge, and the first
+			// run is the case nothing else looks at - seedGrants returns on a missing file,
+			// and only an interactive session calls it at all.
 			if trust.realPath == "" {
 				if trust, err = inspectNewManifest(out); err != nil {
 					return err
 				}
-				warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
 			}
+			warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
 			// The merge re-reads the same file the seed came from, so a seeded grant the
 			// user declined this session would come back through the union. Drop it: a
 			// refusal at the prompt has to hold in the artifact, not only in the mount.
@@ -1061,7 +1061,9 @@ func guessInterpreter(path string) string {
 // for a different entrypoint is not honored here, and why converge still prompts for a
 // seeded path the enforced run will not re-shield. A missing path is the first run.
 func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
-	doc, _, err := loadDocument(path, out)
+	// io.Discard: the write at the end of the session reports the manifest's location, and
+	// it does so for the non-interactive runs this is never reached from too.
+	doc, _, err := loadDocument(path, io.Discard)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, nil

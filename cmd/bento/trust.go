@@ -71,15 +71,21 @@ const (
 // Absence of the attribute, and a filesystem that does not carry it at all, both mean the
 // mode is the whole story - which is the common case and not a finding.
 func aclNamedWrite(path string) (bool, error) {
-	buf := make([]byte, 512)
-	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
+	// Sized from the attribute rather than guessed: a long ACL read into a short buffer
+	// fails, and answering "no named writer" about an ACL nobody read would be the one
+	// wrong answer this can give.
+	size, err := unix.Getxattr(path, "system.posix_acl_access", nil)
 	switch {
 	case errors.Is(err, unix.ENODATA), errors.Is(err, unix.ENOTSUP):
 		return false, nil
-	case errors.Is(err, unix.ERANGE):
-		// An ACL too large for the buffer is not one this can reason about, and guessing
-		// "no named writer" about it would be the one wrong answer.
-		return false, fmt.Errorf("the ACL on %s is too large to inspect", path)
+	case err != nil:
+		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
+	}
+	buf := make([]byte, size)
+	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
+	switch {
+	case errors.Is(err, unix.ENODATA):
+		return false, nil // set aside between the two reads
 	case err != nil:
 		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
 	}
@@ -107,14 +113,25 @@ func aclNamedWrite(path string) (bool, error) {
 	return named&mask&aclPermWrite != 0, nil
 }
 
-// sharedWrite is the write bits granted to someone other than the owner. On a sticky
-// directory (/tmp) others may add their own entries but cannot rename or unlink ours,
-// which is the only thing that would let them replace a manifest, so it grants none.
+// sharedWrite is the write bits granted to someone other than the owner.
 func (f fileFacts) sharedWrite() fs.FileMode {
-	if f.mode.IsDir() && f.mode&fs.ModeSticky != 0 {
+	if f.stickyDir() {
 		return 0
 	}
 	return f.mode.Perm() & 0o022
+}
+
+// aclSharedWrite is aclWrite once the sticky exemption is applied, so both ways of granting
+// write to someone else are read through the same rule about what write there means.
+func (f fileFacts) aclSharedWrite() bool {
+	return f.aclWrite && !f.stickyDir()
+}
+
+// stickyDir marks a directory whose write bits grant less than they say: on a sticky one
+// (/tmp) others may add their own entries but cannot rename or unlink ours, and replacing
+// the manifest is the only thing that would matter here.
+func (f fileFacts) stickyDir() bool {
+	return f.mode.IsDir() && f.mode&fs.ModeSticky != 0
 }
 
 // foreignOwner reports ownership by a user who is neither us nor root. Root is not
@@ -264,10 +281,12 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 	}, nil
 }
 
-// newManifestMode is what a manifest written where none was gets. Owner write only past
-// the owner, since approve's whole value is that the permissions cannot move without its
-// stamp going stale.
-const newManifestMode fs.FileMode = 0o644
+// newManifestMode is what a manifest written where none was gets: readable and writable by
+// its owner and nobody else. Narrower than any umask would have left it, deliberately - a
+// manifest is the policy a sandbox is built from, its approval attests permissions that
+// only stay attested while nobody else can touch them, and someone who wants it readable
+// can say so afterwards. Rewrites of an existing manifest carry its mode forward instead.
+const newManifestMode fs.FileMode = 0o600
 
 // dirsUpward returns facts for dir and every directory above it, nearest first.
 func dirsUpward(dir string) ([]fileFacts, error) {
@@ -343,7 +362,7 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 // euid do with it. role names the directory in the message.
 func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 	var out []trustFlaw
-	if d.aclWrite {
+	if d.aclSharedWrite() {
 		out = append(out, trustFlaw{
 			reason: fmt.Sprintf("%s, %s, has an ACL granting write to a named user or group, who can replace the manifest", d.path, role),
 			fatal:  true,
