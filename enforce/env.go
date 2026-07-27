@@ -2,7 +2,7 @@ package enforce
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -38,12 +38,8 @@ func ResolveEnv(p *policy.Policy, overrides map[string]string, lookup Lookup) (e
 	if p == nil {
 		return nil, nil, fmt.Errorf("enforce: nil Policy; env resolution has no allowlist to work from")
 	}
-	allowed := make(map[string]bool, len(p.Env))
-	for _, name := range p.Env {
-		allowed[name] = true
-	}
 	for name := range overrides {
-		if !allowed[name] {
+		if !slices.Contains(p.Env, name) {
 			return nil, nil, fmt.Errorf("--env %s: %q is not in the manifest's env allowlist; add it to `env:` so the manifest still describes what the script can see", name, name)
 		}
 	}
@@ -60,6 +56,6 @@ func ResolveEnv(p *policy.Policy, overrides map[string]string, lookup Lookup) (e
 		}
 		unset = append(unset, name)
 	}
-	sort.Strings(unset)
+	slices.Sort(unset)
 	return env, unset, nil
 }

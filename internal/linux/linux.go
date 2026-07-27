@@ -7,6 +7,7 @@
 package linux
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -498,11 +499,8 @@ func (c *egressCollector) gateAdmitted() []enforce.HostPort {
 	for _, hp := range c.admitted {
 		out = append(out, hp)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Host != out[j].Host {
-			return out[i].Host < out[j].Host
-		}
-		return out[i].Port < out[j].Port
+	slices.SortFunc(out, func(a, b enforce.HostPort) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Port, b.Port))
 	})
 	return out
 }

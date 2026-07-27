@@ -1,12 +1,12 @@
 package linux
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"syscall"
 
@@ -318,7 +318,7 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 		}
 		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	slices.SortFunc(out, func(a, b enforce.ShieldApplied) int { return cmp.Compare(a.Path, b.Path) })
 	return out
 }
 
@@ -1052,8 +1052,8 @@ func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved 
 			resolved = append(resolved, sb.resolve(r.Path))
 		}
 	}
-	sort.Strings(literal)
-	sort.Strings(resolved)
+	slices.Sort(literal)
+	slices.Sort(resolved)
 	return literal, resolved
 }
 
@@ -1316,7 +1316,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		seen[hop] = true
 		links = append(links, [2]string{real, hop})
 	}
-	sort.Slice(links, func(i, j int) bool { return links[i][1] < links[j][1] })
+	slices.SortFunc(links, func(a, b [2]string) int { return cmp.Compare(a[1], b[1]) })
 
 	var args []string
 	var made []string
@@ -1404,7 +1404,7 @@ func resolveAll(sb sandbox, paths []string) ([]string, error) {
 			out = append(out, r)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
@@ -1448,7 +1448,7 @@ func envArgs(proc enforce.Process) []string {
 	for k := range proc.Env {
 		names = append(names, k)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, k := range names {
 		args = append(args, "--setenv", k, proc.Env[k])
 	}

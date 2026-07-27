@@ -1,10 +1,11 @@
 package policy
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
+	"slices"
 )
 
 // Fingerprint is a stable hash of the policy's permission fields. It is what a
@@ -62,18 +63,15 @@ func (p *Policy) Fingerprint() string {
 }
 
 func sortedCopy(s []string) []string {
-	out := append([]string(nil), s...)
-	sort.Strings(out)
+	out := slices.Clone(s)
+	slices.Sort(out)
 	return out
 }
 
 func sortedRules(rules []NetworkRule) []NetworkRule {
-	out := append([]NetworkRule(nil), rules...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Host != out[j].Host {
-			return out[i].Host < out[j].Host
-		}
-		return out[i].Port < out[j].Port
+	out := slices.Clone(rules)
+	slices.SortFunc(out, func(a, b NetworkRule) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Port, b.Port))
 	})
 	return out
 }
