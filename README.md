@@ -173,7 +173,8 @@ func main() {
 	ctx := context.Background()
 
 	// 1. Load and parse the manifest file
-	f, err := os.Open("fetch.py.manifest.yaml")
+	manifestPath := "fetch.py.manifest.yaml"
+	f, err := os.Open(manifestPath)
 	if err != nil {
 		log.Fatalf("failed to open manifest: %v", err)
 	}
@@ -184,19 +185,25 @@ func main() {
 		log.Fatalf("invalid manifest policy: %v", err)
 	}
 
-	// 2. Resolve environment variables allowed by the manifest policy
+	// 2. Anchor the policy's relative paths to the manifest's own directory. Kept out
+	// of Load because it must run after any approval/fingerprint check, never before.
+	if err := manifest.Resolve(pol, manifestPath); err != nil {
+		log.Fatalf("path resolution failed: %v", err)
+	}
+
+	// 3. Resolve environment variables allowed by the manifest policy
 	env, _, err := enforce.ResolveEnv(pol, nil, os.LookupEnv)
 	if err != nil {
 		log.Fatalf("env resolution failed: %v", err)
 	}
 
-	// 3. Create the platform backend enforcer
+	// 4. Create the platform backend enforcer
 	e, err := backend.New()
 	if err != nil {
 		log.Fatalf("failed to instantiate enforcer: %v", err)
 	}
 
-	// 4. Run the target inside the sandbox
+	// 5. Run the target inside the sandbox
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
 	res, err := enforce.Run(ctx, e, pol, proc, enforce.Options{})
 	if err != nil {

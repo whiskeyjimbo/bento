@@ -104,6 +104,15 @@ func run(manifestPath string) int {
 		return 2
 	}
 
+	// A manifest's relative read/write/entrypoint means "beside the manifest", not
+	// "beside whatever cwd embed was started from", so anchor before anything reads
+	// the policy. Resolve is separate from Load because it must follow an approval
+	// check - this example has none, so it goes directly after the load.
+	if err := manifest.Resolve(p, manifestPath); err != nil {
+		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+		return 2
+	}
+
 	// The policy names which env vars may pass through; resolving those names
 	// against the host is the core's job, exposed here so the values a target sees
 	// are explicit.
