@@ -32,6 +32,12 @@ func ResolveEnv(p *policy.Policy, overrides map[string]string, lookup Lookup) (e
 	if lookup == nil {
 		return nil, nil, fmt.Errorf("enforce: nil Lookup; pass os.LookupEnv to read the host environment")
 	}
+	// Refused rather than read as an empty allowlist: that would resolve to an empty
+	// environment and no override error, so a caller who lost their policy would get a
+	// plausible-looking result instead of being told.
+	if p == nil {
+		return nil, nil, fmt.Errorf("enforce: nil Policy; env resolution has no allowlist to work from")
+	}
 	allowed := make(map[string]bool, len(p.Env))
 	for _, name := range p.Env {
 		allowed[name] = true

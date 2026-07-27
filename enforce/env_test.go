@@ -85,3 +85,13 @@ func TestResolveEnvRejectsNilLookup(t *testing.T) {
 		t.Fatal("expected a nil lookup to be refused")
 	}
 }
+
+// A nil policy is a caller mistake too: treating it as an empty allowlist would
+// hand back an empty environment and accept no overrides, which reads as a real
+// answer rather than a missing policy.
+func TestResolveEnvRejectsNilPolicy(t *testing.T) {
+	_, _, err := ResolveEnv(nil, nil, fakeHost(nil))
+	if err == nil {
+		t.Fatal("expected a nil policy to be refused")
+	}
+}
