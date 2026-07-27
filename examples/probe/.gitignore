@@ -1,2 +1,4 @@
 out/
 __pycache__/
+probe.py.manifest.yaml
+probe-cwd.txt
