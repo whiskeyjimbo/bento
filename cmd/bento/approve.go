@@ -96,7 +96,7 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 // still acts on a name, so someone who can write the resolved directory can still choose
 // what ends up there - but that is fatal in the trust check, so approve never gets here.
 //
-// The mode carries forward from the file being replaced (0644 for one that does not exist
+// The mode carries forward from the file being replaced (0600 for one that does not exist
 // yet), minus group and world write: approval is drift detection whose whole value is that
 // the permissions cannot change without the stamp going stale, and a manifest anyone can
 // edit gives that away.

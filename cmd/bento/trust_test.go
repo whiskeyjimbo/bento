@@ -183,7 +183,7 @@ func TestPathDirsSeesIntermediateSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dirs, err := pathDirs(path)
+	dirs, _, err := pathDirs(path)
 	if err != nil {
 		t.Fatalf("pathDirs: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestPathDirsFollowsChainsAndRefusesLoops(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "bento.yaml"), []byte("entrypoint: ./x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dirs, err := pathDirs(filepath.Join(root, "one", "bento.yaml"))
+	dirs, _, err := pathDirs(filepath.Join(root, "one", "bento.yaml"))
 	if err != nil {
 		t.Fatalf("pathDirs: %v", err)
 	}
@@ -248,8 +248,96 @@ func TestPathDirsFollowsChainsAndRefusesLoops(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pathDirs(filepath.Join(root, "a", "bento.yaml")); err == nil {
+	if _, _, err := pathDirs(filepath.Join(root, "a", "bento.yaml")); err == nil {
 		t.Error("a symlink loop must be refused, not walked")
+	}
+}
+
+// The place a manifest is about to be written is judged by the same walk as one already
+// there, `..` and all: cleaning the name lexically first would name a directory the kernel
+// would not have written to, so profile would judge one location and create the file in
+// another.
+func TestInspectNewManifestFollowsDotDotThroughALink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, w := filepath.Join(root, "elsewhere"), filepath.Join(root, "w")
+	for _, d := range []string{elsewhere, w} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(w, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Built by hand: filepath.Join and filepath.Abs both clean the ".." away, and after a
+	// symlink the cleaned name is a different directory than the kernel reaches.
+	trust, err := inspectNewManifest(w + "/lnk/../bento.yaml")
+	if err != nil {
+		t.Fatalf("inspectNewManifest: %v", err)
+	}
+	if want := filepath.Join(root, "bento.yaml"); trust.realPath != want {
+		t.Errorf("realPath = %q, want %q - where an open of the same name would land", trust.realPath, want)
+	}
+}
+
+// A manifest symlinked into place from a dotfiles repo whose target is not checked out yet
+// is a dangling link. os.WriteFile followed it and created the target; renaming onto the
+// name would replace the link with a regular file and detach it from its source, which is
+// the case writeManifestAtomically exists to avoid for an existing manifest.
+func TestInspectNewManifestFollowsADanglingLink(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(real, "bento.yaml")
+	if err := os.Symlink(filepath.Join(real, "source.yaml"), link); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := inspectNewManifest(link)
+	if err != nil {
+		t.Fatalf("inspectNewManifest: %v", err)
+	}
+	if err := writeManifestAtomically(trust, []byte("entrypoint: ./x\n"), io.Discard); err != nil {
+		t.Fatalf("writeManifestAtomically: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("the link must survive and its target be written; lstat = %v, %v", fi, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(real, "source.yaml")); err != nil || string(data) != "entrypoint: ./x\n" {
+		t.Errorf("the link's target must hold the manifest; got %q, %v", data, err)
+	}
+}
+
+// pathDirs is run once per manifest load, and a profile session loads the manifest every
+// round, so a descriptor left behind on the way out accumulates over a long session.
+func TestPathDirsLeaksNoDescriptors(t *testing.T) {
+	dir := t.TempDir()
+	path := manifestIn(t, dir)
+	count := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+
+	before := count()
+	for range 20 {
+		if _, _, err := pathDirs(path); err != nil {
+			t.Fatal(err)
+		}
+		// The interesting half: an error partway along used to leave the descriptor the walk
+		// was standing on open.
+		if _, _, err := pathDirs(filepath.Join(dir, "absent", "bento.yaml")); err == nil {
+			t.Fatal("a missing intermediate directory must fail")
+		}
+	}
+	if after := count(); after > before {
+		t.Errorf("open descriptors went from %d to %d", before, after)
 	}
 }
 

@@ -197,7 +197,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if !os.SameFile(fi, targetFI) {
 		return manifestTrust{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
 	}
-	dirs, err := pathDirs(path)
+	dirs, _, err := pathDirs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -211,18 +211,16 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 }
 
 // inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
-// its location. The directory is walked the same way as an existing manifest's, so the write
-// lands where the facts were read even if a component of the given path is a link.
+// its location. The path is walked the same way as an existing manifest's, so the write lands
+// where the facts were read, and where the kernel would have put it - including through a
+// symlink at the name itself, which a dotfiles repo whose target is not checked out yet
+// leaves dangling, and which os.WriteFile would have followed rather than replaced.
 //
 // file describes the manifest as it will be created rather than one that is there, so only
 // locationFlaws is meaningful on the result - flaws would report a clean verdict about a
 // file nobody has looked at.
 func inspectNewManifest(path string) (manifestTrust, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return manifestTrust{}, err
-	}
-	dirs, err := pathDirs(filepath.Dir(abs))
+	dirs, leaf, err := pathDirs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -230,7 +228,7 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 		file:     fileFacts{path: path, mode: newManifestMode, uid: uint32(os.Geteuid())},
 		dir:      dirs[0],
 		chain:    dirs[1:],
-		realPath: filepath.Join(dirs[0].path, filepath.Base(abs)),
+		realPath: filepath.Join(dirs[0].path, leaf),
 	}, nil
 }
 
@@ -242,7 +240,8 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 const newManifestMode fs.FileMode = 0o600
 
 // pathDirs walks path one component at a time and returns facts for every directory the
-// resolution read a component from, nearest first. Every one of them can decide which file
+// resolution read a component from, nearest first, along with the name the last hop left -
+// the manifest's own name at the location the walk landed in. Every one of them can decide which file
 // the path reaches - a directory that holds a symlink repoints it at a file of its owner's
 // choosing, and a directory anywhere above renames a level aside - so the check has to see
 // all of them, not only the ones in the name it was given or the ones above where it landed.
@@ -254,7 +253,11 @@ const newManifestMode fs.FileMode = 0o600
 // failure mode of getting that wrong is silently missing a directory, which is the whole
 // thing this exists to catch. And each directory's facts come from fstat of the descriptor
 // the next component was read from, so nothing can be swapped between the two.
-func pathDirs(path string) ([]fileFacts, error) {
+//
+// A final component that is not there is not an error: profile walks the place a manifest
+// is about to be written, and a dangling link at that name still has to be followed to the
+// name it stands for rather than replaced. Every directory above it must exist.
+func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 	// Not filepath.Abs, which cleans: it would delete a `..` lexically, and a `..` that
 	// follows a symlink names a different directory cleaned than walked - the very thing
 	// this walk exists to resolve properly.
@@ -262,20 +265,23 @@ func pathDirs(path string) ([]fileFacts, error) {
 	if !filepath.IsAbs(abs) {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		abs = cwd + "/" + abs
 	}
 	root, err := unix.Open("/", unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer unix.Close(root)
 
 	dirfd, at := root, "/"
+	// The descriptor the walk is standing on, closed however the walk ends: every error
+	// below leaves one open otherwise, and the walk runs once per manifest load.
+	defer func() { closeUnlessRoot(dirfd, root) }()
 	rootFacts, err := fdFacts(root, "/")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	out := []fileFacts{rootFacts}
 	// The remaining components are a stack rather than a range, since resolving a symlink
@@ -292,12 +298,12 @@ func pathDirs(path string) ([]fileFacts, error) {
 			// directory the walk actually reached is the point of walking this way.
 			up, err := unix.Openat(dirfd, "..", unix.O_PATH|unix.O_CLOEXEC, 0)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			facts, err := fdFacts(up, filepath.Dir(at))
 			if err != nil {
 				unix.Close(up)
-				return nil, err
+				return nil, "", err
 			}
 			closeUnlessRoot(dirfd, root)
 			dirfd, at = up, facts.path
@@ -306,25 +312,29 @@ func pathDirs(path string) ([]fileFacts, error) {
 		}
 
 		fd, err := unix.Openat(dirfd, comp, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(err, unix.ENOENT) && len(rest) == 0 {
+			leaf = comp
+			break
+		}
 		if err != nil {
-			return nil, &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: err}
+			return nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: err}
 		}
 		var st unix.Stat_t
 		if err := unix.Fstat(fd, &st); err != nil {
 			unix.Close(fd)
-			return nil, err
+			return nil, "", err
 		}
 		switch mode := statMode(st.Mode); {
 		case mode&fs.ModeSymlink != 0:
 			hops++
 			if hops > maxSymlinkHops {
 				unix.Close(fd)
-				return nil, &fs.PathError{Op: "openat", Path: abs, Err: unix.ELOOP}
+				return nil, "", &fs.PathError{Op: "openat", Path: abs, Err: unix.ELOOP}
 			}
 			link, err := readlinkat(dirfd, comp)
 			unix.Close(fd)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			// A relative target continues from the directory holding the link; an absolute
 			// one restarts from the root, exactly as the kernel would resolve it.
@@ -337,7 +347,7 @@ func pathDirs(path string) ([]fileFacts, error) {
 			facts, err := fdFacts(fd, filepath.Join(at, comp))
 			if err != nil {
 				unix.Close(fd)
-				return nil, err
+				return nil, "", err
 			}
 			closeUnlessRoot(dirfd, root)
 			dirfd, at = fd, facts.path
@@ -347,13 +357,16 @@ func pathDirs(path string) ([]fileFacts, error) {
 			// let whoever opens it say so rather than guessing at the errno here.
 			unix.Close(fd)
 			if len(rest) > 0 {
-				return nil, &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: unix.ENOTDIR}
+				return nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: unix.ENOTDIR}
 			}
+			leaf = comp
 		}
 	}
-	closeUnlessRoot(dirfd, root)
+	if leaf == "" {
+		return nil, "", fmt.Errorf("%s names a directory, not a manifest", path)
+	}
 	slices.Reverse(out)
-	return dedupeDirs(out), nil
+	return dedupeDirs(out), leaf, nil
 }
 
 // maxSymlinkHops matches the kernel's own ceiling, so a chain this walk refuses is one an
