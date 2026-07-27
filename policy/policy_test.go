@@ -47,6 +47,19 @@ func TestValidateAcceptsNonLeadingTildes(t *testing.T) {
 	}
 }
 
+// The home-write rule keys on where a grant lands after cleaning, so the risk it
+// carries is the opposite of the one its own reject cases cover: a traversal that
+// wanders and comes back must still be a legal grant. Only a grant that cleans to
+// home itself, or above it, is refused.
+func TestValidateAcceptsWriteGrantsInsideHome(t *testing.T) {
+	p := valid()
+	p.Write = []string{"~/out", "~/.config", "~/out/../out", "~/x/../y", "~/a/b/../c"}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
 // A genuine right-to-left path carries directional letters (Arabic, Hebrew), which
 // have inherent direction and are not the explicit bidi format controls the
 // Trojan-Source class rejects, plus other non-ASCII (accents, CJK, emoji). None of
