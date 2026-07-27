@@ -1,0 +1,14 @@
+# Hardening tier: `none` blocks execve but still permits fork, so exec.fork only
+# comes back DENIED under `none-strict`. Run the plain manifests first and
+# compare - the difference between the two is the whole point of this file.
+#
+# The limits group allocates ~1 GiB in 16 MiB steps against a 128M cap. A cgroup
+# kill is a SIGKILL rather than a MemoryError, so expect the run to die without
+# reaching PROBE-COMPLETE; results printed before that point are still valid.
+# Both hardening layers need host support, so check `bento doctor` first.
+entrypoint: ./probe.py
+interpreter: python3
+args: [exec, limits]
+env: [LANG]
+exec: none-strict
+limits: { memory: 128M, pids: 32 }

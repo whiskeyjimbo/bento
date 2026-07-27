@@ -1,0 +1,15 @@
+# Egress: one declared host, everything else refused. Egress is proxy-mediated,
+# so net.allowed-host (example.com, via HTTPS_PROXY) should be ALLOWED while
+# net.denied-host (api.github.com, same transport) is refused at the CONNECT.
+#
+# net.direct-socket and net.dns must both be DENIED regardless: the netns is
+# unshared and DNS is resolved host-side by the proxy, so a program that ignores
+# the proxy environment cannot reach anything.
+entrypoint: ./probe.py
+interpreter: python3
+args: [net, env]
+env: [LANG, BENTO_PROBE_HOME]
+network:
+  - host: example.com
+    port: "443"
+exec: none

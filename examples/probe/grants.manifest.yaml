@@ -1,0 +1,12 @@
+# Narrow grants: one readable file tree, one writable directory. Expect
+# read.granted and every write.* under ./out ALLOWED - including
+# write.save-via-rename, which is the positive control for bento granting
+# directories rather than individual files. read.ungranted (./secret) and the
+# shield probes stay DENIED.
+entrypoint: ./probe.py
+interpreter: python3
+args: [read, write, env]
+env: [LANG, BENTO_PROBE_HOME]
+read: [./data]
+write: [./out]
+exec: none

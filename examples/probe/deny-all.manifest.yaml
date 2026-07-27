@@ -1,0 +1,8 @@
+# Baseline: no grants at all. Every probe outcome here is the floor - anything
+# ALLOWED under this manifest is allowed by the sandbox itself, not by policy.
+# Expect read.granted DENIED, every write DENIED, both net hosts DENIED.
+entrypoint: ./probe.py
+interpreter: python3
+args: [read, write, env, net, exec]
+env: [LANG, BENTO_PROBE_HOME]
+exec: none
