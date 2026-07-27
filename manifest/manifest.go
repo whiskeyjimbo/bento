@@ -234,8 +234,21 @@ func Load(r io.Reader) (*policy.Policy, error) {
 // deliberately NOT part of Load: the approval fingerprint attests the manifest as
 // written, so resolving first would change it. Call it after that check, and before
 // anything that touches the named files.
-func Resolve(p *policy.Policy, manifestPath string) {
-	base := filepath.Dir(manifestPath)
+//
+// The anchor is absolutized, so a relative manifest path ("./m.yaml", anchor ".")
+// still yields absolute grants. Anything that persists or crosses a process - a
+// written manifest, a landlock rule, a bind mount, a store key - would otherwise
+// carry a path that means whatever the resolving process's cwd meant.
+func Resolve(p *policy.Policy, manifestPath string) error {
+	// Refused rather than skipped: a caller who lost their policy would get a silent
+	// success and go on to enforce paths that were never anchored.
+	if p == nil {
+		return fmt.Errorf("manifest: nil Policy; path resolution has nothing to anchor")
+	}
+	base, err := filepath.Abs(filepath.Dir(manifestPath))
+	if err != nil {
+		return fmt.Errorf("manifest: cannot anchor %s to an absolute directory: %w", manifestPath, err)
+	}
 	p.Entrypoint = resolveAgainst(base, p.Entrypoint)
 	p.Interpreter = resolveInterpreter(base, p.Interpreter)
 	for i, r := range p.Read {
@@ -244,6 +257,7 @@ func Resolve(p *policy.Policy, manifestPath string) {
 	for i, w := range p.Write {
 		p.Write[i] = resolveAgainst(base, w)
 	}
+	return nil
 }
 
 // resolveInterpreter anchors a path-shaped interpreter to the manifest's directory,

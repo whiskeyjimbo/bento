@@ -37,7 +37,10 @@ func warnManifestDrift(w io.Writer, s *store, key, script string) {
 	// Compare what `bento run` would actually enforce: it anchors a relative grant to
 	// the manifest's directory, while the store's paths are absolute. Without this a
 	// relative grant matches nothing and every store allow reads as drift.
-	manifest.Resolve(m, path)
+	if err := manifest.Resolve(m, path); err != nil {
+		fmt.Fprintf(w, "supervise: manifest %s cannot be anchored to its directory: %v\n", path, err)
+		return
+	}
 
 	var drift []string
 	for _, kind := range []string{"read", "write"} {

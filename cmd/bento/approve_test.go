@@ -69,7 +69,9 @@ func TestApprovalCheckedBeforePathResolution(t *testing.T) {
 	if got := checkApproval(doc); got != approvalCurrent {
 		t.Fatalf("as-written approval = %v, want current", got)
 	}
-	manifest.Resolve(p, "/work/proj/manifest.yaml")
+	if err := manifest.Resolve(p, "/work/proj/manifest.yaml"); err != nil {
+		t.Fatal(err)
+	}
 	if p.Fingerprint() == stamped {
 		t.Fatal("manifest.Resolve must change the fingerprint, else the check ordering would not matter")
 	}

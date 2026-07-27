@@ -2,6 +2,8 @@ package manifest
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -392,7 +394,9 @@ func TestResolveResolvesInterpreter(t *testing.T) {
 	}
 	for interp, want := range cases {
 		p := &policy.Policy{Entrypoint: "run.py", Interpreter: interp}
-		Resolve(p, "/work/proj/m.yaml")
+		if err := Resolve(p, "/work/proj/m.yaml"); err != nil {
+			t.Fatal(err)
+		}
 		if p.Interpreter != want {
 			t.Errorf("interpreter %q resolved to %q, want %q", interp, p.Interpreter, want)
 		}
@@ -407,7 +411,9 @@ func TestResolveAnchorsPathsToManifestDir(t *testing.T) {
 		Read:       []string{"../shared", "/etc/hosts"},
 		Write:      []string{"out"},
 	}
-	Resolve(p, "/work/proj/m.yaml")
+	if err := Resolve(p, "/work/proj/m.yaml"); err != nil {
+		t.Fatal(err)
+	}
 	if p.Entrypoint != "/work/proj/run.py" {
 		t.Errorf("entrypoint = %q", p.Entrypoint)
 	}
@@ -416,5 +422,40 @@ func TestResolveAnchorsPathsToManifestDir(t *testing.T) {
 	}
 	if got, want := strings.Join(p.Write, ","), "/work/proj/out"; got != want {
 		t.Errorf("write = %q, want %q", got, want)
+	}
+}
+
+// A relative manifest path gives filepath.Dir the anchor ".", which would leave every
+// grant relative all the way into the landlock rules and bind mounts - paths that mean
+// whatever the resolving process's cwd meant. Resolve absolutizes its own anchor so no
+// caller has to remember to.
+func TestResolveAbsolutizesRelativeManifestPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// Not t.TempDir() itself: on a host where the temp root is a symlink the two spell
+	// the same directory differently, and Resolve reports the kernel's spelling.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: "run.py", Read: []string{"data"}, Write: []string{"out"}}
+	if err := Resolve(p, "./m.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []string{p.Entrypoint, p.Read[0], p.Write[0]} {
+		if !filepath.IsAbs(got) {
+			t.Errorf("%q is not absolute", got)
+		}
+	}
+	if want := filepath.Join(dir, "run.py"); p.Entrypoint != want {
+		t.Errorf("entrypoint = %q, want %q", p.Entrypoint, want)
+	}
+}
+
+// A nil policy is refused rather than skipped: silently succeeding would let a caller
+// who lost their policy go on to enforce paths that were never anchored.
+func TestResolveRefusesNilPolicy(t *testing.T) {
+	if err := Resolve(nil, "/work/proj/m.yaml"); err == nil {
+		t.Fatal("Resolve(nil, ...) returned no error")
 	}
 }
