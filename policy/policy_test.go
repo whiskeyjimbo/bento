@@ -31,6 +31,22 @@ func TestValidateAcceptsWellFormedPolicy(t *testing.T) {
 	}
 }
 
+// Only a LEADING tilde names a home directory. A file genuinely named with one is an
+// ordinary path, and "./~backup" is the documented way to grant it - a contains-rule
+// would refuse both spellings and leave such a file ungrantable. Args are never
+// expanded, so a tilde there is just an argument.
+func TestValidateAcceptsNonLeadingTildes(t *testing.T) {
+	p := valid()
+	p.Entrypoint = "./~backup"
+	p.Read = []string{"./~odd", "data/~x", "/home/u/~"}
+	p.Write = []string{"~/out", "~"}
+	p.Args = []string{"~operator/keys"}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
 // A genuine right-to-left path carries directional letters (Arabic, Hebrew), which
 // have inherent direction and are not the explicit bidi format controls the
 // Trojan-Source class rejects, plus other non-ASCII (accents, CJK, emoji). None of
@@ -143,6 +159,13 @@ func TestValidateRejects(t *testing.T) {
 		// the working directory in the enforcer, so it reads as no grant and is not one.
 		{"empty read grant", func(p *Policy) { p.Read = []string{""} }, "read[0] is empty"},
 		{"empty write grant", func(p *Policy) { p.Write = []string{"/out", ""} }, "write[1] is empty"},
+		// Host-independent, so it belongs at this gate rather than beside the expansion:
+		// `bento validate` runs Validate but does not resolve paths, and refusing later
+		// let validate print ok and approve stamp a manifest that could never run.
+		{"other user's home in read", func(p *Policy) { p.Read = []string{"~operator/keys"} }, "read[0] \"~operator/keys\" names another user's home"},
+		{"other user's home in write", func(p *Policy) { p.Write = []string{"/out", "~backup"} }, "write[1]"},
+		{"other user's home in entrypoint", func(p *Policy) { p.Entrypoint = "~operator/run.sh" }, "entrypoint"},
+		{"other user's home in interpreter", func(p *Policy) { p.Interpreter = "~operator/py" }, "interpreter"},
 		{"escape in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/true\x1b]0;PWNED\x07" }, "control character"},
 		{"escape in interpreter", func(p *Policy) { p.Interpreter = "python3\x1b[31m" }, "control character"},
 		{"escape in arg", func(p *Policy) { p.Args = []string{"--flag\x07"} }, "control character"},

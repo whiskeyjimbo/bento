@@ -153,6 +153,32 @@ func (p *Policy) Validate() error {
 			}
 		}
 	}
+	// A leading "~" means the invoking user's home, and nothing else: "~operator/keys"
+	// would need a passwd lookup, and both fallbacks - treating it as relative, or as
+	// the invoker's own home - grant something other than what the manifest names. The
+	// rule holds regardless of the host it is checked on, which is why it belongs here
+	// rather than beside the expansion: validate runs this gate but does not resolve
+	// paths, so refusing later would let validate print ok and approve stamp a manifest
+	// that can never run. Only a leading tilde is special - "./~backup" and "data/~x"
+	// name ordinary files and pass, and Args are never expanded at all.
+	for _, f := range []struct {
+		name string
+		path string
+	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}} {
+		if err := screenTilde(f.name, f.path); err != nil {
+			return err
+		}
+	}
+	for _, l := range []struct {
+		name  string
+		paths []string
+	}{{"read", p.Read}, {"write", p.Write}} {
+		for i, path := range l.paths {
+			if err := screenTilde(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
+				return err
+			}
+		}
+	}
 	for _, name := range p.Env {
 		if !envNameRe.MatchString(name) {
 			return fmt.Errorf("policy: invalid env name %q: must match [A-Za-z_][A-Za-z0-9_]* (env is an allowlist of variable names, not values)", name)
@@ -167,6 +193,25 @@ func (p *Policy) Validate() error {
 		}
 	}
 	return p.Limits.validate()
+}
+
+// NamesOtherUserHome reports whether path uses the "~operator/keys" spelling. Only a
+// leading tilde is special: "./~backup" and "data/~x" name ordinary files.
+//
+// Exported because the refusal has to hold at two places that cannot share a call
+// stack - Validate, the gate every construction path passes through and the only one
+// `bento validate` runs, and the tilde expansion in package manifest, which a Go
+// embedder can reach with a policy it built itself.
+func NamesOtherUserHome(path string) bool {
+	rest, ok := strings.CutPrefix(path, "~")
+	return ok && rest != "" && !strings.HasPrefix(rest, "/")
+}
+
+func screenTilde(field, path string) error {
+	if NamesOtherUserHome(path) {
+		return fmt.Errorf("policy: %s %q names another user's home directory, which bento does not expand; write the path out in full (a file of that name beside the manifest is \"./%s\")", field, path, path)
+	}
+	return nil
 }
 
 // FirstUnsafeRune returns the first character in s that must not appear in a value

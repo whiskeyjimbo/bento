@@ -301,16 +301,17 @@ func resolveAgainst(base, path string) (string, error) {
 // a manifest that reads as granting home while granting nothing, and a shield test
 // that passes because there was no grant to shield against.
 //
-// Only the current user's home is expandable. "~operator/keys" is refused rather
-// than guessed at: resolving another user's home means a passwd lookup this package
-// does not do, and the alternatives - treating it as relative, or as the invoker's
-// own home - both grant something other than what the manifest names.
+// Only the current user's home is expandable. policy.Validate refuses the
+// "~operator/keys" spelling at the parse gate, so `bento validate` reports it rather
+// than leaving it for a run; the same rule is re-checked here because a Go embedder
+// can hand Resolve a policy it built without going through Validate, and joining
+// "operator/keys" onto the invoker's own home would grant a path nobody named.
 func expandHome(path string) (string, error) {
 	rest, ok := strings.CutPrefix(path, "~")
 	if !ok {
 		return "", fmt.Errorf("manifest: %q is not a tilde path", path)
 	}
-	if rest != "" && !strings.HasPrefix(rest, "/") {
+	if policy.NamesOtherUserHome(path) {
 		return "", fmt.Errorf("manifest: %q names another user's home directory, which bento does not expand; write the path out in full", path)
 	}
 	home, err := os.UserHomeDir()

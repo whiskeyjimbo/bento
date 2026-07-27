@@ -511,9 +511,10 @@ func TestResolveExpandsHomeCleanly(t *testing.T) {
 	}
 }
 
-// Refused, not guessed at. "~operator/keys" means a passwd lookup this package does
-// not do, and both fallbacks - the manifest directory, or the invoker's own home -
-// grant something other than what the manifest names. A relative or empty $HOME is
+// policy.Validate is where the "~operator/keys" spelling is refused for anything that
+// comes through a manifest; Resolve re-checks it because a Go embedder can hand it a
+// policy built in code, where joining "operator/keys" onto the invoker's own home
+// would grant a path nobody named. A relative or empty $HOME is
 // refused for the same reason: the grant would land wherever the enforcing process's
 // cwd points, which is the silent misplacement the expansion exists to fix.
 func TestResolveRefusesUnexpandableTilde(t *testing.T) {
