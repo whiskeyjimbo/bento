@@ -182,21 +182,48 @@ func TestWriteManifestAtomicallyIgnoresARepointedSymlink(t *testing.T) {
 	}
 }
 
-// A manifest replaced or unlinked between the open and the readlink leaves the kernel
-// naming something the facts do not describe - "/w/m.yaml (deleted)", or another inode
-// entirely. Concluding a location from either would send a rewrite somewhere unexamined.
+// A manifest unlinked or renamed over between the open and the readlink leaves the kernel
+// naming something the facts do not describe - "/w/m.yaml (deleted)". Concluding a location
+// from that would send a rewrite somewhere unexamined, and the refusal has to say so in
+// those terms rather than surfacing a stat error about a path the user never named.
 func TestInspectManifestRefusesAManifestUnlinkedWhileOpen(t *testing.T) {
-	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]func(t *testing.T, path string){
+		"unlinked": func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"renamed over": func(t *testing.T, path string) {
+			other := filepath.Join(filepath.Dir(path), "other.yaml")
+			if err := os.WriteFile(other, []byte("entrypoint: ./y\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(other, path); err != nil {
+				t.Fatal(err)
+			}
+		},
 	}
-	defer f.Close()
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := inspectManifest(f, path); err == nil {
-		t.Error("an unlinked manifest has no location to judge, so it must fail")
+	for name, disturb := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			disturb(t, path)
+
+			_, err = inspectManifest(f, path)
+			if err == nil {
+				t.Fatal("a manifest with no location left to judge must fail")
+			}
+			if !strings.Contains(err.Error(), "moved while it was being read") {
+				t.Errorf("the refusal must say the manifest moved; got %v", err)
+			}
+			if strings.Contains(err.Error(), "(deleted)") {
+				t.Errorf("the refusal must not name the kernel's placeholder path; got %v", err)
+			}
+		})
 	}
 }
 

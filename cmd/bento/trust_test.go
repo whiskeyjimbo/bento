@@ -602,6 +602,48 @@ func TestInspectManifestFollowsTheKernelThroughDotDot(t *testing.T) {
 	}
 }
 
+// The walk and the kernel must agree about which file this is. They diverge when the
+// directory holding the manifest is renamed aside and another put in its place while the
+// two run: the descriptor follows its directory, so it still names a live file with the
+// inode that was read, while the walk of the same name lands in whatever now answers to it.
+// Every fact gathered afterwards would describe the substitute.
+func TestInspectManifestRefusesADirectorySwappedMidWalk(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, decoy := filepath.Join(root, "proj"), filepath.Join(root, "decoy")
+	for _, d := range []string{dir, decoy} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := manifestIn(t, dir)
+	manifestIn(t, decoy)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// The swap: proj moves aside and decoy takes its name. The open descriptor is not
+	// unlinked, so the kernel goes on naming it - under its directory's new name.
+	if err := os.Rename(dir, filepath.Join(root, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(decoy, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = inspectManifest(f, path)
+	if err == nil {
+		t.Fatal("a manifest whose directory was substituted mid-walk must not be judged")
+	}
+	if !strings.Contains(err.Error(), "it resolved to") {
+		t.Errorf("the refusal must name both locations rather than read as an unlinked manifest; got %v", err)
+	}
+}
+
 // The kernel names a pipe or device descriptor `pipe:[N]` or /dev/null, whose directory
 // is either meaningless or the process's own working directory. Parsing would succeed
 // and the verdict would describe somewhere the manifest never came from, so the load
@@ -655,6 +697,54 @@ func TestRequireApprovableLocation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), outer) {
 			t.Errorf("the refusal must name the offending directory; got %v", err)
+		}
+	})
+
+	// A setgid group-writable ancestor is the shared-project layout: the group demonstrably
+	// holds other people, any of whom can rename the level below aside. Fatality for that
+	// mode is decided in dirFlaws, but only the chain loop applies it above the manifest's
+	// own directory, and world-writability was the only case that ever drove it end to end.
+	t.Run("refuses a setgid group-writable ancestor", func(t *testing.T) {
+		outer := t.TempDir()
+		inner := filepath.Join(outer, "proj")
+		if err := os.Mkdir(inner, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := manifestIn(t, inner)
+		if err := os.Chmod(outer, fs.ModeSetgid|0o775); err != nil {
+			t.Fatal(err)
+		}
+		err := approvable(t, path)
+		if err == nil || !strings.Contains(err.Error(), "a directory on the path to it") {
+			t.Fatalf("a shared-project ancestor must not be stamped over; got %v", err)
+		}
+		if !strings.Contains(err.Error(), outer) || !strings.Contains(err.Error(), "setgid") {
+			t.Errorf("the refusal must name the directory and why its group write counts; got %v", err)
+		}
+	})
+
+	// The same for the other flaw the mode cannot show. An ACL naming a writer on an
+	// ancestor is as good as one on the manifest's own directory: the named user renames
+	// the level below aside and substitutes the whole tree.
+	t.Run("refuses an ancestor an ACL opens", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root writes anywhere regardless")
+		}
+		outer := t.TempDir()
+		inner := filepath.Join(outer, "proj")
+		if err := os.Mkdir(inner, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := manifestIn(t, inner)
+		setACL(t, outer, [][3]uint32{
+			{0x01, 7, 0xffffffff}, {0x02, 7, 65534}, {0x04, 5, 0xffffffff}, {0x10, 7, 0xffffffff}, {0x20, 5, 0xffffffff},
+		})
+		err := approvable(t, path)
+		if err == nil || !strings.Contains(err.Error(), "a directory on the path to it") {
+			t.Fatalf("an ancestor a named user can write must not be stamped over; got %v", err)
+		}
+		if !strings.Contains(err.Error(), outer) || !strings.Contains(err.Error(), "ACL") {
+			t.Errorf("the refusal must name the directory and the ACL; got %v", err)
 		}
 	})
 
@@ -769,6 +859,48 @@ func TestLocationFlawsRefuseAForeignSymlink(t *testing.T) {
 	trust.links[0].path = "/opt/tool/link.yaml"
 	if got := trust.locationFlaws(me); len(got) != 0 {
 		t.Errorf("a link in a directory its owner cannot write is nobody's to repoint; got %+v", got)
+	}
+}
+
+// The same refusal driven end to end rather than from a synthesized trust, which needs a
+// second uid to plant the link and so a euid that can hand one out. Everything else here is
+// clean: the manifest and its directory are private and ours, and the sticky directory the
+// link sits in reports no flaw of its own - the link's owner is the whole finding.
+func TestApproveRefusesAForeignSymlinkInAStickyDirectory(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("planting a link owned by another user needs a uid to give it away to")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, pub := filepath.Join(root, "real"), filepath.Join(root, "pub")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(pub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Sticky and world-writable, as /tmp is: the exemption that clears the directory itself
+	// rests on nobody being able to unlink our entries, which says nothing about an entry
+	// that is not ours.
+	if err := os.Chmod(pub, fs.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(pub, "bento.yaml")
+	if err := os.Symlink(manifestIn(t, real), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Lchown(link, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+
+	err = approvable(t, link)
+	if err == nil || !strings.Contains(err.Error(), link) {
+		t.Fatalf("a link its owner can repoint must not be stamped through; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "repoint") {
+		t.Errorf("the refusal must say what the link's owner can do with it; got %v", err)
 	}
 }
 
