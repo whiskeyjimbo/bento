@@ -727,9 +727,6 @@ func TestRequireApprovableLocation(t *testing.T) {
 	// ancestor is as good as one on the manifest's own directory: the named user renames
 	// the level below aside and substitutes the whole tree.
 	t.Run("refuses an ancestor an ACL opens", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("root writes anywhere regardless")
-		}
 		outer := t.TempDir()
 		inner := filepath.Join(outer, "proj")
 		if err := os.Mkdir(inner, 0o755); err != nil {

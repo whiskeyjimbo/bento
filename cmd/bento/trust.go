@@ -191,14 +191,12 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, noProcError(err)
 	}
-	// The kernel's name is not always usable as a path: a manifest unlinked or renamed over
-	// between the open and the readlink reads back as "/w/m.yaml (deleted)", which would
-	// send a rewrite somewhere the facts gathered here do not describe. So the name is
-	// required to still lead back to the descriptor before anything is concluded from it.
-	// A name that no longer leads anywhere says the same thing the inode mismatch below
-	// does, and says it about the common case: an unlinked manifest reads back as
-	// "/w/m.yaml (deleted)", which stats as a path nobody asked about. Anything else that
-	// stops the stat is left as it came, since it describes a different problem.
+	// The kernel's name is not always usable as a path, and a rewrite sent to one that no
+	// longer leads back to this descriptor would land somewhere the facts gathered here do
+	// not describe. A manifest unlinked or renamed over between the open and the readlink
+	// reads back as "/w/m.yaml (deleted)", which stats as a path nobody asked about; a name
+	// that leads to a different inode is the same conclusion arrived at the other way. Any
+	// other reason the stat fails describes a different problem and is left as it came.
 	targetFI, err := os.Stat(target)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return manifestTrust{}, err
