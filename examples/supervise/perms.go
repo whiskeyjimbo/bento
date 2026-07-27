@@ -461,7 +461,15 @@ func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
 		permsUsage(out)
 		return 2
 	}
-	f, err := os.Open(args[0])
+	// Absolutize the manifest path first, the same way `supervise run` absolutizes its
+	// script argument: Resolve anchors to filepath.Dir, so a relative manifest path
+	// gives a relative anchor and the grants stay relative all the way into the store.
+	mfPath, err := filepath.Abs(args[0])
+	if err != nil {
+		fmt.Fprintf(out, "supervise: %v\n", err)
+		return 1
+	}
+	f, err := os.Open(mfPath)
 	if err != nil {
 		fmt.Fprintf(out, "supervise: %v\n", err)
 		return 1
@@ -479,7 +487,7 @@ func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
 	// cwd points at rather than the entrypoint the manifest declares. Import is the only
 	// route a manifest's paths take into the store, so this one call covers all four
 	// fields - `supervise run` absolutizes its script argument itself.
-	manifest.Resolve(pol, args[0])
+	manifest.Resolve(pol, mfPath)
 	key, err := appKey(pol.Entrypoint)
 	if err != nil {
 		fmt.Fprintf(out, "supervise: cannot hash the manifest's entrypoint: %v\n", err)

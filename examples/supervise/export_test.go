@@ -335,3 +335,46 @@ func TestImportAnchorsRelativePathsToManifestDir(t *testing.T) {
 		t.Errorf("write %q missing; store has %v", filepath.Join(base, "out"), a.Write)
 	}
 }
+
+// The manifest path itself can be relative, and filepath.Dir of a relative path is a
+// relative anchor - which would put relative grants in the store just the same. The
+// store outlives the cwd it was seeded from, so import absolutizes before anchoring.
+func TestImportAbsolutizesRelativeManifestPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	base := t.TempDir()
+	script := filepath.Join(base, "agent.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := manifest.Marshal(&policy.Policy{
+		Entrypoint: "agent.sh",
+		Read:       []string{"data"},
+	}, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "in.manifest.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(base)
+
+	s, _ := loadStore()
+	var out strings.Builder
+	if rc := importPerms(s, []string{"in.manifest.yaml"}, strings.NewReader("y\n"), &out); rc != 0 {
+		t.Fatalf("import rc=%d out=%q", rc, out.String())
+	}
+	key, err := appKey(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := s.Apps[key]
+	if a == nil {
+		t.Fatalf("app missing; store has %v", s.Apps)
+	}
+	if a.Entrypoint != script {
+		t.Errorf("entrypoint = %q, want %q", a.Entrypoint, script)
+	}
+	if _, ok := a.Read[filepath.Join(base, "data")]; !ok {
+		t.Errorf("read grant was not absolutized; store has %v", a.Read)
+	}
+}
