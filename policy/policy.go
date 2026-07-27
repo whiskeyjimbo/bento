@@ -243,9 +243,12 @@ func isBidiOverride(r rune) bool {
 // out, being neither Cf nor default-ignorable: U+FE0F rides along on real emoji
 // filenames and does not hide anything on its own.
 func isInvisible(r rune) bool {
-	return unicode.Is(unicode.Cf, r) ||
-		unicode.Is(unicode.Properties["Other_Default_Ignorable_Code_Point"], r)
+	return unicode.Is(unicode.Cf, r) || unicode.Is(defaultIgnorable, r)
 }
+
+// defaultIgnorable is resolved once: unicode.Is panics on a nil table, so a bad key
+// would surface at validation time rather than at build.
+var defaultIgnorable = unicode.Properties["Other_Default_Ignorable_Code_Point"]
 
 // canonical resolves the zero value to the default it stands for, so a policy that
 // omits the mode and one that spells it out are one mode, not two.
