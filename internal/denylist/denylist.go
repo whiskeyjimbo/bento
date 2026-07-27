@@ -46,7 +46,12 @@ type Rule struct {
 // Credential stores are shielded as whole directories on purpose. Naming
 // individual files (~/.ssh/id_rsa) leaves siblings exposed (~/.ssh/my_deploy_key)
 // and cannot stop a script from creating a new file in the directory.
-func Home(home string) []Rule {
+//
+// alsoHomes are the run's other home anchors, when it has more than one (a caller
+// whose $HOME disagrees with the passwd entry). Home is called once per anchor, so
+// the swallowing guard below would otherwise only ever see the anchor it was called
+// for and let an env relocation swallow a sibling anchor's whole tree.
+func Home(home string, alsoHomes ...string) []Rule {
 	join := func(p string) string { return filepath.Join(home, p) }
 
 	dirs := slices.Concat(credentialAnchorDirs, bulkStoreDirs, persistenceDirs)
@@ -431,7 +436,15 @@ func Home(home string) []Rule {
 	// with one DenyAll on the home - which also silently nullifies the completeness
 	// audit, since it leaves no per-store rule left to compare against firejail's.
 	shieldable := func(p string) bool {
-		return p != "/" && p != home && !strings.HasPrefix(home, p+string(filepath.Separator))
+		if p == "/" {
+			return false
+		}
+		for _, h := range append([]string{home}, alsoHomes...) {
+			if p == h || strings.HasPrefix(h, p+string(filepath.Separator)) {
+				return false
+			}
+		}
+		return true
 	}
 
 	// A tool-specific env var can move a whole credential directory off its default

@@ -585,7 +585,9 @@ func alwaysShields(sb sandbox) []denylist.Rule {
 func homeShields(sb sandbox) []denylist.Rule {
 	var rules []denylist.Rule
 	for _, h := range sb.homes {
-		rules = append(rules, denylist.Home(h)...)
+		// Every anchor is passed to every call: a relocation env var pointing at one
+		// home must not produce a rule that swallows another.
+		rules = append(rules, denylist.Home(h, sb.homes...)...)
 	}
 	return rules
 }

@@ -392,6 +392,23 @@ func TestHomeIgnoresRelocationsThatSwallowTheHome(t *testing.T) {
 	}
 }
 
+// A run with more than one home anchor calls Home once per anchor, so the guard has to
+// see the whole set: an env pointing at a SIBLING anchor swallows that anchor's tree
+// just as thoroughly, and the call that would notice is the one that never sees it.
+func TestHomeIgnoresRelocationsThatSwallowAnotherHome(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/home/other")
+
+	for _, r := range Home("/home/u", "/home/u", "/home/other") {
+		if r.Path == "/home/other" {
+			t.Fatalf("GNUPGHOME produced a shield at %q, which hides the whole of the other home anchor", r.Path)
+		}
+	}
+	// Without the set, the same call has no way to know: this is the behavior being fixed.
+	if !slices.ContainsFunc(Home("/home/u"), func(r Rule) bool { return r.Path == "/home/other" }) {
+		t.Error("the single-anchor call is expected to still emit the swallowing rule; the test above proves the set is what suppresses it")
+	}
+}
+
 // KUBECONFIG (a colon-separated list of files) and the AWS_*_FILE envs relocate individual
 // credential files off ~/.kube / ~/.aws. Each absolute target must be shielded at its own
 // path; relative and empty entries are ignored, like a relative directory relocation.

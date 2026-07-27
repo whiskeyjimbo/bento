@@ -19,7 +19,11 @@ DATE ?= $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
 # adds nothing and makes the binary depend on working-tree cleanliness, so a stray edit
 # changes the output of an otherwise identical source build.
 GO_BUILD_ENV   := GOWORK=off CGO_ENABLED=0
-GO_BUILD_FLAGS := -trimpath -buildvcs=false
+# osusergo forces the pure-Go passwd resolver even under a cgo build. The credential
+# shields anchor on the uid's passwd entry precisely because $HOME is caller-chosen
+# (see homeAnchors); routing that lookup through libc NSS would put it back under
+# caller control, since LD_PRELOAD can make getpwuid_r fail and drop the anchor.
+GO_BUILD_FLAGS := -trimpath -buildvcs=false -tags osusergo
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
 # Pinned so the audit is reproducible: floating @latest would let the scanner drift

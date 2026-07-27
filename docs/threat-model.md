@@ -77,9 +77,19 @@ A few things Bento trusts rather than defends:
   What the environment still decides is where a `~` grant *points*, since the
   fingerprint attests the manifest as written and not the environment it runs
   in - a harness with a caller-chosen environment can retarget the grant, though
-  the shields inside whatever it lands on stay engaged. Where the passwd entry
-  is missing entirely (an LDAP host whose module is not loaded, an unmapped
-  container uid) `$HOME` is the only anchor left and the original lever returns.
+  the shields inside whatever it lands on stay engaged. The same lever also
+  decides which spellings count as a deliberate shield opt-in, since a read grant
+  is matched against the shield paths `$HOME` produces: pointing `$HOME` at a
+  symlink to the real home makes a grant of `<link>/.ssh` an honored, warned
+  opt-in where the same manifest is refused otherwise.
+
+  Two configurations return the original lever in full. Where the passwd entry is
+  missing entirely (an LDAP host whose module is not loaded, an unmapped container
+  uid) `$HOME` is the only anchor left. And where the binary is built against libc
+  NSS rather than the pure-Go resolver, `LD_PRELOAD` can make the passwd lookup
+  fail and drop that anchor - the shipped build is static and tagged `osusergo`,
+  which is what keeps that out of the caller's reach; a `go build` without it is
+  not the shipped configuration and does not carry this property.
 
 ## 4. The defenses
 

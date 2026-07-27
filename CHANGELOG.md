@@ -44,10 +44,14 @@ them:
   `gpg-agent`, the session bus, and similar.
 
 The shields anchor on both `$HOME` and the running uid's passwd entry, so a
-caller-chosen environment cannot relocate them: under `HOME=/` the real home's
-credential stores stay shielded rather than the shields moving to `/.ssh`,
-`/.aws` and so on. Where the uid has no passwd entry at all, `$HOME` is the only
-anchor left.
+caller-chosen environment cannot relocate them off the real credential stores:
+under `HOME=/` those stay shielded rather than the shields moving to `/.ssh`,
+`/.aws` and so on. Two limits: where the uid has no passwd entry at all (an
+LDAP host whose module is not loaded, an unmapped container uid) `$HOME` is the
+only anchor left, and the passwd lookup must not route through libc NSS, which
+`LD_PRELOAD` would put back under the caller's control - the shipped build is
+static and tagged `osusergo`, which keeps it in pure Go. `$HOME` still decides
+where a `~` grant points; see the threat model.
 
 A write grant that covers a shielded path is refused outright - including a
 grant above a home directory that is itself a symlink, where the shield's

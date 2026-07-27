@@ -22,6 +22,9 @@ builds:
     flags:
       - -trimpath
       - -buildvcs=false
+      # Keeps the passwd lookup the credential shields anchor on out of libc NSS, where
+      # LD_PRELOAD would put it back under the caller's control. See the Makefile.
+      - -tags=osusergo
     # The stamp and the archive mtimes come from the commit, never the wall clock,
     # so a published binary can be reproduced from its tag and compared against the
     # checksum. See the same reasoning behind SOURCE_DATE_EPOCH in the Makefile.
