@@ -246,3 +246,36 @@ func TestExportRefusesGrantCoveringTheStore(t *testing.T) {
 		t.Errorf("a refused export must write no manifest; found:\n%s", got)
 	}
 }
+
+// supervise resolves a relative grant against its own working directory; `bento run`
+// resolves a manifest's relative path against the manifest's directory. Exporting one
+// would therefore ship a grant that means something other than what the store shield
+// judged - a path missing the store from the export cwd can reach it from beside the
+// manifest. Export refuses rather than pick an anchor (found reviewing bv2-yc8g).
+func TestExportRefusesRelativeGrant(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, _ := loadStore()
+	key := "sha256:cccc"
+	a := s.app(key)
+	a.Entrypoint = "/home/u/proj/agent.py"
+	// The spelling `perms import` seeds verbatim from a manifest's relative read path:
+	// it misses the store from the export cwd and lands on it from the manifest's dir.
+	a.Read = map[string]decision{"../.config/bento-supervise": allow}
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(dir, "out.yaml")
+	var out strings.Builder
+	if rc := exportPerms(s, []string{shortKey(key), "-o", outPath}, &out); rc == 0 {
+		t.Fatalf("export must refuse a relative grant; out=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "relative") {
+		t.Errorf("the refusal must name the reason: %q", out.String())
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		got, _ := os.ReadFile(outPath)
+		t.Errorf("a refused export must write no manifest; found:\n%s", got)
+	}
+}

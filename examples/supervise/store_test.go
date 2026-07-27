@@ -469,7 +469,10 @@ func TestLoadStoreDropsNullAppEntries(t *testing.T) {
 // filepath.Rel errors on that pair - which underComponent reads as "not under". A
 // remembered grant spelled relatively (a manifest's read path, seeded by `perms
 // import`; nothing validates it as absolute) therefore reported false and reached the
-// store it names (bv2-tr2u).
+// store it names (bv2-tr2u). The working directory is the anchor this pins, which is
+// the right one for the enforced run (it executes in the supervise process) and the
+// WRONG one for an exported manifest - which is why export refuses a relative grant
+// outright rather than trusting this predicate to judge it.
 func TestCoversStoreJudgesRelativeGrants(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

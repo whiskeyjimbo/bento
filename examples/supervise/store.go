@@ -741,8 +741,9 @@ func coversStore(grant, dir string) bool {
 	// Both sides must be absolute for the comparison to mean anything: filepath.Rel
 	// errors out on a relative/absolute pair and underComponent reads that error as
 	// "not under", which answers "this grant does not touch the store" about a path
-	// that does. resolveSymlinks absolutizes, so a spelling that survives it is one
-	// there is no cwd to anchor to - unjudgeable, and the store is what is at stake.
+	// that does. resolveSymlinks anchors to the working directory, so this only fires
+	// when there is no working directory to anchor to (it was deleted out from under
+	// the process) - unjudgeable, and the store is what is at stake.
 	if !filepath.IsAbs(g) || !filepath.IsAbs(d) {
 		return true
 	}

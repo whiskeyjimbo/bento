@@ -397,6 +397,24 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 		pol.Network = append(pol.Network, policy.NetworkRule{Host: host, Port: port})
 	}
 
+	// A relative grant cannot be exported, because the two ends anchor it differently:
+	// supervise resolves it against its own working directory, while `bento run`
+	// resolves a manifest's relative path against the manifest's directory. The store
+	// shield below would then judge a different path than the one the manifest grants -
+	// so a grant that misses the store from here can reach it from there. Refuse rather
+	// than pick one anchor and be wrong about the other.
+	for _, kind := range []struct {
+		name  string
+		paths []string
+	}{{"read", pol.Read}, {"write", pol.Write}} {
+		for _, p := range kind.paths {
+			if !filepath.IsAbs(p) {
+				fmt.Fprintf(out, "supervise: cannot export: the %s grant %s is relative; a manifest resolves it against its own directory, not the one you remembered it from. forget it and re-approve the absolute path.\n", kind.name, quotePath(p))
+				return 1
+			}
+		}
+	}
+
 	// Export is where a store decision leaves the wrapper's own shielding: under plain
 	// `bento run` there is no approve() refusal and no enforced-run backstop, so a
 	// remembered allow covering the store would graduate into a real grant. Refuse with
