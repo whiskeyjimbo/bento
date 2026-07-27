@@ -868,9 +868,8 @@ func TestAliasRefusalPrintsThePasteableAcknowledgement(t *testing.T) {
 // point - an acknowledgement is per-invocation and easily left behind in a wrapper, so a
 // run that proceeds over a known gap has to report the gap rather than look clean.
 func TestRunProceedsOnAnAcknowledgedAlias(t *testing.T) {
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		skipMissingDep(t, "bwrap not installed")
-	}
+	requireSandbox(t)
+	bento := sandboxEnforcer(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
@@ -898,11 +897,11 @@ func TestRunProceedsOnAnAcknowledgedAlias(t *testing.T) {
 	proc := enforce.Process{Env: map[string]string{"HOME": home}}
 
 	// Control: without the acknowledgement this policy is refused.
-	if _, err := New().Run(context.Background(), p, proc, enforce.RunOptions{}); err == nil {
+	if _, err := bento.Run(context.Background(), p, proc, enforce.RunOptions{}); err == nil {
 		t.Fatal("the aliased snapshot must refuse the run without an acknowledgement")
 	}
 
-	res, err := New().Run(context.Background(), p, proc,
+	res, err := bento.Run(context.Background(), p, proc,
 		enforce.RunOptions{AcceptAliasesUnder: []string{filepath.Join(home, "backups")}})
 	if err != nil {
 		t.Fatalf("acknowledging the snapshot tree must let the run proceed: %v", err)
