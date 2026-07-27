@@ -77,7 +77,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 5. **Secrecy During Profiling:** Profiling inspects syscall registers directly (via `ptrace`) without opening host files, preventing untrusted scripts from probing secrets during manifest discovery.
 
 ### Built-in Shields & Exceptions
-- **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: "~"`) are strictly refused.
+- **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: "~"`) are strictly refused - by `validate` and `approve` where the grant names home in the manifest's own vocabulary, and by `run` once the host makes the rest recognizable.
 - **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
 - **Fail-Closed Principle:** Any ambiguity, missing permission, unhandled network request, or missing kernel feature fails closed by default.
 

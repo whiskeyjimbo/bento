@@ -60,7 +60,17 @@ naming an exact shield path is honored as a deliberate, warned exception.
   fingerprint attests the manifest as written, a `~` grant resolves against
   `$HOME` at run time; see the threat model.
 - `bento validate` parses a manifest, rejects malformed fields, and prints the
-  requested permissions and resource limits (`--json` for machine output).
+  requested permissions and resource limits (`--json` for machine output). Under
+  each grant it also prints what that grant lands on for the host it is run on,
+  so a reviewer can see which directory `~` or a relative path means before
+  approving it.
+- The refusals a manifest can earn without consulting the host are raised by
+  `validate` and `approve`, not left for `run`: a `~operator/...` path, and a
+  write grant of the home directory itself (whatever `$HOME` is, the credential
+  stores sit inside it, so such a grant would make their parent writable). Both
+  were already refused at run; the gate moved earlier, so no manifest that used
+  to run stops running. The same grant spelled absolutely (`write: /home/u`)
+  still needs `$HOME` to recognize and is still refused at run.
 - `bento approve` stamps a fingerprint over the policy fields. `bento run`
   refuses an unapproved or since-edited manifest unless `--allow-unapproved` is
   passed, and re-checks the fingerprint at run time rather than trusting an
