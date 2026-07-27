@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -8,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // fileFacts is the ownership and permissions of one path, the two things that decide
@@ -16,6 +20,12 @@ type fileFacts struct {
 	path string
 	mode fs.FileMode
 	uid  uint32
+	// aclWrite is write granted to a named user or group by a POSIX ACL, which the mode
+	// cannot show: such a grant appears in the group-class bits and is indistinguishable
+	// there from the group write an ordinary umask leaves. Only statFacts fills it in - the
+	// manifest's own ACL is corrected along with its mode by the rewrite, which zeroes the
+	// group class and with it the mask every named entry is filtered through.
+	aclWrite bool
 }
 
 func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
@@ -31,7 +41,70 @@ func statFacts(path string) (fileFacts, error) {
 	if err != nil {
 		return fileFacts{}, err
 	}
-	return factsOf(path, fi)
+	facts, err := factsOf(path, fi)
+	if err != nil {
+		return fileFacts{}, err
+	}
+	facts.aclWrite, err = aclNamedWrite(path)
+	if err != nil {
+		return fileFacts{}, err
+	}
+	return facts, nil
+}
+
+// POSIX ACL entry tags and permission bits, as the kernel lays them out in
+// system.posix_acl_access. See acl(5) and fs/posix_acl.c.
+const (
+	aclTagUser   = 0x0002 // a named user
+	aclTagGroup  = 0x0008 // a named group
+	aclTagMask   = 0x0010 // the ceiling every named entry is filtered through
+	aclPermWrite = 0x0002
+	aclEntrySize = 8
+	aclVersion   = 2
+)
+
+// aclNamedWrite reports whether a POSIX ACL grants write to a named user or group - that
+// is, to somebody the mode bits cannot name. Only named entries count: a directory that
+// merely inherited a default ACL carries an access ACL with no named entry in it, and
+// treating the ACL's presence as the signal would flag every such directory.
+//
+// Absence of the attribute, and a filesystem that does not carry it at all, both mean the
+// mode is the whole story - which is the common case and not a finding.
+func aclNamedWrite(path string) (bool, error) {
+	buf := make([]byte, 512)
+	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
+	switch {
+	case errors.Is(err, unix.ENODATA), errors.Is(err, unix.ENOTSUP):
+		return false, nil
+	case errors.Is(err, unix.ERANGE):
+		// An ACL too large for the buffer is not one this can reason about, and guessing
+		// "no named writer" about it would be the one wrong answer.
+		return false, fmt.Errorf("the ACL on %s is too large to inspect", path)
+	case err != nil:
+		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
+	}
+	acl := buf[:n]
+	if len(acl) < 4 || binary.LittleEndian.Uint32(acl) != aclVersion {
+		return false, fmt.Errorf("cannot read the ACL on %s: unrecognized format", path)
+	}
+	entries := acl[4:]
+	if len(entries)%aclEntrySize != 0 {
+		return false, fmt.Errorf("cannot read the ACL on %s: truncated entry", path)
+	}
+	// The mask is the ceiling on every named entry, so a named grant it does not include
+	// grants nothing. A missing mask means an ACL with no named entries to filter.
+	var named, mask uint16
+	for i := 0; i < len(entries); i += aclEntrySize {
+		tag := binary.LittleEndian.Uint16(entries[i:])
+		perm := binary.LittleEndian.Uint16(entries[i+2:])
+		switch tag {
+		case aclTagUser, aclTagGroup:
+			named |= perm
+		case aclTagMask:
+			mask = perm
+		}
+	}
+	return named&mask&aclPermWrite != 0, nil
 }
 
 // sharedWrite is the write bits granted to someone other than the owner. On a sticky
@@ -86,9 +159,9 @@ type trustFlaw struct {
 // lexically cleaning a `..` that follows a symlink names a directory the file is not in
 // - and asking the kernel is also free of any race with the bytes already parsed.
 //
-// The reasoning is mode bits only. A POSIX ACL granting a named user write appears in
-// the group-class bits and is indistinguishable here, so a clean report means "nothing
-// in the mode says otherwise", not "verified private".
+// The directories are judged on their mode bits and their access ACL. The manifest's own
+// facts come from fstat, which carries no ACL, because the rewrite corrects its mode - and
+// with the group class the mask every named ACL entry is filtered through.
 func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	fi, err := f.Stat()
 	if err != nil {
@@ -270,14 +343,26 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 // euid do with it. role names the directory in the message.
 func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 	var out []trustFlaw
-	if shared := d.sharedWrite(); shared != 0 {
-		// Only world-writable is fatal. Group write is what a umask of 002 leaves on
-		// every directory it creates, and on a distro with per-user groups the group
-		// holds nobody else - refusing it would fail approve on ordinary machines.
+	if d.aclWrite {
 		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s, %s, is %s-writable (%#o), so anyone there can replace the manifest", d.path, role, writerClass(shared), d.mode.Perm()),
-			fatal:  shared&0o002 != 0,
+			reason: fmt.Sprintf("%s, %s, has an ACL granting write to a named user or group, who can replace the manifest", d.path, role),
+			fatal:  true,
 		})
+	}
+	if shared := d.sharedWrite(); shared != 0 {
+		// World write is always fatal. Group write on its own is not: it is what a umask of
+		// 002 leaves on every directory it creates, and on a distro with per-user groups the
+		// group holds nobody else - refusing it would fail approve on ordinary machines.
+		// Setgid is what says otherwise. A setgid group-writable directory is the shared
+		// project layout, made that way so a group of people can all write there, so the
+		// "nobody else is in the group" reading is the one thing it rules out.
+		fatal := shared&0o002 != 0
+		reason := fmt.Sprintf("%s, %s, is %s-writable (%#o), so anyone there can replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
+		if shared&0o020 != 0 && d.mode&fs.ModeSetgid != 0 {
+			fatal = true
+			reason = fmt.Sprintf("%s, %s, is setgid and group-writable (%#o), which is the shared-project layout, so the group holds other people who can replace the manifest", d.path, role, d.mode.Perm())
+		}
+		out = append(out, trustFlaw{reason: reason, fatal: fatal})
 	}
 	if d.foreignOwner(euid) {
 		out = append(out, trustFlaw{

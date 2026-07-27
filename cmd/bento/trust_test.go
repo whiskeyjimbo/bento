@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // A sticky directory (/tmp) is world-writable but does not let anyone rename or unlink
@@ -33,6 +36,118 @@ func TestSharedWrite(t *testing.T) {
 				t.Errorf("sharedWrite(%v) = %#o, want %#o", tc.mode, got, tc.want)
 			}
 		})
+	}
+}
+
+// The mode alone cannot say who the group holds. Setgid can: a setgid group-writable
+// directory is the shared-project layout, made that way precisely so several people write
+// there, which is the one thing "on a distro with per-user groups the group holds nobody
+// else" rules out. An ACL naming a writer is the same story told a different way.
+func TestDirFlawsFatality(t *testing.T) {
+	const me = 1000
+	cases := map[string]struct {
+		facts     fileFacts
+		wantFatal bool
+	}{
+		"private":                {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me}, false},
+		"group-writable":         {fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me}, false},
+		"world-writable":         {fileFacts{path: "/w", mode: fs.ModeDir | 0o777, uid: me}, true},
+		"setgid group-writable":  {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o775, uid: me}, true},
+		"setgid but not group":   {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o755, uid: me}, false},
+		"an ACL names a writer":  {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me, aclWrite: true}, true},
+		"sticky world-writable":  {fileFacts{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}, false},
+		"setgid sticky and open": {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | fs.ModeSticky | 0o775, uid: me}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var fatal bool
+			for _, f := range dirFlaws(tc.facts, "the directory holding it", me) {
+				fatal = fatal || f.fatal
+			}
+			if fatal != tc.wantFatal {
+				t.Errorf("fatal = %v, want %v for %v", fatal, tc.wantFatal, tc.facts.mode)
+			}
+		})
+	}
+}
+
+// setACL writes a POSIX access ACL, so the parse is exercised against what the kernel
+// actually stores rather than a blob this test made up. entries are {tag, perm, id}
+// triples in the order the kernel requires: USER_OBJ, USER*, GROUP_OBJ, GROUP*, MASK,
+// OTHER.
+func setACL(t *testing.T, path string, entries [][3]uint32) {
+	t.Helper()
+	blob := binary.LittleEndian.AppendUint32(nil, 2)
+	for _, e := range entries {
+		blob = binary.LittleEndian.AppendUint16(blob, uint16(e[0]))
+		blob = binary.LittleEndian.AppendUint16(blob, uint16(e[1]))
+		blob = binary.LittleEndian.AppendUint32(blob, e[2])
+	}
+	if err := unix.Setxattr(path, "system.posix_acl_access", blob, 0); err != nil {
+		t.Skipf("this filesystem does not take POSIX ACLs: %v", err)
+	}
+}
+
+// A named user granted write is exactly what the mode cannot show: it lands in the
+// group-class bits, where it is indistinguishable from the group write an ordinary umask
+// leaves. Reading the ACL is the only way to tell them apart, and only entries naming
+// somebody count - a directory that merely inherited a default ACL names nobody.
+func TestACLNamedWrite(t *testing.T) {
+	const (
+		userObj, user, groupObj, mask, other = 0x01, 0x02, 0x04, 0x10, 0x20
+		noID                                 = 0xffffffff
+	)
+	cases := map[string]struct {
+		entries [][3]uint32
+		want    bool
+	}{
+		"trivial, as an inherited default leaves it": {
+			[][3]uint32{{userObj, 7, noID}, {groupObj, 5, noID}, {other, 5, noID}}, false,
+		},
+		"a named user with write": {
+			[][3]uint32{{userObj, 7, noID}, {user, 7, 65534}, {groupObj, 5, noID}, {mask, 7, noID}, {other, 5, noID}}, true,
+		},
+		"a named user with read only": {
+			[][3]uint32{{userObj, 7, noID}, {user, 5, 65534}, {groupObj, 5, noID}, {mask, 7, noID}, {other, 5, noID}}, false,
+		},
+		"a named user whose write the mask withholds": {
+			[][3]uint32{{userObj, 7, noID}, {user, 7, 65534}, {groupObj, 5, noID}, {mask, 5, noID}, {other, 5, noID}}, false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			setACL(t, dir, tc.entries)
+			got, err := aclNamedWrite(dir)
+			if err != nil {
+				t.Fatalf("aclNamedWrite: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("aclNamedWrite = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A directory an ACL lets a specific other user write is one they can replace the manifest
+// in, so approve must refuse it - the same as a world-writable one, and for the same
+// reason, however private the mode looks.
+func TestApproveRefusesADirectoryAnACLOpens(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere regardless")
+	}
+	dir := t.TempDir()
+	path := manifestIn(t, dir)
+	setACL(t, dir, [][3]uint32{
+		{0x01, 7, 0xffffffff}, {0x02, 7, 65534}, {0x04, 5, 0xffffffff}, {0x10, 7, 0xffffffff}, {0x20, 5, 0xffffffff},
+	})
+
+	_, err := runCapturingStdout(t, newApproveCmd(), path)
+	if err == nil {
+		t.Fatal("a directory an ACL opens to another user must not be stamped over")
+	}
+	if !strings.Contains(err.Error(), "ACL") {
+		t.Errorf("the refusal must name the ACL; got %v", err)
 	}
 }
 
