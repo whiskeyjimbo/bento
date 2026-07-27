@@ -47,25 +47,25 @@ sandbox actually lets it read, write, reach, and execute - so each step has
 visible output rather than a silent success.
 
 ```sh
-go build -o bento ./cmd/bento
+go build -o examples/probe/bento ./cmd/bento
 cd examples/probe
 
 # 1. Profile: Observe what a script touches under default-deny to generate a draft manifest.
 #    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
-bento profile ./probe.py
+./bento profile ./probe.py
 
 # 2. Validate: Check manifest syntax and review requested permissions.
-bento validate ./probe.py.manifest.yaml --strict
+./bento validate ./probe.py.manifest.yaml --strict
 
 # 3. Approve: Stamp an approval fingerprint over the reviewed manifest policy fields.
-bento approve ./probe.py.manifest.yaml
+./bento approve ./probe.py.manifest.yaml
 
 # 4. Run: Execute the script inside the enforced sandbox.
 #    Refuses to run if the manifest is unapproved or modified unless --allow-unapproved is passed.
-bento run ./probe.py.manifest.yaml
+./bento run ./probe.py.manifest.yaml
 
 # Inspect Host Capabilities: Verify what isolation mechanisms this host kernel enforces.
-bento doctor
+./bento doctor
 ```
 
 Step 2 is where the work is. A profiled manifest describes what that one run
