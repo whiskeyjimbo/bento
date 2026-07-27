@@ -226,3 +226,27 @@ func TestWriteManifestAtomicallyLeavesNoTempFiles(t *testing.T) {
 		t.Errorf("manifest = %q, want the new bytes", data)
 	}
 }
+
+// A stamp is current as long as the policy has not changed, and the mode is no part of
+// the fingerprint - so chmod after an approve leaves the stamp reading as current over
+// permissions nobody attested. Reporting that as already approved would vouch for what
+// it never checked, so the clamp runs regardless of the stamp.
+func TestApproveClampsAnAlreadyApprovedManifest(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+		t.Fatalf("second approve: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got&0o022 != 0 {
+		t.Errorf("mode = %#o, want the group/world write bits cleared", got)
+	}
+}

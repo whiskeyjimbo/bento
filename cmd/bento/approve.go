@@ -44,7 +44,12 @@ func newApproveCmd() *cobra.Command {
 			}
 			warnUntrusted(cmd.ErrOrStderr(), trust.locationFlaws(uint32(os.Geteuid())))
 
-			if checkApproval(doc) == approvalCurrent {
+			// A current stamp is not the whole claim: the fingerprint covers the policy, so
+			// a chmod after an approve leaves it reading as current over permissions nobody
+			// attested. The rewrite is what clamps those and says so, and it is skipped here,
+			// so a manifest still needing the clamp goes through it rather than being
+			// reported as already approved for a mode approve never vouched for.
+			if checkApproval(doc) == approvalCurrent && trust.file.sharedWrite() == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
 			}
