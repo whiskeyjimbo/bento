@@ -145,6 +145,12 @@ type manifestTrust struct {
 	// held a symlink along the way, since whoever can replace a link repoints it at a file
 	// of their choosing.
 	chain []fileFacts
+	// links is every symlink the resolution followed. Their own ownership is judged, not
+	// their mode, which grants nothing on a symlink: the directory holding one usually
+	// decides who may repoint it, but a sticky directory exempts that write on the premise
+	// that only we can unlink our own entries - which is exactly what a link belonging to
+	// somebody else breaks.
+	links []fileFacts
 }
 
 // trustFlaw is one way someone other than this user could change the manifest. fatal
@@ -197,7 +203,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if !os.SameFile(fi, targetFI) {
 		return manifestTrust{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
 	}
-	dirs, _, err := pathDirs(path)
+	dirs, links, _, err := pathDirs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -207,7 +213,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if dirPath := filepath.Dir(target); dirs[0].path != dirPath {
 		return manifestTrust{}, fmt.Errorf("%s moved while it was being read: it resolved to %s but is open in %s", path, dirs[0].path, dirPath)
 	}
-	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], realPath: target}, nil
+	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], links: links, realPath: target}, nil
 }
 
 // inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
@@ -220,7 +226,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 // locationFlaws is meaningful on the result - flaws would report a clean verdict about a
 // file nobody has looked at.
 func inspectNewManifest(path string) (manifestTrust, error) {
-	dirs, leaf, err := pathDirs(path)
+	dirs, links, leaf, err := pathDirs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -228,6 +234,7 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 		file:     fileFacts{path: path, mode: newManifestMode, uid: uint32(os.Geteuid())},
 		dir:      dirs[0],
 		chain:    dirs[1:],
+		links:    links,
 		realPath: filepath.Join(dirs[0].path, leaf),
 	}, nil
 }
@@ -240,7 +247,8 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 const newManifestMode fs.FileMode = 0o600
 
 // pathDirs walks path one component at a time and returns facts for every directory the
-// resolution read a component from, nearest first, along with the name the last hop left -
+// resolution read a component from, nearest first, for every symlink it followed, and the
+// name the last hop left -
 // the manifest's own name at the location the walk landed in. Every one of them can decide which file
 // the path reaches - a directory that holds a symlink repoints it at a file of its owner's
 // choosing, and a directory anywhere above renames a level aside - so the check has to see
@@ -257,7 +265,7 @@ const newManifestMode fs.FileMode = 0o600
 // A final component that is not there is not an error: profile walks the place a manifest
 // is about to be written, and a dangling link at that name still has to be followed to the
 // name it stands for rather than replaced. Every directory above it must exist.
-func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
+func pathDirs(path string) (dirs, links []fileFacts, leaf string, err error) {
 	// Not filepath.Abs, which cleans: it would delete a `..` lexically, and a `..` that
 	// follows a symlink names a different directory cleaned than walked - the very thing
 	// this walk exists to resolve properly.
@@ -265,13 +273,13 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 	if !filepath.IsAbs(abs) {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		abs = cwd + "/" + abs
 	}
 	root, err := unix.Open("/", unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	defer unix.Close(root)
 
@@ -281,7 +289,7 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 	defer func() { closeUnlessRoot(dirfd, root) }()
 	rootFacts, err := fdFacts(root, "/")
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	out := []fileFacts{rootFacts}
 	// The remaining components are a stack rather than a range, since resolving a symlink
@@ -298,12 +306,12 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 			// directory the walk actually reached is the point of walking this way.
 			up, err := unix.Openat(dirfd, "..", unix.O_PATH|unix.O_CLOEXEC, 0)
 			if err != nil {
-				return nil, "", err
+				return nil, nil, "", err
 			}
 			facts, err := fdFacts(up, filepath.Dir(at))
 			if err != nil {
 				unix.Close(up)
-				return nil, "", err
+				return nil, nil, "", err
 			}
 			closeUnlessRoot(dirfd, root)
 			dirfd, at = up, facts.path
@@ -317,24 +325,28 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 			break
 		}
 		if err != nil {
-			return nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: err}
+			return nil, nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: err}
 		}
 		var st unix.Stat_t
 		if err := unix.Fstat(fd, &st); err != nil {
 			unix.Close(fd)
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		switch mode := statMode(st.Mode); {
 		case mode&fs.ModeSymlink != 0:
 			hops++
 			if hops > maxSymlinkHops {
 				unix.Close(fd)
-				return nil, "", &fs.PathError{Op: "openat", Path: abs, Err: unix.ELOOP}
+				return nil, nil, "", &fs.PathError{Op: "openat", Path: abs, Err: unix.ELOOP}
 			}
+			// The link's own owner, from the same fstat the type came from. Not fdFacts: a
+			// symlink has no meaningful mode and carries no ACL, so there is nothing to read
+			// through /proc for it.
+			links = append(links, fileFacts{path: filepath.Join(at, comp), mode: mode, uid: st.Uid})
 			link, err := readlinkat(dirfd, comp)
 			unix.Close(fd)
 			if err != nil {
-				return nil, "", err
+				return nil, nil, "", err
 			}
 			// A relative target continues from the directory holding the link; an absolute
 			// one restarts from the root, exactly as the kernel would resolve it.
@@ -347,7 +359,7 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 			facts, err := fdFacts(fd, filepath.Join(at, comp))
 			if err != nil {
 				unix.Close(fd)
-				return nil, "", err
+				return nil, nil, "", err
 			}
 			closeUnlessRoot(dirfd, root)
 			dirfd, at = fd, facts.path
@@ -357,16 +369,16 @@ func pathDirs(path string) (dirs []fileFacts, leaf string, err error) {
 			// let whoever opens it say so rather than guessing at the errno here.
 			unix.Close(fd)
 			if len(rest) > 0 {
-				return nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: unix.ENOTDIR}
+				return nil, nil, "", &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: unix.ENOTDIR}
 			}
 			leaf = comp
 		}
 	}
 	if leaf == "" {
-		return nil, "", fmt.Errorf("%s names a directory, not a manifest", path)
+		return nil, nil, "", fmt.Errorf("%s names a directory, not a manifest", path)
 	}
 	slices.Reverse(out)
-	return dedupeDirs(out), leaf, nil
+	return dedupeDirs(out), links, leaf, nil
 }
 
 // maxSymlinkHops matches the kernel's own ceiling, so a chain this walk refuses is one an
@@ -495,6 +507,19 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 // describe a state approve is in the middle of leaving.
 func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 	out := dirFlaws(t.dir, "the directory holding it", euid)
+	// A link belonging to someone else is theirs to repoint, at whatever manifest they
+	// like. Usually the directory holding it is already fatal for the same reason, but a
+	// sticky one is not: its write bits are exempted because others cannot unlink our
+	// entries, which says nothing about the ones that are not ours.
+	for _, l := range t.links {
+		if l.foreignOwner(euid) {
+			out = append(out, trustFlaw{
+				reason: fmt.Sprintf("%s, a symlink on the path to it, is owned by uid %d, who can repoint it at a manifest of their choosing", l.path, l.uid),
+				fatal:  true,
+			})
+			break
+		}
+	}
 	// One fatal link in the chain is enough to report. A group-writable directory up the
 	// tree is as ordinary as a group-writable one holding the manifest, and naming every
 	// level to / would bury the one that actually lets someone else choose which manifest

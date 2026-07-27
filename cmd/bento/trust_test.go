@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -183,7 +184,7 @@ func TestPathDirsSeesIntermediateSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dirs, _, err := pathDirs(path)
+	dirs, _, _, err := pathDirs(path)
 	if err != nil {
 		t.Fatalf("pathDirs: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestPathDirsFollowsChainsAndRefusesLoops(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "bento.yaml"), []byte("entrypoint: ./x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dirs, _, err := pathDirs(filepath.Join(root, "one", "bento.yaml"))
+	dirs, _, _, err := pathDirs(filepath.Join(root, "one", "bento.yaml"))
 	if err != nil {
 		t.Fatalf("pathDirs: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestPathDirsFollowsChainsAndRefusesLoops(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := pathDirs(filepath.Join(root, "a", "bento.yaml")); err == nil {
+	if _, _, _, err := pathDirs(filepath.Join(root, "a", "bento.yaml")); err == nil {
 		t.Error("a symlink loop must be refused, not walked")
 	}
 }
@@ -327,12 +328,12 @@ func TestPathDirsLeaksNoDescriptors(t *testing.T) {
 
 	before := count()
 	for range 20 {
-		if _, _, err := pathDirs(path); err != nil {
+		if _, _, _, err := pathDirs(path); err != nil {
 			t.Fatal(err)
 		}
 		// The interesting half: an error partway along used to leave the descriptor the walk
 		// was standing on open.
-		if _, _, err := pathDirs(filepath.Join(dir, "absent", "bento.yaml")); err == nil {
+		if _, _, _, err := pathDirs(filepath.Join(dir, "absent", "bento.yaml")); err == nil {
 			t.Fatal("a missing intermediate directory must fail")
 		}
 	}
@@ -731,5 +732,68 @@ func TestWriteManifestAtomicallyExplainsAnUnwritableDirectory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "not only on the manifest") {
 		t.Errorf("the error must name the directory and the permission it needs; got %v", err)
+	}
+}
+
+// A symlink's own owner decides who may repoint it, and in a sticky directory that is not
+// the directory's owner: the sticky exemption rests on others being unable to unlink our
+// entries, which says nothing about an entry belonging to somebody else. So the walk has to
+// record the links it followed, not only the directories that held them - synthesized here
+// because planting a link owned by another user needs a second uid.
+func TestLocationFlawsRefuseAForeignSymlink(t *testing.T) {
+	const me = 1000
+	trust := manifestTrust{
+		file:  fileFacts{path: "/home/me/m.yaml", mode: 0o600, uid: me},
+		dir:   fileFacts{path: "/home/me", mode: fs.ModeDir | 0o700, uid: me},
+		chain: []fileFacts{{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}},
+		links: []fileFacts{{path: "/tmp/link.yaml", mode: fs.ModeSymlink | 0o777, uid: 1001}},
+	}
+	got := trust.locationFlaws(me)
+	if len(got) != 1 || !got[0].fatal {
+		t.Fatalf("a link somebody else can repoint must be fatal; got %+v", got)
+	}
+	if !strings.Contains(got[0].reason, "/tmp/link.yaml") {
+		t.Errorf("the refusal must name the link; got %q", got[0].reason)
+	}
+	// Our own link through the same sticky directory is ordinary - flagging it would refuse
+	// every manifest reached through a link in /tmp.
+	trust.links[0].uid = me
+	if got := trust.locationFlaws(me); len(got) != 0 {
+		t.Errorf("our own link grants nobody else anything; got %+v", got)
+	}
+}
+
+// The facts above are only worth what the walk feeds them, so every link the resolution
+// followed has to arrive in links - the intermediate directory ones as well as the leaf.
+func TestPathDirsRecordsTheLinksItFollowed(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestIn(t, filepath.Join(root, "real"))
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+	leaf := filepath.Join(root, "leaflink.yaml")
+	if err := os.Symlink(filepath.Join(root, "dirlink", "bento.yaml"), leaf); err != nil {
+		t.Fatal(err)
+	}
+	_, links, _, err := pathDirs(leaf)
+	if err != nil {
+		t.Fatalf("pathDirs: %v", err)
+	}
+	var got []string
+	for _, l := range links {
+		got = append(got, l.path)
+		if l.uid != uint32(os.Geteuid()) {
+			t.Errorf("%s: uid = %d, want the link's own owner %d", l.path, l.uid, os.Geteuid())
+		}
+	}
+	want := []string{leaf, filepath.Join(root, "dirlink")}
+	if !slices.Equal(got, want) {
+		t.Errorf("links = %v, want %v", got, want)
 	}
 }
