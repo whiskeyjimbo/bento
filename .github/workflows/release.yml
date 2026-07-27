@@ -39,6 +39,13 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      # A runner that still refuses userns fails ~80 sandbox tests with one line each
+      # and no cause. Probing the levers first says which one is wrong.
+      - name: Probe the sandbox preconditions
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces || true
+          bwrap --unshare-user --dev-bind / / true && echo "bwrap userns OK"
+
       - run: make check
 
   release:
@@ -63,7 +70,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v3
 
       - uses: anchore/sbom-action/download-syft@v0
 
