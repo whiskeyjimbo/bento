@@ -91,8 +91,7 @@ through the checksum file:
 ```sh
 # 1. The checksum file really came from a tagged release run of this repository.
 cosign verify-blob checksums.txt \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp \
     '^https://github\.com/whiskeyjimbo/bento/\.github/workflows/release\.yml@refs/tags/v'
