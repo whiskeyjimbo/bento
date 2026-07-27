@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -569,13 +570,20 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	if host == "" {
 		return "", "", nil, fmt.Errorf("empty target host")
 	}
-	// A hostname, IP literal, or port never carries a control byte. One here is a
-	// target crafted to smuggle a terminal escape into a host-side render of the egress
-	// log: host and port flow into report() (the run's admitted-hosts list) and the 403
-	// body. Refuse it rather than carry the escape through.
+	// A hostname, IP literal, or port never carries a deceiving character. One here is
+	// a target crafted to mislead a host-side render of the egress log: host and port
+	// flow into report() (the run's admitted-hosts list) and the 403 body, and the
+	// recorded host reaches every other consumer of the observation. Hold the target to
+	// the same screen policy.Validate applies to a path, so the refusal happens here
+	// rather than in each consumer. The UTF-8 check is separate because it is what
+	// catches a raw 8-bit C1 byte: 0x9b alone decodes as RuneError, not as U+009B, so
+	// the rune screen never sees the CSI the terminal would act on.
 	for _, s := range []string{host, port} {
-		if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
-			return "", "", nil, fmt.Errorf("target contains a control character")
+		if !utf8.ValidString(s) {
+			return "", "", nil, fmt.Errorf("target contains invalid UTF-8")
+		}
+		if r, ok := policy.FirstUnsafeRune(s); ok {
+			return "", "", nil, fmt.Errorf("target contains %s (U+%04X)", policy.UnsafeRuneKind(r), r)
 		}
 	}
 	// net.SplitHostPort hands back whatever sat after the colon: "08080" and

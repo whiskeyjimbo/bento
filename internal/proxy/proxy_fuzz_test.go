@@ -7,6 +7,9 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // readConnect is the proxy's only parser of attacker-controlled bytes: everything
@@ -18,16 +21,20 @@ import (
 //
 // More importantly, a request it ACCEPTS must yield a host and port fit to render:
 // both flow into report() (the run's admitted-hosts list, printed on the host) and
-// into the 403 body the target reads back, so a control byte surviving the parse is
-// a terminal-escape smuggled into the operator's console. Table tests pin the
-// escapes someone thought of; this pins the property against the ones nobody did.
+// into the 403 body the target reads back, so a deceiving character surviving the
+// parse is a terminal escape, a reordered display, or a hidden segment smuggled into
+// the operator's console. Table tests pin the escapes someone thought of; this pins
+// the property against the ones nobody did.
 func FuzzReadConnect(f *testing.F) {
 	f.Add("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
 	f.Add("CONNECT [::1]:443 HTTP/1.1\r\n\r\n")        // IPv6 literal, bracketed
 	f.Add("CONNECT \x1bevil.com:443 HTTP/1.1\r\n\r\n") // escape in the host
 	f.Add("CONNECT example.com:4\x0043 HTTP/1.1\r\n\r\n")
-	f.Add("CONNECT :443 HTTP/1.1\r\n\r\n")        // empty host
-	f.Add("CONNECT example.com:443 HTTP/1.1\r\n") // headers never terminated
+	f.Add("CONNECT ex\u202eample.com:443 HTTP/1.1\r\n\r\n") // bidi override in the host
+	f.Add("CONNECT ex\u200bample.com:443 HTTP/1.1\r\n\r\n") // zero-width space in the host
+	f.Add("CONNECT ex\x9bample.com:443 HTTP/1.1\r\n\r\n")   // raw 8-bit CSI, decodes as RuneError
+	f.Add("CONNECT :443 HTTP/1.1\r\n\r\n")                  // empty host
+	f.Add("CONNECT example.com:443 HTTP/1.1\r\n")           // headers never terminated
 	f.Add("connect example.com:443 HTTP/1.1\r\n\r\n")
 	f.Add("GET / HTTP/1.1\r\n\r\n") // not a CONNECT
 	f.Add("CONNECT\r\n\r\n")
@@ -52,10 +59,11 @@ func FuzzReadConnect(f *testing.F) {
 			t.Fatalf("readConnect accepted a request with an empty host (req %q)", req)
 		}
 		for _, s := range []string{host, port} {
-			for _, r := range s {
-				if r < 0x20 || r == 0x7f {
-					t.Fatalf("readConnect accepted control character %q in %q, which reaches the egress log and the 403 body (req %q)", r, s, req)
-				}
+			if !utf8.ValidString(s) {
+				t.Fatalf("readConnect accepted invalid UTF-8 in %q, which can carry a raw 8-bit C1 the rune screen never decodes (req %q)", s, req)
+			}
+			if r, bad := policy.FirstUnsafeRune(s); bad {
+				t.Fatalf("readConnect accepted deceiving rune %q in %q, which reaches the egress log and the 403 body (req %q)", r, s, req)
 			}
 		}
 	})

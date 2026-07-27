@@ -67,20 +67,31 @@ func connect(t *testing.T, c net.Conn, target string) (status string, br *bufio.
 	return strings.TrimSpace(line), br
 }
 
-// A CONNECT target carrying a control byte is a crafted attempt to inject a terminal
-// escape into the host-side egress log (the host flows into report() and the 403 body).
-// readConnect must refuse it rather than pass the escape through.
-func TestReadConnectRejectsControlCharTarget(t *testing.T) {
-	for _, target := range []string{"ex\x1bample.com:443", "example.com:4\x0043", "host\x07:443"} {
+// A CONNECT target carrying a deceiving character is a crafted attempt to mislead the
+// host-side egress log (the host flows into report() and the 403 body) and every other
+// consumer of the recorded host. readConnect must refuse it at entry rather than pass
+// it through: a control byte reprograms the terminal, a bidi override reorders the
+// display, a zero-width character hides a segment, and a raw 8-bit C1 is a CSI some
+// terminals honor directly while decoding as RuneError rather than as its code point.
+func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
+	for _, tc := range []struct{ target, want string }{
+		{"ex\x1bample.com:443", "a control character"},
+		{"example.com:4\x0043", "a control character"},
+		{"host\x07:443", "a control character"},
+		{"ex\u202eample.com:443", "a bidirectional formatting character"},
+		{"ex\u200bample.com:443", "a zero-width or invisible character"},
+		{"ex\u009bample.com:443", "a control character"},
+		{"ex\x9bample.com:443", "invalid UTF-8"},
+	} {
 		client, server := net.Pipe()
 		go func() {
-			fmt.Fprintf(client, "CONNECT %s HTTP/1.1\r\n\r\n", target)
+			fmt.Fprintf(client, "CONNECT %s HTTP/1.1\r\n\r\n", tc.target)
 		}()
 		_, _, _, err := readConnect(server)
 		client.Close()
 		server.Close()
-		if err == nil || !strings.Contains(err.Error(), "control character") {
-			t.Errorf("target %q: expected a control-character rejection; got %v", target, err)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("target %q: expected a rejection naming %q; got %v", tc.target, tc.want, err)
 		}
 	}
 }
