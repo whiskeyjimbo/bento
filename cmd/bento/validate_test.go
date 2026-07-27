@@ -21,7 +21,7 @@ func TestValidateShowsLimits(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M", CPU: "50%", PIDs: 64}}
 
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", p)
+	writePolicySummary(&buf, "m.yaml", p, nil)
 	out := buf.String()
 	for _, want := range []string{"limits:", "memory 128M", "cpu 50%", "pids 64"} {
 		if !strings.Contains(out, want) {
@@ -120,5 +120,43 @@ func TestValidateJSONHonorsStrict(t *testing.T) {
 				t.Errorf("approval = %q, want %q", got.Approval, tc.wantApproval)
 			}
 		})
+	}
+}
+
+// The summary shows what a grant lands on so a reviewer can see which directory `~`
+// or a relative path means - and showing it must not change the verdict. Resolve
+// rewrites the slices in place, so resolving through a shallow struct copy would
+// write absolute paths into the very policy the approval is then checked against,
+// reporting every approved manifest as STALE. The approval assertion is what catches
+// that; the display assertion alone passes with the bug present.
+func TestValidateShowsResolvedGrantsWithoutDisturbingApproval(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~", "./data", "/etc/hosts"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err != nil {
+		t.Fatalf("validate --strict on a freshly approved manifest: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "approval:     current") {
+		t.Errorf("approval must stay current when the summary resolves grants; got:\n%s", out)
+	}
+	// The literal spelling stays, since that is what the fingerprint attests.
+	if !strings.Contains(out, "read:         [~ ./data /etc/hosts]") {
+		t.Errorf("summary must show the grants as written; got:\n%s", out)
+	}
+	for _, want := range []string{"on this host: " + home, "on this host: " + filepath.Join(filepath.Dir(path), "data")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q; got:\n%s", want, out)
+		}
+	}
+	// An absolute grant already says where it lands, so it gets no second line.
+	if strings.Contains(out, "on this host: /etc/hosts") {
+		t.Errorf("an absolute grant must not be repeated; got:\n%s", out)
 	}
 }

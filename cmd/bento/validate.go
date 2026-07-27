@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -46,7 +47,7 @@ func newValidateCmd() *cobra.Command {
 				// stderr and the non-zero exit, exactly as the human mode's does.
 				return strictApprovalError(doc, strict)
 			}
-			writePolicySummary(os.Stdout, args[0], doc.Policy)
+			writePolicySummary(os.Stdout, args[0], doc.Policy, resolvedGrants(doc.Policy, args[0]))
 			return reportApproval(os.Stdout, doc, strict)
 		},
 	}
@@ -189,7 +190,34 @@ func toPolicyJSON(p *policy.Policy) policyJSON {
 	return out
 }
 
-func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
+// resolvedGrants reports what this host would make of the policy's grants, for display
+// beside the manifest's own spelling. A reviewer approving `read: ["~"]` or `read: [./data]`
+// otherwise has to work out which directory that lands on, and `~` in particular depends
+// on an environment the fingerprint does not attest.
+//
+// It resolves a deep copy: Resolve rewrites the slices in place, and a struct copy shares
+// their backing arrays, so resolving through one would leave the caller's policy holding
+// absolute paths - and validate fingerprints that policy afterwards, which would report
+// every approved manifest as stale.
+//
+// A host that cannot resolve them (an unusable $HOME) yields nil rather than an error:
+// the approval verdict validate exists to give is a property of the manifest, and must
+// not start depending on where it is checked.
+func resolvedGrants(p *policy.Policy, manifestPath string) *policy.Policy {
+	cp := *p
+	cp.Read = slices.Clone(p.Read)
+	cp.Write = slices.Clone(p.Write)
+	if err := manifest.Resolve(&cp, manifestPath); err != nil {
+		return nil
+	}
+	return &cp
+}
+
+func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
+	var resolvedRead, resolvedWrite []string
+	if resolved != nil {
+		resolvedRead, resolvedWrite = resolved.Read, resolved.Write
+	}
 	fmt.Fprintf(w, "manifest:     %s - ok\n", path)
 	fmt.Fprintf(w, "entrypoint:   %s\n", p.Entrypoint)
 	if p.Interpreter != "" {
@@ -198,7 +226,9 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is a compiled binary)\n")
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
+	writeResolvedGrants(w, p.Read, resolvedRead)
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
+	writeResolvedGrants(w, p.Write, resolvedWrite)
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 
 	if len(p.Network) == 0 {
@@ -250,6 +280,20 @@ func writePolicySummary(w io.Writer, path string, p *policy.Policy) {
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
+}
+
+// writeResolvedGrants prints the resolved spelling of a grant list under the literal
+// one, and only where the two differ - an absolute grant already says where it lands,
+// and repeating it would bury the lines that carry new information.
+func writeResolvedGrants(w io.Writer, literal, resolved []string) {
+	if len(resolved) != len(literal) || slices.Equal(literal, resolved) {
+		return
+	}
+	for i, lit := range literal {
+		if lit != resolved[i] {
+			fmt.Fprintf(w, "  on this host: %s\n", resolved[i])
+		}
+	}
 }
 
 // isLoopbackHost reports whether a network-rule host is one the sandbox's
