@@ -318,6 +318,23 @@ func TestHomeAnchorsKeepsPasswdHome(t *testing.T) {
 	}
 }
 
+// The passwd anchor only resists a caller-chosen environment while the lookup stays in
+// pure Go: built against libc NSS, an LD_PRELOAD that fails getpwuid_r drops the anchor
+// and restores the bug homeAnchors exists to fix (verified by hand against a cgo build).
+// The osusergo tag is what makes the pure-Go resolver unconditional, so it is a security
+// flag rather than a build preference and both build paths must carry it.
+func TestBuildsPinThePureGoPasswdResolver(t *testing.T) {
+	for _, f := range []string{"../../Makefile", "../../.goreleaser.yaml"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "osusergo") {
+			t.Errorf("%s does not build with the osusergo tag, so the passwd anchor the credential shields rely on can be dropped by LD_PRELOAD", f)
+		}
+	}
+}
+
 // $HOME agreeing with passwd is the common case and must not shield everything twice -
 // including when the two differ only in a trailing slash.
 func TestHomeAnchorsDeduplicates(t *testing.T) {
