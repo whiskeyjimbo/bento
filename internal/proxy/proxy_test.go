@@ -80,6 +80,7 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 		{"host\x07:443", "a control character"},
 		{"ex\u202eample.com:443", "a bidirectional formatting character"},
 		{"ex\u200bample.com:443", "a zero-width or invisible character"},
+		{"ex\U000E0041ample.com:443", "a zero-width or invisible character"},
 		{"ex\u009bample.com:443", "a control character"},
 		{"ex\x9bample.com:443", "invalid UTF-8"},
 	} {

@@ -37,7 +37,9 @@ func TestValidateAcceptsWellFormedPolicy(t *testing.T) {
 func TestValidateAcceptsNonASCIIAndRTLPaths(t *testing.T) {
 	p := valid()
 	p.Entrypoint = "/home/u/مشروع/run.py" // "project" in Arabic letters
-	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁"}
+	// The variation selector is deliberately outside the invisible screen: it rides
+	// along on real emoji filenames and hides nothing on its own.
+	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁", "/emoji/⚠️.txt"}
 	p.Args = []string{"--name=مرحبا", "--dir=Ελληνικά"}
 	if err := p.Validate(); err != nil {
 		t.Errorf("a policy with legitimate non-ASCII/RTL paths must validate: %v", err)
@@ -130,6 +132,19 @@ func TestValidateRejects(t *testing.T) {
 		{"emoji ZWJ sequence rejected (deliberate tradeoff)", func(p *Policy) { p.Read = []string{"/data/\U0001F468\u200D\U0001F469.png"} }, "zero-width or invisible"},
 		{"soft hyphen in path", func(p *Policy) { p.Read = []string{"/data/se\u00adcret"} }, "zero-width or invisible"},
 		{"invisible math operator in arg", func(p *Policy) { p.Args = []string{"--x\u2061y"} }, "zero-width or invisible"},
+		// A tag character carries no glyph at all, so the host below renders to an
+		// operator as plain "example.com" while granting something else.
+		{"tag character in arg", func(p *Policy) { p.Args = []string{"--host=ex\U000E0041ample.com"} }, "zero-width or invisible"},
+		{"tag block terminator in path", func(p *Policy) { p.Read = []string{"/data/x\U000E007F"} }, "zero-width or invisible"},
+		{"language tag in path", func(p *Policy) { p.Read = []string{"/data/\U000E0001x"} }, "zero-width or invisible"},
+		{"mongolian vowel separator in path", func(p *Policy) { p.Read = []string{"/data/se\u180ecret"} }, "zero-width or invisible"},
+		// The Hangul fillers are not format characters but render as blank, which is the
+		// same spoof by a different table.
+		{"hangul choseong filler in path", func(p *Policy) { p.Read = []string{"/data/se\u115fcret"} }, "zero-width or invisible"},
+		{"hangul jungseong filler in path", func(p *Policy) { p.Read = []string{"/data/se\u1160cret"} }, "zero-width or invisible"},
+		{"hangul filler in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/ru\u3164n" }, "zero-width or invisible"},
+		{"halfwidth hangul filler in arg", func(p *Policy) { p.Args = []string{"--x\uffa0y"} }, "zero-width or invisible"},
+		{"combining grapheme joiner in path", func(p *Policy) { p.Read = []string{"/data/se\u034fcret"} }, "zero-width or invisible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

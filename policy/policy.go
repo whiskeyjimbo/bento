@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -191,7 +192,9 @@ func unsafeInField(r rune) bool {
 	return isControl(r) || isBidiOverride(r) || isInvisible(r)
 }
 
-// unsafeKind names the class of an unsafeInField rune for the error message.
+// unsafeKind names the class of an unsafeInField rune for the error message. The bidi
+// overrides are also format characters, so they are tested first to keep the specific
+// name for the class an operator most needs to recognize.
 func unsafeKind(r rune) string {
 	switch {
 	case isBidiOverride(r):
@@ -223,20 +226,25 @@ func isBidiOverride(r rune) bool {
 	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
 }
 
-// isInvisible reports whether r is a zero-width or otherwise invisible formatting
-// character that renders as nothing: the soft hyphen (U+00AD, invisible unless a line
-// wraps on it), the zero-width space/joiners (U+200B-U+200D), the word joiner
-// (U+2060), the invisible math operators (U+2061-U+2064), and the byte-order mark /
-// zero-width no-break space (U+FEFF). In a path they are a spoof - hiding a segment,
-// or making two distinct grants look identical. The joiners (U+200C/U+200D) do have
-// legitimate text-shaping uses - Persian/Indic rendering, emoji ZWJ sequences - so a
-// real filename can carry one, but a manifest is a reviewed security boundary where an
-// invisible character is a red flag worth refusing loudly: a file whose name truly
-// needs one can be granted through its parent directory.
+// isInvisible reports whether r renders as nothing: the format characters (Cf - the
+// soft hyphen, the zero-width space and joiners, the word joiner, the byte-order mark,
+// the Mongolian vowel separator, the tag block) and the other default-ignorable code
+// points (the Hangul fillers, the combining grapheme joiner, the rest of the tag
+// block). In a path any of them is a spoof - hiding a segment, or making two distinct
+// grants render identically. Unlike isControl and isBidiOverride, which screen closed
+// sets, this one is open-ended and grows with Unicode, so it defers to the property
+// tables rather than an enumeration that goes stale.
+//
+// The union is deliberately wide. It sweeps in runes with legitimate text-shaping uses
+// - the joiners U+200C/U+200D for Persian/Indic and emoji ZWJ sequences, the Arabic
+// prepended-concatenation marks - but a manifest is a reviewed security boundary where
+// an invisible character is a red flag worth refusing loudly: a file whose name truly
+// needs one can be granted through its parent directory. Variation selectors are left
+// out, being neither Cf nor default-ignorable: U+FE0F rides along on real emoji
+// filenames and does not hide anything on its own.
 func isInvisible(r rune) bool {
-	return r == 0x00AD ||
-		(r >= 0x200B && r <= 0x200D) || r == 0x2060 || (r >= 0x2061 && r <= 0x2064) ||
-		r == 0xFEFF
+	return unicode.Is(unicode.Cf, r) ||
+		unicode.Is(unicode.Properties["Other_Default_Ignorable_Code_Point"], r)
 }
 
 // canonical resolves the zero value to the default it stands for, so a policy that
