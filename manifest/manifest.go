@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -249,13 +250,21 @@ func Resolve(p *policy.Policy, manifestPath string) error {
 	if err != nil {
 		return fmt.Errorf("manifest: cannot anchor %s to an absolute directory: %w", manifestPath, err)
 	}
-	p.Entrypoint = resolveAgainst(base, p.Entrypoint)
-	p.Interpreter = resolveInterpreter(base, p.Interpreter)
+	if p.Entrypoint, err = resolveAgainst(base, p.Entrypoint); err != nil {
+		return err
+	}
+	if p.Interpreter, err = resolveInterpreter(base, p.Interpreter); err != nil {
+		return err
+	}
 	for i, r := range p.Read {
-		p.Read[i] = resolveAgainst(base, r)
+		if p.Read[i], err = resolveAgainst(base, r); err != nil {
+			return err
+		}
 	}
 	for i, w := range p.Write {
-		p.Write[i] = resolveAgainst(base, w)
+		if p.Write[i], err = resolveAgainst(base, w); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -267,18 +276,58 @@ func Resolve(p *policy.Policy, manifestPath string) error {
 // per caller, fingerprinting identically. A bare `python3` is left alone: it means
 // "the host's python3" and joining it to the manifest directory would name a file
 // that almost never exists.
-func resolveInterpreter(base, interp string) string {
-	if !strings.ContainsRune(interp, filepath.Separator) {
-		return interp
+func resolveInterpreter(base, interp string) (string, error) {
+	// The tilde check comes first: a bare "~" carries no separator, so the PATH-search
+	// branch below would otherwise hand it to exec.LookPath as a command name.
+	if !strings.HasPrefix(interp, "~") && !strings.ContainsRune(interp, filepath.Separator) {
+		return interp, nil
 	}
 	return resolveAgainst(base, interp)
 }
 
-func resolveAgainst(base, path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
+func resolveAgainst(base, path string) (string, error) {
+	if strings.HasPrefix(path, "~") {
+		return expandHome(path)
 	}
-	return filepath.Join(base, path)
+	if path == "" || filepath.IsAbs(path) {
+		return path, nil
+	}
+	return filepath.Join(base, path), nil
+}
+
+// expandHome rewrites a leading "~" to the invoking user's home directory. Without
+// it a grant of "~/.ssh/id_rsa" is just a relative path: it anchors to the manifest
+// directory, names a file that does not exist, mounts nothing, and reports nothing -
+// a manifest that reads as granting home while granting nothing, and a shield test
+// that passes because there was no grant to shield against.
+//
+// Only the current user's home is expandable. "~operator/keys" is refused rather
+// than guessed at: resolving another user's home means a passwd lookup this package
+// does not do, and the alternatives - treating it as relative, or as the invoker's
+// own home - both grant something other than what the manifest names.
+func expandHome(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, "~")
+	if !ok {
+		return "", fmt.Errorf("manifest: %q is not a tilde path", path)
+	}
+	if rest != "" && !strings.HasPrefix(rest, "/") {
+		return "", fmt.Errorf("manifest: %q names another user's home directory, which bento does not expand; write the path out in full", path)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("manifest: cannot expand %q: resolving home directory: %w", path, err)
+	}
+	// os.UserHomeDir returns $HOME verbatim, so a relative or empty value would produce
+	// a grant that lands wherever the enforcing process's cwd points - the same silent
+	// misplacement the expansion exists to fix. internal/linux refuses it for the same
+	// reason; this layer cannot import that one.
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("manifest: cannot expand %q: home directory %q is not absolute", path, home)
+	}
+	// Cleaned because the shield and grant comparisons downstream are exact string
+	// equality against filepath.Clean(home): a trailing slash in $HOME would make
+	// "~" resolve to a path that matches home everywhere except where it counts.
+	return filepath.Clean(filepath.Join(home, rest)), nil
 }
 
 // Marshal serializes a policy and its provenance to canonical manifest YAML. The

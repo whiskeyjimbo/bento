@@ -68,10 +68,9 @@ many entries of the home directory the sandbox can see. Compare it against
 mount for the path down to the working directory and not a real grant. **Only
 read the shield results as meaningful when that count is close to the host's.**
 
-Bento contributes to this trap by not expanding `~` in manifest grants: a
-`read: ["~"]` grant resolves to a nonexistent path next to the manifest, grants
-nothing, and says nothing about it. `broad-home.manifest.yaml` uses an absolute
-path for that reason - edit it if you are not running as the user who wrote it.
+YAML contributes to this trap: an unquoted `~` is the null tag, not a path, so
+`read: [~]` decodes to an empty grant. Bento refuses that outright, but the
+manifest reads as a home grant either way - quote it, as `broad-home` does.
 
 **Egress is proxy-mediated.** The network namespace is unshared and DNS is
 resolved host-side, so a program that ignores `HTTP(S)_PROXY` cannot reach an

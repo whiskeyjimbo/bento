@@ -460,6 +460,92 @@ func TestResolveAbsolutizesRelativeManifestPath(t *testing.T) {
 	}
 }
 
+// README documents `read: "~"` and `read: ~/.ssh/id_rsa` as working syntax, and the
+// shielding guarantees are stated in terms of them. Unexpanded, a tilde is an ordinary
+// relative path: it anchors under the manifest directory, names nothing, and grants
+// nothing - so a manifest reads as granting home while granting nothing, and a test
+// asserting a shielded path is unreadable under `read: "~"` passes vacuously.
+func TestResolveExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{
+		Entrypoint:  "~/bin/run.py",
+		Interpreter: "~/venv/bin/python",
+		Read:        []string{"~", "~/.ssh/id_rsa"},
+		Write:       []string{"~/out"},
+	}
+	if err := Resolve(p, "/work/proj/m.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "bin/run.py"); p.Entrypoint != want {
+		t.Errorf("entrypoint = %q, want %q", p.Entrypoint, want)
+	}
+	if want := filepath.Join(home, "venv/bin/python"); p.Interpreter != want {
+		t.Errorf("interpreter = %q, want %q", p.Interpreter, want)
+	}
+	if got, want := strings.Join(p.Read, ","), home+","+filepath.Join(home, ".ssh/id_rsa"); got != want {
+		t.Errorf("read = %q, want %q", got, want)
+	}
+	if got, want := p.Write[0], filepath.Join(home, "out"); got != want {
+		t.Errorf("write = %q, want %q", got, want)
+	}
+}
+
+// A trailing slash in $HOME must not survive into a grant: the shield and grant
+// comparisons downstream are exact string equality against filepath.Clean(home), so
+// an unclean "~" would name home everywhere except where the shields are decided.
+func TestResolveExpandsHomeCleanly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home+"/")
+
+	p := &policy.Policy{Entrypoint: "run.py", Read: []string{"~", "~/x"}}
+	if err := Resolve(p, "/work/proj/m.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if p.Read[0] != home {
+		t.Errorf("read[0] = %q, want %q", p.Read[0], home)
+	}
+	if want := filepath.Join(home, "x"); p.Read[1] != want {
+		t.Errorf("read[1] = %q, want %q", p.Read[1], want)
+	}
+}
+
+// Refused, not guessed at. "~operator/keys" means a passwd lookup this package does
+// not do, and both fallbacks - the manifest directory, or the invoker's own home -
+// grant something other than what the manifest names. A relative or empty $HOME is
+// refused for the same reason: the grant would land wherever the enforcing process's
+// cwd points, which is the silent misplacement the expansion exists to fix.
+func TestResolveRefusesUnexpandableTilde(t *testing.T) {
+	t.Setenv("HOME", "/home/jrose")
+	for _, path := range []string{"~operator/keys", "~backup"} {
+		p := &policy.Policy{Entrypoint: "run.py", Read: []string{path}}
+		if err := Resolve(p, "/work/proj/m.yaml"); err == nil {
+			t.Errorf("Resolve accepted read %q, resolving it to %q", path, p.Read[0])
+		}
+	}
+	t.Setenv("HOME", "relative/home")
+	p := &policy.Policy{Entrypoint: "run.py", Read: []string{"~/x"}}
+	if err := Resolve(p, "/work/proj/m.yaml"); err == nil {
+		t.Errorf("Resolve accepted a relative $HOME, resolving read to %q", p.Read[0])
+	}
+}
+
+// A bare "~" carries no separator, so the interpreter's PATH-search branch would hand
+// it to exec.LookPath as a command name rather than expanding it.
+func TestResolveExpandsBareTildeInterpreter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{Entrypoint: "run.py", Interpreter: "~"}
+	if err := Resolve(p, "/work/proj/m.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if p.Interpreter != home {
+		t.Errorf("interpreter = %q, want %q", p.Interpreter, home)
+	}
+}
+
 // A nil policy is refused rather than skipped: silently succeeding would let a caller
 // who lost their policy go on to enforce paths that were never anchored.
 func TestResolveRefusesNilPolicy(t *testing.T) {

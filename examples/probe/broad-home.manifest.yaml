@@ -3,11 +3,10 @@
 # (the whole tree is readable), while every read.shield-* probe still comes back
 # DENIED. A shield probe reporting ALLOWED here is a real finding.
 #
-# EDIT THE GRANT BELOW to your own home directory. Bento does not expand `~`, so
-# a tilde grant resolves to a nonexistent path next to the manifest, grants
-# nothing, and makes every shield probe pass vacuously. Check the run's
-# "credential/host-service path(s) shielded" count is non-zero before believing
-# any DENIED here.
+# The tilde must be quoted: unquoted, YAML reads a bare `~` as null rather than a
+# path. Either way, check the run's "credential/host-service path(s) shielded"
+# count is non-zero before believing any DENIED here - a grant that reaches
+# nothing makes every shield probe pass vacuously.
 #
 # There is deliberately no write grant: a write grant covering home is refused
 # outright, which is worth confirming by hand once with `bento validate`.
@@ -15,5 +14,5 @@ entrypoint: ./probe.py
 interpreter: python3
 args: [read, env]
 env: [LANG, BENTO_PROBE_HOME]
-read: [/home/jrose]
+read: ["~"]
 exec: none

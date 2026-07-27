@@ -17,7 +17,7 @@ Bento surfaces any gap between what a manifest requests and what the host kernel
 ## Why Bento?
 
 - **Default-Deny Isolation:** The sandbox only exposes explicitly granted files and directories. Everything else is hidden.
-- **Built-in Credential & Host Shielding:** Sensitive paths (`~/.ssh`, `~/.aws`, GPG keyrings, OS keyrings, environment-relocated secret stores, runtime sockets in `/run`, and persistence targets like `.git/hooks` or `.vscode`) remain shielded even under broad grants like `read: ~`.
+- **Built-in Credential & Host Shielding:** Sensitive paths (`~/.ssh`, `~/.aws`, GPG keyrings, OS keyrings, environment-relocated secret stores, runtime sockets in `/run`, and persistence targets like `.git/hooks` or `.vscode`) remain shielded even under broad grants like `read: "~"`.
 - **Declarative Permissions & Fingerprinted Approvals:** Policy lives in a human-readable manifest (`manifest.yaml`). Unattended runs (`bento run`) require a valid approval fingerprint over policy fields to prevent unreviewed permission creep in CI or autonomous agents.
 - **Egress-Controlled Proxy:** Network traffic is blocked by default in an unshared network namespace. Per-host egress is strictly routed through a host-side HTTP CONNECT proxy with hostname validation and IP pin checks.
 - **Host Honesty & No Quiet Degradation:** `bento doctor` reports kernel capability support. When host isolation layers (such as seccomp or cgroups) are unavailable, Bento flags the shortfall instead of quietly falling back to a weaker sandbox.
@@ -77,7 +77,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 5. **Secrecy During Profiling:** Profiling inspects syscall registers directly (via `ptrace`) without opening host files, preventing untrusted scripts from probing secrets during manifest discovery.
 
 ### Built-in Shields & Exceptions
-- **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: ~`) are strictly refused.
+- **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: "~"`) are strictly refused.
 - **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh/id_rsa`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
 - **Fail-Closed Principle:** Any ambiguity, missing permission, unhandled network request, or missing kernel feature fails closed by default.
 
@@ -111,6 +111,10 @@ provenance:
   approves: <sha256-fingerprint-over-policy-fields>
 ```
 
+Read and write paths accept a leading `~` for your home directory (`~/.ssh/id_rsa`,
+or `"~"` for home itself). Quote the bare tilde: unquoted, YAML reads `~` as null,
+not as a path. Another user's home (`~operator/...`) is not expanded - write it out.
+
 ---
 
 ## Enforcement Matrix
@@ -130,6 +134,8 @@ Bento organizes enforcement capabilities into **Core** and **Hardening** tiers:
 
 If a hardening layer is missing on the host, `bento doctor` flags the shortfall. When `--strict` is passed, `bento run` refuses to execute under degraded enforcement.
 
+A core guarantee that can only be partially enforced stops the run by default. `--allow-degraded` overrides that, and it is the widest escape hatch Bento has: it also skips the credential-alias scan entirely, so aliased copies of shielded paths under a granted tree are exposed rather than acknowledged. Use `--accept-alias <path>` to acknowledge a specific tree instead.
+
 ---
 
 ## Architecture
@@ -142,6 +148,7 @@ Bento is architected around a platform-decoupled enforcement seam:
 - **`internal/linux`**: Linux implementation using bubblewrap, `internal/launcher`, `internal/observe` (ptrace profiler), seccomp, and Landlock.
 - **`internal/proxy`**: Shared host-side egress HTTP CONNECT proxy.
 - **`manifest`**: YAML manifest loader, serializer, and provenance tracker.
+- **`profile`**: The `Observation` a profiling pass records, which `backend.Profile` returns and manifest synthesis consumes.
 - **`backend`**: Backend selection logic and profiling synthesis.
 
 ---
@@ -210,7 +217,7 @@ func main() {
 		log.Fatalf("execution error: %v", err)
 	}
 
-	fmt.Printf("Exit Code: %d, Degraded: %v\n", res.ExitCode, res.Report.IsDegraded())
+	fmt.Printf("Exit Code: %d, Degraded: %v\n", res.ExitCode, res.Report.HasDegradation())
 }
 ```
 

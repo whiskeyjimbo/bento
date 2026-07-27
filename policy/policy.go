@@ -147,7 +147,9 @@ func (p *Policy) Validate() error {
 	}{{"read", p.Read}, {"write", p.Write}} {
 		for i, path := range l.paths {
 			if path == "" {
-				return fmt.Errorf("policy: %s[%d] is empty; a grant must name a path (an empty value reads as no grant but resolves to the working directory)", l.name, i)
+				// The YAML hint earns its place: an unquoted `- ~` is the null tag, so the
+				// manifest most likely to land here reads as a home grant and decodes to nothing.
+				return fmt.Errorf("policy: %s[%d] is empty; a grant must name a path (an empty value reads as no grant but resolves to the working directory; in YAML, quote a bare tilde as \"~\" - unquoted it is null)", l.name, i)
 			}
 		}
 	}
