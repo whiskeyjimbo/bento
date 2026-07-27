@@ -377,3 +377,44 @@ func TestMarshalOutputParses(t *testing.T) {
 		t.Fatalf("Parse rejected what Marshal wrote:\n%s\nerror: %v", b, err)
 	}
 }
+
+// An interpreter naming a path must mean the same file regardless of the directory
+// the tool was invoked from, since the backend LookPaths it on the host and the
+// fingerprint cannot tell two invocations apart. A bare name stays a PATH search:
+// it means "the host's python3", not a file beside the manifest.
+func TestResolveResolvesInterpreter(t *testing.T) {
+	cases := map[string]string{
+		"venv/bin/python": "/work/proj/venv/bin/python",
+		"./py":            "/work/proj/py",
+		"python3":         "python3",
+		"/usr/bin/python": "/usr/bin/python",
+		"":                "",
+	}
+	for interp, want := range cases {
+		p := &policy.Policy{Entrypoint: "run.py", Interpreter: interp}
+		Resolve(p, "/work/proj/m.yaml")
+		if p.Interpreter != want {
+			t.Errorf("interpreter %q resolved to %q, want %q", interp, p.Interpreter, want)
+		}
+	}
+}
+
+// Resolve anchors every path-shaped field to the manifest's own directory and leaves
+// absolute ones alone, so the same manifest names the same files from any cwd.
+func TestResolveAnchorsPathsToManifestDir(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "run.py",
+		Read:       []string{"../shared", "/etc/hosts"},
+		Write:      []string{"out"},
+	}
+	Resolve(p, "/work/proj/m.yaml")
+	if p.Entrypoint != "/work/proj/run.py" {
+		t.Errorf("entrypoint = %q", p.Entrypoint)
+	}
+	if got, want := strings.Join(p.Read, ","), "/work/shared,/etc/hosts"; got != want {
+		t.Errorf("read = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(p.Write, ","), "/work/proj/out"; got != want {
+		t.Errorf("write = %q, want %q", got, want)
+	}
+}

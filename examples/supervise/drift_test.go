@@ -179,3 +179,26 @@ func TestDriftSilentWhenManifestWildcardCoversStoreHost(t *testing.T) {
 		t.Errorf("a wildcard covering the store host must not warn; got %q", out.String())
 	}
 }
+
+// Drift must compare what `bento run` would actually enforce, and it anchors a
+// manifest's relative grant to the manifest's own directory. Judging the literal
+// string instead matches nothing, so a hand-written manifest that agrees with the
+// store warns on every line.
+func TestDriftAnchorsRelativeManifestGrants(t *testing.T) {
+	dir := t.TempDir()
+	script := dir + "/agent.sh"
+	s := newTestStore()
+	key := "sha256:aaaa"
+	s.rememberPath(key, "read", dir+"/data", allow, false)
+
+	writeManifestAt(t, script, &policy.Policy{
+		Entrypoint: script, Interpreter: "sh",
+		Read: []string{"data"},
+	})
+
+	var out strings.Builder
+	warnManifestDrift(&out, s, key, script)
+	if out.Len() != 0 {
+		t.Errorf("a relative grant naming the same file must not warn; got %q", out.String())
+	}
+}

@@ -122,24 +122,3 @@ func TestValidateJSONHonorsStrict(t *testing.T) {
 		})
 	}
 }
-
-// An interpreter naming a path must mean the same file regardless of the directory
-// bento was invoked from, since the backend LookPaths it on the host and the
-// fingerprint cannot tell two invocations apart (bv2-ubip). A bare name stays a PATH
-// search: it means "the host's python3", not a file beside the manifest.
-func TestResolveManifestPathsResolvesInterpreter(t *testing.T) {
-	cases := map[string]string{
-		"venv/bin/python": "/work/proj/venv/bin/python",
-		"./py":            "/work/proj/py",
-		"python3":         "python3",
-		"/usr/bin/python": "/usr/bin/python",
-		"":                "",
-	}
-	for interp, want := range cases {
-		p := &policy.Policy{Entrypoint: "run.py", Interpreter: interp}
-		resolveManifestPaths(p, "/work/proj/m.yaml")
-		if p.Interpreter != want {
-			t.Errorf("interpreter %q resolved to %q, want %q", interp, p.Interpreter, want)
-		}
-	}
-}

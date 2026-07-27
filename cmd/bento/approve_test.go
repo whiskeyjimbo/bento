@@ -56,7 +56,7 @@ func TestRequireApproval(t *testing.T) {
 }
 
 // The approval binding depends on the fingerprint being checked on the manifest AS
-// WRITTEN, before resolveManifestPaths rewrites its relative paths to absolute. This
+// WRITTEN, before manifest.Resolve rewrites its relative paths to absolute. This
 // pins that ordering: resolution changes the fingerprint, so a check run after it
 // would reject a validly-approved manifest - and a fingerprint stamped post-resolution
 // would shift with the invocation directory. run.go checks approval first for exactly
@@ -69,9 +69,9 @@ func TestApprovalCheckedBeforePathResolution(t *testing.T) {
 	if got := checkApproval(doc); got != approvalCurrent {
 		t.Fatalf("as-written approval = %v, want current", got)
 	}
-	resolveManifestPaths(p, "/work/proj/manifest.yaml")
+	manifest.Resolve(p, "/work/proj/manifest.yaml")
 	if p.Fingerprint() == stamped {
-		t.Fatal("resolveManifestPaths must change the fingerprint, else the check ordering would not matter")
+		t.Fatal("manifest.Resolve must change the fingerprint, else the check ordering would not matter")
 	}
 	if got := checkApproval(doc); got != approvalStale {
 		t.Fatalf("post-resolution approval = %v, want stale (so the check must precede resolution)", got)

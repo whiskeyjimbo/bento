@@ -472,6 +472,14 @@ func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
 		fmt.Fprintf(out, "supervise: %v\n", err)
 		return 1
 	}
+	// Anchor before anything reads the policy: a manifest's relative path means "beside
+	// the manifest" to `bento run`, while the store holds the absolute paths the trial
+	// observed. Seeding the literal string would remember a decision that names a
+	// different file on every run, and appKey below would hash whatever supervise's own
+	// cwd points at rather than the entrypoint the manifest declares. Import is the only
+	// route a manifest's paths take into the store, so this one call covers all four
+	// fields - `supervise run` absolutizes its script argument itself.
+	manifest.Resolve(pol, args[0])
 	key, err := appKey(pol.Entrypoint)
 	if err != nil {
 		fmt.Fprintf(out, "supervise: cannot hash the manifest's entrypoint: %v\n", err)

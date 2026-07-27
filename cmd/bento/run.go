@@ -63,7 +63,7 @@ func newRunCmd() *cobra.Command {
 			// Resolve paths for execution only after the fingerprint check above, which
 			// must see the manifest as written.
 			p := doc.Policy
-			resolveManifestPaths(p, args[0])
+			manifest.Resolve(p, args[0])
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
 			if err != nil {
 				return refuse(err)

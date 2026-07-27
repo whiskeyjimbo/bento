@@ -5,7 +5,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -55,43 +54,6 @@ func newValidateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the parsed policy as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail if the manifest's approval is stale or missing")
 	return cmd
-}
-
-// resolveManifestPaths rewrites a policy's relative paths against the manifest's
-// own directory, so a manifest means the same thing regardless of where bento is
-// invoked from. It must run AFTER the approval fingerprint is checked: the
-// fingerprint attests the manifest as written, so resolving first would change it.
-func resolveManifestPaths(p *policy.Policy, manifestPath string) {
-	base := filepath.Dir(manifestPath)
-	p.Entrypoint = resolveAgainst(base, p.Entrypoint)
-	p.Interpreter = resolveInterpreter(base, p.Interpreter)
-	for i, r := range p.Read {
-		p.Read[i] = resolveAgainst(base, r)
-	}
-	for i, w := range p.Write {
-		p.Write[i] = resolveAgainst(base, w)
-	}
-}
-
-// resolveInterpreter anchors a path-shaped interpreter to the manifest's directory,
-// following exec.LookPath's own rule: a name carrying a separator is a path, and a
-// bare name is a PATH search. Without this, `interpreter: venv/bin/python` resolves
-// against whatever directory bento was invoked from - a different interpreter per
-// caller, fingerprinting identically. A bare `python3` is left alone: it means "the
-// host's python3" and joining it to the manifest directory would name a file that
-// almost never exists.
-func resolveInterpreter(base, interp string) string {
-	if !strings.ContainsRune(interp, filepath.Separator) {
-		return interp
-	}
-	return resolveAgainst(base, interp)
-}
-
-func resolveAgainst(base, path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(base, path)
 }
 
 // loadDocument parses a manifest into its policy and provenance without resolving

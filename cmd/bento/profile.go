@@ -1078,7 +1078,7 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 	}
 	// After the approval check, never before: the fingerprint attests the manifest as
 	// written, so resolving its relative paths first would make a valid stamp read stale.
-	resolveManifestPaths(doc.Policy, path)
+	manifest.Resolve(doc.Policy, path)
 	// The approval says "this script may see these paths". Profiling a different target
 	// against the same --out is outside what was approved, so it starts fresh.
 	if doc.Policy.Entrypoint != script {
@@ -1114,7 +1114,7 @@ func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manife
 		// Resolve before the union: a proposal names absolute paths, so a relative grant
 		// in the existing manifest would survive the merge as a second spelling of a path
 		// the proposal already carries, and the written manifest would hold both.
-		resolveManifestPaths(existing.Policy, path)
+		manifest.Resolve(existing.Policy, path)
 		return mergePolicies(existing.Policy, proposed), trust, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return proposed, manifestTrust{}, nil

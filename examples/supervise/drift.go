@@ -34,6 +34,10 @@ func warnManifestDrift(w io.Writer, s *store, key, script string) {
 		fmt.Fprintf(w, "supervise: manifest %s present but will not parse: %v\n", path, err)
 		return
 	}
+	// Compare what `bento run` would actually enforce: it anchors a relative grant to
+	// the manifest's directory, while the store's paths are absolute. Without this a
+	// relative grant matches nothing and every store allow reads as drift.
+	manifest.Resolve(m, path)
 
 	var drift []string
 	for _, kind := range []string{"read", "write"} {
