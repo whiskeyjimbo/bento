@@ -152,13 +152,61 @@ func TestApproveWritesThroughASymlink(t *testing.T) {
 	}
 }
 
+// The location approve writes at is the one its trust check inspected, so repointing the
+// symlink after the check cannot redirect the stamp. Standing in for the race: whoever can
+// replace the link gets to do it at a moment of their choosing, and this is that moment.
+func TestWriteManifestAtomicallyIgnoresARepointedSymlink(t *testing.T) {
+	target := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	link := filepath.Join(t.TempDir(), "link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	trust := trustOf(t, link)
+
+	elsewhere := writeManifest(t, &policy.Policy{Entrypoint: "./elsewhere"}, manifest.Provenance{})
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManifestAtomically(trust, []byte("entrypoint: ./y\n"), io.Discard); err != nil {
+		t.Fatalf("writeManifestAtomically: %v", err)
+	}
+
+	if data, err := os.ReadFile(target); err != nil || string(data) != "entrypoint: ./y\n" {
+		t.Errorf("the inspected target must get the write; got %q, %v", data, err)
+	}
+	if data, err := os.ReadFile(elsewhere); err != nil || string(data) == "entrypoint: ./y\n" {
+		t.Errorf("the repointed target must not be written; got %q, %v", data, err)
+	}
+}
+
+// A manifest replaced or unlinked between the open and the readlink leaves the kernel
+// naming something the facts do not describe - "/w/m.yaml (deleted)", or another inode
+// entirely. Concluding a location from either would send a rewrite somewhere unexamined.
+func TestInspectManifestRefusesAManifestUnlinkedWhileOpen(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectManifest(f, path); err == nil {
+		t.Error("an unlinked manifest has no location to judge, so it must fail")
+	}
+}
+
 // A failed write must not leave a truncated manifest where a complete one was: the
 // replacement goes through a temporary file and a rename, so the manifest is only ever
 // the old bytes or the new ones - and no temp file is left behind.
 func TestWriteManifestAtomicallyLeavesNoTempFiles(t *testing.T) {
 	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
 	dir := filepath.Dir(path)
-	if err := writeManifestAtomically(path, []byte("entrypoint: ./y\n"), io.Discard); err != nil {
+	if err := writeManifestAtomically(trustOf(t, path), []byte("entrypoint: ./y\n"), io.Discard); err != nil {
 		t.Fatalf("writeManifestAtomically: %v", err)
 	}
 	entries, err := os.ReadDir(dir)

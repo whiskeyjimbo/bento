@@ -170,6 +170,22 @@ func manifestIn(t *testing.T, dir string) string {
 	return path
 }
 
+// trustOf is how the write path is reached in a test: the location a manifest is rewritten
+// at comes from the trust, which only an open handle can produce.
+func trustOf(t *testing.T, path string) manifestTrust {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	trust, err := inspectManifest(f, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trust
+}
+
 // run, validate and profile keep working on a permissive checkout: a second writer is
 // reported, not refused, since a shared box or a loose umask is ordinary.
 func TestLoadDocumentWarnsAboutAWorldWritableDirectory(t *testing.T) {
@@ -341,6 +357,7 @@ func TestWriteManifestAtomicallyExplainsAnUnwritableDirectory(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := manifestIn(t, dir)
+	trust := trustOf(t, path)
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +368,7 @@ func TestWriteManifestAtomicallyExplainsAnUnwritableDirectory(t *testing.T) {
 		}
 	})
 
-	err := writeManifestAtomically(path, []byte("entrypoint: ./y\n"), &bytes.Buffer{})
+	err := writeManifestAtomically(trust, []byte("entrypoint: ./y\n"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("an unwritable directory must fail the approve")
 	}

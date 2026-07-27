@@ -57,6 +57,11 @@ func (f fileFacts) foreignOwner(euid uint32) bool {
 type manifestTrust struct {
 	file fileFacts
 	dir  fileFacts
+	// realPath is where the manifest actually lives, as the kernel names the open
+	// descriptor: the same resolution dir and chain were judged against, so a caller that
+	// rewrites the manifest writes at the location that was inspected rather than
+	// resolving the name a second time and racing whoever can repoint it.
+	realPath string
 	// chain is every other directory that can decide which file the manifest's name
 	// reaches: the ones above dir, since renaming one of them aside substitutes the
 	// manifest as surely as replacing the file, followed by those leading to a symlink
@@ -104,12 +109,24 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, err
 	}
+	// The kernel's name is not always usable as a path: a manifest unlinked between the
+	// open and the readlink reads back as "/w/m.yaml (deleted)", and one replaced in that
+	// window names a different inode. Both would send a rewrite somewhere the facts
+	// gathered here do not describe, so the name is required to still lead back to the
+	// descriptor before anything is concluded from it.
+	targetFI, err := os.Stat(target)
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	if !os.SameFile(fi, targetFI) {
+		return manifestTrust{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
+	}
 	dirPath := filepath.Dir(target)
 	dir, err := statFacts(dirPath)
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	trust := manifestTrust{file: file, dir: dir}
+	trust := manifestTrust{file: file, dir: dir, realPath: target}
 
 	above, err := dirsUpward(filepath.Dir(dirPath))
 	if err != nil {
