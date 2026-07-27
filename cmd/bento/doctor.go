@@ -48,6 +48,7 @@ func newDoctorCmd() *cobra.Command {
 
 			writeReportTable(os.Stdout, report)
 			fmt.Println()
+			writeShieldAnchors(os.Stdout)
 			if shortfall {
 				fmt.Println("A core guarantee every run needs is not fully enforced here. Runs are refused")
 				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")

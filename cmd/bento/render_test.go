@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -96,10 +99,64 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 		}
 	}
 
+	// An ordinary opt-in names a path that is its own target, so it stays one line.
+	if strings.Contains(out, "on this host") {
+		t.Errorf("a grant that resolves to itself must not print a second line; got %q", out)
+	}
+
 	var empty bytes.Buffer
 	writeShieldedGrantWarning(&empty, enforce.Result{})
 	if empty.Len() != 0 {
 		t.Errorf("a run that opted into no shields must print nothing; got %q", empty.String())
+	}
+}
+
+// The names that count as an opt-in come from the deny-list, which builds them from
+// $HOME - so a grant can name one path while the store it exposes is somewhere else.
+// The operator has to see which credential was actually handed over, not just the
+// spelling that opted into it.
+func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "real", ".ssh")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(dir, "real"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	var b bytes.Buffer
+	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []string{filepath.Join(link, ".ssh")}})
+
+	if out := b.String(); !strings.Contains(out, "on this host: "+store) {
+		t.Errorf("the notice must name the store the grant lands on; %q missing from %q", store, out)
+	}
+}
+
+// The anchor set is the one shield fact a run cannot show: the count looks identical
+// whether passwd corroborated $HOME or the lookup found nothing and left the caller's
+// environment deciding alone. doctor is where an operator can see which one they have.
+func TestWriteShieldAnchors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var b bytes.Buffer
+	writeShieldAnchors(&b)
+	out := b.String()
+
+	if !strings.Contains(out, home) {
+		t.Errorf("the anchors must name $HOME; %q missing from %q", home, out)
+	}
+	// This uid has a passwd entry (the test host), so both anchors are listed and the
+	// single-anchor caveat stays quiet.
+	if pw := denylist.PasswdHome(); pw != "" {
+		if !strings.Contains(out, pw) {
+			t.Errorf("the anchors must name the passwd home; %q missing from %q", pw, out)
+		}
+		if strings.Contains(out, "only anchor") {
+			t.Errorf("the single-anchor caveat must not fire where passwd answered; got %q", out)
+		}
 	}
 }
 

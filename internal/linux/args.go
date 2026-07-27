@@ -1054,7 +1054,14 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 //     literalReads (not writes) is what enforces that.
 //   - A shield is opted in only when a read names its LITERAL deny-list path (~/.ssh); a
 //     read that merely resolves to the same place (a symlink's target) is a side-step the
-//     shield still refuses, so the match is on the unresolved grant string.
+//     shield still refuses, so the match is on the unresolved grant string. The names
+//     that count are the ones the deny-list built, and those are built from the run's
+//     homes - so where $HOME reaches the real home through a symlink, the grant that opts
+//     in is spelled with the link and the store exposed is the link's target. That is not
+//     closable from here: the same shape is a caller aliasing the home and a host whose
+//     home is legitimately a symlink, and refusing it would break the second. The
+//     frontend names the resolved store in its warning so the exposure is not read as
+//     the literal path alone.
 //   - Built-in Home/Runtime shields only, never sb.extraDeny: a caller-supplied deny (a
 //     supervising embedder shielding its own control store from an untrusted target) is a
 //     different trust domain the profiled policy must not be able to lift.

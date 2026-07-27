@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -179,6 +183,15 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
 	for _, g := range res.ShieldedGrants {
 		fmt.Fprintf(w, "[bento]   %s\n", g)
+		// A grant matches a shield by the name the deny-list gives it, and those names are
+		// built from $HOME - so where $HOME reaches the real home through a symlink, the
+		// grant names one path and the script reads another. Naming the store the exposure
+		// actually lands on is the difference between reviewing a path and reviewing a
+		// credential. Printed only where the two differ, so an ordinary opt-in stays one
+		// line (the same rule validate uses for a resolved grant).
+		if real, err := filepath.EvalSymlinks(g); err == nil && real != g {
+			fmt.Fprintf(w, "[bento]     on this host: %s\n", real)
+		}
 	}
 }
 
@@ -196,6 +209,30 @@ func writeAcceptedAliasWarning(w io.Writer, res enforce.Result) {
 	for _, a := range res.AcceptedAliases {
 		fmt.Fprintf(w, "[bento]   %q aliases %q\n", a.Path, a.Credential)
 	}
+}
+
+// writeShieldAnchors names the home directories the credential shields will anchor on
+// here, and says whether the passwd entry corroborated $HOME.
+//
+// The anchor set is a host fact an operator cannot recover from a run: the shield count
+// looks the same whether both anchors agreed or the passwd lookup found nothing and left
+// $HOME - a value whoever launches bento chooses - as the only thing deciding where the
+// shields land. doctor is where that belongs; per-run it would be noise on every host
+// that is configured normally.
+func writeShieldAnchors(w io.Writer) {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		fmt.Fprintf(w, "Credential shields: no usable home directory (%v), so the home shields cannot be\n", err)
+		fmt.Fprintf(w, "anchored at all. Runs are refused until $HOME names an absolute path.\n\n")
+		return
+	}
+	fmt.Fprintf(w, "Credential shields anchor on: %s\n", strings.Join(anchors, ", "))
+	if denylist.PasswdHome() == "" {
+		fmt.Fprintf(w, "  No passwd entry for uid %d, so $HOME is the only anchor - whoever sets the\n", os.Getuid())
+		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")
+		fmt.Fprintf(w, "  them too, which is what a caller-chosen $HOME cannot move.\n")
+	}
+	fmt.Fprintln(w)
 }
 
 // writeExposedWarning tells the user which credential and persistence paths a full

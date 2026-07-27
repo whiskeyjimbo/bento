@@ -804,22 +804,27 @@ func partialRunWarning(obs profile.Observation) string {
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
 // shield goes.
 func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped, writeShielded []string) {
-	home, _ := os.UserHomeDir()
-	// A relative home yields relative shield paths that never match the absolute grants
-	// below, silently keeping a grant this filter meant to drop. Treat it like an unset
-	// home and skip the clamp; the run-time refusal is the backstop either way.
-	if home == "" || !filepath.IsAbs(home) {
+	// The same anchors the enforcer shields on, so the proposal is clamped against the
+	// shields the run will actually apply - a filter keyed on $HOME alone would skip a
+	// store the run then hides, and draft a manifest that dies at the shield refusal.
+	// An unusable $HOME is reported as an error here; treat it as an unset home and skip
+	// the clamp, since relative shield paths would never match the absolute grants below
+	// and would silently keep a grant this filter meant to drop.
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
 		return reads, writes, nil, nil
 	}
-	// Build shields against both the home as configured and its symlink-resolved form.
-	// A symlinked home (Fedora Silverblue's /home -> /var/home) means an observed
+	// Each anchor is shielded in both its configured and its symlink-resolved form. A
+	// symlinked home (Fedora Silverblue's /home -> /var/home) means an observed
 	// credential path can arrive resolved (/var/home/u/.ssh, anchored at a resolved cwd)
 	// while $HOME is the unresolved /home/u, or the reverse; shielding against both
 	// forms drops the grant either way. It only ever adds matches, so a grant is never
 	// wrongly kept. A home that does not resolve (nonexistent) falls back to raw.
-	homes := []string{home}
-	if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
-		homes = append(homes, resolved)
+	homes := slices.Clone(anchors)
+	for _, h := range anchors {
+		if resolved, err := filepath.EvalSymlinks(h); err == nil && !slices.Contains(homes, resolved) {
+			homes = append(homes, resolved)
+		}
 	}
 	seenShield := map[string]bool{}
 	var shields []string
@@ -924,9 +929,12 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // path (~/.config/systemd/user) is unshielded at run time just like a DenyAll credential.
 // A data path enclosing no shield still stays quiet.
 func foreignHomeShields(grants []string) []string {
-	self, _ := os.UserHomeDir()
+	// Every anchor the run shields on counts as "own", not just $HOME: under sudo -H the
+	// two disagree, and treating the passwd home as foreign would warn about a store the
+	// run shields anyway - noise the reviewer learns to skip past.
+	anchors, _ := denylist.HomeAnchors()
 	selves := map[string]bool{}
-	if filepath.IsAbs(self) {
+	for _, self := range anchors {
 		selves[self] = true
 		if resolved, err := filepath.EvalSymlinks(self); err == nil {
 			selves[resolved] = true
@@ -1026,11 +1034,12 @@ func isBroadDir(path string) bool {
 	if path == "/" || filepath.Dir(path) == "/" {
 		return true
 	}
-	// Clean the home value: proposal paths are already filepath.Clean'd (Synthesize),
-	// so a $HOME carrying a trailing slash would otherwise never compare equal and the
-	// whole home tree would slip through as a non-broad grant.
-	home, _ := os.UserHomeDir()
-	return home != "" && path == filepath.Clean(home)
+	// Every anchor counts, since either can be the home the script actually walked -
+	// under sudo -H a proposal of the passwd home is just as broad as one of $HOME. The
+	// values are already cleaned, which proposal paths are too (Synthesize), so a $HOME
+	// carrying a trailing slash cannot slip the whole home tree through as non-broad.
+	anchors, _ := denylist.HomeAnchors()
+	return slices.Contains(anchors, path)
 }
 
 // guessInterpreter picks an interpreter from the script's extension. An empty

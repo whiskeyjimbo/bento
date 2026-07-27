@@ -2,8 +2,10 @@ package denylist
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -997,5 +999,61 @@ func TestHomeWriteShieldsPathBinaryDirs(t *testing.T) {
 	// hidden - the same DenyWrite-tree-around-a-DenyAll-file pairing the agent trees use.
 	if r, ok := byPath["/home/u/.gem/credentials"]; !ok || r.Deny != DenyAll {
 		t.Errorf("~/.gem/credentials must stay DenyAll inside the write-shielded tree, got %+v (present=%v)", r, ok)
+	}
+}
+
+// The passwd anchor is what a caller-chosen $HOME cannot move, so it must survive any
+// value of $HOME - including one that is itself a valid home directory.
+func TestHomeAnchorsKeepsPasswdHome(t *testing.T) {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skip("no passwd entry for this uid")
+	}
+	t.Setenv("HOME", "/")
+
+	homes, err := HomeAnchors()
+	if err != nil {
+		t.Fatalf("homeAnchors: %v", err)
+	}
+	if !slices.Contains(homes, filepath.Clean(u.HomeDir)) {
+		t.Errorf("HomeAnchors() = %v, want it to contain the passwd home %q whatever $HOME says", homes, u.HomeDir)
+	}
+	if !slices.Contains(homes, "/") {
+		t.Errorf("HomeAnchors() = %v, want it to contain $HOME", homes)
+	}
+}
+
+// The passwd anchor only resists a caller-chosen environment while the lookup stays in
+// pure Go: built against libc NSS, an LD_PRELOAD that fails getpwuid_r drops the anchor
+// and restores the bug homeAnchors exists to fix (verified by hand against a cgo build).
+// The osusergo tag is what makes the pure-Go resolver unconditional, so it is a security
+// flag rather than a build preference and both build paths must carry it.
+func TestBuildsPinThePureGoPasswdResolver(t *testing.T) {
+	for _, f := range []string{"../../Makefile", "../../.goreleaser.yaml"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "osusergo") {
+			t.Errorf("%s does not build with the osusergo tag, so the passwd anchor the credential shields rely on can be dropped by LD_PRELOAD", f)
+		}
+	}
+}
+
+// $HOME agreeing with passwd is the common case and must not shield everything twice -
+// including when the two differ only in a trailing slash.
+func TestHomeAnchorsDeduplicates(t *testing.T) {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skip("no passwd entry for this uid")
+	}
+	t.Setenv("HOME", u.HomeDir+"/")
+
+	homes, err := HomeAnchors()
+	if err != nil {
+		t.Fatalf("homeAnchors: %v", err)
+	}
+	if want := []string{filepath.Clean(u.HomeDir)}; !slices.Equal(homes, want) {
+		t.Errorf("HomeAnchors() = %v, want %v", homes, want)
 	}
 }

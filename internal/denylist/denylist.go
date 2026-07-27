@@ -8,9 +8,12 @@
 package denylist
 
 import (
+	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +42,59 @@ type Rule struct {
 	// directory rather than each known filename is what closes the "plant a new
 	// credential file" hole.
 	Dir bool
+}
+
+// HomeAnchors returns the home directories the shields anchor on: $HOME and the passwd
+// entry for the running uid, cleaned and deduplicated, $HOME first.
+//
+// Anchoring on $HOME alone lets the environment decide where the shields land, and a
+// caller that chooses it (a CI job, an agent supervisor) can move them off the real
+// credential stores just by exporting HOME=/ - the run still reports shields, they just
+// cover nothing. Anchoring on passwd alone breaks the hosts where $HOME is the truth:
+// containers, nix shells, sudo -H, CI images with no passwd entry for the uid. The union
+// costs a handful of extra bind mounts and neither anchor can be dodged by moving the
+// other.
+//
+// It lives here, beside the rules it anchors, because every consumer has to agree on the
+// answer: a profiler that clamps its proposal against a different home than the enforcer
+// shields drafts manifests the enforcer then refuses.
+//
+// The passwd lookup must not route through libc NSS, where LD_PRELOAD would put it back
+// under the caller's control - the shipped builds pass -tags osusergo for exactly that.
+func HomeAnchors() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("denylist: resolving home directory: %w", err)
+	}
+	// os.UserHomeDir returns $HOME verbatim, which a caller can set to a relative path.
+	// The shields join onto it, so a relative home yields relative Rule.Path values that a
+	// backend would apply at the wrong (or no) location, silently leaving the real
+	// credential dirs exposed. Refuse it rather than shield air.
+	if !filepath.IsAbs(home) {
+		return nil, fmt.Errorf("denylist: home directory %q is not absolute", home)
+	}
+	homes := []string{filepath.Clean(home)}
+
+	if pw := PasswdHome(); pw != "" && pw != homes[0] {
+		homes = append(homes, pw)
+	}
+	return homes, nil
+}
+
+// PasswdHome returns the home directory the passwd database gives the running uid, or
+// "" when there is none to be had.
+//
+// A uid with no passwd entry is normal (an LDAP/SSS host whose module is not loaded, a
+// container running an unmapped uid), and refusing to run there would break hosts that
+// $HOME alone shields correctly - so HomeAnchors degrades to $HOME rather than aborting.
+// That costs the one anchor the caller cannot move, which is why doctor reports whether
+// this answered: the operator cannot tell from the shield count alone.
+func PasswdHome() string {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil || !filepath.IsAbs(u.HomeDir) {
+		return ""
+	}
+	return filepath.Clean(u.HomeDir)
 }
 
 // Home returns the mandatory rules for a user's home directory.

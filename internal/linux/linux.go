@@ -14,10 +14,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -291,42 +289,6 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	return nil
 }
 
-// homeAnchors returns the home directories the credential shields anchor on: $HOME
-// and the passwd entry for the running uid, deduplicated.
-//
-// Anchoring on $HOME alone lets the environment decide where the shields land, and
-// a caller that chooses it (a CI job, an agent supervisor) can move them off the real
-// credential stores just by exporting HOME=/ - the run still reports shields, they
-// just cover nothing. Anchoring on passwd alone breaks the hosts where $HOME is the
-// truth: containers, nix shells, sudo -H, CI images with no passwd entry for the uid.
-// The union costs a handful of extra bind mounts and neither anchor can be dodged by
-// moving the other.
-func homeAnchors() ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("linux: resolving home directory: %w", err)
-	}
-	// os.UserHomeDir returns $HOME verbatim, which a caller can set to a relative path.
-	// The credential shields join onto it (denylist.Home), so a relative home yields
-	// relative Rule.Path values that bwrap would apply at the wrong (or no) location,
-	// silently leaving the real credential dirs exposed. Refuse it rather than shield air.
-	if !filepath.IsAbs(home) {
-		return nil, fmt.Errorf("linux: home directory %q is not absolute", home)
-	}
-	homes := []string{filepath.Clean(home)}
-
-	// A uid with no passwd entry is normal (an LDAP/SSS host whose module is not
-	// loaded, a container running an unmapped uid), and refusing there would break runs
-	// that $HOME alone shields correctly. So a failed lookup degrades to $HOME rather
-	// than aborting: it loses the second anchor, not the first.
-	if u, err := user.LookupId(strconv.Itoa(os.Getuid())); err == nil && filepath.IsAbs(u.HomeDir) {
-		if pw := filepath.Clean(u.HomeDir); pw != homes[0] {
-			homes = append(homes, pw)
-		}
-	}
-	return homes, nil
-}
-
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
 func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []string) (sandbox, func(), error) {
@@ -355,7 +317,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		}
 	}
 
-	homes, err := homeAnchors()
+	homes, err := denylist.HomeAnchors()
 	if err != nil {
 		return sandbox{}, noop, err
 	}

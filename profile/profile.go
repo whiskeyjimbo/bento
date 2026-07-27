@@ -9,12 +9,12 @@ package profile
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -376,19 +376,26 @@ func isForeignHomeTree(dir string) bool {
 	if !isHomeShapedTree(dir) || !slices.Contains(homeContainers, filepath.Dir(dir)) {
 		return false
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" || !filepath.IsAbs(home) {
+	// Both anchors the shields use, since either can be this account's home: under sudo -H
+	// $HOME and the passwd entry name different directories and only one of them is the
+	// account being profiled.
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
 		// With no usable home to compare against, every home is foreign - the fail-safe
 		// direction, since the alternative proposes a whole account.
 		return true
 	}
-	if dir == filepath.Clean(home) {
-		return false
+	for _, home := range anchors {
+		if dir == home {
+			return false
+		}
+		// A symlinked home (/home -> /var/home) reaches the same account under two names,
+		// and only one of them compares equal above.
+		if resolved, err := filepath.EvalSymlinks(home); err == nil && dir == resolved {
+			return false
+		}
 	}
-	// A symlinked home (/home -> /var/home) reaches the same account under two names,
-	// and only one of them compares equal above.
-	resolved, err := filepath.EvalSymlinks(home)
-	return err != nil || dir != resolved
+	return true
 }
 
 // runtimeTree returns the install root of the interpreter (…/bin/python3 → …),
@@ -411,12 +418,12 @@ func runtimeTree(interp string) string {
 	// tree (a home directory itself or a shallow child of one like ~/.local under
 	// pipx/pip --user, or ~/miniconda3). The home-shape test is structural, not keyed on
 	// the profiler's own $HOME, so it holds under sudo, an unset HOME, or a symlinked
-	// home; the $HOME match is a cheap supplement for a home outside the usual
-	// containers (matched empty/relative-home is skipped, as in clampShieldedGrants).
+	// home; the anchor match is a cheap supplement for a home outside the usual
+	// containers (an unusable home is skipped, as in clampShieldedGrants).
 	if tree == "/" || filepath.Dir(tree) == "/" || isHomeShapedTree(tree) {
 		return ""
 	}
-	if home, _ := os.UserHomeDir(); home != "" && filepath.IsAbs(home) && tree == filepath.Clean(home) {
+	if anchors, _ := denylist.HomeAnchors(); slices.Contains(anchors, tree) {
 		return ""
 	}
 	return tree

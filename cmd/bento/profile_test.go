@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -241,6 +243,22 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 		if !slices.Contains(dropped, p) {
 			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
 		}
+	}
+}
+
+// The enforcer shields the passwd home whatever $HOME says, so the clamp has to know
+// about it too: keyed on $HOME alone, a profiling run with a relocated home proposes a
+// credential grant the enforced run then refuses.
+func TestClampShieldedGrantsClampsThePasswdHome(t *testing.T) {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skip("no passwd entry for this uid")
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	ssh := filepath.Join(u.HomeDir, ".ssh", "id_rsa")
+	if _, _, dropped, _ := clampShieldedGrants([]string{ssh}, nil); !slices.Contains(dropped, ssh) {
+		t.Errorf("%q is inside the passwd home's ~/.ssh shield and must be dropped; dropped=%v", ssh, dropped)
 	}
 }
 
