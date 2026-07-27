@@ -146,6 +146,19 @@ type Result struct {
 	// opts into none. A frontend surfaces each as a loud warning so the exposure is
 	// never silent - the backend does not refuse it, the operator chose it.
 	ShieldedGrants []string
+	// ShieldedGrantTargets pairs an opted-in grant with the store it actually bound, for
+	// the entries where the two differ - Path is the spelling from ShieldedGrants,
+	// Credential the path it reached. The deny-list builds the names that count as an
+	// opt-in from the run's home anchors, and $HOME is caller-chosen, so a grant can name
+	// a symlink while the exposure lands elsewhere; a frontend that reported only the
+	// spelling would name a scratch path where a private key was handed over.
+	//
+	// The backend resolves these as it binds them, not afterwards. Re-resolving at report
+	// time would name whatever the path points at once the target has exited, which for a
+	// run that moved a symlink underneath itself is not what was exposed. Sorted by Path,
+	// empty for the ordinary run that opted into nothing and for opt-ins that name their
+	// own target.
+	ShieldedGrantTargets []CredentialAlias
 	// Shields lists the always-on shields the run actually engaged: the credential
 	// and host-service paths the sandbox hid or made read-only for this policy. It is
 	// the operator-visible evidence that the boundary engaged, and shows which

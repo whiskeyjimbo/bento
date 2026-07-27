@@ -194,7 +194,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code := exitCodeOf(cmd.ProcessState)
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
-		return enforce.Result{ExitCode: code, Report: report, ShieldedGrants: optedIn, Exposed: exposed}, nil
+		return enforce.Result{ExitCode: code, Report: report, ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

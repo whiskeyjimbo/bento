@@ -11,6 +11,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -123,19 +124,36 @@ type grantTargetJSON struct {
 // (the same path for a grant that arrives absolute); symlinks are followed on top of
 // that, because a link answers "what does this reach" differently from the name.
 //
-// A path that does not exist yet is legitimate and simply has no target to report - so
-// the caller prints nothing rather than an empty string, which would read as "/".
+// It resolves through pathresolve.Existing, the same resolver the enforcer binds by, so
+// the reported target is the path the run will actually use rather than a second opinion
+// about it. That matters most for a grant whose leaf does not exist yet - a plain
+// EvalSymlinks fails outright there and would report the path with its symlinked
+// components still unresolved, so two entries in one envelope could disagree about the
+// same directory, one of them naming a link the other had just called an alias.
 func grantTarget(literal, resolved string) (string, bool) {
-	if real, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = real
+	if filepath.IsAbs(resolved) {
+		resolved = pathresolve.Existing(resolved)
 	}
 	return resolved, resolved != literal
+}
+
+// toShieldedTargetsJSON renders the pairs the backend resolved as it bound them.
+func toShieldedTargetsJSON(targets []enforce.CredentialAlias) []grantTargetJSON {
+	var out []grantTargetJSON
+	for _, t := range targets {
+		out = append(out, grantTargetJSON{Path: t.Path, OnHost: t.Credential})
+	}
+	return out
 }
 
 // toGrantTargetsJSON pairs each grant with what it reaches, for the entries where the
 // two differ. The differing ones are the whole point: an agent gating on the envelope
 // otherwise reads the spelling and never the store, which for a shield opt-in under a
 // caller-chosen $HOME is the difference between a scratch path and a private key.
+//
+// This is validate's answer, resolved when the summary is written - there is no run to
+// take it from, and the comment on writeResolvedGrants owns that gap. The run's own
+// envelope uses toShieldedTargetsJSON instead, which carries what was actually bound.
 func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	if len(resolved) != len(literal) {
 		return nil
@@ -219,18 +237,20 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	}
 	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields as")
 	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
+	// A grant matches a shield by the name the deny-list gives it, and those names are
+	// built from $HOME - so where $HOME reaches the real home through a symlink, the grant
+	// names one path and the script reads another. Naming the store the exposure landed on
+	// is the difference between reviewing a path and reviewing a credential. The backend
+	// resolved these as it bound them; re-resolving here would name whatever the path
+	// points at now, which a run that moved a symlink underneath itself has changed.
+	lands := make(map[string]string, len(res.ShieldedGrantTargets))
+	for _, t := range res.ShieldedGrantTargets {
+		lands[t.Path] = t.Credential
+	}
 	for _, g := range res.ShieldedGrants {
 		fmt.Fprintf(w, "[bento]   %s\n", g)
-		// A grant matches a shield by the name the deny-list gives it, and those names are
-		// built from $HOME - so where $HOME reaches the real home through a symlink, the
-		// grant names one path and the script reads another. Naming the store the exposure
-		// actually lands on is the difference between reviewing a path and reviewing a
-		// credential. Printed wherever the two differ, which on a host whose home root is
-		// itself a link (Silverblue's /home -> /var/home) is every opt-in, since symlink
-		// resolution covers every component. That is the right side to err on: the line is
-		// accurate there too.
-		if lands, differs := grantTarget(g, g); differs {
-			fmt.Fprintf(w, "[bento]     on this host: %s\n", lands)
+		if target, ok := lands[g]; ok {
+			fmt.Fprintf(w, "[bento]     on this host: %s\n", target)
 		}
 	}
 }

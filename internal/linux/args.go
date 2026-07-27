@@ -1069,21 +1069,41 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 // literalReads are the policy's own absolute, un-symlink-resolved read paths. It returns
 // each matched shield's literal path (for the operator-facing warning) and its resolved
 // path (which checkNotShielded and denyArgs key off, since grants and shields are
-// compared resolved). Both sorted.
+// compared resolved). Sorted together, so literal[i] and resolved[i] are the same shield:
+// sorting the two independently reorders them differently the moment a symlink puts a
+// store somewhere that sorts elsewhere, and a caller pairing them by index would then
+// report one grant as reaching another's target.
 func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved []string) {
 	builtin := append(homeShields(sb), denylist.Runtime()...)
+	var pairs []enforce.CredentialAlias
 	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {
 			continue
 		}
 		if slices.Contains(literalReads, r.Path) {
-			literal = append(literal, r.Path)
-			resolved = append(resolved, sb.resolve(r.Path))
+			pairs = append(pairs, enforce.CredentialAlias{Path: r.Path, Credential: sb.resolve(r.Path)})
 		}
 	}
-	slices.Sort(literal)
-	slices.Sort(resolved)
+	slices.SortFunc(pairs, func(a, b enforce.CredentialAlias) int { return cmp.Compare(a.Path, b.Path) })
+	for _, p := range pairs {
+		literal = append(literal, p.Path)
+		resolved = append(resolved, p.Credential)
+	}
 	return literal, resolved
+}
+
+// shieldGrantTargets pairs each opted-in grant with the store it binds, for the entries
+// where the two differ. It is built from the compile-time resolution the binds
+// themselves use, so the report names what was exposed rather than what the path points
+// at once the target has exited.
+func shieldGrantTargets(literal, resolved []string) []enforce.CredentialAlias {
+	var out []enforce.CredentialAlias
+	for i, lit := range literal {
+		if resolved[i] != lit {
+			out = append(out, enforce.CredentialAlias{Path: lit, Credential: resolved[i]})
+		}
+	}
+	return out
 }
 
 // checkWriteNotAboveShield refuses a write grant that contains a DenyAll home

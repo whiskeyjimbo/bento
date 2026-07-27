@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -109,33 +107,25 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 // The names that count as an opt-in come from the deny-list, which builds them from
 // $HOME - so a grant can name one path while the store it exposes is somewhere else.
 // The operator has to see which credential was actually handed over, not just the
-// spelling that opted into it.
+// spelling that opted into it. The pairing is the backend's, resolved as it bound the
+// grant; the frontend renders it rather than stat'ing the path again afterwards.
 func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
-	dir := t.TempDir()
-	store := filepath.Join(dir, "real", ".ssh")
-	if err := os.MkdirAll(store, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(filepath.Join(dir, "real"), link); err != nil {
-		t.Fatal(err)
-	}
+	const granted, store = "/home/u/link/.ssh", "/home/u/real/.ssh"
 
 	var b bytes.Buffer
-	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []string{filepath.Join(link, ".ssh")}})
+	writeShieldedGrantWarning(&b, enforce.Result{
+		ShieldedGrants:       []string{granted, "/run"},
+		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
+	})
+	out := b.String()
 
-	if out := b.String(); !strings.Contains(out, "on this host: "+store) {
+	if !strings.Contains(out, "on this host: "+store) {
 		t.Errorf("the notice must name the store the grant lands on; %q missing from %q", store, out)
 	}
-
-	// The same store granted by its own name has nothing more to say about it. This is
-	// the assertion that keeps the second line from becoming unconditional noise; the
-	// grant has to EXIST for it to mean anything, since EvalSymlinks fails silently on a
-	// path that does not.
-	var direct bytes.Buffer
-	writeShieldedGrantWarning(&direct, enforce.Result{ShieldedGrants: []string{store}})
-	if out := direct.String(); strings.Contains(out, "on this host") {
-		t.Errorf("a grant that resolves to itself must not print a second line; got %q", out)
+	// An opt-in that names its own target has nothing more to say about it, so it gets no
+	// second line - the backend reports a pair only where the two differ.
+	if strings.Count(out, "on this host") != 1 {
+		t.Errorf("only the aliased grant gets a second line; got %q", out)
 	}
 }
 

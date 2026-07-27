@@ -204,14 +204,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
 		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, ee.ExitCode())
 		noteDeadListener(&report, serveErr)
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}

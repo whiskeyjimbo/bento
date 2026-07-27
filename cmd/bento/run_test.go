@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -155,23 +153,20 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 }
 
-// A machine gate reads the envelope, so it must be told what an opted-in grant reaches -
+// A machine gate reads the envelope, so it must be told what an opted-in grant reached -
 // shielded_grants carries the spelling that opted in, and the deny-list builds those
 // spellings from $HOME, so under a caller-chosen environment that name can be a link
-// while the exposure lands on the real store.
+// while the exposure lands on the real store. The pairing comes from the backend, which
+// resolved it as it bound the grant; the frontend must render that rather than stat the
+// path again after the target has exited.
 func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
-	dir := t.TempDir()
-	store := filepath.Join(dir, "real", ".ssh")
-	if err := os.MkdirAll(store, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link")); err != nil {
-		t.Fatal(err)
-	}
-	granted := filepath.Join(dir, "link", ".ssh")
+	const granted, store = "/home/u/link/.ssh", "/home/u/real/.ssh"
 
 	var stdout, stderr bytes.Buffer
-	res := enforce.Result{ShieldedGrants: []string{granted, "/etc/hosts"}}
+	res := enforce.Result{
+		ShieldedGrants:       []string{granted, "/etc/hosts"},
+		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
+	}
 	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
 
 	var env struct {

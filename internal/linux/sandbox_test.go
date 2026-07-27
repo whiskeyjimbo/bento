@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -705,6 +706,62 @@ func TestWriteGrantOfSymlinkedShieldNameIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "always-shielded") {
 		t.Errorf("error = %v, want the shield-conflict message", err)
+	}
+}
+
+// An opt-in names a shield by its deny-list spelling, which is built from $HOME - so
+// where that spelling is a symlink the grant names one path and the run binds another.
+// The Result has to carry the pair, and carry the store as it stood when the grant was
+// bound: a frontend that stat'd the path again after the target exited would name
+// whatever it points at then, which a run that moved the link underneath itself has
+// changed. Reporting the wrong store understates a credential exposure.
+func TestRunReportsWhatAnOptedInGrantBound(t *testing.T) {
+	requireSandbox(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store := filepath.Join(t.TempDir(), "keystore")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	granted := filepath.Join(home, ".ssh")
+	if err := os.Symlink(store, granted); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("sleep 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{granted, dir}, Exec: policy.ExecAll}
+
+	// Repoint the link on the HOST while the target runs. The bind already happened, so
+	// the run's exposure is unchanged; only a report that resolves afterwards would move.
+	decoy := filepath.Join(t.TempDir(), "decoy")
+	if err := os.MkdirAll(decoy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relinked := make(chan error, 1)
+	go func() {
+		time.Sleep(time.Second)
+		relinked <- os.Symlink(decoy, granted+".new")
+		_ = os.Rename(granted+".new", granted)
+	}()
+
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := <-relinked; err != nil {
+		t.Fatalf("repointing the link mid-run: %v", err)
+	}
+	if now, _ := filepath.EvalSymlinks(granted); now != decoy {
+		t.Fatalf("the link was not repointed before the run finished (now %q); the test proves nothing", now)
+	}
+	want := []enforce.CredentialAlias{{Path: granted, Credential: store}}
+	if !slices.Equal(res.ShieldedGrantTargets, want) {
+		t.Errorf("ShieldedGrantTargets = %v, want %v - the store bound at mount time, not what the link points at now", res.ShieldedGrantTargets, want)
 	}
 }
 
