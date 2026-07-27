@@ -1130,7 +1130,15 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 			// own name kept literal - rather than its symlink target, which lies outside
 			// the grant.
 			loc := filepath.Join(sb.resolve(filepath.Dir(r.Path)), filepath.Base(r.Path))
-			if under(loc, w) {
+			// The resolved location alone misses the case where it is the SHIELD that
+			// moves out of the grant: with a symlinked home (/home/u -> /data/u), loc is
+			// /data/u/.ssh while the grant is /home, so the containment is only visible in
+			// the unresolved namespace. The grant still holds the home symlink, and a run
+			// that can replace it points home at a directory it controls and plants a real
+			// .ssh there - the exact key-planting this check exists to stop. Refusing on
+			// either namespace costs nothing: a shield with no symlink above it resolves to
+			// itself, so the two tests coincide everywhere else.
+			if under(loc, w) || under(r.Path, w) {
 				return fmt.Errorf("linux: write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
 			}
 		}

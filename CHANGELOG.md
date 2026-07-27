@@ -43,8 +43,17 @@ them:
 - Host control sockets under `/run` and `/var/run` - the Docker daemon socket,
   `gpg-agent`, the session bus, and similar.
 
-A write grant that covers a shielded path is refused outright. A read grant
-naming an exact shield path is honored as a deliberate, warned exception.
+The shields anchor on both `$HOME` and the running uid's passwd entry, so a
+caller-chosen environment cannot relocate them: under `HOME=/` the real home's
+credential stores stay shielded rather than the shields moving to `/.ssh`,
+`/.aws` and so on. Where the uid has no passwd entry at all, `$HOME` is the only
+anchor left.
+
+A write grant that covers a shielded path is refused outright - including a
+grant above a home directory that is itself a symlink, where the shield's
+resolved location leaves the granted tree while the symlink inside it stays
+writable. A read grant naming an exact shield path is honored as a deliberate,
+warned exception.
 `make audit` checks the denylist against upstream firejail reference definitions.
 
 ### Workflow

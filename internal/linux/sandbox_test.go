@@ -708,6 +708,44 @@ func TestWriteGrantOfSymlinkedShieldNameIsRefused(t *testing.T) {
 	}
 }
 
+// Where the HOME DIRECTORY itself is a symlink (/home/u -> /data/u), the shield's
+// resolved location leaves the granted tree while its literal name stays inside it, so
+// a compare in the resolved namespace alone sees no containment. The grant still holds
+// the home symlink: a run can point it at a directory it controls and plant a real .ssh
+// there, which is what checkWriteNotAboveShield exists to stop.
+func TestWriteGrantAboveSymlinkedHomeIsRefused(t *testing.T) {
+	requireSandbox(t)
+
+	base := t.TempDir()
+	homes := filepath.Join(base, "homes")
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(homes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(homes, "u")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", filepath.Join(homes, "u"))
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{homes}}
+
+	_, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil {
+		t.Fatal("a write grant above a symlinked home must be refused - the run could repoint home and plant keys")
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("error = %v, want the shield-conflict message", err)
+	}
+}
+
 // A grant that names the resolved target of a symlinked shield (~/.ssh -> a real
 // key store, then write to that store) must still be refused: the deny rule and
 // the grant are compared after both are symlink-resolved, so the shield cannot be
