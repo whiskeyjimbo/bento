@@ -331,9 +331,11 @@ func printUnrepresentable(obs profile.Observation) {
 			continue
 		}
 		seenHosts[key] = true
-		// Quoted, not %s: the proxy's CONNECT screen rejects only C0 and DEL, so a bidi
-		// override or an 8-bit C1 byte in a target-chosen host reaches here, and this is
-		// the one place such a value is echoed to the operator's terminal.
+		// Quoted, not %s: the host is target-chosen, and this is the one place such a
+		// value is echoed to the operator's terminal. readConnect holds a CONNECT target
+		// to the same screen, so nothing deceiving should reach here - but a rendering
+		// that depends on a screen upstream is one refactor away from being wrong, and
+		// quoting also delimits a host that is empty or carries spaces.
 		fmt.Fprintf(os.Stderr, "[bento] not proposing network access to %q port %q - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
 	}
 }

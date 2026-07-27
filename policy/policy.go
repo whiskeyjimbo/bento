@@ -119,8 +119,10 @@ func (p *Policy) Validate() error {
 	// validate summary, error messages naming a bad path - so a deceiving character in
 	// one lets an untrusted manifest mislead the operator reading it: a control
 	// character reprograms the terminal (ESC/OSC window spoofing, hidden text), a bidi
-	// override reorders the display, and a zero-width character hides a segment - each
-	// so a value reads as something other than what it grants. No legitimate path or
+	// override reorders the display, a zero-width character hides a segment, a line
+	// separator pushes the rest off the display, and a byte that does not decode at all
+	// carries an 8-bit control past every rune predicate - each so a value reads as
+	// something other than what it grants. No legitimate path or
 	// argument carries any of them. Rejecting here, at the
 	// single gate every construction path passes through, closes it for the CLI and Go
 	// embedders alike; the host field is already guarded separately.
@@ -166,8 +168,9 @@ func (p *Policy) Validate() error {
 }
 
 // FirstUnsafeRune returns the first character in s that must not appear in a value
-// a frontend echoes to the operator - a control character, a bidi override, or a
-// zero-width/invisible one - and true, or (0, false) when s is clean. It backs both
+// a frontend echoes to the operator - a control character, a bidi override, a
+// zero-width/invisible one, or a line separator - and true, or (0, false) when s is
+// clean. It backs both
 // the path/argument screen here and the manifest provenance screen, so every field
 // an untrusted manifest can populate is held to the same rule.
 //
