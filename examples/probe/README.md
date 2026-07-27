@@ -17,6 +17,75 @@ Results flush as they are produced and a successful run ends with
 cgroup limit is a SIGKILL, not a catchable error) and every line before it still
 counts.
 
+## Five-minute quick start
+
+Four runs, in order. Each one establishes something the next depends on.
+
+```sh
+go build -o bento ./cmd/bento
+cd examples/probe
+export PATH="$PWD/../..:$PATH"
+export BENTO_PROBE_HOME="$HOME" BENTO_PROBE_CANARY=must-not-leak
+```
+
+**1. The floor** - what the sandbox denies with no grants at all.
+
+```sh
+bento run deny-all.manifest.yaml --allow-unapproved
+```
+
+Every read, write, and network probe comes back DENIED. The handful that do not
+are each worth understanding, because they are the sandbox's own floor rather
+than anything the manifest granted:
+
+- `read.cwd-listing` - the entrypoint has to be visible to run at all.
+- `read.home-listing` - ALLOWED, but only a couple of entries: a skeleton mount
+  for the path down to the working directory, not a readable home.
+- `write.sandbox-tmpfs` - a private tmpfs, discarded with the box.
+- `exec.fork` - plain `exec: none` blocks `execve`, not `fork`; step 4 covers it.
+- `env.passthrough` / `env.sandbox-injected` - the manifest does allowlist
+  `BENTO_PROBE_HOME`, and `PATH`/`HOME` are injected by bento.
+
+The run ends in `PROBE-COMPLETE`.
+
+**2. Grants work, and don't over-block.**
+
+```sh
+bento run grants.manifest.yaml --allow-unapproved
+```
+
+`read.granted` and `write.granted` flip to ALLOWED while `read.ungranted`
+(`./secret`) stays DENIED. The one to look at is `write.save-via-rename`:
+ALLOWED, because bento grants directories rather than files, so `os.replace`
+and git-style atomic saves keep working.
+
+**3. The headline claim** - a grant over all of `$HOME` does not lift the shields.
+
+```sh
+bento run broad-home.manifest.yaml --allow-unapproved
+```
+
+`read.home-listing` should report a count close to `ls -A ~ | wc -l`, proving
+home really is mounted, while all four `read.shield-*` probes stay DENIED. The
+closing line should say 44 or so paths shielded. If the count is small, the
+grant reached nothing and the DENIEDs mean nothing - see below.
+
+**4. Egress, then the hardening tier.**
+
+```sh
+bento run network.manifest.yaml --allow-unapproved
+bento run strict.manifest.yaml --allow-unapproved
+```
+
+The declared host returns `HTTP 200` through the proxy; the undeclared one is
+refused at the CONNECT with a 403; `direct-socket` and `dns` fail because they
+bypass the proxy. Then `strict` shows `exec.fork` DENIED (that is `none-strict`
+doing what plain `none` did not) and the pid and memory caps biting - the memory
+probe ends the process partway, so that run has no `PROBE-COMPLETE` by design.
+
+Run `bento doctor` first if step 4 looks too permissive; the hardening tier
+needs host support that a container or an old kernel may not have.
+
 ## Running
 
 ```sh
@@ -52,7 +121,7 @@ The two environment variables:
 |---|---|
 | `deny-all` | The floor. No grants, so anything ALLOWED here is allowed by the sandbox itself rather than by policy. |
 | `grants` | Narrow read/write grants work, including save-via-rename into the granted directory. |
-| `broad-home` | A read grant over the whole home directory does not lift the credential shields. **Edit the path first** - see below. |
+| `broad-home` | A read grant over the whole home directory does not lift the credential shields. |
 | `network` | One declared host reaches the internet through the proxy; everything else, including any direct socket, does not. |
 | `strict` | The hardening tier: `exec: none-strict` blocks fork as well as execve, and the memory cap kills the process. |
 
