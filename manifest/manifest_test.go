@@ -530,6 +530,18 @@ func TestResolveRefusesUnexpandableTilde(t *testing.T) {
 	}
 }
 
+// Policy's character screen runs at Parse, over the manifest as written, so $HOME is
+// the one value that reaches a policy path without passing it. The resolved path is
+// what the shield warnings and --json envelopes echo, which is what the screen guards.
+func TestResolveScreensHomeForUnsafeRunes(t *testing.T) {
+	t.Setenv("HOME", "/home/‮esc")
+
+	p := &policy.Policy{Entrypoint: "run.py", Read: []string{"~/x"}}
+	if err := Resolve(p, "/work/proj/m.yaml"); err == nil {
+		t.Errorf("Resolve accepted a $HOME carrying a bidi override, resolving read to %q", p.Read[0])
+	}
+}
+
 // A bare "~" carries no separator, so the interpreter's PATH-search branch would hand
 // it to exec.LookPath as a command name rather than expanding it.
 func TestResolveExpandsBareTildeInterpreter(t *testing.T) {

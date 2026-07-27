@@ -113,8 +113,9 @@ provenance:
 
 Read and write paths accept a leading `~` for your home directory (`~/projects/api`,
 or `"~"` for home itself). Quote the bare tilde: unquoted, YAML reads `~` as null,
-not as a path. Another user's home (`~operator/...`) is not expanded - write it out.
-A `~` grant resolves against `$HOME` at run time, not at approval time.
+not as a path. Another user's home (`~operator/...`) is not expanded - write it out,
+and prefix a file genuinely named with a tilde as `./~backup`. A `~` grant resolves
+against `$HOME` at run time, not at approval time.
 
 ---
 

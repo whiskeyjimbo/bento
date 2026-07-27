@@ -324,6 +324,12 @@ func expandHome(path string) (string, error) {
 	if !filepath.IsAbs(home) {
 		return "", fmt.Errorf("manifest: cannot expand %q: home directory %q is not absolute", path, home)
 	}
+	// Policy's character screen runs at Parse, over the manifest as written. Expansion
+	// happens after, so $HOME is the one thing that reaches a policy path without
+	// passing it - and the resolved path is what the warnings and --json envelopes echo.
+	if r, ok := policy.FirstUnsafeRune(home); ok {
+		return "", fmt.Errorf("manifest: cannot expand %q: home directory %q contains %s, which is not allowed in a path", path, home, policy.DescribeUnsafeRune(r))
+	}
 	// Cleaned because the shield and grant comparisons downstream are exact string
 	// equality against filepath.Clean(home): a trailing slash in $HOME would make
 	// "~" resolve to a path that matches home everywhere except where it counts.
