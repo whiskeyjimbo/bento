@@ -70,7 +70,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: sigstore/cosign-installer@v3
+      # cosign-installer publishes no floating v4 tag, unlike every other action here,
+      # so the major version has to be pinned to a point release.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       - uses: anchore/sbom-action/download-syft@v0
 
