@@ -5,6 +5,41 @@ import (
 	"testing"
 )
 
+// The fingerprint is what a manifest's approval attests, so its byte output is a
+// wire format: any change to how it is computed invalidates every approval in the
+// wild. The other tests here are self-consistent - they compare fingerprints to
+// each other and would stay green through a rewrite that shifted every hash. This
+// one pins the actual bytes.
+//
+// The fixture is built to exercise the sort paths: each set-like field arrives out
+// of order, and the network rules include a host tie on differing ports, which is
+// the only input that distinguishes the two-key rule comparator.
+//
+// If this fails, do not re-pin it. Either the change was meant to be invisible and
+// is not, or the fingerprint format changed deliberately - and that needs a story
+// for the approvals it strands.
+func TestFingerprintGolden(t *testing.T) {
+	p := &Policy{
+		Entrypoint:  "./x",
+		Interpreter: "python3",
+		Args:        []string{"--b", "--a"},
+		Env:         []string{"PATH", "HOME", "LANG"},
+		Read:        []string{"/two", "/one"},
+		Write:       []string{"/out/b", "/out/a"},
+		Network: []NetworkRule{
+			{Host: "b.com", Port: "80"},
+			{Host: "a.com", Port: "443"},
+			{Host: "a.com", Port: "80"},
+		},
+		Exec:   ExecAll,
+		Limits: Limits{Memory: "1M", CPU: "50%", PIDs: 128},
+	}
+	const want = "aa2f73e71ab6923705ca40cd8c9096becc6dcdc3cccc2a834f2e62d777a624ad"
+	if got := p.Fingerprint(); got != want {
+		t.Errorf("fingerprint = %q, want %q", got, want)
+	}
+}
+
 func TestFingerprintStableAcrossReordering(t *testing.T) {
 	a := &Policy{
 		Entrypoint: "./x",
