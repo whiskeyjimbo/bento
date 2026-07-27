@@ -265,6 +265,15 @@ of plain runs and fail immediately under the race detector. It needs a C toolcha
 
 The test suite executes real probes inside real bubblewrap sandboxes to verify that security boundaries strictly hold.
 
+To exercise those boundaries by hand, [`examples/probe`](examples/probe) is a
+Python script that runs inside the sandbox and reports what it can actually
+read, write, reach, and execute, one line per probe. It ships with manifests
+covering the deny-all floor, narrow grants, a broad home grant with the
+credential shields still in place, per-host egress, and the hardening tier
+(`none-strict`, memory and pid caps). Useful for checking a host's enforcement
+after a kernel or bubblewrap change, and for seeing what a given manifest really
+buys before approving it.
+
 ---
 
 ## License & Security
