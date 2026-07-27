@@ -169,14 +169,14 @@ func TestValidateRejects(t *testing.T) {
 		// The enforcer refuses this too, but only once it knows what $HOME is. Whatever
 		// home turns out to be, ~/.ssh is inside it, so the refusal needs no host - and
 		// `bento validate` runs this gate without resolving anything.
-		{"write grant of home", func(p *Policy) { p.Write = []string{"~"} }, "grants your whole home directory"},
-		{"write grant of home, trailing slash", func(p *Policy) { p.Write = []string{"~/"} }, "grants your whole home directory"},
-		{"write grant of home, dot", func(p *Policy) { p.Write = []string{"~/."} }, "grants your whole home directory"},
+		{"write grant of home", func(p *Policy) { p.Write = []string{"~"} }, "grants your home directory or a parent of it"},
+		{"write grant of home, trailing slash", func(p *Policy) { p.Write = []string{"~/"} }, "grants your home directory or a parent of it"},
+		{"write grant of home, dot", func(p *Policy) { p.Write = []string{"~/."} }, "grants your home directory or a parent of it"},
 		// Above home encloses it, so it encloses every shield inside it too. Clean folds
 		// "/.." to "/", so the traversal spellings land on the same rule.
-		{"write grant above home", func(p *Policy) { p.Write = []string{"~/.."} }, "grants your whole home directory"},
-		{"write grant above home, twice", func(p *Policy) { p.Write = []string{"~/../.."} }, "grants your whole home directory"},
-		{"write grant looping back to home", func(p *Policy) { p.Write = []string{"~/out/.."} }, "grants your whole home directory"},
+		{"write grant above home", func(p *Policy) { p.Write = []string{"~/.."} }, "grants your home directory or a parent of it"},
+		{"write grant above home, twice", func(p *Policy) { p.Write = []string{"~/../.."} }, "grants your home directory or a parent of it"},
+		{"write grant looping back to home", func(p *Policy) { p.Write = []string{"~/out/.."} }, "grants your home directory or a parent of it"},
 		{"escape in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/true\x1b]0;PWNED\x07" }, "control character"},
 		{"escape in interpreter", func(p *Policy) { p.Interpreter = "python3\x1b[31m" }, "control character"},
 		{"escape in arg", func(p *Policy) { p.Args = []string{"--flag\x07"} }, "control character"},

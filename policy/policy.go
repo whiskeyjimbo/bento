@@ -192,7 +192,7 @@ func (p *Policy) Validate() error {
 	// shields stay engaged inside it. Only write would put the shields' parent in reach.
 	for i, w := range p.Write {
 		if rest, ok := strings.CutPrefix(w, "~"); ok && filepath.Clean("/"+rest) == "/" {
-			return fmt.Errorf("policy: write[%d] %q grants your whole home directory, which would make the credential stores bento shields inside it (~/.ssh, ~/.aws, ...) writable through their parent; grant the specific directory the program writes to", i, w)
+			return fmt.Errorf("policy: write[%d] %q grants your home directory or a parent of it, which would make the credential stores bento shields inside it (~/.ssh, ~/.aws, ...) writable through their parent; grant the specific directory the program writes to", i, w)
 		}
 	}
 	for _, name := range p.Env {
