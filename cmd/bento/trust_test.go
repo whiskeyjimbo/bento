@@ -155,6 +155,104 @@ func TestApproveRefusesADirectoryAnACLOpens(t *testing.T) {
 	}
 }
 
+// A symlink partway along the path is the same exposure as one at the manifest's own name:
+// whoever can write the directory holding it repoints it at a file of their choosing. The
+// endpoint cannot show it - an intermediate hop appears in neither the name given nor the
+// path it resolved to - so the walk has to record the directory every hop was read from.
+func TestPathDirsSeesIntermediateSymlinks(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// <root>/open holds the link, <root>/real holds the manifest; only the link's holder is
+	// world-writable, and nothing about /open appears in <root>/real/bento.yaml.
+	open, real := filepath.Join(root, "open"), filepath.Join(root, "real")
+	for _, d := range []string{open, real} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(open, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(open, "lnk", "bento.yaml")
+	if err := os.WriteFile(filepath.Join(real, "bento.yaml"), []byte("entrypoint: ./x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs, err := pathDirs(path)
+	if err != nil {
+		t.Fatalf("pathDirs: %v", err)
+	}
+	if dirs[0].path != real {
+		t.Errorf("the nearest directory must be the manifest's own %s; got %s", real, dirs[0].path)
+	}
+	var sawOpen bool
+	for _, d := range dirs {
+		sawOpen = sawOpen || d.path == open
+	}
+	if !sawOpen {
+		t.Fatalf("the directory holding the intermediate link must be inspected; got %v", dirs)
+	}
+
+	if os.Geteuid() == 0 {
+		return // root writes anywhere regardless, so nothing about the mode is a finding
+	}
+	// And it is reported as fatal, so approve refuses rather than stamping a manifest whose
+	// name somebody else chooses.
+	flaws := trustOf(t, path).locationFlaws(uint32(os.Geteuid()))
+	var fatal bool
+	for _, f := range flaws {
+		fatal = fatal || (f.fatal && strings.Contains(f.reason, open))
+	}
+	if !fatal {
+		t.Errorf("a world-writable directory holding an intermediate link must be fatal; got %+v", flaws)
+	}
+}
+
+// A chain of links resolves the way an open of the same path would, and a loop is refused
+// at the kernel's own ceiling rather than walked until something runs out.
+func TestPathDirsFollowsChainsAndRefusesLoops(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A relative target continues from the directory holding the link, not from the cwd.
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(root, "two")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("two", filepath.Join(root, "one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "bento.yaml"), []byte("entrypoint: ./x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := pathDirs(filepath.Join(root, "one", "bento.yaml"))
+	if err != nil {
+		t.Fatalf("pathDirs: %v", err)
+	}
+	if dirs[0].path != target {
+		t.Errorf("a chain of relative links must land in %s; got %s", target, dirs[0].path)
+	}
+
+	if err := os.Symlink(filepath.Join(root, "b"), filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pathDirs(filepath.Join(root, "a", "bento.yaml")); err == nil {
+		t.Error("a symlink loop must be refused, not walked")
+	}
+}
+
 // Root is not a foreign owner: it can write anywhere regardless, so flagging it would
 // report every system-installed manifest without naming a reachable widening.
 func TestForeignOwner(t *testing.T) {

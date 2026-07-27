@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -22,9 +24,10 @@ type fileFacts struct {
 	uid  uint32
 	// aclWrite is write granted to a named user or group by a POSIX ACL, which the mode
 	// cannot show: such a grant appears in the group-class bits and is indistinguishable
-	// there from the group write an ordinary umask leaves. Only statFacts fills it in - the
-	// manifest's own ACL is corrected along with its mode by the rewrite, which zeroes the
-	// group class and with it the mask every named entry is filtered through.
+	// there from the group write an ordinary umask leaves. Only the directories the path walk
+	// records carry it - the manifest's own ACL is corrected along with its mode by the
+	// rewrite, which zeroes the group class and with it the mask every named entry is
+	// filtered through.
 	aclWrite bool
 }
 
@@ -34,22 +37,6 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 		return fileFacts{}, fmt.Errorf("cannot read ownership of %s", path)
 	}
 	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, nil
-}
-
-func statFacts(path string) (fileFacts, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return fileFacts{}, err
-	}
-	facts, err := factsOf(path, fi)
-	if err != nil {
-		return fileFacts{}, err
-	}
-	facts.aclWrite, err = aclNamedWrite(path)
-	if err != nil {
-		return fileFacts{}, err
-	}
-	return facts, nil
 }
 
 // POSIX ACL entry tags and permission bits, as the kernel lays them out in
@@ -152,12 +139,11 @@ type manifestTrust struct {
 	// rewrites the manifest writes at the location that was inspected rather than
 	// resolving the name a second time and racing whoever can repoint it.
 	realPath string
-	// chain is every other directory that can decide which file the manifest's name
-	// reaches: the ones above dir, since renaming one of them aside substitutes the
-	// manifest as surely as replacing the file, followed by those leading to a symlink
-	// named as the manifest, since whoever can replace a link repoints it at a file of
-	// their choosing. Each run is nearest-first, but the second follows the whole of
-	// the first rather than being interleaved by distance.
+	// chain is every other directory the resolution passed through, in the reverse of the
+	// order it read them so the nearest comes first: those above dir, since renaming one of
+	// them aside substitutes the manifest as surely as replacing the file, and those that
+	// held a symlink along the way, since whoever can replace a link repoints it at a file
+	// of their choosing.
 	chain []fileFacts
 }
 
@@ -170,11 +156,11 @@ type trustFlaw struct {
 	fatal  bool
 }
 
-// inspectManifest reads the trust facts for an already-open manifest. Both halves come
-// from the open handle: the file's from fstat, and its location from the kernel's own
-// name for the descriptor. Resolving the path in userspace instead gets this wrong -
-// lexically cleaning a `..` that follows a symlink names a directory the file is not in
-// - and asking the kernel is also free of any race with the bytes already parsed.
+// inspectManifest reads the trust facts for an already-open manifest. The file's come from
+// fstat of the handle, and where it lives from the kernel's own name for the descriptor:
+// authoritative, and free of any race with the bytes already parsed. The directories that
+// lead there come from walking the given path a component at a time, since the endpoint
+// alone cannot show a symlink partway along it; the two are required to agree.
 //
 // The directories are judged on their mode bits and their access ACL. The manifest's own
 // facts come from fstat, which carries no ACL, because the rewrite corrects its mode - and
@@ -211,47 +197,22 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if !os.SameFile(fi, targetFI) {
 		return manifestTrust{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
 	}
-	dirPath := filepath.Dir(target)
-	dir, err := statFacts(dirPath)
+	dirs, err := pathDirs(path)
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	trust := manifestTrust{file: file, dir: dir, realPath: target}
-
-	above, err := dirsUpward(filepath.Dir(dirPath))
-	if err != nil {
-		return manifestTrust{}, err
+	// The walk landed where the kernel says the descriptor is, or the two disagree about
+	// which file this is and neither the facts nor the location can be trusted. Nothing
+	// short of a swap mid-walk makes them differ, and that is the case worth refusing.
+	if dirPath := filepath.Dir(target); dirs[0].path != dirPath {
+		return manifestTrust{}, fmt.Errorf("%s moved while it was being read: it resolved to %s but is open in %s", path, dirs[0].path, dirPath)
 	}
-	// skip dirPath: for a manifest sitting directly in /, walking up from it starts at
-	// / again, and reporting it as both the holding directory and an ancestor is noise.
-	trust.chain = appendUnseen(nil, above, dirPath)
-
-	// A symlink named as the manifest is a second name for it, and whoever can replace
-	// the link points it wherever they like however private its current target is - so
-	// the directories leading to the link are inspected too. Only a link at the name
-	// itself: a link at an intermediate component is the same exposure, but finding it
-	// needs the resolution walked hop by hop rather than its endpoint read back.
-	li, err := os.Lstat(path)
-	if err != nil {
-		return manifestTrust{}, err
-	}
-	if li.Mode()&fs.ModeSymlink != 0 {
-		linkDir, err := filepath.Abs(filepath.Dir(path))
-		if err != nil {
-			return manifestTrust{}, err
-		}
-		linked, err := dirsUpward(linkDir)
-		if err != nil {
-			return manifestTrust{}, err
-		}
-		trust.chain = appendUnseen(trust.chain, linked, dirPath)
-	}
-	return trust, nil
+	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], realPath: target}, nil
 }
 
 // inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
-// its location. The directory is resolved, so the write lands where the facts were read
-// even if a component of the given path is a link.
+// its location. The directory is walked the same way as an existing manifest's, so the write
+// lands where the facts were read even if a component of the given path is a link.
 //
 // file describes the manifest as it will be created rather than one that is there, so only
 // locationFlaws is meaningful on the result - flaws would report a clean verdict about a
@@ -261,23 +222,15 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 	if err != nil {
 		return manifestTrust{}, err
 	}
-	dirPath, err := filepath.EvalSymlinks(filepath.Dir(abs))
-	if err != nil {
-		return manifestTrust{}, err
-	}
-	dir, err := statFacts(dirPath)
-	if err != nil {
-		return manifestTrust{}, err
-	}
-	above, err := dirsUpward(filepath.Dir(dirPath))
+	dirs, err := pathDirs(filepath.Dir(abs))
 	if err != nil {
 		return manifestTrust{}, err
 	}
 	return manifestTrust{
 		file:     fileFacts{path: path, mode: newManifestMode, uid: uint32(os.Geteuid())},
-		dir:      dir,
-		chain:    appendUnseen(nil, above, dirPath),
-		realPath: filepath.Join(dirPath, filepath.Base(abs)),
+		dir:      dirs[0],
+		chain:    dirs[1:],
+		realPath: filepath.Join(dirs[0].path, filepath.Base(abs)),
 	}, nil
 }
 
@@ -288,35 +241,199 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 // can say so afterwards. Rewrites of an existing manifest carry its mode forward instead.
 const newManifestMode fs.FileMode = 0o600
 
-// dirsUpward returns facts for dir and every directory above it, nearest first.
-func dirsUpward(dir string) ([]fileFacts, error) {
-	var out []fileFacts
-	for p := dir; ; p = filepath.Dir(p) {
-		facts, err := statFacts(p)
+// pathDirs walks path one component at a time and returns facts for every directory the
+// resolution read a component from, nearest first. Every one of them can decide which file
+// the path reaches - a directory that holds a symlink repoints it at a file of its owner's
+// choosing, and a directory anywhere above renames a level aside - so the check has to see
+// all of them, not only the ones in the name it was given or the ones above where it landed.
+// An intermediate symlink puts its target's ancestors in neither.
+//
+// The walk is done with descriptors rather than strings for the two things strings get
+// wrong. `..` is resolved by the kernel against the directory actually reached, where
+// cleaning it lexically after a symlink names a directory the walk never entered - and the
+// failure mode of getting that wrong is silently missing a directory, which is the whole
+// thing this exists to catch. And each directory's facts come from fstat of the descriptor
+// the next component was read from, so nothing can be swapped between the two.
+func pathDirs(path string) ([]fileFacts, error) {
+	// Not filepath.Abs, which cleans: it would delete a `..` lexically, and a `..` that
+	// follows a symlink names a different directory cleaned than walked - the very thing
+	// this walk exists to resolve properly.
+	abs := path
+	if !filepath.IsAbs(abs) {
+		cwd, err := os.Getwd()
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, facts)
-		if p == filepath.Dir(p) {
-			return out, nil
+		abs = cwd + "/" + abs
+	}
+	root, err := unix.Open("/", unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(root)
+
+	dirfd, at := root, "/"
+	rootFacts, err := fdFacts(root, "/")
+	if err != nil {
+		return nil, err
+	}
+	out := []fileFacts{rootFacts}
+	// The remaining components are a stack rather than a range, since resolving a symlink
+	// splices its target's components in front of what is left to walk.
+	rest := strings.Split(strings.TrimPrefix(abs, "/"), "/")
+	for hops := 0; len(rest) > 0; {
+		comp := rest[0]
+		rest = rest[1:]
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			// No O_NOFOLLOW: `..` is not a symlink, and the kernel resolving it against the
+			// directory the walk actually reached is the point of walking this way.
+			up, err := unix.Openat(dirfd, "..", unix.O_PATH|unix.O_CLOEXEC, 0)
+			if err != nil {
+				return nil, err
+			}
+			facts, err := fdFacts(up, filepath.Dir(at))
+			if err != nil {
+				unix.Close(up)
+				return nil, err
+			}
+			closeUnlessRoot(dirfd, root)
+			dirfd, at = up, facts.path
+			out = append(out, facts)
+			continue
+		}
+
+		fd, err := unix.Openat(dirfd, comp, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: err}
+		}
+		var st unix.Stat_t
+		if err := unix.Fstat(fd, &st); err != nil {
+			unix.Close(fd)
+			return nil, err
+		}
+		switch mode := statMode(st.Mode); {
+		case mode&fs.ModeSymlink != 0:
+			hops++
+			if hops > maxSymlinkHops {
+				unix.Close(fd)
+				return nil, &fs.PathError{Op: "openat", Path: abs, Err: unix.ELOOP}
+			}
+			link, err := readlinkat(dirfd, comp)
+			unix.Close(fd)
+			if err != nil {
+				return nil, err
+			}
+			// A relative target continues from the directory holding the link; an absolute
+			// one restarts from the root, exactly as the kernel would resolve it.
+			if strings.HasPrefix(link, "/") {
+				closeUnlessRoot(dirfd, root)
+				dirfd, at = root, "/"
+			}
+			rest = append(strings.Split(strings.Trim(link, "/"), "/"), rest...)
+		case mode.IsDir():
+			facts, err := fdFacts(fd, filepath.Join(at, comp))
+			if err != nil {
+				unix.Close(fd)
+				return nil, err
+			}
+			closeUnlessRoot(dirfd, root)
+			dirfd, at = fd, facts.path
+			out = append(out, facts)
+		default:
+			// A non-directory that is not the last component is a path that cannot resolve;
+			// let whoever opens it say so rather than guessing at the errno here.
+			unix.Close(fd)
+			if len(rest) > 0 {
+				return nil, &fs.PathError{Op: "openat", Path: filepath.Join(at, comp), Err: unix.ENOTDIR}
+			}
+		}
+	}
+	closeUnlessRoot(dirfd, root)
+	slices.Reverse(out)
+	return dedupeDirs(out), nil
+}
+
+// maxSymlinkHops matches the kernel's own ceiling, so a chain this walk refuses is one an
+// open of the same path would refuse too.
+const maxSymlinkHops = 40
+
+func closeUnlessRoot(fd, root int) {
+	if fd != root {
+		unix.Close(fd)
+	}
+}
+
+func readlinkat(dirfd int, comp string) (string, error) {
+	for size := 256; ; size *= 2 {
+		buf := make([]byte, size)
+		n, err := unix.Readlinkat(dirfd, comp, buf)
+		if err != nil {
+			return "", err
+		}
+		if n < size {
+			return string(buf[:n]), nil
 		}
 	}
 }
 
-// appendUnseen adds the directories of add that are not already in chain and are not
-// skip, so a path and its resolved target - which share every level above the point
-// they diverge - do not report the same directory twice.
-func appendUnseen(chain, add []fileFacts, skip string) []fileFacts {
-	seen := map[string]bool{skip: true}
-	for _, d := range chain {
-		seen[d.path] = true
-	}
-	for _, d := range add {
+// dedupeDirs drops the repeats a walk produces on its own: `..` returns to a directory
+// already entered, and a symlink's target shares every level above where it diverges from
+// the name that reached it. The first mention wins, which is the nearest one.
+func dedupeDirs(dirs []fileFacts) []fileFacts {
+	seen := make(map[string]bool, len(dirs))
+	out := dirs[:0]
+	for _, d := range dirs {
 		if !seen[d.path] {
-			chain = append(chain, d)
+			seen[d.path] = true
+			out = append(out, d)
 		}
 	}
-	return chain
+	return out
+}
+
+// fdFacts reads the facts of an already-open directory. The ACL is read through the
+// descriptor's name in /proc rather than the path walked to it, since fgetxattr refuses an
+// O_PATH descriptor and reopening for read needs a permission an ancestor may not grant.
+func fdFacts(fd int, path string) (fileFacts, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fileFacts{}, err
+	}
+	facts := fileFacts{path: path, mode: statMode(st.Mode), uid: st.Uid}
+	aclWrite, err := aclNamedWrite("/proc/self/fd/" + strconv.Itoa(fd))
+	if err != nil {
+		return fileFacts{}, err
+	}
+	facts.aclWrite = aclWrite
+	return facts, nil
+}
+
+// statMode is st_mode as an fs.FileMode, carrying the bits the trust check reads: the type,
+// the permissions, and setgid and sticky, each of which changes what the permissions mean.
+func statMode(m uint32) fs.FileMode {
+	mode := fs.FileMode(m & 0o777)
+	switch m & unix.S_IFMT {
+	case unix.S_IFDIR:
+		mode |= fs.ModeDir
+	case unix.S_IFLNK:
+		mode |= fs.ModeSymlink
+	case unix.S_IFREG:
+	default:
+		mode |= fs.ModeIrregular
+	}
+	if m&unix.S_ISGID != 0 {
+		mode |= fs.ModeSetgid
+	}
+	if m&unix.S_ISUID != 0 {
+		mode |= fs.ModeSetuid
+	}
+	if m&unix.S_ISVTX != 0 {
+		mode |= fs.ModeSticky
+	}
+	return mode
 }
 
 // flaws lists what euid cannot vouch for about the manifest's location, most specific
@@ -344,10 +461,10 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 // describe a state approve is in the middle of leaving.
 func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 	out := dirFlaws(t.dir, "the directory holding it", euid)
-	// Only the nearest fatal link in the chain is reported. A group-writable directory
-	// up the tree is as ordinary as a group-writable one holding the manifest, and
-	// naming every level to / would bury the one that actually lets someone else choose
-	// which manifest is read.
+	// One fatal link in the chain is enough to report. A group-writable directory up the
+	// tree is as ordinary as a group-writable one holding the manifest, and naming every
+	// level to / would bury the one that actually lets someone else choose which manifest
+	// is read.
 	for _, d := range t.chain {
 		for _, f := range dirFlaws(d, "a directory on the path to it", euid) {
 			if f.fatal {
