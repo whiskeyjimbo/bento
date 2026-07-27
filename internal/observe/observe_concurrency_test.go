@@ -73,13 +73,11 @@ func TestConcurrentTracesDoNotStealEachOthersStops(t *testing.T) {
 		if err := os.WriteFile(own, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			var sink bytes.Buffer
 			res, err := Trace([]string{sh, "-c", "cat " + own}, os.Environ(), nil, &sink, &sink)
 			results[i] = outcome{res: res, err: err, own: own}
-		}()
+		})
 	}
 	// Bounded, because the failure mode is not a wrong answer: a trace whose stop was
 	// consumed elsewhere blocks in its wait loop, so an unbounded Wait would turn a

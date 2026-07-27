@@ -81,12 +81,12 @@ func TestRunReportRefusesToClaimLayersWhenTheChildIsSilent(t *testing.T) {
 	}
 	// The reason names the exit code, which is what lets a reader tell bento failing to
 	// confine from a target that chose 125 itself.
-	var reasons string
+	var reasons strings.Builder
 	for _, d := range res.Report.Degradations() {
-		reasons += d.Reason
+		reasons.WriteString(d.Reason)
 	}
-	if !strings.Contains(reasons, "125") {
-		t.Errorf("no degradation reason names the exit code the silent launcher died with: %q", reasons)
+	if !strings.Contains(reasons.String(), "125") {
+		t.Errorf("no degradation reason names the exit code the silent launcher died with: %q", reasons.String())
 	}
 }
 
