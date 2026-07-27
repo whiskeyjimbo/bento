@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -177,6 +178,21 @@ func (p *Policy) Validate() error {
 			if err := screenTilde(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
 				return err
 			}
+		}
+	}
+	// A write grant of home itself is refused wherever it is checked, because the
+	// credential stores it would make writable sit at fixed names inside home: whatever
+	// $HOME turns out to be, `~/.ssh` is under it. That is what lets the refusal live
+	// here, at a gate that never looks at the host, rather than only in the enforcer -
+	// `bento validate` runs this and would otherwise print ok for a manifest that can
+	// never run. The enforcer still refuses the same grant spelled absolutely
+	// (write: /home/u), which needs $HOME to recognize.
+	//
+	// Read is deliberately exempt: `read: "~"` is the documented broad grant, and the
+	// shields stay engaged inside it. Only write would put the shields' parent in reach.
+	for i, w := range p.Write {
+		if rest, ok := strings.CutPrefix(w, "~"); ok && filepath.Clean("/"+rest) == "/" {
+			return fmt.Errorf("policy: write[%d] %q grants your whole home directory, which would make the credential stores bento shields inside it (~/.ssh, ~/.aws, ...) writable through their parent; grant the specific directory the program writes to", i, w)
 		}
 	}
 	for _, name := range p.Env {
