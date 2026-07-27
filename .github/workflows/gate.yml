@@ -27,7 +27,7 @@ jobs:
 
       # Keyed on the pinned tool versions in the Makefile as well as go.sum, so
       # bumping either pin busts the cache rather than serving a stale toolchain.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/go-build
