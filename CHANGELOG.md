@@ -78,7 +78,11 @@ warned exception.
   each grant it also prints what that grant lands on for the host it is run on,
   following symlinks as well as `~` and relative prefixes, so a reviewer can see
   what the grant reaches before approving it - a `~` grant whose `.ssh` is a link
-  elsewhere would otherwise read as a path under `$HOME`.
+  elsewhere would otherwise read as a path under `$HOME`. `--json` carries the
+  same answer as `resolved_read`/`resolved_write`, and `run --json` carries
+  `shielded_grant_targets` for an opted-in shield, so a CI gate reads what the
+  human summary shows rather than the spelling alone. The literal `read`/`write`
+  are unchanged: they are what the fingerprint attests.
 - The refusals a manifest can earn without consulting the host are raised by
   `validate` and `approve`, not left for `run`: a `~operator/...` path, and a
   write grant of the home directory itself (whatever `$HOME` is, the credential

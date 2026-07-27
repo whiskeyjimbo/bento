@@ -152,21 +152,27 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// that as bentoFailed would overwrite the real exit code with 125 - a lie
 		// that bento could not run the script. Warn and still pass the code through.
 		if err := writeJSON(stdout, struct {
-			ExitCode          int          `json:"exit_code"`
-			Stdout            string       `json:"stdout"`
-			Stderr            string       `json:"stderr"`
-			EgressConnections int          `json:"egress_connections"`
-			ShieldedGrants    []string     `json:"shielded_grants,omitempty"`
-			Shields           []shieldJSON `json:"shields,omitempty"`
-			Exposed           []shieldJSON `json:"exposed,omitempty"`
-			AcceptedAliases   []aliasJSON  `json:"accepted_aliases,omitempty"`
-			Report            reportJSON   `json:"report"`
+			ExitCode          int      `json:"exit_code"`
+			Stdout            string   `json:"stdout"`
+			Stderr            string   `json:"stderr"`
+			EgressConnections int      `json:"egress_connections"`
+			ShieldedGrants    []string `json:"shielded_grants,omitempty"`
+			// ShieldedGrantTargets names what an opted-in grant reaches, for the entries
+			// where the two differ. shielded_grants carries the spelling that opted in, and
+			// the deny-list builds those spellings from $HOME - so under a caller-chosen
+			// environment the name a consumer sees can be a link and the exposure lands
+			// elsewhere. Present only when something differs.
+			ShieldedGrantTargets []grantTargetJSON `json:"shielded_grant_targets,omitempty"`
+			Shields              []shieldJSON      `json:"shields,omitempty"`
+			Exposed              []shieldJSON      `json:"exposed,omitempty"`
+			AcceptedAliases      []aliasJSON       `json:"accepted_aliases,omitempty"`
+			Report               reportJSON        `json:"report"`
 			// StrictShortfall says the run was admitted under --strict but a guarantee it
 			// required lapsed while the target ran, so exit_code below is the code of a run
 			// whose posture did not hold. Without it a machine consumer reading the envelope
 			// alone would see an ordinary completed run.
 			StrictShortfall bool `json:"strict_shortfall,omitempty"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toGrantTargetsJSON(res.ShieldedGrants, res.ShieldedGrants), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {

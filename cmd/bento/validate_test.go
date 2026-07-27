@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,13 +30,13 @@ func TestValidateShowsLimits(t *testing.T) {
 		}
 	}
 
-	j := toPolicyJSON(p)
+	j := toPolicyJSON(p, nil)
 	if j.Limits == nil || j.Limits.Memory != "128M" || j.Limits.CPU != "50%" || j.Limits.PIDs != 64 {
 		t.Errorf("JSON limits = %+v, want memory/cpu/pids populated", j.Limits)
 	}
 
 	// A no-limits policy must omit the limits entirely (no empty struct in JSON).
-	if toPolicyJSON(&policy.Policy{Entrypoint: "./x"}).Limits != nil {
+	if toPolicyJSON(&policy.Policy{Entrypoint: "./x"}, nil).Limits != nil {
 		t.Error("a no-limits policy must not emit a limits object in JSON")
 	}
 }
@@ -180,5 +181,36 @@ func TestValidateResolvesSymlinkedGrants(t *testing.T) {
 	}
 	if !strings.Contains(out, "on this host: "+target) {
 		t.Errorf("summary must name what the symlinked grant reaches (%q); got:\n%s", target, out)
+	}
+}
+
+// The CI gate reads --json, so the envelope has to answer what the human summary does.
+// read/write stay literal - that is what the fingerprint attests, and a consumer diffing
+// them across hosts must not see them move - so what the grant reaches is a field of its
+// own, present only where the two differ.
+func TestValidateJSONNamesWhatGrantsReach(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~/.ssh", "/etc/hosts"}}
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", writeManifest(t, p, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, out)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+
+	if !slices.Equal(got.Read, p.Read) {
+		t.Errorf("read = %v, want the manifest's own spelling %v", got.Read, p.Read)
+	}
+	want := []grantTargetJSON{{Path: "~/.ssh", OnHost: target}}
+	if !slices.Equal(got.ResolvedRead, want) {
+		t.Errorf("resolved_read = %v, want %v - the absolute grant names its own target and needs no entry", got.ResolvedRead, want)
 	}
 }

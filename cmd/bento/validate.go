@@ -5,7 +5,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -38,7 +37,7 @@ func newValidateCmd() *cobra.Command {
 				return err
 			}
 			if asJSON {
-				out := toPolicyJSON(doc.Policy)
+				out := toPolicyJSON(doc.Policy, resolvedGrants(doc.Policy, args[0]))
 				out.Approval = approvalName(checkApproval(doc))
 				if err := writeJSON(os.Stdout, out); err != nil {
 					return err
@@ -150,15 +149,22 @@ func approvalName(s approvalState) string {
 }
 
 type policyJSON struct {
-	Entrypoint  string      `json:"entrypoint"`
-	Interpreter string      `json:"interpreter,omitempty"`
-	Args        []string    `json:"args,omitempty"`
-	Env         []string    `json:"env,omitempty"`
-	Read        []string    `json:"read,omitempty"`
-	Write       []string    `json:"write,omitempty"`
-	Network     []string    `json:"network"`
-	Exec        string      `json:"exec"`
-	Limits      *limitsJSON `json:"limits,omitempty"`
+	Entrypoint  string   `json:"entrypoint"`
+	Interpreter string   `json:"interpreter,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Env         []string `json:"env,omitempty"`
+	Read        []string `json:"read,omitempty"`
+	Write       []string `json:"write,omitempty"`
+	// ResolvedRead/ResolvedWrite name what each grant reaches on this host, for the
+	// entries where that differs from the spelling - a ~ or relative prefix, or a
+	// symlink. read/write stay literal because that is what the fingerprint attests and
+	// what a consumer diffing across runs must be able to compare; these say what
+	// approving it would hand over. Absent when every grant names its own target.
+	ResolvedRead  []grantTargetJSON `json:"resolved_read,omitempty"`
+	ResolvedWrite []grantTargetJSON `json:"resolved_write,omitempty"`
+	Network       []string          `json:"network"`
+	Exec          string            `json:"exec"`
+	Limits        *limitsJSON       `json:"limits,omitempty"`
 	// Approval is "current", "stale", or "unapproved" - the same verdict the human
 	// summary prints, so a machine gate can read the outcome as a field rather than
 	// inferring it from the exit code.
@@ -171,7 +177,7 @@ type limitsJSON struct {
 	PIDs   int    `json:"pids,omitempty"`
 }
 
-func toPolicyJSON(p *policy.Policy) policyJSON {
+func toPolicyJSON(p, resolved *policy.Policy) policyJSON {
 	out := policyJSON{
 		Entrypoint:  p.Entrypoint,
 		Interpreter: p.Interpreter,
@@ -187,6 +193,13 @@ func toPolicyJSON(p *policy.Policy) policyJSON {
 	}
 	if !p.Limits.IsZero() {
 		out.Limits = &limitsJSON{Memory: p.Limits.Memory, CPU: p.Limits.CPU, PIDs: p.Limits.PIDs}
+	}
+	// A host that could not resolve the grants (an unusable $HOME) yields nil here, the
+	// same degradation the human summary makes: the approval verdict this command exists
+	// to give is a property of the manifest and must not start depending on the host.
+	if resolved != nil {
+		out.ResolvedRead = toGrantTargetsJSON(p.Read, resolved.Read)
+		out.ResolvedWrite = toGrantTargetsJSON(p.Write, resolved.Write)
 	}
 	return out
 }
@@ -296,17 +309,8 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 // approval is worth - a link that moves afterward changes what the same approved
 // manifest reaches, and only the run-time output will say so.
 func writeResolvedGrants(w io.Writer, literal, resolved []string) {
-	if len(resolved) != len(literal) {
-		return
-	}
-	for i, lit := range literal {
-		lands := resolved[i]
-		if real, err := filepath.EvalSymlinks(lands); err == nil {
-			lands = real
-		}
-		if lit != lands {
-			fmt.Fprintf(w, "  on this host: %s\n", lands)
-		}
+	for _, t := range toGrantTargetsJSON(literal, resolved) {
+		fmt.Fprintf(w, "  on this host: %s\n", t.OnHost)
 	}
 }
 

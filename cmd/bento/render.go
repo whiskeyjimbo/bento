@@ -111,6 +111,44 @@ func toAliasesJSON(aliases []enforce.CredentialAlias) []aliasJSON {
 	return out
 }
 
+// grantTargetJSON is one grant whose name is not where it lands - the store a symlinked
+// or expanded path actually reaches. It mirrors aliasJSON: a name, and what it reaches.
+type grantTargetJSON struct {
+	Path   string `json:"path"`
+	OnHost string `json:"on_host"`
+}
+
+// grantTarget reports what a grant reaches, and whether that differs from how the
+// manifest spells it. resolved is the grant after ~ and relative prefixes are expanded
+// (the same path for a grant that arrives absolute); symlinks are followed on top of
+// that, because a link answers "what does this reach" differently from the name.
+//
+// A path that does not exist yet is legitimate and simply has no target to report - so
+// the caller prints nothing rather than an empty string, which would read as "/".
+func grantTarget(literal, resolved string) (string, bool) {
+	if real, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = real
+	}
+	return resolved, resolved != literal
+}
+
+// toGrantTargetsJSON pairs each grant with what it reaches, for the entries where the
+// two differ. The differing ones are the whole point: an agent gating on the envelope
+// otherwise reads the spelling and never the store, which for a shield opt-in under a
+// caller-chosen $HOME is the difference between a scratch path and a private key.
+func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
+	if len(resolved) != len(literal) {
+		return nil
+	}
+	var out []grantTargetJSON
+	for i, lit := range literal {
+		if lands, differs := grantTarget(lit, resolved[i]); differs {
+			out = append(out, grantTargetJSON{Path: lit, OnHost: lands})
+		}
+	}
+	return out
+}
+
 // writeShieldSummary prints one concise line confirming the boundary engaged: how many
 // credential/host-service paths the run shielded, so an operator sees the sandbox is
 // working without a per-path dump (the full list is in --json). It records what the
@@ -187,12 +225,12 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 		// built from $HOME - so where $HOME reaches the real home through a symlink, the
 		// grant names one path and the script reads another. Naming the store the exposure
 		// actually lands on is the difference between reviewing a path and reviewing a
-		// credential. Printed wherever the two differ, the same rule validate uses for a
-		// resolved grant - which on a host whose home root is itself a link (Silverblue's
-		// /home -> /var/home) is every opt-in, since EvalSymlinks resolves every component.
-		// That is the right side to err on: the line is accurate there too.
-		if real, err := filepath.EvalSymlinks(g); err == nil && real != g {
-			fmt.Fprintf(w, "[bento]     on this host: %s\n", real)
+		// credential. Printed wherever the two differ, which on a host whose home root is
+		// itself a link (Silverblue's /home -> /var/home) is every opt-in, since symlink
+		// resolution covers every component. That is the right side to err on: the line is
+		// accurate there too.
+		if lands, differs := grantTarget(g, g); differs {
+			fmt.Fprintf(w, "[bento]     on this host: %s\n", lands)
 		}
 	}
 }

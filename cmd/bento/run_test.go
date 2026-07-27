@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -149,6 +152,45 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 	if len(env.Shields) != 2 || env.Shields[0].Path != "/home/u/.aws" || env.Shields[0].Kind != "hidden" || env.Shields[1].Kind != "read-only" {
 		t.Errorf("success envelope dropped or mangled the shield audit: %+v", env.Shields)
+	}
+}
+
+// A machine gate reads the envelope, so it must be told what an opted-in grant reaches -
+// shielded_grants carries the spelling that opted in, and the deny-list builds those
+// spellings from $HOME, so under a caller-chosen environment that name can be a link
+// while the exposure lands on the real store.
+func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "real", ".ssh")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	granted := filepath.Join(dir, "link", ".ssh")
+
+	var stdout, stderr bytes.Buffer
+	res := enforce.Result{ShieldedGrants: []string{granted, "/etc/hosts"}}
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+
+	var env struct {
+		ShieldedGrants       []string `json:"shielded_grants"`
+		ShieldedGrantTargets []struct {
+			Path   string `json:"path"`
+			OnHost string `json:"on_host"`
+		} `json:"shielded_grant_targets"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !slices.Equal(env.ShieldedGrants, res.ShieldedGrants) {
+		t.Errorf("shielded_grants = %v, want the grants as the policy spelled them", env.ShieldedGrants)
+	}
+	// Only the aliased one: /etc/hosts names its own target, and an entry claiming
+	// otherwise would be noise a consumer has to filter.
+	if len(env.ShieldedGrantTargets) != 1 || env.ShieldedGrantTargets[0].Path != granted || env.ShieldedGrantTargets[0].OnHost != store {
+		t.Errorf("shielded_grant_targets = %+v, want just %q -> %q", env.ShieldedGrantTargets, granted, store)
 	}
 }
 
