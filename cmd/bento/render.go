@@ -224,8 +224,8 @@ func writeAcceptedAliasWarning(w io.Writer, res enforce.Result) {
 func writeShieldAnchors(w io.Writer) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
-		fmt.Fprintf(w, "Credential shields: no usable home directory (%v), so the home shields cannot be\n", err)
-		fmt.Fprintf(w, "anchored at all. Runs are refused until $HOME names an absolute path.\n\n")
+		fmt.Fprintf(w, "Credential shields: %v, so they cannot be anchored at all and runs are refused.\n", err)
+		fmt.Fprintf(w, "Set $HOME to an absolute path, or give this uid a passwd entry.\n\n")
 		return
 	}
 	fmt.Fprintf(w, "Credential shields anchor on: %s\n", strings.Join(anchors, ", "))

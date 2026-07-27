@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -283,15 +284,28 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal
-// one, and only where the two differ - an absolute grant already says where it lands,
-// and repeating it would bury the lines that carry new information.
+// one, and only where the two differ - an absolute grant that names its own target
+// already says where it lands, and repeating it would bury the lines that carry new
+// information.
+//
+// Symlinks are followed as well as ~ and relative prefixes, because the reviewer's
+// question is what the grant reaches, and a link answers it differently from the name.
+// A ~ grant under a $HOME whose .ssh is a symlink elsewhere reads as a scratch path here
+// and binds that link's target at run time; the run warning names it, but by then the
+// manifest is approved. The stamp attests the manifest text, so this line is what the
+// approval is worth - a link that moves afterward changes what the same approved
+// manifest reaches, and only the run-time output will say so.
 func writeResolvedGrants(w io.Writer, literal, resolved []string) {
-	if len(resolved) != len(literal) || slices.Equal(literal, resolved) {
+	if len(resolved) != len(literal) {
 		return
 	}
 	for i, lit := range literal {
-		if lit != resolved[i] {
-			fmt.Fprintf(w, "  on this host: %s\n", resolved[i])
+		lands := resolved[i]
+		if real, err := filepath.EvalSymlinks(lands); err == nil {
+			lands = real
+		}
+		if lit != lands {
+			fmt.Fprintf(w, "  on this host: %s\n", lands)
 		}
 	}
 }

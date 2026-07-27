@@ -5,12 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -173,9 +175,14 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 
 // $HOME can be set to a relative path. The credential shields join onto it, so a
 // relative home would produce relative (non-enforcing) Rule.Path values that bwrap
-// applies at the wrong place, silently leaving the real stores exposed. newSandbox
-// must refuse it rather than shield air.
-func TestNewSandboxRefusesRelativeHome(t *testing.T) {
+// applies at the wrong place, silently leaving the real stores exposed. It must never
+// become an anchor - but the passwd home is unaffected by whatever $HOME says, so the
+// run proceeds on that one rather than refusing.
+func TestNewSandboxDropsRelativeHomeButKeepsPasswd(t *testing.T) {
+	pw := denylist.PasswdHome()
+	if pw == "" {
+		t.Skip("no passwd entry for this uid")
+	}
 	t.Setenv("HOME", "relhome")
 	dir := t.TempDir()
 	script := filepath.Join(dir, "p.sh")
@@ -183,9 +190,14 @@ func TestNewSandboxRefusesRelativeHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
-	_, _, err := newSandbox(p, "bento-placeholder", false, nil)
-	if err == nil || !strings.Contains(err.Error(), "not absolute") {
-		t.Fatalf("newSandbox with a relative HOME: err = %v, want it to reject a non-absolute home", err)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	if err != nil {
+		t.Fatalf("newSandbox with a relative HOME: %v, want it to fall back to the passwd home", err)
+	}
+	defer cleanup()
+
+	if want := []string{pw}; !slices.Equal(sb.homes, want) {
+		t.Errorf("sb.homes = %v, want %v - a relative home must not anchor a shield", sb.homes, want)
 	}
 }
 

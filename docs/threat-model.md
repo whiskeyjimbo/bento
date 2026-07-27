@@ -81,7 +81,13 @@ A few things Bento trusts rather than defends:
   decides which spellings count as a deliberate shield opt-in, since a read grant
   is matched against the shield paths `$HOME` produces: pointing `$HOME` at a
   symlink to the real home makes a grant of `<link>/.ssh` an honored, warned
-  opt-in where the same manifest is refused otherwise.
+  opt-in where the same manifest is refused otherwise. It changes the spelling
+  that opts in, not what is reachable - a caller who can set `$HOME` can name the
+  store directly instead - so it is a review-surface problem rather than an
+  escalation, and both `validate` and the run warning name the store the grant
+  lands on. It is not closable at the boundary: a caller aliasing the home and a
+  host whose home is legitimately a symlink produce the same shape, and refusing
+  it would break `read: ~/.ssh` everywhere homes are symlinked.
 
   Two configurations return the original lever in full. Where the passwd entry is
   missing entirely (an LDAP host whose module is not loaded, an unmapped container

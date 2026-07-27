@@ -807,9 +807,9 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	// The same anchors the enforcer shields on, so the proposal is clamped against the
 	// shields the run will actually apply - a filter keyed on $HOME alone would skip a
 	// store the run then hides, and draft a manifest that dies at the shield refusal.
-	// An unusable $HOME is reported as an error here; treat it as an unset home and skip
-	// the clamp, since relative shield paths would never match the absolute grants below
-	// and would silently keep a grant this filter meant to drop.
+	// The error means no anchor at all - not merely an unusable $HOME, which drops to the
+	// passwd home - so there are no shields to clamp against and the run this proposal
+	// feeds would be refused anyway.
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
 		return reads, writes, nil, nil

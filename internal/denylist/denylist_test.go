@@ -1040,6 +1040,36 @@ func TestBuildsPinThePureGoPasswdResolver(t *testing.T) {
 	}
 }
 
+// The passwd anchor is the one the caller cannot move, so an environment with no usable
+// $HOME at all - a bare cron job, a systemd unit, env -i - must still shield it rather
+// than refusing the run. Refusing there would fail closed on hosts where the anchor that
+// matters is intact.
+func TestHomeAnchorsSurvivesAnUnusableHome(t *testing.T) {
+	pw := PasswdHome()
+	if pw == "" {
+		t.Skip("no passwd entry for this uid")
+	}
+
+	for _, tc := range []struct{ name, home string }{
+		{"unset", ""},
+		{"relative", "rel/ative"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			if tc.home == "" {
+				os.Unsetenv("HOME") // t.Setenv still restores it after the test
+			}
+			homes, err := HomeAnchors()
+			if err != nil {
+				t.Fatalf("HomeAnchors: %v, want the passwd anchor to carry the run", err)
+			}
+			if want := []string{pw}; !slices.Equal(homes, want) {
+				t.Errorf("HomeAnchors() = %v, want %v", homes, want)
+			}
+		})
+	}
+}
+
 // $HOME agreeing with passwd is the common case and must not shield everything twice -
 // including when the two differ only in a trailing slash.
 func TestHomeAnchorsDeduplicates(t *testing.T) {

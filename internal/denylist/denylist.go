@@ -62,21 +62,26 @@ type Rule struct {
 // The passwd lookup must not route through libc NSS, where LD_PRELOAD would put it back
 // under the caller's control - the shipped builds pass -tags osusergo for exactly that.
 func HomeAnchors() ([]string, error) {
+	var homes []string
+	// os.UserHomeDir returns $HOME verbatim, which a caller can leave unset or set to a
+	// relative path. The shields join onto it, so a relative home yields relative
+	// Rule.Path values that a backend would apply at the wrong (or no) location, silently
+	// leaving the real credential dirs exposed - so an unusable value is dropped rather
+	// than shielding air.
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("denylist: resolving home directory: %w", err)
+	if err == nil && filepath.IsAbs(home) {
+		homes = append(homes, filepath.Clean(home))
 	}
-	// os.UserHomeDir returns $HOME verbatim, which a caller can set to a relative path.
-	// The shields join onto it, so a relative home yields relative Rule.Path values that a
-	// backend would apply at the wrong (or no) location, silently leaving the real
-	// credential dirs exposed. Refuse it rather than shield air.
-	if !filepath.IsAbs(home) {
-		return nil, fmt.Errorf("denylist: home directory %q is not absolute", home)
-	}
-	homes := []string{filepath.Clean(home)}
 
-	if pw := PasswdHome(); pw != "" && pw != homes[0] {
+	if pw := PasswdHome(); pw != "" && !slices.Contains(homes, pw) {
 		homes = append(homes, pw)
+	}
+	if len(homes) == 0 {
+		// Nothing left to anchor on, so there would be no credential shields at all. That
+		// is the one case worth refusing over: a run with no shields is not the boundary
+		// bento claims, and it is indistinguishable at the report from a run whose grants
+		// simply reached none.
+		return nil, fmt.Errorf("denylist: no usable home directory: $HOME is %q and the passwd database has none for uid %d", home, os.Getuid())
 	}
 	return homes, nil
 }

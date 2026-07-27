@@ -76,8 +76,9 @@ warned exception.
 - `bento validate` parses a manifest, rejects malformed fields, and prints the
   requested permissions and resource limits (`--json` for machine output). Under
   each grant it also prints what that grant lands on for the host it is run on,
-  so a reviewer can see which directory `~` or a relative path means before
-  approving it.
+  following symlinks as well as `~` and relative prefixes, so a reviewer can see
+  what the grant reaches before approving it - a `~` grant whose `.ssh` is a link
+  elsewhere would otherwise read as a path under `$HOME`.
 - The refusals a manifest can earn without consulting the host are raised by
   `validate` and `approve`, not left for `run`: a `~operator/...` path, and a
   write grant of the home directory itself (whatever `$HOME` is, the credential

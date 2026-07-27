@@ -160,3 +160,25 @@ func TestValidateShowsResolvedGrantsWithoutDisturbingApproval(t *testing.T) {
 		t.Errorf("an absolute grant must not be repeated; got:\n%s", out)
 	}
 }
+
+// A symlink answers "what does this grant reach" differently from the name, and the
+// reviewer approves from this output. A ~ grant whose .ssh is a link elsewhere reads as
+// a harmless path under $HOME unless the link is followed here - the run says so, but by
+// then the manifest is approved.
+func TestValidateResolvesSymlinkedGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~/.ssh"}}
+	out, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, p, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "on this host: "+target) {
+		t.Errorf("summary must name what the symlinked grant reaches (%q); got:\n%s", target, out)
+	}
+}
