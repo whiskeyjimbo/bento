@@ -170,6 +170,58 @@ func manifestIn(t *testing.T, dir string) string {
 	return path
 }
 
+// profile writes a manifest where none was, so there is no open handle to read the location
+// from - but the directory is there to be judged, and a world-writable one is the whole
+// reason the write is worth a word at all.
+func TestInspectNewManifestJudgesTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := inspectNewManifest(filepath.Join(dir, "bento.yaml"))
+	if err != nil {
+		t.Fatalf("inspectNewManifest: %v", err)
+	}
+	flaws := trust.locationFlaws(uint32(os.Geteuid()))
+	if len(flaws) != 1 || !strings.Contains(flaws[0].reason, "the directory holding it") {
+		t.Errorf("a world-writable directory must be reported; got %+v", flaws)
+	}
+
+	// The write goes to the resolved directory: a link at a component of --out would
+	// otherwise send it somewhere the facts above describe nothing about.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := inspectNewManifest(filepath.Join(link, "bento.yaml"))
+	if err != nil {
+		t.Fatalf("inspectNewManifest: %v", err)
+	}
+	if want := filepath.Join(trust.dir.path, "bento.yaml"); linked.realPath != want {
+		t.Errorf("realPath = %q, want the resolved %q", linked.realPath, want)
+	}
+}
+
+// A manifest written where none was gets owner-only write, whatever the umask: the next
+// command's approval stamp is worth what the file's permissions are.
+func TestWriteManifestAtomicallyCreatesAPrivateManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bento.yaml")
+	trust, err := inspectNewManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManifestAtomically(trust, []byte("entrypoint: ./x\n"), io.Discard); err != nil {
+		t.Fatalf("writeManifestAtomically: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got&0o022 != 0 {
+		t.Errorf("mode = %#o, want the group/world write bits clear", got)
+	}
+}
+
 // trustOf is how the write path is reached in a test: the location a manifest is rewritten
 // at comes from the trust, which only an open handle can produce.
 func trustOf(t *testing.T, path string) manifestTrust {

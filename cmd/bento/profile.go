@@ -143,9 +143,19 @@ func newProfileCmd() *cobra.Command {
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
 			accepted := proposed
-			proposed, err = mergeExisting(out, proposed)
+			var trust manifestTrust
+			proposed, trust, err = mergeExisting(out, proposed)
 			if err != nil {
 				return err
+			}
+			// Only when the manifest is new: seedGrants already reported an existing one's
+			// location, and the first run - which seedGrants leaves entirely unexamined - is
+			// exactly the case where nothing has said anything yet.
+			if trust.realPath == "" {
+				if trust, err = inspectNewManifest(out); err != nil {
+					return err
+				}
+				warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
 			}
 			// The merge re-reads the same file the seed came from, so a seeded grant the
 			// user declined this session would come back through the union. Drop it: a
@@ -165,7 +175,7 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(out, data, 0o644); err != nil {
+			if err := writeManifestAtomically(trust, data, os.Stderr); err != nil {
 				return err
 			}
 
@@ -1091,19 +1101,23 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 // --out that cannot be parsed; overwriting it would silently discard whatever grants
 // it held - contradicting the merge-not-overwrite contract the help text promises -
 // so it is refused rather than clobbered.
-func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, error) {
-	existing, _, err := loadDocument(path, io.Discard) // seedGrants already reported this manifest
+//
+// The trust comes back so the write lands at the location this load inspected rather than
+// at the name resolved a second time; it is zero on the first run, where there is no file
+// to have gathered it from.
+func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manifestTrust, error) {
+	existing, trust, err := loadDocument(path, io.Discard) // seedGrants already reported this manifest
 	switch {
 	case err == nil:
 		// Resolve before the union: a proposal names absolute paths, so a relative grant
 		// in the existing manifest would survive the merge as a second spelling of a path
 		// the proposal already carries, and the written manifest would hold both.
 		resolveManifestPaths(existing.Policy, path)
-		return mergePolicies(existing.Policy, proposed), nil
+		return mergePolicies(existing.Policy, proposed), trust, nil
 	case errors.Is(err, fs.ErrNotExist):
-		return proposed, nil
+		return proposed, manifestTrust{}, nil
 	default:
-		return nil, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+		return nil, manifestTrust{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
 	}
 }
 

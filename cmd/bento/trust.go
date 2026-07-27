@@ -159,6 +159,43 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	return trust, nil
 }
 
+// inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
+// its location. The directory is resolved, so the write lands where the facts were read
+// even if a component of the given path is a link.
+//
+// file describes the manifest as it will be created rather than one that is there, so only
+// locationFlaws is meaningful on the result - flaws would report a clean verdict about a
+// file nobody has looked at.
+func inspectNewManifest(path string) (manifestTrust, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	dirPath, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	dir, err := statFacts(dirPath)
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	above, err := dirsUpward(filepath.Dir(dirPath))
+	if err != nil {
+		return manifestTrust{}, err
+	}
+	return manifestTrust{
+		file:     fileFacts{path: path, mode: newManifestMode, uid: uint32(os.Geteuid())},
+		dir:      dir,
+		chain:    appendUnseen(nil, above, dirPath),
+		realPath: filepath.Join(dirPath, filepath.Base(abs)),
+	}, nil
+}
+
+// newManifestMode is what a manifest written where none was gets. Owner write only past
+// the owner, since approve's whole value is that the permissions cannot move without its
+// stamp going stale.
+const newManifestMode fs.FileMode = 0o644
+
 // dirsUpward returns facts for dir and every directory above it, nearest first.
 func dirsUpward(dir string) ([]fileFacts, error) {
 	var out []fileFacts

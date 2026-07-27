@@ -253,7 +253,7 @@ func TestMergeExisting(t *testing.T) {
 	proposed := &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/in.txt"}}
 
 	// Missing file: the first run returns the proposal unchanged, ready to write.
-	got, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
+	got, _, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
 	if err != nil {
 		t.Fatalf("missing --out should not error (first run); got %v", err)
 	}
@@ -266,7 +266,7 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mergeExisting(corrupt, proposed); err == nil {
+	if _, _, err := mergeExisting(corrupt, proposed); err == nil {
 		t.Errorf("a corrupt existing manifest must be refused, not overwritten")
 	}
 
@@ -280,7 +280,7 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(valid, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	merged, err := mergeExisting(valid, proposed)
+	merged, _, err := mergeExisting(valid, proposed)
 	if err != nil {
 		t.Fatalf("a valid existing manifest should merge; got %v", err)
 	}
@@ -299,7 +299,7 @@ func TestMergeExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	same := &policy.Policy{Entrypoint: filepath.Join(dir, "run.py"), Read: []string{filepath.Join(dir, "in.txt")}}
-	merged, err = mergeExisting(rel, same)
+	merged, _, err = mergeExisting(rel, same)
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}

@@ -83,9 +83,10 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 }
 
 // writeManifestAtomically replaces the manifest through a temporary file in its own
-// directory and a rename, so an interrupted approve cannot leave a truncated manifest
-// where a complete one was - os.WriteFile opens the real file for truncation, and the
-// stamp it is mid-way through writing is the thing every other command reads.
+// directory and a rename, so an interrupted write cannot leave a truncated manifest where
+// a complete one was - os.WriteFile opens the real file for truncation, and the half of a
+// manifest it is mid-way through writing is what every other command would read. Both
+// approve and profile write through here.
 //
 // It writes at the location the trust was gathered against, which is the symlink-resolved
 // one: a manifest kept in a dotfiles repo and linked into place is ordinary here, and
@@ -95,9 +96,10 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 // still acts on a name, so someone who can write the resolved directory can still choose
 // what ends up there - but that is fatal in the trust check, so approve never gets here.
 //
-// The mode carries forward from the file being replaced, minus group and world write:
-// approval is drift detection whose whole value is that the permissions cannot change
-// without the stamp going stale, and a manifest anyone can edit gives that away.
+// The mode carries forward from the file being replaced (0644 for one that does not exist
+// yet), minus group and world write: approval is drift detection whose whole value is that
+// the permissions cannot change without the stamp going stale, and a manifest anyone can
+// edit gives that away.
 func writeManifestAtomically(trust manifestTrust, data []byte, warn io.Writer) error {
 	target := trust.realPath
 	mode := trust.file.mode.Perm()
@@ -109,7 +111,7 @@ func writeManifestAtomically(trust manifestTrust, data []byte, warn io.Writer) e
 	dir := filepath.Dir(target)
 	f, err := os.CreateTemp(dir, ".bento-approve-*")
 	if err != nil {
-		return fmt.Errorf("approve rewrites the manifest through a temporary file in %s, so it needs write and search permission on that directory, not only on the manifest: %w", dir, err)
+		return fmt.Errorf("bento rewrites the manifest through a temporary file in %s, so it needs write and search permission on that directory, not only on the manifest: %w", dir, err)
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp) // a no-op once the rename below has moved it away
