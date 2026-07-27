@@ -171,7 +171,7 @@ func (p *Policy) Validate() error {
 // the path/argument screen here and the manifest provenance screen, so every field
 // an untrusted manifest can populate is held to the same rule.
 //
-// A byte that is not valid UTF-8 is reported as utf8.RuneError, which UnsafeRuneKind
+// A byte that is not valid UTF-8 is reported as utf8.RuneError, which DescribeUnsafeRune
 // names as invalid UTF-8. The screen has to decode to judge, so an undecodable byte
 // would otherwise pass as clean while still reaching the terminal: 0x9B alone is the
 // 8-bit CSI some terminals act on, and no rune predicate ever sees it. A genuine

@@ -3,6 +3,7 @@ package policy
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // valid is the minimal well-formed policy; tests mutate a copy to isolate one
@@ -37,14 +38,38 @@ func TestValidateAcceptsWellFormedPolicy(t *testing.T) {
 func TestValidateAcceptsNonASCIIAndRTLPaths(t *testing.T) {
 	p := valid()
 	p.Entrypoint = "/home/u/مشروع/run.py" // "project" in Arabic letters
-	// The variation selector is deliberately outside the invisible screen: it rides
-	// along on real emoji filenames and hides nothing on its own.
-	// A genuine U+FFFD is three decodable bytes and renders as a visible glyph, so it
-	// is not the undecodable byte the screen refuses.
+	// Two runes sit deliberately outside the screen: the variation selector, which rides
+	// along on real emoji filenames and hides nothing on its own, and a genuine U+FFFD,
+	// which is three decodable bytes and a visible glyph rather than the undecodable
+	// byte the screen refuses.
 	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁", "/emoji/⚠️.txt", "/data/we�ird"}
 	p.Args = []string{"--name=مرحبا", "--dir=Ελληνικά"}
 	if err := p.Validate(); err != nil {
 		t.Errorf("a policy with legitimate non-ASCII/RTL paths must validate: %v", err)
+	}
+}
+
+// The screen tells an undecodable byte from a genuine U+FFFD by the decoded size, which
+// is only sound if Go's decoder reports size 1 for every malformed sequence - not just
+// the lone bad byte. Overlongs, surrogate halves, and out-of-range 4-byte forms are the
+// ones that would slip through as clean if it ever reported more, so the property is
+// pinned against utf8.ValidString rather than against a list of cases.
+func TestFirstUnsafeRuneAgreesWithUTF8Validity(t *testing.T) {
+	for _, s := range []string{
+		"/data/x\xc0\xafy",         // overlong '/'
+		"/data/x\xed\xa0\x80y",     // surrogate half
+		"/data/x\xf4\x90\x80\x80y", // above U+10FFFF
+		"/data/x\xf0\x82\x82\xacy", // overlong U+20AC
+		"/data/x\xc3",              // truncated at end of string
+		"/data/x\xe2\x80",          // truncated three-byte form
+		"/data/x\x9by",             // the raw 8-bit CSI
+		"/data/x�y",                // a genuine replacement character, which is fine
+		"/data/plain",
+	} {
+		_, bad := FirstUnsafeRune(s)
+		if want := !utf8.ValidString(s); bad != want {
+			t.Errorf("FirstUnsafeRune(%q) reported %v, but utf8.ValidString says the string is valid=%v", s, bad, !want)
+		}
 	}
 }
 

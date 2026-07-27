@@ -320,7 +320,7 @@ func printUnrepresentable(obs profile.Observation) {
 			continue
 		}
 		seen[p] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, or invisible one), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
+		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
 	}
 	seenHosts := map[string]bool{}
 	for _, h := range obs.Hosts {

@@ -306,7 +306,8 @@ func resolvesIntoProc(p string) bool {
 
 // Unrepresentable reports whether an observed path cannot be written to a manifest,
 // because it carries a character policy refuses in a path field - a control byte, a
-// bidi override, an invisible rune. A target creates its own filenames, so it can
+// bidi override, an invisible rune, a line separator, or a byte that is not valid UTF-8
+// (the loader rejects a non-UTF-8 document whole, so such a path is unloadable twice over). A target creates its own filenames, so it can
 // produce one; a proposal naming it fails validation at the marshal that ends the
 // profiling run, discarding the whole session's work. Synthesize drops it instead, and
 // this is exported so a frontend can name what was withheld.
