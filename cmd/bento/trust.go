@@ -507,18 +507,29 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 // describe a state approve is in the middle of leaving.
 func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 	out := dirFlaws(t.dir, "the directory holding it", euid)
-	// A link belonging to someone else is theirs to repoint, at whatever manifest they
-	// like. Usually the directory holding it is already fatal for the same reason, but a
-	// sticky one is not: its write bits are exempted because others cannot unlink our
-	// entries, which says nothing about the ones that are not ours.
+	// A link belonging to someone else is theirs to repoint - but only where they can still
+	// write the directory holding it, which ownership on its own does not say: root
+	// unpacking somebody's tarball restores the link's uid (lchown) in a directory nobody
+	// but root can write, and refusing that would fail on every such install.
+	//
+	// The holding directory's raw mode decides, not sharedWrite: sticky is exempted there
+	// because others cannot unlink our entries, and a link that is not ours is exactly what
+	// that premise misses. So a sticky world-writable directory, which reports no flaw of
+	// its own, is the case this catches - and a plainly group-writable one, whose own flaw
+	// is not fatal because a per-user group holds nobody else, becomes fatal once a link in
+	// it belongs to somebody who evidently is in that group.
 	for _, l := range t.links {
-		if l.foreignOwner(euid) {
-			out = append(out, trustFlaw{
-				reason: fmt.Sprintf("%s, a symlink on the path to it, is owned by uid %d, who can repoint it at a manifest of their choosing", l.path, l.uid),
-				fatal:  true,
-			})
-			break
+		if !l.foreignOwner(euid) {
+			continue
 		}
+		if holder, ok := t.dirAt(filepath.Dir(l.path)); ok && holder.mode.Perm()&0o022 == 0 {
+			continue
+		}
+		out = append(out, trustFlaw{
+			reason: fmt.Sprintf("%s, a symlink on the path to it, is owned by uid %d and sits in a directory they can write, so they can repoint it at a manifest of their choosing", l.path, l.uid),
+			fatal:  true,
+		})
+		break
 	}
 	// One fatal link in the chain is enough to report. A group-writable directory up the
 	// tree is as ordinary as a group-writable one holding the manifest, and naming every
@@ -532,6 +543,22 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 		}
 	}
 	return out
+}
+
+// dirAt finds the recorded facts for one of the directories the walk read a component
+// from. Every directory holding a link the walk followed is among them, since the walk had
+// to enter it to read the link - a miss means the two disagree, and a link whose holder
+// cannot be found is judged as though the holder were writable rather than waved through.
+func (t manifestTrust) dirAt(path string) (fileFacts, bool) {
+	if t.dir.path == path {
+		return t.dir, true
+	}
+	for _, d := range t.chain {
+		if d.path == path {
+			return d, true
+		}
+	}
+	return fileFacts{}, false
 }
 
 // dirFlaws reports what a directory on the way to the manifest lets someone other than

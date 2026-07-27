@@ -761,6 +761,15 @@ func TestLocationFlawsRefuseAForeignSymlink(t *testing.T) {
 	if got := trust.locationFlaws(me); len(got) != 0 {
 		t.Errorf("our own link grants nobody else anything; got %+v", got)
 	}
+
+	// Ownership alone is not the finding: root unpacking somebody's tarball restores the
+	// link's uid in a directory only root can write, and nobody can repoint that.
+	trust.links[0].uid = 1001
+	trust.chain[0] = fileFacts{path: "/opt/tool", mode: fs.ModeDir | 0o755, uid: 0}
+	trust.links[0].path = "/opt/tool/link.yaml"
+	if got := trust.locationFlaws(me); len(got) != 0 {
+		t.Errorf("a link in a directory its owner cannot write is nobody's to repoint; got %+v", got)
+	}
 }
 
 // The facts above are only worth what the walk feeds them, so every link the resolution
