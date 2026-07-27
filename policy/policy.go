@@ -128,7 +128,7 @@ func (p *Policy) Validate() error {
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
 		if r, ok := FirstUnsafeRune(f); ok {
-			return fmt.Errorf("policy: value %q contains %s (U+%04X), which is not allowed in a path or argument", f, UnsafeRuneKind(r), r)
+			return fmt.Errorf("policy: value %q contains %s, which is not allowed in a path or argument", f, DescribeUnsafeRune(r))
 		}
 	}
 	// An empty path grant is not a grant of nothing. It survives the manifest-dir
@@ -170,17 +170,35 @@ func (p *Policy) Validate() error {
 // zero-width/invisible one - and true, or (0, false) when s is clean. It backs both
 // the path/argument screen here and the manifest provenance screen, so every field
 // an untrusted manifest can populate is held to the same rule.
+//
+// A byte that is not valid UTF-8 is reported as utf8.RuneError, which UnsafeRuneKind
+// names as invalid UTF-8. The screen has to decode to judge, so an undecodable byte
+// would otherwise pass as clean while still reaching the terminal: 0x9B alone is the
+// 8-bit CSI some terminals act on, and no rune predicate ever sees it. A genuine
+// U+FFFD decodes to three bytes and is left alone.
 func FirstUnsafeRune(s string) (rune, bool) {
-	if i := strings.IndexFunc(s, unsafeInField); i >= 0 {
-		r, _ := utf8.DecodeRuneInString(s[i:])
-		return r, true
+	for i, r := range s {
+		if r == utf8.RuneError {
+			if _, size := utf8.DecodeRuneInString(s[i:]); size == 1 {
+				return utf8.RuneError, true
+			}
+		}
+		if unsafeInField(r) {
+			return r, true
+		}
 	}
 	return 0, false
 }
 
-// UnsafeRuneKind names the class of a rune FirstUnsafeRune reported, for an error
-// message.
-func UnsafeRuneKind(r rune) string { return unsafeKind(r) }
+// DescribeUnsafeRune names what FirstUnsafeRune reported, for an error message: the
+// class of the offending rune and its code point, or just "invalid UTF-8" for an
+// undecodable byte, which has no code point to name.
+func DescribeUnsafeRune(r rune) string {
+	if r == utf8.RuneError {
+		return unsafeKind(r)
+	}
+	return fmt.Sprintf("%s (U+%04X)", unsafeKind(r), r)
+}
 
 // unsafeInField reports whether r must not appear in a path or argument field: a
 // control character, a bidirectional formatting character, or a zero-width/invisible
@@ -197,6 +215,8 @@ func unsafeInField(r rune) bool {
 // name for the class an operator most needs to recognize.
 func unsafeKind(r rune) string {
 	switch {
+	case r == utf8.RuneError:
+		return "invalid UTF-8"
 	case isBidiOverride(r):
 		return "a bidirectional formatting character"
 	case isInvisible(r):

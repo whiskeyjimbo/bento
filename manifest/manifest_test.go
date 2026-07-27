@@ -359,6 +359,14 @@ func TestMarshalValidatesBeforeWriting(t *testing.T) {
 			t.Error("provenance must be screened on the way out as it is on the way in")
 		}
 	})
+	// Parse rejects a non-UTF-8 document whole, but that guard sits on the read side
+	// only. Without the same screen here, Marshal writes a file it can never load back.
+	t.Run("invalid UTF-8 provenance", func(t *testing.T) {
+		p := &policy.Policy{Entrypoint: "/x.py"}
+		if _, err := Marshal(p, Provenance{GeneratedBy: "bento\x9b"}); err == nil {
+			t.Error("provenance carrying an undecodable byte must not be written")
+		}
+	})
 }
 
 // Whatever Marshal writes, Parse must accept: the two gates are the same one, and a

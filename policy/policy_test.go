@@ -39,7 +39,9 @@ func TestValidateAcceptsNonASCIIAndRTLPaths(t *testing.T) {
 	p.Entrypoint = "/home/u/مشروع/run.py" // "project" in Arabic letters
 	// The variation selector is deliberately outside the invisible screen: it rides
 	// along on real emoji filenames and hides nothing on its own.
-	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁", "/emoji/⚠️.txt"}
+	// A genuine U+FFFD is three decodable bytes and renders as a visible glyph, so it
+	// is not the undecodable byte the screen refuses.
+	p.Read = []string{"/data/café", "/データ/入力", "/emoji/📁", "/emoji/⚠️.txt", "/data/we�ird"}
 	p.Args = []string{"--name=مرحبا", "--dir=Ελληνικά"}
 	if err := p.Validate(); err != nil {
 		t.Errorf("a policy with legitimate non-ASCII/RTL paths must validate: %v", err)
@@ -145,6 +147,11 @@ func TestValidateRejects(t *testing.T) {
 		{"hangul filler in entrypoint", func(p *Policy) { p.Entrypoint = "/bin/ru\u3164n" }, "zero-width or invisible"},
 		{"halfwidth hangul filler in arg", func(p *Policy) { p.Args = []string{"--x\uffa0y"} }, "zero-width or invisible"},
 		{"combining grapheme joiner in path", func(p *Policy) { p.Read = []string{"/data/se\u034fcret"} }, "zero-width or invisible"},
+		// A raw 0x9b decodes as RuneError rather than as U+009B, so no rune predicate
+		// ever sees the 8-bit CSI a terminal would act on. The screen has to decode to
+		// judge, which makes an undecodable byte its blind spot unless it says so.
+		{"raw 8-bit CSI in path", func(p *Policy) { p.Read = []string{"/data/x\x9by"} }, "invalid UTF-8"},
+		{"truncated multibyte in arg", func(p *Policy) { p.Args = []string{"--x=\xc3"} }, "invalid UTF-8"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

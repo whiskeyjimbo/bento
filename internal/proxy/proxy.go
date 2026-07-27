@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -575,15 +574,12 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// flow into report() (the run's admitted-hosts list) and the 403 body, and the
 	// recorded host reaches every other consumer of the observation. Hold the target to
 	// the same screen policy.Validate applies to a path, so the refusal happens here
-	// rather than in each consumer. The UTF-8 check is separate because it is what
-	// catches a raw 8-bit C1 byte: 0x9b alone decodes as RuneError, not as U+009B, so
-	// the rune screen never sees the CSI the terminal would act on.
+	// rather than in each consumer. That screen also rejects an undecodable byte, which
+	// is what catches a raw 8-bit C1: 0x9b alone decodes as RuneError, not as U+009B, so
+	// no rune predicate ever sees the CSI the terminal would act on.
 	for _, s := range []string{host, port} {
-		if !utf8.ValidString(s) {
-			return "", "", nil, fmt.Errorf("target contains invalid UTF-8")
-		}
 		if r, ok := policy.FirstUnsafeRune(s); ok {
-			return "", "", nil, fmt.Errorf("target contains %s (U+%04X)", policy.UnsafeRuneKind(r), r)
+			return "", "", nil, fmt.Errorf("target contains %s", policy.DescribeUnsafeRune(r))
 		}
 	}
 	// net.SplitHostPort hands back whatever sat after the colon: "08080" and

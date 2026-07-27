@@ -311,7 +311,7 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 func screenProvenance(prov Provenance) error {
 	for _, f := range []string{prov.GeneratedBy, prov.GeneratedAt, prov.Approves} {
 		if r, ok := policy.FirstUnsafeRune(f); ok {
-			return fmt.Errorf("manifest: provenance value %q contains %s (U+%04X)", f, policy.UnsafeRuneKind(r), r)
+			return fmt.Errorf("manifest: provenance value %q contains %s", f, policy.DescribeUnsafeRune(r))
 		}
 	}
 	return nil

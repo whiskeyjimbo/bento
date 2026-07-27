@@ -93,6 +93,28 @@ func TestSynthesizeDropsRelativePaths(t *testing.T) {
 	}
 }
 
+// A Linux filename is arbitrary bytes, so a target can create one that is not valid
+// UTF-8. Synthesize has to withhold it: the manifest loader refuses a non-UTF-8
+// document outright, so keeping the path would produce a proposal that fails on
+// re-read and discards the whole profiling session - the outcome Unrepresentable
+// exists to prevent.
+func TestSynthesizeDropsInvalidUTF8Paths(t *testing.T) {
+	obs := Observation{
+		Reads:  []string{"/work/x\x9by.txt", "/work/real.txt"},
+		Writes: []string{"/work/bad\xc3/out.txt"},
+	}
+	p := mustSynthesize(t, "/work/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{"/work/real.txt"}) {
+		t.Errorf("read = %q, want only the decodable /work/real.txt", p.Read)
+	}
+	if len(p.Write) != 0 {
+		t.Errorf("write = %q, want the non-UTF-8 write dir dropped", p.Write)
+	}
+	if err := p.Validate(); err != nil {
+		t.Errorf("a synthesized policy must validate: %v", err)
+	}
+}
+
 // bv2-2wy: a script that reads a credential store and also writes a file directly
 // in $HOME must not have the read hidden. Synthesize must keep the read (rather than
 // dropping it under the $HOME-level write dir), so the profiler's shield clamp can
