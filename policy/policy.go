@@ -201,13 +201,14 @@ func DescribeUnsafeRune(r rune) string {
 }
 
 // unsafeInField reports whether r must not appear in a path or argument field: a
-// control character, a bidirectional formatting character, or a zero-width/invisible
-// one. Each is a way an untrusted manifest deceives an operator reading the value - a
-// control character reprograms the terminal, a bidi override reorders the display, an
-// invisible character hides a segment or makes two different paths render identically
-// - so a path shows as something other than what it grants.
+// control character, a bidirectional formatting character, a zero-width/invisible one,
+// or a line separator. Each is a way an untrusted manifest deceives an operator reading
+// the value - a control character reprograms the terminal, a bidi override reorders the
+// display, an invisible character hides a segment or makes two different paths render
+// identically, a line separator pushes the rest of the value off the displayed line -
+// so a path shows as something other than what it grants.
 func unsafeInField(r rune) bool {
-	return isControl(r) || isBidiOverride(r) || isInvisible(r)
+	return isControl(r) || isBidiOverride(r) || isInvisible(r) || isLineSeparator(r)
 }
 
 // unsafeKind names the class of an unsafeInField rune for the error message. The bidi
@@ -219,6 +220,8 @@ func unsafeKind(r rune) string {
 		return "invalid UTF-8"
 	case isBidiOverride(r):
 		return "a bidirectional formatting character"
+	case isLineSeparator(r):
+		return "a line separator"
 	case isInvisible(r):
 		return "a zero-width or invisible character"
 	default:
@@ -233,6 +236,16 @@ func unsafeKind(r rune) string {
 // honor directly).
 func isControl(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// isLineSeparator reports whether r is the Unicode line or paragraph separator
+// (U+2028, U+2029). Neither is a C0/C1 control, a format character, or default-ignorable,
+// so the other three screens all miss them, yet many renderers break the line on one -
+// which pushes the rest of a path off the display, so what the operator reads is a
+// prefix of what is granted. Like the bidi controls this is a closed set of two, so it
+// is spelled out rather than deferred to the Zl/Zp tables.
+func isLineSeparator(r rune) bool {
+	return r == 0x2028 || r == 0x2029
 }
 
 // isBidiOverride reports whether r is a Unicode bidirectional embedding, override,

@@ -152,6 +152,10 @@ func TestValidateRejects(t *testing.T) {
 		// judge, which makes an undecodable byte its blind spot unless it says so.
 		{"raw 8-bit CSI in path", func(p *Policy) { p.Read = []string{"/data/x\x9by"} }, "invalid UTF-8"},
 		{"truncated multibyte in arg", func(p *Policy) { p.Args = []string{"--x=\xc3"} }, "invalid UTF-8"},
+		// The renderer breaks the line here, so the grant reads as "/data/public" and
+		// the segment that widens it sits on a line the operator never connects to it.
+		{"line separator in read path", func(p *Policy) { p.Read = []string{"/data/public /../secrets"} }, "a line separator"},
+		{"paragraph separator in arg", func(p *Policy) { p.Args = []string{"--out=safe /etc"} }, "a line separator"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
