@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # The gate needs runner host state (bwrap, userns, the firejail corpus), so it
+  # has to be triggerable on a branch before that branch has a pull request.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer irrelevant, and
+# the gate holds a runner for minutes on real sandboxes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml

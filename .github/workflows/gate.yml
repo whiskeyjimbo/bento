@@ -1,0 +1,63 @@
+name: gate
+
+# The one definition of "the gate": ci.yml runs it on push and pull request,
+# release.yml runs it before publishing. Two copies of the host setup below
+# would drift, and a release gate that drifted from the PR gate is the failure
+# this shape exists to prevent.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # Cached explicitly below instead: setup-go keys its cache on go.sum,
+          # which does not mention golangci-lint or govulncheck, so the tools
+          # `make lint` and `make vuln` fetch with `go run tool@version` would
+          # be recompiled from source on every run.
+          cache: false
+
+      # Keyed on the pinned tool versions in the Makefile as well as go.sum, so
+      # bumping either pin busts the cache rather than serving a stale toolchain.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('**/go.sum', 'Makefile') }}
+          restore-keys: |
+            go-${{ runner.os }}-
+
+      # The test suite runs real probes inside real bwrap sandboxes, and the denylist
+      # audit diffs against the locally installed firejail and AppArmor profiles;
+      # without them those tests skip and the gate would pass without exercising the
+      # boundary. BENTO_REQUIRE_TEST_DEPS turns such a skip into a failure, so they
+      # have to be present rather than merely nice to have.
+      - name: Install sandbox test dependencies
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap firejail
+
+      # Ubuntu 24.04 ships an AppArmor restriction that denies unprivileged user
+      # namespaces to unconfined binaries, which is exactly what bwrap needs. The
+      # runner is a throwaway VM, so lifting it there costs nothing.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      # A runner that still refuses userns fails ~80 sandbox tests with one line each
+      # and no cause. Probing the levers first says which one is wrong.
+      - name: Probe the sandbox preconditions
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces || true
+          bwrap --unshare-user --dev-bind / / true && echo "bwrap userns OK"
+
+      - run: make check
