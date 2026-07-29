@@ -600,7 +600,7 @@ func superviseTarget(target, env []string) (int, error) {
 	// Past Start the target is running, so a failure below is no longer "the target was
 	// never reached" - reapUntil can fail with the target still executing (Wait4 returns
 	// ECHILD when an inherited SIGCHLD=SIG_IGN has the kernel auto-reaping children).
-	code, err := reapUntil(cmd.Process.Pid)
+	code, err := reapChildren(cmd.Process.Pid)
 	if err != nil {
 		return 0, errTargetRan{err}
 	}

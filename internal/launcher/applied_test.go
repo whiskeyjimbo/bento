@@ -130,6 +130,33 @@ func TestNewAppliedReportValidatesTheDescriptor(t *testing.T) {
 	}
 }
 
+// The record must not fire the other way either. reapUntil runs with the target already
+// executing, so a wait that fails there - ECHILD, where an inherited SIGCHLD=SIG_IGN has
+// the kernel auto-reaping - is not a target that was never reached, and reporting one
+// would be the same untruth this channel exists to stop, pointing the other way.
+func TestRunTargetKeepsTheRecordOffARunThatHappened(t *testing.T) {
+	reap := reapChildren
+	t.Cleanup(func() { reapChildren = reap })
+	reapChildren = func(int) (int, error) { return 0, errors.New("launcher: reaping children: no child processes") }
+
+	got, err := reportOf(t, func(a *appliedReport) error {
+		if err := a.write(); err != nil {
+			return err
+		}
+		_, runErr := runTarget(false, []string{"/bin/true"}, nil, a)
+		return runErr
+	})
+	if err == nil {
+		t.Fatal("runTarget swallowed a failed wait instead of returning it")
+	}
+	if strings.Contains(got, AppliedTargetUnreached) {
+		t.Errorf("a wait that failed with the target already running was reported as a target that never ran: %q", got)
+	}
+	if !strings.Contains(got, AppliedMarker) {
+		t.Errorf("report %q lost its completion marker", got)
+	}
+}
+
 // sentinelRunReport makes the test binary re-exec itself as the sacrificial child that
 // runs a whole launcher stage.
 const sentinelRunReport = "BENTO_TEST_RUN_REPORT"
@@ -160,9 +187,9 @@ func TestRunReportsWhetherTheTargetWasReached(t *testing.T) {
 		{"the target ran", "reached", false},
 		{"the entrypoint does not exist", "missing", true},
 		{"the target is not an absolute path", "relative", true},
-		// The exec-block path is the one the design rests on: execveat replaces this
-		// process, so the report can only end at the marker because the descriptor is
-		// close-on-exec. Its failure semantics are seccomp.Exec's, not os/exec's.
+		// The exec-block path is the one the design rests on, and its failure semantics are
+		// seccomp.Exec's rather than os/exec's: a reached target replaces this process, so
+		// nothing must have appended to the report by the time the host reads it.
 		{"the target ran under the exec block", "block-reached", false},
 		{"the entrypoint does not exist under the exec block", "block-missing", true},
 	}

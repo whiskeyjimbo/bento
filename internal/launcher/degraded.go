@@ -75,10 +75,16 @@ var (
 // be exercised. landlockRestrict is here for the opposite outcome: the bwrap tier's
 // Landlock failure is the one place in either tier that warns and proceeds, so it is the
 // branch a test most needs to reach and the one a live kernel never takes.
+// reapChildren joins them for the same reason from the other direction: the wait loop
+// fails only when the kernel refuses the wait (ECHILD, where an inherited
+// SIGCHLD=SIG_IGN has it auto-reaping children), which no test can produce without
+// taking the Go runtime's own signal handling with it - and it is the one dispatch
+// failure that must NOT be reported as a target that never ran, since by then it has.
 var (
 	installExecBlock = seccomp.BlockExec
 	blockExecStrict  = seccomp.BlockExecStrict
 	landlockRestrict = landlock.Restrict
+	reapChildren     = reapUntil
 )
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
