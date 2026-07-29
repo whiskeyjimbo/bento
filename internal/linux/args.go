@@ -203,11 +203,6 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		args = append(args, "--ro-bind-try", path, path)
 	}
 	for _, path := range writes {
-		// Unlike a read grant, "/" is never expanded for writes: making the entire
-		// host root writable would defeat the sandbox, and it is never a real grant.
-		if path == "/" {
-			return nil, nil, fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
-		}
 		// Write grants are directory-granular: bwrap can only make a directory
 		// writable in a way that supports creating and renaming files inside it.
 		// Binding a file makes it a mount point, which returns EBUSY on the
@@ -930,6 +925,10 @@ func shield(r denylist.Rule, sb sandbox) []string {
 // reads and writes are the resolved grants; p carries the unresolved paths the process
 // and managed-mount checks re-resolve for their own diagnostics.
 func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
+	// First: the shield checks below skip "/" and rely on it being refused already.
+	if err := checkWriteNotRoot(writes); err != nil {
+		return err
+	}
 	_, optInShields := explicitShieldOptIns(sb, p.Read)
 	// Only reads carry the opt-in: a write grant under a shield the policy also reads
 	// must stay refused, so it is checked against no opt-ins at all.
@@ -1145,10 +1144,23 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 	return nil
 }
 
+// checkWriteNotRoot refuses a write grant of the host root. Unlike a read grant,
+// "/" is never expanded for writes: making the entire host root writable would
+// defeat the sandbox, and it is never a real grant. It lives here rather than in
+// compile's write-grant loop because the degraded tier never compiles an argv - it
+// hands the grants to landlock.RestrictDegraded, where a "/" write is host-root
+// write with nothing above it.
+func checkWriteNotRoot(writes []string) error {
+	if slices.Contains(writes, "/") {
+		return fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
+	}
+	return nil
+}
+
 func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 	for _, w := range writes {
 		if w == "/" {
-			continue // rejected with a clearer message by the write-grant loop
+			continue // rejected with a clearer message by checkWriteNotRoot
 		}
 		for _, r := range alwaysShields(sb) {
 			if r.Deny != denylist.DenyAll {

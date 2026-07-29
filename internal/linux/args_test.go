@@ -1112,6 +1112,20 @@ func TestRootWriteGrantIsRejected(t *testing.T) {
 	}
 }
 
+// The refusal has to live in the shared checks, not in compile: the degraded tier
+// never compiles an argv, so a "/" write reaching it is host-root write under
+// Landlock with no mount namespace above it.
+func TestRootWriteGrantIsRejectedByCheckGrants(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/"}}
+	err := checkGrants(testSandbox(), p, nil, []string{"/"})
+	if err == nil {
+		t.Fatal("checkGrants should reject a \"/\" write grant, or --allow-degraded accepts it")
+	}
+	if !strings.Contains(err.Error(), "host root") {
+		t.Errorf("error = %v, want it to explain the whole-root-writable refusal", err)
+	}
+}
+
 // A read-only grant already makes a write-denied path unwritable, so no shield
 // mount is needed - and adding one over a read-only parent would abort bwrap.
 func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
