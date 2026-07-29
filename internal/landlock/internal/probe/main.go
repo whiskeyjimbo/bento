@@ -80,6 +80,8 @@ func unixConnect(allowed, socket string) {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
+	//nolint:gosec // G704: the socket path is this test probe's own argument, and dialing
+	// an attacker-chosen path is the point - what is under test is whether Landlock denies it.
 	c, err := net.Dial("unix", socket)
 	if err != nil {
 		fmt.Println("unixconnect=DENIED")
