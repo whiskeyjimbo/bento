@@ -107,13 +107,14 @@ func DefaultNAT64Lookup(ctx context.Context) ([]net.IP, error) {
 // classify can decode a synthesized RFC1918 target that classifyIP alone passes as
 // public.
 //
-// A lookup that answers is conclusive either way: a synthesized AAAA gives the
-// prefix, and NXDOMAIN/no-AAAA (*net.DNSError with IsNotFound, what a network
-// without DNS64 returns for ipv4only.arpa's AAAA) proves there is no synthesis to
-// decode. Any other error - the resolver unreachable, refused, or the discovery
-// deadline expiring - answers nothing, and treating that as "no DNS64" is the
-// fail-open the site-prefix decode exists to close. It is recorded on the Proxy
-// instead, and classify fails closed for what it can no longer rule out.
+// An answer is conclusive only when it is one of the two shapes ipv4only.arpa can
+// honestly have: a synthesized AAAA, which gives the prefix, or no AAAA at all
+// (NXDOMAIN as *net.DNSError with IsNotFound, or an empty result), which proves
+// there is no synthesis to decode. Anything else answers nothing and is recorded as
+// inconclusive on the Proxy, so classify fails closed for what it can no longer rule
+// out: an error - the resolver unreachable, refused, or the discovery deadline
+// expiring - and equally an AAAA that derives no prefix, since treating either as
+// "no DNS64" is the fail-open the site-prefix decode exists to close.
 func (p *Proxy) discoverNAT64(ctx context.Context) {
 	if p.discoverAAAA == nil {
 		return
@@ -132,7 +133,16 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 	}
 	seen := make(map[nat64Prefix]bool)
 	for _, a := range addrs {
-		if pfx, ok := deriveNAT64Prefix(a); ok && !seen[pfx] {
+		pfx, ok := deriveNAT64Prefix(a)
+		if !ok {
+			// ipv4only.arpa has no real AAAA, so an address that embeds neither fixed
+			// IPv4 at any RFC 6052 length was not synthesized by a scheme this can read
+			// - a nonstandard DNS64, a captive portal, a blockpage. It neither yields a
+			// prefix nor proves there is none, which is the inconclusive case.
+			p.nat64Inconclusive = true
+			continue
+		}
+		if !seen[pfx] {
 			seen[pfx] = true
 			p.nat64 = append(p.nat64, pfx)
 		}

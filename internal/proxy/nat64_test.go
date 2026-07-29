@@ -199,6 +199,44 @@ func TestNAT64NotFoundIsConclusive(t *testing.T) {
 	}
 }
 
+// An AAAA that derives no prefix is not a no-DNS64 answer: ipv4only.arpa has no real
+// AAAA, so a nonstandard synthesis or a captive-portal address leaves the site prefix
+// unknown and classify must fail closed rather than pass a wrapped RFC1918 as public.
+// An answer carrying no AAAA at all is the honest no-DNS64 shape and stays conclusive,
+// as does a lookup that derived a prefix from at least one of its answers.
+func TestNAT64NonDerivingAnswerIsInconclusive(t *testing.T) {
+	cases := []struct {
+		name  string
+		addrs []net.IP
+		want  bool
+	}{
+		{"captive-portal AAAA", []net.IP{net.ParseIP("2606:4700::1111")}, true},
+		{"no AAAA at all", nil, false},
+		{"synthesized", []net.IP{net.ParseIP("2001:db8:1:2:3:4:c000:aa")}, false},
+		{"synthesized beside a stray", []net.IP{
+			net.ParseIP("2001:db8:1:2:3:4:c000:aa"), net.ParseIP("2606:4700::1111"),
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := New(egressRules, WithNAT64Discovery(fakeLookup(c.addrs...)))
+			p.discoverNAT64(t.Context())
+			if p.nat64Inconclusive != c.want {
+				t.Fatalf("nat64Inconclusive = %v, want %v", p.nat64Inconclusive, c.want)
+			}
+			// The undecodable IPv6 an inconclusive run must refuse: no transition prefix
+			// explains it, so it may be a site synthesis wrapping RFC1918.
+			want := ipPublic
+			if c.want {
+				want = ipPrivate
+			}
+			if got := p.classify(net.ParseIP("2606:4700::1111")); got != want {
+				t.Errorf("classify = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
 // The RFC 8215 local-use prefix 64:ff9b:1::/48 is a container a site carves its own
 // Pref64 out of, so every RFC 6052 length it admits must be decoded - not just a
 // flat /48 reading, which would miss a target wrapped at any other length.
