@@ -460,8 +460,14 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			// Whether the run had already ended is read HERE, not after the drain: an
+			// open tunnel holds wg.Wait until run teardown, so a listener that died on
+			// its own at minute one would find ctx cancelled by the time the last
+			// handler finished and report a clean end. What the caller needs to know is
+			// whether the run was over when accepting stopped.
+			ended := ctx.Err() != nil
 			wg.Wait()
-			if ctx.Err() != nil {
+			if ended {
 				return nil
 			}
 			return err

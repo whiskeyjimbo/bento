@@ -537,9 +537,12 @@ func (c *egressCollector) gateAdmitted() []enforce.HostPort {
 
 // startProxyWith serves the egress allowlist on socket with a caller-supplied
 // observer, returning a stop function.
-// The returned stop reports the listener's terminal error: nil when Serve ended
-// because the run did, non-nil when Accept failed on its own and the egress fence
-// stopped serving for the rest of the run.
+// The returned stop reports the listener's terminal error: non-nil when Accept
+// failed while the run was still live, so the egress fence stopped serving for the
+// rest of it. A nil is weaker than "the run ended cleanly" - Serve cannot tell an
+// Accept that failed in the same instant as teardown from one caused by it, and
+// answers nil - so noteDeadListener under-reports that overlap rather than
+// inventing a Degraded run out of a race.
 func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func() error, err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {

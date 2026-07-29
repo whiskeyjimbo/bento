@@ -444,6 +444,62 @@ func TestServeReturnsTerminalAcceptError(t *testing.T) {
 	}
 }
 
+// The terminal Accept error survives the handler drain. An open tunnel holds
+// wg.Wait until the run is cancelled, so reading "did the run end?" after the drain
+// would find every mid-run listener death cancelled and report a clean end - and
+// noteDeadListener would leave LayerNetwork Enforced for a run whose egress fence
+// was gone from the moment the tunnel opened.
+func TestServeReturnsAcceptErrorThatPrecededCancellation(t *testing.T) {
+	dir := t.TempDir()
+	real, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Errorf("listener is gone")
+	l := &dyingListener{Listener: real, err: want}
+
+	// An upstream that stays open, so the handler is still in the tunnel - and still
+	// counted by wg - when the listener dies.
+	held, upstream := net.Pipe()
+	defer upstream.Close()
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(func(context.Context, string, string) (net.Conn, error) { return held, nil }))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- p.Serve(ctx, l) }()
+
+	c, err := net.Dial("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if status, _ := connect(t, c, "example.com:443"); !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want the tunnel established", status)
+	}
+	// The tunnel is up and the listener has failed on its own; only now does the run end.
+	cancel()
+	if err := <-served; !errors.Is(err, want) {
+		t.Errorf("Serve() = %v, want the listener's terminal error %v", err, want)
+	}
+}
+
+// dyingListener delegates the first Accept and then fails on its own, standing in
+// for a listener that stops accepting mid-run.
+type dyingListener struct {
+	net.Listener
+	err      error
+	accepted bool
+}
+
+func (l *dyingListener) Accept() (net.Conn, error) {
+	if l.accepted {
+		return nil, l.err
+	}
+	l.accepted = true
+	return l.Listener.Accept()
+}
+
 // NAT64 discovery writes p.nat64 with no lock, safe only because it runs before any
 // handler exists. A second Serve on the same *Proxy would rewrite it while the first
 // Serve's tunnels are classifying against it, so re-entry must be refused before
