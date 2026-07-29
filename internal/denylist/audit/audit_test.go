@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -322,7 +323,7 @@ func TestSplitByScopeOrdersOutOfScopeForDiffing(t *testing.T) {
 // and cover a path the list is known to shield (so a refactor that empties Home()
 // does not silently make the audit pass by finding nothing to compare).
 func TestDiffAgainstRealList(t *testing.T) {
-	rules := append(denylist.Home("/HOME"), denylist.Runtime()...)
+	rules := append(denylist.Home("/HOME"), denylist.Runtime("/run/user/1000", "/HOME")...)
 	c := []Candidate{{Path: "/HOME/.ssh/id_rsa", Deny: denylist.DenyAll}}
 	if gaps := Diff(c, rules); len(gaps) != 0 {
 		t.Errorf("~/.ssh/id_rsa should be covered by the real list, got gaps %+v", gaps)
@@ -434,7 +435,15 @@ func TestFirejailCompleteness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unclassified, globs, outOfScope := Audit(firejailSources(contents), home, "/run/user/1000")
+	sources := firejailSources(contents)
+	unclassified, globs, outOfScope := Audit(sources, home, "/run/user/1000")
+
+	// A keyword that matches no section means the classifier lost that block to an
+	// upstream retitle: its entries stopped being compared, and the gap list stays empty
+	// because nothing reaches it. That is the ratchet going quiet, which fails here.
+	if stale := StaleKeywords(sources, home, "/run/user/1000"); len(stale) > 0 {
+		t.Errorf("scope keyword(s) %v match no section in the installed corpus, so the blocks they classified are no longer compared - re-point them in ScopeKeywords or record them in DormantKeywords", stale)
+	}
 
 	// Globs and out-of-scope totals are surfaced (not silently dropped) so a whole
 	// class or the app/privacy scope stays visible for periodic manual review.
@@ -617,4 +626,39 @@ func keysOf(m map[string]Candidate) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// inScopeSection fails open: a section whose title no longer matches any keyword bins its
+// paths in the out-of-scope set, which the report only prints. The parity gate keys on the
+// unclassified set, so it stays green over a comparison that silently stopped being made.
+// StaleKeywords is what notices, so it has to fire on the retitle and stay quiet otherwise.
+func TestStaleKeywordsNoticesARetitledSection(t *testing.T) {
+	// Every non-dormant keyword present, so a clean corpus reports nothing stale and the
+	// retitle below is the only variable.
+	var b strings.Builder
+	for _, kw := range ScopeKeywords {
+		if _, dormant := DormantKeywords[kw]; dormant {
+			continue
+		}
+		fmt.Fprintf(&b, "# %s\nblacklist ${HOME}/.%s-entry\n\n", kw, strings.ReplaceAll(kw, " ", "-"))
+	}
+	live := b.String()
+
+	if stale := StaleKeywords(firejailSources([]string{live}), "/HOME", "/run/user/1000"); len(stale) > 0 {
+		t.Fatalf("StaleKeywords over a corpus carrying every keyword = %v, want none", stale)
+	}
+
+	retitled := strings.Replace(live, "# top secret\n", "# Sensitive material\n", 1)
+	stale := StaleKeywords(firejailSources([]string{retitled}), "/HOME", "/run/user/1000")
+	if !slices.Contains(stale, "top secret") {
+		t.Errorf("StaleKeywords after upstream retitled the top-secret section = %v, want it to name \"top secret\" - otherwise the block stops being compared and the gate stays green", stale)
+	}
+
+	// A dormant keyword names a real firejail section whose entries are all outside
+	// ${HOME}, so it classifies nothing by construction and must never be reported.
+	for kw := range DormantKeywords {
+		if slices.Contains(stale, kw) {
+			t.Errorf("%q is recorded dormant but was reported stale; the gate would red-fail on a corpus that is fine", kw)
+		}
+	}
 }

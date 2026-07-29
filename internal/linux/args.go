@@ -35,6 +35,11 @@ type sandbox struct {
 	// shells, sudo and CI. Every one is shielded, so moving either does not relocate
 	// the shields off the other.
 	homes []string
+	// runtimeDir is the host's XDG runtime directory, when it names one outside /run.
+	// The runtime shields anchor on it the same way the credential shields anchor on
+	// homes: a host that parks it under /tmp keeps the auth stores and agent sockets
+	// there, where the /run shield does not reach them.
+	runtimeDir string
 	// extraDeny are caller-supplied shields applied on top of the built-in deny-list
 	// (a supervising embedder shielding its own state during a profiling trial; see
 	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads
@@ -591,7 +596,7 @@ func interpreterPrefix(interp string) string {
 // all derive from this, so a caller deny can never reach one and miss another
 // (which would leak a host artifact or leave a path unshielded).
 func alwaysShields(sb sandbox) []denylist.Rule {
-	rules := append(homeShields(sb), denylist.Runtime()...)
+	rules := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
 	return append(rules, sb.extraDeny...)
 }
 
@@ -1146,7 +1151,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 // store somewhere that sorts elsewhere, and a caller pairing them by index would then
 // report one grant as reaching another's target.
 func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved []string) {
-	builtin := append(homeShields(sb), denylist.Runtime()...)
+	builtin := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
 	var pairs []enforce.CredentialAlias
 	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {

@@ -738,8 +738,8 @@ func discoveryPolicy(script, interpreter string, args []string) *policy.Policy {
 // passes their host values to the target so it names real paths, and records the
 // names in the proposed manifest so the enforced run resolves the same paths. Omitted
 // deliberately: PWD (the run is chdir'd to the script's directory, so a host PWD would
-// mislead) and XDG_RUNTIME_DIR (it points into the always-shielded runtime directory,
-// which no grant can honor).
+// mislead) and XDG_RUNTIME_DIR (denylist.Runtime shields wherever it points, so a path
+// discovered under it is one no grant can honor).
 var discoveryEnvNames = []string{
 	"HOME", "USER", "LOGNAME",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",

@@ -75,6 +75,84 @@ type Candidate struct {
 	Raw string
 }
 
+// ScopeKeywords are the distinctive words of firejail's secret and exec section headers.
+// They are the whole of what decides whether a headed profile's block is compared at all,
+// which is why StaleKeywords exists to notice when one stops matching upstream. Exported
+// beside DormantKeywords so the gates can name the set they are ratcheting.
+var ScopeKeywords = []string{
+	// secret / credential sections
+	"top secret", "cloud provider", "ssh-agent", "remote access", "pass utility",
+	"mail directories", "dm-crypt", "luks", "veracrypt", "truecrypt", "zulucrypt",
+	"intrusion detection", "history files",
+	// host-exec sections (a plant that runs on the host later)
+	"arbitrary command execution", "startup files", "autostart", "session manager",
+	"systemd", "openrc", "desktop entries", "terminal emulator", "ipc socket",
+	// Directories on $PATH and the portable-app tree: planting a binary in one is run
+	// by the next bare command name that resolves to it, which is the same
+	// plant-that-runs-on-the-host-later model the exec keywords above cover. These sat
+	// in the out-of-scope bucket while the classifier claimed to cover exec.
+	"$path", "portable apps",
+}
+
+// DormantKeywords are the ScopeKeywords that classify nothing in the current upstreams,
+// each with the reason it is expected to stay silent. They name a firejail section whose
+// entries are all outside ${HOME}/${RUNUSER}, so the parser produces no candidate for the
+// diff to attribute to them - which is not the same as the keyword having gone stale, and
+// StaleKeywords must not report them.
+//
+// Recorded rather than pruned: each names a class bento would want compared the moment
+// firejail adds a home-relative path to it, and deleting the keyword is how that arrival
+// would go unnoticed. A dormant keyword waking up is not a failure.
+var DormantKeywords = map[string]string{
+	"dm-crypt":            "the dm-crypt/LUKS block shields /dev/mapper and /etc paths only",
+	"luks":                "same block as dm-crypt",
+	"intrusion detection": "the IDS block shields /etc and /var config, no home entries",
+	"session manager":     "the session-manager block shields system paths only",
+	"openrc":              "the openrc block shields /etc/init.d and /run service state",
+	"terminal emulator":   "the terminal-escape block shields system paths only",
+}
+
+// StaleKeywords reports the ScopeKeywords that match no section in the parsed upstreams
+// and are not recorded dormant - the signal that an upstream retitled a section out from
+// under the classifier.
+//
+// It exists because inScopeSection fails open: a retitled section bins its paths in the
+// out-of-scope set, which the report only prints, so the parity gate stays green over a
+// comparison that silently stopped being made. Quieter is the dangerous direction for a
+// ratchet. SplitByScope's credentialName fallback catches part of that - a path matching a
+// credential token still lands in scope - so a retitle goes fully silent only for the
+// paths matching no token either; this closes the rest.
+//
+// It is deliberately not part of Audit: Audit runs against synthetic corpora in tests,
+// where almost no keyword matches and staleness means nothing. Only the gates that read a
+// real upstream call this.
+func StaleKeywords(sources []Source, home, runUser string) []string {
+	sections := map[string]bool{}
+	for _, s := range sources {
+		for _, c := range s.Parse(s.Content, home, runUser) {
+			sections[strings.ToLower(c.Section)] = true
+		}
+	}
+	var stale []string
+	for _, kw := range ScopeKeywords {
+		if _, dormant := DormantKeywords[kw]; dormant {
+			continue
+		}
+		matched := false
+		for s := range sections {
+			if strings.Contains(s, kw) && !negatedKeyword(s, kw) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			stale = append(stale, kw)
+		}
+	}
+	sort.Strings(stale)
+	return stale
+}
+
 // inScopeSection reports whether a section is within bento's host-exec / secret-read
 // threat model - as opposed to an upstream's broader privacy, other-app, and
 // system-hardening scope, which bento's empty-root default already covers and
@@ -90,20 +168,7 @@ func inScopeSection(section string) bool {
 	if section == appArmorSection {
 		return true
 	}
-	for _, kw := range []string{
-		// secret / credential sections
-		"top secret", "cloud provider", "ssh-agent", "remote access", "pass utility",
-		"mail directories", "dm-crypt", "luks", "veracrypt", "truecrypt", "zulucrypt",
-		"intrusion detection", "history files",
-		// host-exec sections (a plant that runs on the host later)
-		"arbitrary command execution", "startup files", "autostart", "session manager",
-		"systemd", "openrc", "desktop entries", "terminal emulator", "ipc socket",
-		// Directories on $PATH and the portable-app tree: planting a binary in one is run
-		// by the next bare command name that resolves to it, which is the same
-		// plant-that-runs-on-the-host-later model the exec keywords above cover. These sat
-		// in the out-of-scope bucket while the classifier claimed to cover exec.
-		"$path", "portable apps",
-	} {
+	for _, kw := range ScopeKeywords {
 		if strings.Contains(s, kw) && !negatedKeyword(s, kw) {
 			return true
 		}
@@ -556,7 +621,7 @@ func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfSc
 	for _, s := range sources {
 		candidates = append(candidates, s.Parse(s.Content, home, runUser)...)
 	}
-	rules := append(denylist.Home(home), denylist.Runtime()...)
+	rules := append(denylist.Home(home), denylist.Runtime(runUser, home)...)
 	inScope, outOfScope := SplitByScope(Diff(candidates, rules))
 	for _, g := range inScope {
 		if excluded(g.Path, home) {

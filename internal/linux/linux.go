@@ -372,6 +372,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 
 	sb := sandbox{
 		homes:           homes,
+		runtimeDir:      denylist.RuntimeDir(),
 		emptyFile:       empty,
 		entrypoint:      entrypoint,
 		interpreter:     interp,
