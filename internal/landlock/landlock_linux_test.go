@@ -1,6 +1,7 @@
 package landlock
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,3 +204,46 @@ func TestRestrictReachesAPreexistingThread(t *testing.T) {
 // Available() skips before the probe is ever built - so the disagreement never reaches a
 // running probe.
 const tsyncABI = 8
+
+// A pathname AF_UNIX socket outside the granted tree must stay connectable. Landlock
+// restricts a right that is in handled_access_fs whether or not any rule grants it, and
+// none of the rule helpers this package builds on grant ABI 9's resolve_unix - so a
+// handled set that reached V9 would deny every connect to dbus, X11, /dev/log and glibc's
+// NSS socket, with the run still reporting the layer applied. handledFS pins the handled
+// set at ABI 8 to keep that from happening; this observes the result from outside.
+//
+// Below ABI 9 the kernel cannot restrict the connect at all, so this passes trivially
+// there. It is not skipped on those kernels: the assertion is what the sandbox must do
+// on every kernel, and it starts biting by itself on the first host that has ABI 9.
+func TestUnixConnectOutsideTheGrantStaysAllowed(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	// The listener is bound here, in the parent, so its server is outside the Landlock
+	// domain the probe creates - the only case resolve_unix covers.
+	socket := filepath.Join(t.TempDir(), "s.sock")
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	out, err := exec.Command(bin, "unixconnect", t.TempDir(), socket).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); !strings.Contains(got, "unixconnect=OK") {
+		t.Errorf("connecting to a pathname unix socket outside the grant was denied: %q", got)
+	}
+}

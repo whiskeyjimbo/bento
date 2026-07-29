@@ -19,6 +19,27 @@ import (
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
+// handledFS is the Landlock configuration both Restrict tiers apply: the filesystem
+// access rights this package has actually reasoned about, which is every right through
+// ABI 8. It is deliberately NOT go-landlock's newest preset.
+//
+// Landlock only restricts a right that is in handled_access_fs, and a handled right is
+// denied everywhere no rule grants it. The rule helpers this package builds on
+// (RODirs/RWDirs/ROFiles/RWFiles) grant a fixed set that does not grow with the ABI, so
+// tracking the newest preset silently converts each new ABI's rights into a blanket
+// denial the moment a kernel supports them. ABI 9's resolve_unix is the live case: V9
+// handles it, no helper grants it, so on a 6.19+ kernel every connect(2) and sendmsg(2)
+// to a pathname AF_UNIX socket outside the domain - dbus, X11, /dev/log, glibc's NSS -
+// would be denied, while the run report still said the layer applied cleanly.
+//
+// Pinning the handled set here means a kernel newer than this build enforces what this
+// build intends and nothing more. Adopting a new right is then a deliberate change: add
+// it to this set AND grant it on the paths that need it.
+//
+// RestrictPaths keeps only handledAccessFS from a Config, so V8's network and scoped
+// sets never reach the ruleset.
+var handledFS = ll.V8
+
 // errUnavailableABI is returned by RestrictDegraded when the effective Landlock ABI is
 // below the usable floor, so the degraded tier refuses rather than run unconfined.
 var errUnavailableABI = errors.New("landlock: kernel ABI unavailable, refusing to run the degraded tier unconfined")
@@ -57,7 +78,7 @@ func Restrict(writable []string) error {
 func RestrictTo(read, write []string) error {
 	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
 	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
-	if err := ll.V9.BestEffort().RestrictPaths(rules...); err != nil {
+	if err := handledFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying ruleset: %w", err)
 	}
 	return nil
@@ -105,8 +126,9 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // right above and is kept explicit. Missing paths are skipped, as in RestrictTo.
 //
 // It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
-// ABI. That downgrade has a sharp edge: V9 declares it HANDLES the full access-right
-// set, and BestEffort strips handled_access_fs down to the kernel's ABI - and a right
+// ABI. That downgrade has a sharp edge: handledFS declares it HANDLES every access
+// right through ABI 8, and BestEffort strips handled_access_fs down to the kernel's
+// ABI on anything older - and a right
 // absent from handled_access_fs is not restricted at all. So on a kernel below ABI 3
 // (5.13-6.1) truncate is unhandled and a read-granted file can still be truncated
 // (zeroed), and below ABI 5 (pre-6.10) the ioctl_dev right is unhandled. The read/
@@ -137,7 +159,7 @@ func RestrictDegraded(read, write, exec []string) error {
 	if e := existing(exec); len(e) > 0 {
 		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
 	}
-	if err := ll.V9.BestEffort().RestrictPaths(rules...); err != nil {
+	if err := handledFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying degraded ruleset: %w", err)
 	}
 	return nil

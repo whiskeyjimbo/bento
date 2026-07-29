@@ -14,6 +14,13 @@
 // Prints "otherthread_inside=... otherthread_outside=...", read from a thread that
 // already existed when the ruleset was applied.
 //
+// Usage: probe unixconnect <allowed-dir> <socket-path>
+// Confines itself to allowed-dir, then connects to a pathname AF_UNIX socket that
+// lives outside it and prints "unixconnect=OK|DENIED". Landlock ABI 9 can restrict
+// that connect, and it is restricted whenever the ruleset HANDLES the right, whether
+// or not any rule grants it - so this observes what the handled set is, from outside
+// the package.
+//
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
 // whose /sys/kernel/security has been masked, reproducing a container.
@@ -21,6 +28,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"syscall"
@@ -31,6 +39,10 @@ import (
 func main() {
 	if len(os.Args) == 5 && os.Args[1] == "otherthread" {
 		otherThread(os.Args[2], os.Args[3], os.Args[4])
+		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == "unixconnect" {
+		unixConnect(os.Args[2], os.Args[3])
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "available" {
@@ -58,6 +70,23 @@ func readable(path string) string {
 		return "DENIED"
 	}
 	return "OK"
+}
+
+// unixConnect confines itself away from socket, then dials it. The socket's server was
+// bound before this process existed, so it is outside the Landlock domain - which is
+// exactly the case ABI 9's resolve_unix right covers.
+func unixConnect(allowed, socket string) {
+	if err := landlock.RestrictTo([]string{allowed}, []string{allowed}); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	c, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Println("unixconnect=DENIED")
+		return
+	}
+	c.Close()
+	fmt.Println("unixconnect=OK")
 }
 
 // otherThread applies the ruleset while a second OS thread is already parked, then
