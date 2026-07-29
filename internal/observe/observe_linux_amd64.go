@@ -288,9 +288,14 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			return res, nil
 		case ws.Exited() || ws.Signaled():
 			// A subprocess ended and is reaped; drop it so the guard does not wait on a
-			// freed pid, and nothing to resume.
+			// freed pid, and nothing to resume. A thread killed between the entry and exit
+			// stop of an existence probe leaves that pathname held with no stop left to
+			// resolve it, and no ptrace request fails to say so - deadThreadLostNothing
+			// only speaks for a thread that dies AT a stop. A non-leader execve makes this
+			// routine: de_thread kills every sibling and each one arrives here.
 			delete(tracees, wpid)
 			delete(lastOp, wpid)
+			res.Dropped += releaseHeldOf(held, wpid)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones, unless it came through a

@@ -37,7 +37,8 @@ import (
 //	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
 //	execve     spawns via execve(2), the path the exec-block filter denies.
 //	execveat   spawns via execveat(2), the path it permits by construction.
-//	execthread execve's from a non-leader thread, which retires that thread's tid.
+//	execthread execve's from a non-leader thread, which retires that thread's tid;
+//	           N sibling threads probe a path in a loop until de_thread kills them.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -160,6 +161,27 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// tid is checked rather than assumed. A goroutine that finds itself on the leader
 		// hands off and parks WITHOUT unlocking, so that thread stays occupied and the next
 		// attempt is given another; there is one leader, so it hands off at most once.
+		// n sibling threads probing a real path in a tight loop, so that when de_thread
+		// kills them some are mid-probe: their entry stop consumed and its pathname
+		// resolved, their exit stop never coming.
+		var probing sync.WaitGroup
+		probing.Add(n)
+		for range n {
+			go func() {
+				runtime.LockOSThread()
+				path, err := syscall.BytePtrFromString(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), probeName))
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+					os.Exit(9)
+				}
+				probing.Done()
+				for {
+					_, _, _ = syscall.Syscall(unix.SYS_ACCESS, uintptr(unsafe.Pointer(path)), unix.F_OK, 0)
+				}
+			}()
+		}
+		probing.Wait()
+
 		var execFromNonLeader func()
 		execFromNonLeader = func() {
 			runtime.LockOSThread()
@@ -212,6 +234,9 @@ func TestObserveTraceeHelper(t *testing.T) {
 // badHowName is the pathname the badhow mode passes to openat2. Distinctive, so its
 // presence in a Result can only have come from that one call.
 const badHowName = "openat2-how-unreadable"
+
+// probeName is the path execthread's sibling threads probe while they wait to be killed.
+const probeName = "sibling-probe-target"
 
 // The two names the plantpath mode swaps between, equal in length so a write lands
 // wholly on one or the other and cannot splice a third path out of the two.
@@ -589,6 +614,32 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 		// dangerous: the pid is free for the host to hand to something unrelated.
 		t.Errorf("pid %d was left in the tracee set for reapTracees to SIGKILL; kill(pid, 0) = %v",
 			pid, syscall.Kill(pid, 0))
+	}
+}
+
+// A thread killed between the entry and exit stop of an existence probe takes that
+// pathname with it: the entry stop resolved it, and whether the call succeeded - the thing
+// that decides if the path needs a grant - can no longer be read. No ptrace request fails
+// to announce that, because the thread has no stop left to fail at; the only trace of it is
+// the wait status, which the loop's exit branch handles.
+//
+// A non-leader execve makes the case routine rather than exotic: de_thread kills every
+// sibling at once, so probers spinning at the moment of the exec supply a supply of threads
+// that die mid-syscall. Which of them is caught between the two stops is the scheduler's
+// business, so the assertion is that at least one loss reaches Dropped, not an exact count.
+func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
+	const probers = 16
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := traceHelper(t, "execthread", dir, probers)
+	if !res.Execed {
+		t.Fatal("the tracee did not exec, so no sibling was killed and nothing was lost mid-probe")
+	}
+	if res.Dropped == 0 {
+		t.Errorf("Dropped = 0 after %d threads were killed probing %s; a pathname held by a thread that dies before its exit stop is an access the manifest is short by, and nothing else reports it",
+			probers, probeName)
 	}
 }
 
