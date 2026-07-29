@@ -266,13 +266,13 @@ func TestWorkspaceShieldsEditorConfigDirs(t *testing.T) {
 // to that service no matter how the path is mounted - a read-only bind does not
 // stop connect() - so /run must be shielded whole, not left to a read grant.
 func TestRuntimeShieldsHostSockets(t *testing.T) {
-	for _, r := range Runtime() {
+	for _, r := range Runtime("/run/user/1000") {
 		if r.Deny != DenyAll || !r.Dir {
 			t.Errorf("%s: got Deny=%v Dir=%v, want DenyAll directory", r.Path, r.Deny, r.Dir)
 		}
 	}
-	byPath := make(map[string]bool, len(Runtime()))
-	for _, r := range Runtime() {
+	byPath := make(map[string]bool, len(Runtime("/run/user/1000")))
+	for _, r := range Runtime("/run/user/1000") {
 		byPath[r.Path] = true
 	}
 	// /var/run is the pre-usrmerge spelling: a symlink to /run on most hosts, a
@@ -1085,5 +1085,64 @@ func TestHomeAnchorsDeduplicates(t *testing.T) {
 	}
 	if want := []string{filepath.Clean(u.HomeDir)}; !slices.Equal(homes, want) {
 		t.Errorf("HomeAnchors() = %v, want %v", homes, want)
+	}
+}
+
+// A file relocation env var naming a path inside ONE anchor's credential store must not
+// produce an interior file rule on another anchor's pass. Home runs once per anchor, and
+// keyed on the current anchor alone the sibling pass emits a DenyAll on the file itself -
+// a rule no `read: ~/.kube` opt-in matches, so the user who opts in gets a zero-byte
+// kubeconfig instead of a refusal. The store is the store under every anchor.
+func TestFileRelocationInsideAnySiblingAnchorStoreIsNotShieldedByFile(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/home/a/.kube/config")
+	for _, r := range Home("/home/b", "/home/a", "/home/b") {
+		if r.Path == "/home/a/.kube/config" {
+			t.Errorf("the sibling anchor's pass emitted an interior file rule on %s; the anchor's own directory shield covers it, and this rule survives a read grant on the directory", r.Path)
+		}
+	}
+	// The directory shield the drop relies on has to actually be there.
+	var covered bool
+	for _, r := range Home("/home/a", "/home/a", "/home/b") {
+		if r.Path == "/home/a/.kube" && r.Deny == DenyAll && r.Dir {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Error("no DenyAll directory shield on /home/a/.kube; dropping the sibling's file rule would lose coverage")
+	}
+	// A target outside every anchor's store still gets its own rule - the drop is
+	// containment, not a blanket exemption for relocated files.
+	t.Setenv("KUBECONFIG", "/srv/kubeconfig")
+	if !slices.ContainsFunc(Home("/home/b", "/home/a", "/home/b"), func(r Rule) bool {
+		return r.Path == "/srv/kubeconfig" && r.Deny == DenyAll
+	}) {
+		t.Error("a relocation outside every anchor's store must still be shielded")
+	}
+}
+
+// XDG_RUNTIME_DIR holds what /run holds - the podman auth.json, the gpg-agent socket, the
+// dbus and wayland sockets - and a host that points it outside /run keeps them there,
+// where the /run shield names nothing. Two call sites skip work believing Runtime covers
+// this; the shield has to follow the variable for that belief to hold.
+func TestRuntimeFollowsRelocatedRuntimeDir(t *testing.T) {
+	rules := Runtime("/tmp/runtime-u", "/home/u")
+	if !slices.ContainsFunc(rules, func(r Rule) bool {
+		return r.Path == "/tmp/runtime-u" && r.Deny == DenyAll && r.Dir
+	}) {
+		t.Errorf("Runtime(/tmp/runtime-u) = %v, want a DenyAll directory shield on the relocated runtime dir", rules)
+	}
+
+	// The ordinary host: /run/user/<uid> is already inside the /run shield, so following
+	// it would only add a redundant rule for every backend to bind and reconcile.
+	if got := len(Runtime("/run/user/1000", "/home/u")); got != 2 {
+		t.Errorf("Runtime(/run/user/1000) emitted %d rules, want the 2 base rules and no redundant interior shield", got)
+	}
+
+	// A runtime dir that is the home, an ancestor of it, or the root cannot be shielded:
+	// the rule would hide the whole grant surface and subsume every other rule.
+	for _, dir := range []string{"/", "/home", "/home/u", ""} {
+		if got := len(Runtime(dir, "/home/u")); got != 2 {
+			t.Errorf("Runtime(%q) emitted %d rules, want only the 2 base rules - it cannot shield the grant surface itself", dir, got)
+		}
 	}
 }

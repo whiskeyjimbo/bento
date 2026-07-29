@@ -102,6 +102,46 @@ func PasswdHome() string {
 	return filepath.Clean(u.HomeDir)
 }
 
+// RuntimeDir returns the host's XDG runtime directory, or "" when the environment
+// names none usable. It is resolved here, beside the rules it feeds, for the same
+// reason HomeAnchors is: Runtime takes the resolved value so every consumer shields the
+// same directory, and so the completeness audit's rule set does not depend on the
+// environment of whoever runs it.
+//
+// A relative value is dropped: the shield is an absolute bind, so it cannot cover a path
+// it cannot name, and shielding a relative path would silently bind at the wrong place.
+func RuntimeDir() string {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	return filepath.Clean(dir)
+}
+
+// Shieldable reports whether a relocation target can carry a deny rule at all, given the
+// run's home anchors.
+//
+// A target that is the root, one of the homes, or an ancestor of one cannot be shielded:
+// the rule would hide or ro-bind the entire grant surface, so nothing the policy granted
+// stays reachable and every other rule is subsumed by this one. The consumers already
+// drop a rule resolving to "/" for the same reason (see the Linux backend's denyArgs),
+// and the ZDOTDIR relocation declines the home itself; this applies the rule to the
+// credential relocations too, where a stray GNUPGHOME=$HOME would otherwise replace the
+// whole deny-list with one DenyAll on the home - which also silently nullifies the
+// completeness audit, since it leaves no per-store rule left to compare against
+// firejail's.
+func Shieldable(p string, homes []string) bool {
+	if p == "/" {
+		return false
+	}
+	for _, h := range homes {
+		if p == h || strings.HasPrefix(h, p+string(filepath.Separator)) {
+			return false
+		}
+	}
+	return true
+}
+
 // Home returns the mandatory rules for a user's home directory.
 //
 // Credential stores are shielded as whole directories on purpose. Naming
@@ -487,26 +527,8 @@ func Home(home string, alsoHomes ...string) []Rule {
 		emit(d, DenyWrite, true)
 	}
 
-	// A relocation target that is the root, the home itself, or an ancestor of it
-	// cannot be shielded: the rule would hide or ro-bind the entire grant surface, so
-	// nothing the policy granted stays reachable and every other rule is subsumed by
-	// this one. The consumers already drop a rule resolving to "/" for the same reason
-	// (see the Linux backend's denyArgs), and the ZDOTDIR relocation below already
-	// declines the home itself; this applies the rule to the credential relocations
-	// too, where a stray GNUPGHOME=$HOME would otherwise replace the whole deny-list
-	// with one DenyAll on the home - which also silently nullifies the completeness
-	// audit, since it leaves no per-store rule left to compare against firejail's.
-	shieldable := func(p string) bool {
-		if p == "/" {
-			return false
-		}
-		for _, h := range append([]string{home}, alsoHomes...) {
-			if p == h || strings.HasPrefix(h, p+string(filepath.Separator)) {
-				return false
-			}
-		}
-		return true
-	}
+	anchors := append([]string{home}, alsoHomes...)
+	shieldable := func(p string) bool { return Shieldable(p, anchors) }
 
 	// A tool-specific env var can move a whole credential directory off its default
 	// path, the same way an XDG base does. When one is set to an absolute location that
@@ -542,19 +564,35 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// config) is dropped too: the whole-directory shield already covers it, and emitting an
 	// interior file rule would blank the file out from under a `read: ~/.kube` opt-in that
 	// matches only the directory.
+	//
+	// The store is tested under EVERY anchor, not just the one this call is for. Home runs
+	// once per anchor, so a KUBECONFIG under anchor A's ~/.kube is recognized as covered on
+	// A's pass but - keyed on the current anchor alone - would land as an interior file rule
+	// on B's, which no `read: ~/.kube` opt-in matches. That rule survives the opt-in and the
+	// user gets a zero-byte kubeconfig: a silent wrong answer rather than a refusal. The
+	// sibling anchor's own pass emits the directory shield that covers the path, so dropping
+	// it here loses no coverage.
 	fileEnvs := []struct{ env, store string }{
 		{"KUBECONFIG", ".kube"},
 		{"AWS_SHARED_CREDENTIALS_FILE", ".aws"},
 		{"AWS_CONFIG_FILE", ".aws"},
 	}
+	underStore := func(p, store string) bool {
+		for _, h := range anchors {
+			s := filepath.Join(h, store)
+			if p == s || strings.HasPrefix(p, s+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, fe := range fileEnvs {
-		store := join(fe.store)
 		for _, p := range filepath.SplitList(os.Getenv(fe.env)) {
 			if p == "" || !filepath.IsAbs(p) {
 				continue
 			}
 			p = filepath.Clean(p)
-			if p == store || strings.HasPrefix(p, store+string(filepath.Separator)) || !shieldable(p) {
+			if underStore(p, fe.store) || !shieldable(p) {
 				continue
 			}
 			rules = append(rules, Rule{Path: p, Deny: DenyAll})
@@ -707,7 +745,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 	return rules
 }
 
-// Runtime returns the mandatory rules for the host's runtime state directory.
+// Runtime returns the mandatory rules for the host's runtime state directories.
+//
+// runtimeDir is the host's resolved XDG runtime directory (see RuntimeDir), and homes the
+// run's anchors. On an ordinary host it is /run/user/<uid>, already inside the /run shield
+// below, and no extra rule comes out. It is a parameter rather than an environment read so
+// that the completeness audit - which builds this same rule set - does not vary with the
+// environment of whoever runs it, the same reason Home takes a resolved anchor.
 //
 // /run holds the control sockets of the host's services - the docker/podman
 // daemon, the session bus, gpg-agent, the display server - and a unix socket is a
@@ -728,13 +772,27 @@ func Home(home string, alsoHomes ...string) []Rule {
 // /var/lib/mysql, or one a host process creates during the run. Sockets under $HOME
 // are covered where they sit in a shielded credential store (~/.gnupg, ~/.docker,
 // ~/.git-credential-cache); elsewhere under a granted home directory they are not.
-func Runtime() []Rule {
-	return []Rule{
+func Runtime(runtimeDir string, homes ...string) []Rule {
+	rules := []Rule{
 		{Path: "/run", Deny: DenyAll, Dir: true},
 		// A symlink to /run on most hosts (resolved before it is shielded, so it
 		// costs nothing there), a real directory on those that predate the merge.
 		{Path: "/var/run", Deny: DenyAll, Dir: true},
 	}
+	// A host that points XDG_RUNTIME_DIR somewhere other than /run (a container, a
+	// session manager that parks it under /tmp) keeps the same contents there: the
+	// podman/skopeo auth.json, the gpg-agent socket, the dbus and wayland sockets. The
+	// /run shield names none of them at that location, so `read: /tmp` - or `read: /` -
+	// would hand them out. Follow the shield to wherever the variable points.
+	if runtimeDir == "" || under(runtimeDir, "/run") || under(runtimeDir, "/var/run") || !Shieldable(runtimeDir, homes) {
+		return rules
+	}
+	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true})
+}
+
+// under reports whether path is at or inside dir.
+func under(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
 // Workspace returns the rules that apply inside a directory a policy grants
@@ -820,7 +878,7 @@ var credentialAnchorDirs = []string{
 	".kube",          // cluster credentials
 	".docker",        // registry auth
 	// auth.json here is podman/skopeo/buildah's documented fallback registry auth store
-	// (the XDG_RUNTIME_DIR primary is covered by Runtime()) - the same content .docker
+	// (the XDG_RUNTIME_DIR primary is covered by Runtime) - the same content .docker
 	// holds for the other toolchain. The tree also carries containers.conf's
 	// helper_binaries_dir/hooks_dir and registries.conf mirrors, which redirect a later
 	// host invocation to attacker binaries or registries; hiding it covers both.
@@ -1092,7 +1150,7 @@ var bulkStoreDirs = []string{
 	".Private", // ecryptfs private directory (encrypted underlay)
 	"Private",  // ecryptfs DECRYPTED mount point at ~/Private: holds cleartext when mounted
 
-	// Full-node wallet clients: the spending keys anchor via walletKeyDirs, but the data
+	// Full-node wallet clients: the spending keys anchor via walletKeyPaths, but the data
 	// directory as a whole is chain data.
 	".bitcoin",
 	".config/Bitcoin",
