@@ -272,6 +272,15 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// have already exited and been dropped, so this reaps an empty remainder.
 			succeeded = true
 			delete(tracees, root)
+			// Every pathname still held is an existence probe whose entry stop resolved a
+			// pathname and whose exit stop can never arrive: the loop returns here and the
+			// descendants that would have delivered it are SIGKILLed just below. Reachable
+			// two ways - a descendant the script backgrounded, still mid-probe, and root
+			// itself killed mid-syscall, the crash/OOM/timeout shape Signaled reports. No
+			// per-pid sweep is needed because at this point they are all lost, and no
+			// phantom is counted on a clean run: each descendant's held is swept at its own
+			// exit, so a script whose children have finished leaves this empty.
+			res.Dropped += len(held)
 			reapTracees(tracees)
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {

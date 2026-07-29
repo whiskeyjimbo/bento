@@ -40,6 +40,8 @@ import (
 //	execveat   spawns via execveat(2), the path it permits by construction.
 //	execthread execve's from a non-leader thread, which retires that thread's tid;
 //	           N sibling threads probe a path in a loop until de_thread kills them.
+//	outliveroot backgrounds a probeforever child and exits while it is still probing.
+//	probeforever N threads probe a path in a loop and never stop; started by outliveroot.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -201,6 +203,58 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// The exec replaces the image, so the sleep never finishes; it is a sleep rather
 		// than a bare block so the runtime's deadlock detector has no claim on it.
 		time.Sleep(time.Minute)
+	case "outliveroot":
+		// A backgrounded descendant that is still probing when root exits. Root starts it,
+		// waits on the pipe until every prober is in its loop - otherwise root can exit
+		// before the first entry stop and the tracer has nothing held to lose - then exits
+		// clean and leaves the whole process behind.
+		ready, signal, err := os.Pipe()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PIPE_ERR", err)
+			os.Exit(12)
+		}
+		child := exec.Command(os.Args[0], "-test.run=^TestObserveTraceeHelper$")
+		child.Env = append(os.Environ(), "BENTO_OBSERVE_TRACEE=probeforever")
+		child.ExtraFiles = []*os.File{signal}
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_START_ERR", err)
+			os.Exit(12)
+		}
+		signal.Close()
+		if _, err := ready.Read(make([]byte, 1)); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_READY_ERR", err)
+			os.Exit(12)
+		}
+	case "probeforever":
+		// n threads probing a real path in a tight loop and never stopping, so that
+		// whenever the trace ends some of them are mid-probe: the entry stop consumed and
+		// its pathname resolved, the exit stop not yet dequeued. Reaped by the observer's
+		// own cleanup, which SIGKILLs what is left attached.
+		var probing sync.WaitGroup
+		probing.Add(n)
+		for range n {
+			go func() {
+				runtime.LockOSThread()
+				path, err := syscall.BytePtrFromString(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), probeName))
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+					os.Exit(9)
+				}
+				probing.Done()
+				for {
+					_, _, _ = syscall.Syscall(unix.SYS_ACCESS, uintptr(unsafe.Pointer(path)), unix.F_OK, 0)
+				}
+			}()
+		}
+		probing.Wait()
+		// fd 3 is the pipe the parent is blocked on; the write is what releases it.
+		if _, err := os.NewFile(3, "ready").Write([]byte{'r'}); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_READY_WRITE_ERR", err)
+			os.Exit(12)
+		}
+		// A sleep rather than a bare block, so the runtime's deadlock detector has no
+		// claim on it. The observer's cleanup arrives long before it elapses.
+		time.Sleep(time.Hour)
 	case "execveat":
 		// Spawns via execveat(2) rather than execve(2). The image is replaced, so
 		// nothing below this runs.
@@ -683,6 +737,26 @@ func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 	}
 	if res.Dropped == 0 {
 		t.Errorf("Dropped = 0 after %d threads were killed probing %s; a pathname held by a thread that dies before its exit stop is an access the manifest is short by, and nothing else reports it",
+			probers, probeName)
+	}
+}
+
+// Root's exit ends the trace wherever the descendants happen to be, and a backgrounded
+// process still probing is the ordinary way that leaves a pathname resolved with no exit
+// stop coming: the loop returns and SIGKILLs what is left, so the stop that would have
+// applied the success filter never arrives. Nothing else in this fixture can lose an
+// observation - the probed path exists and is read cleanly at every entry stop, and no
+// tracee exits during the trace - so a non-zero count here comes from the root-exit sweep
+// and from nothing else.
+func TestTraceCountsProbesHeldWhenRootExits(t *testing.T) {
+	const probers = 16
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := traceHelper(t, "outliveroot", dir, probers)
+	if res.Dropped == 0 {
+		t.Errorf("Dropped = 0 after root exited while %d backgrounded threads were probing %s; a pathname the entry stop resolved for a tracee that is about to be SIGKILLed is an access the manifest is short by",
 			probers, probeName)
 	}
 }
