@@ -128,8 +128,8 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
 // ABI. That downgrade has a sharp edge: handledFS declares it HANDLES every access
 // right through ABI 8, and BestEffort strips handled_access_fs down to the kernel's
-// ABI on anything older - and a right
-// absent from handled_access_fs is not restricted at all. So on a kernel below ABI 3
+// ABI on anything older - and a right absent from handled_access_fs is not restricted
+// at all. So on a kernel below ABI 3
 // (5.13-6.1) truncate is unhandled and a read-granted file can still be truncated
 // (zeroed), and below ABI 5 (pre-6.10) the ioctl_dev right is unhandled. The read/
 // write/execute access this tier grants all exists at the v1 floor, so path access is
