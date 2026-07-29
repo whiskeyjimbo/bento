@@ -295,8 +295,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
 	socket := ""
+	livenessFD := 0
 	if sb.proxySocket != "" {
 		socket = sandboxProxySocket
+		livenessFD = bridgeLivenessFD
 	}
 	observeFD := 0
 	if sb.observe {
@@ -316,6 +318,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	block, strictBlock := execBlockFlags(execMode, seccompSupported())
 	cfg := launcher.Config{
 		Socket:            socket,
+		BridgeLivenessFD:  livenessFD,
 		Block:             block,
 		StrictBlock:       strictBlock,
 		Writable:          append(append([]string{}, sandboxWritableMounts...), writes...),

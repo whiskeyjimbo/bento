@@ -18,6 +18,13 @@ import (
 // never coexist: profiling produces an observation, not an enforcement report.
 const appliedReportFD = 3
 
+// bridgeLivenessFD is the descriptor carrying the in-sandbox bridge's report of its
+// own death, as the child's second extra file. It is a pipe rather than a second
+// writer on the applied report: that file has no O_APPEND and already carries the
+// target-unreached record past the marker, so two writers would collide. Only a run
+// with egress wires one; without a proxy socket there is no bridge.
+const bridgeLivenessFD = 4
+
 // applied is what the in-sandbox stage reported installing. Absent (complete=false)
 // is not the zero value of a clean run: it means the stage never got far enough to
 // report, so nothing it was supposed to apply can be claimed.

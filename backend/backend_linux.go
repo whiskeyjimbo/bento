@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
@@ -83,10 +84,14 @@ func DispatchReexec() {
 		}
 		os.Exit(code)
 	case launcher.SentinelBridge:
-		if len(os.Args) != 3 {
-			reexecFail(fmt.Errorf("%s takes exactly one socket argument", launcher.SentinelBridge))
+		if len(os.Args) != 4 {
+			reexecFail(fmt.Errorf("%s takes exactly a socket and a liveness descriptor", launcher.SentinelBridge))
 		}
-		if err := launcher.BridgeMain(os.Args[2]); err != nil {
+		livenessFD, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			reexecFail(fmt.Errorf("%s: liveness descriptor %q is not a number", launcher.SentinelBridge, os.Args[3]))
+		}
+		if err := launcher.BridgeMain(os.Args[2], livenessFD); err != nil {
 			reexecFail(fmt.Errorf("bridge: %w", err))
 		}
 		os.Exit(0)

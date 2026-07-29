@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +37,13 @@ type Config struct {
 	// Socket is the bind-mounted unix socket reaching the host-side egress proxy.
 	// Empty means the policy allows no egress, so no bridge is set up.
 	Socket string
+	// BridgeLivenessFD, when > 0, is an inherited descriptor handed on to the bridge
+	// as the write end of its liveness pipe. The bridge writes one byte if it stops
+	// serving, which is the only way that fact can reach the host: on the exec-block
+	// path this stage is replaced by the target, so nothing here outlives the bridge
+	// to report it. Zero means the caller wants no liveness channel. Only meaningful
+	// with Socket set.
+	BridgeLivenessFD int
 	// Block installs the exec-block seccomp filter (policy exec is none or
 	// none-strict). When false the target may spawn subprocesses freely.
 	Block bool
@@ -154,7 +162,7 @@ func Run(cfg Config) (int, error) {
 
 	env := os.Environ()
 	if cfg.Socket != "" {
-		if err := startBridge(cfg.Socket); err != nil {
+		if err := startBridge(cfg.Socket, cfg.BridgeLivenessFD); err != nil {
 			return 0, err
 		}
 		// Drop any inherited proxy variables first: glibc getenv returns the first
@@ -505,7 +513,10 @@ func installExecFilter(strict bool) (string, error) {
 // filter is in play the launcher execveats the target and is replaced, which
 // would kill an in-process bridge. As a child it survives until the pid namespace
 // is torn down at the end of the run.
-func startBridge(socket string) error {
+// livenessFD, when > 0, is passed on to the bridge as its liveness write end; the
+// launcher keeps no copy, so the bridge is its sole writer just as with the readiness
+// pipe.
+func startBridge(socket string, livenessFD int) error {
 	// A readiness pipe: the bridge writes one byte after it is non-dumpable and
 	// listening, and this call blocks until then, so the launcher only execveat's the
 	// target once the bridge can no longer be ptrace-hijacked (its dumpable startup
@@ -519,9 +530,22 @@ func startBridge(socket string) error {
 		return fmt.Errorf("launcher: bridge readiness pipe: %w", err)
 	}
 	defer r.Close()
+	// The bridge is told which of its descriptors carries liveness rather than assuming
+	// one: with no host-side pipe (an embedder driving this stage itself) there is no
+	// second extra file and fd bridgeLivenessFD names something else entirely.
+	bridgeLiveness := 0
 	cmd := exec.Command("/proc/self/exe", SentinelBridge, socket)
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{w}
+	if livenessFD > 0 {
+		// Closed once the bridge has it, so the bridge is the pipe's sole writer - the
+		// same ownership the readiness pipe keeps in the other direction.
+		liveness := os.NewFile(uintptr(livenessFD), "bridge-liveness")
+		defer liveness.Close()
+		cmd.ExtraFiles = append(cmd.ExtraFiles, liveness)
+		bridgeLiveness = bridgeLivenessFD
+	}
+	cmd.Args = append(cmd.Args, strconv.Itoa(bridgeLiveness))
 	if err := cmd.Start(); err != nil {
 		w.Close()
 		return fmt.Errorf("launcher: starting egress bridge: %w", err)
@@ -638,7 +662,13 @@ func waitExitCode(ws syscall.WaitStatus) int {
 // BridgeMain is the bridge child (re-exec sentinel SentinelBridge): it forwards
 // every loopback connection on proxyAddr to the host-side proxy socket until the
 // process is torn down with the sandbox.
-func BridgeMain(socket string) error {
+//
+// livenessFD, when > 0, is the write end of the host's liveness pipe: one byte is
+// written there if the bridge stops serving, and nothing at all on an ordinary
+// teardown. Death is deliberately NOT signalled by the pipe closing - the pid
+// namespace collapses at every normal exit, so EOF arrives on every run and could not
+// be told apart from a bridge that failed.
+func BridgeMain(socket string, livenessFD int) error {
 	// The bridge is a separate process the launcher forks before it execveat's the
 	// target; after that transition the bridge is a child of the target and shares
 	// its PID namespace, unconfined by the exec-block filter and the Landlock backstop
@@ -667,6 +697,7 @@ func BridgeMain(socket string) error {
 		c, err := l.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
+				noteBridgeDeath(livenessFD)
 				return err
 			}
 			// Anything short of a closed listener is transient - EMFILE under a burst,
@@ -688,8 +719,28 @@ func BridgeMain(socket string) error {
 var acceptRetryDelay = 100 * time.Millisecond
 
 // bridgeReadyFD is the descriptor the launcher passes the bridge (via ExtraFiles, so
-// it lands at fd 3) as the write end of the readiness pipe.
-const bridgeReadyFD = 3
+// it lands at fd 3) as the write end of the readiness pipe. bridgeLivenessFD is the
+// second extra file, the write end of the host's liveness pipe, present only when the
+// host wired one - which is why the bridge is told the number rather than assuming it.
+const (
+	bridgeReadyFD    = 3
+	bridgeLivenessFD = 4
+)
+
+// noteBridgeDeath tells the host the bridge stopped serving. Nothing is left to
+// recover with, and nothing downstream reads the outcome - the bridge is returning
+// either way - so a failed write is reported to the operator on the one channel this
+// process still has and then dropped.
+func noteBridgeDeath(livenessFD int) {
+	if livenessFD <= 0 {
+		return
+	}
+	f := os.NewFile(uintptr(livenessFD), "bridge-liveness")
+	defer f.Close()
+	if _, err := f.Write([]byte{1}); err != nil {
+		fmt.Fprintf(os.Stderr, "[bento] warning: the in-sandbox egress bridge could not report its own death to the host (%v)\n", err)
+	}
+}
 
 // bridgeConn forwards one loopback connection to the host-side proxy socket in
 // both directions, half-closing each side when its source is done so a

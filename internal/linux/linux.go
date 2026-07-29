@@ -159,11 +159,34 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// target never inherits the channel.
 	cmd.ExtraFiles = []*os.File{appliedReport}
 
-	switch err := cmd.Run(); {
+	// A run with egress also carries the bridge's liveness pipe as fd bridgeLivenessFD.
+	// The in-sandbox bridge is the sole writer once the host drops its own end below;
+	// see noteDeadBridge for why a written byte, not the pipe closing, is the signal.
+	var bridgeLiveness, bridgeLivenessW *os.File
+	if sb.proxySocket != "" {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return enforce.Result{}, fmt.Errorf("linux: bridge liveness pipe: %w", err)
+		}
+		defer r.Close()
+		bridgeLiveness, bridgeLivenessW = r, w
+		cmd.ExtraFiles = append(cmd.ExtraFiles, w)
+	}
+
+	runErr := cmd.Run()
+	// Dropping the host's write end before reading: while the host holds one the read
+	// below would block past the sandbox's exit waiting for an EOF only it can send.
+	if bridgeLivenessW != nil {
+		bridgeLivenessW.Close()
+	}
+	bridgeDied := bridgeReportedDeath(bridgeLiveness)
+
+	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
+		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
@@ -171,6 +194,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		serveErr := stopProxy()
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, ee.ExitCode())
 		noteDeadListener(&report, serveErr)
+		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
@@ -188,6 +212,39 @@ func noteDeadListener(r *enforce.Report, err error) {
 	}
 	r.Set(enforce.LayerNetwork, enforce.Degraded,
 		fmt.Sprintf("the egress proxy stopped accepting mid-run (%v); declared egress was refused for the remainder", err))
+}
+
+// bridgeReportedDeath reads the bridge's liveness pipe, which the host has already
+// stopped writing to. One byte means the bridge wrote that it stopped serving; EOF
+// with nothing read is an ordinary run, since the pid namespace collapses at every
+// exit and would otherwise make EOF look like a failure on every run. A read error is
+// treated as no report: the pipe is the host's own, and the alternative is claiming a
+// degraded network layer on the strength of a broken channel.
+func bridgeReportedDeath(r *os.File) bool {
+	if r == nil {
+		return false
+	}
+	var b [1]byte
+	n, _ := r.Read(b[:])
+	return n > 0
+}
+
+// noteDeadBridge records an in-sandbox egress bridge that stopped serving mid-run.
+// Nothing else can report this: on the exec-block path the launcher has been replaced
+// by the target, so the bridge outlives every process that could write the applied
+// report, and the host-side proxy listener stays healthy (noteDeadListener covers that
+// one, not this one). Declared egress simply stopped, and a report claiming
+// LayerNetwork Enforced would hide it. It runs after reconcile so the in-sandbox
+// report cannot overwrite it.
+//
+// A bridge killed outright leaves no byte and is not covered; only a bridge that
+// reached its own fatal path reports itself.
+func noteDeadBridge(r *enforce.Report, died bool) {
+	if !died {
+		return
+	}
+	r.Set(enforce.LayerNetwork, enforce.Degraded,
+		"the in-sandbox egress bridge stopped serving mid-run; declared egress was unreachable for the remainder")
 }
 
 func isExitError(err error) bool {

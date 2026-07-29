@@ -30,6 +30,9 @@ func EncodeLaunch(cfg Config) []string {
 	if cfg.Socket != "" {
 		args = append(args, "--socket", cfg.Socket)
 	}
+	if cfg.BridgeLivenessFD > 0 {
+		args = append(args, "--bridge-liveness-fd", strconv.Itoa(cfg.BridgeLivenessFD))
+	}
 	if cfg.ObserveFD > 0 {
 		args = append(args, "--observe-fd", strconv.Itoa(cfg.ObserveFD))
 	}
@@ -57,15 +60,17 @@ func DecodeLaunch(args []string) (Config, error) {
 	fs := flag.NewFlagSet(SentinelLaunch, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		socket    string
-		execMode  string
-		observeFD int
-		appliedFD int
-		writable  stringList
-		netStdio  bool
+		socket     string
+		execMode   string
+		observeFD  int
+		appliedFD  int
+		livenessFD int
+		writable   stringList
+		netStdio   bool
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
 	fs.StringVar(&socket, "socket", "", "")
+	fs.IntVar(&livenessFD, "bridge-liveness-fd", 0, "")
 	fs.IntVar(&observeFD, "observe-fd", 0, "")
 	fs.IntVar(&appliedFD, "applied-fd", 0, "")
 	fs.Var(&writable, "rw", "")
@@ -79,6 +84,7 @@ func DecodeLaunch(args []string) (Config, error) {
 	}
 	return Config{
 		Socket:            socket,
+		BridgeLivenessFD:  livenessFD,
 		Block:             block,
 		StrictBlock:       strict,
 		Writable:          writable,
