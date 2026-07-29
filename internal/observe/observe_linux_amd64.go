@@ -214,6 +214,14 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// The op of each pid's last syscall stop that was read successfully - the parity a
 	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
+	// Both maps above (and tracees) strand an entry when a non-leader thread execve's: it
+	// adopts the thread-group leader's pid, and its old tid vanishes with no wait status,
+	// so the deletes keyed on it never run. Not swept, because ptrace does not report the
+	// disappearance. For these two the stranded key names a tid that cannot stop again, so
+	// nothing reads it and the cost is memory alone. tracees is the one with a consequence:
+	// reapTracees signals every entry, so a recycled pid gets the SIGKILL, and the set can
+	// no longer empty, which drops that drain onto its ECHILD stop and forfeits the "never
+	// blocks on the embedder's own children" property its doc claims.
 	var res Result
 	record := func(path string, write bool) {
 		if path == "" {
