@@ -187,7 +187,8 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// read, the .msmtprc/.muttrc precedent. A sandboxed claude loses its own settings,
 		// which is the trade - the alternative hands a broad read grant a live token. The
 		// .claude.json.backup.<epoch> siblings the CLI writes beside it carry the same
-		// content under a name no concrete path can enumerate; see bv2 for that residual.
+		// content under an epoch-suffixed name no concrete path can enumerate - the same
+		// residual class as an editor leaving at the home root.
 		".claude.json",
 		// ollama generates an ed25519 keypair to identify the host to a model registry.
 		// Only the keys are named, not the whole ~/.ollama: the tree's bulk is pulled
