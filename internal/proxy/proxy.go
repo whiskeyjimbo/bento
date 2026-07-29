@@ -114,11 +114,16 @@ func WithObserver(observe func(d Decision, host, port string)) Option {
 // Sanitize before displaying either to a human.
 //
 // Admission only widens to public hosts: guardUpstream still runs on the dial, so
-// a gate can never reach loopback, cloud-metadata, or private space. The
-// private-IP exemption needs a rule naming the literal the CONNECT asked for, and
-// a gate admission means no rule matched at all. A panic in the gate is treated
-// as a denial (the connection gets a 403 and is reported Denied), never swallowed
-// silently.
+// a gate can never reach loopback, cloud-metadata, or private space. That rests on
+// handle withholding the private-IP literal grant from a gate-admitted connection,
+// which is load-bearing and not implied by the gate having been consulted at all:
+// the allowlist matches the CONNECT host textually while literalGrantFor matches by
+// address, so CONNECT [::ffff:10.0.0.5]:443 against a rule for 10.0.0.5:443 misses
+// the rule, reaches the gate, and would carry a grant into private space if the
+// grant were derived after admission.
+//
+// A panic in the gate is treated as a denial (the connection gets a 403 and is
+// reported Denied), never swallowed silently.
 //
 // A pending prompt pins one of the proxy's bounded handler slots with no
 // deadline, so a hostile target can fire many undeclared CONNECTs to flood the

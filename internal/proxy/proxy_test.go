@@ -800,6 +800,33 @@ func TestPrivateIPExemptionRequiresLiteralTarget(t *testing.T) {
 	}
 }
 
+// handle withholds the literal grant from a gate-admitted connection, and that
+// guard is not redundant with the gate having been consulted at all: the allowlist
+// matches the CONNECT host textually while literalGrantFor matches by address, so
+// a v4-mapped spelling of a rule's own literal misses the rule, reaches the gate,
+// and would carry a grant into private space if the grant were derived after
+// admission. A gate yes must never reach anywhere the guard would otherwise block.
+func TestGateAdmissionCarriesNoLiteralGrant(t *testing.T) {
+	var p *Proxy
+	p = New([]policy.NetworkRule{{Host: "10.0.0.5", Port: "443"}},
+		WithGatekeeper(func(context.Context, string, string) bool { return true }),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if err := p.guardUpstream(ctx, network, addr, nil); err != nil {
+				return nil, err
+			}
+			return fakeDialer("tunnel")(ctx, network, addr)
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "[::ffff:10.0.0.5]:443")
+	if !strings.Contains(status, "403") {
+		t.Errorf("status = %q, want 403 - a gate admission must not inherit the rule's literal grant", status)
+	}
+}
+
 // An IPv6 zone id makes net.ParseIP return nil; the guard must strip it and
 // classify the underlying address rather than fail open. The mapped-IPv4 form
 // reaches the IPv4 cloud-metadata endpoint and host loopback (the kernel dials
