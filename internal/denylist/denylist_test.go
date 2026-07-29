@@ -826,6 +826,11 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		"/home/u/.nuget/NuGet/NuGet.Config", // NuGet apikeys
 		"/home/u/.claude/.credentials.json", // coding-agent OAuth token
 		"/home/u/.codex/auth.json",
+		// The same account/OAuth block as .claude.json, under the one backup name that
+		// is concrete. Its epoch-suffixed siblings are not expressible and stay a
+		// recorded residual; this one is, so dropping it would be the silent regression.
+		"/home/u/.claude.json",
+		"/home/u/.claude.json.backup",
 	} {
 		r, ok := byPath[p]
 		if !ok {

@@ -186,10 +186,17 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// separate them. Hidden rather than write-denied: the secret wins over the config
 		// read, the .msmtprc/.muttrc precedent. A sandboxed claude loses its own settings,
 		// which is the trade - the alternative hands a broad read grant a live token. The
-		// .claude.json.backup.<epoch> siblings the CLI writes beside it carry the same
-		// content under an epoch-suffixed name no concrete path can enumerate - the same
-		// residual class as an editor leaving at the home root.
+		// The CLI also writes backups beside it holding the same block. The suffix-less
+		// one has a concrete name and is shielded; the .claude.json.backup.<epoch>
+		// siblings do not, and stay the same residual class as an editor leaving at the
+		// home root. Enumerating them here is not the missing piece: these rules are
+		// pure path arithmetic that the profiler's clamp, the credential hunt and the
+		// firejail audit each derive independently, and a host read would make all four
+		// disagree. Nor would enumeration close the class - bwrap binds concrete paths
+		// at launch over a live home, so a backup the host CLI writes mid-run appears
+		// inside the sandbox unshielded whatever the rule list said.
 		".claude.json",
+		".claude.json.backup",
 		// ollama generates an ed25519 keypair to identify the host to a model registry.
 		// Only the keys are named, not the whole ~/.ollama: the tree's bulk is pulled
 		// models, which a sandboxed run may legitimately read, and the walletKeyPaths
