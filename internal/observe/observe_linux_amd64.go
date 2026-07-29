@@ -783,8 +783,10 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		// Reading address zero fails, so decoding one as a pathname reported a lost access
 		// for a call that lost nothing: cp -p, tar -x, install and rsync all use utimensat,
 		// so extracting an archive alone put hundreds of phantom losses on the channel that
-		// tells the user their manifest is short. No other syscall here takes a NULL path,
-		// so the exemption is named rather than applied to every zero pathname register.
+		// tells the user their manifest is short. The exemption names the two rather than
+		// skipping every zero pathname register because they are the only two: the other
+		// *at forms in this case list (mkdirat, unlinkat, mknodat, fchmodat, fchmodat2,
+		// fchownat) all refuse a NULL pathname with EFAULT.
 		if regs.Rsi == 0 && (regs.Orig_rax == unix.SYS_UTIMENSAT || regs.Orig_rax == unix.SYS_FUTIMESAT) {
 			return
 		}
