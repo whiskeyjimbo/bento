@@ -97,25 +97,36 @@ func TestGateConsultedButGuardBlocksHostReserved(t *testing.T) {
 	if res.EgressConnections == 0 {
 		t.Error("EgressConnections = 0, want the guard-blocked connection to have been counted")
 	}
+	// The whole path: the guard's verdict reaches the operator as a destination, not
+	// just as a count. Without it the run reports a connection that went nowhere with
+	// no reason, which is exactly what the script was told.
+	want := []enforce.HostPort{{Host: "169.254.254.254", Port: "1"}}
+	if !slices.Equal(res.GuardBlocked, want) {
+		t.Errorf("GuardBlocked = %v, want %v: the guard's refusal must surface on the host side", res.GuardBlocked, want)
+	}
 }
 
 // egressCollector is the honesty surface a wrapper reads: it must count every
-// decision, dedupe gate admissions by host:port, sort them, and keep a
-// guard-blocked (Denied) host out of the admitted list. The real-sandbox test
-// only reaches the empty path (guard blocks), and the proxy unit tests use their
-// own observer, so this exercises the populated collector directly.
+// decision, dedupe gate admissions and guard blocks by host:port, sort each, and keep
+// the two sets apart - a host the guard blocked is reported as blocked and never as
+// admitted. The real-sandbox test only reaches the empty admitted path, and the proxy
+// unit tests use their own observer, so this exercises the populated collector
+// directly.
 func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	c := &egressCollector{}
 	c.observe(proxy.AdmittedByGate, "b.example", "443")
-	c.observe(proxy.AdmittedByGate, "b.example", "443") // duplicate: same key
-	c.observe(proxy.AdmittedByGate, "a.example", "443") // sorts before b
-	c.observe(proxy.AdmittedByGate, "a.example", "22")  // same host, tiebreak on port
-	c.observe(proxy.Denied, "blocked.example", "443")   // counted, never admitted
-	c.observe(proxy.Allowed, "declared.example", "443") // counted, not a gate admission
-	c.observe(proxy.Refused, "", "")                    // at capacity: counted, no host to admit
+	c.observe(proxy.AdmittedByGate, "b.example", "443")     // duplicate: same key
+	c.observe(proxy.AdmittedByGate, "a.example", "443")     // sorts before b
+	c.observe(proxy.AdmittedByGate, "a.example", "22")      // same host, tiebreak on port
+	c.observe(proxy.Denied, "denied.example", "443")        // counted, never admitted
+	c.observe(proxy.GuardBlocked, "blocked.example", "443") // the guard's refusal
+	c.observe(proxy.GuardBlocked, "blocked.example", "443") // duplicate: same key
+	c.observe(proxy.AdmittedByGate, "b.example", "443")     // admitted, so not blocked
+	c.observe(proxy.Allowed, "declared.example", "443")     // counted, not a gate admission
+	c.observe(proxy.Refused, "", "")                        // at capacity: counted, no host to admit
 
-	if got := c.counted(); got != 7 {
-		t.Errorf("counted() = %d, want 7 (every decision counts, duplicates included)", got)
+	if got := c.counted(); got != 10 {
+		t.Errorf("counted() = %d, want 10 (every decision counts, duplicates included)", got)
 	}
 
 	want := []enforce.HostPort{
@@ -131,6 +142,14 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("gateAdmitted()[%d] = %v, want %v (deduped, sorted, blocked host absent)", i, got[i], want[i])
 		}
+	}
+
+	// The guard-blocked set is what restores the operator's only signal that a
+	// permitted name resolved into space the sandbox may not reach: the sandbox itself
+	// is told nothing but "could not reach".
+	wantBlocked := []enforce.HostPort{{Host: "blocked.example", Port: "443"}}
+	if blocked := c.guardBlocked(); !slices.Equal(blocked, wantBlocked) {
+		t.Errorf("guardBlocked() = %v, want %v (deduped; an ordinary deny and a gate admission are not guard blocks)", blocked, wantBlocked)
 	}
 }
 

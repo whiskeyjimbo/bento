@@ -103,10 +103,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// It is idempotent (sync.OnceFunc inside startProxy), so the defer stays as a
 	// safety net for the error paths without double-closing.
 	stopProxy := func() error { return nil }
-	egress := func() int { return 0 }
-	admitted := func() []enforce.HostPort { return nil }
+	// A run with no proxy socket reads its egress numbers off this zero collector,
+	// which reports what such a run in fact saw: no connections, nothing admitted,
+	// nothing blocked.
+	collected := &egressCollector{}
 	if sb.proxySocket != "" {
-		stopProxy, egress, admitted, err = startProxy(ctx, p, sb.proxySocket, opts.Gate)
+		stopProxy, collected, err = startProxy(ctx, p, sb.proxySocket, opts.Gate)
 		if err != nil {
 			return enforce.Result{}, err
 		}
@@ -188,7 +190,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -196,7 +198,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, ee.ExitCode())
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: egress(), GateAdmitted: admitted(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: ee.ExitCode(), Report: report, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -550,11 +552,12 @@ func writeEmptyFile(path string) error {
 
 // startProxy serves the egress allowlist on socket for the run's lifetime,
 // optionally consulting gate for hosts the manifest does not declare. It returns
-// an idempotent stop function (which reports the listener's terminal error), a
-// count of how many connections reached the proxy (a zero count on an egress-capable
-// run tells the frontend the target never went through the proxy - used no network,
-// or bypassed it), and the hosts the gate admitted beyond the manifest.
-func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func() error, count func() int, admitted func() []enforce.HostPort, err error) {
+// an idempotent stop function (which reports the listener's terminal error) and the
+// collector holding what the run's egress actually did: how many connections reached
+// the proxy (a zero count on an egress-capable run tells the frontend the target never
+// went through the proxy - used no network, or bypassed it), the hosts the gate
+// admitted beyond the manifest, and the ones the upstream guard refused to dial.
+func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func() error, collected *egressCollector, err error) {
 	c := &egressCollector{}
 	// Discover the host's NAT64 prefix so a synthesized RFC1918 target cannot reach
 	// the LAN through a permitted public hostname (RFC 7050). The profiling path
@@ -566,32 +569,43 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 	}
 	stop, err = startProxyWith(ctx, p, socket, c.observe, opts...)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return sync.OnceValue(stop), c.counted, c.gateAdmitted, nil
+	return sync.OnceValue(stop), c, nil
 }
 
 // egressCollector records the proxy's per-connection decisions for the run
-// result: a total count and the deduped set of hosts the gate admitted beyond
-// the manifest. The observer runs in each handler's own goroutine, so a mutex
-// guards the shared state; the gate itself is never called under this lock (it
-// runs in the handler, the observer only records the outcome).
+// result: a total count, the deduped set of hosts the gate admitted beyond
+// the manifest, and the deduped set the upstream guard refused to dial. The
+// observer runs in each handler's own goroutine, so a mutex guards the shared
+// state; the gate itself is never called under this lock (it runs in the handler,
+// the observer only records the outcome).
 type egressCollector struct {
 	mu       sync.Mutex
 	count    int
 	admitted map[string]enforce.HostPort
+	blocked  map[string]enforce.HostPort
 }
 
 func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.count++
-	if d == proxy.AdmittedByGate {
+	// Key both sets on JoinHostPort so an IPv6 host:port dedupes correctly. A
+	// destination lands in at most one of them: the guard's refusal replaces the gate's
+	// admission rather than following it, which is what keeps the admitted list from
+	// claiming a host that never got past the guard.
+	switch d {
+	case proxy.AdmittedByGate:
 		if c.admitted == nil {
 			c.admitted = make(map[string]enforce.HostPort)
 		}
-		// Key on JoinHostPort so an IPv6 host:port dedupes correctly.
 		c.admitted[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.GuardBlocked:
+		if c.blocked == nil {
+			c.blocked = make(map[string]enforce.HostPort)
+		}
+		c.blocked[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	}
 }
 
@@ -606,8 +620,20 @@ func (c *egressCollector) counted() int {
 func (c *egressCollector) gateAdmitted() []enforce.HostPort {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]enforce.HostPort, 0, len(c.admitted))
-	for _, hp := range c.admitted {
+	return sortedHostPorts(c.admitted)
+}
+
+// guardBlocked returns a copy of the guard-blocked set, sorted for the same reason
+// gateAdmitted is.
+func (c *egressCollector) guardBlocked() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.blocked)
+}
+
+func sortedHostPorts(m map[string]enforce.HostPort) []enforce.HostPort {
+	out := make([]enforce.HostPort, 0, len(m))
+	for _, hp := range m {
 		out = append(out, hp)
 	}
 	slices.SortFunc(out, func(a, b enforce.HostPort) int {

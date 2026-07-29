@@ -120,6 +120,23 @@ func toAliasesJSON(aliases []enforce.CredentialAlias) []aliasJSON {
 	return out
 }
 
+// hostPortJSON is one egress destination for the --json envelope; see enforce.HostPort.
+type hostPortJSON struct {
+	Host string `json:"host"`
+	Port string `json:"port"`
+}
+
+func toHostPortsJSON(dests []enforce.HostPort) []hostPortJSON {
+	if len(dests) == 0 {
+		return nil
+	}
+	out := make([]hostPortJSON, 0, len(dests))
+	for _, hp := range dests {
+		out = append(out, hostPortJSON{Host: hp.Host, Port: hp.Port})
+	}
+	return out
+}
+
 // grantTargetJSON is one grant whose name is not where it lands - the store a symlinked
 // or expanded path actually reaches. It mirrors aliasJSON: a name, and what it reaches.
 type grantTargetJSON struct {
@@ -233,6 +250,36 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] if it needs network: bento intercepts egress via HTTP_PROXY, so a program that")
 	fmt.Fprintln(w, "[bento] ignores proxy settings (some static binaries) cannot reach allowlisted hosts and")
 	fmt.Fprintln(w, "[bento] fails to connect. Programs that honor HTTP_PROXY (curl, requests, pip, npm) work.")
+}
+
+// writeGuardBlockedWarning names the destinations the allowlist permitted but the
+// egress guard refused to dial, because the name resolved somewhere the sandbox must
+// not reach. The script saw only "could not reach", deliberately - telling it apart
+// from a dial failure would let it classify names against the host's internal DNS -
+// so without this the routine case (an allowlisted name that resolves into private
+// space on a corporate network) presents as an unexplained connection failure.
+//
+// The hosts came from the sandbox's own CONNECT requests, so they are quoted: a
+// crafted hostname carries whatever bytes the target chose, including a newline that
+// would otherwise forge a line of this report.
+func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
+	if len(res.GuardBlocked) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] the egress guard refused to connect to these allowed destinations, because")
+	fmt.Fprintln(w, "[bento] each resolved to an address the sandbox must not reach:")
+	for _, hp := range res.GuardBlocked {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	// The guard blocks three shapes - host-reserved space, private space with no
+	// literal rule, and an address it could not classify - and the report cannot say
+	// which (naming the resolved address is the disclosure the 502 exists to avoid), so
+	// the likeliest cause is offered as a cause and not asserted. Widening the
+	// allowlist cannot fix any of them, which is the part an operator most needs told.
+	fmt.Fprintln(w, "[bento] usually a name that resolves into private space (a split-horizon or corporate DNS).")
+	fmt.Fprintln(w, "[bento] adding the name to the allowlist will not help: to reach a private address, list")
+	fmt.Fprintln(w, "[bento] that address itself as an explicit IP rule. Loopback and cloud metadata can never")
+	fmt.Fprintln(w, "[bento] be reached, by any rule.")
 }
 
 // writeShieldedGrantWarning tells the user that the policy granted a path bento would

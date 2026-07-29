@@ -293,6 +293,36 @@ func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	}
 }
 
+// The guard-blocked destinations reach a machine consumer too, and are omitted for the
+// run the guard never refused.
+func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	res := enforce.Result{ExitCode: 0, GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+	var env struct {
+		GuardBlocked []struct {
+			Host string `json:"host"`
+			Port string `json:"port"`
+		} `json:"guard_blocked"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(env.GuardBlocked) != 1 || env.GuardBlocked[0].Host != "internal.example" || env.GuardBlocked[0].Port != "443" {
+		t.Errorf("guard_blocked = %+v, want the refused destination", env.GuardBlocked)
+	}
+
+	stdout.Reset()
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	var raw map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := raw["guard_blocked"]; present {
+		t.Error("guard_blocked must be omitted when the guard refused nothing (omitempty)")
+	}
+}
+
 // failWriter is a stdout that always fails, so a test can drive the JSON-encode error
 // path of writeRunResult.
 type failWriter struct{}

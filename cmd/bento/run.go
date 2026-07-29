@@ -164,16 +164,22 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// exposure lands elsewhere. Resolved by the backend as it bound them, so a target
 			// that moved a symlink mid-run cannot rewrite what this reports.
 			ShieldedGrantTargets []grantTargetJSON `json:"shielded_grant_targets,omitempty"`
-			Shields              []shieldJSON      `json:"shields,omitempty"`
-			Exposed              []shieldJSON      `json:"exposed,omitempty"`
-			AcceptedAliases      []aliasJSON       `json:"accepted_aliases,omitempty"`
-			Report               reportJSON        `json:"report"`
+			// GuardBlocked names the destinations the allowlist permitted but the egress guard
+			// refused to dial. The sandbox was told only that it could not connect, so this is
+			// the operator's only signal that a permitted name resolved somewhere it must not
+			// reach. Each host is the sandbox's own CONNECT target, so a consumer rendering it
+			// is rendering attacker-chosen bytes.
+			GuardBlocked    []hostPortJSON `json:"guard_blocked,omitempty"`
+			Shields         []shieldJSON   `json:"shields,omitempty"`
+			Exposed         []shieldJSON   `json:"exposed,omitempty"`
+			AcceptedAliases []aliasJSON    `json:"accepted_aliases,omitempty"`
+			Report          reportJSON     `json:"report"`
 			// StrictShortfall says the run was admitted under --strict but a guarantee it
 			// required lapsed while the target ran, so exit_code below is the code of a run
 			// whose posture did not hold. Without it a machine consumer reading the envelope
 			// alone would see an ordinary completed run.
 			StrictShortfall bool `json:"strict_shortfall,omitempty"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
+		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
@@ -182,6 +188,9 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		writeShieldedGrantWarning(stderr, res)
 		writeExposedWarning(stderr, res)
 		writeDegradations(stderr, res.Report)
+		// Before the bypass hint: a guard block is a connection that DID reach the proxy,
+		// so it explains a network failure the hint would otherwise blame on a bypass.
+		writeGuardBlockedWarning(stderr, res)
 		writeEgressHint(stderr, p, res)
 	}
 

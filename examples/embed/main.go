@@ -258,6 +258,15 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, hp := range res.GateAdmitted {
 		fmt.Fprintf(w, "embed: gate admitted undeclared egress to %q port %s\n", hp.Host, hp.Port)
 	}
+	// GuardBlocked: destinations the allowlist permitted but the egress guard refused to
+	// dial, because the name resolved to an address the sandbox must not reach. The target
+	// was told only that it could not connect - telling it apart from a dial failure would
+	// let it classify names against the host's internal DNS - so a wrapper that stays quiet
+	// leaves an ordinary split-horizon DNS misconfiguration looking like an unexplained
+	// network failure. Quoted: the target chose the name.
+	for _, hp := range res.GuardBlocked {
+		fmt.Fprintf(w, "embed: the egress guard refused %q port %s: it resolved to an address the sandbox may not reach (list a private address as an explicit IP rule to allow it)\n", hp.Host, hp.Port)
+	}
 	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
 	// so the backend honored the grant over its own shield. bento does not refuse this -
 	// the operator chose it - so a frontend that stays quiet makes the exposure silent.

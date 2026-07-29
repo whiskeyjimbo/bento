@@ -738,8 +738,8 @@ func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
 	// The status alone cannot carry this: nothing listens on port 9 either, so a
 	// removed guard would answer with the same 502 and the test would pass over a
 	// hole. The guard's verdict is only visible on the host side.
-	if decision != Denied {
-		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, Denied)
+	if decision != GuardBlocked {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlocked)
 	}
 	body, _ := io.ReadAll(br)
 	// The refusal must not answer the query it refused: naming the resolved address
@@ -788,8 +788,8 @@ func TestGuardRefusalIsIndistinguishableFromDialFailure(t *testing.T) {
 	if blocked != failed {
 		t.Errorf("a guard block answers %q but a dial failure answers %q; the split classifies the name for the sandbox", blocked, failed)
 	}
-	if d, _ := decisions.Load("private.example.com"); d != Denied {
-		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, Denied)
+	if d, _ := decisions.Load("private.example.com"); d != GuardBlocked {
+		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, GuardBlocked)
 	}
 	if d, _ := decisions.Load("public.example.com"); d != Allowed {
 		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Allowed)
@@ -845,8 +845,8 @@ func TestExplicitLoopbackRuleStillBlocked(t *testing.T) {
 	if !strings.Contains(status, "502") {
 		t.Fatalf("status = %q, want 502 (an explicit loopback rule must not reach the host)", status)
 	}
-	if decision != Denied {
-		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, Denied)
+	if decision != GuardBlocked {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlocked)
 	}
 }
 
@@ -1090,10 +1090,10 @@ func TestGatekeeperCannotReachNonPublic(t *testing.T) {
 		t.Fatalf("status = %q, want 502 (gate admission cannot reach loopback)", status)
 	}
 	// The client cannot tell this from a dial failure, so the block shows on the host
-	// side: Denied, not AdmittedByGate, which is what keeps the run's gate-admitted
-	// list from claiming a destination the guard never let through.
-	if decision != Denied {
-		t.Errorf("observer reported %q, want %q", decision, Denied)
+	// side: GuardBlocked, not AdmittedByGate, which is what keeps the run's
+	// gate-admitted list from claiming a destination the guard never let through.
+	if decision != GuardBlocked {
+		t.Errorf("observer reported %q, want %q", decision, GuardBlocked)
 	}
 }
 

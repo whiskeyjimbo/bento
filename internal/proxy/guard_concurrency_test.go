@@ -184,7 +184,7 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	for host, d := range decisions {
 		want := AdmittedByGate
 		if strings.HasPrefix(host, "priv") {
-			want = Denied // the guard's refusal, after the gate admitted it
+			want = GuardBlocked // the guard's refusal, after the gate admitted it
 		}
 		if d != want {
 			t.Errorf("observer reported %s as %q, want %q", host, d, want)

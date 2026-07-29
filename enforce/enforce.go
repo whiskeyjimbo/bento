@@ -139,13 +139,33 @@ type Result struct {
 	// GateAdmitted lists the destinations a NetworkGate admitted beyond the
 	// manifest, deduped and sorted. A host appears once the gate approved it, even
 	// if the subsequent dial then failed - EXCEPT a dial the upstream guard blocked
-	// (a gate-approved host resolving to a non-public address): that reports Denied
-	// and is not listed, since it was never admitted past the guard. Empty means no
+	// (a gate-approved host resolving to a non-public address): that is reported in
+	// GuardBlocked instead, since it was never admitted past the guard. Empty means no
 	// destination was admitted beyond the manifest, which is also what a run with no
 	// gate at all reports - it is not evidence a gate was present, only that nothing
 	// went through one. Together with the count it keeps the run honest about egress it
 	// permitted beyond the declared policy.
 	GateAdmitted []HostPort
+	// GuardBlocked lists the destinations the allowlist permitted by name but the
+	// egress guard then refused to dial, because the name resolved to an address the
+	// sandbox must not reach (loopback, cloud metadata, private space it holds no
+	// explicit IP rule for) - or to one the guard could not classify at all. Deduped
+	// and sorted.
+	//
+	// Each entry names the destination as the target ASKED for it, not the address it
+	// resolved to: the sandbox is told nothing that separates this from an ordinary
+	// dial failure (telling the two apart classifies names against the host's internal
+	// DNS), so the resolved address stays out of the report as well. A frontend
+	// surfaces these, because an allowlisted name resolving into private space is an
+	// ordinary corporate-network misconfiguration that otherwise presents to the
+	// operator as an unexplained connection failure, and no amount of widening the
+	// allowlist fixes it - only an explicit IP rule for the address does.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target),
+	// so a consumer rendering it to a terminal must quote it. Empty is not evidence
+	// that no name resolved into private space: a run that made no connections, or one
+	// with no egress at all, reports empty too.
+	GuardBlocked []HostPort
 	// AcceptedAliases lists the credential aliases this run was allowed to read past a
 	// shield because the caller acknowledged the tree they sit in. Each names the path
 	// that reaches the content and the credential it reaches. Non-empty means the run

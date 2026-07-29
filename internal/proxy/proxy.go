@@ -40,6 +40,14 @@ const (
 	// CONNECT was read - so it carries no host or port. It is reported so a run that
 	// floods the proxy is not counted as one that never touched the network.
 	Refused Decision = "refused"
+	// GuardBlocked marks a connection the allowlist (or a gate) permitted by name but
+	// the upstream guard then refused, because the name resolved to an address the
+	// sandbox must not reach. It is distinct from Denied because the two call for
+	// different operator action - widening the allowlist cannot fix a guard block,
+	// while naming the address as an explicit IP rule can - and the client is told
+	// nothing that separates the guard's refusal from an ordinary dial failure, so
+	// the observer is the only place the distinction survives.
+	GuardBlocked Decision = "blocked"
 )
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
@@ -98,7 +106,9 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 //
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries neither, having
-// been made before the CONNECT was read.
+// been made before the CONNECT was read. A GuardBlocked decision carries the CONNECT
+// target, not the address it resolved to: the guard's own text names the address, and
+// that never leaves the host side.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
 }
@@ -551,8 +561,8 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 
 	// A gate admission is reported distinctly from a manifest allow so the run
 	// stays honest about egress it permitted beyond the declared policy. The
-	// blocked-upstream refusal below still reports Denied: the guard overrides the
-	// gate, so a gate-admitted host resolving to non-public space was never
+	// blocked-upstream refusal below reports GuardBlocked instead: the guard overrides
+	// the gate, so a gate-admitted host resolving to non-public space was never
 	// admitted past it.
 	decision := Allowed
 	if admittedByGate {
@@ -581,7 +591,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			// stays out of the shared body too - a *net.OpError carries the Addr in its
 			// own text. The guard still refuses before any SYN while a real dial costs an
 			// RTT, so this removes the textual oracle, not the timing one.
-			p.report(Denied, host, port)
+			p.report(GuardBlocked, host, port)
 			writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 			return
 		}

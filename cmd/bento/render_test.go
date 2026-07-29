@@ -83,6 +83,45 @@ func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// The guard-blocked notice names each destination and says what would actually help,
+// since the sandbox itself was told only "could not reach". It stays silent for the run
+// the guard never refused, which is every ordinary run.
+func TestWriteGuardBlockedWarning(t *testing.T) {
+	var b bytes.Buffer
+	writeGuardBlockedWarning(&b, enforce.Result{})
+	if b.Len() != 0 {
+		t.Errorf("a run with no guard block must print nothing; got %q", b.String())
+	}
+
+	writeGuardBlockedWarning(&b, enforce.Result{GuardBlocked: []enforce.HostPort{
+		{Host: "internal.example", Port: "443"},
+		{Host: "db.example", Port: "5432"},
+	}})
+	out := b.String()
+	for _, want := range []string{"internal.example", "443", "db.example", "5432", "explicit IP rule"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must contain %q; got %q", want, out)
+		}
+	}
+}
+
+// A CONNECT target is whatever the sandboxed script asked for, so a host holding a
+// newline would otherwise print as a second line and forge a line of this report.
+func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
+	var b bytes.Buffer
+	writeGuardBlockedWarning(&b, enforce.Result{GuardBlocked: []enforce.HostPort{
+		{Host: "evil.example\n[bento] nothing was blocked", Port: "443"},
+	}})
+	for _, line := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento] ") {
+			t.Errorf("a crafted host forged the line %q in %q", line, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "nothing was blocked\n") {
+		t.Errorf("the host was not quoted; got %q", b.String())
+	}
+}
+
 // yz3.2: the warning names each opted-in credential path loudly, and stays silent when
 // the policy opted into none (the common run).
 func TestWriteShieldedGrantWarning(t *testing.T) {
