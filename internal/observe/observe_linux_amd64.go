@@ -320,6 +320,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 				}
 			// An exec event reports the tid the execve retired, which is the one
 			// disappearance ptrace does not otherwise announce - see forgetRetiredTid.
+			//
+			// Nothing is swept when the message will not load, and nothing can be: the
+			// retired tid is unrecoverable afterwards, since the post-exec thread group
+			// holds only the stopping pid. A tracee at an event stop answers this request,
+			// so the one way to get here is the tracee dying between the wait and the
+			// call - and then the retirement is the smaller half of the loss, because the
+			// execed image is going with it.
 			case syscall.PTRACE_EVENT_EXEC:
 				if old, err := syscall.PtraceGetEventMsg(wpid); err == nil {
 					res.Dropped += forgetRetiredTid(wpid, int(old), tracees, lastOp, held)
