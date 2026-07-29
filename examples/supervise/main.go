@@ -289,6 +289,17 @@ func supervised(ctx context.Context, s *store, script string) int {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
+	// A guard block is the one outcome a supervised run cannot explain from the prompt
+	// alone: the human just approved the host, the guard then refused the dial because
+	// the name resolved somewhere the sandbox may not reach, and the target was told
+	// only that it could not connect. Without this the approval looks honored and the
+	// failure looks unexplained. Quoted for the reason the admitted list is.
+	if len(res.GuardBlocked) > 0 {
+		fmt.Fprintf(os.Stderr, "\n%s\n", t.warn("the egress guard refused these destinations: each resolved to an address the sandbox may not reach"))
+		for _, hp := range res.GuardBlocked {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
+		}
+	}
 	return res.ExitCode
 }
 

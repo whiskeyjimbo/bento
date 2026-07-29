@@ -194,7 +194,8 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 // blockedUpstreamError is returned by guardUpstream when a resolved address must
 // not be dialed: a non-public IP the rules do not explicitly authorize, or an
 // address the guard cannot parse (refused rather than dialed blind). handle uses
-// it to report the refusal as Denied rather than as the connection's own decision.
+// it to report the refusal as GuardBlocked rather than as the connection's own
+// decision.
 // What the CLIENT is told is deliberately identical to an ordinary dial failure:
 // telling the two apart classifies the name against the host's internal DNS.
 type blockedUpstreamError struct{ addr string }
@@ -582,7 +583,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	if err != nil {
 		var blocked *blockedUpstreamError
 		if errors.As(err, &blocked) {
-			// Reported Denied, but answered exactly as an ordinary dial failure is. A
+			// Reported GuardBlocked, but answered exactly as an ordinary dial failure is. A
 			// distinct refusal here told the client that the name resolved into
 			// non-public space, which under a permissive allowlist (`bento profile
 			// --allow-network` runs *:*) lets a confined process classify arbitrary
