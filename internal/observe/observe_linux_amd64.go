@@ -627,6 +627,12 @@ func holdsPath(held map[string]heldPath, pid int) bool {
 // issued no syscall of its own yet, and the exit stop those pathnames are waiting on can never
 // arrive. Only in the non-leader case, where the pid demonstrably changed hands; an ordinary
 // exec's pathnames belong to the thread that is still running and still owes them an exit stop.
+//
+// That leader sweep is the half with reachable losses to count - a leader mid-probe when a
+// sibling execs is the observed case. The retired tid's own sweep is symmetry: a thread's
+// syscall stops alternate, so every pair the execer opened closed before its execve entry stop,
+// and there should be nothing left to release. It is swept rather than assumed empty because
+// the cost of being wrong is an uncounted access, which is what Dropped exists to prevent.
 func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
 	if old == wpid {
 		return 0
