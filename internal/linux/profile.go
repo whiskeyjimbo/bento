@@ -266,20 +266,33 @@ func parseObservations(path string) (profile.Observation, error) {
 			} else {
 				obs.Dropped++
 			}
+		// The status lines have no honest partial reading, which is why they refuse
+		// rather than count a drop like an unquotable path does. A malformed EXIT
+		// silently left ExitCode at 0, reporting a clean run for one that may have
+		// died partway - the "observations are incomplete" warning suppressed by the
+		// very line that carries it - and a malformed DROPPED lost the count that
+		// says the manifest is short. A report whose status cannot be read is the
+		// same partial report the missing-marker check below already refuses.
 		case strings.HasPrefix(line, "EXIT "):
-			if n, err := strconv.Atoi(line[5:]); err == nil {
-				obs.ExitCode = n
+			n, err := strconv.Atoi(line[5:])
+			if err != nil {
+				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable exit status %q", line)
 			}
+			obs.ExitCode = n
 		case strings.HasPrefix(line, "DROPPED "):
-			if n, err := strconv.Atoi(line[8:]); err == nil {
-				obs.Dropped += n
+			n, err := strconv.Atoi(line[8:])
+			if err != nil {
+				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable dropped-access count %q", line)
 			}
+			obs.Dropped += n
 		case strings.HasPrefix(line, "SIGNAL "):
-			if n, err := strconv.Atoi(line[7:]); err == nil {
-				obs.Signaled = true
-				obs.Signal = n
-				obs.ExitCode = 128 + n
+			n, err := strconv.Atoi(line[7:])
+			if err != nil {
+				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable signal status %q", line)
 			}
+			obs.Signaled = true
+			obs.Signal = n
+			obs.ExitCode = 128 + n
 		}
 	}
 	if err := s.Err(); err != nil {

@@ -111,6 +111,27 @@ func TestParseObservationsReadsExitStatus(t *testing.T) {
 	}
 }
 
+// A status line that cannot be read leaves the run's outcome unknown, and the
+// profiler's warning about a run that may have stopped partway rides on exactly that
+// line - so an unreadable one silently reported a clean exit 0, the most reassuring
+// answer available. It refuses instead, like the missing completion marker. An
+// unquotable R/W line is deliberately NOT this case: there the loss is one path, and
+// counting it as a drop reports it honestly.
+func TestParseObservationsRefusesUnreadableStatusLines(t *testing.T) {
+	for _, line := range []string{"EXIT nope", "EXIT ", "SIGNAL nine", "DROPPED lots"} {
+		t.Run(line, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "report")
+			content := fmt.Sprintf("R %q\n%s\n%s\n", "/a", line, observe.ReportEnd)
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if obs, err := parseObservations(p); err == nil {
+				t.Errorf("parse accepted %q and reported ExitCode=%d Dropped=%d", line, obs.ExitCode, obs.Dropped)
+			}
+		})
+	}
+}
+
 // The observation backend is chosen at build time - the ptrace decoder reads amd64
 // syscall numbers and register layout, so every other architecture links a stub
 // that only returns an error. Profile must refuse up front on such a host.
