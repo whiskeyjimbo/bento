@@ -130,12 +130,13 @@ func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
 	}
 }
 
-// The store a grant lands on is enumerated from the host, so its name carries whatever
-// bytes the filesystem allows. Printed raw, a directory named with an embedded newline
-// splits into two lines and the second one can be written to read like a warning bento
-// itself emitted - the reviewer's whole reason for reading this block.
-func TestWriteShieldedGrantWarningQuotesTheResolvedStore(t *testing.T) {
-	const granted = "/home/u/.ssh"
+// Neither line of this block is manifest text: the grant is the deny-list's name for the
+// shield it matched, built from $HOME, and the store is enumerated from the filesystem.
+// Printed raw, either one with an embedded newline splits into two lines, and the second
+// can be written to read like a warning bento itself emitted - the reviewer's whole reason
+// for reading this block.
+func TestWriteShieldedGrantWarningQuotesBothNames(t *testing.T) {
+	granted := "/home/u\n[bento]   /also-nothing/.ssh"
 	forged := "/home/u/real\n[bento]   /nothing-to-see-here"
 
 	var b bytes.Buffer
@@ -147,11 +148,13 @@ func TestWriteShieldedGrantWarningQuotesTheResolvedStore(t *testing.T) {
 
 	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
 		if !strings.HasPrefix(line, "[bento]") {
-			t.Errorf("a store name must not be able to start a line of its own; got %q in:\n%s", line, out)
+			t.Errorf("a host-derived name must not be able to start a line of its own; got %q in:\n%s", line, out)
 		}
 	}
-	if !strings.Contains(out, strconv.Quote(forged)) {
-		t.Errorf("the store must still be named, quoted; got:\n%s", out)
+	for _, want := range []string{granted, forged} {
+		if !strings.Contains(out, strconv.Quote(want)) {
+			t.Errorf("%q must still be named, quoted; got:\n%s", want, out)
+		}
 	}
 }
 
@@ -166,13 +169,13 @@ func TestWriteShieldAnchors(t *testing.T) {
 	writeShieldAnchors(&b)
 	out := b.String()
 
-	if !strings.Contains(out, home) {
-		t.Errorf("the anchors must name $HOME; %q missing from %q", home, out)
+	if !strings.Contains(out, strconv.Quote(home)) {
+		t.Errorf("the anchors must name $HOME, quoted; %q missing from %q", home, out)
 	}
 	// This uid has a passwd entry (the test host), so both anchors are listed and the
 	// single-anchor caveat stays quiet.
 	if pw := denylist.PasswdHome(); pw != "" {
-		if !strings.Contains(out, pw) {
+		if !strings.Contains(out, strconv.Quote(pw)) {
 			t.Errorf("the anchors must name the passwd home; %q missing from %q", pw, out)
 		}
 		if strings.Contains(out, "only anchor") {

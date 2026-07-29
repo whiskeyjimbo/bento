@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -251,16 +252,17 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	// resolved these as it bound them; re-resolving here would name whatever the path
 	// points at now, which a run that moved a symlink underneath itself has changed.
 	//
-	// That target is host-enumerated, so it is quoted: a directory whose name holds a
-	// newline would otherwise print as a second line and forge a summary line of its own.
-	// The grant above it is manifest text the reviewer approved, and stays unquoted so the
-	// line still matches how the manifest spells it.
+	// Both lines are quoted, matching writeAcceptedAliasWarning. Neither is manifest text:
+	// the grant is the deny-list's name for the shield it matched, built from $HOME, and
+	// the target is enumerated from the filesystem - so a directory (or a $HOME) whose name
+	// holds a newline would otherwise print as a second line and forge a summary line of
+	// its own, in the block that exists to make an exposure impossible to miss.
 	lands := make(map[string]string, len(res.ShieldedGrantTargets))
 	for _, t := range res.ShieldedGrantTargets {
 		lands[t.Path] = t.Credential
 	}
 	for _, g := range res.ShieldedGrants {
-		fmt.Fprintf(w, "[bento]   %s\n", g)
+		fmt.Fprintf(w, "[bento]   %q\n", g)
 		if target, ok := lands[g]; ok {
 			fmt.Fprintf(w, "[bento]     on this host: %q\n", target)
 		}
@@ -298,7 +300,13 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "Set $HOME to an absolute path, or give this uid a passwd entry.\n\n")
 		return
 	}
-	fmt.Fprintf(w, "Credential shields anchor on: %s\n", strings.Join(anchors, ", "))
+	// Quoted for the reason the shield warnings are: an anchor is $HOME or a passwd entry,
+	// so its bytes are the host's and a newline in one would forge a line of this report.
+	quoted := make([]string, len(anchors))
+	for i, a := range anchors {
+		quoted[i] = strconv.Quote(a)
+	}
+	fmt.Fprintf(w, "Credential shields anchor on: %s\n", strings.Join(quoted, ", "))
 	if denylist.PasswdHome() == "" {
 		fmt.Fprintf(w, "  No passwd entry for uid %d, so $HOME is the only anchor - whoever sets the\n", os.Getuid())
 		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")

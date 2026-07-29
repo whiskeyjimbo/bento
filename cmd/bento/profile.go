@@ -939,20 +939,23 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // Keyed on the foreign root alone, a KUBECONFIG under the profiler's ~/.kube produces an
 // interior file rule here that the enforced run does not carry, and the warning names a
 // shield the run has no such rule for.
+//
+// Raw anchors, unlike the symlink-augmented set the clamps above match grants against:
+// this argument decides which rules exist, and the enforcer builds its own from raw
+// HomeAnchors (see the Linux backend's homeShields). Adding a resolved anchor here would
+// let Home's swallow guard drop an env relocation the run does emit - a relocation to an
+// ancestor of the resolved home is shieldable for the enforcer and not for this pass -
+// and the warning would go quiet on a shield the run really carries.
 func foreignHomeShields(grants []string) []string {
 	// Every anchor the run shields on counts as "own", not just $HOME: under sudo -H the
 	// two disagree, and treating the passwd home as foreign would warn about a store the
 	// run shields anyway - noise the reviewer learns to skip past.
 	anchors, _ := denylist.HomeAnchors()
-	homes := slices.Clone(anchors)
 	selves := map[string]bool{}
 	for _, self := range anchors {
 		selves[self] = true
 		if resolved, err := filepath.EvalSymlinks(self); err == nil {
 			selves[resolved] = true
-			if !slices.Contains(homes, resolved) {
-				homes = append(homes, resolved)
-			}
 		}
 	}
 	seen := map[string]bool{}
@@ -962,7 +965,7 @@ func foreignHomeShields(grants []string) []string {
 		if !ok || selves[root] || seen[g] {
 			continue
 		}
-		for _, r := range denylist.Home(root, homes...) {
+		for _, r := range denylist.Home(root, anchors...) {
 			if g == r.Path || underDir(r.Path, g) || underDir(g, r.Path) {
 				seen[g] = true
 				out = append(out, g)
