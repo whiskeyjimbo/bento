@@ -765,6 +765,15 @@ func TestPrivateIPExemptionRequiresLiteralTarget(t *testing.T) {
 			want:    "200",
 		},
 		{
+			// The DNS root label passes policy.Allows (normalizeHost strips it) but is not
+			// an address, so an unstripped target would lose the grant its own rule gives
+			// and the rule would be silently inert in that spelling.
+			name:    "the literal's own rule, spelled with a trailing dot",
+			rules:   []policy.NetworkRule{{Host: "10.0.0.5", Port: "443"}},
+			connect: "10.0.0.5.:443",
+			want:    "200",
+		},
+		{
 			name:    "wildcard rule matching a literal target",
 			rules:   []policy.NetworkRule{{Host: "*", Port: "*"}},
 			connect: "10.0.0.5:443",

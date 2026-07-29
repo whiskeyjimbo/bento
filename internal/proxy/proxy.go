@@ -657,6 +657,14 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	if err != nil {
 		return "", "", nil, fmt.Errorf("malformed target %q: %w", fields[1], err)
 	}
+	// The DNS root label is a spelling of the same name, and policy.Allows already
+	// normalizes it away - but literalGrantFor parses the host as an address, where
+	// "10.0.0.5." is not one. Left standing, a CONNECT in that spelling passes an
+	// explicit-IP rule's allowlist check and then loses the grant the rule exists to
+	// give, so the rule is silently inert. Strip it here, on the canonicalPort
+	// precedent below: one spelling at every layer. Exactly one label is stripped, as
+	// normalizeHost strips one, so the two cannot disagree on "10.0.0.5..".
+	host = strings.TrimSuffix(host, ".")
 	if host == "" {
 		return "", "", nil, fmt.Errorf("empty target host")
 	}
