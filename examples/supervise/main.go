@@ -276,17 +276,31 @@ func supervised(ctx context.Context, s *store, script string) int {
 		return 1
 	}
 
-	// Summary: what the live gate let out beyond the manifest, and any shortfall.
+	writeSummary(os.Stderr, t, res)
+	return res.ExitCode
+}
+
+// writeSummary reports what the enforced run actually did beyond what the human
+// approved at the prompt. Every honesty field of enforce.Result reaches it, and
+// TestWriteSummarySurfacesEveryField holds it to that: a supervised run is the one
+// place a silence is most costly, because the human just answered a prompt and reads
+// the absence of a warning as confirmation their answer was what happened.
+func writeSummary(w io.Writer, t theme, res enforce.Result) {
 	for _, d := range res.Report.Degradations() {
-		fmt.Fprintf(os.Stderr, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, d.Reason)
+		fmt.Fprintf(w, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, d.Reason)
+	}
+	// Shields is the positive evidence the boundary engaged. A count, not a guarantee:
+	// the degraded tier shields nothing and says so through the Report instead.
+	if len(res.Shields) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.dim(fmt.Sprintf("the sandbox shielded %d credential/host-service path(s) from the script", len(res.Shields))))
 	}
 	if len(res.GateAdmitted) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%s\n", t.warn("the live gate admitted egress beyond the manifest:"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("the live gate admitted egress beyond the manifest:"))
 		for _, hp := range res.GateAdmitted {
 			// Quoted for the same reason the gate prompt quotes it: the target chose the
 			// host, and a human approving the quoted form does not make the raw bytes safe
 			// to replay in the summary.
-			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a real wrapper would offer to add this to the manifest)"))
 		}
 	}
 	// A guard block is the one outcome a supervised run cannot explain from the prompt
@@ -295,12 +309,57 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// only that it could not connect. Without this the approval looks honored and the
 	// failure looks unexplained. Quoted for the reason the admitted list is.
 	if len(res.GuardBlocked) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%s\n", t.warn("the egress guard refused these destinations: each resolved to an address the sandbox may not reach"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("the egress guard refused these destinations: each resolved to an address the sandbox may not reach"))
 		for _, hp := range res.GuardBlocked {
-			fmt.Fprintf(os.Stderr, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
-	return res.ExitCode
+	// A grant over a built-in credential shield is caveat-emptor: approve() can hand one
+	// out because the human said yes to a path, and bento honors it rather than refusing.
+	// ShieldedGrantTargets names the store it landed on where that differs from the
+	// spelling - the grantable names are built from $HOME, so a grant can name a symlink
+	// while the exposure lands on the real key. Both quoted: neither is manifest text.
+	if len(res.ShieldedGrants) > 0 {
+		lands := make(map[string]string, len(res.ShieldedGrantTargets))
+		for _, g := range res.ShieldedGrantTargets {
+			lands[g.Path] = g.Credential
+		}
+		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields as credential stores:"))
+		for _, g := range res.ShieldedGrants {
+			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
+			if target, ok := lands[g]; ok {
+				fmt.Fprintf(w, "    %s %s\n", t.dim("on this host:"), t.bold(strconv.Quote(target)))
+			}
+		}
+	}
+	// Accepted aliases are a gap the run proceeded over knowingly. supervise passes no
+	// AcceptAliasesUnder today, but an empty list is not proof there was no second name -
+	// reporting it unconditionally is what keeps a copyist that adds the option honest.
+	if len(res.AcceptedAliases) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("these paths were readable as a second name for a shielded credential:"))
+		for _, a := range res.AcceptedAliases {
+			fmt.Fprintf(w, "  %s %s %s\n", t.bold(strconv.Quote(a.Path)), t.dim("aliases"), t.bold(strconv.Quote(a.Credential)))
+		}
+	}
+	// The mirror of Shields, populated only by the tier that has no mount namespace and
+	// so applies no shields at all. Same contract as the grants above: bento does not
+	// refuse, so staying quiet is what would hide the exposure.
+	if len(res.Exposed) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("this host could not shield these paths; the script could read them:"))
+		for _, s := range res.Exposed {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+s.Kind+" on a host that can shield)"))
+		}
+	}
+	// A failed run that reached nothing through the proxy is what a bypass looks like:
+	// bento intercepts egress cooperatively through HTTP_PROXY, so a script that ignores
+	// proxy settings dials into an empty network namespace and fails closed. The count is
+	// meaningful here even over a manifest declaring no network, because the enforced run
+	// always carries a live gate. A heuristic, so it is worded as one.
+	if res.ExitCode != 0 && res.EgressConnections == 0 {
+		fmt.Fprintf(w, "\n%s\n", t.dim("the script failed having made no connection through the egress proxy; if it needs"))
+		fmt.Fprintf(w, "%s\n", t.dim("network, note that bento intercepts egress via HTTP_PROXY - a script that ignores"))
+		fmt.Fprintf(w, "%s\n", t.dim("proxy settings cannot reach even its approved hosts."))
+	}
 }
 
 // reportInterrupt is the exit for a signalled run: it is supervise's own failure code,
