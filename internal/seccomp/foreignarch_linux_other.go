@@ -2,9 +2,17 @@
 
 package seccomp
 
-// blockForeignArch is a no-op off amd64. The compat-ABI bypass it closes is the
-// x86 i386 path (int 0x80); an arm64 kernel built with CONFIG_COMPAT has the
-// analogous aarch32 bypass, but the hand-rolled arch guard is only implemented for
-// amd64 (as with the strict/egress filters). That residual is documented rather
-// than silently closed here.
-func blockForeignArch() error { return nil }
+import "fmt"
+
+// blockForeignArch is unavailable off amd64. The library-backed filters it
+// accompanies (BlockExec, BlockProcessReach, BlockIoUring) match syscalls by their
+// native numbers and default-allow everything else, so without an arch guard a
+// compat ABI - aarch32 on an arm64 kernel built with CONFIG_COMPAT, exactly as
+// i386 is on amd64 - reaches the default-allow and bypasses all three. Returning
+// nil here would install those filters and report them applied while the bypass
+// stayed open, so this refuses instead: the guard is amd64-only, as the
+// strict/egress ones already are, and an unenforceable block fails loud rather
+// than quietly.
+func blockForeignArch() error {
+	return fmt.Errorf("seccomp: the foreign-arch guard is not implemented for this architecture, so the syscall filters it protects cannot be enforced")
+}
