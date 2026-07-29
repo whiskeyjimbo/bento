@@ -41,7 +41,7 @@ var observeSupported = observe.Supported
 // describe this run - profiling observes exec rather than blocking it, and its proxy
 // records rather than allowlisting. What it does share with Run is that a requested
 // resource limit protects the host, so that one is enforced and refused here directly.
-func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths []string) (profile.Observation, error) {
+func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths, acceptAliasesUnder []string) (profile.Observation, error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
 	}
@@ -80,12 +80,20 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	}
 	defer cleanup()
 
+	// Every refusal is decided here, before anything is launched, and the granted write
+	// directories are created - the same pre-launch pass the enforced run makes. The
+	// profiled target is untrusted by construction, so an alias reaching a shielded
+	// credential from inside an accepted grant is exposed here exactly as it would be
+	// under Run, and a write grant naming a directory that does not exist yet is bound
+	// with --bind-try, so without the mkdir it is a silent no-op the convergence loop
+	// then never converges on. compile re-runs checkGrants below as its own guard.
+	preflight, err := preflightGrants(sb, p, acceptAliasesUnder)
+	if err != nil {
+		return profile.Observation{}, err
+	}
 	// Remove directory shield mount points bwrap creates on the host, as Run does -
 	// profiling applies the same deny-list shields, so it leaves the same artifacts.
-	if reads, writes, err := resolveGrants(sb, p); err == nil {
-		_, optIns := explicitShieldOptIns(sb, p.Read)
-		defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
-	}
+	defer removeCreatedShieldDirs(preflight.createdShieldDirs(sb))
 
 	report, err := os.CreateTemp("", "bento-observe-")
 	if err != nil {

@@ -298,6 +298,19 @@ invocation, because a run that reads past a shield must not look clean; and it i
 invocation flag, never a manifest field, since an alias is a fact about one host's
 filesystem and a manifest is portable and fingerprinted.
 
+An acknowledgement wide enough to contain a credential store is refused outright,
+because it would accept every alias of that store rather than the ones you meant.
+That verdict is reached against every store this host shields, not against the
+aliases the current run happened to find - the flag is pasted into a command line
+that outlives the run that suggested it, so one judged only against today's aliases
+would silently accept whatever is planted under it tomorrow, and one typed on a run
+that found nothing would never be judged at all.
+
+`bento profile` runs the same scan and takes the same flag. The profiled target is
+untrusted by construction - that is what it is being profiled to find out - so an
+alias inside a discovery grant reads past the shield there exactly as it would
+under a real run, and `--allow-network` would forward what it read.
+
 Note that `rsync --link-dest` does *not* trigger this: it hardlinks each snapshot to
 the previous snapshot rather than to the source, so the live credential keeps a link
 count of one. Its snapshots are byte-identical copies, which is the content residual

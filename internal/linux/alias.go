@@ -62,6 +62,18 @@ type credentialAlias struct {
 	Credential string
 }
 
+// aliasScan is what one run's credential scan produced. It carries the shielded
+// credential paths alongside the aliases because the two answer different questions and
+// only one of them is about this run: found depends on what the policy grants, while
+// credentials is every store the host shields, whatever this run reached. Judging an
+// acknowledgement needs the second - a guard that consults only found accepts
+// "--accept-alias $HOME" on any run whose aliases happen to sit elsewhere, and accepts
+// anything at all on a run that found nothing.
+type aliasScan struct {
+	found       []credentialAlias
+	credentials []string
+}
+
 // aliasedCredentials reports the paths inside the trees this run exposes that alias a
 // shielded credential. The trees are everything bwrap will bind, not only the paths the
 // policy names: an out-of-FHS interpreter has its whole install prefix bound read-only so
@@ -86,22 +98,27 @@ type credentialAlias struct {
 // engineered against, because the actor here already holds the user's privileges and
 // could read the credential directly; the value delivered is naming where an alias is,
 // not blocking someone who needs no alias.
-func aliasedCredentials(sb sandbox, trees, literalOptIns []string) []credentialAlias {
+func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, error) {
 	creds, linked := credentialFiles(sb, literalOptIns)
 	if len(creds) == 0 {
-		return nil
+		return aliasScan{}, nil
 	}
 
 	want := make(map[fileID]string, len(creds))
 	shielded := make(map[string]bool, len(creds))
+	credentials := make([]string, 0, len(creds))
 	for _, c := range creds {
 		// Two credentials that are already hardlinks of each other share an identity;
 		// the shallower path names the pair predictably.
 		if prev, dup := want[c.id]; !dup || c.path < prev {
 			want[c.id] = c.path
 		}
-		shielded[c.path] = true
+		if !shielded[c.path] {
+			shielded[c.path] = true
+			credentials = append(credentials, c.path)
+		}
 	}
+	slices.Sort(credentials)
 
 	resolved := make([]string, 0, len(trees))
 	for _, t := range trees {
@@ -134,7 +151,11 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) []credentialA
 			devs = append(devs, id.dev)
 		}
 	}
-	out = append(out, mountAliases(sb, creds, shielded, trees, devs)...)
+	mounted, err := mountAliases(sb, creds, shielded, trees, devs)
+	if err != nil {
+		return aliasScan{}, err
+	}
+	out = append(out, mounted...)
 
 	slices.SortFunc(out, func(a, b credentialAlias) int {
 		if a.Path != b.Path {
@@ -144,7 +165,7 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) []credentialA
 	})
 	// Overlapping grants (read: ~ alongside read: ~/project) walk the same file twice,
 	// and a bind inside a walked tree is found by both mechanisms; report each once.
-	return slices.Compact(out)
+	return aliasScan{found: slices.Compact(out), credentials: credentials}, nil
 }
 
 // splitAcknowledgedAliases divides found aliases into the ones that still refuse the run
@@ -156,10 +177,7 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) []credentialA
 // credential per snapshot. The trees are resolved before comparing, like every other path
 // this package compares - the aliases arrive resolved, so an unresolved acknowledgement
 // would match nothing and silently keep refusing.
-func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder []string) (refuse, accepted []credentialAlias, err error) {
-	if len(found) == 0 {
-		return nil, nil, nil
-	}
+func splitAcknowledgedAliases(sb sandbox, scan aliasScan, acceptUnder []string) (refuse, accepted []credentialAlias, err error) {
 	trees := make([]string, 0, len(acceptUnder))
 	for _, t := range acceptUnder {
 		t = sb.resolve(t)
@@ -169,12 +187,19 @@ func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder [
 		// never had in mind. Refusing is the honest answer - the caller asked to accept
 		// specific aliases and this would accept all of them, so silently narrowing it
 		// would be answering a different question than the one they asked.
-		if err := checkAcknowledgementScope(t, found); err != nil {
+		//
+		// Judged before the empty-scan shortcut below, and against every credential the
+		// host shields rather than the ones this run aliased. Both matter: the flag is
+		// pasted into a command line that outlives the run that suggested it, so an
+		// acknowledgement validated only against today's aliases silently accepts every
+		// one planted under it tomorrow - and one validated on a run that found nothing
+		// was never judged at all.
+		if err := checkAcknowledgementScope(t, scan.credentials); err != nil {
 			return nil, nil, err
 		}
 		trees = append(trees, t)
 	}
-	for _, a := range found {
+	for _, a := range scan.found {
 		if slices.ContainsFunc(trees, func(t string) bool { return under(a.Path, t) }) {
 			accepted = append(accepted, a)
 			continue
@@ -188,8 +213,8 @@ func splitAcknowledgedAliases(sb sandbox, found []credentialAlias, acceptUnder [
 // aliases in front of it. The same predicate decides what aliasRefusal is willing to
 // SUGGEST, so the advice and the enforcement cannot drift apart - suggesting a narrow tree
 // while accepting an arbitrarily wide one was the gap this closes.
-func checkAcknowledgementScope(tree string, aliases []credentialAlias) error {
-	if overbroadAcknowledgement(tree, aliases) {
+func checkAcknowledgementScope(tree string, credentials []string) error {
+	if overbroadAcknowledgement(tree, credentials) {
 		return fmt.Errorf("linux: --accept-alias %s would accept every alias of a credential it contains, not the ones you meant; name the tree the aliases actually live in", tree)
 	}
 	return nil
@@ -198,11 +223,14 @@ func checkAcknowledgementScope(tree string, aliases []credentialAlias) error {
 // overbroadAcknowledgement reports whether a tree is too wide to acknowledge: the
 // filesystem root, or a tree holding one of the shielded credentials itself. A backup root
 // passes - it contains second names for credentials, not the credentials.
-func overbroadAcknowledgement(tree string, aliases []credentialAlias) bool {
+//
+// credentials is the host's whole shielded set, not the subset this run aliased, so the
+// verdict on a given tree is the same on every run.
+func overbroadAcknowledgement(tree string, credentials []string) bool {
 	if tree == "/" || tree == "." || tree == "" {
 		return true
 	}
-	return slices.ContainsFunc(aliases, func(a credentialAlias) bool { return under(a.Credential, tree) })
+	return slices.ContainsFunc(credentials, func(c string) bool { return under(c, tree) })
 }
 
 // reportedAliases converts accepted aliases for the run's result. The scan already sorts
@@ -228,7 +256,7 @@ func reportedAliases(accepted []credentialAlias) []enforce.CredentialAlias {
 // symlink-resolved, and one retyped by hand would not compare equal to what the scan
 // produced - so the message hands over the exact string the acknowledgement needs instead
 // of describing it.
-func aliasRefusal(aliases []credentialAlias) error {
+func aliasRefusal(aliases []credentialAlias, credentials []string) error {
 	var b strings.Builder
 	b.WriteString("linux: a readable path is a second name for a shielded credential, which would read past the shield:")
 	for _, a := range aliases {
@@ -236,7 +264,7 @@ func aliasRefusal(aliases []credentialAlias) error {
 	}
 	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it.")
 	b.WriteString("\nif these are known to you - a snapshot or deduplicated backup - acknowledge the tree:")
-	for _, r := range acknowledgementRoots(aliases) {
+	for _, r := range acknowledgementRoots(aliases, credentials) {
 		fmt.Fprintf(&b, "\n  --accept-alias %s", r)
 	}
 	return errors.New(b.String())
@@ -253,7 +281,7 @@ func aliasRefusal(aliases []credentialAlias) error {
 // credential itself. That second guard is the one that matters: aliases scattered across
 // a home share the home as their ancestor, and suggesting it would turn a targeted
 // acknowledgement into an off-switch covering the credential stores too.
-func acknowledgementRoots(aliases []credentialAlias) []string {
+func acknowledgementRoots(aliases []credentialAlias, credentials []string) []string {
 	parents := make([]string, 0, len(aliases))
 	for _, a := range aliases {
 		if p := filepath.Dir(a.Path); !slices.Contains(parents, p) {
@@ -265,7 +293,7 @@ func acknowledgementRoots(aliases []credentialAlias) []string {
 	for _, p := range parents[1:] {
 		shared = commonAncestor(shared, p)
 	}
-	if overbroadAcknowledgement(shared, aliases) {
+	if overbroadAcknowledgement(shared, credentials) {
 		return parents
 	}
 	return []string{shared}
@@ -303,13 +331,17 @@ func commonAncestor(a, b string) string {
 // credential's own ancestor at that same path, so the alias it computes is the credential
 // itself and drops out as the shielded path - which is why the root filesystem's mount
 // does not make every launch walk the whole home.
-func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, trees []string, devs []uint64) []credentialAlias {
+func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, trees []string, devs []uint64) ([]credentialAlias, error) {
+	mounts, err := sb.mountpoints(devs)
+	if err != nil {
+		return nil, fmt.Errorf("linux: reading the host's mount table to scan for credential aliases: %w", err)
+	}
 	byID := map[fileID][]string{}
-	for _, m := range sb.mountpoints(devs) {
+	for _, m := range mounts {
 		byID[m.id] = append(byID[m.id], m.path)
 	}
 	if len(byID) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Credentials share ancestors (~/.ssh and ~/.aws both sit under home), so each
@@ -355,7 +387,7 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 			break
 		}
 	}
-	return out
+	return out, nil
 }
 
 // credentialFiles returns the identified files behind this host's hidden home
@@ -542,20 +574,23 @@ func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
 // forever, and hanging before launch over a filesystem holding no credential would be a
 // worse failure than the one this scan prevents. A device the kernel reports under a
 // number that does not match the credential's st_dev (some btrfs anonymous devices) is a
-// miss, not a misattribution. Unreadable mountinfo yields nothing, as does a scan that
-// could not finish - a partial mount list is the more dangerous shape, since it reads as
-// a complete one. Either way this feeds one of two mechanisms, and the hardlink half
-// stands on its own.
-func hostMountpoints(devs []uint64) []mountPoint {
+// miss, not a misattribution.
+//
+// A mount table that cannot be read or cannot be parsed to the end is an error, not an
+// empty result. A partial list is the dangerous shape precisely because it reads as a
+// complete one, and the hardlink half of the scan does not compensate for it: a bind
+// adds no directory entry, so it bumps no link count and the hardlink gate never opens
+// for one. Losing this mechanism silently loses bind detection outright.
+func hostMountpoints(devs []uint64) ([]mountPoint, error) {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	paths, err := mountinfoPaths(f, devs)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	var out []mountPoint
@@ -564,7 +599,7 @@ func hostMountpoints(devs []uint64) []mountPoint {
 			out = append(out, mountPoint{path: path, id: id})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // mountinfoPaths returns the mountpoints in a mountinfo stream that sit on one of the

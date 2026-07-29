@@ -215,7 +215,7 @@ func TestProfileExecAllNoNetworkRuns(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("Profile with exec:all and no network failed: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestProfileDefaultDenyRecordsHomePathWithoutExposure(t *testing.T) {
 
 	var out bytes.Buffer
 	obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
-		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out}, false, nil)
+		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("profile: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestProfileHomeIsEmptyOverlay(t *testing.T) {
 
 	var out bytes.Buffer
 	if _, err := sandboxEnforcer(t).Profile(context.Background(), p,
-		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out, Stderr: &out}, false, nil); err != nil {
+		enforce.Process{Env: map[string]string{"HOME": home}, Stdout: &out, Stderr: &out}, false, nil, nil); err != nil {
 		t.Fatalf("profile: %v", err)
 	}
 	got := out.String()
@@ -337,7 +337,7 @@ func TestProfileThenEnforceHomePathRoundTrip(t *testing.T) {
 	var pout bytes.Buffer
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 	obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
-		enforce.Process{Env: env, Stdout: &pout}, false, nil)
+		enforce.Process{Env: env, Stdout: &pout}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("profile: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestProfileSurfacesExitStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
-		obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil)
+		obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
 		if err != nil {
 			t.Fatalf("Profile: %v", err)
 		}
@@ -419,7 +419,7 @@ func TestProfileTargetCannotReachReport(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
 
 	var out bytes.Buffer
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("profile: %v (out: %q)", err, out.String())
 	}
@@ -1060,7 +1060,7 @@ func TestProfileLeavesNoHostArtifact(t *testing.T) {
 	}
 
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{proj}, Exec: policy.ExecAll}
-	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil); err != nil {
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil, nil); err != nil {
 		t.Fatalf("Profile failed: %v", err)
 	}
 
@@ -1313,7 +1313,7 @@ func TestProfileReadsSymlinkedGrant(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir, link}, Exec: policy.ExecAll}
 
 	var out bytes.Buffer
-	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("Profile: %v (output: %s)", err, out.String())
 	}

@@ -226,7 +226,7 @@ func TestProfileDenyPathsShieldsCallerStore(t *testing.T) {
 	run := func(deny []string) (profile.Observation, string) {
 		var out bytes.Buffer
 		obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
-			enforce.Process{Stdout: &out, Stderr: &out}, false, deny)
+			enforce.Process{Stdout: &out, Stderr: &out}, false, deny, nil)
 		if err != nil {
 			t.Fatalf("Profile: %v", err)
 		}

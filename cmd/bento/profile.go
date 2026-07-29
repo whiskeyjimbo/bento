@@ -25,9 +25,10 @@ import (
 
 func newProfileCmd() *cobra.Command {
 	var (
-		interpreter  string
-		out          string
-		allowNetwork bool
+		interpreter   string
+		out           string
+		allowNetwork  bool
+		acceptAliases []string
 	)
 	cmd := &cobra.Command{
 		Use:   "profile <script> [-- args...]",
@@ -82,6 +83,7 @@ func newProfileCmd() *cobra.Command {
 			cfg := profileConfig{
 				ctx: cmd.Context(), script: script, interpreter: interpreter,
 				args: args[1:], env: env, allowNetwork: allowNetwork,
+				acceptAliases: acceptAliases,
 			}
 			base := discoveryPolicy(script, interpreter, args[1:])
 
@@ -194,6 +196,7 @@ func newProfileCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the extension if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
+	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
 }
@@ -219,13 +222,14 @@ func incompleteReason(status roundStatus, stop convergeStop) string {
 // profileConfig carries the inputs a profiling round needs that do not change between
 // rounds, so the convergence loop can re-run rounds without re-threading them.
 type profileConfig struct {
-	ctx          context.Context
-	script       string
-	interpreter  string
-	args         []string
-	env          map[string]string
-	allowNetwork bool
-	targetStdin  io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
+	ctx           context.Context
+	script        string
+	interpreter   string
+	args          []string
+	env           map[string]string
+	allowNetwork  bool
+	acceptAliases []string  // host trees whose credential aliases the user has acknowledged; profiling scans for them exactly as an enforced run does
+	targetStdin   io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
 }
 
 // profileRound runs one profiling pass under discovery and returns the clamped
@@ -238,7 +242,7 @@ type profileConfig struct {
 func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, roundStatus, error) {
 	obs, err := backend.Profile(cfg.ctx, discovery,
 		enforce.Process{Stdin: cfg.targetStdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: cfg.env},
-		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork})
+		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork, AcceptAliasesUnder: cfg.acceptAliases})
 	if err != nil {
 		return nil, roundStatus{}, err
 	}

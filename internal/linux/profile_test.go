@@ -132,7 +132,7 @@ func TestProfileRefusesWithoutAnObservationBackend(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}}
 
 	var out strings.Builder
-	_, err := New().Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+	_, err := New().Profile(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, false, nil, nil)
 	if err == nil {
 		t.Fatal("Profile must refuse on a host with no observation backend, not run and report an empty observation")
 	}
@@ -208,7 +208,7 @@ func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
 		}
 		var out strings.Builder
 		obs, err := sandboxEnforcer(t).Profile(context.Background(), p,
-			enforce.Process{Stdout: &out, Stderr: &out}, false, nil)
+			enforce.Process{Stdout: &out, Stderr: &out}, false, nil, nil)
 		// The kernel picks its OOM victim by size, so it usually takes the allocating
 		// shell and the observer still reports - but it can take the observer instead,
 		// which surfaces as a truncated report. Both are the cap biting, and only the
@@ -252,8 +252,86 @@ func TestProfileRefusesLimitsItCannotEnforce(t *testing.T) {
 		t.Skip("this host can create a transient scope; the refusal is unreachable here")
 	}
 	p := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{Memory: "256M"}}
-	_, err := New().Profile(context.Background(), p, enforce.Process{}, false, nil)
+	_, err := New().Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot enforce") {
 		t.Fatalf("profiling must refuse limits this host cannot enforce; got err=%v", err)
+	}
+}
+
+// mqwl: profiling applies the same path shields an enforced run does, so it has to run
+// the same alias scan. The profiled target is untrusted by construction - that is the
+// whole reason it is being profiled - so a hardlink to a shielded credential inside a
+// granted tree is read past the shield here exactly as it would be under Run, and
+// --allow-network would forward what it read. The acknowledgement is honored, because the
+// refusal prints it as a paste-ready flag and a host with a deduplicated backup would
+// otherwise be unprofilable.
+func TestProfileRefusesAnAliasedCredential(t *testing.T) {
+	requireSandbox(t)
+	// newSandbox takes the home the deny-list anchors on from os.UserHomeDir, i.e. $HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(project, "notes.txt")
+	if err := os.Link(key, alias); err != nil {
+		t.Skipf("no hardlink support: %v", err)
+	}
+	entrypoint := filepath.Join(project, "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{project}}
+	proc := enforce.Process{Env: map[string]string{"HOME": home}}
+
+	_, err := sandboxEnforcer(t).Profile(context.Background(), p, proc, false, nil, nil)
+	if err == nil {
+		t.Fatal("Profile observed a policy whose granted tree holds a hardlink to a shielded credential")
+	}
+	for _, want := range []string{alias, key} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q must name %q", err, want)
+		}
+	}
+
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, proc, false, nil, []string{project}); err != nil {
+		t.Fatalf("acknowledging the tree must let the profiling run proceed: %v", err)
+	}
+}
+
+// A write grant naming a directory that does not exist yet is bound with --bind-try, so
+// without the mkdir the bind is a silent no-op: the target's write fails, the observer
+// records the attempt as ungranted, and the convergence loop proposes the same grant
+// again forever. Run prepares these directories before launching; profiling has to as
+// well, or the manifest it converges on is one it never actually exercised.
+func TestProfileCreatesAWriteGrantsDirectory(t *testing.T) {
+	requireSandbox(t)
+	dir := t.TempDir()
+	unborn := filepath.Join(dir, "out", "nested")
+	script := filepath.Join(dir, "write.sh")
+	if err := os.WriteFile(script, []byte("echo hi > "+filepath.Join(unborn, "f")+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{unborn}, Exec: policy.ExecAll}
+	var out strings.Builder
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p,
+		enforce.Process{Stdout: &out, Stderr: &out}, false, nil, nil); err != nil {
+		t.Fatalf("Profile: %v\noutput:\n%s", err, out.String())
+	}
+
+	// The write landed on the host, which is only possible if the directory existed to
+	// be bound: --bind-try would have skipped a missing source without a word.
+	if _, err := os.Stat(filepath.Join(unborn, "f")); err != nil {
+		t.Errorf("the profiled write did not persist, so the write grant was never bound: %v\noutput:\n%s", err, out.String())
 	}
 }

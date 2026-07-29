@@ -17,4 +17,12 @@ type ProfileOptions struct {
 	// path's contents, not its existence, and the attempted access is still observed
 	// - so the caller must still refuse a grant that later covers these paths.
 	DenyPaths []string
+
+	// AcceptAliasesUnder acknowledges the credential aliases inside the named host
+	// trees, which would otherwise refuse the profiling run. Profiling scans for them
+	// exactly as an enforced run does - the profiled target is untrusted by
+	// construction - so the same acknowledgement has to be available here, or a host
+	// with a deduplicated backup could never be profiled at all. See
+	// RunOptions.AcceptAliasesUnder for what an acknowledgement means.
+	AcceptAliasesUnder []string
 }

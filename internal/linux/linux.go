@@ -80,58 +80,18 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	defer cleanup()
 
-	// Everything that can refuse this run is decided before anything touches the host,
-	// the order runDegraded already uses: the full grant-safety set and the alias scan
-	// run first, so a to-be-refused grant never leaves behind a directory prepareWriteDirs
-	// created for it. compile re-runs checkGrants as its own guard.
-	reads, writes, err := resolveGrants(sb, p)
+	preflight, err := preflightGrants(sb, p, opts.AcceptAliasesUnder)
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	if err := checkGrants(sb, p, reads, writes); err != nil {
-		return enforce.Result{}, err
-	}
-
-	// Surface any always-shielded credential store the policy explicitly opted back into
-	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
-	// path. The shields still protect every path not opted into.
-	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
-
-	// A shield hides a credential's path, not the content behind it. Refuse before the
-	// target starts if anything this run can read holds a second name for a shielded
-	// credential's inode: the user granted that tree, not the credential, so proceeding
-	// would hand over a store they never opted into. The scan covers everything bwrap
-	// binds, not only the policy's own grants, because an out-of-FHS interpreter's prefix
-	// is bound too and may sit under the home. An explicit opt-in is honored - those
-	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
-	// the aliases in it, so this refuses only what nobody asked for.
-	// The degraded tier returns above without reaching here, and that is a real gap, not
-	// a clean exemption: it confines with Landlock, which is path-hierarchy based, so an
-	// alias inside a granted tree is readable there for exactly the reason it would be
-	// past a shield - Landlock never consults an inode's other names. Nor is it reported:
-	// the exposure list can only name built-in shield paths that fall in the visible set,
-	// and an arbitrary alias path is not one. So --allow-degraded proceeds where the full
-	// tier refuses. It is opt-in and already the weaker tier, which is why this is
-	// documented rather than fixed here.
-	found := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
-	refuse, accepted, err := splitAcknowledgedAliases(sb, found, opts.AcceptAliasesUnder)
-	if err != nil {
-		return enforce.Result{}, err
-	}
-	if len(refuse) > 0 {
-		return enforce.Result{}, aliasRefusal(refuse)
-	}
-
-	if err := prepareWriteDirs(p, sb); err != nil {
-		return enforce.Result{}, err
-	}
+	optedIn, optIns, accepted := preflight.optedIn, preflight.optIns, preflight.aliases
 
 	// bwrap creates a directory shield mount point on the host when the shielded
 	// path does not exist yet and a write grant makes its parent writable (e.g. a
 	// project's unborn .git/hooks). Remove those after the run so the sandbox leaves
 	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
 	// best-effort.
-	defer removeCreatedShieldDirs(createdShieldDirs(sb, exposedPaths(sb, reads, writes), writes, optIns))
+	defer removeCreatedShieldDirs(preflight.createdShieldDirs(sb))
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
 	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox
@@ -233,6 +193,82 @@ func noteDeadListener(r *enforce.Report, err error) {
 func isExitError(err error) bool {
 	var ee *exec.ExitError
 	return errors.As(err, &ee)
+}
+
+// preflighted is what the pre-launch checks produced for a run that passed them: the
+// resolved grants the sandbox will bind, the always-shielded stores the policy opted
+// back in, and the aliases the caller acknowledged.
+type preflighted struct {
+	reads, writes []string
+	// optedIn are the LITERAL deny-list paths the policy opted back into the sandbox,
+	// for the frontend to warn about by the name the deny-list uses; optIns are the
+	// same paths resolved, which is what the shield bookkeeping compares against.
+	optedIn, optIns []string
+	aliases         []credentialAlias
+}
+
+// createdShieldDirs names the directory shield mount points bwrap will create on the
+// host for this run, so the caller can remove them afterwards.
+func (pf preflighted) createdShieldDirs(sb sandbox) []string {
+	return createdShieldDirs(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, pf.optIns)
+}
+
+// preflightGrants decides everything that can refuse a run and then prepares the host
+// for it, in that order: the full grant-safety set and the alias scan run before
+// prepareWriteDirs, so a to-be-refused grant never leaves behind a directory that was
+// created for it. compile re-runs checkGrants as its own guard.
+//
+// Both bwrap tiers - the enforced run and the profiling run - go through here. Profiling
+// needs it for exactly the same reason Run does: the profiled target is untrusted by
+// construction, so a hardlink to a credential inside an accepted read grant would be
+// readable there too, and a write grant naming a not-yet-existing directory would be a
+// silent no-op that the convergence loop then never converges on.
+//
+// The degraded tier does not, and that is a real gap rather than a clean exemption: it
+// confines with Landlock, which is path-hierarchy based, so an alias inside a granted
+// tree is readable there for exactly the reason it would be past a shield - Landlock
+// never consults an inode's other names. Nor is it reported: the exposure list can only
+// name built-in shield paths that fall in the visible set, and an arbitrary alias path
+// is not one. So --allow-degraded proceeds where the full tier refuses. It is opt-in and
+// already the weaker tier, which is why this is documented rather than fixed here.
+func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) (preflighted, error) {
+	reads, writes, err := resolveGrants(sb, p)
+	if err != nil {
+		return preflighted{}, err
+	}
+	if err := checkGrants(sb, p, reads, writes); err != nil {
+		return preflighted{}, err
+	}
+
+	// Surface any always-shielded credential store the policy explicitly opted back into
+	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
+	// path. The shields still protect every path not opted into.
+	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
+
+	// A shield hides a credential's path, not the content behind it. Refuse before the
+	// target starts if anything this run can read holds a second name for a shielded
+	// credential's inode: the user granted that tree, not the credential, so proceeding
+	// would hand over a store they never opted into. The scan covers everything bwrap
+	// binds, not only the policy's own grants, because an out-of-FHS interpreter's prefix
+	// is bound too and may sit under the home. An explicit opt-in is honored - those
+	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
+	// the aliases in it, so this refuses only what nobody asked for.
+	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
+	if err != nil {
+		return preflighted{}, err
+	}
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scan, acceptAliasesUnder)
+	if err != nil {
+		return preflighted{}, err
+	}
+	if len(refuse) > 0 {
+		return preflighted{}, aliasRefusal(refuse, scan.credentials)
+	}
+
+	if err := prepareWriteDirs(p, sb); err != nil {
+		return preflighted{}, err
+	}
+	return preflighted{reads: reads, writes: writes, optedIn: optedIn, optIns: optIns, aliases: accepted}, nil
 }
 
 // prepareWriteDirs makes each granted write directory exist on the host before it

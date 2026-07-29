@@ -109,8 +109,10 @@ type sandbox struct {
 	// mountpoints returns where the host's filesystems are attached, with the identity
 	// of what sits at each. A bind exposes a credential's inode at a second path without
 	// adding a directory entry to it, so no link count reveals one and the mount table is
-	// the only place it shows up.
-	mountpoints func(devs []uint64) []mountPoint
+	// the only place it shows up. It errors rather than returning a short list: the
+	// hardlink half of the scan cannot cover for a missed bind, so a partial answer here
+	// would report clean because it could not look.
+	mountpoints func(devs []uint64) ([]mountPoint, error)
 	// statID returns a single host path's content identity. Injected beside the walking
 	// seams: the mount scan compares a credential's ancestor directories against what a
 	// mount is attached to, which is one stat per directory, not a walk.

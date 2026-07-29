@@ -35,9 +35,34 @@ func aliasSandbox(creds map[string][]identifiedFile, matches map[string][]identi
 		}
 		return out
 	}
-	sb.mountpoints = func([]uint64) []mountPoint { return nil }
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) { return nil, nil }
 	sb.statID = func(string) (fileID, bool) { return fileID{}, false }
 	return sb
+}
+
+// scanAliases runs the scan and fails the test on an error, so the cases that only care
+// about what was found read the way they did before an unreadable mount table became a
+// refusal rather than an empty result.
+func scanAliases(t *testing.T, sb sandbox, trees, optIns []string) []credentialAlias {
+	t.Helper()
+	scan, err := aliasedCredentials(sb, trees, optIns)
+	if err != nil {
+		t.Fatalf("aliasedCredentials: %v", err)
+	}
+	return scan.found
+}
+
+// scanOf builds the scan value the split takes. Production carries the host's whole
+// shielded set here; a case that only exercises acceptance needs no more than the stores
+// its own aliases name, and the cases that turn on the difference say so themselves.
+func scanOf(found ...credentialAlias) aliasScan {
+	var creds []string
+	for _, a := range found {
+		if !slices.Contains(creds, a.Credential) {
+			creds = append(creds, a.Credential)
+		}
+	}
+	return aliasScan{found: found, credentials: creds}
 }
 
 // The whole cost structure rests on one fact: a hardlink needs a second directory
@@ -56,7 +81,7 @@ func TestAliasedCredentialsSkipsWalkWhenNoCredentialIsLinked(t *testing.T) {
 		walked = true
 		return nil
 	}
-	if got := aliasedCredentials(sb, []string{"/home/u/project"}, nil); got != nil {
+	if got := scanAliases(t, sb, []string{"/home/u/project"}, nil); got != nil {
 		t.Errorf("aliasedCredentials = %v, want none when no credential carries an extra link", got)
 	}
 	if walked {
@@ -74,7 +99,7 @@ func TestAliasedCredentialsNamesTheAliasAndItsCredential(t *testing.T) {
 	matches := map[string][]identifiedFile{
 		"/home/u/project": {{path: "/home/u/project/notes.txt", id: fileID{dev: 1, ino: 10}}},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u/project"}, nil)
+	got := scanAliases(t, aliasSandbox(creds, matches), []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/notes.txt", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("aliasedCredentials = %v, want %v", got, want)
@@ -90,7 +115,7 @@ func TestAliasedCredentialsCoversWriteGrants(t *testing.T) {
 	matches := map[string][]identifiedFile{
 		"/home/u/build": {{path: "/home/u/build/key", id: fileID{dev: 1, ino: 11}}},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u/build"}, nil)
+	got := scanAliases(t, aliasSandbox(creds, matches), []string{"/home/u/build"}, nil)
 	want := []credentialAlias{{Path: "/home/u/build/key", Credential: "/home/u/.ssh/id_rsa"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("write grants must be walked too; got %v want %v", got, want)
@@ -111,7 +136,7 @@ func TestAliasedCredentialsIgnoresTheShieldedPathItself(t *testing.T) {
 			{path: "/home/u/copy", id: fileID{dev: 1, ino: 10}},             // the actual alias
 		},
 	}
-	got := aliasedCredentials(aliasSandbox(creds, matches), []string{"/home/u"}, nil)
+	got := scanAliases(t, aliasSandbox(creds, matches), []string{"/home/u"}, nil)
 	want := []credentialAlias{{Path: "/home/u/copy", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("the shielded path is not its own alias; got %v want %v", got, want)
@@ -134,7 +159,7 @@ func TestAliasedCredentialsDropsOptedInCredentials(t *testing.T) {
 		},
 	}
 	sb := aliasSandbox(creds, matches)
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, []string{"/home/u/.aws"})
+	got := scanAliases(t, sb, []string{"/home/u/project"}, []string{"/home/u/.aws"})
 	want := []credentialAlias{{Path: "/home/u/project/b", Credential: "/home/u/.ssh/id_rsa"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("an opted-in credential has no shield to leak past; got %v want %v", got, want)
@@ -158,7 +183,7 @@ func TestAliasedCredentialsResolvesTheOptInBeforeMatching(t *testing.T) {
 		}
 		return p
 	}
-	if got := aliasedCredentials(sb, []string{"/home/u/project"}, []string{"/home/u/.aws"}); got != nil {
+	if got := scanAliases(t, sb, []string{"/home/u/project"}, []string{"/home/u/.aws"}); got != nil {
 		t.Errorf("a symlinked store opted in by its literal path has no shield to leak past; got %v", got)
 	}
 }
@@ -177,14 +202,14 @@ func TestAliasedCredentialsFindsBindAliasWithoutTheWalk(t *testing.T) {
 		}
 		return fileID{}, false
 	}
-	sb.mountpoints = func([]uint64) []mountPoint {
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) {
 		return []mountPoint{
 			{path: "/home/u/project/creds", id: fileID{dev: 1, ino: 10}}, // the bind of the credential
 			{path: "/home/u/project/cache", id: fileID{dev: 9, ino: 99}}, // unrelated, foreign device
 			{path: "/mnt/elsewhere", id: fileID{dev: 1, ino: 10}},        // same bind, outside every grant
-		}
+		}, nil
 	}
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
+	got := scanAliases(t, sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/creds", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("a bind alias bumps no link count and must be caught from mountinfo; got %v want %v", got, want)
@@ -206,10 +231,10 @@ func TestAliasedCredentialsMapsDirectoryBindToTheCredentialPath(t *testing.T) {
 		}
 		return fileID{}, false
 	}
-	sb.mountpoints = func([]uint64) []mountPoint {
-		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 7}}}
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) {
+		return []mountPoint{{path: "/home/u/project/vendor", id: fileID{dev: 1, ino: 7}}}, nil
 	}
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
+	got := scanAliases(t, sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/home/u/project/vendor/credentials", Credential: "/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("a directory bind aliases each credential under it; got %v want %v", got, want)
@@ -229,7 +254,7 @@ func TestAliasedCredentialsResolvesBothSidesBeforeComparing(t *testing.T) {
 	}
 	sb := aliasSandbox(creds, matches)
 	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
-	got := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
+	got := scanAliases(t, sb, []string{"/home/u/project"}, nil)
 	want := []credentialAlias{{Path: "/var/home/u/project/copy", Credential: "/var/home/u/.aws/credentials"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("grants and deny paths must be compared resolved; got %v want %v", got, want)
@@ -275,7 +300,7 @@ func TestHostAliasesUnderFindsHardlinkNotCopy(t *testing.T) {
 func TestAliasRefusalNamesBothEnds(t *testing.T) {
 	err := aliasRefusal([]credentialAlias{
 		{Path: "/home/u/project/notes.txt", Credential: "/home/u/.aws/credentials"},
-	})
+	}, []string{"/home/u/.aws/credentials"})
 	for _, want := range []string{"/home/u/project/notes.txt", "/home/u/.aws/credentials", "shielded credential"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q must mention %q", err, want)
@@ -483,11 +508,11 @@ func TestAliasedCredentialsFindsABindMountedAboveTheGrant(t *testing.T) {
 		}
 		return fileID{}, false
 	}
-	sb.mountpoints = func([]uint64) []mountPoint {
-		return []mountPoint{{path: "/srv/backup", id: fileID{dev: 1, ino: 2}}}
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) {
+		return []mountPoint{{path: "/srv/backup", id: fileID{dev: 1, ino: 2}}}, nil
 	}
 
-	got := aliasedCredentials(sb, []string{"/srv/backup/.ssh"}, nil)
+	got := scanAliases(t, sb, []string{"/srv/backup/.ssh"}, nil)
 	want := []credentialAlias{{Path: "/srv/backup/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("a bind above the grant must still be found; got %v want %v", got, want)
@@ -509,14 +534,14 @@ func TestAliasedCredentialsIgnoresAnOrdinaryMount(t *testing.T) {
 		}
 		return fileID{}, false
 	}
-	sb.mountpoints = func([]uint64) []mountPoint {
-		return []mountPoint{{path: "/", id: fileID{dev: 1, ino: 2}}}
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) {
+		return []mountPoint{{path: "/", id: fileID{dev: 1, ino: 2}}}, nil
 	}
 
 	// The grant contains the credential, so the computed path lands inside a granted tree
 	// and only the "this is the credential itself" guard can reject it. Granting a sibling
 	// would let the containment filter pass the test without that guard working.
-	if got := aliasedCredentials(sb, []string{"/home/u"}, nil); got != nil {
+	if got := scanAliases(t, sb, []string{"/home/u"}, nil); got != nil {
 		t.Errorf("the root mount names the credential's own path, not an alias; got %v", got)
 	}
 }
@@ -676,7 +701,7 @@ func TestRealBindAliasIsFound(t *testing.T) {
 
 	// The grant names the backup, which mentions no credential path at all - and the key
 	// has a single link, so the hardlink gate stays shut and only the mount scan can see it.
-	got := aliasedCredentials(sb, []string{backup}, nil)
+	got := scanAliases(t, sb, []string{backup}, nil)
 	want := credentialAlias{Path: filepath.Join(backup, ".ssh/id_rsa"), Credential: key}
 	if !slices.Contains(got, want) {
 		t.Fatalf("real bind scan = %+v, want it to contain %+v", got, want)
@@ -797,7 +822,7 @@ func TestSplitAcknowledgedAliasesAcceptsByTree(t *testing.T) {
 		{Path: "/home/u/project/stolen", Credential: "/home/u/.aws/credentials"},
 	}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -820,7 +845,7 @@ func TestSplitAcknowledgedAliasesIgnoresANonMatchingTree(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backup"}) // typo: no trailing s
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backup"}) // typo: no trailing s
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -840,7 +865,7 @@ func TestSplitAcknowledgedAliasesResolvesTheAcknowledgedTree(t *testing.T) {
 	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
 	found := []credentialAlias{{Path: "/var/home/u/backups/snap/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -855,7 +880,7 @@ func TestSplitAcknowledgedAliasesResolvesTheAcknowledgedTree(t *testing.T) {
 func TestAliasRefusalPrintsThePasteableAcknowledgement(t *testing.T) {
 	err := aliasRefusal([]credentialAlias{
 		{Path: "/var/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"},
-	})
+	}, []string{"/var/home/u/.ssh/id_rsa"})
 	want := "--accept-alias /var/home/u/backups/2026-07-24/.ssh"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("refusal must print %q verbatim; got:\n%s", want, err)
@@ -922,7 +947,7 @@ func TestAcknowledgementRootsPrefersTheSharedTree(t *testing.T) {
 		{Path: "/home/u/backups/2026-07-24/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		{Path: "/home/u/backups/2026-07-24/.aws/credentials", Credential: "/home/u/.aws/credentials"},
 		{Path: "/home/u/backups/2026-07-25/.ssh/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
-	})
+	}, []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"})
 	if !slices.Equal(got, []string{"/home/u/backups"}) {
 		t.Errorf("acknowledgementRoots = %v, want the one shared tree [/home/u/backups]", got)
 	}
@@ -937,7 +962,7 @@ func TestAcknowledgementRootsRefusesATreeHoldingACredential(t *testing.T) {
 		{Path: "/home/u/notes/copy", Credential: "/home/u/.ssh/id_rsa"},
 		{Path: "/home/u/build/key", Credential: "/home/u/.aws/credentials"},
 	}
-	got := acknowledgementRoots(aliases)
+	got := acknowledgementRoots(aliases, []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"})
 	if slices.Contains(got, "/home/u") {
 		t.Errorf("must not suggest a tree containing the credential stores; got %v", got)
 	}
@@ -952,7 +977,7 @@ func TestAcknowledgementRootsNeverSuggestsTheFilesystemRoot(t *testing.T) {
 	got := acknowledgementRoots([]credentialAlias{
 		{Path: "/srv/a/key", Credential: "/home/u/.ssh/id_rsa"},
 		{Path: "/mnt/b/key", Credential: "/home/u/.ssh/id_rsa"},
-	})
+	}, []string{"/home/u/.ssh/id_rsa"})
 	if slices.Contains(got, "/") {
 		t.Errorf("must never suggest the filesystem root; got %v", got)
 	}
@@ -973,7 +998,7 @@ func TestSplitAcknowledgedAliasesRejectsAnOffSwitch(t *testing.T) {
 	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
 
 	for _, tree := range []string{"/", "/home/u", "/home/u/.."} {
-		_, accepted, err := splitAcknowledgedAliases(sb, found, []string{tree})
+		_, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{tree})
 		if err == nil {
 			t.Errorf("--accept-alias %s must be refused as an off-switch; accepted %v", tree, accepted)
 		}
@@ -981,8 +1006,68 @@ func TestSplitAcknowledgedAliasesRejectsAnOffSwitch(t *testing.T) {
 
 	// The legitimate case must still pass: a backup root holds second NAMES for
 	// credentials, not the credentials themselves.
-	refuse, accepted, err := splitAcknowledgedAliases(sb, found, []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
 	if err != nil || len(refuse) != 0 || len(accepted) != 1 {
 		t.Errorf("a backup root must be acceptable; err=%v refuse=%v accepted=%v", err, refuse, accepted)
+	}
+}
+
+// jx5f: the guard has to judge an acknowledgement against every credential the host
+// shields, not the ones this run happened to alias. A run whose aliases all name a store
+// outside the home would otherwise accept "--accept-alias ~" - and bento would print it
+// as a paste-ready suggestion - after which every alias planted under the home is
+// accepted silently on later runs.
+func TestSplitAcknowledgedAliasesJudgesTheWholeCredentialSet(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return p }
+	// The run's only alias names a relocated KUBECONFIG, so nothing in found sits under
+	// the home - but ~/.ssh/id_rsa is shielded all the same.
+	scan := aliasScan{
+		found:       []credentialAlias{{Path: "/home/u/project/copy", Credential: "/mnt/kube/config"}},
+		credentials: []string{"/home/u/.ssh/id_rsa", "/mnt/kube/config"},
+	}
+
+	if _, _, err := splitAcknowledgedAliases(sb, scan, []string{"/home/u"}); err == nil {
+		t.Error("--accept-alias /home/u holds a shielded credential and must be refused, whatever this run's aliases named")
+	}
+	// The narrow tree the user actually meant still passes.
+	if _, accepted, err := splitAcknowledgedAliases(sb, scan, []string{"/home/u/project"}); err != nil || len(accepted) != 1 {
+		t.Errorf("the tree the alias lives in must still be acceptable; err=%v accepted=%v", err, accepted)
+	}
+}
+
+// The same guard on a run that found nothing. An acknowledgement is typed once and lives
+// in a wrapper script forever, so validating it only when the current run has aliases to
+// compare against means "--accept-alias /" is accepted on the clean run that installs it
+// and never questioned again.
+func TestSplitAcknowledgedAliasesJudgesAnOffSwitchWithNoAliasesFound(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string { return p }
+	scan := aliasScan{credentials: []string{"/home/u/.ssh/id_rsa"}}
+
+	for _, tree := range []string{"/", "/home/u"} {
+		if _, _, err := splitAcknowledgedAliases(sb, scan, []string{tree}); err == nil {
+			t.Errorf("--accept-alias %s must be refused even when the run found no alias", tree)
+		}
+	}
+	if _, _, err := splitAcknowledgedAliases(sb, scan, []string{"/home/u/backups"}); err != nil {
+		t.Errorf("a narrow tree must stay acceptable on a run that found nothing: %v", err)
+	}
+}
+
+// 9aj1: a mount table that cannot be read to the end refuses the run. The hardlink half
+// does not cover for it - a bind adds no directory entry, so it bumps no link count and
+// the hardlink gate never opens for one - so returning an empty list here would report
+// clean because the scan could not look.
+func TestAliasedCredentialsRefusesAnUnreadableMountTable(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/home/u/.ssh": {{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 1}},
+	}
+	sb := aliasSandbox(creds, nil)
+	sb.mountpoints = func([]uint64) ([]mountPoint, error) { return nil, errors.New("mountinfo truncated") }
+
+	_, err := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "mountinfo truncated") {
+		t.Fatalf("an unreadable mount table must refuse the run, naming the cause; got %v", err)
 	}
 }

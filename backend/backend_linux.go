@@ -106,5 +106,5 @@ func reexecFail(err error) {
 // profiling untrusted code cannot exfiltrate; opts.DenyPaths shields caller-owned
 // paths from the profiling run (see ProfileOptions).
 func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, opts ProfileOptions) (profile.Observation, error) {
-	return linux.New().Profile(ctx, p, proc, opts.AllowNetwork, opts.DenyPaths)
+	return linux.New().Profile(ctx, p, proc, opts.AllowNetwork, opts.DenyPaths, opts.AcceptAliasesUnder)
 }
