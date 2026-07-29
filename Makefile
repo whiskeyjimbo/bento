@@ -42,7 +42,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test race vet lint audit vuln repro check install clean help
+.PHONY: all build test race vet lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -111,7 +111,16 @@ vuln: ## Scan both modules for known vulnerabilities (needs network)
 repro: ## Verify the binary builds byte-identically from a different source path
 	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" ./scripts/repro-build.sh
 
-check: vet lint test race audit ## Run all quality gates (vet, lint, test, race, audit)
+# The examples are separate modules (their go.mod replaces bento with ../..), so the
+# root `go test ./...` does not reach them and their tests can sit red indefinitely -
+# which is how the embed Result-completeness guard, the thing that keeps a new honesty
+# field from going unprinted, stayed failing unnoticed. The gate runs each verify.sh.
+examples: ## Build, vet and test every example module against the public API
+	@printf "$(CYAN)$(BOLD)==> Verifying example modules...$(RESET)\n"
+	@for f in examples/*/verify.sh; do "$$f" || exit 1; done
+	@printf "$(GREEN)$(BOLD)✓ Examples verified!$(RESET)\n"
+
+check: vet lint test race audit examples ## Run all quality gates (vet, lint, test, race, audit, examples)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
