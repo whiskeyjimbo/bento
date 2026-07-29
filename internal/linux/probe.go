@@ -242,10 +242,18 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 // grants it only on the write set, so a pathname socket outside the grants is denied and
 // only the abstract namespace - which no file grant governs - is left. Below it no
 // pathname socket is governed at all.
+//
+// /dev/log is named because it is the one denial with no visible symptom: glibc's
+// syslog(3) discards the message and reports nothing, so a target that logs through it
+// goes quiet rather than failing, and an operator has no thread to pull. The other
+// sockets this denies (nscd, systemd-resolved, dbus, X11) error visibly, and losing them
+// is the trade the tier is for.
 func unixSocketClause(resolveUnixRestricted bool) string {
 	if resolveUnixRestricted {
 		return "an abstract-namespace unix socket to a host daemon, which no file grant governs " +
-			"(a pathname one outside the write grants is denied by Landlock's resolve_unix right)"
+			"(a pathname one outside the write grants is denied by Landlock's resolve_unix right - " +
+			"including /dev/log, whose denial is silent, since glibc's syslog(3) drops the message " +
+			"without an error)"
 	}
 	return "a unix socket to a host daemon, including an abstract-namespace one no grant is needed to reach"
 }

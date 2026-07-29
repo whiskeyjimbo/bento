@@ -214,6 +214,11 @@ func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	if !strings.Contains(restricted, "abstract-namespace unix socket") {
 		t.Errorf("the abstract namespace stays reachable and must still be disclosed: %q", restricted)
 	}
+	// The one denial an operator cannot diagnose from the target's own behaviour, so the
+	// report has to name it rather than leave it to "a pathname socket is denied".
+	if !strings.Contains(restricted, "/dev/log") {
+		t.Errorf("the silent syslog denial must be named: %q", restricted)
+	}
 	_, unrestricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true)
 	if !strings.Contains(unrestricted, "any host daemon socket its path names") {
 		t.Errorf("below ABI 9 the pathname-socket residual must be disclosed: %q", unrestricted)
