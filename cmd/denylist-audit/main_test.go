@@ -31,7 +31,7 @@ func TestReportFlagsUncoveredInScopeShield(t *testing.T) {
 // The complement: a shield bento already covers (~/.ssh is a DenyAll dir in
 // denylist.Home) is not a gap, so the gate stays green.
 func TestReportPassesWhenShieldCovered(t *testing.T) {
-	content := "# top secret\nblacklist ${HOME}/.ssh\n"
+	content := liveSections() + "# top secret\nblacklist ${HOME}/.ssh\n"
 
 	var b bytes.Buffer
 	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
@@ -267,7 +267,7 @@ func skipMissingDep(t *testing.T, format string, args ...any) {
 // An out-of-scope section (firejail's privacy/system scope, which bento's empty-root
 // default already covers) is summarized, not treated as a gate failure.
 func TestReportIgnoresOutOfScopeSection(t *testing.T) {
-	content := "# KDE config\nblacklist ${HOME}/.config/some-kde-thing\n"
+	content := liveSections() + "# KDE config\nblacklist ${HOME}/.config/some-kde-thing\n"
 
 	var b bytes.Buffer
 	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
@@ -275,5 +275,36 @@ func TestReportIgnoresOutOfScopeSection(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "out-of-scope") {
 		t.Errorf("the out-of-scope gap should be summarized, not dropped; got %q", b.String())
+	}
+}
+
+// liveSections is a synthetic firejail preamble carrying one section per non-dormant
+// scope keyword, each with a home path bento already shields. report ratchets on the
+// keywords still matching a section, so a corpus built to exercise the diff arm has to
+// say that it is not also asserting an upstream retitle - see TestReportFailsOnStaleScopeKeyword.
+func liveSections() string {
+	var b strings.Builder
+	for _, kw := range audit.ScopeKeywords {
+		if _, dormant := audit.DormantKeywords[kw]; dormant {
+			continue
+		}
+		fmt.Fprintf(&b, "# %s\nblacklist ${HOME}/.ssh\n\n", kw)
+	}
+	return b.String()
+}
+
+// A scope keyword that matches no upstream section means firejail retitled the block out
+// from under the classifier: its entries stopped being compared, and the gap list stays
+// empty because nothing reaches it. inScopeSection fails open, so without this the gate
+// reports a clean pass over a comparison it never made.
+func TestReportFailsOnStaleScopeKeyword(t *testing.T) {
+	content := strings.Replace(liveSections(), "# top secret\n", "# Sensitive material\n", 1)
+
+	var b bytes.Buffer
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 1 {
+		t.Fatalf("a retitled section must fail the gate; got %d (%q)", code, b.String())
+	}
+	if !strings.Contains(b.String(), "top secret") {
+		t.Errorf("the stale keyword must be named so it can be re-pointed; got %q", b.String())
 	}
 }

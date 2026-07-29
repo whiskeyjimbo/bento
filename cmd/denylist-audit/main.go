@@ -168,13 +168,24 @@ func isProfile(content, sentinel string) bool {
 
 // report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
 // in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
-// exitGap when any in-scope gap remains, 0 when the list already covers them. It is separated
+// exitGap when any in-scope gap remains or a scope keyword has gone stale, 0 when the
+// list already covers them and the classifier still matches every section. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
 func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	// One diff logic, two triggers: this CLI and the completeness test both go through
 	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
 	unclassified, globs, outOfScope := audit.Audit(sources, home, runUser)
+
+	// A scope keyword that matches no upstream section means the classifier lost a
+	// section to a retitle, and the entries under it are now being skipped rather than
+	// compared. That is a gap in the comparison itself, so it fails the gate the same way
+	// a concrete missing shield does - the whole point of the check is that a ratchet
+	// going quiet must not read as a pass.
+	stale := audit.StaleKeywords(sources, home, runUser)
+	if len(stale) > 0 {
+		fmt.Fprintf(w, "%d scope keyword(s) now match no upstream section, so the blocks they classified are no longer compared - retitled upstream? Re-point the keyword in inScopeSection or record it in DormantKeywords: %s\n\n", len(stale), strings.Join(stale, ", "))
+	}
 
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.
@@ -183,6 +194,10 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	}
 
 	if len(unclassified) == 0 {
+		if len(stale) > 0 {
+			reportOutOfScope(w, outOfScope)
+			return exitGap
+		}
 		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec upstream shield is covered or excluded")
 		reportOutOfScope(w, outOfScope)
 		return 0
