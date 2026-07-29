@@ -723,7 +723,9 @@ func TestClassifyIP(t *testing.T) {
 // the name check passed, but the sandbox must not reach host-internal services
 // (loopback, cloud metadata, RFC1918) by resolving a permitted name to them.
 func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
-	p := New([]policy.NetworkRule{{Host: "localhost", Port: "9"}})
+	var decision Decision
+	p := New([]policy.NetworkRule{{Host: "localhost", Port: "9"}},
+		WithObserver(func(d Decision, _, _ string) { decision = d }))
 	dialProxy, stop := startProxy(t, p)
 	defer stop()
 
@@ -732,6 +734,12 @@ func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
 	status, br := connect(t, c, "localhost:9")
 	if !strings.Contains(status, "502") {
 		t.Fatalf("status = %q, want 502 (localhost resolves to loopback)", status)
+	}
+	// The status alone cannot carry this: nothing listens on port 9 either, so a
+	// removed guard would answer with the same 502 and the test would pass over a
+	// hole. The guard's verdict is only visible on the host side.
+	if decision != Denied {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, Denied)
 	}
 	body, _ := io.ReadAll(br)
 	// The refusal must not answer the query it refused: naming the resolved address
@@ -821,17 +829,24 @@ func (a fakeAddr) String() string  { return string(a) }
 // services. An explicit loopback rule must NOT reach them - loopback is never
 // exempt - so validate's warning that loopback rules cannot reach the host holds.
 func TestExplicitLoopbackRuleStillBlocked(t *testing.T) {
-	p := New([]policy.NetworkRule{{Host: "127.0.0.1", Port: "6379"}})
+	var decision Decision
+	p := New([]policy.NetworkRule{{Host: "127.0.0.1", Port: "6379"}},
+		WithObserver(func(d Decision, _, _ string) { decision = d }))
 	dialProxy, stop := startProxy(t, p)
 	defer stop()
 
 	c := dialProxy()
 	defer c.Close()
 	status, _ := connect(t, c, "127.0.0.1:6379")
-	// 502: the guard answers exactly as a dial failure does, so the block shows in
-	// the absence of a tunnel, not in a distinct status.
+	// 502: the guard answers exactly as a dial failure does, so the block shows on
+	// the host side, not in a distinct status. Asserting only the status would make
+	// the verdict environment-dependent - it would pass over a removed guard on a
+	// machine with nothing on 6379, and fail with a 200 on one running redis.
 	if !strings.Contains(status, "502") {
 		t.Fatalf("status = %q, want 502 (an explicit loopback rule must not reach the host)", status)
+	}
+	if decision != Denied {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, Denied)
 	}
 }
 

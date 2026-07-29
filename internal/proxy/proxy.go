@@ -673,7 +673,10 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// explicit-IP rule's allowlist check and then loses the grant the rule exists to
 	// give, so the rule is silently inert. Strip it here, on the canonicalPort
 	// precedent below: one spelling at every layer. Exactly one label is stripped, as
-	// normalizeHost strips one, so the two cannot disagree on "10.0.0.5..".
+	// normalizeHost strips one. A doubled dot survives both and the two layers do
+	// still part ways there - but only in the safe direction: net.ParseIP rejects any
+	// remaining dot, so no grant can outlive one, and the guard then refuses
+	// indistinguishably from a dial failure.
 	host = strings.TrimSuffix(host, ".")
 	if host == "" {
 		return "", "", nil, fmt.Errorf("empty target host")
