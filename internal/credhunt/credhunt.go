@@ -125,9 +125,10 @@ type Options struct {
 // Hunt walks opts.Home and returns the credential-shaped files no rule in opts.Rules
 // covers, sorted by path.
 //
-// Directories are pruned as soon as a rule covers them: everything under a shielded store
-// is already unreachable in the sandbox, so descending would report thousands of
-// already-covered files and hide the handful that matter. Symlinks are never followed -
+// Directories are pruned as soon as a DenyAll rule covers them: everything under a hidden
+// store is already unreachable in the sandbox, so descending would report thousands of
+// already-covered files and hide the handful that matter. A DenyWrite rule is not
+// coverage - see the walk body. Symlinks are never followed -
 // a link out of the home would walk the host, and a link within it would report the same
 // file twice under two names.
 //
@@ -140,12 +141,25 @@ func Hunt(opts Options) ([]Finding, int, error) {
 	pruned := 0
 	err := filepath.WalkDir(opts.Home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// The root is the exception to the skip-and-continue rule below: a home that
+			// cannot be walked yields zero findings, which reads as a clean home. That is
+			// the silent wrong answer this tool exists to avoid, so it is the one error
+			// worth refusing over.
+			if path == opts.Home {
+				return err
+			}
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if _, shielded := denylist.Covers(path, opts.Rules); shielded {
+		// Only a DenyAll rule counts as covered. DenyWrite leaves the path fully
+		// READABLE - it exists to stop a plant, not to hide a secret - so treating it as
+		// coverage would prune exactly the trees this hunts: the agent config directories
+		// are DenyWrite precisely so the agent can read its own settings, which is why
+		// each carries a separate DenyAll rule on the credential file inside it. Those
+		// files are what the hunt is looking for.
+		if r, covered := denylist.Covers(path, opts.Rules); covered && r.Deny == denylist.DenyAll {
 			if d.IsDir() {
 				return fs.SkipDir
 			}

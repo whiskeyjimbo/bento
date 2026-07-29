@@ -833,7 +833,7 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	seenShield := map[string]bool{}
 	var shields []string
 	for _, h := range homes {
-		for _, r := range denylist.Home(h) {
+		for _, r := range denylist.Home(h, homes...) {
 			if r.Deny == denylist.DenyAll && !seenShield[r.Path] {
 				seenShield[r.Path] = true
 				shields = append(shields, r.Path)
@@ -881,7 +881,7 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 		}
 	}
 	for _, h := range homes {
-		for _, r := range denylist.Home(h) {
+		for _, r := range denylist.Home(h, homes...) {
 			if r.Deny != denylist.DenyWrite {
 				continue
 			}

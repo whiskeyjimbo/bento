@@ -190,3 +190,32 @@ func TestMachineStoresArePrunedAndCounted(t *testing.T) {
 		t.Errorf("pruned = %d, want 1; a prune the operator cannot see is a suppression", pruned)
 	}
 }
+
+// DenyWrite leaves a path READABLE - it stops a plant, it does not hide a secret - so it
+// must not read as coverage. The agent config trees are DenyWrite exactly so the agent can
+// read its own settings, and each carries a separate DenyAll rule on the credential file
+// inside; treating the tree as covered would prune the very files this hunts.
+func TestDenyWriteIsNotCoverage(t *testing.T) {
+	home := t.TempDir()
+	inWriteShield := plant(t, home, ".claude/some-tool-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	hidden := plant(t, home, ".claude/.credentials.json", 0o600, "token = 0123456789abcdefghijklmnop\n")
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, inWriteShield) {
+		t.Errorf("%s sits under a DenyWrite tree, which leaves it readable, so it must surface; got %v", inWriteShield, got)
+	}
+	if slices.Contains(got, hidden) {
+		t.Errorf("%s has its own DenyAll rule and must not be reported; got %v", hidden, got)
+	}
+}
+
+// A home that cannot be walked yields zero findings, which reads as a clean home - the
+// silent wrong answer this tool exists to avoid. Every other error is skipped and the walk
+// continues, but the root is worth refusing over.
+func TestHuntRefusesAnUnwalkableRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-home")
+	found, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
+	if err == nil {
+		t.Errorf("Hunt over a nonexistent home returned %d findings and no error; a clean report over a scan that never happened is the failure this refuses", len(found))
+	}
+}

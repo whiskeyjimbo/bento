@@ -69,7 +69,12 @@ func summarize(home string, found []credhunt.Finding) ([]credhunt.Finding, []den
 	}
 	count := map[string]int{}
 	for _, f := range found {
-		count[prefixOf(f.Path)]++
+		// The home root itself is never folded: the dotfiles and editor leavings directly
+		// under it are the class this tool is most for, and summarizing them as one line
+		// would hide exactly what it went looking for.
+		if p := prefixOf(f.Path); p != home {
+			count[p]++
+		}
 	}
 	var leads []credhunt.Finding
 	var dense []denseTree
