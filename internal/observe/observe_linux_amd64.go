@@ -378,11 +378,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 // Counted once per call, at the entry stop, which is what the op field distinguishes -
 // no dedup needed. A failed read is counted for the same reason: it says nothing about
 // what the stop was. That one is counted per stop rather than per call, because a
-// failure leaves no op field to tell them apart; with the request's availability already
-// established at the initial stop, the only failure left is a tracee that died mid-pair,
-// which has no second stop to count. Which stop it died at decides whether that is a real
-// loss, and lastOp is what answers it here - unlike inspect, which has this stop's own op
-// in hand.
+// failure leaves no op field to tell them apart. With the request's availability already
+// established at the initial stop, the failure that actually happens is a tracee that died
+// mid-pair, and it has no second stop to count; which stop it died at decides whether that
+// is a real loss, and lastOp is what answers it here - unlike inspect, which has this stop's
+// own op in hand. Any other errno leaves a live tracee whose second stop is still coming, so
+// it is counted flatly and judged on nothing (see unreadableStopLoss).
 //
 // This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
 // and passes here, and inspect drops it on the tag its syscall numbers carry.
@@ -449,12 +450,18 @@ func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
 // other sibling of deadThreadLoss: both reads that can fail - PTRACE_GET_SYSCALL_INFO in
 // nativeSyscall and PtraceGetRegs in inspect - take this branch on an EIO or EFAULT.
 //
-// One, always. The failure says nothing about which stop this was, so there is no op to
-// judge it on and the stop itself is the loss. A pathname held for this pid can only be
-// this pair's, resolved at the entry stop and waiting on the exit stop that just came back
-// unreadable, so it is the same single loss and must not be counted twice - and it has to
-// go, because the pathname sweeps would otherwise report it again when the tracee exits
-// (releaseHeldOf) or when root does (len(held)).
+// One, always, and not judged on the op the way deadThreadLoss judges its own. The
+// asymmetry is the tracee's state, not an oversight: a dead thread at an entry stop never
+// ran the syscall, so there was nothing to lose, while here the thread is alive and the
+// syscall does run - the stop just cannot be decoded. At an entry stop that costs the
+// pathname, which is read there and nowhere else; at an exit stop it costs the success
+// filter. Either way this stop is one lost observation, and returning what the release
+// below found instead would report an entry-stop failure as no loss at all.
+//
+// The release is what keeps that one from being counted twice. Any pathname held for this
+// pid is this pair's - a tid has at most one pair open (see releaseHeldOf) - so it is the
+// same loss, and left in place it would be counted again by the sweep at this tracee's exit
+// (releaseHeldOf) or at root's (len(held)).
 func unreadableStopLoss(held map[string]heldPath, pid int) int {
 	releaseHeldOf(held, pid)
 	return 1
@@ -675,8 +682,11 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // an access the observer could not read must reach Dropped or the manifest is silently short.
 //
 // It takes a tid rather than a stop key because a vanished thread leaves no registers to
-// form one, and a signal handler's own calls stop under the same pid, so more than one of
-// its pairs can be open at once.
+// form one. A tid has at most one pair open - its syscall stops alternate, and a signal
+// handler's own stops cannot fall between one pair's two, because the exit stop is reported
+// as the syscall returns and the handler runs only after the tracer has resumed past it -
+// so this sweep normally finds a single entry. It is a sweep rather than a lookup because
+// the key cannot be rebuilt, not because several can be held.
 func releaseHeldOf(held map[string]heldPath, pid int) int {
 	prefix := fmt.Sprintf("%d\x00", pid)
 	lost := 0
