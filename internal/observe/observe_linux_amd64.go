@@ -290,7 +290,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// A subprocess ended and is reaped; drop it so the guard does not wait on a
 			// freed pid, and nothing to resume. A thread killed between the entry and exit
 			// stop of an existence probe leaves that pathname held with no stop left to
-			// resolve it, and no ptrace request fails to say so - deadThreadLostNothing
+			// resolve it, and no ptrace request fails to say so - deadThreadLoss
 			// only speaks for a thread that dies AT a stop. A non-leader execve makes this
 			// routine: de_thread kills every sibling and each one arrives here.
 			delete(tracees, wpid)
@@ -385,7 +385,9 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropp
 		// would be off by a stop.
 		prev := lastOp[pid]
 		delete(lastOp, pid)
-		if !errors.Is(err, syscall.ESRCH) || !deadThreadLostNothing(nextStop(prev), held, pid) {
+		if errors.Is(err, syscall.ESRCH) {
+			*dropped += deadThreadLoss(nextStop(prev), held, pid)
+		} else {
 			*dropped++
 		}
 		return 0, false
@@ -400,10 +402,10 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropp
 	return op, false
 }
 
-// deadThreadLostNothing reports whether an ESRCH at a stop of this op means no observation
-// was actually lost. It is the one judgement both reads that can fail on a dying thread
-// share - PTRACE_GET_SYSCALL_INFO in nativeSyscall and PtraceGetRegs in inspect - because
-// which of the two loses the race is a coin flip on the same event.
+// deadThreadLoss reports how many observations an ESRCH at a stop of this op actually lost.
+// It is the one judgement both reads that can fail on a dying thread share -
+// PTRACE_GET_SYSCALL_INFO in nativeSyscall and PtraceGetRegs in inspect - because which of
+// the two loses the race is a coin flip on the same event.
 //
 // At an ENTRY stop nothing ran: a ptrace-stopped thread executes nothing until the observer
 // resumes it, so a thread already gone died holding the stop and never issued the syscall.
@@ -414,18 +416,23 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropp
 // So a pid holding nothing had nothing this stop could lose; a dying thread's nanosleep or
 // futex exit stop is the case that showed up in practice. With a pathname held the loss is
 // real: the probe completed and its result is what decides whether the path needs a grant.
+// Those pathnames are released as they are counted, because this thread's wait status is
+// still coming and the sweep it triggers would otherwise count every one of them a second
+// time - one lost probe reported as two, which is the miscount dropOnce exists to prevent.
 //
 // Any other op - the initial exec stop's NONE, a seccomp stop, or a parity that was never
-// established - is unknown rather than safe, and counts. An uncounted lost access is the
-// failure this channel exists to prevent, so unknown must never mean "suppress".
-func deadThreadLostNothing(op byte, held map[string]heldPath, pid int) bool {
+// established - is unknown rather than safe, and counts one. An uncounted lost access is the
+// failure this channel exists to prevent, so unknown must never mean "suppress". Nothing is
+// released there: what was lost is a stop of unknown kind, not the held pathnames, and those
+// are still the exit sweep's to count.
+func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
 	switch op {
 	case unix.PTRACE_SYSCALL_INFO_ENTRY:
-		return true
+		return 0
 	case unix.PTRACE_SYSCALL_INFO_EXIT:
-		return !holdsPath(held, pid)
+		return releaseHeldOf(held, pid)
 	}
-	return false
+	return 1
 }
 
 // nextStop reports the op of the stop that follows one of op, which is what a stop whose
@@ -435,7 +442,7 @@ func deadThreadLostNothing(op byte, held map[string]heldPath, pid int) bool {
 //
 // prev is a pid's last op only when one was read successfully, so anything else - a cloned
 // child's first stop, a stop after a failed read, the initial exec stop's NONE, a seccomp
-// stop - carries no parity and yields NONE, which deadThreadLostNothing counts. Inferring
+// stop - carries no parity and yields NONE, which deadThreadLoss counts. Inferring
 // where nothing was observed is what would turn this into a silent suppressor.
 //
 // One stop stream is spliced rather than alternating: a non-leader thread that execve's
@@ -594,25 +601,6 @@ func stopKey(pid int, regs *syscall.PtraceRegs) string {
 	return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
 }
 
-// holdsPath reports whether any of this pid's entry stops resolved a pathname that is
-// still waiting on its exit stop. It reads the held set rather than tracking a count
-// alongside it, so it cannot disagree with what is actually held - and it is asked only
-// where a thread has already died, once per thread, so the scan is not on any hot path.
-//
-// A thread runs one syscall at a time, but a signal delivered mid-call runs a handler
-// whose own calls stop under the same pid, so more than one of its pairs can be open at
-// once. That is why this answers per pid rather than for one pair: without registers
-// there is no key to ask about, and the pid-wide answer errs toward counting.
-func holdsPath(held map[string]heldPath, pid int) bool {
-	prefix := fmt.Sprintf("%d\x00", pid)
-	for key := range held {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // forgetRetiredTid drops every trace of the tid an execve retired, and reports how many
 // observations went with it. A thread that execve's takes over the thread-group leader's pid
 // and its own tid ceases to exist with no wait status, so every map keyed on that tid would
@@ -657,7 +645,7 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // releaseHeldOf drops every pathname a vanished tid was still holding and reports how many
 // were lost. Each is an existence probe whose entry stop resolved a pathname and whose exit
 // stop can never arrive, so whether the call succeeded - the thing that decides if the path
-// needs a grant - is unknowable. That is the same loss deadThreadLostNothing counts for a
+// needs a grant - is unknowable. That is the same loss deadThreadLoss counts for a
 // thread that dies at an exit stop holding one, and it is counted here for the same reason:
 // an access the observer could not read must reach Dropped or the manifest is silently short.
 //
@@ -698,14 +686,15 @@ func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscal
 		// access at all - a tracee killed between the stop and this read fails here on
 		// whatever it was running.
 		//
-		// ESRCH means the thread died holding this stop, which deadThreadLostNothing can
-		// often resolve rather than count. The op comes from the caller's own read at this
-		// same stop, before any resume, so it describes this stop and not a later one.
+		// ESRCH means the thread died holding this stop, which deadThreadLoss can often
+		// resolve to nothing rather than count. The op comes from the caller's own read at
+		// this same stop, before any resume, so it describes this stop and not a later one.
 		//
 		// Every other failure is counted: an uncounted lost access is what this channel
 		// exists to prevent. An EIO or EFAULT says nothing about whether the thread is
 		// alive.
-		if errors.Is(err, syscall.ESRCH) && deadThreadLostNothing(op, held, pid) {
+		if errors.Is(err, syscall.ESRCH) {
+			res.Dropped += deadThreadLoss(op, held, pid)
 			return
 		}
 		countDrop(&regs, 0)

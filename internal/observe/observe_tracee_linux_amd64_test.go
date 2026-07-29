@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -161,6 +162,7 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// tid is checked rather than assumed. A goroutine that finds itself on the leader
 		// hands off and parks WITHOUT unlocking, so that thread stays occupied and the next
 		// attempt is given another; there is one leader, so it hands off at most once.
+		//
 		// n sibling threads probing a real path in a tight loop, so that when de_thread
 		// kills them some are mid-probe: their entry stop consumed and its pathname
 		// resolved, their exit stop never coming.
@@ -237,6 +239,19 @@ const badHowName = "openat2-how-unreadable"
 
 // probeName is the path execthread's sibling threads probe while they wait to be killed.
 const probeName = "sibling-probe-target"
+
+// heldBy counts the pathnames a pid is still waiting on an exit stop to resolve. The
+// observer only ever releases them in bulk, so nothing in the package answers this.
+func heldBy(held map[string]heldPath, pid int) int {
+	n := 0
+	prefix := fmt.Sprintf("%d\x00", pid)
+	for key := range held {
+		if strings.HasPrefix(key, prefix) {
+			n++
+		}
+	}
+	return n
+}
 
 // The two names the plantpath mode swaps between, equal in length so a write lands
 // wholly on one or the other and cannot splice a third path out of the two.
@@ -444,6 +459,34 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 	}
 }
 
+// A thread that dies holding a probe is reported by two channels in turn, and the loss is
+// one. The ptrace read at its stop fails ESRCH and counts it; then its wait status arrives
+// and the loop's exit branch sweeps everything the tid still held. Both consult the same
+// held entry, so the count is right only if whichever runs first takes it away - otherwise
+// one lost probe tells the user the manifest is short by two.
+func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
+	dead := reapedPid(t)
+	if err := syscall.PtraceGetRegs(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
+		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
+	}
+	held := map[string]heldPath{
+		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}):   {path: "/etc/hosts", readOK: true},
+		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS}): {path: "/etc/passwd", readOK: true},
+	}
+
+	var res Result
+	count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
+	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, count, release, held, &res)
+	res.Dropped += releaseHeldOf(held, dead)
+
+	if res.Dropped != 2 {
+		t.Errorf("Dropped = %d after one dead thread's two held probes reached both channels, want 2; 3 is the signature of the stop-read counting a flat one and leaving the sweep to count both again", res.Dropped)
+	}
+	if n := heldBy(held, dead); n != 0 {
+		t.Errorf("%d pathnames are still held for a thread that no longer exists, so a later sweep would count them a third time", n)
+	}
+}
+
 // The same race one read earlier: the thread dies before PTRACE_GET_SYSCALL_INFO, so the
 // stop has no op of its own and the pid's last recorded one has to supply the parity.
 // Stops alternate, so the stop after a known entry stop is an exit stop and the stop after
@@ -516,7 +559,7 @@ func reapedPid(t *testing.T) int {
 // the tracee loses exactly this many accesses and the observer's own miscounts only ever
 // add. It was a band for a while, to absorb the phantom a tracee thread that exits between
 // its syscall stop and the observer's read of it used to leave behind. Both reads that can
-// lose that race now resolve it (see deadThreadLostNothing), so an exact assertion is what
+// lose that race now resolve it (see deadThreadLoss), so an exact assertion is what
 // catches the two bugs above.
 //
 // One phantom is still counted by construction: a thread that dies at its first-ever
@@ -624,9 +667,10 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 // the wait status, which the loop's exit branch handles.
 //
 // A non-leader execve makes the case routine rather than exotic: de_thread kills every
-// sibling at once, so probers spinning at the moment of the exec supply a supply of threads
-// that die mid-syscall. Which of them is caught between the two stops is the scheduler's
-// business, so the assertion is that at least one loss reaches Dropped, not an exact count.
+// sibling at once, so probers spinning at the moment of the exec are a steady supply of
+// threads dying mid-syscall. Which of them is caught between the two stops is the
+// scheduler's business, so the assertion is that at least one loss reaches Dropped, not an
+// exact count.
 func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 	const probers = 16
 	dir := t.TempDir()
@@ -684,8 +728,12 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 				t.Errorf("lastOp[%d] present = %v, want %v", tc.old, got, tc.wantKept)
 			}
 			for _, pid := range []int{leader, tc.old} {
-				if got := holdsPath(held, pid); got != tc.wantKept {
-					t.Errorf("holdsPath(%d) = %v, want %v", pid, got, tc.wantKept)
+				want := 0
+				if tc.wantKept {
+					want = 2
+				}
+				if got := heldBy(held, pid); got != want {
+					t.Errorf("pid %d still holds %d pathnames, want %d", pid, got, want)
 				}
 			}
 			if !tracees[leader] {
