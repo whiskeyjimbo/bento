@@ -185,7 +185,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// configuration, so the tree-DenyWrite/credential-DenyAll split above cannot
 		// separate them. Hidden rather than write-denied: the secret wins over the config
 		// read, the .msmtprc/.muttrc precedent. A sandboxed claude loses its own settings,
-		// which is the trade - the alternative hands a broad read grant a live token. The
+		// which is the trade - the alternative hands a broad read grant a live token.
 		// The CLI also writes backups beside it holding the same block. The suffix-less
 		// one has a concrete name and is shielded; the .claude.json.backup.<epoch>
 		// siblings do not, and stay the same residual class as an editor leaving at the

@@ -1161,6 +1161,28 @@ func TestWalksDivergeOnAnUnreadableSubtree(t *testing.T) {
 	if _, err := hostFileIDs(root); err == nil || !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("hostFileIDs over an unreadable credential subtree = %v, want a permission error", err)
 	}
+
+	// An anchor with nothing behind it is not an anchor the walk failed to read, and
+	// only ENOENT reaches fs.ErrNotExist - a component that is a regular file or a
+	// symlink loop names no file just as squarely, and refusing on either would refuse
+	// every run on a host where a store bento models happens not to be a directory.
+	notThere := filepath.Join(root, "plain")
+	if err := os.WriteFile(notThere, []byte("not a store"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loop := filepath.Join(root, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	for _, anchor := range []string{
+		filepath.Join(notThere, "auth"), // ENOTDIR
+		filepath.Join(loop, "auth"),     // ELOOP
+		filepath.Join(root, "absent"),   // ENOENT
+	} {
+		if ids, err := hostFileIDs(anchor); err != nil || ids != nil {
+			t.Errorf("hostFileIDs(%q) = %v, %v; want it skipped as an anchor with no file behind it", anchor, ids, err)
+		}
+	}
 	if _, err := hostAliasesUnder(root, map[fileID]string{{dev: 1, ino: 1}: "/home/u/.ssh/id_rsa"}); err != nil {
 		t.Errorf("hostAliasesUnder over an unreadable granted subtree = %v, want it skipped", err)
 	}

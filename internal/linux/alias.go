@@ -492,17 +492,30 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 // it. It walks without following symlinks, so a symlink planted in a credential
 // directory cannot redirect the walk or loop it.
 //
-// A path that is not there is skipped: the anchor set names every credential store bento
-// models, and no host has more than a handful of them, so absence is the normal answer.
-// Anything else is fatal. These are the credential anchors themselves, which the invoking
-// user owns and can read - an EACCES here is already anomalous, and swallowing it would
-// under-count the links this file's caller gates the whole granted-tree walk on, turning
-// "could not look" into a proof that no hardlink exists.
+// A path with nothing behind it is skipped: the anchor set names every credential store
+// bento models and no host has more than a handful of them, so absence is the normal
+// answer. That is more than ENOENT - a component that is a regular file (ENOTDIR) or a
+// symlink loop (ELOOP) equally means there is no file at the anchor to identify, and
+// neither is a file the walk failed to read.
+//
+// Anything else is fatal, because swallowing it would under-count the links this file's
+// caller gates the whole granted-tree walk on, turning "could not look" into a proof that
+// no hardlink exists. Unreadability is no proof of safety here, unlike in the granted-tree
+// walk: an unreadable DIRECTORY says nothing about the inodes listed in it. A hardlink
+// carries the file's own mode, not the mode of the directory it appears in, so a file
+// behind an unreadable subtree can still have a perfectly readable second name in a
+// granted tree - true of a tree the user chmod'd to 000, and equally of a root-owned 0700
+// directory holding a 0644 file.
+//
+// The cost is that an anchor which has picked up an unreadable subdirectory refuses until
+// it is opened back up. `sudo kubectl` with HOME preserved is the usual way one appears
+// under ~/.kube, and chowning it back is the remedy - which is why the message names the
+// path rather than only the anchor.
 func hostFileIDs(path string) ([]identifiedFile, error) {
 	var out []identifiedFile
 	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			if nothingBehind(err) {
 				return nil
 			}
 			return fmt.Errorf("reading %s to identify the credentials behind it: %w", p, err)
@@ -554,8 +567,9 @@ func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, e
 			// nothing behind it to leak past a shield. The scan walks as the invoking uid
 			// before launch, and the sandboxed process is that same uid at that same path
 			// under the same parent modes - the walk roots ARE the trees bwrap binds. So
-			// permission is a proof, not a blind spot, which is what separates this from
-			// the mount-table case where a short list silently loses bind detection. Any
+			// permission is a proof for a subtree it can neither list nor traverse, not a
+			// blind spot, which is what separates this from the mount-table case where a
+			// short list silently loses bind detection. Any
 			// other error is a genuine could-not-look and is fatal: reporting clean
 			// because the walk broke is the failure this refuses.
 			//
@@ -563,7 +577,7 @@ func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, e
 			// does not discriminate - /etc/ssl/private is unreadable and on the same
 			// device as a home on an ordinary host, so it would refuse every run whose
 			// exposed trees include /etc.
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
 				return nil
 			}
 			return fmt.Errorf("reading %s to scan for credential aliases: %w", p, err)
@@ -589,6 +603,16 @@ func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, e
 		return nil, fmt.Errorf("linux: %w", err)
 	}
 	return out, nil
+}
+
+// nothingBehind reports whether a walk error means there is no file at the path rather
+// than one the walk could not read. Only ENOENT reaches fs.ErrNotExist (syscall.Errno.Is
+// maps nothing else to it), so the two other ways a path can name no file are spelled
+// out: a component that is a regular file, and a symlink loop.
+func nothingBehind(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP)
 }
 
 func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
