@@ -69,6 +69,22 @@ func TestNetworkStdioIsAllowedWhenTheEmbedderOptsIn(t *testing.T) {
 	}
 }
 
+// The opt-in describes what the embedder passed, not a standing state, so a run that
+// sets it and then passes an ordinary stream has bypassed nothing and must say nothing.
+func TestNetworkStdioOptInIsSilentWithoutASocket(t *testing.T) {
+	requireSandbox(t)
+
+	p, _ := networkStdioProbe(t)
+	var out strings.Builder
+	proc := enforce.Process{Stdout: &out, Stderr: &out, AllowNetworkStdio: true}
+	if _, err := sandboxEnforcer(t).Run(context.Background(), p, proc, enforce.RunOptions{}); err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, out.String())
+	}
+	if strings.Contains(out.String(), "egress allowlist") {
+		t.Errorf("the opt-in warned about a bypass with no socket on stdio: %q", out.String())
+	}
+}
+
 // networkStdioProbe returns a policy granting egress to an unrelated host, and a
 // connected TCP client socket as an *os.File - the form os/exec hands to the child
 // as a raw descriptor, which is how it survives to the target at all. The server

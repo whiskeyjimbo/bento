@@ -9,6 +9,7 @@
 package launcher
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -112,10 +113,18 @@ func Run(cfg Config) (int, error) {
 	// or not the policy grants egress: with no egress it falsifies the claim outright,
 	// and with egress it bypasses the host proxy's allowlist. So the refusal is
 	// unconditional, and the one caller that means to pass a connection says so.
-	if cfg.AllowNetworkStdio {
-		fmt.Fprintf(os.Stderr, "[bento] warning: network sockets on the target's standard streams are permitted by the embedder; a connection passed there bypasses the manifest's egress allowlist\n")
-	} else if err := refuseNetworkStdio(); err != nil {
-		return 0, err
+	if err := refuseNetworkStdio(); err != nil {
+		// Only the socket itself is opt-in-able. A descriptor that could not be
+		// classified at all is still fatal: the embedder permitted a connection it
+		// knows it passed, not an unreadable stream.
+		var passed *networkStdio
+		if !cfg.AllowNetworkStdio || !errors.As(err, &passed) {
+			return 0, err
+		}
+		// Warned from the refusal, not from the opt-in, so it names the descriptor that
+		// is actually a socket and stays silent when the embedder set the opt-in but
+		// passed an ordinary stream.
+		fmt.Fprintf(os.Stderr, "[bento] warning: %v; the embedder permits it, and it bypasses the manifest's egress allowlist\n", passed)
 	}
 
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
@@ -375,9 +384,21 @@ func refuseNetworkFD(fd int) error {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a socket whose domain could not be read: %w", fd, err)
 	}
 	if domain != unix.AF_UNIX && domain != unix.AF_NETLINK {
-		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited socket of family %d; no sandbox layer can revoke an already-open network channel", fd, domain)
+		return fmt.Errorf("launcher: refusing to run - %w", &networkStdio{fd: fd, domain: domain})
 	}
 	return nil
+}
+
+// networkStdio is the one refusal above that an embedder can opt out of, so it is
+// typed: Run tells it from the neighbouring "could not be classified" failures, which
+// stay fatal, and reuses its text for the opt-in warning.
+type networkStdio struct {
+	fd     int
+	domain int
+}
+
+func (e *networkStdio) Error() string {
+	return fmt.Sprintf("standard descriptor %d is an inherited socket of family %d; no sandbox layer can revoke an already-open network channel", e.fd, e.domain)
 }
 
 // dropInheritedFDs marks every descriptor from firstInheritableFD up close-on-exec,
