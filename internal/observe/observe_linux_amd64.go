@@ -397,7 +397,7 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropp
 		if errors.Is(err, syscall.ESRCH) {
 			*dropped += deadThreadLoss(nextStop(prev), held, pid)
 		} else {
-			*dropped++
+			*dropped += unreadableStopLoss(held, pid)
 		}
 		return 0, false
 	}
@@ -441,6 +441,22 @@ func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
 	case unix.PTRACE_SYSCALL_INFO_EXIT:
 		return releaseHeldOf(held, pid)
 	}
+	return 1
+}
+
+// unreadableStopLoss reports how many observations a read that failed for a reason other
+// than ESRCH lost, and releases the pathname the stop's pair was holding as it counts. The
+// other sibling of deadThreadLoss: both reads that can fail - PTRACE_GET_SYSCALL_INFO in
+// nativeSyscall and PtraceGetRegs in inspect - take this branch on an EIO or EFAULT.
+//
+// One, always. The failure says nothing about which stop this was, so there is no op to
+// judge it on and the stop itself is the loss. A pathname held for this pid can only be
+// this pair's, resolved at the entry stop and waiting on the exit stop that just came back
+// unreadable, so it is the same single loss and must not be counted twice - and it has to
+// go, because the pathname sweeps would otherwise report it again when the tracee exits
+// (releaseHeldOf) or when root does (len(held)).
+func unreadableStopLoss(held map[string]heldPath, pid int) int {
+	releaseHeldOf(held, pid)
 	return 1
 }
 
@@ -701,12 +717,14 @@ func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscal
 		//
 		// Every other failure is counted: an uncounted lost access is what this channel
 		// exists to prevent. An EIO or EFAULT says nothing about whether the thread is
-		// alive.
+		// alive. It is counted per stop rather than through the pair's dedup, whose key
+		// would be built from registers this read never returned - one key for every such
+		// failure on this pid, so a second lost stop would dedup to nothing.
 		if errors.Is(err, syscall.ESRCH) {
 			res.Dropped += deadThreadLoss(op, held, pid)
 			return
 		}
-		countDrop(&regs, 0)
+		res.Dropped += unreadableStopLoss(held, pid)
 		return
 	}
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see

@@ -541,6 +541,46 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 	}
 }
 
+// A read that fails for a reason other than ESRCH cannot be staged against a live tracer -
+// every pid a test could point ptrace at answers ESRCH, and an EIO or EFAULT would have to
+// be injected - so the invariant is asserted where the two failure sites now share it. One
+// loss per unreadable stop, and the pair's pathname goes with it: leaving it held is what
+// let the sweeps report the same lost probe a second time.
+func TestAnUnreadableStopCountsItsHeldProbeOnce(t *testing.T) {
+	const pid = 4242
+
+	for _, tc := range []struct {
+		name string
+		held map[string]heldPath
+		want int
+	}{
+		{"holding nothing", map[string]heldPath{}, 0},
+		{
+			"holding a pathname",
+			map[string]heldPath{stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			0,
+		},
+		{
+			// Another pid's pending probe is still waiting on a stop of its own.
+			"while a sibling holds a pathname",
+			map[string]heldPath{stopKey(pid+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unreadableStopLoss(tc.held, pid); got != 1 {
+				t.Errorf("an unreadable stop %s counted %d, want 1 - the stop itself is the loss whatever it was holding", tc.name, got)
+			}
+			if n := heldBy(tc.held, pid); n != 0 {
+				t.Errorf("%d pathnames are still held for a stop already counted, so a sweep would count them again", n)
+			}
+			if len(tc.held) != tc.want {
+				t.Errorf("held has %d entries, want %d - releasing more than this pid's pair would drop a probe that is still live", len(tc.held), tc.want)
+			}
+		})
+	}
+}
+
 // The same race one read earlier: the thread dies before PTRACE_GET_SYSCALL_INFO, so the
 // stop has no op of its own and the pid's last recorded one has to supply the parity.
 // Stops alternate, so the stop after a known entry stop is an exit stop and the stop after
