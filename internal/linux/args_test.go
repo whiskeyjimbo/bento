@@ -212,22 +212,94 @@ func lastPairIndex(args []string, flag, target string) int {
 	return last
 }
 
-// The post-run cleanup targets only DIRECTORY shield mount points: os.Remove on a
-// directory is empty-only (rmdir), so it can never delete host data, whereas an
-// os.Remove of a FILE is unconditional and would race a host-side atomic save over
-// that path. So file shields must never be scheduled for removal.
-func TestCreatedShieldDirsExcludesFileShields(t *testing.T) {
+// The post-run cleanup has to schedule the FILE shield mount points too, not just the
+// directories: a write grant on a plain directory made bwrap create .git/config and
+// .git/config.worktree, and excluding them left those - and the .git/ holding them -
+// on the host after every run. Existence is read here, before the run, so a path that
+// was already on the host is never scheduled; removeCreatedShields adds the
+// still-empty check that makes the removal itself safe.
+func TestCreatedShieldsSchedulesBothKinds(t *testing.T) {
 	sb := testSandbox("/home/u/proj/src") // an entry under proj makes it a workspace dir
 	grants := []string{"/home/u/proj"}
-	dirs := createdShieldDirs(sb, grants, grants, nil)
+	dirs, files := createdShields(sb, grants, grants, nil)
 
 	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
 		t.Errorf("the .git/hooks directory shield should be scheduled for cleanup; got %v", dirs)
 	}
 	for _, f := range []string{"/home/u/proj/.git/config", "/home/u/proj/.git/config.worktree"} {
-		if containsStr(dirs, f) {
-			t.Errorf("file shield %s must not be scheduled for cleanup (os.Remove would delete a real file)", f)
+		if !containsStr(files, f) {
+			t.Errorf("file shield %s should be scheduled for cleanup; got %v", f, files)
 		}
+		if containsStr(dirs, f) {
+			t.Errorf("file shield %s must not be removed as a directory; got %v", f, dirs)
+		}
+	}
+}
+
+// A shielded path that ALREADY exists on the host is not an artifact of the run, so it
+// must never reach the cleanup - this is the check that keeps removeCreatedShields from
+// deleting a real .git/config.
+func TestCreatedShieldsExcludesPreexistingPaths(t *testing.T) {
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/.git", "/home/u/proj/.git/config")
+	grants := []string{"/home/u/proj"}
+	dirs, files := createdShields(sb, grants, grants, nil)
+
+	if containsStr(files, "/home/u/proj/.git/config") {
+		t.Errorf("an existing .git/config must never be scheduled for removal; got %v", files)
+	}
+	if !containsStr(files, "/home/u/proj/.git/config.worktree") {
+		t.Errorf("the absent .git/config.worktree should still be scheduled; got %v", files)
+	}
+	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
+		t.Errorf("the absent .git/hooks should still be scheduled; got %v", dirs)
+	}
+}
+
+// removeCreatedShields is the half that touches the host, and its safety rests on two
+// properties: it removes a file only while it is still empty, and it reclaims the
+// intermediate directories bwrap created - but never the write grant itself, which is
+// the user's own directory.
+func TestRemoveCreatedShieldsReclaimsOnlyEmptyArtifacts(t *testing.T) {
+	grant := t.TempDir()
+	gitDir := filepath.Join(grant, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(gitDir, "config.worktree")
+	written := filepath.Join(gitDir, "config")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(written, []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeCreatedShields([]string{filepath.Join(gitDir, "hooks")}, []string{empty, written}, []string{grant})
+
+	if _, err := os.Stat(written); err != nil {
+		t.Errorf("a file with content must survive cleanup: %v", err)
+	}
+	if _, err := os.Stat(empty); !os.IsNotExist(err) {
+		t.Errorf("the empty artifact should be gone; stat err = %v", err)
+	}
+	if _, err := os.Stat(gitDir); err != nil {
+		t.Errorf(".git still holds the non-empty config, so it must survive: %v", err)
+	}
+
+	// With the last artifact gone, the intermediate .git/ goes too - and the grant
+	// itself, which is the user's directory, never does.
+	if err := os.Remove(written); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removeCreatedShields(nil, []string{empty}, []string{grant})
+	if _, err := os.Stat(gitDir); !os.IsNotExist(err) {
+		t.Errorf("the intermediate .git/ should be reclaimed once empty; stat err = %v", err)
+	}
+	if _, err := os.Stat(grant); err != nil {
+		t.Errorf("the write grant itself must never be removed: %v", err)
 	}
 }
 

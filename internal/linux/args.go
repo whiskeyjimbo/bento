@@ -226,6 +226,14 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 
 	// The deny-list goes after the grants so it always wins - except for a shield the
 	// policy explicitly opts into (yz3.2), which denyArgs skips so the grant above binds.
+	//
+	// Two binds do follow it, below: the entrypoint and the interpreter. They are the
+	// file the run was asked to execute and the binary that executes it, so a shield
+	// hiding either leaves nothing to run at all - and they are re-bound precisely to
+	// enforce a stricter rule than the deny-list, read-only over a write grant that
+	// would otherwise leave the running code writable. Each covers one explicitly
+	// named, executable file and adds no write anywhere, so what they can expose past
+	// a DenyAll shield is exactly the program the user pointed bento at.
 	_, optIns := explicitShieldOptIns(sb, p.Read)
 	deny, appliedShields := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
 	args = append(args, deny...)
@@ -574,7 +582,7 @@ func interpreterPrefix(interp string) string {
 // shieldRules is the full deny-list for a run: the mandatory Home shields plus,
 // for each write-granted checkout, the static Workspace shields and the git
 // directories discovered under it (see gitDirShields). Building it in one place
-// keeps denyArgs and createdShieldDirs enforcing and cleaning up the exact same
+// keeps denyArgs and createdShields enforcing and cleaning up the exact same
 // set - a divergence would either leak a host artifact or leave a path unshielded.
 // alwaysShields is the deny-list every run applies regardless of grants: the
 // built-in home credential/config shields, the host's runtime state (its service
@@ -627,7 +635,7 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 //
 // The hooks directory is shielded whether or not it exists yet, matching the
 // top-level .git/hooks shield: an absent hooks/ under a real gitdir is still
-// plantable, so it is tmpfs'd and reclaimed by createdShieldDirs. config and
+// plantable, so it is tmpfs'd and reclaimed by createdShields. config and
 // config.worktree are only shielded where they exist (they are files, not planting
 // surfaces on their own - a new config.worktree is inert unless config, which is
 // shielded, enables extensions.worktreeConfig).
@@ -809,47 +817,92 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	return args, applied
 }
 
-// createdShieldDirs returns the DIRECTORY shield mount points bwrap will create on
-// the host because the shielded path does not exist yet and a write grant makes its
-// parent writable (a nonexistent path is only shielded when a write grant reaches
-// it, so its parent is a read-write host bind). The caller removes these after the
-// run so the sandbox leaves no directory artifact.
+// createdShields returns the shield mount points bwrap will create on the host
+// because the shielded path does not exist yet and a write grant makes its parent
+// writable (a nonexistent path is only shielded when a write grant reaches it, so its
+// parent is a read-write host bind). The caller removes these after the run so the
+// sandbox leaves no artifact.
 //
-// Only directory shields are returned: removing a directory is empty-only by the
-// rmdir syscall, so cleanup can never delete host data even if a process wrote into
-// the path during the run. File shield mount points are deliberately excluded - an
-// os.Remove of a file is unconditional, so cleaning one would race a host-side
-// atomic save (write-temp then rename) over that path and could delete a real file.
+// Existence is read HERE, before the run, which is what makes the removal safe: a
+// path already on the host is never in the list, so cleanup can only remove one bento
+// itself caused to appear.
 //
 // This selects the same shieldNeeded rules denyArgs emits, minus the DenyAll children
 // denyArgs force-emits under an exposed DenyWrite ancestor: those are gated on the path
-// already existing, and this returns only nonexistent dirs, so bwrap never creates a
+// already existing, and this returns only nonexistent paths, so bwrap never creates a
 // mount point for them and there is nothing to clean up.
-func createdShieldDirs(sb sandbox, grants, writes, optIns []string) []string {
+func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []string) {
 	rules := shieldRules(sb, writes)
-	var dirs []string
 	for _, r := range rules {
 		r.Path = sb.resolve(r.Path)
-		if r.Path == "/" || !r.Dir || !shieldNeeded(r, sb, grants, writes, optIns) {
+		if r.Path == "/" || !shieldNeeded(r, sb, grants, writes, optIns) || sb.exists(r.Path) {
 			continue
 		}
-		if !sb.exists(r.Path) {
+		if r.Dir {
 			dirs = append(dirs, r.Path)
+		} else {
+			files = append(files, r.Path)
 		}
 	}
-	return dirs
+	return dirs, files
 }
 
-// removeCreatedShieldDirs removes directory shield mount points bento caused bwrap
-// to create (see createdShieldDirs), after the run. os.Remove on a directory is the
-// rmdir syscall: it removes only an empty directory, so a path a host process wrote
-// into during the run survives (ENOTEMPTY, ignored), and a pre-existing path is
-// never in the list to begin with. Best effort: a kill before this runs, or an
-// intermediate parent bwrap created, can survive.
-func removeCreatedShieldDirs(dirs []string) {
-	for _, d := range dirs {
-		os.Remove(d)
+// removeCreatedShields removes the shield mount points bento caused bwrap to create
+// (see createdShields), after the run, and then the intermediate directories bwrap
+// made to hold them - a write grant on a plain directory otherwise left an empty
+// .git/ with two empty files in it, host clutter no run asked for.
+//
+// Removal cannot destroy host content. os.Remove on a directory is the rmdir syscall:
+// it removes only an empty directory, so a path a host process wrote into during the
+// run survives (ENOTEMPTY, ignored). A file is removed only while it is still zero
+// bytes, which holds nothing - and a host-side atomic save (write-temp then rename)
+// puts a non-empty file at the path, so it is skipped. Combined with the pre-run
+// existence check in createdShields, every removal is a path that did not exist before
+// the run and holds nothing after it.
+//
+// The residual is not data at rest: a host process that CREATED one of these paths
+// during the run and still holds the descriptor loses its later writes to an unlinked
+// inode. That needs a host process creating exactly a shielded path, inside a
+// directory this run was granted write to, in the window the run occupied.
+//
+// Best effort throughout: a kill before this runs leaves the artifact, as before.
+func removeCreatedShields(dirs, files []string, writes []string) {
+	removed := make([]string, 0, len(dirs)+len(files))
+	for _, f := range files {
+		if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+			continue
+		}
+		if os.Remove(f) == nil {
+			removed = append(removed, f)
+		}
 	}
+	for _, d := range dirs {
+		if os.Remove(d) == nil {
+			removed = append(removed, d)
+		}
+	}
+	// Then the directories bwrap created only to hold those mount points (.git/ above
+	// an unborn .git/hooks). The walk stops at the write grant itself - the grant is a
+	// directory the user has, not an artifact - and at the first directory that will
+	// not go, since an ancestor of a non-empty directory is non-empty too.
+	for _, p := range removed {
+		for dir := filepath.Dir(p); insideAWriteGrant(dir, writes); dir = filepath.Dir(dir) {
+			if os.Remove(dir) != nil {
+				break
+			}
+		}
+	}
+}
+
+// insideAWriteGrant reports whether path is STRICTLY inside a write grant, so the
+// cleanup walk never reaches the granted directory itself or anything above it.
+func insideAWriteGrant(path string, writes []string) bool {
+	for _, w := range writes {
+		if path != w && under(path, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // shieldNeeded decides whether a deny rule needs a shield mount, given what the

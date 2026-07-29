@@ -86,12 +86,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	optedIn, optIns, accepted := preflight.optedIn, preflight.optIns, preflight.aliases
 
-	// bwrap creates a directory shield mount point on the host when the shielded
-	// path does not exist yet and a write grant makes its parent writable (e.g. a
-	// project's unborn .git/hooks). Remove those after the run so the sandbox leaves
-	// no directory artifact; see removeCreatedShieldDirs for why this is safe and
-	// best-effort.
-	defer removeCreatedShieldDirs(preflight.createdShieldDirs(sb))
+	// bwrap creates a shield mount point on the host when the shielded path does not
+	// exist yet and a write grant makes its parent writable (e.g. a project's unborn
+	// .git/hooks). Remove those after the run so the sandbox leaves no artifact; see
+	// removeCreatedShields for why this is safe and best-effort.
+	shieldDirs, shieldFiles := preflight.createdShields(sb)
+	defer removeCreatedShields(shieldDirs, shieldFiles, preflight.writes)
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
 	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox
@@ -207,10 +207,10 @@ type preflighted struct {
 	aliases         []credentialAlias
 }
 
-// createdShieldDirs names the directory shield mount points bwrap will create on the
-// host for this run, so the caller can remove them afterwards.
-func (pf preflighted) createdShieldDirs(sb sandbox) []string {
-	return createdShieldDirs(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, pf.optIns)
+// createdShields names the shield mount points bwrap will create on the host for this
+// run, so the caller can remove them afterwards.
+func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
+	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, pf.optIns)
 }
 
 // preflightGrants decides everything that can refuse a run and then prepares the host

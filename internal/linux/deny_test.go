@@ -97,7 +97,7 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 	sb := testSandbox() // empty fake fs: the deny dir does not exist yet
 	sb.extraDeny = []denylist.Rule{{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true}}
 
-	dirs := createdShieldDirs(sb, []string{"/home/u/proj"}, []string{"/home/u/proj"}, nil)
+	dirs, _ := createdShields(sb, []string{"/home/u/proj"}, []string{"/home/u/proj"}, nil)
 	found := false
 	for _, d := range dirs {
 		if d == "/home/u/proj/store" {
@@ -105,7 +105,7 @@ func TestExtraDenyCreatedShieldDirCleaned(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("an absent extra-deny dir under a write grant must be in createdShieldDirs for cleanup; got %v", dirs)
+		t.Errorf("an absent extra-deny dir under a write grant must be in createdShields for cleanup; got %v", dirs)
 	}
 }
 

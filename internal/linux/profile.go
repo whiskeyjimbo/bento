@@ -99,9 +99,10 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	if err != nil {
 		return profile.Observation{}, err
 	}
-	// Remove directory shield mount points bwrap creates on the host, as Run does -
+	// Remove the shield mount points bwrap creates on the host, as Run does -
 	// profiling applies the same deny-list shields, so it leaves the same artifacts.
-	defer removeCreatedShieldDirs(preflight.createdShieldDirs(sb))
+	shieldDirs, shieldFiles := preflight.createdShields(sb)
+	defer removeCreatedShields(shieldDirs, shieldFiles, preflight.writes)
 
 	report, err := os.CreateTemp("", "bento-observe-")
 	if err != nil {
