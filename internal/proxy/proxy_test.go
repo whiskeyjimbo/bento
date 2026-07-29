@@ -360,6 +360,78 @@ func TestConcurrencyIsCapped(t *testing.T) {
 	}
 }
 
+// The observer is embedder code, and a Refused decision is reported from Serve's
+// own accept goroutine - so a panic there would take the whole bento process down
+// rather than end one connection. The accept loop must survive it and keep
+// refusing.
+func TestObserverPanicOnRefusedDoesNotKillServe(t *testing.T) {
+	block := make(chan struct{})
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(func(context.Context, string, string) (net.Conn, error) {
+			<-block
+			return nil, fmt.Errorf("test dialer unblocked")
+		}),
+		WithObserver(func(Decision, string, string) { panic("embedder observer blew up") }))
+	dialProxy, stop := startProxy(t, p)
+	defer func() { close(block); stop() }()
+
+	held := make([]net.Conn, 0, maxConcurrent)
+	for range maxConcurrent {
+		c := dialProxy()
+		fmt.Fprintf(c, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+		held = append(held, c)
+	}
+	defer func() {
+		for _, c := range held {
+			c.Close()
+		}
+	}()
+
+	// Two over-cap connections: the first drives the panicking report, the second
+	// shows the accept loop is still there to refuse it.
+	for i := range 2 {
+		over := dialProxy()
+		defer over.Close()
+		fmt.Fprintf(over, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+		over.SetReadDeadline(time.Now().Add(3 * time.Second))
+		status, err := bufio.NewReader(over).ReadString('\n')
+		if err != nil {
+			t.Fatalf("over-cap connection %d got no status: %v", i, err)
+		}
+		if !strings.Contains(status, "503") {
+			t.Errorf("over-cap connection %d: status = %q, want 503", i, status)
+		}
+	}
+}
+
+// A panicking observer must not cost the connection it reports either. handle's
+// blanket recover would otherwise swallow the panic into a dropped connection with
+// no status line at all, which is neither an allow nor a deny.
+func TestObserverPanicDoesNotDropTheConnection(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}},
+		WithDialer(fakeDialer("tunnel")),
+		WithObserver(func(Decision, string, string) { panic("embedder observer blew up") }))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 - a faulty observer must not deny an allowed host", status)
+	}
+	if _, err := br.ReadString('\n'); err != nil { // the blank line closing the 200
+		t.Fatalf("reading the response terminator: %v", err)
+	}
+	banner := make([]byte, len("tunnel"))
+	if _, err := io.ReadFull(br, banner); err != nil {
+		t.Fatalf("reading the tunnel after an observer panic: %v", err)
+	}
+	if string(banner) != "tunnel" {
+		t.Errorf("tunnel carried %q, want the upstream banner", banner)
+	}
+}
+
 // A listener that stops accepting on its own kills the egress fence for the rest of
 // the run, so Serve must hand that error back rather than return as if the run had
 // ended it. Only a caller-cancelled Serve returns nil.

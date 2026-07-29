@@ -90,7 +90,15 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 	return func(p *Proxy) { p.dial = dial }
 }
 
-// WithObserver installs a callback invoked for every allow/deny decision.
+// WithObserver installs a callback invoked for every allow/deny decision. It runs
+// on the deciding connection's goroutine, and for a Refused decision on Serve's
+// accept goroutine, so it must not block: a slow observer stalls the connection it
+// reports, and on the accept path it stalls every connection behind it. A panic is
+// contained and the connection proceeds; the decision it carried is simply lost.
+//
+// host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
+// before displaying either to a human. A Refused decision carries neither, having
+// been made before the CONNECT was read.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
 }
@@ -584,10 +592,19 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	tunnel(br, client, upstream)
 }
 
+// report hands a decision to the observer, containing a panic there rather than
+// letting it escape. The observer is embedder code called from two places with no
+// recover of their own worth relying on: Serve's accept goroutine, where a panic
+// would take down the whole bento process mid-run, and handle, whose blanket
+// recover would swallow it into a dropped connection with no status line. Neither
+// outcome should follow from a faulty callback, so the decision is delivered
+// best-effort and the connection proceeds.
 func (p *Proxy) report(d Decision, host, port string) {
-	if p.observe != nil {
-		p.observe(d, host, port)
+	if p.observe == nil {
+		return
 	}
+	defer func() { _ = recover() }()
+	p.observe(d, host, port)
 }
 
 // callGate consults the gatekeeper for a host the allowlist did not permit,
