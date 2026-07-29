@@ -62,6 +62,11 @@ type Config struct {
 	// reflects what was really installed rather than only what the host probed as
 	// possible. See applied.go. Zero means no report.
 	AppliedFD int
+	// AllowNetworkStdio carries enforce.Process.AllowNetworkStdio: the embedder
+	// deliberately handed the target an open network socket as one of its standard
+	// streams, so refuseNetworkStdio is skipped. Off by default, including for every
+	// CLI run.
+	AllowNetworkStdio bool
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -103,14 +108,14 @@ func Run(cfg Config) (int, error) {
 	if err := dropInheritedFDs(); err != nil {
 		return 0, err
 	}
-	// An empty Socket means the policy grants no egress, so the netns is the whole
-	// guarantee - and an inherited socket walks through it. With a proxy socket the
-	// policy does grant egress, and refusing there would break an embedder deliberately
-	// passing a connection as stdio; see refuseNetworkStdio.
-	if cfg.Socket == "" {
-		if err := refuseNetworkStdio(); err != nil {
-			return 0, err
-		}
+	// An inherited socket on stdio walks through every fence bento installs, whether
+	// or not the policy grants egress: with no egress it falsifies the claim outright,
+	// and with egress it bypasses the host proxy's allowlist. So the refusal is
+	// unconditional, and the one caller that means to pass a connection says so.
+	if cfg.AllowNetworkStdio {
+		fmt.Fprintf(os.Stderr, "[bento] warning: network sockets on the target's standard streams are permitted by the embedder; a connection passed there bypasses the manifest's egress allowlist\n")
+	} else if err := refuseNetworkStdio(); err != nil {
+		return 0, err
 	}
 
 	// Marking the leaked descriptors close-on-exec drops them at the exec into the
@@ -324,17 +329,18 @@ const firstInheritableFD = 3
 // and it is a live channel under a policy whose claim is that the target cannot open
 // one at all.
 //
-// It is reachable only through the embedding API: os/exec passes the raw descriptor
-// when enforce.Process.Stdin/Stdout is an *os.File, while a plain io.Reader is funnelled
-// through a pipe and the socket does not survive.
+// It is not an embedding-API-only concern. os/exec passes the raw descriptor whenever
+// enforce.Process.Stdin/Stdout is an *os.File - and the CLI passes os.Stdin, so any
+// parent that starts `bento run` with a socket on fd 0 (socket activation, an
+// inetd-style supervisor, a daemon spawning bento) reaches it with no embedder
+// involved. A plain io.Reader is funnelled through a pipe and the socket does not
+// survive, which is why only the *os.File case gets here.
 //
-// This runs only where the policy grants NO egress, which is the claim an inherited
-// socket falsifies outright. Under an egress-allowed policy such a descriptor still
-// bypasses the host proxy's allowlist, but an embedder handing the target a connection
-// as stdio - the socket-activation pattern, where a server passes a per-connection
-// handler its accepted conn - is doing so deliberately, and refusing would break that
-// on the sandbox's guess about intent. That is a residual of the embedding API,
-// alongside the AF_UNIX and SCM_RIGHTS ones.
+// So it runs whatever the policy's egress: with none granted an inherited socket
+// falsifies the claim outright, and with egress granted it bypasses the host proxy's
+// allowlist. The one deliberate case - the socket-activation pattern, where a server
+// passes a per-connection handler its accepted conn - opts in through
+// enforce.Process.AllowNetworkStdio, which no manifest and no CLI flag can set.
 func refuseNetworkStdio() error {
 	for fd := range firstInheritableFD {
 		if err := refuseNetworkFD(fd); err != nil {

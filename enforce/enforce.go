@@ -93,6 +93,20 @@ type Process struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
+	// AllowNetworkStdio permits a stdio stream that is already an open network
+	// socket. Bento otherwise refuses such a run: no layer it installs revokes an
+	// already-open description - a netns binds at socket creation, the seccomp
+	// egress block filters socket(2), and Landlock governs paths - so the target
+	// gets an unfiltered channel past the manifest's allowlist. The socket-activation
+	// pattern (a server handing a per-connection handler its accepted conn as stdio)
+	// is doing that deliberately, and this is how it says so. It is deliberately not
+	// a manifest field and not a CLI flag: a downloaded manifest or a copied command
+	// line must never be able to re-open the channel, so only a Go caller that passed
+	// the socket in the first place can permit it. The degraded (no-bwrap) tier
+	// refuses regardless: every confinement there is the only one of its kind, so it
+	// takes no bypass at all.
+	AllowNetworkStdio bool
+
 	// Env are the resolved environment values handed to the target. The policy
 	// declares which NAMES may pass through; resolving those names against the
 	// host, and merging any values supplied at invocation, is the core's job -

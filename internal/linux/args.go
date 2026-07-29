@@ -288,13 +288,14 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	// one place keeps them in sync.
 	block, strictBlock := execBlockFlags(execMode, seccompSupported())
 	cfg := launcher.Config{
-		Socket:      socket,
-		Block:       block,
-		StrictBlock: strictBlock,
-		Writable:    append(append([]string{}, sandboxWritableMounts...), writes...),
-		ObserveFD:   observeFD,
-		AppliedFD:   appliedFD,
-		Target:      command(p, sb),
+		Socket:            socket,
+		Block:             block,
+		StrictBlock:       strictBlock,
+		Writable:          append(append([]string{}, sandboxWritableMounts...), writes...),
+		ObserveFD:         observeFD,
+		AppliedFD:         appliedFD,
+		AllowNetworkStdio: proc.AllowNetworkStdio,
+		Target:            command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)
 	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(appliedShields), nil
