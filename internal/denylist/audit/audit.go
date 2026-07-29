@@ -434,7 +434,7 @@ func expand(raw, home, runUser string) (string, bool) {
 func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 	var gaps []Gap
 	for _, c := range candidates {
-		covering, ok := cover(c.Path, rules)
+		covering, ok := denylist.Covers(c.Path, rules)
 		if !ok {
 			gaps = append(gaps, Gap{Candidate: c})
 			continue
@@ -639,26 +639,4 @@ func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfSc
 		}
 	}
 	return unclassified, globs, outOfScope
-}
-
-// cover finds a rule that shields path, returning it and true. An exact match wins;
-// otherwise a directory rule whose path encloses it covers it.
-func cover(path string, rules []denylist.Rule) (denylist.Rule, bool) {
-	var best denylist.Rule
-	found := false
-	for _, r := range rules {
-		if r.Path == path || (r.Dir && under(path, r.Path)) {
-			// Prefer the strictest covering rule, so a DenyAll dir shield is not
-			// reported Weaker because a DenyWrite rule also matched.
-			if !found || r.Deny < best.Deny {
-				best, found = r, true
-			}
-		}
-	}
-	return best, found
-}
-
-// under reports whether path is strictly inside dir.
-func under(path, dir string) bool {
-	return strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
 }

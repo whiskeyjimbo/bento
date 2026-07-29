@@ -176,8 +176,25 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// Coding-agent credential files. Their trees are DenyWrite above so the agent can
 		// still read its own configuration; the token inside must not be readable, and
 		// denyArgs emits DenyWrite before DenyAll so this hide lands after that bind.
-		".claude/.credentials.json", // Claude Code OAuth token
-		".codex/auth.json",          // Codex CLI OAuth token
+		".claude/.credentials.json",        // Claude Code OAuth token
+		".codex/auth.json",                 // Codex CLI OAuth token
+		".gemini/oauth_creds.json",         // Gemini CLI OAuth token
+		".gemini/google_accounts.json",     // the account identities beside it
+		".gemini/mcp-oauth-tokens-v2.json", // per-MCP-server OAuth tokens
+		// Claude Code keeps its account/OAuth block in the SAME file as the global
+		// configuration, so the tree-DenyWrite/credential-DenyAll split above cannot
+		// separate them. Hidden rather than write-denied: the secret wins over the config
+		// read, the .msmtprc/.muttrc precedent. A sandboxed claude loses its own settings,
+		// which is the trade - the alternative hands a broad read grant a live token. The
+		// .claude.json.backup.<epoch> siblings the CLI writes beside it carry the same
+		// content under a name no concrete path can enumerate; see bv2 for that residual.
+		".claude.json",
+		// ollama generates an ed25519 keypair to identify the host to a model registry.
+		// Only the keys are named, not the whole ~/.ollama: the tree's bulk is pulled
+		// models, which a sandboxed run may legitimately read, and the walletKeyPaths
+		// entries make the same narrowing for the same reason.
+		".ollama/id_ed25519",
+		".ollama/id_ed25519.pub",
 		// Mail/registry configs whose dominant content is a plaintext credential and
 		// whose tool is rarely a sandboxed target: hidden (not just write-denied) so a
 		// sandboxed run cannot read the secret, which also neutralizes their exec knobs
@@ -463,6 +480,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".claude",
 		".codex",
 		".cursor",
+		".gemini", // settings.json declares MCP servers, the same host-exec knob
 
 		// Directories the distro default profile prepends to $PATH when they exist
 		// (/etc/skel/.profile does this for both). A binary planted here is run by the
@@ -790,6 +808,28 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true})
 }
 
+// Covers finds the rule shielding path, returning it and true. An exact match wins;
+// otherwise a directory rule enclosing the path covers it. When several match, the
+// strictest wins, so a path inside a DenyAll directory does not read as merely
+// write-shielded because a DenyWrite rule also matched it.
+//
+// It lives here rather than in each consumer because "is this path shielded" is a
+// question about Rule, and the parity audit and the credential hunt both have to answer
+// it the same way - a second copy is how they would come to disagree about what bento
+// covers.
+func Covers(path string, rules []Rule) (Rule, bool) {
+	var best Rule
+	found := false
+	for _, r := range rules {
+		if r.Path == path || (r.Dir && under(path, r.Path)) {
+			if !found || r.Deny < best.Deny {
+				best, found = r, true
+			}
+		}
+	}
+	return best, found
+}
+
 // under reports whether path is at or inside dir.
 func under(path, dir string) bool {
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
@@ -902,6 +942,9 @@ var credentialAnchorDirs = []string{
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
 	".config/helm",      // repository basic-auth and OCI registry auth (caches live under .cache/.local)
+	// Found by the shape hunt (internal/credhunt) rather than by either upstream corpus -
+	// its sessions/*/.cache/KEYREGISTRY holds the CLI's stored git-host credentials.
+	".local/share/GitKrakenCLI",
 
 	// pass(1) is genuinely key-bearing and anchors, but it is also a git repo by design.
 	// The alias scan skips VCS object stores inside an anchor separately, so a
