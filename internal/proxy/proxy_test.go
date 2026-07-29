@@ -609,7 +609,41 @@ func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
 	if !strings.Contains(string(body), "non-public") {
 		t.Errorf("refusal body should explain the non-public address; got %q", body)
 	}
+	// The refusal must not answer the query it refused: naming the resolved address
+	// would let a confined process enumerate the host's DNS one denial at a time.
+	if strings.Contains(string(body), "127.0.0.1") {
+		t.Errorf("refusal body discloses the resolved address; got %q", body)
+	}
 }
+
+// A dial that fails for an ordinary reason must not report the address it tried:
+// *net.OpError names the resolved peer, which is the same disclosure the refusal
+// path avoids, reached through the 502 instead.
+func TestDialFailureBodyHidesResolvedAddress(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "internal.example", Port: "443"}},
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: network, Addr: fakeAddr("10.0.0.5:443"), Err: errors.New("connection refused")}
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "internal.example:443")
+	if !strings.Contains(status, "502") {
+		t.Fatalf("status = %q, want 502", status)
+	}
+	body, _ := io.ReadAll(br)
+	if strings.Contains(string(body), "10.0.0.5") {
+		t.Errorf("dial-failure body discloses the resolved address; got %q", body)
+	}
+}
+
+// fakeAddr stands in for the resolved peer a *net.OpError carries.
+type fakeAddr string
+
+func (a fakeAddr) Network() string { return "tcp" }
+func (a fakeAddr) String() string  { return string(a) }
 
 // The proxy runs on the host, so dialing loopback reaches the HOST's loopback
 // services. An explicit loopback rule must NOT reach them - loopback is never

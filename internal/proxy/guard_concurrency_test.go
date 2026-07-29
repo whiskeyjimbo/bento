@@ -60,8 +60,14 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	}
 
 	var (
-		mu        sync.Mutex
-		dialed    []string
+		mu     sync.Mutex
+		dialed []string
+		// refusals records the guard's own verdict text per host. The 403 body
+		// deliberately does not name the resolved address (it would enumerate the
+		// host's DNS for the sandbox), so the per-connection property - this
+		// connection was blocked for ITS address, not another's - is read here,
+		// where the guard's error is still intact.
+		refusals  = map[string]string{}
 		decisions = map[string]Decision{}
 	)
 	arrived := make(chan struct{}, conns)
@@ -89,6 +95,9 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 			arrived <- struct{}{}
 			<-release
 			if err := p.guardUpstream(ctx, network, net.JoinHostPort(ip, port), nil); err != nil {
+				mu.Lock()
+				refusals[host] = err.Error()
+				mu.Unlock()
 				return nil, err
 			}
 			// Recorded only AFTER the guard passes: recording on entry would make the
@@ -145,15 +154,27 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 			t.Errorf("%s got %q, want %s - a guard verdict landed on the wrong connection", r.host, r.status, want)
 			continue
 		}
-		// The refusal names the address that was blocked, so a verdict carrying another
-		// connection's address - the block holding but for the wrong reason - is caught
-		// too, not just a swapped allow/deny.
-		// Compared in canonical form: the guard names the parsed address, so an
-		// IPv4-mapped literal is reported as the plain v4 address it wraps.
-		if blocked := net.ParseIP(resolved[r.host]).String(); want == "403" && !strings.Contains(r.body, blocked) {
-			t.Errorf("%s was refused naming a different address than %s: %q", r.host, blocked, r.body)
+		if want == "403" && !strings.Contains(r.body, r.host) {
+			t.Errorf("%s was refused without naming itself: %q", r.host, r.body)
 		}
 	}
+
+	// The guard's own verdict names the address that was blocked, so a verdict
+	// carrying another connection's address - the block holding but for the wrong
+	// reason - is caught too, not just a swapped allow/deny.
+	// Compared in canonical form: the guard names the parsed address, so an
+	// IPv4-mapped literal is reported as the plain v4 address it wraps.
+	mu.Lock()
+	for host, ip := range resolved {
+		if !strings.HasPrefix(host, "priv") {
+			continue
+		}
+		blocked := net.ParseIP(ip).String()
+		if !strings.Contains(refusals[host], blocked) {
+			t.Errorf("%s was refused naming a different address than %s: %q", host, blocked, refusals[host])
+		}
+	}
+	mu.Unlock()
 
 	mu.Lock()
 	defer mu.Unlock()

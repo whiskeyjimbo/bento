@@ -552,12 +552,18 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		var blocked *blockedUpstreamError
 		if errors.As(err, &blocked) {
 			p.report(Denied, host, port)
+			// The body names only what the client already knows - the host it asked
+			// for. Naming the address the host RESOLVED to would let a confined
+			// process walk the host's internal DNS namespace one denied CONNECT at a
+			// time, each refusal looking like an ordinary denial while answering the
+			// query. The same reason keeps the dial error out of the 502 below: a
+			// *net.OpError carries the resolved Addr in its own text.
 			writeStatus(client, "403 Forbidden",
-				fmt.Sprintf("bento denied egress to %s:%s (%s resolves to non-public address %s; list it as an explicit IP rule if you meant it)", host, port, host, blocked.addr))
+				fmt.Sprintf("bento denied egress to %s:%s (it resolves to a non-public address; list it as an explicit IP rule if you meant it)", host, port))
 			return
 		}
 		p.report(decision, host, port)
-		writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s: %v", host, port, err))
+		writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 		return
 	}
 	defer upstream.Close()
