@@ -19,6 +19,13 @@ import (
 // They are defined here, in the frontend, so the core stays free of wire-format
 // concerns - and they use explicit strings rather than the core's enum values, so
 // reordering a Go constant can never silently change the contract.
+//
+// Every path field below is a Go string encoded as JSON, so a path carrying bytes that
+// are not valid UTF-8 arrives with those bytes replaced by U+FFFD and no longer names an
+// openable file. A consumer that must open what it reads has to treat a path field as a
+// display name on such a host; nothing here re-encodes them, because no credential store
+// bento shields has a non-UTF-8 name in practice and a base64 sibling on every path field
+// would cost every consumer to serve none of them.
 
 type layerJSON struct {
 	Layer  string `json:"layer"`
@@ -243,6 +250,11 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	// is the difference between reviewing a path and reviewing a credential. The backend
 	// resolved these as it bound them; re-resolving here would name whatever the path
 	// points at now, which a run that moved a symlink underneath itself has changed.
+	//
+	// That target is host-enumerated, so it is quoted: a directory whose name holds a
+	// newline would otherwise print as a second line and forge a summary line of its own.
+	// The grant above it is manifest text the reviewer approved, and stays unquoted so the
+	// line still matches how the manifest spells it.
 	lands := make(map[string]string, len(res.ShieldedGrantTargets))
 	for _, t := range res.ShieldedGrantTargets {
 		lands[t.Path] = t.Credential
@@ -250,7 +262,7 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	for _, g := range res.ShieldedGrants {
 		fmt.Fprintf(w, "[bento]   %s\n", g)
 		if target, ok := lands[g]; ok {
-			fmt.Fprintf(w, "[bento]     on this host: %s\n", target)
+			fmt.Fprintf(w, "[bento]     on this host: %q\n", target)
 		}
 	}
 }

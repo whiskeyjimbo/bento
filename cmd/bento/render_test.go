@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -119,13 +120,38 @@ func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
 	})
 	out := b.String()
 
-	if !strings.Contains(out, "on this host: "+store) {
+	if !strings.Contains(out, "on this host: "+strconv.Quote(store)) {
 		t.Errorf("the notice must name the store the grant lands on; %q missing from %q", store, out)
 	}
 	// An opt-in that names its own target has nothing more to say about it, so it gets no
 	// second line - the backend reports a pair only where the two differ.
 	if strings.Count(out, "on this host") != 1 {
 		t.Errorf("only the aliased grant gets a second line; got %q", out)
+	}
+}
+
+// The store a grant lands on is enumerated from the host, so its name carries whatever
+// bytes the filesystem allows. Printed raw, a directory named with an embedded newline
+// splits into two lines and the second one can be written to read like a warning bento
+// itself emitted - the reviewer's whole reason for reading this block.
+func TestWriteShieldedGrantWarningQuotesTheResolvedStore(t *testing.T) {
+	const granted = "/home/u/.ssh"
+	forged := "/home/u/real\n[bento]   /nothing-to-see-here"
+
+	var b bytes.Buffer
+	writeShieldedGrantWarning(&b, enforce.Result{
+		ShieldedGrants:       []string{granted},
+		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: forged}},
+	})
+	out := b.String()
+
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento]") {
+			t.Errorf("a store name must not be able to start a line of its own; got %q in:\n%s", line, out)
+		}
+	}
+	if !strings.Contains(out, strconv.Quote(forged)) {
+		t.Errorf("the store must still be named, quoted; got:\n%s", out)
 	}
 }
 

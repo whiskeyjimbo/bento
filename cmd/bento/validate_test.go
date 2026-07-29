@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -151,13 +152,13 @@ func TestValidateShowsResolvedGrantsWithoutDisturbingApproval(t *testing.T) {
 	if !strings.Contains(out, "read:         [~ ./data /etc/hosts]") {
 		t.Errorf("summary must show the grants as written; got:\n%s", out)
 	}
-	for _, want := range []string{"on this host: " + home, "on this host: " + filepath.Join(filepath.Dir(path), "data")} {
+	for _, want := range []string{"on this host: " + strconv.Quote(home), "on this host: " + strconv.Quote(filepath.Join(filepath.Dir(path), "data"))} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary missing %q; got:\n%s", want, out)
 		}
 	}
 	// An absolute grant already says where it lands, so it gets no second line.
-	if strings.Contains(out, "on this host: /etc/hosts") {
+	if strings.Contains(out, `on this host: "/etc/hosts"`) {
 		t.Errorf("an absolute grant must not be repeated; got:\n%s", out)
 	}
 }
@@ -179,8 +180,35 @@ func TestValidateResolvesSymlinkedGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "on this host: "+target) {
+	if !strings.Contains(out, "on this host: "+strconv.Quote(target)) {
 		t.Errorf("summary must name what the symlinked grant reaches (%q); got:\n%s", target, out)
+	}
+}
+
+// Following symlinks means the printed target is a name the filesystem chose, not one the
+// manifest did. A directory named with an embedded newline would otherwise print as two
+// lines, letting a host path forge what reads like another line of bento's own summary.
+func TestValidateQuotesResolvedGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(t.TempDir(), "real\nnetwork:      forged-by-a-directory-name")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Skipf("this filesystem rejects a newline in a directory name: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~/.ssh"}}
+	out, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, p, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "on this host: "+strconv.Quote(target)) {
+		t.Errorf("summary must name the resolved target, quoted; got:\n%s", out)
+	}
+	if strings.Contains(out, "\nnetwork:      forged-by-a-directory-name") {
+		t.Errorf("a host directory name must not be able to forge a summary line; got:\n%s", out)
 	}
 }
 

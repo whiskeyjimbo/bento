@@ -308,9 +308,12 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 // manifest is approved. The stamp attests the manifest text, so this line is what the
 // approval is worth - a link that moves afterward changes what the same approved
 // manifest reaches, and only the run-time output will say so.
+//
+// The target is enumerated from the host, so it is quoted: a directory whose name holds a
+// newline would otherwise print as a second line and forge a summary line of its own.
 func writeResolvedGrants(w io.Writer, literal, resolved []string) {
 	for _, t := range toGrantTargetsJSON(literal, resolved) {
-		fmt.Fprintf(w, "  on this host: %s\n", t.OnHost)
+		fmt.Fprintf(w, "  on this host: %q\n", t.OnHost)
 	}
 }
 
