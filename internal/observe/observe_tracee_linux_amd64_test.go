@@ -2,8 +2,10 @@ package observe
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -358,6 +360,51 @@ func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 // way out, so a run carries at most a couple. The band is wide enough to absorb them and
 // far too tight for either counting bug.
 const observerSlack = 3
+
+// A thread that dies holding a syscall stop is the observer's own race, not a loss the
+// tracee had: a ptrace-stopped thread runs nothing until it is resumed, so one that is
+// already gone at the entry stop never executed the syscall. Counting it reports a lost
+// access on a call that never happened, which is what made a multithreaded Go tracee
+// report a drop or two on a run that lost nothing. The exit stop is the opposite case -
+// the call completed and the existence probes are read there - so it still counts.
+func TestInspectDoesNotCountADeadThreadsEntryStop(t *testing.T) {
+	// A reaped pid answers every ptrace request with ESRCH, which is exactly the state a
+	// thread that exited between its stop and the register read leaves behind.
+	dead := reapedPid(t)
+	if err := syscall.PtraceGetRegs(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
+		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		op   byte
+		want int
+	}{
+		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, 0},
+		{"exit", unix.PTRACE_SYSCALL_INFO_EXIT, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var res Result
+			count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
+			inspect(dead, tc.op, func(string, bool) {}, count, release, map[string]heldPath{}, &res)
+			if res.Dropped != tc.want {
+				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
+			}
+		})
+	}
+}
+
+// reapedPid returns the pid of a process that has run and been waited for, so it names
+// nothing live. Pid reuse would need the whole pid space to wrap within the test.
+func reapedPid(t *testing.T) int {
+	t.Helper()
+	// No mode in the environment, so the helper skips immediately and exits clean.
+	cmd := exec.Command(os.Args[0], "-test.run=TestObserveTraceeHelper")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run a throwaway child: %v", err)
+	}
+	return cmd.Process.Pid
+}
 
 func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 	const lost = 500
