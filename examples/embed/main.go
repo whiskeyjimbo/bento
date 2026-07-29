@@ -270,8 +270,19 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
 	// so the backend honored the grant over its own shield. bento does not refuse this -
 	// the operator chose it - so a frontend that stays quiet makes the exposure silent.
+	// ShieldedGrantTargets names the store a grant actually bound where the two differ:
+	// the deny-list builds the grantable names from $HOME, so a grant can name a symlink
+	// while the exposure lands elsewhere, and naming only the spelling would point a
+	// reviewer at a scratch path instead of the private key that was handed over.
+	lands := make(map[string]string, len(res.ShieldedGrantTargets))
+	for _, t := range res.ShieldedGrantTargets {
+		lands[t.Path] = t.Credential
+	}
 	for _, path := range res.ShieldedGrants {
 		fmt.Fprintf(w, "embed: WARNING: exposed shielded credential path to the target: %q\n", path)
+		if target, ok := lands[path]; ok {
+			fmt.Fprintf(w, "embed: WARNING:   on this host that path is %q\n", target)
+		}
 	}
 	// AcceptedAliases: paths the run could read as a second name for a shielded
 	// credential, because AcceptAliasesUnder acknowledged the tree they sit in. That
