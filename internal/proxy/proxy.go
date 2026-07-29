@@ -346,21 +346,36 @@ func isRFC8215LocalUse(ip net.IP) bool {
 // may reach even by literal. Every length the container admits is tried, so a
 // wrapped metadata address is caught whichever carve produced it.
 //
-// A candidate leading with a zero octet is skipped rather than read as
-// this-network: at every length but the true one the offsets fall outside the
-// embedding, onto the zero padding of a shorter carve, and honoring those would
-// make almost any address in the /48 look host-reserved.
+// A length whose layout the address does not actually satisfy is skipped, or a
+// carve shorter than the candidate would be read at offsets that fall on its zero
+// padding and make almost anything in the /48 look host-reserved. RFC 6052 sec 2.2
+// pins two things a real carve must show: the u-octet at byte 8 is zero below /96,
+// and every byte after the embedded IPv4 is zero. An all-zero candidate is padding
+// rather than this-network, so it is skipped too.
+//
+// This is not exact. A carve SHORTER than the candidate length can still satisfy
+// both rules and read as some other address - a /48-wrapped 8.127.3.4 looks like
+// 127.3.4.0 at /56 - so the escalation can over-refuse. That costs a literal rule
+// naming an address inside a non-routable /48, which is the cheap direction to be
+// wrong in.
 func classifyRFC8215(ip net.IP) ipClass {
 	ip16 := ip.To16()
 	for _, length := range rfc6052Lengths {
 		if length < 48 {
 			continue
 		}
-		pos := rfc6052Positions[length]
-		if ip16[pos[0]] == 0 {
+		if length < 96 && ip16[8] != 0 {
 			continue
 		}
-		if classifyIP(net.IPv4(ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]])) == ipHostReserved {
+		pos := rfc6052Positions[length]
+		if !bytes.Equal(ip16[pos[3]+1:], make([]byte, 15-pos[3])) {
+			continue
+		}
+		v4 := net.IPv4(ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]])
+		if v4.IsUnspecified() {
+			continue
+		}
+		if classifyIP(v4) == ipHostReserved {
 			return ipHostReserved
 		}
 	}
@@ -420,7 +435,8 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	defer cancel()
 	// Learn the host's NAT64 prefix once, before any connection is handled, so
 	// classify reads p.nat64 without a lock. Bounded so a slow or dead resolver
-	// delays run start by at most this, then falls back to the well-known baseline.
+	// delays run start by at most this; a deadline that expires answers nothing, so
+	// discovery records that and classify fails closed rather than assuming no DNS64.
 	discoverCtx, discoverCancel := context.WithTimeout(ctx, nat64DiscoveryTimeout)
 	p.discoverNAT64(discoverCtx)
 	discoverCancel()

@@ -10,8 +10,8 @@ import (
 )
 
 // nat64DiscoveryTimeout bounds the one-time ipv4only.arpa lookup at Serve start so
-// a slow or unreachable resolver delays run start by at most this before falling
-// back to the well-known-prefix baseline.
+// a slow or unreachable resolver delays run start by at most this. Expiring is not
+// an answer, so it leaves discovery inconclusive and classify fails closed.
 const nat64DiscoveryTimeout = 3 * time.Second
 
 // NAT64 prefix discovery (RFC 7050). On a DNS64/NAT64 network a resolver
@@ -147,8 +147,11 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 // When discovery was inconclusive, an IPv6 that no transition prefix decodes may
 // be a site synthesis wrapping RFC1918, and nothing left can tell. It is private
 // rather than public: still reachable when a rule names the literal, refused when
-// only a hostname pointed there, which is the SSRF shape this guards. That bites
-// exactly one case - a broken resolver plus a raw public IPv6 destination.
+// only a hostname pointed there, which is the SSRF shape this guards.
+//
+// The cost is real: after one failed lookup, every allowlisted host reachable ONLY
+// over IPv6 is refused for the rest of the run, since a hostname rule grants no
+// literal. A dual-stack host survives on the dialer's fallback to its A records.
 func (p *Proxy) classify(ip net.IP) ipClass {
 	c := classifyIP(ip)
 	if c != ipPublic || ip.To4() != nil {

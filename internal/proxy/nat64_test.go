@@ -229,3 +229,19 @@ func TestRFC8215LocalUsePrefixDecodesEveryLength(t *testing.T) {
 		})
 	}
 }
+
+// A wrapped this-network address is host-reserved, not merely private: 0.0.0.0/8
+// names the gateway rather than a destination, so no rule may reach it even by
+// naming the literal. It is only distinguishable from the zero padding a wrong
+// carve length reads by RFC 6052's rule that the bytes after the embedded IPv4 are
+// zero, which is what the length filter checks.
+func TestRFC8215ThisNetworkStaysHostReserved(t *testing.T) {
+	if got := classifyIP(net.ParseIP("64:ff9b:1::0.0.0.1")); got != ipHostReserved {
+		t.Errorf("wrapped 0.0.0.1 classified %d, want ipHostReserved (%d)", got, ipHostReserved)
+	}
+	// The counterpart the filter exists to protect: a /96-carved public address must
+	// not be read at /64 as its own zero padding (0.0.0.8) and refused as this-network.
+	if got := classifyIP(net.ParseIP("64:ff9b:1::8.8.8.8")); got != ipPrivate {
+		t.Errorf("wrapped 8.8.8.8 classified %d, want ipPrivate (%d)", got, ipPrivate)
+	}
+}
