@@ -31,6 +31,31 @@ func TestAwaitBridgeReady(t *testing.T) {
 		}
 	})
 
+	// A bridge that neither signals nor dies would otherwise block the launcher forever,
+	// with no output: every other wait in the file is bounded, and an embedder calling
+	// launcher.Run directly has nothing else watching it.
+	t.Run("gives up on a bridge that never signals", func(t *testing.T) {
+		old := bridgeReadyTimeout
+		bridgeReadyTimeout = 50 * time.Millisecond
+		defer func() { bridgeReadyTimeout = old }()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close() // the write end stays open, so the read never sees EOF
+		done := make(chan error, 1)
+		go func() { done <- awaitBridgeReady(r) }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("want an error from a bridge that never signaled, got nil")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("awaitBridgeReady never returned; the wait is unbounded")
+		}
+	})
+
 	t.Run("fails closed when the bridge dies before signaling", func(t *testing.T) {
 		r, w, err := os.Pipe()
 		if err != nil {

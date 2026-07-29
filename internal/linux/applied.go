@@ -28,8 +28,16 @@ type applied struct {
 	complete bool
 	// execFilter is which exec-block filter landed: launcher.AppliedExecNone/Basic/Strict.
 	execFilter string
-	// landlockErr is why the Landlock confinement was not applied, when it was not.
+	// landlock is the outcome the stage reported for the Landlock confinement:
+	// launcher.AppliedYes/No/Absent, or "" when it reported none at all.
+	landlock string
+	// landlockErr is why the Landlock confinement was not applied, when it was not and
+	// the stage's reason could be read.
 	landlockErr string
+	// targetUnreached is whether the stage reported that it applied its layers and then
+	// never reached the target; targetErr is what stopped it, when it could be read.
+	targetUnreached bool
+	targetErr       string
 }
 
 // newAppliedReport creates the file the in-sandbox stage writes its applied-layer
@@ -57,30 +65,45 @@ func parseApplied(path string) applied {
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
+		key, rest, _ := strings.Cut(line, " ")
+		value, detail, _ := strings.Cut(rest, " ")
 		if a.complete {
-			// Anything after the marker did not come from the stage's single write, so the
-			// report is treated as tampered - the same stance parseObservations takes.
-			if line != "" {
+			// One record may legitimately follow the marker: the stage saying the layers
+			// above it were applied but the target never ran. Accepting it is safe because
+			// it can only ever WORSEN the report - the same monotonicity the rest of
+			// reconcile rests on - so it cannot be used to claim a layer. Anything else did
+			// not come from the stage's writes, so the report is treated as tampered, the
+			// same stance parseObservations takes.
+			switch {
+			case key == launcher.AppliedTargetUnreached:
+				a.targetUnreached = true
+				if a.targetErr, err = strconv.Unquote(rest); err != nil {
+					a.targetErr = ""
+				}
+			case line != "":
 				return applied{}
 			}
 			continue
 		}
-		key, rest, _ := strings.Cut(line, " ")
-		value, detail, _ := strings.Cut(rest, " ")
 		switch {
 		case line == launcher.AppliedMarker:
 			a.complete = true
 		case key == launcher.AppliedExecFilter:
 			a.execFilter = value
-		case key == launcher.AppliedLandlock && value == launcher.AppliedAbsent:
-			// A kernel with no usable Landlock ABI. The probe already reports that this host
-			// has no backstop and that bwrap alone confines, so there is nothing to
-			// reconcile - recording it keeps "yes" meaning a ruleset really landed.
-		case key == launcher.AppliedLandlock && value == launcher.AppliedNo:
-			// Quoted by the writer so a newline in the error cannot forge a record; an
-			// unquotable detail still counts as a failure, just without the reason.
-			if a.landlockErr, err = strconv.Unquote(detail); err != nil {
-				a.landlockErr = "reason unreadable"
+		case key == launcher.AppliedLandlock:
+			// The value is kept whatever it is, including one this host does not recognize:
+			// reconcile judges it against what was asked for rather than reading a failure
+			// reason, so a record whose reason is empty or unreadable cannot pass as success.
+			// Absent - a kernel with no usable Landlock ABI - is the one non-"yes" value that
+			// is not a shortfall: the probe already reports that this host has no backstop
+			// and that bwrap alone confines.
+			a.landlock = value
+			if value == launcher.AppliedNo {
+				// Quoted by the writer so a newline in the error cannot forge a record; an
+				// unquotable detail still counts as a failure, just without the reason.
+				if a.landlockErr, err = strconv.Unquote(detail); err != nil {
+					a.landlockErr = "reason unreadable"
+				}
 			}
 		}
 	}
@@ -113,6 +136,22 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		r.Set(enforce.LayerFilesystem, enforce.Unavailable, silent)
 		return
 	}
+	if a.targetUnreached {
+		// The layers really were installed - on the launcher, which then could not reach
+		// the target they were installed for. Claiming them Enforced would attest a
+		// confinement that confined nothing, the same lie the missing-marker branch above
+		// exists to refuse; the marker cannot catch it because on the exec-block path it
+		// must be written before the target is reached.
+		unreached := "the sandboxed launcher applied its layers but never reached the target"
+		if a.targetErr != "" {
+			unreached += " (" + a.targetErr + ")"
+		}
+		unreached += ", so nothing ran under this layer"
+		r.Set(enforce.LayerExec, enforce.Unavailable, unreached)
+		r.Set(enforce.LayerExecStrict, enforce.Unavailable, unreached)
+		r.Set(enforce.LayerFilesystem, enforce.Unavailable, unreached)
+		return
+	}
 	// The exec layers are only as strong as the filter that actually landed. A report
 	// naming no filter (or a value this host does not recognize) where the policy asked
 	// for one is the case a marker alone cannot catch: the child completed setup and
@@ -128,14 +167,23 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		r.Set(enforce.LayerExecStrict, enforce.Degraded,
 			"the sandbox installed the execve-only block; fork/vfork/process-clone blocking is not available on this architecture")
 	}
-	if a.landlockErr != "" {
+	// Judged against what was asked for, like the exec layers above: both tiers apply the
+	// backstop unconditionally, so anything but a ruleset that landed - a reported
+	// failure, a value this host does not recognize, or no Landlock record at all - is a
+	// run without it. Keying on the failure REASON instead read a report whose reason was
+	// empty, and one that never mentioned the layer, as success.
+	if a.landlock != launcher.AppliedYes && a.landlock != launcher.AppliedAbsent {
+		why := a.landlockErr
+		if why == "" {
+			why = fmt.Sprintf("the sandbox reported no Landlock outcome, %q", a.landlock)
+		}
 		// Degraded, not Unavailable: on the bwrap tier the mount namespace still confines
 		// the filesystem and only the second-layer backstop is missing. Reported as a
 		// state change rather than a detail rewrite because enforce.Run's overlay
 		// propagates only a worsening state, so an Enforced-with-a-new-reason would be
 		// dropped and the run would still claim the backstop was active.
 		r.Set(enforce.LayerFilesystem, enforce.Degraded,
-			"the Landlock backstop could not be applied inside the sandbox ("+a.landlockErr+
+			"the Landlock backstop could not be applied inside the sandbox ("+why+
 				"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
 	}
 }

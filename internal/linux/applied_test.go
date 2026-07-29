@@ -201,6 +201,36 @@ func TestAppliedReconcile(t *testing.T) {
 			want:   map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Degraded, enforce.LayerExec: enforce.Enforced},
 		},
 		{
+			// strconv.Unquote turns `""` into an empty string with a nil error, so a reason
+			// keyed on emptiness read a reported failure as a success.
+			name:   "a failure with an empty reason is still a failure",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedNo + " " + `""` + "\n" + launcher.AppliedMarker + "\n",
+			want:   map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Degraded},
+		},
+		{
+			// The backstop is applied unconditionally in both tiers, so silence about it is
+			// a run that did not report applying it, not a run that had it.
+			name:   "a complete report with no Landlock record at all claims no backstop",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" + launcher.AppliedMarker + "\n",
+			want:   map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Degraded},
+		},
+		{
+			name:   "a Landlock outcome this host does not recognize claims no backstop",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" + launcher.AppliedLandlock + " partly\n" + launcher.AppliedMarker + "\n",
+			want:   map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Degraded},
+		},
+		{
+			// Every layer really was applied - to the launcher, which then never reached the
+			// target. The marker cannot catch this: on the exec-block path it must be written
+			// before the target is reached, so a nonexistent entrypoint lands past it.
+			name: "layers applied to a run that never happened are claimed by no layer",
+			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" +
+				launcher.AppliedMarker + "\n" + launcher.AppliedTargetUnreached + " " + `"launcher: starting target: no such file or directory"` + "\n",
+			blockWanted:  true,
+			strictWanted: true,
+			want:         map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Unavailable, enforce.LayerExecStrict: enforce.Unavailable, enforce.LayerFilesystem: enforce.Unavailable},
+		},
+		{
 			name:   "records appended after the marker discard the whole report",
 			report: launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" + launcher.AppliedMarker + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n",
 			want:   map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Unavailable, enforce.LayerExecStrict: enforce.Unavailable, enforce.LayerFilesystem: enforce.Unavailable},
@@ -274,6 +304,30 @@ func TestParseAppliedQuotedReasonCannotForgeRecords(t *testing.T) {
 	}
 	if !strings.Contains(a.landlockErr, "line one") {
 		t.Errorf("landlockErr = %q, want the quoted reason back intact", a.landlockErr)
+	}
+}
+
+// The unreached-target reason is what tells an operator WHY nothing ran, and it is the
+// one thing separating this from the silent-launcher case, which reports the exit code
+// instead because it has nothing else. It travels the same quoted field as the Landlock
+// reason and must survive the round trip.
+func TestReconcileNamesWhyTheTargetWasNeverReached(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n" +
+		launcher.AppliedTargetUnreached + " " + fmt.Sprintf("%q", "launcher: starting target: /app/run.sh: no such file") + "\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var r enforce.Report
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	parseApplied(path).reconcile(&r, true, false, 125)
+
+	if got := r.StateOf(enforce.LayerExec); got != enforce.Unavailable {
+		t.Fatalf("exec layer = %v for a target that never ran, want unavailable", got)
+	}
+	if !strings.Contains(r.Degradations()[0].Reason, "/app/run.sh") {
+		t.Errorf("reason = %q, want the cause the launcher reported", r.Degradations()[0].Reason)
 	}
 }
 

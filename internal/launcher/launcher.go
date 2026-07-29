@@ -23,7 +23,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/whiskeyjimbo/bento/internal/landlock"
 	"github.com/whiskeyjimbo/bento/internal/observe"
 	"github.com/whiskeyjimbo/bento/internal/seccomp"
 )
@@ -84,6 +83,14 @@ type Config struct {
 func Run(cfg Config) (int, error) {
 	if len(cfg.Target) == 0 {
 		return 0, fmt.Errorf("launcher: no target command")
+	}
+	// The two reports travel the same inherited descriptor (the host places each at fd 3),
+	// so a config asking for both would have the observation and the layer report
+	// overwriting each other. They are mutually exclusive by design - profiling produces
+	// an observation, not an enforcement report - and this is where that is checked
+	// rather than only stated.
+	if cfg.ObserveFD > 0 && cfg.AppliedFD > 0 {
+		return 0, fmt.Errorf("launcher: cannot both profile and report applied layers: descriptors %d and %d", cfg.ObserveFD, cfg.AppliedFD)
 	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
@@ -165,7 +172,30 @@ func Run(cfg Config) (int, error) {
 		return runObserve(cfg, env)
 	}
 
-	applied := appliedReport{fd: cfg.AppliedFD}
+	applied, err := newAppliedReport(cfg.AppliedFD)
+	if err != nil {
+		return 0, err
+	}
+	if err := applyLayers(cfg, applied); err != nil {
+		return 0, err
+	}
+
+	// Written before the target is reached, because on the exec-block path this
+	// process is replaced by it and there is no later moment to write from. Every
+	// layer above is decided by now, so the report is complete when the marker lands.
+	if err := applied.write(); err != nil {
+		return 0, err
+	}
+
+	return runTarget(cfg.Block, cfg.Target, env, applied)
+}
+
+// applyLayers installs the exec-block filter and the Landlock backstop for one run,
+// recording in the report what actually landed. It is its own function so those
+// outcomes - including the only fail-open branch in this file - are reachable in a test
+// without the terminal dispatch, which either replaces this process or supervises a
+// child.
+func applyLayers(cfg Config, applied *appliedReport) error {
 	installed := AppliedExecNone
 	if cfg.Block {
 		var err error
@@ -173,7 +203,7 @@ func Run(cfg Config) (int, error) {
 			// Fail closed: never run the target unconfined while claiming to block
 			// subprocesses. No applied report is written, so the host reports the exec
 			// layers unenforced rather than carrying the probe's Enforced through.
-			return 0, fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
+			return fmt.Errorf("launcher: refusing to run - could not install the exec-block filter: %w", err)
 		}
 	}
 	applied.record(AppliedExecFilter, installed, nil)
@@ -188,10 +218,10 @@ func Run(cfg Config) (int, error) {
 	// than aborting the run - failing here would make bwrap's confinement
 	// contingent on the backstop, inverting the relationship. (An absent Landlock
 	// is a silent no-op inside Restrict, not an error.)
-	if err := landlock.Restrict(cfg.Writable); err != nil {
+	if err := landlockRestrict(cfg.Writable); err != nil {
 		fmt.Fprintf(os.Stderr, "[bento] warning: the Landlock filesystem backstop could not be applied (%v); bwrap confinement still holds\n", err)
 		applied.record(AppliedLandlock, AppliedNo, err)
-	} else if !landlock.Available() {
+	} else if !landlockAvailable() {
 		// Restrict is best-effort: on a kernel below the usable ABI it installs no ruleset
 		// and still returns nil. Reporting that as applied would make the report assert a
 		// backstop that does not exist, which is the whole failure this channel closes.
@@ -199,20 +229,32 @@ func Run(cfg Config) (int, error) {
 	} else {
 		applied.record(AppliedLandlock, AppliedYes, nil)
 	}
+	return nil
+}
 
-	// Written before the target is reached, because on the exec-block path this
-	// process is replaced by it and there is no later moment to write from. Every
-	// layer above is decided by now, so the report is complete when the marker lands.
-	if err := applied.write(); err != nil {
-		return 0, err
+// runTarget reaches the target the way this run's exec mode requires, and tells the
+// report when it could not be reached at all.
+//
+// Both tiers dispatch through here so neither can grow a route past the marker that
+// leaves the report claiming layers for a target that never ran: everything the
+// dispatch can refuse - a nonexistent entrypoint, a relative argv[0], a target that
+// could not be started - is a run whose confinement confined nothing.
+func runTarget(block bool, target, env []string, applied *appliedReport) (int, error) {
+	dispatch := func() (int, error) {
+		if block {
+			// execveat replaces this process with the target under the filters, so this
+			// returns only if the transition itself fails.
+			return 0, seccomp.Exec(target, env)
+		}
+		return superviseTarget(target, env)
 	}
-
-	if cfg.Block {
-		// execveat replaces this process with the target under the filters, so this
-		// returns only if the transition itself fails.
-		return 0, seccomp.Exec(cfg.Target, env)
+	code, err := dispatch()
+	if err != nil {
+		if reportErr := applied.targetUnreached(err); reportErr != nil {
+			return 0, errors.Join(err, reportErr)
+		}
 	}
-	return superviseTarget(cfg.Target, env)
+	return code, err
 }
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
@@ -436,7 +478,7 @@ func dropInheritedFDs() error {
 // so the gap is never silent.
 func installExecFilter(strict bool) (string, error) {
 	if strict && strictExecSupported() {
-		if err := seccomp.BlockExecStrict(); err != nil {
+		if err := blockExecStrict(); err != nil {
 			return "", err
 		}
 		return AppliedExecStrict, nil
@@ -482,12 +524,22 @@ func startBridge(socket string) error {
 // liveness signal - the launcher is the sole holder of the read end and dropped the
 // write end, so the only remaining writer is the bridge; its death closes the pipe.
 func awaitBridgeReady(r *os.File) error {
+	// Bounded, like every other wait in this file. The bridge only has to re-exec and
+	// bind a loopback port, so a wait this long means it is wedged rather than slow, and
+	// an unbounded read would hang the run with no output at all - a caller driving
+	// launcher.Run directly has nothing else watching it.
+	if err := r.SetReadDeadline(time.Now().Add(bridgeReadyTimeout)); err != nil {
+		return fmt.Errorf("launcher: bounding the egress bridge wait: %w", err)
+	}
 	var b [1]byte
 	if _, err := io.ReadFull(r, b[:]); err != nil {
 		return fmt.Errorf("launcher: egress bridge did not come up: %w", err)
 	}
 	return nil
 }
+
+// bridgeReadyTimeout bounds the wait for the bridge's readiness byte.
+var bridgeReadyTimeout = 30 * time.Second
 
 func proxyEnv() []string {
 	u := "http://" + proxyAddr
@@ -596,11 +648,26 @@ func BridgeMain(socket string) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return err
+			}
+			// Anything short of a closed listener is transient - EMFILE under a burst,
+			// ECONNABORTED from a client that went away - and must not end the bridge.
+			// Nothing supervises this process once the launcher has execveat'd the target,
+			// so a bridge that returns here takes the run's egress with it while the applied
+			// report and the host's result both still say the network layer is enforced.
+			// Back off and keep accepting; the warning is the only channel left.
+			fmt.Fprintf(os.Stderr, "[bento] warning: the in-sandbox egress bridge could not accept a connection (%v); still accepting\n", err)
+			time.Sleep(acceptRetryDelay)
+			continue
 		}
 		go bridgeConn(c, socket)
 	}
 }
+
+// acceptRetryDelay paces the bridge's retries after a failed Accept, so a persistent
+// failure cannot spin the loop.
+var acceptRetryDelay = 100 * time.Millisecond
 
 // bridgeReadyFD is the descriptor the launcher passes the bridge (via ExtraFiles, so
 // it lands at fd 3) as the write end of the readiness pipe.
@@ -613,6 +680,11 @@ func bridgeConn(client net.Conn, socket string) {
 	defer client.Close()
 	upstream, err := net.Dial("unix", socket)
 	if err != nil {
+		// The target sees only a connection that closed on it, which is indistinguishable
+		// from the proxy refusing the destination. Say which it was: every other shortfall
+		// in this file reaches the operator through the applied report or stderr, and the
+		// bridge has no report to write to.
+		fmt.Fprintf(os.Stderr, "[bento] warning: the in-sandbox egress bridge could not reach the host proxy socket (%v); this connection was dropped\n", err)
 		return
 	}
 	defer upstream.Close()

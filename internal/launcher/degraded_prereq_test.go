@@ -41,6 +41,36 @@ func TestDegradedPrerequisites(t *testing.T) {
 	}
 }
 
+// The confinement paths arrive from argv (--ro/--rw/--x), and in this tier the ruleset
+// built from them is the whole filesystem fence - there is no mount namespace behind it.
+// A relative one resolves against whatever working directory the stage started in, so it
+// would confine the target to a tree the policy never granted. Target[0] in the same
+// struct is refused for the same reason.
+func TestRunDegradedRefusesRelativeConfinementPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  DegradedConfig
+	}{
+		{"readable", DegradedConfig{Readable: []string{"etc"}}},
+		{"writable", DegradedConfig{Writable: []string{"../elsewhere"}}},
+		{"exec", DegradedConfig{ExecPaths: []string{"bin/sh"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			cfg.Target = []string{"/bin/true"}
+			// The refusal is checked before anything is applied, so this returns without
+			// confining or exec'ing anything in the test process.
+			_, err := RunDegraded(cfg)
+			if err == nil {
+				t.Fatal("ran with a relative confinement path instead of refusing")
+			}
+			if !strings.Contains(err.Error(), "must be absolute") {
+				t.Errorf("refusal %q does not name the relative path as the problem", err)
+			}
+		})
+	}
+}
+
 // sentinelPrereq makes the test binary re-exec itself as the child half of the
 // wiring test below.
 const sentinelPrereq = "BENTO_TEST_DEGRADED_PREREQ"

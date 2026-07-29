@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -67,12 +68,18 @@ var (
 	strictExecSupported    = seccomp.StrictExecSupported
 )
 
-// The exec-filter install, for the same reason: a seccomp install fails only on a kernel
+// The installs themselves, for the same reason: a seccomp install fails only on a kernel
 // that refuses the syscall, so the refusal both launch tiers make when it does - the
 // fail-closed stance the whole exec-block design rests on, since the alternative is
 // running the target unconfined behind a report claiming otherwise - has no other way to
-// be exercised.
-var installExecBlock = seccomp.BlockExec
+// be exercised. landlockRestrict is here for the opposite outcome: the bwrap tier's
+// Landlock failure is the one place in either tier that warns and proceeds, so it is the
+// branch a test most needs to reach and the one a live kernel never takes.
+var (
+	installExecBlock = seccomp.BlockExec
+	blockExecStrict  = seccomp.BlockExecStrict
+	landlockRestrict = landlock.Restrict
+)
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
 // supply. Both layers are the ONLY one of their kind in this tier - there is no
@@ -97,6 +104,18 @@ func degradedPrerequisites(landlockOK, egressOK bool) error {
 func RunDegraded(cfg DegradedConfig) (int, error) {
 	if len(cfg.Target) == 0 {
 		return 0, fmt.Errorf("launcher: no target command")
+	}
+	// The Landlock ruleset is only as good as the paths it names, and these arrive from
+	// argv (--ro/--rw/--x). A relative one resolves against whatever working directory
+	// this stage happens to start in, so it would confine the target to a tree the policy
+	// never granted - and since this tier has no mount namespace behind it, that ruleset
+	// is the whole confinement. Target[0] in the same struct is checked the same way.
+	for _, set := range [][]string{cfg.Readable, cfg.Writable, cfg.ExecPaths} {
+		for _, p := range set {
+			if !filepath.IsAbs(p) {
+				return 0, fmt.Errorf("launcher: degraded confinement paths must be absolute, got %q", p)
+			}
+		}
 	}
 	if err := degradedPrerequisites(landlockAvailable(), seccompEgressSupported()); err != nil {
 		return 0, err
@@ -123,7 +142,10 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 		env = append(env, "TMPDIR="+cfg.Scratch, "TMP="+cfg.Scratch, "TEMP="+cfg.Scratch)
 	}
 
-	applied := appliedReport{fd: cfg.AppliedFD}
+	applied, err := newAppliedReport(cfg.AppliedFD)
+	if err != nil {
+		return 0, err
+	}
 	installed := AppliedExecNone
 	if cfg.Block {
 		var err error
@@ -170,10 +192,7 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 		return 0, err
 	}
 
-	if cfg.Block {
-		return 0, seccomp.Exec(cfg.Target, env)
-	}
-	return superviseTarget(cfg.Target, env)
+	return runTarget(cfg.Block, cfg.Target, env, applied)
 }
 
 // EncodeLaunchDegraded renders the direct-child launch invocation for cfg. The

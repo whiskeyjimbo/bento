@@ -139,6 +139,14 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	if sb.entrypoint == "" {
 		return nil, nil, fmt.Errorf("linux: no entrypoint")
 	}
+	// observeReportFD and appliedReportFD are the same descriptor - each is the child's
+	// first extra file - so a sandbox asking for both would have the two reports
+	// overwriting each other. They are mutually exclusive by design, profiling producing
+	// an observation rather than an enforcement report, and this is where that is checked
+	// rather than only stated.
+	if sb.observe && sb.applied {
+		return nil, nil, fmt.Errorf("linux: a run cannot be both profiled and reported on: the observation and applied-layer reports share descriptor %d", observeReportFD)
+	}
 	args := baseFlags()
 
 	// A profiling run uses the real HOME so the target probes its real credential
