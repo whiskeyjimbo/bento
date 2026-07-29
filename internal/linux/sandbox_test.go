@@ -943,9 +943,9 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	// Network confinement needs bwrap's user namespace strictly: no userns, no netns
 	// to fence egress into, so it is Unavailable - never Degraded, the guardrail that
 	// keeps a network manifest refusing even under --allow-degraded.
-	nsOK, _ := usableNamespaces(context.Background())
+	ns, _ := usableNamespaces(context.Background())
 	wantNet := enforce.Unavailable
-	if nsOK {
+	if ns == namespacesUsable {
 		wantNet = enforce.Enforced
 	}
 	if states[enforce.LayerNetwork] != wantNet {
@@ -956,7 +956,7 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	// degraded tier when the kernel has Landlock, else no confinement at all.
 	wantFS := enforce.Unavailable
 	switch {
-	case nsOK:
+	case ns == namespacesUsable:
 		wantFS = enforce.Enforced
 	case landlock.Available():
 		wantFS = enforce.Degraded

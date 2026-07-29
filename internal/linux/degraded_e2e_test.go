@@ -22,7 +22,7 @@ import (
 // runner in test/degraded-e2e.sh creates the clamped environment.
 func TestDegradedEndToEndOnClampedHost(t *testing.T) {
 	requireDegraded(t)
-	if nsOK, _ := usableNamespaces(context.Background()); nsOK {
+	if ns, _ := usableNamespaces(context.Background()); ns == namespacesUsable {
 		t.Skip("user namespaces work here; the degraded end-to-end path only runs on a userns-blocked host")
 	}
 

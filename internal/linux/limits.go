@@ -26,42 +26,64 @@ import (
 // manager is reachable, limits cannot be enforced unprivileged, and that is
 // reported rather than silently ignored (v1's actual failure).
 
-var (
-	scopeOnce   sync.Once
-	scopeOK     bool
-	scopeReason string
-)
+// cacheProbe memoizes a host measurement, but only once it has ANSWERED: measure's
+// bool reports whether it did, and a probe that did not is re-run on the next call.
+//
+// That distinction is the whole point. Both limits probes below measure something a
+// systemd user manager that is busy, restarting, or slower than the 5s bound simply
+// fails to report - and a failure memoized for the process lifetime pinned the limits
+// layers Unavailable forever on a host where the limits bind, which under
+// --allow-degraded means running the target unbounded. A host that CAN create a scope
+// keeps that capability, so the success is cached and every later caller is free; the
+// cost of re-measuring is one bounded probe per call on a host that is genuinely
+// failing, which is the case that was already going to refuse.
+func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
+	var (
+		mu       sync.Mutex
+		val      T
+		answered bool
+	)
+	return func() (T, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !answered {
+			val, answered = measure()
+		}
+		return val, answered
+	}
+}
 
 // canCreateScope reports whether this host can create a transient user scope at
-// all. It answers by actually creating a throwaway one - a stat of a runtime
-// directory does not prove the manager will answer - and caches the result,
-// which is stable for the life of the process.
+// all, and why not otherwise.
 func canCreateScope() (bool, string) {
-	scopeOnce.Do(func() {
-		if _, err := exec.LookPath("systemd-run"); err != nil {
-			scopeReason = "systemd-run is not installed, so resource limits cannot be enforced unprivileged"
-			return
-		}
-		if err := runScopeProbe(policy.Limits{Memory: "64M"}, nil); err != nil {
-			scopeReason = "no usable systemd user manager for resource limits: " + err.Error()
-			return
-		}
-		// A scope can be *created*, but systemd-run silently accepts a property for
-		// an undelegated controller without enforcing it. memory and pids are the
-		// host-safety controllers (an uncapped memory bomb can OOM the host) and are
-		// delegated by default; if they are not, limits genuinely cannot protect the
-		// host, so report unavailable here - that is what lets admission refuse a
-		// requested memory limit rather than run unbounded. cpu, which commonly needs
-		// a Delegate=cpu drop-in, is reported separately by the probe as its own
-		// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
-		// unenforced) without gating scope creation on cpu delegation.
-		if ok, reason := hostControllersDelegated(delegatedControllers()); !ok {
-			scopeReason = reason
-			return
-		}
-		scopeOK = true
-	})
-	return scopeOK, scopeReason
+	reason, ok := scopeProbe()
+	return ok, reason
+}
+
+var scopeProbe = cacheProbe(measureScope)
+
+// measureScope answers by actually creating a throwaway scope - a stat of a runtime
+// directory does not prove the manager will answer.
+func measureScope() (string, bool) {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return "systemd-run is not installed, so resource limits cannot be enforced unprivileged", false
+	}
+	if err := runScopeProbe(policy.Limits{Memory: "64M"}, nil); err != nil {
+		return "no usable systemd user manager for resource limits: " + err.Error(), false
+	}
+	// A scope can be *created*, but systemd-run silently accepts a property for
+	// an undelegated controller without enforcing it. memory and pids are the
+	// host-safety controllers (an uncapped memory bomb can OOM the host) and are
+	// delegated by default; if they are not, limits genuinely cannot protect the
+	// host, so report unavailable here - that is what lets admission refuse a
+	// requested memory limit rather than run unbounded. cpu, which commonly needs
+	// a Delegate=cpu drop-in, is reported separately by the probe as its own
+	// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
+	// unenforced) without gating scope creation on cpu delegation.
+	if ok, reason := hostControllersDelegated(delegatedControllers()); !ok {
+		return reason, false
+	}
+	return "", true
 }
 
 // hostControllersDelegated reports whether the memory and pids controllers - the
@@ -156,9 +178,12 @@ const cpuUndelegatedReason = "the cpu controller is not delegated to your system
 // delegatedControllers reports which cgroup controllers a transient scope actually
 // gets, so the fail-closed decision knows whether a limit will bind. It is a var so
 // a test can construct the unknown-delegation host the decision hinges on, which the
-// real, systemd-dependent implementation cannot otherwise reach in-package. The
-// result is process-stable, so it is measured once.
-var delegatedControllers = sync.OnceValues(measureDelegatedControllers)
+// real, systemd-dependent implementation cannot otherwise reach in-package.
+//
+// Only a reading that answered is cached (see cacheProbe): known==false means the
+// probe scope could not be created or read at all, which a busy or restarting user
+// manager causes transiently.
+var delegatedControllers = cacheProbe(measureDelegatedControllers)
 
 // measureDelegatedControllers creates a throwaway scope that REQUESTS every
 // controller's limit and reads that scope's own cgroup.controllers, so it measures

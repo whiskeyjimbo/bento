@@ -2,11 +2,13 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 )
@@ -14,14 +16,14 @@ import (
 // filesystemLayer is the decision at the heart of the degraded tier: bwrap when
 // userns works, Landlock-only Degraded when it does not but the kernel has Landlock
 // and the reduced tier's seccomp fences are available, and Unavailable when the
-// filesystem cannot be confined or those fences cannot stand in for the missing
-// namespaces. It is a pure function so every branch is testable without a
-// userns-blocked host.
+// filesystem cannot be confined, when those fences cannot stand in for the missing
+// namespaces, or when the probe never answered at all. It is a pure function so every
+// branch is testable without a userns-blocked host.
 func TestFilesystemLayerThreeStates(t *testing.T) {
 	const nsReason = "userns blocked here"
 	cases := []struct {
 		name               string
-		nsOK               bool
+		ns                 namespaceProbe
 		landlockAvail      bool
 		truncateRestricted bool
 		ioctlDevRestricted bool
@@ -29,17 +31,23 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 		want               enforce.State
 		reasonHas          string
 	}{
-		{"userns ok, landlock present", true, true, true, true, true, enforce.Enforced, "backstop"},
-		{"userns ok, no landlock", true, false, true, true, true, enforce.Enforced, "bwrap alone"},
-		{"userns blocked, landlock present, fences ok", false, true, true, true, true, enforce.Degraded, "Landlock path rules"},
-		{"userns blocked, landlock present, truncate unrestricted", false, true, false, true, true, enforce.Degraded, "cannot restrict truncate"},
-		{"userns blocked, landlock present, ioctl_dev unrestricted", false, true, true, false, true, enforce.Degraded, "cannot restrict ioctl on device files"},
-		{"userns blocked, landlock present, no seccomp fences", false, true, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
-		{"userns blocked, no landlock", false, false, true, true, true, enforce.Unavailable, "no filesystem confinement"},
+		{"userns ok, landlock present", namespacesUsable, true, true, true, true, enforce.Enforced, "backstop"},
+		{"userns ok, no landlock", namespacesUsable, false, true, true, true, enforce.Enforced, "bwrap alone"},
+		{"userns blocked, landlock present, fences ok", namespacesBlocked, true, true, true, true, enforce.Degraded, "Landlock path rules"},
+		{"userns blocked, landlock present, truncate unrestricted", namespacesBlocked, true, false, true, true, enforce.Degraded, "cannot restrict truncate"},
+		{"userns blocked, landlock present, ioctl_dev unrestricted", namespacesBlocked, true, true, false, true, enforce.Degraded, "cannot restrict ioctl on device files"},
+		{"userns blocked, landlock present, no seccomp fences", namespacesBlocked, true, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
+		{"userns blocked, no landlock", namespacesBlocked, false, true, true, true, enforce.Unavailable, "no filesystem confinement"},
+		// An unanswered probe must never select the weaker tier: the host may run bwrap
+		// fine, and a degraded run decided from a measurement that was never taken is the
+		// wrong sandbox under a wrong reason. Unknown fails closed even where Landlock -
+		// and the fences the degraded tier needs - are present.
+		{"userns unknown, landlock and fences present", namespacesUnknown, true, true, true, true, enforce.Unavailable, "userns blocked here"},
+		{"userns unknown, no landlock", namespacesUnknown, false, true, true, true, enforce.Unavailable, "userns blocked here"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, reason := filesystemLayer(tc.nsOK, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.degradedFencesOK)
+			state, reason := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.degradedFencesOK)
 			if state != tc.want {
 				t.Errorf("state = %v, want %v", state, tc.want)
 			}
@@ -206,7 +214,7 @@ func layerStatus(t *testing.T, layer enforce.Layer) enforce.LayerStatus {
 func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 	const nsReason = "AppArmor restricts unprivileged user namespaces"
 	for _, landlock := range []bool{true, false} {
-		state, reason := filesystemLayer(false, nsReason, landlock, true, true, true)
+		state, reason := filesystemLayer(namespacesBlocked, nsReason, landlock, true, true, true)
 		if !strings.Contains(reason, nsReason) {
 			t.Errorf("landlock=%v: %v reason %q dropped the namespace reason", landlock, state, reason)
 		}
@@ -258,5 +266,85 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 	}
 	if !slices.Contains(writes, "/dev/null") {
 		t.Errorf("writes = %v, want /dev/null", writes)
+	}
+}
+
+// Every failure of the namespace probe used to read as "userns blocked", which is a
+// finding about the host. Only bwrap refusing the namespace is that finding; a probe
+// that was killed by its own deadline, or that failed for a reason bwrap did not name,
+// has measured nothing - and reporting it as blocked hands the user the Landlock-only
+// tier plus AppArmor remediation on a host where bwrap works.
+func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		want      namespaceProbe
+		reasonHas string
+	}{
+		{
+			"bwrap refused the namespace",
+			&usernsError{output: "bwrap: No permissions to create new user namespace", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot create an unprivileged user namespace",
+		},
+		{
+			"permission denied",
+			&usernsError{output: "bwrap: Permission denied", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot create an unprivileged user namespace",
+		},
+		{
+			"probe timed out",
+			&usernsError{output: "", err: errors.New("signal: killed"), ctxErr: context.DeadlineExceeded},
+			namespacesUnknown, "did not finish",
+		},
+		{
+			// A deadline that also produced bwrap output must still be unanswered: the
+			// output is whatever the canary managed before the kill, not a verdict.
+			"timed out with namespace-shaped output",
+			&usernsError{output: "bwrap: No permissions to create new user namespace", err: errors.New("signal: killed"), ctxErr: context.Canceled},
+			namespacesUnknown, "did not finish",
+		},
+		{
+			"canary reaped without a namespace error",
+			&usernsError{output: "bwrap: execvp true: Cannot allocate memory", err: errors.New("exit status 1")},
+			namespacesUnknown, "is unknown",
+		},
+		{
+			"bwrap could not be run at all",
+			errors.New("fork/exec /usr/bin/bwrap: resource temporarily unavailable"),
+			namespacesUnknown, "is unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := classifyUnshare(tc.err)
+			if got != tc.want {
+				t.Errorf("verdict = %v, want %v (reason %q)", got, tc.want, reason)
+			}
+			if !strings.Contains(reason, tc.reasonHas) {
+				t.Errorf("reason %q does not mention %q", reason, tc.reasonHas)
+			}
+		})
+	}
+}
+
+// The probe runs on the hot path of every Run, so it bounds itself like every sibling
+// probe rather than trusting the caller's context - the CLI's is never cancelled, so a
+// wedged bwrap would stall admission indefinitely. The bound is reported as a probe
+// failure, not as a host that blocks namespaces.
+func TestCanUnshareBoundsItselfAndReportsTheDeadline(t *testing.T) {
+	slow := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	err := canUnshare(context.Background(), slow)
+	if err == nil {
+		t.Fatal("a bwrap that never returns must fail the probe")
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Errorf("the probe took %v; it must bound itself rather than wait on an uncancelled caller context", elapsed)
+	}
+	if got, reason := classifyUnshare(err); got != namespacesUnknown {
+		t.Errorf("verdict = %v, want namespacesUnknown (reason %q)", got, reason)
 	}
 }

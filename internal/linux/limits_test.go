@@ -173,15 +173,15 @@ func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
 // simply never runs anything.
 func TestRealProbeDrivesStrictAndDefaultRefusalAndDegradedRun(t *testing.T) {
 	requireSandbox(t)
-	nsOK, _ := usableNamespaces(context.Background())
-	if ok, _ := canCreateScope(); !nsOK || !ok {
+	ns, _ := usableNamespaces(context.Background())
+	if ok, _ := canCreateScope(); ns != namespacesUsable || !ok {
 		t.Skip("no bwrap tier with a usable systemd scope on this host; the cpu limits layer is not emitted")
 	}
 	// Overriding AFTER the guard above is deliberate and load-bearing. canCreateScope
-	// caches behind a sync.Once and reads delegation inside it, so the guard must run
+	// caches success and reads delegation before doing so, so the guard must run
 	// first and cache a real scopeOK; the cpu sub-layer is then measured outside that
-	// Once and does see this override. Move the override earlier and canCreateScope
-	// caches false instead, limitsLayers emits no cpu sub-layer at all, and this test
+	// cache and does see this override. Move the override earlier and canCreateScope
+	// refuses instead, limitsLayers emits no cpu sub-layer at all, and this test
 	// silently SKIPS forever while still reporting PASS.
 	orig := delegatedControllers
 	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
@@ -305,5 +305,34 @@ func TestMeasuredDelegationMatchesActualBinding(t *testing.T) {
 		if got := binds(tc.prop, tc.iface); ctrls[tc.ctrl] != got {
 			t.Errorf("measured %s delegated=%v, but the limit actually binds=%v", tc.ctrl, ctrls[tc.ctrl], got)
 		}
+	}
+}
+
+// The two limits probes measure something a busy or restarting systemd user manager
+// simply fails to report, so an unanswered probe must not be memoized: pinning one
+// transient failure left the limits layers Unavailable for the process lifetime, and
+// under --allow-degraded that runs the target unbounded on a host whose caps bind.
+func TestCacheProbeMemoizesOnlyAnsweredMeasurements(t *testing.T) {
+	calls := 0
+	answers := []bool{false, false, true}
+	probe := cacheProbe(func() (int, bool) {
+		i := calls
+		calls++
+		return i, answers[min(i, len(answers)-1)]
+	})
+
+	if _, ok := probe(); ok || calls != 1 {
+		t.Fatalf("first call: ok=%v calls=%d, want a failed measurement after 1 call", ok, calls)
+	}
+	if _, ok := probe(); ok || calls != 2 {
+		t.Errorf("second call: ok=%v calls=%d, want the failure re-measured", ok, calls)
+	}
+	v, ok := probe()
+	if !ok || v != 2 || calls != 3 {
+		t.Fatalf("third call: v=%d ok=%v calls=%d, want the recovered answer", v, ok, calls)
+	}
+	// The capability, once proven, is stable: every later caller is free.
+	if v, ok := probe(); !ok || v != 2 || calls != 3 {
+		t.Errorf("fourth call: v=%d ok=%v calls=%d, want the cached answer with no re-measure", v, ok, calls)
 	}
 }

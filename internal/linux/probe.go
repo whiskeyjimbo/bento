@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/landlock"
@@ -42,12 +43,12 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// bwrap's filesystem and network confinement both depend on creating an
 	// unprivileged user namespace here; probe that once and report both layers
 	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
-	nsOK, nsReason := usableNamespaces(ctx)
+	ns, nsReason := usableNamespaces(ctx)
 	// The reduced-confinement tier stands in for the missing netns and PID namespace
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	fsState, fsDetail := filesystemLayer(nsOK, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), degradedFencesOK)
+	fsState, fsDetail := filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -66,7 +67,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// deny-list shields the host's runtime directory whole (see denylist.Runtime), and
 	// why the residual it documents - a service socket somewhere else that a grant
 	// exposes - is an egress hole as much as a filesystem one.
-	if nsOK {
+	if ns == namespacesUsable {
 		r.Add(enforce.LayerNetwork, enforce.Enforced, "")
 	} else {
 		r.Add(enforce.LayerNetwork, enforce.Unavailable, nsReason)
@@ -160,16 +161,22 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 //     than the full sandbox, not the same thing by another mechanism (design 6.2).
 //   - neither: nothing confines the filesystem, so the layer is unavailable and a
 //     run refuses outright rather than offering a degraded mode that enforces nothing.
+//   - the probe could not answer: unavailable, never degraded. Substituting the weaker
+//     tier here would act on a measurement that was never taken - the host may well run
+//     bwrap fine - and would hand the user a weaker sandbox with a wrong reason. Like
+//     the delegated-controller readings in limits.go, unknown fails closed.
 //
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(nsOK bool, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, degradedFencesOK bool) (enforce.State, string) {
+func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, degradedFencesOK bool) (enforce.State, string) {
 	switch {
-	case nsOK && landlockAvail:
+	case ns == namespacesUsable && landlockAvail:
 		return enforce.Enforced, "Landlock backstop active"
-	case nsOK:
+	case ns == namespacesUsable:
 		return enforce.Enforced, "no Landlock backstop on this kernel; bwrap alone confines"
+	case ns == namespacesUnknown:
+		return enforce.Unavailable, nsReason
 	case landlockAvail && !degradedFencesOK:
 		// Landlock confines the filesystem, but the reduced-confinement tier also
 		// substitutes a seccomp egress block and cross-process block for the netns and
@@ -227,23 +234,45 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 		"beyond the terminal-injection set seccomp blocks"
 }
 
+// namespaceProbe is what the user-namespace probe could establish. The third state
+// is the point of the type: an unanswered probe - the canary reaped under memory
+// pressure, the context expired, bwrap itself failing to start - is not the same
+// finding as a host that refused the namespace, and collapsing the two selects the
+// Landlock-only tier on a host where bwrap works fine, telling the user to go flip
+// AppArmor sysctls that were never the problem.
+type namespaceProbe int
+
+const (
+	namespacesUsable namespaceProbe = iota
+	namespacesBlocked
+	namespacesUnknown
+)
+
 // usableNamespaces reports whether bwrap is installed and can create here the
 // unprivileged user namespace its filesystem and network confinement depend on,
 // with a reason a user can act on when it cannot.
-func usableNamespaces(ctx context.Context) (bool, string) {
+func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		return false, "bubblewrap (bwrap) is not installed; no filesystem or network confinement is possible"
+		return namespacesBlocked, "bubblewrap (bwrap) is not installed; no filesystem or network confinement is possible"
 	}
 	if err := canUnshare(ctx, bwrap); err != nil {
-		return false, usernsReason(err)
+		return classifyUnshare(err)
 	}
-	return true, ""
+	return namespacesUsable, ""
 }
 
 // canUnshare reports whether an unprivileged user namespace can be created here,
 // by asking bwrap to create one.
 func canUnshare(ctx context.Context, bwrap string) error {
+	// Bound the probe like every sibling (runScopeProbe, measureDelegatedControllers):
+	// it runs on the hot path of every Run, and a bwrap that hangs - a wedged canary, a
+	// stuck mount - would otherwise stall admission for as long as the caller's context
+	// allows, which for the CLI is forever. The deadline is a probe failure, not a host
+	// finding, and classifyUnshare reports it as one.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	// Exercise the same namespace and capability flags the real run uses (namespaceFlags),
 	// not a hand-copied subset: a host that permits user+net namespaces but rejects one of
 	// the others - most plausibly --unshare-cgroup on a pre-4.6 kernel, or --cap-drop on an
@@ -261,9 +290,14 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	args := append([]string{}, namespaceFlags...)
 	args = append(args, "--unshare-net", "--bind", "/", "/", trueBinary())
 	cmd := exec.CommandContext(ctx, bwrap, args...)
+	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
+	// the output pipe to close, and any descendant still holding it keeps the probe
+	// blocked for as long as it lives - which is the stall the deadline exists to stop.
+	// WaitDelay makes exec close the pipe itself shortly after the kill.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return &usernsError{output: string(out), err: err}
+		return &usernsError{output: string(out), err: err, ctxErr: ctx.Err()}
 	}
 	return nil
 }
@@ -271,38 +305,56 @@ func canUnshare(ctx context.Context, bwrap string) error {
 type usernsError struct {
 	output string
 	err    error
+	// ctxErr is the probe context's error read after the command returned. It is
+	// captured here because exec reports a cancelled command as the kill signal it
+	// sent ("signal: killed"), which is indistinguishable from the canary being
+	// reaped by anything else - and a probe that ran out of time has measured
+	// nothing about this host.
+	ctxErr error
 }
 
 func (e *usernsError) Error() string { return e.err.Error() }
 
-// usernsReason turns a failed namespace creation into something a user can act
-// on. The bare bwrap message ("No permissions to create a new user namespace")
-// tells a user nothing about why or what to do, and on current Ubuntu the cause
-// is a specific, fixable AppArmor policy.
-func usernsReason(err error) string {
+// classifyUnshare turns a failed namespace creation into a verdict about the host
+// plus a reason a user can act on. The bare bwrap message ("No permissions to create
+// a new user namespace") tells a user nothing about why or what to do, and on current
+// Ubuntu the cause is a specific, fixable AppArmor policy.
+//
+// Only bwrap's own refusal counts as "blocked": a namespace error it reported is the
+// host answering. Everything else - the probe timing out, bwrap failing to start, an
+// exit whose output names no namespace failure (a reaped canary, EAGAIN under load) -
+// leaves the question open, and saying "userns blocked" there costs the user the full
+// sandbox on a host that supports it.
+func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError
 	if errors.As(err, &ue) {
 		out = ue.output
+		if ue.ctxErr != nil {
+			return namespacesUnknown, "the user-namespace probe did not finish (" + ue.ctxErr.Error() +
+				"), so whether bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
+		}
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
+	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
+		"bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 
 	if !strings.Contains(out, "user namespace") && !strings.Contains(out, "Permission denied") {
 		if out != "" {
-			return base + ": " + strings.TrimSpace(out)
+			return namespacesUnknown, unknownBase + ": " + strings.TrimSpace(out)
 		}
-		return base
+		return namespacesUnknown, unknownBase + ": " + err.Error()
 	}
 	if restricted("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1") {
-		return base + ": AppArmor restricts unprivileged user namespaces on this host " +
+		return namespacesBlocked, base + ": AppArmor restricts unprivileged user namespaces on this host " +
 			"(kernel.apparmor_restrict_unprivileged_userns=1). Install an AppArmor profile permitting bwrap, " +
 			"or set it to 0 to allow them system-wide."
 	}
 	if restricted("/proc/sys/kernel/unprivileged_userns_clone", "0") {
-		return base + ": unprivileged user namespaces are disabled " +
+		return namespacesBlocked, base + ": unprivileged user namespaces are disabled " +
 			"(kernel.unprivileged_userns_clone=0). Set it to 1 to allow them."
 	}
-	return base + ": " + strings.TrimSpace(out)
+	return namespacesBlocked, base + ": " + strings.TrimSpace(out)
 }
 
 // restricted reports whether a sysctl file holds the given value.

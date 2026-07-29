@@ -63,7 +63,8 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// because enforce.Run already admitted that shortfall and the Report carries it;
 	// profiling has neither an admission seam ahead of it nor a Report to say so, so
 	// the refusal has to be its own. Refused up here with the other prerequisites, so
-	// nothing is launched first; canCreateScope is memoized, so asking early is free.
+	// nothing is launched first; canCreateScope memoizes a usable host, so asking early is
+	// free on every host that will go on to profile.
 	if !p.Limits.IsZero() {
 		if ok, reason := canCreateScope(); !ok {
 			return profile.Observation{}, fmt.Errorf("linux: the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
