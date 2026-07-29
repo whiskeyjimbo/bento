@@ -693,23 +693,42 @@ func BridgeMain(socket string, livenessFD int) error {
 		return fmt.Errorf("bridge: signaling readiness: %w", err)
 	}
 	ready.Close()
+	liveness := openBridgeLiveness(livenessFD)
+	defer liveness.close()
+	return serveBridge(l, socket, liveness)
+}
+
+// serveBridge is the bridge's accept loop, split from BridgeMain so its liveness
+// accounting can be exercised against a listener that fails on demand - the real one
+// only fails under conditions (EMFILE, a wedged socket) a test cannot arrange.
+func serveBridge(l net.Listener, socket string, liveness *bridgeLiveness) error {
+	failures := 0
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				noteBridgeDeath(livenessFD)
+				liveness.reportDeath()
 				return err
 			}
 			// Anything short of a closed listener is transient - EMFILE under a burst,
 			// ECONNABORTED from a client that went away - and must not end the bridge.
 			// Nothing supervises this process once the launcher has execveat'd the target,
-			// so a bridge that returns here takes the run's egress with it while the applied
-			// report and the host's result both still say the network layer is enforced.
-			// Back off and keep accepting; the warning is the only channel left.
+			// so a bridge that returns here takes the run's egress with it. Back off and
+			// keep accepting.
 			fmt.Fprintf(os.Stderr, "[bento] warning: the in-sandbox egress bridge could not accept a connection (%v); still accepting\n", err)
+			failures++
+			// A failure that has persisted this long is no longer transient: egress has been
+			// refused for acceptFailuresBeforeDeath backoffs and the run's report would
+			// otherwise still claim the network layer enforced. Retrying continues - the
+			// bridge may yet recover, and killing egress that could come back is worse - but
+			// the host is told once that it stopped.
+			if failures == acceptFailuresBeforeDeath {
+				liveness.reportDeath()
+			}
 			time.Sleep(acceptRetryDelay)
 			continue
 		}
+		failures = 0
 		go bridgeConn(c, socket)
 	}
 }
@@ -727,18 +746,45 @@ const (
 	bridgeLivenessFD = 4
 )
 
-// noteBridgeDeath tells the host the bridge stopped serving. Nothing is left to
-// recover with, and nothing downstream reads the outcome - the bridge is returning
-// either way - so a failed write is reported to the operator on the one channel this
+// acceptFailuresBeforeDeath is how many consecutive failed Accepts, each paced by
+// acceptRetryDelay, make the bridge report that it stopped serving. It buys enough
+// time that a burst of EMFILE under load is ridden out rather than reported, while a
+// wedged listener is surfaced within seconds rather than never. A var so a test does
+// not have to spin for that long.
+var acceptFailuresBeforeDeath = 50
+
+// bridgeLiveness is the bridge's end of the host's liveness pipe. A zero value (no
+// descriptor) is the embedder case and every method is a no-op, and the report is sent
+// at most once: the accept loop keeps retrying after reporting, so without this a
+// persistently failing listener would write a byte per backoff.
+type bridgeLiveness struct {
+	f        *os.File
+	reported bool
+}
+
+func openBridgeLiveness(fd int) *bridgeLiveness {
+	if fd <= 0 {
+		return &bridgeLiveness{}
+	}
+	return &bridgeLiveness{f: os.NewFile(uintptr(fd), "bridge-liveness")}
+}
+
+// reportDeath tells the host the bridge stopped serving. Nothing downstream reads the
+// outcome, so a failed write is reported to the operator on the one channel this
 // process still has and then dropped.
-func noteBridgeDeath(livenessFD int) {
-	if livenessFD <= 0 {
+func (b *bridgeLiveness) reportDeath() {
+	if b.f == nil || b.reported {
 		return
 	}
-	f := os.NewFile(uintptr(livenessFD), "bridge-liveness")
-	defer f.Close()
-	if _, err := f.Write([]byte{1}); err != nil {
+	b.reported = true
+	if _, err := b.f.Write([]byte{1}); err != nil {
 		fmt.Fprintf(os.Stderr, "[bento] warning: the in-sandbox egress bridge could not report its own death to the host (%v)\n", err)
+	}
+}
+
+func (b *bridgeLiveness) close() {
+	if b.f != nil {
+		b.f.Close()
 	}
 }
 

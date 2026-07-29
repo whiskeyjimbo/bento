@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,41 @@ func TestCleanEgressRunKeepsTheNetworkLayer(t *testing.T) {
 	if st := res.Report.StateOf(enforce.LayerNetwork); st == enforce.Degraded {
 		t.Errorf("network layer = %v on a clean egress run; the bridge's ordinary teardown was read as its death: %v",
 			st, res.Report.Degradations())
+	}
+}
+
+// A profiling run has egress - and so a bridge - but passes only its observation
+// report as an extra file, so fd bridgeLivenessFD is whatever the launcher's Go
+// runtime holds there. Naming it on the wire would have the bridge write a byte into
+// an unrelated descriptor, so only the enforcing path, which actually wires the pipe,
+// may claim it.
+func TestOnlyTheEnforcingPathClaimsTheLivenessDescriptor(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "/work/run.py",
+		Network:    []policy.NetworkRule{{Host: "example.com", Port: "443"}},
+	}
+	base := testSandbox("/work/run.py")
+	base.bentoPath = "/usr/bin/bento"
+	base.proxySocket = "/run/bento-proxy.sock"
+
+	profiling := base
+	profiling.observe = true
+	args, _, err := compile(p, enforce.Process{}, profiling)
+	if err != nil {
+		t.Fatalf("compile (profiling): %v", err)
+	}
+	if slices.Contains(args, "--bridge-liveness-fd") {
+		t.Error("a profiling run claimed the bridge liveness descriptor, which it never passes")
+	}
+
+	enforcing := base
+	enforcing.applied = true
+	args, _, err = compile(p, enforce.Process{}, enforcing)
+	if err != nil {
+		t.Fatalf("compile (enforcing): %v", err)
+	}
+	if !slices.Contains(args, "--bridge-liveness-fd") {
+		t.Error("an enforcing egress run did not tell the bridge where to report its death")
 	}
 }
 

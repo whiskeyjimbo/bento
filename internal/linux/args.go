@@ -295,9 +295,15 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
 
 	socket := ""
-	livenessFD := 0
 	if sb.proxySocket != "" {
 		socket = sandboxProxySocket
+	}
+	// The bridge's liveness pipe is the enforcing path's second extra file, and only
+	// that path appends it - a profiling run has egress too but passes just its
+	// observation report, so claiming fd bridgeLivenessFD there would hand the bridge
+	// whatever the launcher's runtime happens to hold at that number.
+	livenessFD := 0
+	if socket != "" && sb.applied {
 		livenessFD = bridgeLivenessFD
 	}
 	observeFD := 0

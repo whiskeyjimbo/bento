@@ -238,13 +238,16 @@ func bridgeReportedDeath(r *os.File) bool {
 // report cannot overwrite it.
 //
 // A bridge killed outright leaves no byte and is not covered; only a bridge that
-// reached its own fatal path reports itself.
+// noticed its own listener had stopped serving reports itself. It may also have
+// recovered afterwards, which is why this says egress stopped rather than that it
+// stayed down. Set last, so where a dead host-side listener also degraded the layer
+// this is the reason the operator sees - it names the half that stopped first.
 func noteDeadBridge(r *enforce.Report, died bool) {
 	if !died {
 		return
 	}
 	r.Set(enforce.LayerNetwork, enforce.Degraded,
-		"the in-sandbox egress bridge stopped serving mid-run; declared egress was unreachable for the remainder")
+		"the in-sandbox egress bridge stopped serving mid-run; declared egress was unreachable for part of the run")
 }
 
 func isExitError(err error) bool {
