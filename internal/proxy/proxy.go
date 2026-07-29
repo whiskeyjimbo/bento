@@ -184,7 +184,9 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 // blockedUpstreamError is returned by guardUpstream when a resolved address must
 // not be dialed: a non-public IP the rules do not explicitly authorize, or an
 // address the guard cannot parse (refused rather than dialed blind). handle uses
-// it to refuse the tunnel distinctly from an ordinary dial failure.
+// it to report the refusal as Denied rather than as the connection's own decision.
+// What the CLIENT is told is deliberately identical to an ordinary dial failure:
+// telling the two apart classifies the name against the host's internal DNS.
 type blockedUpstreamError struct{ addr string }
 
 func (e *blockedUpstreamError) Error() string {
