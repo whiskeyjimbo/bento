@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"time"
@@ -104,8 +105,15 @@ func DefaultNAT64Lookup(ctx context.Context) ([]net.IP, error) {
 
 // discoverNAT64 records any site NAT64 prefix a DNS64 resolver synthesized, so
 // classify can decode a synthesized RFC1918 target that classifyIP alone passes as
-// public. Best-effort: a lookup error or a host without DNS64 leaves the
-// well-known-prefix baseline unchanged, so discovery never loosens beyond it.
+// public.
+//
+// A lookup that answers is conclusive either way: a synthesized AAAA gives the
+// prefix, and NXDOMAIN/no-AAAA (*net.DNSError with IsNotFound, what a network
+// without DNS64 returns for ipv4only.arpa's AAAA) proves there is no synthesis to
+// decode. Any other error - the resolver unreachable, refused, or the discovery
+// deadline expiring - answers nothing, and treating that as "no DNS64" is the
+// fail-open the site-prefix decode exists to close. It is recorded on the Proxy
+// instead, and classify fails closed for what it can no longer rule out.
 func (p *Proxy) discoverNAT64(ctx context.Context) {
 	if p.discoverAAAA == nil {
 		return
@@ -118,6 +126,8 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 	}
 	addrs, err := p.discoverAAAA(ctx)
 	if err != nil {
+		var dnsErr *net.DNSError
+		p.nat64Inconclusive = !errors.As(err, &dnsErr) || !dnsErr.IsNotFound
 		return
 	}
 	seen := make(map[nat64Prefix]bool)
@@ -133,6 +143,12 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 // discovered NAT64 prefix: a synthesized address classifyIP passes as public is
 // re-checked against its embedded IPv4, so a Pref64-wrapped RFC1918 target is
 // classified private (and thus refused unless a rule names its literal).
+//
+// When discovery was inconclusive, an IPv6 that no transition prefix decodes may
+// be a site synthesis wrapping RFC1918, and nothing left can tell. It is private
+// rather than public: still reachable when a rule names the literal, refused when
+// only a hostname pointed there, which is the SSRF shape this guards. That bites
+// exactly one case - a broken resolver plus a raw public IPv6 destination.
 func (p *Proxy) classify(ip net.IP) ipClass {
 	c := classifyIP(ip)
 	if c != ipPublic || ip.To4() != nil {
@@ -142,6 +158,9 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 		if v4 := pfx.embeddedV4(ip); v4 != nil {
 			return classifyIP(v4)
 		}
+	}
+	if p.nat64Inconclusive && embeddedIPv4(ip) == nil {
+		return ipPrivate
 	}
 	return c
 }

@@ -147,3 +147,85 @@ func TestNAT64DerivesEveryRFC6052Length(t *testing.T) {
 		})
 	}
 }
+
+// A resolver that never answers - unreachable, refused, or the discovery deadline
+// expiring - leaves a site Pref64 possible and undetected, so an IPv6 no decoder
+// understands must stop being treated as plain public space.
+func TestNAT64InconclusiveDiscoveryFailsClosed(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+	}{
+		{"timeout", &net.DNSError{Err: "i/o timeout", Name: ipv4onlyName, IsTimeout: true, IsTemporary: true}},
+		{"refused", &net.DNSError{Err: "connection refused", Name: ipv4onlyName, IsTemporary: true}},
+		{"not a DNS error", context.DeadlineExceeded},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+				return nil, c.err
+			}))
+			p.discoverNAT64(t.Context())
+			if !p.nat64Inconclusive {
+				t.Fatal("discovery recorded a conclusive answer despite the resolver never answering")
+			}
+			if got := p.classify(net.ParseIP("2606:4700::1111")); got != ipPrivate {
+				t.Errorf("undecodable IPv6 classified %d, want ipPrivate (%d)", got, ipPrivate)
+			}
+			// IPv4 is not synthesizable, so the fail-closed classification must not
+			// reach it; nor may it override a decode that already answered.
+			if got := p.classify(net.ParseIP("8.8.8.8")); got != ipPublic {
+				t.Errorf("IPv4 classified %d under inconclusive discovery, want ipPublic (%d)", got, ipPublic)
+			}
+			if got := p.classify(net.ParseIP("64:ff9b::808:808")); got != ipPublic {
+				t.Errorf("well-known-prefix 8.8.8.8 classified %d, want ipPublic (%d)", got, ipPublic)
+			}
+		})
+	}
+}
+
+// NXDOMAIN (or an answer with no AAAA) is what a network without DNS64 returns for
+// ipv4only.arpa: the resolver answered and proved there is no synthesis, so the
+// baseline stands and public IPv6 stays reachable.
+func TestNAT64NotFoundIsConclusive(t *testing.T) {
+	p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: ipv4onlyName, IsNotFound: true}
+	}))
+	p.discoverNAT64(t.Context())
+	if p.nat64Inconclusive {
+		t.Fatal("a not-found answer was treated as inconclusive")
+	}
+	if got := p.classify(net.ParseIP("2606:4700::1111")); got != ipPublic {
+		t.Errorf("public IPv6 classified %d after a conclusive no-DNS64 answer, want ipPublic (%d)", got, ipPublic)
+	}
+}
+
+// The RFC 8215 local-use prefix 64:ff9b:1::/48 is a container a site carves its own
+// Pref64 out of, so every RFC 6052 length it admits must be decoded - not just a
+// flat /48 reading, which would miss a target wrapped at any other length.
+func TestRFC8215LocalUsePrefixDecodesEveryLength(t *testing.T) {
+	for _, length := range []int{48, 56, 64, 96} {
+		t.Run(fmt.Sprintf("/%d", length), func(t *testing.T) {
+			build := func(v4 [4]byte) net.IP {
+				ip := make(net.IP, 16)
+				copy(ip, []byte{0x00, 0x64, 0xff, 0x9b, 0x00, 0x01})
+				for i, pos := range rfc6052Positions[length] {
+					ip[pos] = v4[i]
+				}
+				return ip
+			}
+			if got := classifyIP(build([4]byte{192, 168, 1, 1})); got != ipPrivate {
+				t.Errorf("RFC1918 wrapped at /%d classified %d, want ipPrivate (%d)", length, got, ipPrivate)
+			}
+			if got := classifyIP(build([4]byte{169, 254, 169, 254})); got != ipHostReserved {
+				t.Errorf("cloud metadata wrapped at /%d classified %d, want ipHostReserved (%d)", length, got, ipHostReserved)
+			}
+			// Local-use space is never public, but a public payload must stay merely
+			// private: the zero padding a wrong length reads leads with 0.x.x.x, and
+			// honoring that would make it host-reserved and unreachable even by a rule
+			// naming the literal.
+			if got := classifyIP(build([4]byte{8, 8, 8, 8})); got != ipPrivate {
+				t.Errorf("public 8.8.8.8 wrapped at /%d classified %d, want ipPrivate (%d)", length, got, ipPrivate)
+			}
+		})
+	}
+}

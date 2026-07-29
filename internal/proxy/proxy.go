@@ -72,6 +72,12 @@ type Proxy struct {
 	// is what makes "once" true: a second Serve would rewrite it under live handlers.
 	nat64 []nat64Prefix
 
+	// nat64Inconclusive records that discovery could not rule out a site NAT64
+	// prefix - the resolver never answered - so classify must fail closed on an
+	// undecodable IPv6. Written and read under the same once-before-Serve
+	// discipline as nat64.
+	nat64Inconclusive bool
+
 	// served marks that Serve has been entered, so a Proxy is used at most once.
 	served atomic.Bool
 }
@@ -315,17 +321,58 @@ func classifyIP(ip net.IP) ipClass {
 		}
 		return ipPublic
 	}
+	if isRFC8215LocalUse(ip) {
+		return classifyRFC8215(ip)
+	}
 	if embedded := embeddedIPv4(ip); embedded != nil {
 		return classifyIP(embedded)
 	}
 	return ipPublic
 }
 
+// isRFC8215LocalUse reports whether ip is in 64:ff9b:1::/48, the local-use prefix
+// RFC 8215 reserves for a site's own NAT64.
+func isRFC8215LocalUse(ip net.IP) bool {
+	ip16 := ip.To16()
+	return ip16 != nil && ip.To4() == nil && bytes.Equal(ip16[:6], []byte{0x00, 0x64, 0xff, 0x9b, 0x00, 0x01})
+}
+
+// classifyRFC8215 classifies an address in the local-use /48. Unlike the
+// well-known prefix, that /48 is a container a site carves its own Pref64 out of
+// at any RFC 6052 length, so the embedded IPv4 has no fixed position. The address
+// is therefore never public here: local-use space is not globally routable, so it
+// is at least private whatever it wraps, and the decode only has to find the one
+// verdict that is stricter still - a target naming the host itself, which no rule
+// may reach even by literal. Every length the container admits is tried, so a
+// wrapped metadata address is caught whichever carve produced it.
+//
+// A candidate leading with a zero octet is skipped rather than read as
+// this-network: at every length but the true one the offsets fall outside the
+// embedding, onto the zero padding of a shorter carve, and honoring those would
+// make almost any address in the /48 look host-reserved.
+func classifyRFC8215(ip net.IP) ipClass {
+	ip16 := ip.To16()
+	for _, length := range rfc6052Lengths {
+		if length < 48 {
+			continue
+		}
+		pos := rfc6052Positions[length]
+		if ip16[pos[0]] == 0 {
+			continue
+		}
+		if classifyIP(net.IPv4(ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]])) == ipHostReserved {
+			return ipHostReserved
+		}
+	}
+	return ipPrivate
+}
+
 // embeddedIPv4 returns the IPv4 carried by an IPv6 transition address, or nil.
-// It covers the NAT64 well-known prefix 64:ff9b::/96 and 6to4 (2002::/16). Other
-// NAT64 prefix lengths (the RFC 6052 split-byte layouts), the RFC 8215 local-use
-// prefix, operator-specific prefixes, and Teredo are not decoded - a defense in
-// depth gap, since the allowlist must still permit the hostname at all.
+// It covers the NAT64 well-known prefix 64:ff9b::/96 and 6to4 (2002::/16). The
+// RFC 8215 local-use /48 has no fixed embedding position and is handled by
+// classifyRFC8215 instead. Operator-specific prefixes and Teredo are not decoded;
+// the site prefix a DNS64 network actually uses is learned by discovery instead
+// (see nat64.go), and the allowlist must still permit the hostname at all.
 func embeddedIPv4(ip net.IP) net.IP {
 	ip16 := ip.To16()
 	if ip16 == nil {
