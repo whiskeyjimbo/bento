@@ -30,14 +30,19 @@ const MaxDepth = 40
 // A path whose symlinks loop is returned unresolved once the budget runs out: a caller
 // that shields on the result then fails closed, and one that judges a proposal is
 // judging a path the backend refuses anyway.
-func Existing(abs string) string { return existing(abs, 0) }
+func Existing(abs string) string { return existing(abs, abs, 0) }
 
-func existing(abs string, depth int) string {
+// existing carries the caller's own path alongside the one being walked, because the
+// budget runs out mid-chain: by then abs is a path this function rebuilt out of a link
+// target, which is neither what the caller asked about nor anywhere a write through it
+// lands. Handing that back is a shield bound on an arbitrary interior hop, so the
+// cutoff returns the input instead - the only path the caller can fail closed on.
+func existing(input, abs string, depth int) string {
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		return real
 	}
 	if depth >= MaxDepth {
-		return abs
+		return input
 	}
 
 	resolved := "/"
@@ -68,7 +73,7 @@ func existing(abs string, depth int) string {
 		if rem := parts[i+1:]; len(rem) > 0 {
 			rebuilt += "/" + strings.Join(rem, "/")
 		}
-		return existing(rebuilt, depth+1)
+		return existing(input, rebuilt, depth+1)
 	}
 	return resolved
 }
