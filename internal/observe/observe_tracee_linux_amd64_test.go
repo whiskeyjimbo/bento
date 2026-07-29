@@ -339,35 +339,18 @@ func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 	}
 }
 
-// Dropped is the channel that tells the host its manifest is short. Two ways to get it
-// wrong meet in one trace of N lost accesses issued from a single call site:
-//
-//   - counting the entry and the exit stop of each syscall separately doubles it, and a
-//     count that is wrong by construction teaches the reader to discount the warning;
-//   - a dedup key held for longer than its entry/exit pair collapses the whole loop into
-//     one drop, which reads as a stray probe for a file the target needs every iteration.
-//
-// The count is one trace, with no baseline subtracted from a second one: the tracee loses
-// exactly this many accesses, so the true count is the floor and the observer's own
-// miscounts only ever add.
-//
-// observerSlack is the one addition that is not a miscount. A tracee thread that exits
-// between its syscall stop and the observer's read of it answers ESRCH. Where inspect's
-// register read fails that way at an entry stop, the observer now knows nothing ran and
-// does not count it; where PTRACE_GET_SYSCALL_INFO is the read that failed there is no op
-// to say which stop it was, so that one is still counted deliberately - an uncounted loss
-// is the failure the channel exists to prevent. A Go tracee retires a thread or two on its
-// way out, so a run carries at most a couple. The band is wide enough to absorb them and
-// far too tight for either counting bug.
-const observerSlack = 3
-
 // A thread that dies holding a syscall stop is the observer's own race, not a loss the
 // tracee had: a ptrace-stopped thread runs nothing until it is resumed, so one that is
 // already gone at the entry stop never executed the syscall. Counting it reports a lost
 // access on a call that never happened, which is what made a multithreaded Go tracee
-// report a drop or two on a run that lost nothing. The exit stop is the opposite case -
-// the call completed and the existence probes are read there - so it still counts.
-func TestInspectDoesNotCountADeadThreadsEntryStop(t *testing.T) {
+// report a drop or two on a run that lost nothing.
+//
+// The exit stop turns on what the stop had left to do rather than on the stop itself. Its
+// only decode is the existence syscalls' success filter, replayed against a pathname the
+// entry stop held, so a pid holding nothing had nothing to lose - a dying thread's
+// nanosleep exit stop is the one that showed up in practice. A pid with a pathname held is
+// the real loss: the probe completed and its result is what decides the grant.
+func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 	// A reaped pid answers every ptrace request with ESRCH, which is exactly the state a
 	// thread that exited between its stop and the register read leaves behind.
 	dead := reapedPid(t)
@@ -378,17 +361,79 @@ func TestInspectDoesNotCountADeadThreadsEntryStop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		op   byte
+		held map[string]heldPath
 		want int
 	}{
-		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, 0},
-		{"exit", unix.PTRACE_SYSCALL_INFO_EXIT, 1},
+		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, map[string]heldPath{}, 0},
+		{"exit holding nothing", unix.PTRACE_SYSCALL_INFO_EXIT, map[string]heldPath{}, 0},
+		{
+			"exit holding a pathname",
+			unix.PTRACE_SYSCALL_INFO_EXIT,
+			map[string]heldPath{stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			1,
+		},
+		{
+			// Another pid's pending probe says nothing about this one's stop.
+			"exit while a sibling holds a pathname",
+			unix.PTRACE_SYSCALL_INFO_EXIT,
+			map[string]heldPath{stopKey(dead+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			0,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var res Result
 			count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, count, release, map[string]heldPath{}, &res)
+			inspect(dead, tc.op, func(string, bool) {}, count, release, tc.held, &res)
 			if res.Dropped != tc.want {
 				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
+			}
+		})
+	}
+}
+
+// The same race one read earlier: the thread dies before PTRACE_GET_SYSCALL_INFO, so the
+// stop has no op of its own and the pid's last recorded one has to supply the parity.
+// Stops alternate, so the stop after a known entry stop is an exit stop and the stop after
+// a known exit stop is an entry stop; from there the judgement is the same one inspect
+// makes. Parity that was never established is unknown rather than safe and still counts.
+func TestNativeSyscallResolvesADeadThreadsPhantomStops(t *testing.T) {
+	dead := reapedPid(t)
+	if _, _, err := syscallInfo(dead); !errors.Is(err, syscall.ESRCH) {
+		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
+	}
+	holding := map[string]heldPath{
+		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true},
+	}
+
+	for _, tc := range []struct {
+		name string
+		seed []byte
+		held map[string]heldPath
+		want int
+	}{
+		{"at the entry stop after an exit stop", []byte{unix.PTRACE_SYSCALL_INFO_EXIT}, map[string]heldPath{}, 0},
+		{"at the exit stop after an entry stop, holding nothing", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, map[string]heldPath{}, 0},
+		{"at the exit stop after an entry stop, holding a pathname", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, holding, 1},
+		{"after the initial stop", []byte{unix.PTRACE_SYSCALL_INFO_NONE}, map[string]heldPath{}, 1},
+		{"after a seccomp stop", []byte{unix.PTRACE_SYSCALL_INFO_SECCOMP}, map[string]heldPath{}, 1},
+		{"with no parity recorded", nil, map[string]heldPath{}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lastOp := map[int]byte{}
+			for _, op := range tc.seed {
+				lastOp[dead] = op
+			}
+			dropped := 0
+			if _, native := nativeSyscall(dead, lastOp, tc.held, &dropped); native {
+				t.Fatal("a failed read cannot report the stop as native")
+			}
+			if dropped != tc.want {
+				t.Errorf("Dropped = %d after an ESRCH info read %s, want %d", dropped, tc.name, tc.want)
+			}
+			// The parity a failed read leaves behind is a stop stale, so every later
+			// inference off it would be off by one.
+			if _, ok := lastOp[dead]; ok {
+				t.Error("a failed read must invalidate the pid's parity, not leave the previous stop's op in place")
 			}
 		})
 	}
@@ -406,11 +451,25 @@ func reapedPid(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
+// Dropped is the channel that tells the host its manifest is short. Two ways to get it
+// wrong meet in one trace of N lost accesses issued from a single call site:
+//
+//   - counting the entry and the exit stop of each syscall separately doubles it, and a
+//     count that is wrong by construction teaches the reader to discount the warning;
+//   - a dedup key held for longer than its entry/exit pair collapses the whole loop into
+//     one drop, which reads as a stray probe for a file the target needs every iteration.
+//
+// The count is one trace, with no baseline subtracted from a second one, and it is exact:
+// the tracee loses exactly this many accesses and the observer's own miscounts only ever
+// add. It was a band for a while, to absorb the phantom a tracee thread that exits between
+// its syscall stop and the observer's read of it used to leave behind. Both reads that can
+// lose that race now resolve it (see deadThreadLostNothing), so an exact assertion is what
+// catches the two bugs above.
 func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 	const lost = 500
 	res := traceHelper(t, "lostpaths", t.TempDir(), lost)
-	if res.Dropped < lost || res.Dropped > lost+observerSlack {
-		t.Errorf("Dropped = %d, want %d..%d - one per lost access; fewer is the signature of a dedup key outliving its entry/exit pair, and ~%d of counting the entry and exit stop of the same syscall separately", res.Dropped, lost, lost+observerSlack, 2*lost)
+	if res.Dropped != lost {
+		t.Errorf("Dropped = %d, want %d - one per lost access; fewer is the signature of a dedup key outliving its entry/exit pair, and ~%d of counting the entry and exit stop of the same syscall separately", res.Dropped, lost, 2*lost)
 	}
 }
 
@@ -421,13 +480,13 @@ func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 // manifest is incomplete; Go's async preemption signals a busy tracee constantly, so a
 // run that lost nothing reported drops in the hundreds.
 //
-// Nothing here touches the filesystem, so the count should be nothing but observerSlack -
+// Nothing here touches the filesystem, so the count should be zero -
 // two orders of magnitude below what one drop per handled signal would give.
 func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
 	const signals = 300
 	res := traceHelper(t, "sigreturn", t.TempDir(), signals)
-	if res.Dropped > observerSlack {
-		t.Errorf("Dropped = %d after %d handled signals and no file access, want at most %d; ~%d is the signature of rt_sigreturn's restored orig_rax of -1 matching the x32 tag test", res.Dropped, signals, observerSlack, signals)
+	if res.Dropped != 0 {
+		t.Errorf("Dropped = %d after %d handled signals and no file access, want 0; ~%d is the signature of rt_sigreturn's restored orig_rax of -1 matching the x32 tag test", res.Dropped, signals, signals)
 	}
 }
 
@@ -512,8 +571,8 @@ func TestTraceCountsBothLostPathsOfARename(t *testing.T) {
 	const calls = 200
 	const lost = calls * 2
 	res := traceHelper(t, "lostrename", t.TempDir(), calls)
-	if res.Dropped < lost || res.Dropped > lost+observerSlack {
-		t.Errorf("Dropped = %d after %d renames losing both pathnames each, want %d..%d; ~%d is the signature of one drop key serving both arguments", res.Dropped, calls, lost, lost+observerSlack, calls)
+	if res.Dropped != lost {
+		t.Errorf("Dropped = %d after %d renames losing both pathnames each, want %d; ~%d is the signature of one drop key serving both arguments", res.Dropped, calls, lost, calls)
 	}
 }
 
@@ -526,7 +585,7 @@ func TestTraceCountsBothLostPathsOfARename(t *testing.T) {
 func TestTraceDoesNotCountANullPathnameAsALostAccess(t *testing.T) {
 	const calls = 100
 	res := traceHelper(t, "nullpath", t.TempDir(), calls)
-	if res.Dropped > observerSlack {
-		t.Errorf("Dropped = %d after %d utimensat+futimesat calls that name no file, want at most %d; ~%d is the signature of decoding a NULL pathname as one", res.Dropped, 2*calls, observerSlack, 2*calls)
+	if res.Dropped != 0 {
+		t.Errorf("Dropped = %d after %d utimensat+futimesat calls that name no file, want 0; ~%d is the signature of decoding a NULL pathname as one", res.Dropped, 2*calls, 2*calls)
 	}
 }
