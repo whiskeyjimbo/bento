@@ -1,0 +1,192 @@
+package credhunt
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+)
+
+// plant writes a file at home/rel, creating its parents.
+func plant(t *testing.T, home, rel string, mode os.FileMode, content string) string {
+	t.Helper()
+	p := filepath.Join(home, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), mode); err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile honors the umask, which on a developer host would turn a 0600 plant into
+	// something else and make the mode signal untestable.
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func hunt(t *testing.T, home string) []Finding {
+	t.Helper()
+	found, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+func paths(found []Finding) []string {
+	out := make([]string, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.Path)
+	}
+	return out
+}
+
+// The hunt's whole value is finding what the deny-list does not already cover, so a path
+// inside a shielded store must stay silent no matter how credential-shaped it is - it is
+// already unreachable in the sandbox, and reporting it would bury the leads that matter.
+// The complement is the reason the tool exists: the developer token stores neither
+// upstream corpus lists.
+func TestHuntReportsOnlyUnshieldedShapes(t *testing.T) {
+	home := t.TempDir()
+	plant(t, home, ".ssh/id_ed25519", 0o600, "-----BEGIN OPENSSH PRIVATE KEY-----\n")
+	plant(t, home, ".aws/credentials", 0o600, "aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+	uncovered := plant(t, home, ".config/some-new-tool/api-token", 0o600, "token: sk-0123456789abcdefghijklmnop\n")
+	plant(t, home, "notes.txt", 0o644, "nothing to see\n")
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, uncovered) {
+		t.Errorf("an unshielded credential-shaped file must surface; got %v", got)
+	}
+	for _, p := range []string{filepath.Join(home, ".ssh/id_ed25519"), filepath.Join(home, ".aws/credentials")} {
+		if slices.Contains(got, p) {
+			t.Errorf("%s is inside a shielded store and must not be reported; got %v", p, got)
+		}
+	}
+	if slices.Contains(got, filepath.Join(home, "notes.txt")) {
+		t.Errorf("an ordinary world-readable file must not be a finding; got %v", got)
+	}
+}
+
+// An editor leaving of a dotfile at the home root holds the same secret as the original
+// under a name the deny-list cannot enumerate - the class audit.ReviewedGlobs records as
+// an accepted residual precisely because it is not expressible as a concrete path. This
+// tool is what makes it enumerable, so it must report the concrete path rather than
+// suppressing it for matching a recorded glob.
+func TestHuntSurfacesEditorLeavingsAtTheHomeRoot(t *testing.T) {
+	home := t.TempDir()
+	swap := plant(t, home, ".ssh_config.swp", 0o600, "IdentityFile ~/.ssh/id_rsa\n")
+	backup := plant(t, home, ".netrc.bak", 0o600, "password = correct-horse-battery-staple\n")
+	emacs := plant(t, home, ".pgpass~3~", 0o600, "localhost:5432:db:user:hunter2\n")
+	tilde := plant(t, home, ".boto~", 0o600, "nothing token-shaped in here\n")
+
+	got := paths(hunt(t, home))
+	for _, p := range []string{swap, backup, emacs, tilde} {
+		if !slices.Contains(got, p) {
+			t.Errorf("%s is the enumerable form of a recorded residual and must be reported; got %v", p, got)
+		}
+	}
+}
+
+// The signals are what a reader triages on, so each has to fire for its own reason and
+// not stand in for another. A private-mode file with no credential name is still a lead;
+// a credential-named file that is world-readable is a weaker one; and content is only
+// consulted for a file a cheap signal already flagged.
+func TestSignalsFireIndependently(t *testing.T) {
+	home := t.TempDir()
+	plant(t, home, "opaque", 0o600, "nothing shaped like a secret\n")
+	plant(t, home, "deploy-key.txt", 0o644, "-----BEGIN RSA PRIVATE KEY-----\n")
+	plant(t, home, "settings.toml", 0o600, "api_token = \"abcdefghijklmnopqrstuvwxyz0123\"\n")
+
+	bySignals := map[string][]string{}
+	for _, f := range hunt(t, home) {
+		bySignals[filepath.Base(f.Path)] = f.Signals
+	}
+	for name, want := range map[string][]string{
+		// A private mode with nothing else is not a finding at all: measured on a real
+		// home it fires on tens of thousands of package-cache artifacts.
+		"opaque":         nil,
+		"deploy-key.txt": {SignalName, SignalPEM},
+		"settings.toml":  {SignalPrivateMode, SignalToken},
+	} {
+		if got := bySignals[name]; !slices.Equal(got, want) {
+			t.Errorf("%s fired %v, want %v", name, got, want)
+		}
+	}
+}
+
+// A token assignment is what separates a stored secret from an ordinary setting, so the
+// value shape has to carry that weight: a short value is a mode or a boolean, and a path
+// or URL under a key-named setting points AT a secret rather than being one - that file
+// is hunted on its own shape.
+func TestTokenAssignmentDistinguishesSecretsFromSettings(t *testing.T) {
+	for _, line := range []string{
+		"password = correcthorsebatterystaple",
+		"  _authToken: ghp_0123456789abcdefghijklmnop",
+		"\"api_key\" = \"AKIAIOSFODNN7EXAMPLEabcd\"",
+	} {
+		if !tokenAssignment(line) {
+			t.Errorf("tokenAssignment(%q) = false, want true", line)
+		}
+	}
+	for _, line := range []string{
+		"password = short",                            // a value too short to be a token
+		"IdentityFile /home/u/.ssh/id_rsa",            // no assignment operator
+		"certificate = /etc/ssl/certs/my-long-ca.pem", // a path to a secret, not the secret
+		"key_url = https://example.invalid/keys/mine", // likewise a pointer
+		"verbose = true",                              // not a secret-named key
+		"passphrase = this is a long human sentence",  // whitespace: prose, not an opaque token
+	} {
+		if tokenAssignment(line) {
+			t.Errorf("tokenAssignment(%q) = true, want false", line)
+		}
+	}
+}
+
+// A source checkout is workspace surface - bento governs it through a write grant and
+// denylist.Workspace, never through a home shield - and on a developer home it is where
+// essentially every hit comes from, which makes the report unreadable. But the home
+// itself is commonly a dotfiles checkout, and pruning THAT scans nothing and reports a
+// clean home: a silent wrong answer, which is the failure this tool exists to avoid.
+func TestHuntPrunesCheckoutsButNeverTheScanRoot(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	atRoot := plant(t, home, ".some-tool-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	if err := os.MkdirAll(filepath.Join(home, "src/proj/.git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inCheckout := plant(t, home, "src/proj/config/auth.go", 0o600, "const apiKey = \"0123456789abcdefghijklmnop\"\n")
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, atRoot) {
+		t.Errorf("the home is a dotfiles checkout, but its own entries must still be scanned; got %v", got)
+	}
+	if slices.Contains(got, inCheckout) {
+		t.Errorf("%s is inside a nested checkout and must be pruned as workspace surface; got %v", inCheckout, got)
+	}
+}
+
+// A machine store is pruned as content-addressed artifacts rather than the user's own
+// files, but the prune must be visible: an operator who cannot see that the tool narrowed
+// cannot tell a clean home from a scan that skipped the interesting part.
+func TestMachineStoresArePrunedAndCounted(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache")
+	plant(t, home, ".cache/pkg/some-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	kept := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+
+	found, pruned, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{cache}, MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paths(found); !slices.Equal(got, []string{kept}) {
+		t.Errorf("findings = %v, want only %s - the machine store must be pruned", got, kept)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1; a prune the operator cannot see is a suppression", pruned)
+	}
+}
