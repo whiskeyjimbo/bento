@@ -160,6 +160,11 @@ func TestRunReportsWhetherTheTargetWasReached(t *testing.T) {
 		{"the target ran", "reached", false},
 		{"the entrypoint does not exist", "missing", true},
 		{"the target is not an absolute path", "relative", true},
+		// The exec-block path is the one the design rests on: execveat replaces this
+		// process, so the report can only end at the marker because the descriptor is
+		// close-on-exec. Its failure semantics are seccomp.Exec's, not os/exec's.
+		{"the target ran under the exec block", "block-reached", false},
+		{"the entrypoint does not exist under the exec block", "block-missing", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,8 +178,9 @@ func TestRunReportsWhetherTheTargetWasReached(t *testing.T) {
 			cmd.Env = append(os.Environ(), sentinelRunReport+"="+tc.mode)
 			cmd.ExtraFiles = []*os.File{f}
 			out, err := cmd.CombinedOutput()
-			if !tc.wantUnreached && err != nil {
-				t.Fatalf("the stage failed on a target that exists: %v\n%s", err, out)
+			if (err != nil) != tc.wantUnreached {
+				t.Fatalf("the stage exited with %v on a target it should%s have reached\n%s",
+					err, map[bool]string{true: " not", false: ""}[tc.wantUnreached], out)
 			}
 			report, err := os.ReadFile(path)
 			if err != nil {
@@ -194,17 +200,18 @@ func TestRunReportsWhetherTheTargetWasReached(t *testing.T) {
 }
 
 // runReportChild runs one whole launcher stage against the report on fd 3 and reports
-// what Run returned. Block is off throughout: the exec-block path replaces this process,
-// and the reporting question is the same on either dispatch.
+// what Run returned. Under the exec block a reached target replaces this process, so the
+// child says nothing at all - which is itself the thing being checked, since the report
+// must have ended at the marker when the descriptor closed at the exec.
 func runReportChild(mode string) {
 	target := "/bin/true"
 	switch mode {
-	case "missing":
+	case "missing", "block-missing":
 		target = "/nonexistent-bento-run-report-target"
 	case "relative":
 		target = "true"
 	}
-	code, err := Run(Config{AppliedFD: 3, Target: []string{target}})
+	code, err := Run(Config{Block: strings.HasPrefix(mode, "block-"), AppliedFD: 3, Target: []string{target}})
 	if err != nil {
 		os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
 		os.Exit(1)

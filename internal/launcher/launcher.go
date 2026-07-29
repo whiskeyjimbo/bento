@@ -249,13 +249,24 @@ func runTarget(block bool, target, env []string, applied *appliedReport) (int, e
 		return superviseTarget(target, env)
 	}
 	code, err := dispatch()
-	if err != nil {
+	var ran errTargetRan
+	if err != nil && !errors.As(err, &ran) {
 		if reportErr := applied.targetUnreached(err); reportErr != nil {
 			return 0, errors.Join(err, reportErr)
 		}
 	}
 	return code, err
 }
+
+// errTargetRan marks a failure that happened once the target was already executing, so
+// runTarget does not record it as a run the target never reached. Both epochs of the
+// supervise path surface as a plain error - a target that could not be started, and a
+// wait that failed with the target long since running - and a report saying nothing ran
+// would be the same untruth as the one this channel exists to stop, pointing the other
+// way.
+type errTargetRan struct{ error }
+
+func (e errTargetRan) Unwrap() error { return e.error }
 
 // runObserve profiles the target: it runs under the ptrace observer (no seccomp,
 // no Landlock - enforcement is off so every access is seen) and writes the paths the
@@ -586,7 +597,14 @@ func superviseTarget(target, env []string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("launcher: starting target: %w", err)
 	}
-	return reapUntil(cmd.Process.Pid)
+	// Past Start the target is running, so a failure below is no longer "the target was
+	// never reached" - reapUntil can fail with the target still executing (Wait4 returns
+	// ECHILD when an inherited SIGCHLD=SIG_IGN has the kernel auto-reaping children).
+	code, err := reapUntil(cmd.Process.Pid)
+	if err != nil {
+		return 0, errTargetRan{err}
+	}
+	return code, nil
 }
 
 // reapUntil reaps every child that exits until the target does, then returns the

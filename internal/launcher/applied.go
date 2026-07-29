@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -127,9 +128,12 @@ func (a *appliedReport) write() error {
 // the far side of it, giving the host a complete report for a run that never happened.
 // Only a stage that outlived its own dispatch can get here: a reached target has
 // replaced this process on the exec path, and on the supervise path the dispatch returns
-// only when the target could not be started. So the record's presence is proof, not a
-// heuristic on the exit code, which cannot tell a failed setup from a target that itself
-// exits 125.
+// only when the target could not be started. So the record is something the stage
+// observed, not a guess from the exit code, which cannot tell a failed setup from a
+// target that itself exits 125. It is not a guarantee against a stage killed outright
+// between the marker and the dispatch - the host would read that report as complete -
+// but that window is the width of one syscall rather than the whole of the target's
+// startup.
 func (a *appliedReport) targetUnreached(cause error) error {
 	if a.f == nil {
 		return nil
@@ -137,6 +141,17 @@ func (a *appliedReport) targetUnreached(cause error) error {
 	// Quoted for the same reason record quotes its detail: a newline in the cause must
 	// not be able to forge a record.
 	if _, err := fmt.Fprintf(a.f, "%s %q\n", AppliedTargetUnreached, cause.Error()); err != nil {
+		// This append is the only thing between the host and a complete report for a run
+		// that never happened, so failing loud here is not enough - the marker above would
+		// still be there, and the host would read every layer as enforced. Discard the
+		// report instead: with nothing to read the host falls back to its "the stage did
+		// not report what it applied" branch, which claims nothing. Truncating is a
+		// different operation on the same descriptor and survives what stops a write, a
+		// full filesystem most of all.
+		if truncErr := a.f.Truncate(0); truncErr != nil {
+			return errors.Join(fmt.Errorf("launcher: writing the unreached-target record: %w", err),
+				fmt.Errorf("launcher: discarding the applied-layer report: %w", truncErr))
+		}
 		return fmt.Errorf("launcher: writing the unreached-target record: %w", err)
 	}
 	if err := a.f.Close(); err != nil {
