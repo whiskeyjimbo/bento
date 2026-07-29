@@ -469,9 +469,11 @@ func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*s
 }
 
 // inspect decodes a syscall stop and records file opens / subprocess execs. The numbers
-// below are amd64's; the caller has established that this stop carries the amd64 audit
-// arch (see nativeSyscall) and the x32 check below rules out the one ABI that shares it,
-// so between them the numbers mean what they say.
+// below are amd64's, and three checks stand between a stop and that table: the caller has
+// established the stop carries the amd64 audit arch (see nativeSyscall), the x32 check
+// below rules out the one ABI that shares it, and the negative-number check rules out the
+// stops that carry no syscall number at all. Past those three the numbers mean what they
+// say.
 func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
@@ -488,11 +490,28 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 		defer releaseDrop(&regs)
 	}
 	drop := func() { countDrop(&regs) }
+	// A negative orig_rax is the kernel saying this stop reports no syscall number, not a
+	// syscall this decoder failed to read - so it is skipped silently rather than dropped.
+	// It arrives from rt_sigreturn, whose exit stop reports the RESTORED pre-signal
+	// registers: orig_rax is -1 (the marker that suppresses syscall restart) and rax is the
+	// interrupted call's own return value. Nothing is lost by skipping it. Every syscall
+	// recorded at the entry stop was already recorded before these registers appeared, and
+	// no path-existence syscall - the only ones read at the exit stop - can present here,
+	// because the value is rt_sigreturn's restored context and not their own.
+	//
+	// This must precede the x32 test: -1 has every bit set, so it matches x32SyscallBit and
+	// counted as a lost access once per handled signal. Go's async preemption signals a
+	// busy tracee constantly, which put the count in the hundreds for a run that lost
+	// nothing - in the one channel that tells the user their manifest is incomplete.
+	if int64(regs.Orig_rax) < 0 {
+		return
+	}
 	// The other half of the ABI question nativeSyscall could not answer: x32 shares the
 	// amd64 audit arch, so it arrives here, but its numbers are tagged and mean something
 	// else untagged - x32 openat is 0x40000101. Untagged they would misdecode; tagged they
 	// match no case below and would fall through as an access that silently never happened.
-	// Dropped instead, which says the observation is short by one.
+	// Dropped instead, which says the observation is short by one. A real x32 number stays
+	// positive as an int64 (the tag is bit 30), so the guard above does not screen it out.
 	if regs.Orig_rax&x32SyscallBit != 0 {
 		drop()
 		return

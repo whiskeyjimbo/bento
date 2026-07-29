@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 //
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
+//	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -69,6 +71,21 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// EFAULT and the decoder cannot read the pathname at either stop.
 		for range n {
 			_, _, _ = syscall.Syscall6(syscall.SYS_OPENAT, ^uintptr(99), 0x1, 0, 0, 0, 0)
+		}
+	case "sigreturn":
+		// Every handled signal ends in rt_sigreturn, whose exit stop reports the
+		// RESTORED pre-signal registers: orig_rax is -1 (the kernel's "do not restart
+		// this syscall" marker) and rax is the interrupted call's own return value. No
+		// file access happens here at all, which is what makes it the pure case.
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGUSR1)
+		defer signal.Stop(ch)
+		for range n {
+			if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+				fmt.Fprintln(os.Stderr, "TRACEE_KILL_ERR", err)
+				os.Exit(6)
+			}
+			<-ch
 		}
 	default:
 		fmt.Fprintln(os.Stderr, "TRACEE_BAD_MODE", mode)
@@ -161,22 +178,39 @@ func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 //   - a dedup key held for longer than its entry/exit pair collapses the whole loop into
 //     one drop, which reads as a stray probe for a file the target needs every iteration.
 //
-// The band is one trace, no baseline subtracted from a second one: every deliberate loss
-// is counted, and the observer's own miscounts only ever add. So the true count is the
-// floor, and half again as much sits far below the doubling signature.
+// The count is one trace, with no baseline subtracted from a second one: the tracee loses
+// exactly this many accesses, so the true count is the floor and the observer's own
+// miscounts only ever add.
 //
-// The slack is for bv2-q7uv, which counts every syscall stop the kernel reports with no
-// syscall number as a lost access: measured here at 0..2 per run for this tracee over 25
-// runs, but it scales with thread count and is not reproducible run to run, which is why
-// an exact count is not assertable through Trace yet. Tighten this to an equality with
-// that fix.
+// observerSlack is the one addition that is not a miscount. A tracee thread that exits
+// between its syscall stop and the observer's register read answers ESRCH, and that stop
+// is counted as a lost observation deliberately - the read failed, so what it was cannot
+// be known, and an uncounted loss is the failure the channel exists to prevent. A Go
+// tracee retires a thread or two on its way out, so a run carries at most a couple. The
+// band is wide enough to absorb them and far too tight for either counting bug.
+const observerSlack = 3
+
 func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 	const lost = 500
 	res := traceHelper(t, "lostpaths", t.TempDir(), lost)
-	if res.Dropped < lost {
-		t.Errorf("Dropped = %d, want at least %d - one per lost access; a lower count is the signature of a dedup key that outlives its entry/exit pair", res.Dropped, lost)
+	if res.Dropped < lost || res.Dropped > lost+observerSlack {
+		t.Errorf("Dropped = %d, want %d..%d - one per lost access; fewer is the signature of a dedup key outliving its entry/exit pair, and ~%d of counting the entry and exit stop of the same syscall separately", res.Dropped, lost, lost+observerSlack, 2*lost)
 	}
-	if max := lost * 3 / 2; res.Dropped > max {
-		t.Errorf("Dropped = %d, want at most %d for %d lost accesses; ~%d is the signature of counting the entry and exit stop of the same syscall separately", res.Dropped, max, lost, 2*lost)
+}
+
+// A handled signal must not read as a lost file access. rt_sigreturn's exit stop reports
+// the restored pre-signal registers, in which orig_rax is -1 - and -1 has every bit set,
+// so a test for the x32 tag bit matches it. That made every handled signal count as an
+// observation the profiler could not read, in the one channel that tells the user their
+// manifest is incomplete; Go's async preemption signals a busy tracee constantly, so a
+// run that lost nothing reported drops in the hundreds.
+//
+// Nothing here touches the filesystem, so the count should be nothing but observerSlack -
+// two orders of magnitude below what one drop per handled signal would give.
+func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
+	const signals = 300
+	res := traceHelper(t, "sigreturn", t.TempDir(), signals)
+	if res.Dropped > observerSlack {
+		t.Errorf("Dropped = %d after %d handled signals and no file access, want at most %d; ~%d is the signature of rt_sigreturn's restored orig_rax of -1 matching the x32 tag test", res.Dropped, signals, observerSlack, signals)
 	}
 }
