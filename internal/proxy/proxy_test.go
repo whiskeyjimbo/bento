@@ -730,17 +730,61 @@ func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
 	c := dialProxy()
 	defer c.Close()
 	status, br := connect(t, c, "localhost:9")
-	if !strings.Contains(status, "403") {
-		t.Fatalf("status = %q, want 403 (localhost resolves to loopback)", status)
+	if !strings.Contains(status, "502") {
+		t.Fatalf("status = %q, want 502 (localhost resolves to loopback)", status)
 	}
 	body, _ := io.ReadAll(br)
-	if !strings.Contains(string(body), "non-public") {
-		t.Errorf("refusal body should explain the non-public address; got %q", body)
-	}
 	// The refusal must not answer the query it refused: naming the resolved address
 	// would let a confined process enumerate the host's DNS one denial at a time.
 	if strings.Contains(string(body), "127.0.0.1") {
 		t.Errorf("refusal body discloses the resolved address; got %q", body)
+	}
+}
+
+// Refusing the guard's block distinctly from an ordinary dial failure was itself an
+// oracle: under a permissive allowlist - `bento profile --allow-network` runs *:* -
+// a confined process could walk arbitrary names and classify each one as
+// private-resolving or not, one CONNECT at a time. The two answers must be the same
+// bytes. The host keeps the distinction; only the sandbox loses it.
+func TestGuardRefusalIsIndistinguishableFromDialFailure(t *testing.T) {
+	var p *Proxy
+	var decisions sync.Map
+	p = New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(d Decision, host, _ string) { decisions.Store(host, d) }),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, _ := net.SplitHostPort(addr)
+			// Both names resolve; only one lands in private space.
+			if host == "private.example.com" {
+				host = "10.0.0.5"
+			} else {
+				host = "8.8.8.8"
+			}
+			if err := p.guardUpstream(ctx, network, net.JoinHostPort(host, port), nil); err != nil {
+				return nil, err
+			}
+			return nil, &net.OpError{Op: "dial", Net: network, Addr: fakeAddr(addr), Err: errors.New("connection refused")}
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	answer := func(target string) string {
+		c := dialProxy()
+		defer c.Close()
+		status, br := connect(t, c, target)
+		body, _ := io.ReadAll(br)
+		return status + "\n" + string(body)
+	}
+	// The same host:port in both, so any difference is the verdict and not the name.
+	blocked := answer("private.example.com:443")
+	failed := strings.ReplaceAll(answer("public.example.com:443"), "public.", "private.")
+	if blocked != failed {
+		t.Errorf("a guard block answers %q but a dial failure answers %q; the split classifies the name for the sandbox", blocked, failed)
+	}
+	if d, _ := decisions.Load("private.example.com"); d != Denied {
+		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, Denied)
+	}
+	if d, _ := decisions.Load("public.example.com"); d != Allowed {
+		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Allowed)
 	}
 }
 
@@ -784,8 +828,10 @@ func TestExplicitLoopbackRuleStillBlocked(t *testing.T) {
 	c := dialProxy()
 	defer c.Close()
 	status, _ := connect(t, c, "127.0.0.1:6379")
-	if !strings.Contains(status, "403") {
-		t.Fatalf("status = %q, want 403 (an explicit loopback rule must not reach the host)", status)
+	// 502: the guard answers exactly as a dial failure does, so the block shows in
+	// the absence of a tunnel, not in a distinct status.
+	if !strings.Contains(status, "502") {
+		t.Fatalf("status = %q, want 502 (an explicit loopback rule must not reach the host)", status)
 	}
 }
 
@@ -812,7 +858,7 @@ func TestPrivateIPExemptionRequiresLiteralTarget(t *testing.T) {
 			rules:    []policy.NetworkRule{{Host: ".example.com", Port: "*"}, {Host: "10.0.0.5", Port: "443"}},
 			connect:  "x.example.com:443",
 			resolved: "10.0.0.5",
-			want:     "403",
+			want:     "502",
 		},
 		{
 			name:    "the literal's own rule",
@@ -833,7 +879,7 @@ func TestPrivateIPExemptionRequiresLiteralTarget(t *testing.T) {
 			name:    "wildcard rule matching a literal target",
 			rules:   []policy.NetworkRule{{Host: "*", Port: "*"}},
 			connect: "10.0.0.5:443",
-			want:    "403",
+			want:    "502",
 		},
 	}
 	for _, tc := range cases {
@@ -887,8 +933,8 @@ func TestGateAdmissionCarriesNoLiteralGrant(t *testing.T) {
 	c := dialProxy()
 	defer c.Close()
 	status, _ := connect(t, c, "[::ffff:10.0.0.5]:443")
-	if !strings.Contains(status, "403") {
-		t.Errorf("status = %q, want 403 - a gate admission must not inherit the rule's literal grant", status)
+	if !strings.Contains(status, "502") {
+		t.Errorf("status = %q, want 502 - a gate admission must not inherit the rule's literal grant", status)
 	}
 }
 
@@ -1013,22 +1059,26 @@ func TestGatekeeperNotConsultedWhileProfiling(t *testing.T) {
 // This uses the real guarded dialer (not WithDialer, which would
 // bypass the guard); localhost:9 resolves to loopback and is refused pre-connect.
 func TestGatekeeperCannotReachNonPublic(t *testing.T) {
+	var decision Decision
 	p := New(
 		nil,
 		WithGatekeeper(func(context.Context, string, string) bool { return true }),
+		WithObserver(func(d Decision, _, _ string) { decision = d }),
 	)
 	dialProxy, stop := startProxy(t, p)
 	defer stop()
 
 	c := dialProxy()
 	defer c.Close()
-	status, br := connect(t, c, "localhost:9")
-	if !strings.Contains(status, "403") {
-		t.Fatalf("status = %q, want 403 (gate admission cannot reach loopback)", status)
+	status, _ := connect(t, c, "localhost:9")
+	if !strings.Contains(status, "502") {
+		t.Fatalf("status = %q, want 502 (gate admission cannot reach loopback)", status)
 	}
-	body, _ := io.ReadAll(br)
-	if !strings.Contains(string(body), "non-public") {
-		t.Errorf("refusal body should explain the non-public address; got %q", body)
+	// The client cannot tell this from a dial failure, so the block shows on the host
+	// side: Denied, not AdmittedByGate, which is what keeps the run's gate-admitted
+	// list from claiming a destination the guard never let through.
+	if decision != Denied {
+		t.Errorf("observer reported %q, want %q", decision, Denied)
 	}
 }
 

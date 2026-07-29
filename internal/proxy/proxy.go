@@ -570,15 +570,17 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	if err != nil {
 		var blocked *blockedUpstreamError
 		if errors.As(err, &blocked) {
+			// Reported Denied, but answered exactly as an ordinary dial failure is. A
+			// distinct refusal here told the client that the name resolved into
+			// non-public space, which under a permissive allowlist (`bento profile
+			// --allow-network` runs *:*) lets a confined process classify arbitrary
+			// names against the host's internal DNS one CONNECT at a time. Naming the
+			// RESOLVED address would enumerate it outright, which is why the dial error
+			// stays out of the shared body too - a *net.OpError carries the Addr in its
+			// own text. The guard still refuses before any SYN while a real dial costs an
+			// RTT, so this removes the textual oracle, not the timing one.
 			p.report(Denied, host, port)
-			// The body names only what the client already knows - the host it asked
-			// for. Naming the address the host RESOLVED to would let a confined
-			// process walk the host's internal DNS namespace one denied CONNECT at a
-			// time, each refusal looking like an ordinary denial while answering the
-			// query. The same reason keeps the dial error out of the 502 below: a
-			// *net.OpError carries the resolved Addr in its own text.
-			writeStatus(client, "403 Forbidden",
-				fmt.Sprintf("bento denied egress to %s:%s (it resolves to a non-public address; list it as an explicit IP rule if you meant it)", host, port))
+			writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 			return
 		}
 		p.report(decision, host, port)

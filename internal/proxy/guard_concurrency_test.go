@@ -148,13 +148,16 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		r := <-results
 		want := "200"
 		if strings.HasPrefix(r.host, "priv") {
-			want = "403"
+			// The guard's refusal is indistinguishable from an ordinary dial failure by
+			// design, so what the client sees can no longer tell the two apart; the
+			// per-connection property is carried by decisions and refusals below.
+			want = "502"
 		}
 		if !strings.Contains(r.status, want) {
 			t.Errorf("%s got %q, want %s - a guard verdict landed on the wrong connection", r.host, r.status, want)
 			continue
 		}
-		if want == "403" && !strings.Contains(r.body, r.host) {
+		if want == "502" && !strings.Contains(r.body, r.host) {
 			t.Errorf("%s was refused without naming itself: %q", r.host, r.body)
 		}
 	}
@@ -191,7 +194,7 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 		t.Errorf("observer saw %d decisions, want one per connection (%d)", len(decisions), len(hosts))
 	}
 	// The teeth: a guard-blocked host must never have had a tunnel opened, which the
-	// 403 alone does not show - the same handler writes it either way.
+	// refusal alone does not show - the same handler writes it either way.
 	if want := conns / 2; len(dialed) != want {
 		t.Errorf("opened %d tunnels, want one per public host (%d): %v", len(dialed), want, dialed)
 	}
