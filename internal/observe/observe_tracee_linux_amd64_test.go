@@ -154,27 +154,26 @@ func TestObserveTraceeHelper(t *testing.T) {
 	case "execthread":
 		// execve from a thread that is NOT the thread-group leader: the kernel kills the
 		// other threads and hands the execing one the leader's pid, so its own tid
-		// disappears with no wait status for the tracer to see.
-		//
-		// The main goroutine pins the leader first, so the goroutine below cannot be
-		// scheduled onto it - locking a goroutine to its current thread does not move it
-		// off the main one, and an exec from the leader retires no tid at all, which would
-		// make the test pass vacuously. The tid is checked rather than trusted.
-		runtime.LockOSThread()
-		done := make(chan struct{})
-		go func() {
+		// disappears with no wait status for the tracer to see. An exec from the leader
+		// retires no tid at all and would prove nothing, and which thread a goroutine gets
+		// is the runtime's business - a test function does not run on the main one - so the
+		// tid is checked rather than assumed. A goroutine that finds itself on the leader
+		// hands off and parks WITHOUT unlocking, so that thread stays occupied and the next
+		// attempt is given another; there is one leader, so it hands off at most once.
+		var execFromNonLeader func()
+		execFromNonLeader = func() {
 			runtime.LockOSThread()
 			if unix.Gettid() == os.Getpid() {
-				fmt.Fprintln(os.Stderr, "TRACEE_EXEC_TID_IS_LEADER")
-				os.Exit(11)
+				go execFromNonLeader()
+				time.Sleep(time.Minute)
+				return
 			}
-			close(done)
 			if err := syscall.Exec(traceeExecTarget, []string{traceeExecTarget}, nil); err != nil {
 				fmt.Fprintln(os.Stderr, "TRACEE_EXECTHREAD_ERR", err)
 				os.Exit(11)
 			}
-		}()
-		<-done
+		}
+		go execFromNonLeader()
 		// The exec replaces the image, so the sleep never finishes; it is a sleep rather
 		// than a bare block so the runtime's deadlock detector has no claim on it.
 		time.Sleep(time.Minute)
@@ -594,35 +593,38 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 }
 
 // The exec event names a retired tid in both the case that needs sweeping and the case that
-// must not be swept, and only the event message tells them apart. A non-leader's exec retires
-// a tid that can never stop again, so every map keyed on it has to forget it; an ordinary exec
-// reports the stopping pid itself, which kept running, and forgetting that one takes a live
-// tracee out of the reap set - the worse of the two leaks. A held pathname goes with the
-// retired tid, and its probe's result is now unknowable, so it counts as a lost access.
+// must not be swept, and only the event message tells them apart.
+//
+// A non-leader's exec retires two threads: the execing one, whose tid can never stop again,
+// and the leader whose pid it took, which is dead under a pid that is still stopped. Every map
+// keyed on either has to forget it, and a pathname held by either is an existence probe whose
+// exit stop can never arrive, so each counts as a lost access.
+//
+// An ordinary exec reports the stopping pid itself, which kept running: forgetting that one
+// takes a live tracee out of the reap set - the worse of the two leaks - and its held
+// pathnames still have an exit stop coming.
 func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 	const leader, retired = 100, 101
-	heldOf := func(pid int) map[string]heldPath {
-		return map[string]heldPath{
-			stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}):   {path: "/etc/hosts", readOK: true},
-			stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS}): {path: "/etc/passwd", readOK: true},
-		}
-	}
 	for _, tc := range []struct {
 		name     string
 		old      int
 		wantKept bool
 		wantLost int
 	}{
-		{"a non-leader thread's exec retires its own tid", retired, false, 2},
+		{"a non-leader thread's exec retires its own tid and the leader's thread", retired, false, 4},
 		{"an ordinary exec reports the pid it kept", leader, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tracees := map[int]bool{leader: true, tc.old: true}
 			lastOp := map[int]byte{tc.old: unix.PTRACE_SYSCALL_INFO_ENTRY}
-			held := heldOf(tc.old)
+			held := map[string]heldPath{}
+			for _, pid := range []int{leader, tc.old} {
+				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT})] = heldPath{path: "/etc/hosts", readOK: true}
+				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS})] = heldPath{path: "/etc/passwd", readOK: true}
+			}
 
 			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held); lost != tc.wantLost {
-				t.Errorf("lost = %d, want %d - a pathname held by a tid that can never stop again is an observation the exit stop will never resolve", lost, tc.wantLost)
+				t.Errorf("lost = %d, want %d - a pathname held by a thread that can never stop again is an observation no exit stop will ever resolve", lost, tc.wantLost)
 			}
 			if got := tracees[tc.old]; got != tc.wantKept {
 				t.Errorf("tracees[%d] = %v, want %v", tc.old, got, tc.wantKept)
@@ -630,8 +632,10 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 			if _, got := lastOp[tc.old]; got != tc.wantKept {
 				t.Errorf("lastOp[%d] present = %v, want %v", tc.old, got, tc.wantKept)
 			}
-			if got := holdsPath(held, tc.old); got != tc.wantKept {
-				t.Errorf("holdsPath(%d) = %v, want %v", tc.old, got, tc.wantKept)
+			for _, pid := range []int{leader, tc.old} {
+				if got := holdsPath(held, pid); got != tc.wantKept {
+					t.Errorf("holdsPath(%d) = %v, want %v", pid, got, tc.wantKept)
+				}
 			}
 			if !tracees[leader] {
 				t.Errorf("the leader's own pid was dropped from the tracee set; it is alive and must still be reaped")

@@ -428,10 +428,12 @@ func deadThreadLostNothing(op byte, held map[string]heldPath, pid int) bool {
 //
 // One stop stream is spliced rather than alternating: a non-leader thread that execve's
 // adopts the leader's pid, so the execve exit stop arrives under the leader's pid carrying
-// the leader's own parity rather than the execing thread's. That errs toward counting either
-// way - a stale ENTRY infers an exit stop, whose only decode is a success filter execve
-// never registered. The retired tid's own parity is not left behind to be read: the exec
-// event names it and the loop forgets it there.
+// the leader's own parity rather than the execing thread's. Neither answer loses an
+// observation: a stale ENTRY infers an exit stop, whose only decode is a success filter
+// execve never registered, and a stale EXIT infers an entry stop and suppresses - which is
+// right, because forgetRetiredTid has already released and counted everything that pid was
+// holding across the exec. The retired tid's own parity is not left behind to be read at all;
+// the exec event names it and the loop forgets it there.
 //
 // A wrong answer costs at most one drop: it is consulted only where the thread is already
 // dead, so the pid is reaped and its parity forgotten immediately after.
@@ -617,13 +619,21 @@ func holdsPath(held map[string]heldPath, pid int) bool {
 // which is a worse leak than the strand being swept. The pid is re-tracked at its next stop,
 // so only a descendant that exits the window between the two would leak - which is a race,
 // not a certainty, and reason enough not to open it.
+//
+// The retired tid is not the only casualty. The execve also destroys the thread-group leader
+// whose pid the execer took, and that death is announced even less than the retirement - the
+// pid it happened under is still stopped right here. So everything held under the stopping pid
+// is swept too: it belongs to a thread that no longer exists, the image now under that pid has
+// issued no syscall of its own yet, and the exit stop those pathnames are waiting on can never
+// arrive. Only in the non-leader case, where the pid demonstrably changed hands; an ordinary
+// exec's pathnames belong to the thread that is still running and still owes them an exit stop.
 func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
 	if old == wpid {
 		return 0
 	}
 	delete(tracees, old)
 	delete(lastOp, old)
-	return releaseHeldOf(held, old)
+	return releaseHeldOf(held, old) + releaseHeldOf(held, wpid)
 }
 
 // releaseHeldOf drops every pathname a vanished tid was still holding and reports how many
