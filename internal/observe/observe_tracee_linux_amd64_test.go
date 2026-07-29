@@ -27,6 +27,7 @@ import (
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
 //	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
+//	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
 //	execve     spawns via execve(2), the path the exec-block filter denies.
 //	execveat   spawns via execveat(2), the path it permits by construction.
 func TestObserveTraceeHelper(t *testing.T) {
@@ -92,6 +93,8 @@ func TestObserveTraceeHelper(t *testing.T) {
 			}
 			<-ch
 		}
+	case "plantpath":
+		plantPathTracee(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), n)
 	case "execve":
 		// The ordinary spawn, which must still be detected. Exec is execve(2).
 		if err := syscall.Exec(traceeExecTarget, []string{traceeExecTarget}, nil); err != nil {
@@ -128,6 +131,80 @@ func TestObserveTraceeHelper(t *testing.T) {
 		os.Exit(5)
 	}
 	os.Exit(0)
+}
+
+// The two names the plantpath mode swaps between, equal in length so a write lands
+// wholly on one or the other and cannot splice a third path out of the two.
+//
+// plantDecoyName must never exist on disk. That is the whole assertion: the existence
+// syscalls are recorded only when the call SUCCEEDED, so a stat naming the decoy always
+// fails and can never legitimately be recorded. Seeing it in a Result means the observer
+// read the pathname at a moment other than the one the kernel read it.
+const (
+	plantRealName  = "present-file"
+	plantDecoyName = "DECOY-absent"
+)
+
+// plantPathTracee is a victim thread issuing newfstatat on a shared pathname buffer while
+// a sibling thread overwrites that buffer with a path that does not exist. Threads share
+// an address space, which is what a CLONE_VM sibling is.
+//
+// The sibling only ever writes the DECOY, and the victim rewrites the real name before
+// each call, so within one iteration the buffer only ever goes real -> decoy, never back.
+// That asymmetry is what makes the test decisive rather than racy: an observer reading the
+// pathname at the entry stop either sees the real name (and the kernel, reading later,
+// sees the decoy or the real name - a decoy read fails and is filtered out) or sees the
+// decoy (and the kernel cannot then see the real name). Either way the decoy is never
+// recorded against a successful call. An observer reading at the EXIT stop instead reads
+// after the sibling has had the whole syscall to overwrite the buffer, so it records the
+// decoy against a call that succeeded on the real file.
+//
+// The sibling writes through /proc/self/mem rather than assigning to the slice: it is the
+// same memory either way, but a syscall keeps the deliberate data race out of reach of the
+// race detector, which would otherwise abort this tracee instead of letting it prove the
+// point.
+func plantPathTracee(dir string, n int) {
+	real := filepath.Join(dir, plantRealName)
+	buf := make([]byte, len(real)+1)
+	copy(buf, real)
+	nameAt := uintptr(unsafe.Pointer(&buf[0])) + uintptr(len(real)-len(plantRealName))
+
+	mem, err := os.OpenFile("/proc/self/mem", os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TRACEE_MEM_ERR", err)
+		os.Exit(8)
+	}
+	defer mem.Close()
+
+	done := make(chan struct{})
+	var sibling sync.WaitGroup
+	sibling.Add(1)
+	go func() {
+		defer sibling.Done()
+		runtime.LockOSThread()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if _, err := mem.WriteAt([]byte(plantDecoyName), int64(nameAt)); err != nil {
+				fmt.Fprintln(os.Stderr, "TRACEE_PLANT_ERR", err)
+				os.Exit(8)
+			}
+		}
+	}()
+
+	runtime.LockOSThread()
+	var st unix.Stat_t
+	for range n {
+		copy(buf[len(real)-len(plantRealName):len(real)], plantRealName)
+		_, _, _ = syscall.Syscall6(unix.SYS_NEWFSTATAT, ^uintptr(99),
+			uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&st)), 0, 0, 0)
+	}
+	close(done)
+	sibling.Wait()
+	runtime.KeepAlive(buf)
 }
 
 // traceeExecTarget is what the exec modes spawn: absolute, so no PATH search
@@ -281,5 +358,43 @@ func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 				t.Errorf("Execed = %v after a %s spawn, want %v", got, tc.mode, tc.want)
 			}
 		})
+	}
+}
+
+// A sibling sharing the address space must not be able to plant a path in the observation.
+// The pathname argument lives in the tracee's memory, so when the observer reads it decides
+// what it records: read at the syscall EXIT stop, the sibling has had the whole syscall to
+// overwrite the buffer, and the observer attributes the planted path to a call that
+// succeeded on a different file. The manifest is the user's consent surface, so a path the
+// run never touched appearing in it is the failure that matters.
+//
+// plantDecoyName is what makes the assertion airtight rather than statistical: it does not
+// exist, the existence syscalls are recorded only when the call succeeded, and a stat of a
+// path that is not there cannot succeed. There is no legitimate route by which it can be
+// recorded.
+//
+// The real path is asserted present in the same run, because an observer that stopped
+// recording existence syscalls altogether would satisfy the decoy half perfectly.
+func TestTraceDoesNotRecordAPathPlantedBySibling(t *testing.T) {
+	const stats = 3000
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, plantRealName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(dir, plantDecoyName)
+
+	res := traceHelper(t, "plantpath", dir, stats)
+
+	var sawReal bool
+	for _, a := range res.Accesses {
+		if a.Path == decoy {
+			t.Fatalf("recorded %q, a path that does not exist and so cannot have been established by any successful call; the observer read the pathname after the sibling overwrote it", decoy)
+		}
+		if a.Path == filepath.Join(dir, plantRealName) {
+			sawReal = true
+		}
+	}
+	if !sawReal {
+		t.Errorf("the real path was never recorded, so the decoy's absence proves nothing; recorded: %v", res.Accesses)
 	}
 }

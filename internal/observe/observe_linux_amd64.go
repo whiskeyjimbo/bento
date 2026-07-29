@@ -202,6 +202,11 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// recorded-path set above: entries here are released as each pair completes, and
 	// mixing the two lifetimes in one map is how a stale key goes unnoticed.
 	drops := map[string]bool{}
+	// Pathnames the entry stop of an existence syscall resolved, waiting for the exit
+	// stop's return value to say whether the call succeeded. Keyed and released per
+	// entry/exit pair like the drop counter, so a stop that is not this pair's - an
+	// rt_sigreturn landing between the two, say - cannot be mistaken for it.
+	held := map[string]heldPath{}
 	var res Result
 	record := func(path string, write bool) {
 		if path == "" {
@@ -284,7 +289,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// counter's own.
 			if nativeSyscall(wpid, &res.Dropped) {
 				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, record, count, release, &res)
+				inspect(wpid, record, count, release, held, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -453,9 +458,7 @@ func reapTracees(tracees map[int]bool) {
 // entries, and a tracee that dies mid-pair. Each collapses its repeats into one drop, and
 // the last cannot repeat at all - the process is gone.
 func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*syscall.PtraceRegs)) {
-	key := func(regs *syscall.PtraceRegs) string {
-		return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
-	}
+	key := func(regs *syscall.PtraceRegs) string { return stopKey(pid, regs) }
 	count = func(regs *syscall.PtraceRegs) {
 		k := key(regs)
 		if inFlight[k] {
@@ -468,13 +471,30 @@ func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*s
 	return count, release
 }
 
+// stopKey identifies one syscall's entry/exit pair: the tracee, plus the syscall's number
+// and instruction pointer, which are identical at both stops. It is NOT unique across
+// calls - a libc call site issuing the same syscall in a loop repeats it every iteration -
+// so everything keyed on it must release the entry as the pair completes.
+func stopKey(pid int, regs *syscall.PtraceRegs) string {
+	return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
+}
+
+// heldPath is a pathname the entry stop resolved, kept until the exit stop can say
+// whether the call succeeded. readOK is false when the pathname could not be read at all;
+// the drop is deferred with it, because a failed existence probe needs no grant and so
+// must not be reported as a lost access.
+type heldPath struct {
+	path   string
+	readOK bool
+}
+
 // inspect decodes a syscall stop and records file opens / subprocess execs. The numbers
 // below are amd64's, and three checks stand between a stop and that table: the caller has
 // established the stop carries the amd64 audit arch (see nativeSyscall), the x32 check
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), res *Result) {
+func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -514,6 +534,17 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 	// positive as an int64 (the tag is bit 30), so the guard above does not screen it out.
 	if regs.Orig_rax&x32SyscallBit != 0 {
 		drop()
+		return
+	}
+	// Every pathname this decoder reads is read HERE, at the entry stop, while the tracee
+	// is frozen before the kernel has copied its arguments. Reading one at the exit stop
+	// instead lets a sibling sharing the address space (a thread, or any CLONE_VM child)
+	// overwrite the buffer after the syscall ran, so the observer records a path the call
+	// never touched - and over-attribution silently widens the manifest the user consents
+	// to. The exit stop is still needed for one thing, the existence syscalls' success
+	// filter, and that replays what was captured here rather than reading again.
+	if !atSyscallEntry(&regs) {
+		recordHeldExistence(pid, &regs, record, drop, held)
 		return
 	}
 	switch regs.Orig_rax {
@@ -577,12 +608,10 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 		// it buys the user nothing. What it costs is the point: Execed grants ExecAll,
 		// and on ExecAll the launcher installs no exec-block filter at all, so a single
 		// execveat would turn into blanket execve permission for the whole run.
-		if atSyscallEntry(&regs) {
-			res.Execed = true
-		}
+		res.Execed = true
 	default:
 		inspectMutating(pid, &regs, record, drop)
-		inspectExistence(pid, &regs, record, drop)
+		inspectExistence(pid, &regs, record, drop, held)
 	}
 }
 
@@ -618,40 +647,68 @@ func atSyscallEntry(regs *syscall.PtraceRegs) bool {
 // getdents64 and fchdir carry no pathname, and the descriptor they act on came from an
 // openat this decoder already recorded. getcwd names the run's own working directory,
 // which the sandbox must have bound for the process to be running in it.
-func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func()) {
-	// chdir is decoded at the ENTRY stop instead, because it moves the very anchor
-	// resolveAt reads back out of /proc: at its exit stop a relative pathname would be
-	// joined onto the directory the call just entered. That costs it the success filter,
-	// so a chdir to a path that is not there is recorded like a failed open.
+// It runs at the ENTRY stop and only captures: the pathname is read and resolved here,
+// while the tracee is frozen and the buffer still holds what the kernel is about to read,
+// then held under this stop's key until recordHeldExistence can apply the success filter.
+// Reading it at the exit stop instead - where the return value lives - is what let a
+// sibling sharing the address space plant a path the call never touched.
+func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[string]heldPath) {
+	// chdir is recorded outright rather than held, because it moves the very anchor
+	// resolveAt reads back out of /proc: waiting for its exit stop would join a later
+	// relative pathname onto the directory the call just entered. That costs it the
+	// success filter, so a chdir to a path that is not there is recorded like a failed
+	// open.
 	if regs.Orig_rax == unix.SYS_CHDIR {
-		if atSyscallEntry(regs) {
-			if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
-				record(path, false)
-			} else {
-				drop()
-			}
-		}
-		return
-	}
-	if atSyscallEntry(regs) || int64(regs.Rax) < 0 {
-		return
-	}
-	at := func(dirfd int32, pathReg uint64) {
-		if path, ok := readPathAt(pid, dirfd, uintptr(pathReg)); ok {
+		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
 			record(path, false)
-			return
+		} else {
+			drop()
 		}
-		drop()
+		return
 	}
+	var dirfd int32
+	var pathReg uint64
 	switch regs.Orig_rax {
 	case unix.SYS_STAT, unix.SYS_LSTAT, unix.SYS_ACCESS, unix.SYS_READLINK:
-		at(atFdCwd, regs.Rdi)
+		dirfd, pathReg = atFdCwd, regs.Rdi
 	// The *at forms take (dirfd, path, ...). AT_EMPTY_PATH with an empty pathname makes
 	// them operate on the descriptor itself, naming no path; record's empty-path skip
 	// covers that without a separate flag test.
 	case unix.SYS_NEWFSTATAT, unix.SYS_STATX, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2, unix.SYS_READLINKAT:
-		at(int32(regs.Rdi), regs.Rsi)
+		dirfd, pathReg = int32(regs.Rdi), regs.Rsi
+	default:
+		return
 	}
+	// An unreadable pathname is not dropped here: the drop travels with the held entry, so
+	// that a probe the kernel goes on to refuse costs nothing - the same success filter the
+	// recorded path itself gets.
+	path, ok := readPathAt(pid, dirfd, uintptr(pathReg))
+	held[stopKey(pid, regs)] = heldPath{path: path, readOK: ok}
+}
+
+// recordHeldExistence applies the existence syscalls' success filter at the exit stop, to
+// the pathname the entry stop resolved, and releases the held entry either way.
+//
+// Only a call that SUCCEEDED is recorded. A failed open still needs a grant, because the
+// script meant to open that file; a stat that already returned ENOENT needs none, because
+// enforcement reproduces that exact answer. The filter is what keeps manifests tight: a
+// shell's PATH search misses hundreds of times per command, and recording those probes
+// would bury the paths the run actually needs.
+func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[string]heldPath) {
+	key := stopKey(pid, regs)
+	h, ok := held[key]
+	if !ok {
+		return
+	}
+	delete(held, key)
+	if int64(regs.Rax) < 0 {
+		return
+	}
+	if !h.readOK {
+		drop()
+		return
+	}
+	record(h.path, false)
 }
 
 // inspectMutating decodes the path-modifying syscalls - the ones that create,
