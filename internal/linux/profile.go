@@ -153,6 +153,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		}
 		exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
 	}
+	if err := checkLauncher(sb.bentoPath); err != nil {
+		return profile.Observation{}, err
+	}
 	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// The open report file becomes FD observeReportFD in the bwrap child, surviving the

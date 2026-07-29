@@ -44,11 +44,46 @@ var (
 // dir - never another concurrent agent's or a stale one, which on this shared checkout
 // may be bind-mounted into a live sandbox and unsafe to delete mid-run.
 func TestMain(m *testing.M) {
+	launchGuard = testLaunchGuard
 	code := m.Run()
 	if bentoDir != "" {
 		os.RemoveAll(bentoDir)
 	}
 	os.Exit(code)
+}
+
+// testLaunchGuard refuses a launch whose in-sandbox launcher is the test binary.
+// An Enforcer built with New() (rather than sandboxEnforcer) leaves selfPath empty,
+// which resolves to the running executable - so the sandbox would re-exec the whole
+// test suite in place of the launcher, and the run reports nothing about it. Every
+// New() call site is expected to refuse before this point; if one ever stops
+// refusing, this names the reason instead of hanging.
+func testLaunchGuard(bentoPath string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating the test executable to check the in-sandbox launcher: %w", err)
+	}
+	if bentoPath == self {
+		return fmt.Errorf("the in-sandbox launcher is the test binary %q: this test must build its Enforcer with sandboxEnforcer(t), not New()", bentoPath)
+	}
+	return nil
+}
+
+// The guard has to fire from a real launch, not just from a direct call: it is only
+// worth having if it is wired into the path a launching test actually takes. Run is
+// the one exercised here; Profile and runDegraded call the same checkLauncher.
+func TestLaunchGuardRefusesTheTestBinaryAsTheLauncher(t *testing.T) {
+	requireSandbox(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}}
+	_, err := New().Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "the in-sandbox launcher is the test binary") {
+		t.Fatalf("Run with an Enforcer from New() = %v, want the launch guard refusal", err)
+	}
 }
 
 // testBento builds the bento binary once per test run and returns its path. The

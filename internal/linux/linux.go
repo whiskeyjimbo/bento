@@ -155,6 +155,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		}
 	}
 
+	if err := checkLauncher(sb.bentoPath); err != nil {
+		return enforce.Result{}, err
+	}
 	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
 	// bwrap passes this through to the launcher as FD appliedReportFD; it survives the
@@ -536,6 +539,21 @@ func bentoSelfPath(selfPath string) (string, error) {
 		return "", fmt.Errorf("linux: locating the bento binary for the in-sandbox launcher: %w", err)
 	}
 	return self, nil
+}
+
+// launchGuard is nil in production. The test suite installs one so a launch that
+// would bind the test binary as the in-sandbox launcher fails loudly instead of
+// re-execing the suite inside the sandbox - a failure mode that otherwise passes
+// green after minutes of wall clock and a leaked sandbox.
+var launchGuard func(bentoPath string) error
+
+// checkLauncher rules on the binary about to be launched as the in-sandbox
+// launcher. It is a no-op unless launchGuard is installed.
+func checkLauncher(bentoPath string) error {
+	if launchGuard == nil {
+		return nil
+	}
+	return launchGuard(bentoPath)
 }
 
 // writeEmptyFile creates the empty file the deny-list binds over paths that must

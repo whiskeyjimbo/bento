@@ -163,6 +163,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if scoped {
 		exe, cargs = wrapWithLimits(exe, cargs, p.Limits)
 	}
+	if err := checkLauncher(sb.bentoPath); err != nil {
+		return enforce.Result{}, err
+	}
 	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
