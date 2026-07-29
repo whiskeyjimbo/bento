@@ -91,7 +91,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// .git/hooks). Remove those after the run so the sandbox leaves no artifact; see
 	// removeCreatedShields for why this is safe and best-effort.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
-	defer removeCreatedShields(shieldDirs, shieldFiles, preflight.writes)
+	defer removeCreatedShields(shieldDirs, shieldFiles)
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
 	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox

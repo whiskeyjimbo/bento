@@ -118,7 +118,7 @@ func TestParseObservationsReadsExitStatus(t *testing.T) {
 // unquotable R/W line is deliberately NOT this case: there the loss is one path, and
 // counting it as a drop reports it honestly.
 func TestParseObservationsRefusesUnreadableStatusLines(t *testing.T) {
-	for _, line := range []string{"EXIT nope", "EXIT ", "SIGNAL nine", "DROPPED lots"} {
+	for _, line := range []string{"EXIT nope", "EXIT ", "SIGNAL nine", "DROPPED lots", "EXIT -1", "SIGNAL -9", "DROPPED -5"} {
 		t.Run(line, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "report")
 			content := fmt.Sprintf("R %q\n%s\n%s\n", "/a", line, observe.ReportEnd)

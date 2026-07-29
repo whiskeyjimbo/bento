@@ -27,16 +27,17 @@ import (
 // reported rather than silently ignored (v1's actual failure).
 
 // cacheProbe memoizes a host measurement, but only once it has ANSWERED: measure's
-// bool reports whether it did, and a probe that did not is re-run on the next call.
+// bool reports whether the probe reached a verdict, not whether the verdict was yes,
+// and a probe that reached none is re-run on the next call.
 //
 // That distinction is the whole point. Both limits probes below measure something a
 // systemd user manager that is busy, restarting, or slower than the 5s bound simply
-// fails to report - and a failure memoized for the process lifetime pinned the limits
-// layers Unavailable forever on a host where the limits bind, which under
-// --allow-degraded means running the target unbounded. A host that CAN create a scope
-// keeps that capability, so the success is cached and every later caller is free; the
-// cost of re-measuring is one bounded probe per call on a host that is genuinely
-// failing, which is the case that was already going to refuse.
+// fails to report - and one such failure memoized for the process lifetime pinned the
+// limits layers Unavailable forever on a host where the limits bind, which under
+// --allow-degraded means running the target unbounded. A definitive answer, yes or
+// no, is a fact about the host and is cached either way, so the host with no
+// systemd-run and the host with undelegated controllers both pay one probe, not one
+// per call.
 func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
 	var (
 		mu       sync.Mutex
@@ -56,20 +57,34 @@ func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
 // canCreateScope reports whether this host can create a transient user scope at
 // all, and why not otherwise.
 func canCreateScope() (bool, string) {
-	reason, ok := scopeProbe()
-	return ok, reason
+	v, answered := scopeProbe()
+	if !answered {
+		return false, v.reason
+	}
+	return v.ok, v.reason
 }
 
 var scopeProbe = cacheProbe(measureScope)
 
+// scopeVerdict is what measureScope concluded. It is separate from cacheProbe's
+// answered bool because a definitive NO - no systemd-run on this host, controllers the
+// manager does not delegate - is as cacheable as a yes; only a probe that could not
+// reach either is re-run.
+type scopeVerdict struct {
+	ok     bool
+	reason string
+}
+
 // measureScope answers by actually creating a throwaway scope - a stat of a runtime
 // directory does not prove the manager will answer.
-func measureScope() (string, bool) {
+func measureScope() (scopeVerdict, bool) {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return "systemd-run is not installed, so resource limits cannot be enforced unprivileged", false
+		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
 	if err := runScopeProbe(policy.Limits{Memory: "64M"}, nil); err != nil {
-		return "no usable systemd user manager for resource limits: " + err.Error(), false
+		// The scope could not be created, which is the failure a busy or restarting user
+		// manager produces transiently: no verdict, so nothing is cached.
+		return scopeVerdict{reason: "no usable systemd user manager for resource limits: " + err.Error()}, false
 	}
 	// A scope can be *created*, but systemd-run silently accepts a property for
 	// an undelegated controller without enforcing it. memory and pids are the
@@ -80,10 +95,14 @@ func measureScope() (string, bool) {
 	// a Delegate=cpu drop-in, is reported separately by the probe as its own
 	// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
 	// unenforced) without gating scope creation on cpu delegation.
-	if ok, reason := hostControllersDelegated(delegatedControllers()); !ok {
-		return reason, false
+	// An unreadable delegated set is the same non-verdict as an uncreatable scope, and
+	// must not be cached as a fact about the host; controllers it reports as
+	// undelegated are one.
+	ctrls, known := delegatedControllers()
+	if ok, reason := hostControllersDelegated(ctrls, known); !ok {
+		return scopeVerdict{reason: reason}, known
 	}
-	return "", true
+	return scopeVerdict{ok: true}, true
 }
 
 // hostControllersDelegated reports whether the memory and pids controllers - the

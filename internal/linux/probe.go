@@ -320,11 +320,14 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // a new user namespace") tells a user nothing about why or what to do, and on current
 // Ubuntu the cause is a specific, fixable AppArmor policy.
 //
-// Only bwrap's own refusal counts as "blocked": a namespace error it reported is the
-// host answering. Everything else - the probe timing out, bwrap failing to start, an
-// exit whose output names no namespace failure (a reaped canary, EAGAIN under load) -
+// Only output naming a namespace refusal counts as "blocked": that is the host
+// answering. Everything else - the probe timing out, bwrap failing to start, an exit
+// whose output names no namespace failure (a reaped canary, EAGAIN under load) -
 // leaves the question open, and saying "userns blocked" there costs the user the full
-// sandbox on a host that supports it.
+// sandbox on a host that supports it. The match is on bwrap's message, so an
+// unrelated "Permission denied" (a mount it could not make) still reads as blocked;
+// that is the pre-existing reading, and it errs toward the tier that confines less
+// rather than toward claiming a guarantee.
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError

@@ -255,14 +255,57 @@ func TestCreatedShieldsExcludesPreexistingPaths(t *testing.T) {
 	}
 }
 
-// removeCreatedShields is the half that touches the host, and its safety rests on two
-// properties: it removes a file only while it is still empty, and it reclaims the
-// intermediate directories bwrap created - but never the write grant itself, which is
-// the user's own directory.
+// The intermediate directories bwrap creates to hold a shield mount point are part of
+// the artifact - a write grant on a plain directory otherwise left an empty .git/
+// behind - but a directory the user ALREADY had is not, even when a shield lands
+// inside it and leaves it empty. Both answers are decided here, before the run, which
+// is the only moment they can be told apart.
+func TestCreatedShieldsClaimsOnlyTheDirectoriesItCauses(t *testing.T) {
+	unborn := testSandbox("/home/u/proj/src")
+	grants := []string{"/home/u/proj"}
+	dirs, _ := createdShields(unborn, grants, grants, nil)
+	if !containsStr(dirs, "/home/u/proj/.git") {
+		t.Errorf("the .git/ bwrap must create to hold the shields is part of the artifact; got %v", dirs)
+	}
+	if i, j := slices.Index(dirs, "/home/u/proj/.git/hooks"), slices.Index(dirs, "/home/u/proj/.git"); i > j {
+		t.Errorf("dirs must be deepest first so a parent is tried last; got %v", dirs)
+	}
+	if containsStr(dirs, "/home/u/proj") {
+		t.Errorf("the write grant itself is the user's directory and must never be scheduled; got %v", dirs)
+	}
+
+	// The same run against a host that already has an (empty) .git/.
+	existing := testSandbox("/home/u/proj/src", "/home/u/proj/.git")
+	dirs, _ = createdShields(existing, grants, grants, nil)
+	if containsStr(dirs, "/home/u/proj/.git") {
+		t.Errorf("a directory the user already had must never be scheduled for removal; got %v", dirs)
+	}
+	if !containsStr(dirs, "/home/u/proj/.git/hooks") {
+		t.Errorf("the shield mount point inside it is still the run's artifact; got %v", dirs)
+	}
+}
+
+// A write grant nested inside another write grant is still the user's own directory,
+// so the ancestor walk must stop at it rather than treating it as an intermediate
+// directory of the outer grant.
+func TestCreatedShieldsStopsAtANestedWriteGrant(t *testing.T) {
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/sub")
+	writes := []string{"/home/u/proj", "/home/u/proj/sub"}
+	dirs, _ := createdShields(sb, writes, writes, nil)
+
+	if containsStr(dirs, "/home/u/proj/sub") {
+		t.Errorf("a nested write grant must never be scheduled for removal; got %v", dirs)
+	}
+}
+
+// removeCreatedShields is the half that touches the host, and its safety rests on
+// what it refuses to remove: a file that has content, and a path that is no longer the
+// kind of thing bwrap created there.
 func TestRemoveCreatedShieldsReclaimsOnlyEmptyArtifacts(t *testing.T) {
 	grant := t.TempDir()
 	gitDir := filepath.Join(grant, ".git")
-	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+	hooks := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	empty := filepath.Join(gitDir, "config.worktree")
@@ -274,7 +317,7 @@ func TestRemoveCreatedShieldsReclaimsOnlyEmptyArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removeCreatedShields([]string{filepath.Join(gitDir, "hooks")}, []string{empty, written}, []string{grant})
+	removeCreatedShields([]string{hooks, gitDir}, []string{empty, written})
 
 	if _, err := os.Stat(written); err != nil {
 		t.Errorf("a file with content must survive cleanup: %v", err)
@@ -286,20 +329,34 @@ func TestRemoveCreatedShieldsReclaimsOnlyEmptyArtifacts(t *testing.T) {
 		t.Errorf(".git still holds the non-empty config, so it must survive: %v", err)
 	}
 
-	// With the last artifact gone, the intermediate .git/ goes too - and the grant
-	// itself, which is the user's directory, never does.
+	// With the last file gone, the intermediate .git/ goes too - and the grant itself
+	// is not in the list at all, so it cannot.
 	if err := os.Remove(written); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(empty, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	removeCreatedShields(nil, []string{empty}, []string{grant})
+	removeCreatedShields([]string{gitDir}, nil)
 	if _, err := os.Stat(gitDir); !os.IsNotExist(err) {
 		t.Errorf("the intermediate .git/ should be reclaimed once empty; stat err = %v", err)
 	}
 	if _, err := os.Stat(grant); err != nil {
 		t.Errorf("the write grant itself must never be removed: %v", err)
+	}
+}
+
+// A directory artifact is removed by rmdir, never by unlink. If a host process
+// replaced the empty directory bwrap created with a regular FILE during the run, that
+// file is content the run did not put there - os.Remove would have deleted it.
+func TestRemoveCreatedShieldsWillNotUnlinkAPathThatIsNoLongerADirectory(t *testing.T) {
+	dir := t.TempDir()
+	swapped := filepath.Join(dir, "hooks")
+	if err := os.WriteFile(swapped, []byte("host content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeCreatedShields([]string{swapped}, nil)
+
+	if b, err := os.ReadFile(swapped); err != nil || string(b) != "host content" {
+		t.Errorf("a file at a directory artifact's path must survive: content=%q err=%v", b, err)
 	}
 }
 

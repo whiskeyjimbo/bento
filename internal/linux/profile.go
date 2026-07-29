@@ -102,7 +102,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// Remove the shield mount points bwrap creates on the host, as Run does -
 	// profiling applies the same deny-list shields, so it leaves the same artifacts.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
-	defer removeCreatedShields(shieldDirs, shieldFiles, preflight.writes)
+	defer removeCreatedShields(shieldDirs, shieldFiles)
 
 	report, err := os.CreateTemp("", "bento-observe-")
 	if err != nil {
@@ -274,21 +274,24 @@ func parseObservations(path string) (profile.Observation, error) {
 		// very line that carries it - and a malformed DROPPED lost the count that
 		// says the manifest is short. A report whose status cannot be read is the
 		// same partial report the missing-marker check below already refuses.
+		// Negative is unreadable too, not merely odd: Atoi accepts a sign, and a
+		// negative DROPPED would subtract from a count whose whole job is to say the
+		// manifest is short. The launcher emits none of these.
 		case strings.HasPrefix(line, "EXIT "):
 			n, err := strconv.Atoi(line[5:])
-			if err != nil {
+			if err != nil || n < 0 {
 				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable exit status %q", line)
 			}
 			obs.ExitCode = n
 		case strings.HasPrefix(line, "DROPPED "):
 			n, err := strconv.Atoi(line[8:])
-			if err != nil {
+			if err != nil || n < 0 {
 				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable dropped-access count %q", line)
 			}
 			obs.Dropped += n
 		case strings.HasPrefix(line, "SIGNAL "):
 			n, err := strconv.Atoi(line[7:])
-			if err != nil {
+			if err != nil || n < 0 {
 				return profile.Observation{}, fmt.Errorf("linux: observation report has an unreadable signal status %q", line)
 			}
 			obs.Signaled = true

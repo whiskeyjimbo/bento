@@ -958,7 +958,9 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	switch {
 	case ns == namespacesUsable:
 		wantFS = enforce.Enforced
-	case landlock.Available():
+	// Only a host that ANSWERED "blocked" is offered the degraded tier; a probe that
+	// could not answer fails closed, so it keeps the Unavailable default here too.
+	case ns == namespacesBlocked && landlock.Available():
 		wantFS = enforce.Degraded
 	}
 	if states[enforce.LayerFilesystem] != wantFS {
