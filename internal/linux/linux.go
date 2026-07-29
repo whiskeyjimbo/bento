@@ -591,10 +591,13 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.count++
-	// Key both sets on JoinHostPort so an IPv6 host:port dedupes correctly. A
-	// destination lands in at most one of them: the guard's refusal replaces the gate's
-	// admission rather than following it, which is what keeps the admitted list from
-	// claiming a host that never got past the guard.
+	// Key both sets on JoinHostPort so an IPv6 host:port dedupes correctly. Each
+	// CONNECT lands in at most one of them - the guard's refusal replaces the gate's
+	// admission rather than following it, which keeps the admitted list from claiming a
+	// host that never got past the guard - but a destination can appear in both across
+	// connections, when the name resolved public on one and private on another. That is
+	// the rebinding case the guard exists for, so both lists are reported as they are
+	// rather than one being suppressed.
 	switch d {
 	case proxy.AdmittedByGate:
 		if c.admitted == nil {

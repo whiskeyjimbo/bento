@@ -139,8 +139,10 @@ type Result struct {
 	// GateAdmitted lists the destinations a NetworkGate admitted beyond the
 	// manifest, deduped and sorted. A host appears once the gate approved it, even
 	// if the subsequent dial then failed - EXCEPT a dial the upstream guard blocked
-	// (a gate-approved host resolving to a non-public address): that is reported in
-	// GuardBlocked instead, since it was never admitted past the guard. Empty means no
+	// (a gate-approved host resolving to a non-public address): that connection is
+	// reported in GuardBlocked, since it was never admitted past the guard - so a
+	// destination that resolved public on one connection and private on another appears
+	// in both lists, which is the honest account of it. Empty means no
 	// destination was admitted beyond the manifest, which is also what a run with no
 	// gate at all reports - it is not evidence a gate was present, only that nothing
 	// went through one. Together with the count it keeps the run honest about egress it
