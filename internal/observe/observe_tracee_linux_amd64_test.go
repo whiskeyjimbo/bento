@@ -11,6 +11,9 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // The tracee half of this file's tests: a re-exec of the test binary that issues raw
@@ -24,6 +27,8 @@ import (
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
 //	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
+//	execve     spawns via execve(2), the path the exec-block filter denies.
+//	execveat   spawns via execveat(2), the path it permits by construction.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -87,12 +92,47 @@ func TestObserveTraceeHelper(t *testing.T) {
 			}
 			<-ch
 		}
+	case "execve":
+		// The ordinary spawn, which must still be detected. Exec is execve(2).
+		if err := syscall.Exec(traceeExecTarget, []string{traceeExecTarget}, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
+			os.Exit(7)
+		}
+	case "execveat":
+		// Spawns via execveat(2) rather than execve(2). The image is replaced, so
+		// nothing below this runs.
+		argv, err := syscall.SlicePtrFromStrings([]string{traceeExecTarget})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_ARGV_ERR", err)
+			os.Exit(7)
+		}
+		envp, err := syscall.SlicePtrFromStrings([]string{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_ENVP_ERR", err)
+			os.Exit(7)
+		}
+		path, err := syscall.BytePtrFromString(traceeExecTarget)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(7)
+		}
+		// ^uintptr(99) is AT_FDCWD (-100) as an unsigned word; the constant itself does
+		// not convert, the same spelling lostpaths uses for its bad dirfd.
+		_, _, errno := syscall.Syscall6(unix.SYS_EXECVEAT, ^uintptr(99),
+			uintptr(unsafe.Pointer(path)), uintptr(unsafe.Pointer(&argv[0])),
+			uintptr(unsafe.Pointer(&envp[0])), 0, 0)
+		fmt.Fprintln(os.Stderr, "TRACEE_EXECVEAT_ERR", errno)
+		os.Exit(7)
 	default:
 		fmt.Fprintln(os.Stderr, "TRACEE_BAD_MODE", mode)
 		os.Exit(5)
 	}
 	os.Exit(0)
 }
+
+// traceeExecTarget is what the exec modes spawn: absolute, so no PATH search
+// stats it first, and present on every host this package builds for.
+const traceeExecTarget = "/bin/true"
 
 func threadFile(dir string, i int) string {
 	return filepath.Join(dir, fmt.Sprintf("thread-%d", i))
@@ -212,5 +252,34 @@ func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
 	res := traceHelper(t, "sigreturn", t.TempDir(), signals)
 	if res.Dropped > observerSlack {
 		t.Errorf("Dropped = %d after %d handled signals and no file access, want at most %d; ~%d is the signature of rt_sigreturn's restored orig_rax of -1 matching the x32 tag test", res.Dropped, signals, observerSlack, signals)
+	}
+}
+
+// Execed is what grants ExecAll, and ExecAll makes the launcher install no exec-block
+// filter at all - so which spawn syscall sets it decides whether a run keeps its
+// exec-block filter or loses it entirely.
+//
+// execve must set it and execveat must not. The filter denies execve and permits
+// execveat by construction (the launcher's own transition into the sandbox is an
+// execveat), so an execveat-spawning target behaves the same under exec: none as under
+// exec: all - reporting it would widen the manifest to nothing but the user's cost.
+//
+// The two are told apart only at the syscall ENTRY stop: after a successful execveat the
+// kernel reports the EXIT stop as execve's own number, so a decoder that tests at either
+// stop counts every execveat as an execve. Both directions are pinned because a fix that
+// stopped detecting exec altogether would satisfy the execveat half on its own.
+func TestTraceCountsExecveButNotExecveat(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{"execve", true},
+		{"execveat", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			if got := traceHelper(t, tc.mode, t.TempDir(), 0).Execed; got != tc.want {
+				t.Errorf("Execed = %v after a %s spawn, want %v", got, tc.mode, tc.want)
+			}
+		})
 	}
 }

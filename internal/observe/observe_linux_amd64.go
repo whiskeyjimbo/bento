@@ -566,10 +566,20 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 			drop()
 		}
 	case sysExecve:
-		// Only execve is counted: the enforcement exec-block filter blocks execve
-		// but allows execveat, so a program that spawns via execveat runs fine under
-		// exec: none and does not need exec: all.
-		res.Execed = true
+		// Tested at the ENTRY stop because that is the only stop where the number still
+		// tells execve from execveat: after a successful execveat the kernel reports the
+		// EXIT stop as 59, so an ungated test here counts every execveat as an execve.
+		//
+		// Only execve is counted, and the reason is not that execveat is harmless. The
+		// exec-block filter denies execve and permits execveat by construction - the
+		// launcher's own transition into the sandbox is an execveat - so a target that
+		// spawns that way runs identically under exec: none and exec: all, and reporting
+		// it buys the user nothing. What it costs is the point: Execed grants ExecAll,
+		// and on ExecAll the launcher installs no exec-block filter at all, so a single
+		// execveat would turn into blanket execve permission for the whole run.
+		if atSyscallEntry(&regs) {
+			res.Execed = true
+		}
 	default:
 		inspectMutating(pid, &regs, record, drop)
 		inspectExistence(pid, &regs, record, drop)
