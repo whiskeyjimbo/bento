@@ -465,6 +465,11 @@ func reapedPid(t *testing.T) int {
 // its syscall stop and the observer's read of it used to leave behind. Both reads that can
 // lose that race now resolve it (see deadThreadLostNothing), so an exact assertion is what
 // catches the two bugs above.
+//
+// One phantom is still counted by construction: a thread that dies at its first-ever
+// syscall stop has no parity yet, and unknown parity counts rather than suppresses. A Go
+// runtime thread lives well past its first stop before being retired, and 400 runs under
+// load produced none - but a single unexplained drop here is that, not a counting bug.
 func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 	const lost = 500
 	res := traceHelper(t, "lostpaths", t.TempDir(), lost)

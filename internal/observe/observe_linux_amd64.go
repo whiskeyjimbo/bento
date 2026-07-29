@@ -212,7 +212,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// rt_sigreturn landing between the two, say - cannot be mistaken for it.
 	held := map[string]heldPath{}
 	// The op of each pid's last syscall stop that was read successfully - the parity a
-	// failed read has no op of its own to supply. See lastStopWasExit.
+	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
 	var res Result
 	record := func(path string, write bool) {
@@ -417,6 +417,13 @@ func deadThreadLostNothing(op byte, held map[string]heldPath, pid int) bool {
 // child's first stop, a stop after a failed read, the initial exec stop's NONE, a seccomp
 // stop - carries no parity and yields NONE, which deadThreadLostNothing counts. Inferring
 // where nothing was observed is what would turn this into a silent suppressor.
+//
+// One stop stream is spliced rather than alternating: a non-leader thread that execve's
+// adopts the leader's pid, and the old tid disappears with no exit notification, so its
+// parity is stranded for the trace and the execve exit stop arrives under the leader's pid
+// carrying the leader's. That errs toward counting either way - a stale ENTRY infers an
+// exit stop, whose only decode is a success filter execve never registered - and the
+// stranded entry is one map slot per execing thread.
 //
 // A wrong answer costs at most one drop: it is consulted only where the thread is already
 // dead, so the pid is reaped and its parity forgotten immediately after.
