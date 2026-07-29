@@ -58,8 +58,7 @@ func TestBridgeLivenessReport(t *testing.T) {
 // stopped, which the liveness report exists to correct - so a failure that has
 // persisted past the retry budget must reach the pipe even though the loop lives on.
 func TestServeBridgeReportsAPersistentAcceptFailure(t *testing.T) {
-	restore := shortenAcceptBudget(t)
-	defer restore()
+	shortenAcceptBudget(t)
 
 	r, w := livenessPipe(t)
 	l := &failingListener{fail: acceptFailuresBeforeDeath + 2}
@@ -97,11 +96,11 @@ func (l *failingListener) Accept() (net.Conn, error) {
 func (l *failingListener) Close() error   { return nil }
 func (l *failingListener) Addr() net.Addr { return &net.TCPAddr{} }
 
-func shortenAcceptBudget(t *testing.T) func() {
+func shortenAcceptBudget(t *testing.T) {
 	t.Helper()
 	oldCount, oldDelay := acceptFailuresBeforeDeath, acceptRetryDelay
 	acceptFailuresBeforeDeath, acceptRetryDelay = 3, time.Millisecond
-	return func() { acceptFailuresBeforeDeath, acceptRetryDelay = oldCount, oldDelay }
+	t.Cleanup(func() { acceptFailuresBeforeDeath, acceptRetryDelay = oldCount, oldDelay })
 }
 
 func livenessPipe(t *testing.T) (r, w *os.File) {

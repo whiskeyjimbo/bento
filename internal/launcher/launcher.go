@@ -100,6 +100,13 @@ func Run(cfg Config) (int, error) {
 	if cfg.ObserveFD > 0 && cfg.AppliedFD > 0 {
 		return 0, fmt.Errorf("launcher: cannot both profile and report applied layers: descriptors %d and %d", cfg.ObserveFD, cfg.AppliedFD)
 	}
+	// The bridge's liveness pipe is a descriptor from the same launch invocation, and
+	// startBridge closes its copy once the bridge has it. Pointed at the report
+	// descriptor it would close that instead, which surfaces later as an unwritable
+	// report rather than as the wiring mistake it is.
+	if cfg.BridgeLivenessFD > 0 && (cfg.BridgeLivenessFD == cfg.ObserveFD || cfg.BridgeLivenessFD == cfg.AppliedFD) {
+		return 0, fmt.Errorf("launcher: the bridge liveness descriptor %d is also the report descriptor", cfg.BridgeLivenessFD)
+	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without
@@ -751,6 +758,11 @@ const (
 // time that a burst of EMFILE under load is ridden out rather than reported, while a
 // wedged listener is surfaced within seconds rather than never. A var so a test does
 // not have to spin for that long.
+//
+// Counting CONSECUTIVE failures leaves a deliberate gap: a listener that fails in long
+// bursts but accepts occasionally serves almost no egress and never reports itself.
+// The alternative, a failure rate over a window, would report a run that merely had a
+// bad minute, and this channel is only worth having if it is believed when it fires.
 var acceptFailuresBeforeDeath = 50
 
 // bridgeLiveness is the bridge's end of the host's liveness pipe. A zero value (no

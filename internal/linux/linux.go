@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -220,14 +221,30 @@ func noteDeadListener(r *enforce.Report, err error) {
 // exit and would otherwise make EOF look like a failure on every run. A read error is
 // treated as no report: the pipe is the host's own, and the alternative is claiming a
 // degraded network layer on the strength of a broken channel.
+//
+// Deadlined, because the sandbox is not always dead when the command this run waited
+// on is. Under the limits wrapper the process reaped is systemd-run, and a cancelled
+// run can leave bwrap orphaned with the bridge still holding the write end - an
+// undeadlined read would then block until a runaway target exited, turning a cancelled
+// run into a hang. On every ordinary path the pid namespace has already collapsed and
+// EOF is immediate, so the bound is never approached.
 func bridgeReportedDeath(r *os.File) bool {
 	if r == nil {
+		return false
+	}
+	if err := r.SetReadDeadline(time.Now().Add(bridgeLivenessReadTimeout)); err != nil {
 		return false
 	}
 	var b [1]byte
 	n, _ := r.Read(b[:])
 	return n > 0
 }
+
+// bridgeLivenessReadTimeout bounds the wait for the bridge's liveness pipe to close.
+// It is a backstop against a sandbox that outlived the process this run waited on, not
+// a pacing knob: the pipe is already closed by the time it is read on every path where
+// the sandbox actually exited.
+var bridgeLivenessReadTimeout = 2 * time.Second
 
 // noteDeadBridge records an in-sandbox egress bridge that stopped serving mid-run.
 // Nothing else can report this: on the exec-block path the launcher has been replaced
@@ -238,7 +255,11 @@ func bridgeReportedDeath(r *os.File) bool {
 // report cannot overwrite it.
 //
 // A bridge killed outright leaves no byte and is not covered; only a bridge that
-// noticed its own listener had stopped serving reports itself. It may also have
+// noticed its own listener had stopped serving reports itself. The reachable case is
+// a memory-limited run: wrapWithLimits puts MemoryMax on the whole scope, so the
+// bridge shares the target's cap and an OOM kill can pick it. Nothing the bridge can
+// do about a SIGKILL, and reading death from the pipe closing instead would misreport
+// every ordinary run, so this stays a known hole rather than a trade. It may also have
 // recovered afterwards, which is why this says egress stopped rather than that it
 // stayed down. Set last, so where a dead host-side listener also degraded the layer
 // this is the reason the operator sees - it names the half that stopped first.

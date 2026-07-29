@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -41,6 +42,39 @@ func TestBridgeReportedDeath(t *testing.T) {
 			t.Fatal("want no report with no liveness pipe, got one")
 		}
 	})
+
+	// A sandbox can outlive the process the run waited on: under the limits wrapper it
+	// is systemd-run that gets reaped, and a cancelled run can leave bwrap orphaned with
+	// the bridge still holding the write end. An undeadlined read would then hang the
+	// caller until a runaway target exited.
+	t.Run("gives up on a write end that never closes", func(t *testing.T) {
+		old := bridgeLivenessReadTimeout
+		bridgeLivenessReadTimeout = 50 * time.Millisecond
+		defer func() { bridgeLivenessReadTimeout = old }()
+		r, w := livenessPipe(t)
+		defer w.Close() // the writer lives on, so the read never sees EOF
+		done := make(chan bool, 1)
+		go func() { done <- bridgeReportedDeath(r) }()
+		select {
+		case died := <-done:
+			if died {
+				t.Fatal("a timed-out read reported the bridge dead")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("bridgeReportedDeath never returned; the read is unbounded")
+		}
+	})
+}
+
+// reasonFor returns the recorded reason for a layer, by lookup rather than by index
+// into Report.Layers.
+func reasonFor(r enforce.Report, l enforce.Layer) string {
+	for _, ls := range r.Layers {
+		if ls.Layer == l {
+			return ls.Reason
+		}
+	}
+	return ""
 }
 
 // A bridge that stopped serving must reach the run report: on the exec-block path the
@@ -53,7 +87,7 @@ func TestNoteDeadBridge(t *testing.T) {
 	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
 		t.Fatalf("want the network layer degraded, got %v", got)
 	}
-	if reason := r.Layers[0].Reason; !strings.Contains(reason, "bridge") {
+	if reason := reasonFor(r, enforce.LayerNetwork); !strings.Contains(reason, "bridge") {
 		t.Errorf("the reason does not name the bridge: %q", reason)
 	}
 
