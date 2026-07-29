@@ -101,13 +101,17 @@ type aliasScan struct {
 // the host's mount table at O(mounts).
 //
 // Deliberate residuals, documented in the threat model: a reflink shares content
-// without sharing an inode, so identity comparison never sees one, and the whole scan
-// is a snapshot - a host actor can link after it runs. Both are accepted rather than
-// engineered against, because the actor here already holds the user's privileges and
-// could read the credential directly; the value delivered is naming where an alias is,
-// not blocking someone who needs no alias.
+// without sharing an inode, so identity comparison never sees one; the whole scan is a
+// snapshot - a host actor can link after it runs; and a directory the walk may traverse
+// but not list (mode --x) hides an alias the run could still open by a name it already
+// knows. All three are accepted rather than engineered against, because the actor here
+// already holds the user's privileges and could read the credential directly; the value
+// delivered is naming where an alias is, not blocking someone who needs no alias.
 func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, error) {
-	creds, linked := credentialFiles(sb, literalOptIns)
+	creds, linked, err := credentialFiles(sb, literalOptIns)
+	if err != nil {
+		return aliasScan{}, err
+	}
 	if len(creds) == 0 {
 		return aliasScan{}, nil
 	}
@@ -138,16 +142,17 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	// identity is by definition wanted. The shield covers that path; only a second name
 	// is a leak.
 	var out []credentialAlias
-	collect := func(root string) {
-		for _, a := range sb.aliasesUnder(root, want) {
-			if !shielded[a.Path] {
-				out = append(out, a)
-			}
-		}
-	}
 	if linked {
 		for _, t := range trees {
-			collect(t)
+			aliases, err := sb.aliasesUnder(t, want)
+			if err != nil {
+				return aliasScan{}, err
+			}
+			for _, a := range aliases {
+				if !shielded[a.Path] {
+					out = append(out, a)
+				}
+			}
 		}
 	}
 
@@ -428,9 +433,9 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 // shield never engages, so there is no shield for an alias to defeat. literalOptIns are
 // the LITERAL deny-list paths explicitShieldOptIns matched, not its resolved second
 // return: this resolves them itself, alongside the anchors it resolves anyway.
-func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool) {
+func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool, err error) {
 	if len(sb.homes) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
 	// to bind them: on a host where a store sits behind a symlink an unresolved path
@@ -470,26 +475,37 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 		// A symlinked credential's target is not chased. A store that deduplicates
 		// identical files by hardlinking them (Nix) gives every linked dotfile an extra
 		// link by design, and following the link would make that the normal case.
-		for _, f := range sb.fileIDs(path) {
+		ids, err := sb.fileIDs(path)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, f := range ids {
 			files = append(files, f)
 			linked = linked || f.links > 1
 		}
 	}
-	return files, linked
+	return files, linked, nil
 }
 
 // hostFileIDs returns the identity of every regular file at or under path. A file path
 // yields itself; a directory shield (~/.ssh, ~/.aws) yields the credential files inside
 // it. It walks without following symlinks, so a symlink planted in a credential
-// directory cannot redirect the walk or loop it. Best-effort: an unreadable subtree is
-// skipped rather than fatal, and the gate it feeds is conservative in the safe
-// direction only for what it did see.
-func hostFileIDs(path string) []identifiedFile {
+// directory cannot redirect the walk or loop it.
+//
+// A path that is not there is skipped: the anchor set names every credential store bento
+// models, and no host has more than a handful of them, so absence is the normal answer.
+// Anything else is fatal. These are the credential anchors themselves, which the invoking
+// user owns and can read - an EACCES here is already anomalous, and swallowing it would
+// under-count the links this file's caller gates the whole granted-tree walk on, turning
+// "could not look" into a proof that no hardlink exists.
+func hostFileIDs(path string) ([]identifiedFile, error) {
 	var out []identifiedFile
-	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			//nolint:nilerr // an unreadable subtree is skipped, not fatal: see above.
-			return nil
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("reading %s to identify the credentials behind it: %w", p, err)
 		}
 		// A credential store kept in git (~/.password-store is one by design) holds its
 		// history as content-addressed blobs, and `git clone --local` hardlinks every
@@ -507,8 +523,10 @@ func hostFileIDs(path string) []identifiedFile {
 			out = append(out, f)
 		}
 		return nil
-	})
-	return out
+	}); err != nil {
+		return nil, fmt.Errorf("linux: %w", err)
+	}
+	return out, nil
 }
 
 // hostAliasesUnder returns the regular files under root whose content identity is one
@@ -524,16 +542,31 @@ func hostFileIDs(path string) []identifiedFile {
 // prune is a statement about a subtree's contents, so it only applies below the root;
 // a wanted-device filesystem mounted under a pruned directory is reached through the
 // mountpoint scan instead.
-func hostAliasesUnder(root string, want map[fileID]string) []credentialAlias {
+func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, error) {
 	devs := map[uint64]bool{}
 	for id := range want {
 		devs[id.dev] = true
 	}
 	var out []credentialAlias
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			//nolint:nilerr // an unreadable subtree is skipped, not fatal: see above.
-			return nil
+			// A subtree this cannot read is one the RUN cannot read either, so there is
+			// nothing behind it to leak past a shield. The scan walks as the invoking uid
+			// before launch, and the sandboxed process is that same uid at that same path
+			// under the same parent modes - the walk roots ARE the trees bwrap binds. So
+			// permission is a proof, not a blind spot, which is what separates this from
+			// the mount-table case where a short list silently loses bind detection. Any
+			// other error is a genuine could-not-look and is fatal: reporting clean
+			// because the walk broke is the failure this refuses.
+			//
+			// Skipping only on the wanted-device check the prune below uses was tried and
+			// does not discriminate - /etc/ssl/private is unreadable and on the same
+			// device as a home on an ordinary host, so it would refuse every run whose
+			// exposed trees include /etc.
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+				return nil
+			}
+			return fmt.Errorf("reading %s to scan for credential aliases: %w", p, err)
 		}
 		if d.IsDir() {
 			if f, ok := identify(p, d); ok && !devs[f.id.dev] && p != root {
@@ -552,8 +585,10 @@ func hostAliasesUnder(root string, want map[fileID]string) []credentialAlias {
 			out = append(out, credentialAlias{Path: p, Credential: cred})
 		}
 		return nil
-	})
-	return out
+	}); err != nil {
+		return nil, fmt.Errorf("linux: %w", err)
+	}
+	return out, nil
 }
 
 func identify(path string, d fs.DirEntry) (identifiedFile, bool) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,19 +26,39 @@ import (
 // maps a granted tree to the paths under it carrying a wanted content identity.
 func aliasSandbox(creds map[string][]identifiedFile, matches map[string][]identifiedFile) sandbox {
 	sb := testSandbox()
-	sb.fileIDs = func(root string) []identifiedFile { return creds[root] }
-	sb.aliasesUnder = func(root string, want map[fileID]string) []credentialAlias {
+	sb.fileIDs = func(root string) ([]identifiedFile, error) { return creds[root], nil }
+	sb.aliasesUnder = func(root string, want map[fileID]string) ([]credentialAlias, error) {
 		var out []credentialAlias
 		for _, f := range matches[root] {
 			if cred, ok := want[f.id]; ok {
 				out = append(out, credentialAlias{Path: f.path, Credential: cred})
 			}
 		}
-		return out
+		return out, nil
 	}
 	sb.mountpoints = func([]uint64) ([]mountPoint, error) { return nil, nil }
 	sb.statID = func(string) (fileID, bool) { return fileID{}, false }
 	return sb
+}
+
+// mustFileIDs and mustAliasesUnder drive the real host walks in the tests that exercise
+// them against a temp tree, where an error is the test's own setup failing.
+func mustFileIDs(t *testing.T, path string) []identifiedFile {
+	t.Helper()
+	ids, err := hostFileIDs(path)
+	if err != nil {
+		t.Fatalf("hostFileIDs(%q): %v", path, err)
+	}
+	return ids
+}
+
+func mustAliasesUnder(t *testing.T, root string, want map[fileID]string) []credentialAlias {
+	t.Helper()
+	got, err := hostAliasesUnder(root, want)
+	if err != nil {
+		t.Fatalf("hostAliasesUnder(%q): %v", root, err)
+	}
+	return got
 }
 
 // scanAliases runs the scan and fails the test on an error, so the cases that only care
@@ -82,9 +103,9 @@ func TestAliasedCredentialsSkipsWalkWhenNoCredentialIsLinked(t *testing.T) {
 	}
 	sb := aliasSandbox(creds, nil)
 	walked := false
-	sb.aliasesUnder = func(string, map[fileID]string) []credentialAlias {
+	sb.aliasesUnder = func(string, map[fileID]string) ([]credentialAlias, error) {
 		walked = true
-		return nil
+		return nil, nil
 	}
 	if got := scanAliases(t, sb, []string{"/home/u/project"}, nil); got != nil {
 		t.Errorf("aliasedCredentials = %v, want none when no credential carries an extra link", got)
@@ -288,12 +309,12 @@ func TestHostAliasesUnderFindsHardlinkNotCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids := hostFileIDs(cred)
+	ids := mustFileIDs(t, cred)
 	if len(ids) != 1 || ids[0].links != 2 {
 		t.Fatalf("hostFileIDs(%q) = %+v, want one file with 2 links", cred, ids)
 	}
 	want := map[fileID]string{ids[0].id: cred}
-	got := hostAliasesUnder(tree, want)
+	got := mustAliasesUnder(t, tree, want)
 	if len(got) != 1 || got[0].Path != alias || got[0].Credential != cred {
 		t.Errorf("hostAliasesUnder = %+v, want just the hardlink %q (a byte-identical copy has its own inode)", got, alias)
 	}
@@ -344,7 +365,10 @@ func TestCredentialFilesSkipsGitObjectStore(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked := credentialFiles(sb, nil)
+	files, linked, credErr := credentialFiles(sb, nil)
+	if credErr != nil {
+		t.Fatal(credErr)
+	}
 	if linked {
 		t.Error("a hardlinked git object must not open the gate; only live credential files anchor it")
 	}
@@ -375,7 +399,7 @@ func TestHostAliasesUnderCrossesADeviceBoundaryAtTheRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(alias) })
 
-	ids := hostFileIDs(cred)
+	ids := mustFileIDs(t, cred)
 	if len(ids) != 1 {
 		t.Fatalf("hostFileIDs(%q) = %+v, want one file", cred, ids)
 	}
@@ -384,7 +408,7 @@ func TestHostAliasesUnderCrossesADeviceBoundaryAtTheRoot(t *testing.T) {
 	}
 
 	want := map[fileID]string{ids[0].id: cred}
-	got := hostAliasesUnder("/dev", want)
+	got := mustAliasesUnder(t, "/dev", want)
 	if !slices.ContainsFunc(got, func(a credentialAlias) bool { return a.Path == alias }) {
 		t.Errorf("walking /dev must reach the alias at %q on the /dev/shm device; got %+v", alias, got)
 	}
@@ -438,7 +462,10 @@ func TestCredentialFilesDoesNotAnchorOnBulkStores(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked := credentialFiles(sb, nil)
+	files, linked, credErr := credentialFiles(sb, nil)
+	if credErr != nil {
+		t.Fatal(credErr)
+	}
 	if linked {
 		t.Error("hardlinked maildir duplicates must not open the nlink gate")
 	}
@@ -628,7 +655,10 @@ func TestCredentialFilesReachesAnchorsNestedInABulkStore(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked := credentialFiles(sb, nil)
+	files, linked, credErr := credentialFiles(sb, nil)
+	if credErr != nil {
+		t.Fatal(credErr)
+	}
 	got := make([]string, 0, len(files))
 	for _, f := range files {
 		got = append(got, f.path)
@@ -752,7 +782,10 @@ func TestCredentialFilesAnchorsRelocatedStores(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked := credentialFiles(sb, nil)
+	files, linked, credErr := credentialFiles(sb, nil)
+	if credErr != nil {
+		t.Fatal(credErr)
+	}
 	got := make([]string, 0, len(files))
 	for _, f := range files {
 		got = append(got, f.path)
@@ -802,7 +835,10 @@ func TestEveryDeclaredAnchorIsReached(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, _ := credentialFiles(sb, nil)
+	files, _, credErr := credentialFiles(sb, nil)
+	if credErr != nil {
+		t.Fatal(credErr)
+	}
 	got := make(map[string]bool, len(files))
 	for _, f := range files {
 		got[f.path] = true
@@ -1074,5 +1110,58 @@ func TestAliasedCredentialsRefusesAnUnreadableMountTable(t *testing.T) {
 	_, err := aliasedCredentials(sb, []string{"/home/u/project"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "mountinfo truncated") {
 		t.Fatalf("an unreadable mount table must refuse the run, naming the cause; got %v", err)
+	}
+}
+
+// Neither walk may report clean because it broke. The link counts fileIDs returns gate
+// the granted-tree walk outright, so a truncated credential enumeration reads as proof
+// that no hardlink exists; a granted tree the walk could not finish reading is the same
+// shape one level down.
+func TestAliasedCredentialsRefusesAWalkThatFailed(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/home/u/.ssh": {{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 2}},
+	}
+	t.Run("credential anchors", func(t *testing.T) {
+		sb := aliasSandbox(creds, nil)
+		sb.fileIDs = func(string) ([]identifiedFile, error) { return nil, errors.New("anchor walk broke") }
+		if _, err := aliasedCredentials(sb, []string{"/home/u/project"}, nil); err == nil ||
+			!strings.Contains(err.Error(), "anchor walk broke") {
+			t.Fatalf("a failed credential walk must refuse the run, naming the cause; got %v", err)
+		}
+	})
+	t.Run("granted tree", func(t *testing.T) {
+		sb := aliasSandbox(creds, nil)
+		sb.aliasesUnder = func(string, map[fileID]string) ([]credentialAlias, error) {
+			return nil, errors.New("tree walk broke")
+		}
+		if _, err := aliasedCredentials(sb, []string{"/home/u/project"}, nil); err == nil ||
+			!strings.Contains(err.Error(), "tree walk broke") {
+			t.Fatalf("a failed granted-tree walk must refuse the run, naming the cause; got %v", err)
+		}
+	})
+}
+
+// The permission axis, which is what makes the two walks differ. Under a credential
+// anchor the invoking user owns, an unreadable subtree is anomalous and under-counts the
+// links the whole scan gates on, so it refuses. Under a granted tree it is routine - a
+// run's exposed trees include /etc, whose ssl/private is unreadable on any ordinary host
+// - and it is provably harmless: the sandboxed process is the same uid at the same path,
+// so what the scan cannot read the run cannot read either.
+func TestWalksDivergeOnAnUnreadableSubtree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root is not refused by directory permissions, so there is no EACCES to raise")
+	}
+	root := t.TempDir()
+	closed := filepath.Join(root, "closed")
+	if err := os.Mkdir(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+
+	if _, err := hostFileIDs(root); err == nil || !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("hostFileIDs over an unreadable credential subtree = %v, want a permission error", err)
+	}
+	if _, err := hostAliasesUnder(root, map[fileID]string{{dev: 1, ino: 1}: "/home/u/.ssh/id_rsa"}); err != nil {
+		t.Errorf("hostAliasesUnder over an unreadable granted subtree = %v, want it skipped", err)
 	}
 }

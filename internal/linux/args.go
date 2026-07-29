@@ -104,13 +104,17 @@ type sandbox struct {
 	// fileIDs returns the content identity and link count of every regular file at or
 	// under a host path: the file itself for a file shield, the credential files inside
 	// it for a directory shield. Injected alongside the other stat seams so the alias
-	// scan is testable without a real filesystem.
-	fileIDs func(string) []identifiedFile
+	// scan is testable without a real filesystem. Like mountpoints below it errors
+	// rather than returning a short list, because the link counts it reports are what
+	// gate the granted-tree walk: an under-count reads as proof that no hardlink exists.
+	fileIDs func(string) ([]identifiedFile, error)
 	// aliasesUnder returns the files under a granted tree whose content identity is one
 	// of want's, keyed to the credential each aliases. Injected beside fileIDs; the two
 	// are separate seams because the credential trees are small enough to enumerate
-	// whole while a granted tree must be filtered as it is walked.
-	aliasesUnder func(root string, want map[fileID]string) []credentialAlias
+	// whole while a granted tree must be filtered as it is walked. It errors for a
+	// subtree it could not read that could hold a hardlink, so an unreadable tree does
+	// not scan as clean.
+	aliasesUnder func(root string, want map[fileID]string) ([]credentialAlias, error)
 	// mountpoints returns where the host's filesystems are attached, with the identity
 	// of what sits at each. A bind exposes a credential's inode at a second path without
 	// adding a directory entry to it, so no link count reveals one and the mount table is

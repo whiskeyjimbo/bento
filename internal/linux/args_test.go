@@ -68,8 +68,8 @@ func testSandbox(existing ...string) sandbox {
 		},
 		// The fake filesystem has no aliased credentials by default; the alias-scan
 		// tests override these seams to plant one.
-		fileIDs:      func(string) []identifiedFile { return nil },
-		aliasesUnder: func(string, map[fileID]string) []credentialAlias { return nil },
+		fileIDs:      func(string) ([]identifiedFile, error) { return nil, nil },
+		aliasesUnder: func(string, map[fileID]string) ([]credentialAlias, error) { return nil, nil },
 		mountpoints:  func([]uint64) ([]mountPoint, error) { return nil, nil },
 		statID:       func(string) (fileID, bool) { return fileID{}, false },
 	}
