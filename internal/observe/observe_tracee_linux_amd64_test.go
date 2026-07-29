@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -27,6 +28,8 @@ import (
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
 //	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
+//	lostrename N renames with BOTH pathnames unmapped, from one call site.
+//	badhow     openat2 with a readable pathname but an unmapped open_how.
 //	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
 //	execve     spawns via execve(2), the path the exec-block filter denies.
 //	execveat   spawns via execveat(2), the path it permits by construction.
@@ -93,6 +96,24 @@ func TestObserveTraceeHelper(t *testing.T) {
 			}
 			<-ch
 		}
+	case "lostrename":
+		// Both pathnames unmapped, from one call site. rename needs write on the source
+		// AND the destination directory, so one call loses two distinct accesses - and a
+		// drop key that does not distinguish the two arguments reports it as one.
+		for range n {
+			_, _, _ = syscall.Syscall(syscall.SYS_RENAME, 0x1, 0x2, 0)
+		}
+	case "badhow":
+		// A real pathname the decoder can read, with an open_how pointer that is not
+		// mapped - so the kernel refuses the call with EFAULT and opens nothing, while a
+		// decoder guessing the resolve flags would still record the path.
+		path, err := syscall.BytePtrFromString(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), badHowName))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(9)
+		}
+		_, _, _ = syscall.Syscall6(sysOpenat2, ^uintptr(99),
+			uintptr(unsafe.Pointer(path)), 0x1, 24, 0, 0)
 	case "plantpath":
 		plantPathTracee(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), n)
 	case "execve":
@@ -132,6 +153,10 @@ func TestObserveTraceeHelper(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// badHowName is the pathname the badhow mode passes to openat2. Distinctive, so its
+// presence in a Result can only have come from that one call.
+const badHowName = "openat2-how-unreadable"
 
 // The two names the plantpath mode swaps between, equal in length so a write lands
 // wholly on one or the other and cannot splice a third path out of the two.
@@ -354,8 +379,14 @@ func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 		{"execveat", false},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			if got := traceHelper(t, tc.mode, t.TempDir(), 0).Execed; got != tc.want {
-				t.Errorf("Execed = %v after a %s spawn, want %v", got, tc.mode, tc.want)
+			res := traceHelper(t, tc.mode, t.TempDir(), 0)
+			if res.Execed != tc.want {
+				t.Errorf("Execed = %v after a %s spawn, want %v", res.Execed, tc.mode, tc.want)
+			}
+			// The spawned binary is a file the sandbox must be able to read, and this
+			// path is absolute, so no PATH search stats it into the record incidentally.
+			if !slices.Contains(res.Accesses, Access{Path: traceeExecTarget}) {
+				t.Errorf("%s spawned %s and it is absent from the recorded accesses: %v", tc.mode, traceeExecTarget, res.Accesses)
 			}
 		})
 	}
@@ -396,5 +427,18 @@ func TestTraceDoesNotRecordAPathPlantedBySibling(t *testing.T) {
 	}
 	if !sawReal {
 		t.Errorf("the real path was never recorded, so the decoy's absence proves nothing; recorded: %v", res.Accesses)
+	}
+}
+
+// rename needs write access to the source AND the destination directory, so one failed
+// call loses two distinct accesses. The drop counter is keyed per entry/exit pair, and a
+// key that does not also distinguish the two pathname arguments reported them as one - an
+// undercount on the channel whose whole job is to say how much the manifest is missing.
+func TestTraceCountsBothLostPathsOfARename(t *testing.T) {
+	const calls = 200
+	const lost = calls * 2
+	res := traceHelper(t, "lostrename", t.TempDir(), calls)
+	if res.Dropped < lost || res.Dropped > lost+observerSlack {
+		t.Errorf("Dropped = %d after %d renames losing both pathnames each, want %d..%d; ~%d is the signature of one drop key serving both arguments", res.Dropped, calls, lost, lost+observerSlack, calls)
 	}
 }

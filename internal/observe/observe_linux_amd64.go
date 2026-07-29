@@ -72,6 +72,10 @@ const (
 	sysOpenat2 = 437
 	sysCreat   = 85
 	sysExecve  = 59
+	// sysExecveat is the dirfd-relative spawn. It does not set Execed (see the
+	// sysExecve case), but the binary it names is still a file the run must be able
+	// to read, so its path is recorded like any other access.
+	sysExecveat = 322
 )
 
 // auditArchX8664 is the AUDIT_ARCH_ value the kernel reports for a syscall dispatched
@@ -437,6 +441,12 @@ func reapTracees(tracees map[int]bool) {
 	}
 }
 
+// dropSlots is how many pathname arguments one syscall can lose separately. rename, link
+// and their *at forms name a source AND a destination, so one call can lose two distinct
+// accesses; keying the counter on the call alone reported those two as one, which is the
+// undercount this channel exists to prevent. Two is the most any decoded syscall takes.
+const dropSlots = 2
+
 // dropOnce returns the drop counter for one syscall stop, and the release that ends its
 // deduplication. inspect runs on both the entry and the exit stop of the same syscall,
 // and every drop cause is deterministic across the pair - the tracee is frozen between
@@ -444,8 +454,8 @@ func reapTracees(tracees map[int]bool) {
 // report every lost access twice, and a count that is wrong by construction is worse than
 // none: it trains a reader to discount the warning.
 //
-// The key is the tracee plus the syscall's number and instruction pointer, which are
-// identical on entry and exit. They are NOT unique across calls: a libc call site issuing
+// The key is the tracee plus the syscall's number, instruction pointer and argument slot.
+// All but the slot are identical on entry and exit. They are NOT unique across calls: a libc call site issuing
 // the same syscall in a loop has the same Rip every iteration. So the dedup is scoped to
 // the pair it needs to span - inspect releases the key once the exit stop is decoded, and
 // the next iteration counts again. Held for the whole trace instead, a target whose
@@ -457,17 +467,23 @@ func reapTracees(tracees map[int]bool) {
 // syscall the kernel does not implement, whose real -ENOSYS makes both its stops read as
 // entries, and a tracee that dies mid-pair. Each collapses its repeats into one drop, and
 // the last cannot repeat at all - the process is gone.
-func dropOnce(inFlight map[string]bool, pid int, n *int) (count, release func(*syscall.PtraceRegs)) {
-	key := func(regs *syscall.PtraceRegs) string { return stopKey(pid, regs) }
-	count = func(regs *syscall.PtraceRegs) {
-		k := key(regs)
+func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs)) {
+	key := func(regs *syscall.PtraceRegs, slot int) string {
+		return fmt.Sprintf("%s\x00%d", stopKey(pid, regs), slot)
+	}
+	count = func(regs *syscall.PtraceRegs, slot int) {
+		k := key(regs, slot)
 		if inFlight[k] {
 			return
 		}
 		inFlight[k] = true
 		*n++
 	}
-	release = func(regs *syscall.PtraceRegs) { delete(inFlight, key(regs)) }
+	release = func(regs *syscall.PtraceRegs) {
+		for slot := range dropSlots {
+			delete(inFlight, key(regs, slot))
+		}
+	}
 	return count, release
 }
 
@@ -494,14 +510,14 @@ type heldPath struct {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
+func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
 		// access at all - a tracee killed between the stop and this read fails here on
 		// whatever it was running. Counted anyway: an uncounted lost access is the
 		// failure this channel exists to prevent, and the alternative is to guess.
-		countDrop(&regs)
+		countDrop(&regs, 0)
 		return
 	}
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
@@ -509,7 +525,8 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 	if !atSyscallEntry(&regs) {
 		defer releaseDrop(&regs)
 	}
-	drop := func() { countDrop(&regs) }
+	drop := func() { countDrop(&regs, 0) }
+	dropSlot := func(slot int) { countDrop(&regs, slot) }
 	// A negative orig_rax is the kernel saying this stop reports no syscall number, not a
 	// syscall this decoder failed to read - so it is skipped silently rather than dropped.
 	// It arrives from rt_sigreturn, whose exit stop reports the RESTORED pre-signal
@@ -558,28 +575,24 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 		// openat2(dirfd, path, struct open_how *how, size): flags and resolve are fields
 		// of *how, not registers. Increasingly used (Rust std, systemd tools), so a
 		// program using it must not profile as touching nothing.
+		// An unreadable open_how is a dropped observation, not a guess. The resolve
+		// flags decide whether the pathname is re-rooted at the dirfd, clamped, or
+		// rejected outright, so without them there is no path that can honestly be
+		// recorded - the old fallback anchored it at the dirfd and so named a file the
+		// kernel, which refused the call with EFAULT, never opened.
 		flags, resolve, ok := openHow(pid, uintptr(regs.Rdx))
 		path, pathOK := readString(pid, uintptr(regs.Rsi))
-		if !pathOK {
+		if !pathOK || !ok {
 			drop()
 			break
 		}
-		if anchored, rec := openat2Path(openat2Resolve(resolve, ok), path); rec {
+		if anchored, rec := openat2Path(resolve, path); rec {
 			anchoredPath, anchorOK := resolveAt(pid, int32(regs.Rdi), anchored)
 			if !anchorOK {
 				drop()
 				break
 			}
-			// An unreadable open_how leaves the open's intent unknown, and the narrow
-			// answer wins for the same reason openat2Resolve picks the conservative
-			// anchor: under-attribution fails the run closed and is fixed by adding a
-			// grant, over-attribution silently widens the manifest. The drop is what
-			// keeps that from being silent - the path is recorded, but as a read whose
-			// write bit was a guess.
-			if !ok {
-				drop()
-			}
-			record(anchoredPath, ok && flags&uint64(writeFlags) != 0)
+			record(anchoredPath, flags&uint64(writeFlags) != 0)
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
@@ -609,8 +622,11 @@ func inspect(pid int, record func(string, bool), countDrop, releaseDrop func(*sy
 		// and on ExecAll the launcher installs no exec-block filter at all, so a single
 		// execveat would turn into blanket execve permission for the whole run.
 		res.Execed = true
+		recordExecTarget(pid, atFdCwd, uintptr(regs.Rdi), record, drop)
+	case sysExecveat:
+		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), record, drop)
 	default:
-		inspectMutating(pid, &regs, record, drop)
+		inspectMutating(pid, &regs, record, dropSlot)
 		inspectExistence(pid, &regs, record, drop, held)
 	}
 }
@@ -674,8 +690,18 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 	// The *at forms take (dirfd, path, ...). AT_EMPTY_PATH with an empty pathname makes
 	// them operate on the descriptor itself, naming no path; record's empty-path skip
 	// covers that without a separate flag test.
-	case unix.SYS_NEWFSTATAT, unix.SYS_STATX, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2, unix.SYS_READLINKAT:
+	// statfs asks about the filesystem a path is on, the xattr readers about its
+	// attributes, and each answers ENOENT for a path the sandbox did not bind - so a run
+	// that only ever probes a path this way (df /data) profiled as not needing it.
+	case unix.SYS_STATFS, unix.SYS_GETXATTR, unix.SYS_LGETXATTR, unix.SYS_LISTXATTR, unix.SYS_LLISTXATTR:
+		dirfd, pathReg = atFdCwd, regs.Rdi
+	case unix.SYS_NEWFSTATAT, unix.SYS_STATX, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2, unix.SYS_READLINKAT,
+		unix.SYS_NAME_TO_HANDLE_AT:
 		dirfd, pathReg = int32(regs.Rdi), regs.Rsi
+	// inotify_add_watch(fd, path, mask) takes a watch descriptor, not a dirfd, so its
+	// pathname is anchored at the working directory like the non-at forms.
+	case unix.SYS_INOTIFY_ADD_WATCH:
+		dirfd, pathReg = atFdCwd, regs.Rsi
 	default:
 		return
 	}
@@ -722,23 +748,25 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 // amd64 arg registers are Rdi, Rsi, Rdx, R10, R8. Read at the syscall stop, so a
 // failed attempt is still recorded (matching the open cases) - the script's intent
 // is what the manifest must grant.
-func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func()) {
-	at := func(dirfd int32, pathReg uint64, write bool) {
+func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool), dropSlot func(int)) {
+	// slot distinguishes the source pathname from the destination one, so a rename that
+	// loses both reports two drops rather than collapsing them into one.
+	at := func(slot int, dirfd int32, pathReg uint64, write bool) {
 		if path, ok := readPathAt(pid, dirfd, uintptr(pathReg)); ok {
 			record(path, write)
 			return
 		}
-		drop()
+		dropSlot(slot)
 	}
 	switch regs.Orig_rax {
 	// rename removes the source and creates the destination: both directories need
 	// write. renameat/renameat2 carry a dirfd for each (dest path is the 4th arg).
 	case unix.SYS_RENAME:
-		at(atFdCwd, regs.Rdi, true)
-		at(atFdCwd, regs.Rsi, true)
+		at(0, atFdCwd, regs.Rdi, true)
+		at(1, atFdCwd, regs.Rsi, true)
 	case unix.SYS_RENAMEAT, unix.SYS_RENAMEAT2:
-		at(int32(regs.Rdi), regs.Rsi, true)
-		at(int32(regs.Rdx), regs.R10, true)
+		at(0, int32(regs.Rdi), regs.Rsi, true)
+		at(1, int32(regs.Rdx), regs.R10, true)
 	// Single-path creates/removes/truncates/metadata-writes. mknod/mknodat create a
 	// FIFO, socket, or device node - a directory write like mkdir, so the manifest must
 	// grant it or enforcement fails the run closed. The metadata writes (chmod/chown/
@@ -747,35 +775,43 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	case unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_TRUNCATE, unix.SYS_MKNOD,
 		unix.SYS_CHMOD, unix.SYS_CHOWN, unix.SYS_LCHOWN, unix.SYS_UTIME, unix.SYS_UTIMES,
 		unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR:
-		at(atFdCwd, regs.Rdi, true)
+		at(0, atFdCwd, regs.Rdi, true)
 	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_MKNODAT,
 		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT:
-		at(int32(regs.Rdi), regs.Rsi, true)
+		// utimensat with a NULL pathname is the kernel's form of futimens(3): it acts on
+		// the descriptor itself and names no file. Reading address zero fails, so decoding
+		// it as a pathname reported a lost access for a call that lost nothing - and cp -p,
+		// tar -x, install and rsync all use it, so extracting an archive alone put hundreds
+		// of phantom losses on the channel that tells the user their manifest is short.
+		if regs.Orig_rax == unix.SYS_UTIMENSAT && regs.Rsi == 0 {
+			return
+		}
+		at(0, int32(regs.Rdi), regs.Rsi, true)
 	// A hardlink reads the existing source and creates a new name (a write).
 	case unix.SYS_LINK:
-		at(atFdCwd, regs.Rdi, false)
-		at(atFdCwd, regs.Rsi, true)
+		at(0, atFdCwd, regs.Rdi, false)
+		at(1, atFdCwd, regs.Rsi, true)
 	case unix.SYS_LINKAT:
-		at(int32(regs.Rdi), regs.Rsi, false)
-		at(int32(regs.Rdx), regs.R10, true)
+		at(0, int32(regs.Rdi), regs.Rsi, false)
+		at(1, int32(regs.Rdx), regs.R10, true)
 	// A symlink only creates the link; its target is an uninterpreted string, not a
 	// path the syscall touches, so only the link path is recorded.
 	case unix.SYS_SYMLINK:
-		at(atFdCwd, regs.Rsi, true)
+		at(0, atFdCwd, regs.Rsi, true)
 	case unix.SYS_SYMLINKAT: // symlinkat(target, newdirfd, linkpath)
-		at(int32(regs.Rsi), regs.Rdx, true)
+		at(0, int32(regs.Rsi), regs.Rdx, true)
 	// bind(2) on an AF_UNIX pathname socket creates a socket file - a directory write.
 	// The path is inside the sockaddr, not a register, and is bounded by addrlen rather
 	// than NUL-terminated, so it needs its own read. Abstract and unnamed sockets make
 	// no filesystem entry and are skipped by sockaddrUnixPath.
 	case unix.SYS_BIND:
 		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
-			drop()
+			dropSlot(0)
 		} else if path != "" {
 			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
 				record(anchored, true)
 			} else {
-				drop()
+				dropSlot(0)
 			}
 		}
 	// connect(2) to an AF_UNIX pathname socket needs that socket present in the sandbox;
@@ -789,12 +825,12 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// skipped - nothing to grant.
 	case unix.SYS_CONNECT:
 		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
-			drop()
+			dropSlot(0)
 		} else if path != "" {
 			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
 				record(anchored, false)
 			} else {
-				drop()
+				dropSlot(0)
 			}
 		}
 	}
@@ -870,19 +906,6 @@ func openat2Path(resolve uint64, path string) (anchored string, record bool) {
 	default:
 		return path, true
 	}
-}
-
-// openat2Resolve picks the RESOLVE_* flags an openat2 is attributed by. When the open_how
-// read failed (ok is false) the real flags are unknown, so it falls back to RESOLVE_IN_ROOT
-// rather than the zero value: that anchors an absolute path at the dirfd (the run's root)
-// instead of recording it as a real-root host path the run may never have opened. The two
-// errors are not symmetric - under-attribution fails the run closed and is fixed by adding
-// a grant, over-attribution silently widens the manifest - so the conservative anchor wins.
-func openat2Resolve(resolve uint64, ok bool) uint64 {
-	if !ok {
-		return unix.RESOLVE_IN_ROOT
-	}
-	return resolve
 }
 
 // resolveAt anchors a relative openat/open pathname at the directory it was opened
@@ -977,3 +1000,15 @@ func boolKey(b bool) string {
 
 // PTRACE_O_EXITKILL is not exported by the syscall package on all versions.
 const unixPtraceExitKill = 0x00100000
+
+// recordExecTarget records the binary a spawn syscall names. The sandbox must be able to
+// read and execute it, so it is an access like any other - and a spawn by absolute path
+// (os/exec with a full path, or a bare syscall.Exec) reaches the kernel without the PATH
+// search whose stats would otherwise have recorded it incidentally.
+func recordExecTarget(pid int, dirfd int32, addr uintptr, record func(string, bool), drop func()) {
+	if path, ok := readPathAt(pid, dirfd, addr); ok {
+		record(path, false)
+		return
+	}
+	drop()
+}

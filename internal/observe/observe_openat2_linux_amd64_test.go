@@ -1,6 +1,7 @@
 package observe
 
 import (
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -40,19 +41,23 @@ func TestOpenat2Path(t *testing.T) {
 	}
 }
 
-// When the open_how read fails (ok=false) the real RESOLVE_* flags are unknown. Falling
-// back to the zero value would let an absolute path be recorded as a real-root host path
-// the run may never have opened (bv2-3lh); RESOLVE_IN_ROOT instead anchors it at the
-// dirfd. A successful read is passed through untouched.
-func TestOpenat2ResolveFailSafe(t *testing.T) {
-	if got := openat2Resolve(0, false); got != unix.RESOLVE_IN_ROOT {
-		t.Errorf("openat2Resolve(0, false) = %#x; want RESOLVE_IN_ROOT (%#x)", got, unix.RESOLVE_IN_ROOT)
+// An openat2 whose open_how cannot be read is a dropped observation, not a guess. The
+// resolve flags decide whether the pathname is re-rooted at the dirfd, clamped, or
+// rejected outright, so an unreadable how leaves no path that can honestly be recorded.
+// The old fallback assumed RESOLVE_IN_ROOT and anchored the path at the dirfd, which
+// fabricated an access - <cwd>/etc/passwd - out of a call the kernel refused with EFAULT.
+//
+// Both halves are asserted: nothing recorded for the path the tracee named, and the loss
+// counted, so the run reports its manifest as short rather than silently inventing a file.
+func TestOpenat2WithUnreadableHowIsDroppedNotFabricated(t *testing.T) {
+	dir := t.TempDir()
+	res := traceHelper(t, "badhow", dir, 1)
+	for _, a := range res.Accesses {
+		if strings.Contains(a.Path, badHowName) {
+			t.Errorf("recorded %q from an openat2 the kernel refused with EFAULT", a.Path)
+		}
 	}
-	if got := openat2Resolve(unix.RESOLVE_BENEATH, true); got != unix.RESOLVE_BENEATH {
-		t.Errorf("openat2Resolve passes a good read through: got %#x; want %#x", got, unix.RESOLVE_BENEATH)
-	}
-	// The fail-safe resolve must anchor an absolute path at the dirfd, not at real root.
-	if anchored, rec := openat2Path(openat2Resolve(0, false), "/etc/hosts"); !rec || anchored != "etc/hosts" {
-		t.Errorf("fail-safe openat2 of /etc/hosts = (%q, %v); want (%q, true)", anchored, rec, "etc/hosts")
+	if res.Dropped < 1 {
+		t.Errorf("Dropped = %d, want at least 1 - an openat2 whose open_how could not be read is an observation the profiler lost", res.Dropped)
 	}
 }
