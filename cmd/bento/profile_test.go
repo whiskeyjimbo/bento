@@ -126,6 +126,26 @@ func TestForeignHomeShieldsWarnsButKeeps(t *testing.T) {
 	}
 }
 
+// The warning must name shields the enforced run actually carries. A KUBECONFIG under an
+// anchor's own ~/.kube is covered by that anchor's directory shield, so the enforcer emits
+// no interior file rule for it - and neither may this, or the reviewer is sent to check a
+// rule the run has not got. Reachable where $HOME sits under another conventional home
+// root, which makes homeRoot read the parent as foreign.
+func TestForeignHomeShieldsFollowsTheRunsAnchors(t *testing.T) {
+	t.Setenv("HOME", "/home/other/sub")
+	t.Setenv("KUBECONFIG", "/home/other/sub/.kube/config")
+
+	for _, g := range []string{"/home/other/sub/.kube", "/home/other/sub/.kube/config"} {
+		if warned := foreignHomeShields([]string{g}); len(warned) != 0 {
+			t.Errorf("foreignHomeShields(%q) = %v, want none: the anchor's own ~/.kube shield covers it, so the run carries no rule for it", g, warned)
+		}
+	}
+	// The store the anchors do not cover still warns, so this has not simply gone quiet.
+	if len(foreignHomeShields([]string{"/home/other/.ssh"})) == 0 {
+		t.Error("a credential store under the foreign root itself must still warn")
+	}
+}
+
 func TestClampBroadWrites(t *testing.T) {
 	home, _ := os.UserHomeDir()
 

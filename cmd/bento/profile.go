@@ -923,7 +923,7 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // dropped: a home-shaped heuristic strong enough to drop on would also gut legitimate
 // cross-home data grants (/home/u/project/data), so the reviewer decides.
 //
-// The match against denylist.Home(root) tests containment in EITHER direction: a grant
+// The match against denylist.Home(root, homes...) tests containment in EITHER direction: a grant
 // at or under a shield (write: ~/.ssh/id_rsa), and - the case that matters most - a grant
 // that ENCLOSES a shield (write: ~, which Synthesize produces by collapsing a file write
 // to its directory, sweeping in ~/.ssh). For the profiler's own home clampShieldedGrants
@@ -932,16 +932,27 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // both directions must warn. Both shield classes count - a foreign DenyWrite persistence
 // path (~/.config/systemd/user) is unshielded at run time just like a DenyAll credential.
 // A data path enclosing no shield still stays quiet.
+//
+// The run's own anchors are passed to Home even though the root is foreign. They do not
+// place shields - the root does that - they only tell Home which env-relocated stores are
+// already covered by an anchor's own pass, which is the same question the enforcer asks.
+// Keyed on the foreign root alone, a KUBECONFIG under the profiler's ~/.kube produces an
+// interior file rule here that the enforced run does not carry, and the warning names a
+// shield the run has no such rule for.
 func foreignHomeShields(grants []string) []string {
 	// Every anchor the run shields on counts as "own", not just $HOME: under sudo -H the
 	// two disagree, and treating the passwd home as foreign would warn about a store the
 	// run shields anyway - noise the reviewer learns to skip past.
 	anchors, _ := denylist.HomeAnchors()
+	homes := slices.Clone(anchors)
 	selves := map[string]bool{}
 	for _, self := range anchors {
 		selves[self] = true
 		if resolved, err := filepath.EvalSymlinks(self); err == nil {
 			selves[resolved] = true
+			if !slices.Contains(homes, resolved) {
+				homes = append(homes, resolved)
+			}
 		}
 	}
 	seen := map[string]bool{}
@@ -951,7 +962,7 @@ func foreignHomeShields(grants []string) []string {
 		if !ok || selves[root] || seen[g] {
 			continue
 		}
-		for _, r := range denylist.Home(root) {
+		for _, r := range denylist.Home(root, homes...) {
 			if g == r.Path || underDir(r.Path, g) || underDir(g, r.Path) {
 				seen[g] = true
 				out = append(out, g)
