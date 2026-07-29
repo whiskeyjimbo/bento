@@ -64,11 +64,19 @@ type credentialAlias struct {
 
 // aliasScan is what one run's credential scan produced. It carries the shielded
 // credential paths alongside the aliases because the two answer different questions and
-// only one of them is about this run: found depends on what the policy grants, while
-// credentials is every store the host shields, whatever this run reached. Judging an
-// acknowledgement needs the second - a guard that consults only found accepts
-// "--accept-alias $HOME" on any run whose aliases happen to sit elsewhere, and accepts
-// anything at all on a run that found nothing.
+// only one of them is about this run's grants: found depends on what the policy grants,
+// while credentials is every path the scan anchored on, whether or not this run reached
+// it. Judging an acknowledgement needs the second - a guard that consults only found
+// accepts "--accept-alias $HOME" on any run whose aliases happen to sit elsewhere, and
+// accepts anything at all on a run that found nothing.
+//
+// credentials is the anchor set credentialFiles built, so it inherits both of that
+// function's narrowings, and both are in the safe direction. A store the policy opted
+// back in is absent because its shield never engages - there is nothing for a wide
+// acknowledgement to switch off - and the opt-in is re-judged every run, so the tree
+// stops being acceptable the moment the opt-in goes away. A non-anchor bulk store is
+// absent because the scan never reports an alias of one either, so no acknowledgement
+// can accept something the scan would have refused.
 type aliasScan struct {
 	found       []credentialAlias
 	credentials []string

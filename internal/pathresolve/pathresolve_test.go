@@ -114,11 +114,15 @@ func TestExistingReturnsInputAtDepthCutoff(t *testing.T) {
 
 // A self-referential link has no resolution at all; it must terminate and hand back the
 // input for the caller (checkGrantNotLooped) to refuse by name.
+// A three-hop cycle, not two: MaxDepth is even, so a two-hop cycle walks back onto its
+// own head at the budget and would pass even for a resolver returning the interior path
+// it had rebuilt. An odd cycle length makes the two answers differ.
 func TestExistingReturnsInputOnLoop(t *testing.T) {
 	d := canonDir(t)
-	a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
+	a, b, c := filepath.Join(d, "a"), filepath.Join(d, "b"), filepath.Join(d, "c")
 	link(t, b, a)
-	link(t, a, b)
+	link(t, c, b)
+	link(t, a, c)
 
 	if got := Existing(a); got != a {
 		t.Errorf("Existing(%q) on a loop = %q, want the input back", a, got)

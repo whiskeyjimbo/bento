@@ -300,7 +300,7 @@ filesystem and a manifest is portable and fingerprinted.
 
 An acknowledgement wide enough to contain a credential store is refused outright,
 because it would accept every alias of that store rather than the ones you meant.
-That verdict is reached against every store this host shields, not against the
+That verdict is reached against every store the scan anchors on, not against the
 aliases the current run happened to find - the flag is pasted into a command line
 that outlives the run that suggested it, so one judged only against today's aliases
 would silently accept whatever is planted under it tomorrow, and one typed on a run

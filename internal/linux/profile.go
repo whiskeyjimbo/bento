@@ -87,6 +87,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// under Run, and a write grant naming a directory that does not exist yet is bound
 	// with --bind-try, so without the mkdir it is a silent no-op the convergence loop
 	// then never converges on. compile re-runs checkGrants below as its own guard.
+	//
+	// That mkdir is the one host artifact profiling now leaves that it did not before,
+	// and nothing removes it - the shield-mount cleanup below covers only bwrap's own
+	// mount points. It is the right trade: the directory is one the target asked for and
+	// the user accepted at the convergence prompt, an enforced run of the resulting
+	// manifest would create it anyway, and the alternative is a round that reports a
+	// write the sandbox silently dropped.
 	preflight, err := preflightGrants(sb, p, acceptAliasesUnder)
 	if err != nil {
 		return profile.Observation{}, err
