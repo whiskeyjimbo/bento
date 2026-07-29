@@ -579,11 +579,11 @@ func TestTraceForwardsDeliveredSignal(t *testing.T) {
 	}
 }
 
-// The SIGTRAP exclusion in the signal-forwarding path is load-bearing: with
-// PTRACE_O_TRACEEXEC unset, a forked child's execve reports as a SIGTRAP
-// signal-delivery-stop, and forwarding SIGTRAP (default action: core dump) would
-// kill the exec'ing subprocess. The target's exit status is that of an exec'd
-// child, so if SIGTRAP were forwarded the child would die and the status be
+// The SIGTRAP exclusion in the signal-forwarding path is load-bearing: every ptrace
+// event stop reports SIGTRAP, so a forked child that execs stops twice under it - once
+// for the clone event and once for the exec - and forwarding SIGTRAP (default action:
+// core dump) would kill the exec'ing subprocess. The target's exit status is that of an
+// exec'd child, so if SIGTRAP were forwarded the child would die and the status be
 // non-zero. It must exit 0 and the exec must be observed.
 func TestTraceForkExecSurvivesSignalForwarding(t *testing.T) {
 	sh, err := exec.LookPath("sh")

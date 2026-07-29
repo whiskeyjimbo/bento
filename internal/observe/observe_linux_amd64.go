@@ -185,8 +185,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		}
 	}()
 
-	// The child stops at its initial execve; set options to follow subprocesses
-	// and to tag syscall stops distinctly, then let it run.
+	// The child stops at its initial execve; set options to follow subprocesses, to tag
+	// syscall stops distinctly, and to report each exec - the one event that names the tid
+	// an execve retires (see the PTRACE_EVENT_EXEC case) - then let it run.
 	var ws syscall.WaitStatus
 	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
 		return Result{}, fmt.Errorf("observe: initial wait: %w", err)
@@ -196,6 +197,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	}
 	const opts = syscall.PTRACE_O_TRACESYSGOOD |
 		syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEFORK | syscall.PTRACE_O_TRACEVFORK |
+		syscall.PTRACE_O_TRACEEXEC |
 		unixPtraceExitKill
 	if err := syscall.PtraceSetOptions(root, opts); err != nil {
 		return Result{}, fmt.Errorf("observe: set options: %w", err)
@@ -214,14 +216,6 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// The op of each pid's last syscall stop that was read successfully - the parity a
 	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
-	// Both maps above (and tracees) strand an entry when a non-leader thread execve's: it
-	// adopts the thread-group leader's pid, and its old tid vanishes with no wait status,
-	// so the deletes keyed on it never run. Not swept, because ptrace does not report the
-	// disappearance. For these two the stranded key names a tid that cannot stop again, so
-	// nothing reads it and the cost is memory alone. tracees is the one with a consequence:
-	// reapTracees signals every entry, so a recycled pid gets the SIGKILL, and the set can
-	// no longer empty, which drops that drain onto its ECHILD stop and forfeits the "never
-	// blocks on the embedder's own children" property its doc claims.
 	var res Result
 	record := func(path string, write bool) {
 		if path == "" {
@@ -319,6 +313,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 				if child, err := syscall.PtraceGetEventMsg(wpid); err == nil {
 					tracees[int(child)] = true
 				}
+			// An exec event reports the tid the execve retired, which is the one
+			// disappearance ptrace does not otherwise announce - see forgetRetiredTid.
+			case syscall.PTRACE_EVENT_EXEC:
+				if old, err := syscall.PtraceGetEventMsg(wpid); err == nil {
+					res.Dropped += forgetRetiredTid(wpid, int(old), tracees, lastOp, held)
+				}
 			}
 
 			// A group-stop, a ptrace event (a new child), or a genuine
@@ -326,9 +326,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// receives it: suppressing a synchronous fault (SIGSEGV/SIGILL/...) would
 			// re-run the faulting instruction forever and spin the profiler, and
 			// eating SIGINT/SIGTERM/SIGALRM/SIGCHLD would hang or misbehave an
-			// otherwise healthy target. SIGTRAP is the exception - ptrace event stops
-			// and a forked child's exec (PTRACE_O_TRACEEXEC is not set) report SIGTRAP,
-			// and forwarding it (default action: core dump) would kill them.
+			// otherwise healthy target. SIGTRAP is the exception - every ptrace event
+			// stop reports it, including the fork/clone and exec events handled above,
+			// and forwarding it (default action: core dump) would kill the tracee.
 			sig := 0
 			if ws.Stopped() {
 				if s := ws.StopSignal(); s != syscall.SIGTRAP && s != syscall.SIGTRAP|0x80 {
@@ -427,11 +427,11 @@ func deadThreadLostNothing(op byte, held map[string]heldPath, pid int) bool {
 // where nothing was observed is what would turn this into a silent suppressor.
 //
 // One stop stream is spliced rather than alternating: a non-leader thread that execve's
-// adopts the leader's pid, and the old tid disappears with no exit notification, so its
-// parity is stranded for the trace and the execve exit stop arrives under the leader's pid
-// carrying the leader's. That errs toward counting either way - a stale ENTRY infers an
-// exit stop, whose only decode is a success filter execve never registered - and the
-// stranded entry is one map slot per execing thread.
+// adopts the leader's pid, so the execve exit stop arrives under the leader's pid carrying
+// the leader's own parity rather than the execing thread's. That errs toward counting either
+// way - a stale ENTRY infers an exit stop, whose only decode is a success filter execve
+// never registered. The retired tid's own parity is not left behind to be read: the exec
+// event names it and the loop forgets it there.
 //
 // A wrong answer costs at most one drop: it is consulted only where the thread is already
 // dead, so the pid is reaped and its parity forgotten immediately after.
@@ -499,7 +499,13 @@ var waitTracee = syscall.Wait4
 // ECHILD, so it never blocks on an embedding process's own unrelated live children;
 // an ECHILD before then means the rest reparented to init (which reaps their corpses)
 // and is a clean stop.
-func reapTracees(tracees map[int]bool) {
+//
+// It is indirected through a var so a test can see the remainder the loop hands it: a tid
+// left in the set that no longer exists is a pid this would SIGKILL blind, and nothing else
+// about the trace shows it.
+var reapTracees = reapTraceesImpl
+
+func reapTraceesImpl(tracees map[int]bool) {
 	remaining := make(map[int]bool, len(tracees))
 	for pid := range tracees {
 		remaining[pid] = true
@@ -591,6 +597,55 @@ func holdsPath(held map[string]heldPath, pid int) bool {
 		}
 	}
 	return false
+}
+
+// forgetRetiredTid drops every trace of the tid an execve retired, and reports how many
+// observations went with it. A thread that execve's takes over the thread-group leader's pid
+// and its own tid ceases to exist with no wait status, so every map keyed on that tid would
+// strand its entry - the exec event, whose message is that former tid, is the only report of
+// the disappearance.
+//
+// tracees is the entry with a consequence: reapTracees SIGKILLs whatever the set names, and
+// by reap time the retired tid may belong to an unrelated host process. It also keeps the
+// set from ever emptying, which drops the drain onto its ECHILD stop and forfeits the "never
+// blocks on the embedder's own children" property reapTracees documents.
+//
+// The ordinary exec - by a single-threaded process or by the leader itself - reports the
+// stopping pid as the retired tid, because that pid is exactly what the execing thread kept.
+// It is still very much alive, so nothing is forgotten there: dropping a live tracee from the
+// reap set leaves it TASK_TRACED under a tracer that, for a library embedder, may never exit,
+// which is a worse leak than the strand being swept. The pid is re-tracked at its next stop,
+// so only a descendant that exits the window between the two would leak - which is a race,
+// not a certainty, and reason enough not to open it.
+func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
+	if old == wpid {
+		return 0
+	}
+	delete(tracees, old)
+	delete(lastOp, old)
+	return releaseHeldOf(held, old)
+}
+
+// releaseHeldOf drops every pathname a vanished tid was still holding and reports how many
+// were lost. Each is an existence probe whose entry stop resolved a pathname and whose exit
+// stop can never arrive, so whether the call succeeded - the thing that decides if the path
+// needs a grant - is unknowable. That is the same loss deadThreadLostNothing counts for a
+// thread that dies at an exit stop holding one, and it is counted here for the same reason:
+// an access the observer could not read must reach Dropped or the manifest is silently short.
+//
+// It takes a tid rather than a stop key because a vanished thread leaves no registers to
+// form one, and a signal handler's own calls stop under the same pid, so more than one of
+// its pairs can be open at once.
+func releaseHeldOf(held map[string]heldPath, pid int) int {
+	prefix := fmt.Sprintf("%d\x00", pid)
+	lost := 0
+	for key := range held {
+		if strings.HasPrefix(key, prefix) {
+			delete(held, key)
+			lost++
+		}
+	}
+	return lost
 }
 
 // heldPath is a pathname the entry stop resolved, kept until the exit stop can say

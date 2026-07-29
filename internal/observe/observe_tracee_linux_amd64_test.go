@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -36,6 +37,7 @@ import (
 //	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
 //	execve     spawns via execve(2), the path the exec-block filter denies.
 //	execveat   spawns via execveat(2), the path it permits by construction.
+//	execthread execve's from a non-leader thread, which retires that thread's tid.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -149,6 +151,33 @@ func TestObserveTraceeHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
 			os.Exit(7)
 		}
+	case "execthread":
+		// execve from a thread that is NOT the thread-group leader: the kernel kills the
+		// other threads and hands the execing one the leader's pid, so its own tid
+		// disappears with no wait status for the tracer to see.
+		//
+		// The main goroutine pins the leader first, so the goroutine below cannot be
+		// scheduled onto it - locking a goroutine to its current thread does not move it
+		// off the main one, and an exec from the leader retires no tid at all, which would
+		// make the test pass vacuously. The tid is checked rather than trusted.
+		runtime.LockOSThread()
+		done := make(chan struct{})
+		go func() {
+			runtime.LockOSThread()
+			if unix.Gettid() == os.Getpid() {
+				fmt.Fprintln(os.Stderr, "TRACEE_EXEC_TID_IS_LEADER")
+				os.Exit(11)
+			}
+			close(done)
+			if err := syscall.Exec(traceeExecTarget, []string{traceeExecTarget}, nil); err != nil {
+				fmt.Fprintln(os.Stderr, "TRACEE_EXECTHREAD_ERR", err)
+				os.Exit(11)
+			}
+		}()
+		<-done
+		// The exec replaces the image, so the sleep never finishes; it is a sleep rather
+		// than a bare block so the runtime's deadlock detector has no claim on it.
+		time.Sleep(time.Minute)
 	case "execveat":
 		// Spawns via execveat(2) rather than execve(2). The image is replaced, so
 		// nothing below this runs.
@@ -525,6 +554,87 @@ func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 			// path is absolute, so no PATH search stats it into the record incidentally.
 			if !slices.Contains(res.Accesses, Access{Path: traceeExecTarget}) {
 				t.Errorf("%s spawned %s and it is absent from the recorded accesses: %v", tc.mode, traceeExecTarget, res.Accesses)
+			}
+		})
+	}
+}
+
+// A thread that execve's takes over the thread-group leader's pid and its own tid ceases to
+// exist with no wait status, so the loop's tracee set is never told to forget it. What that
+// costs is not memory: reapTracees SIGKILLs every pid the set names, and by reap time the
+// retired tid may belong to an unrelated host process. It also keeps the set from emptying,
+// which drops the drain onto its ECHILD stop and forfeits the property reapTracees
+// documents - that it never blocks on an embedding process's own live children.
+//
+// The exec event is the only report of the disappearance, and its event message is the
+// retired tid. So the assertion is on the remainder handed to reapTracees: it must be empty
+// after a run whose exec came from a non-leader thread.
+func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
+	var remainder []int
+	orig := reapTracees
+	reapTracees = func(tracees map[int]bool) {
+		remainder = remainder[:0]
+		for pid := range tracees {
+			remainder = append(remainder, pid)
+		}
+		orig(tracees)
+	}
+	defer func() { reapTracees = orig }()
+
+	res := traceHelper(t, "execthread", t.TempDir(), 0)
+	if !res.Execed {
+		t.Fatal("the tracee did not exec, so no tid was retired and the sweep is not exercised")
+	}
+	for _, pid := range remainder {
+		// A retired tid is already gone, which is exactly what makes signalling it
+		// dangerous: the pid is free for the host to hand to something unrelated.
+		t.Errorf("pid %d was left in the tracee set for reapTracees to SIGKILL; kill(pid, 0) = %v",
+			pid, syscall.Kill(pid, 0))
+	}
+}
+
+// The exec event names a retired tid in both the case that needs sweeping and the case that
+// must not be swept, and only the event message tells them apart. A non-leader's exec retires
+// a tid that can never stop again, so every map keyed on it has to forget it; an ordinary exec
+// reports the stopping pid itself, which kept running, and forgetting that one takes a live
+// tracee out of the reap set - the worse of the two leaks. A held pathname goes with the
+// retired tid, and its probe's result is now unknowable, so it counts as a lost access.
+func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
+	const leader, retired = 100, 101
+	heldOf := func(pid int) map[string]heldPath {
+		return map[string]heldPath{
+			stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}):   {path: "/etc/hosts", readOK: true},
+			stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS}): {path: "/etc/passwd", readOK: true},
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		old      int
+		wantKept bool
+		wantLost int
+	}{
+		{"a non-leader thread's exec retires its own tid", retired, false, 2},
+		{"an ordinary exec reports the pid it kept", leader, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracees := map[int]bool{leader: true, tc.old: true}
+			lastOp := map[int]byte{tc.old: unix.PTRACE_SYSCALL_INFO_ENTRY}
+			held := heldOf(tc.old)
+
+			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held); lost != tc.wantLost {
+				t.Errorf("lost = %d, want %d - a pathname held by a tid that can never stop again is an observation the exit stop will never resolve", lost, tc.wantLost)
+			}
+			if got := tracees[tc.old]; got != tc.wantKept {
+				t.Errorf("tracees[%d] = %v, want %v", tc.old, got, tc.wantKept)
+			}
+			if _, got := lastOp[tc.old]; got != tc.wantKept {
+				t.Errorf("lastOp[%d] present = %v, want %v", tc.old, got, tc.wantKept)
+			}
+			if got := holdsPath(held, tc.old); got != tc.wantKept {
+				t.Errorf("holdsPath(%d) = %v, want %v", tc.old, got, tc.wantKept)
+			}
+			if !tracees[leader] {
+				t.Errorf("the leader's own pid was dropped from the tracee set; it is alive and must still be reaped")
 			}
 		})
 	}
