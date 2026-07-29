@@ -20,3 +20,6 @@ func TruncateRestricted() bool { return false }
 
 // IoctlDevRestricted reports false: Landlock is Linux-only.
 func IoctlDevRestricted() bool { return false }
+
+// ResolveUnixRestricted reports false: Landlock is Linux-only.
+func ResolveUnixRestricted() bool { return false }

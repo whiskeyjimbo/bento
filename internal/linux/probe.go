@@ -22,12 +22,13 @@ import (
 // this call site consults the probe at all, so a site that hardcoded availability
 // would still pass.
 var (
-	landlockAvailable          = landlock.Available
-	landlockTruncateRestricted = landlock.TruncateRestricted
-	landlockIoctlDevRestricted = landlock.IoctlDevRestricted
-	seccompSupported           = seccomp.Supported
-	seccompStrictExecSupported = seccomp.StrictExecSupported
-	seccompEgressSupported     = seccomp.EgressSupported
+	landlockAvailable             = landlock.Available
+	landlockTruncateRestricted    = landlock.TruncateRestricted
+	landlockIoctlDevRestricted    = landlock.IoctlDevRestricted
+	landlockResolveUnixRestricted = landlock.ResolveUnixRestricted
+	seccompSupported              = seccomp.Supported
+	seccompStrictExecSupported    = seccomp.StrictExecSupported
+	seccompEgressSupported        = seccomp.EgressSupported
 )
 
 // Probe reports what this host can actually enforce.
@@ -48,7 +49,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	fsState, fsDetail := filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), degradedFencesOK)
+	fsState, fsDetail := filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), degradedFencesOK)
 	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
@@ -169,7 +170,7 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, degradedFencesOK bool) (enforce.State, string) {
+func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, degradedFencesOK bool) (enforce.State, string) {
 	switch {
 	case ns == namespacesUsable && landlockAvail:
 		return enforce.Enforced, "Landlock backstop active"
@@ -197,10 +198,11 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"background process it leaves is swept only best-effort by killing the run's process group, which " +
 			"a setsid() escapes and which also stops a target that reads an interactive terminal), and no " +
 			"network namespace " +
-			"(seccomp blocks IP egress but not netlink interface enumeration, nor a unix socket to a host " +
-			"daemon, including an abstract-namespace one no grant is needed to reach). It confines filesystem " +
+			"(seccomp blocks IP egress but not netlink interface enumeration, nor " +
+			unixSocketClause(resolveUnixRestricted) + "). It confines filesystem " +
 			"read/write/exec, nothing more (" + nsReason + ")" +
-			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted)
+			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
+			resolveUnixResidual(resolveUnixRestricted)
 	default:
 		return enforce.Unavailable, nsReason +
 			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
@@ -232,6 +234,36 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 	return ". This kernel's Landlock ABI is also below 5, which cannot restrict ioctl on device files, so " +
 		"any ioctl on a granted device node (/dev/urandom, /dev/random, /dev/zero, /dev/null) is available " +
 		"beyond the terminal-injection set seccomp blocks"
+}
+
+// unixSocketClause is the unix-socket half of the degraded tier's "no network namespace"
+// disclosure. What the target can reach over AF_UNIX depends on the Landlock ABI, so the
+// sentence cannot be fixed text: from ABI 9 the degraded ruleset handles resolve_unix and
+// grants it only on the write set, so a pathname socket outside the grants is denied and
+// only the abstract namespace - which no file grant governs - is left. Below it no
+// pathname socket is governed at all.
+func unixSocketClause(resolveUnixRestricted bool) string {
+	if resolveUnixRestricted {
+		return "an abstract-namespace unix socket to a host daemon, which no file grant governs " +
+			"(a pathname one outside the write grants is denied by Landlock's resolve_unix right)"
+	}
+	return "a unix socket to a host daemon, including an abstract-namespace one no grant is needed to reach"
+}
+
+// resolveUnixResidual is the degraded-tier disclosure clause for a kernel whose Landlock
+// ABI (< 9) cannot restrict connect(2) and sendmsg(2) on pathname AF_UNIX sockets. The
+// degraded ruleset handles that right and grants it on the write set, so from ABI 9 the
+// file grants govern which sockets the target may reach; below it the right is unhandled
+// and every socket path on the host stays connectable. That is an egress residual as much
+// as a filesystem one - the daemon on the other end has its own network access - which is
+// why it is named here rather than left to the filesystem grants to imply.
+func resolveUnixResidual(resolveUnixRestricted bool) string {
+	if resolveUnixRestricted {
+		return ""
+	}
+	return ". This kernel's Landlock ABI is also below 9, which cannot restrict connect(2) on pathname " +
+		"unix sockets, so the target can reach any host daemon socket its path names regardless of the " +
+		"grants - and that daemon's own network access with it"
 }
 
 // namespaceProbe is what the user-namespace probe could establish. The third state

@@ -21,6 +21,14 @@
 // or not any rule grants it - so this observes what the handled set is, from outside
 // the package.
 //
+// Usage: probe degraded <read-dir> <write-dir> <outside-path> <socket-path>
+// Applies the DEGRADED ruleset - which handles resolve_unix and grants it back on the
+// write set - then prints "degraded_outside=OK|DENIED degraded_unixconnect=OK|DENIED
+// degraded_ownsocket=OK|DENIED". The outside read is the load-bearing one: the write
+// rules ask for a right the handled set no longer carries once BestEffort downgrades
+// below ABI 9, and a downgrade that collapsed the ruleset instead of intersecting the
+// right away would return no error while confining nothing.
+//
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
 // whose /sys/kernel/security has been masked, reproducing a container.
@@ -30,6 +38,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -43,6 +52,10 @@ func main() {
 	}
 	if len(os.Args) == 4 && os.Args[1] == "unixconnect" {
 		unixConnect(os.Args[2], os.Args[3])
+		return
+	}
+	if len(os.Args) == 6 && os.Args[1] == "degraded" {
+		degraded(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "available" {
@@ -80,15 +93,57 @@ func unixConnect(allowed, socket string) {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
+	fmt.Printf("unixconnect=%s\n", dial(socket))
+}
+
+// degraded applies the degraded ruleset, then reports three things the tier's posture
+// rests on: a path outside every grant is still denied (so the ruleset was applied at
+// all), a pathname socket bound outside the domain and outside the grants, and a socket
+// this process creates under its own write grant - which must stay reachable, since that
+// is what the resolve_unix grant on the write rules is for.
+func degraded(read, write, outside, socket string) {
+	if err := landlock.RestrictDegraded([]string{read}, []string{write}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("degraded_outside=%s degraded_unixconnect=%s degraded_ownsocket=%s\n",
+		readable(outside), dial(socket), dial(ownSocket(write)))
+}
+
+// ownSocket binds a listener under the write grant after the ruleset is applied, so its
+// server is inside the Landlock domain - the case resolve_unix leaves alone - and returns
+// its path. An empty path makes dial report DENIED, which is the right answer: failing to
+// create the socket at all is the same confinement failure from the target's view.
+func ownSocket(write string) string {
+	path := filepath.Join(write, "own.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return ""
+	}
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return path
+}
+
+func dial(socket string) string {
+	if socket == "" {
+		return "DENIED"
+	}
 	//nolint:gosec // G704: the socket path is this test probe's own argument, and dialing
 	// an attacker-chosen path is the point - what is under test is whether Landlock denies it.
 	c, err := net.Dial("unix", socket)
 	if err != nil {
-		fmt.Println("unixconnect=DENIED")
-		return
+		return "DENIED"
 	}
 	c.Close()
-	fmt.Println("unixconnect=OK")
+	return "OK"
 }
 
 // otherThread applies the ruleset while a second OS thread is already parked, then

@@ -19,26 +19,54 @@ import (
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
-// handledFS is the Landlock configuration both Restrict tiers apply: the filesystem
-// access rights this package has actually reasoned about, which is every right through
-// ABI 8. It is deliberately NOT go-landlock's newest preset.
+// handledFS is the Landlock configuration the bwrap-backstop tier applies: the
+// filesystem access rights this package has actually reasoned about for that tier,
+// which is every right through ABI 8. It is deliberately NOT go-landlock's newest
+// preset.
 //
 // Landlock only restricts a right that is in handled_access_fs, and a handled right is
 // denied everywhere no rule grants it. The rule helpers this package builds on
 // (RODirs/RWDirs/ROFiles/RWFiles) grant a fixed set that does not grow with the ABI, so
 // tracking the newest preset silently converts each new ABI's rights into a blanket
-// denial the moment a kernel supports them. ABI 9's resolve_unix is the live case: V9
-// handles it, no helper grants it, so on a 6.19+ kernel every connect(2) and sendmsg(2)
-// to a pathname AF_UNIX socket outside the domain - dbus, X11, /dev/log, glibc's NSS -
-// would be denied, while the run report still said the layer applied cleanly.
+// denial the moment a kernel supports them: no helper grants ABI 9's resolve_unix, so
+// handling it without granting it anywhere denies every connect(2) and sendmsg(2) to a
+// pathname AF_UNIX socket outside the domain - dbus, X11, /dev/log, glibc's NSS - while
+// the run report still says the layer applied cleanly.
 //
 // Pinning the handled set here means a kernel newer than this build enforces what this
 // build intends and nothing more. Adopting a new right is then a deliberate change: add
-// it to this set AND grant it on the paths that need it.
+// it to a handled set AND grant it on the paths that need it - which is what degradedFS
+// does for resolve_unix, and what this tier deliberately does not do.
 //
-// RestrictPaths keeps only handledAccessFS from a Config, so V8's network and scoped
-// sets never reach the ruleset.
+// RestrictPaths keeps only handledAccessFS from a Config, so the network and scoped sets
+// never reach the ruleset.
 var handledFS = ll.V8
+
+// degradedFS is the handled set for the degraded tier: handledFS plus ABI 9's
+// resolve_unix (V9's handled_access_fs is V8's plus exactly that right). The tiers
+// differ because their exposure does.
+//
+// Under bwrap the mount namespace already hides the host's sockets, so handling
+// resolve_unix would buy near nothing while /tmp and /dev are tmpfs the target may
+// legitimately put its own sockets in - every miss a silent connect denial. The
+// degraded tier has no mount namespace: the whole host filesystem is visible, and
+// pre-ABI-9 Landlock does not govern connect(2) to a pathname socket at all, so a
+// service socket a grant exposes is an egress route out of a tier whose netns-less
+// egress fence is seccomp (see internal/linux/probe.go, which documents the residual
+// this closes). Handling the right here is what makes the file grants govern that
+// connect too.
+//
+// Only the WRITE rules grant it back (RestrictDegraded), so the target keeps reaching a
+// socket it creates itself under its scratch or a write grant. A read grant deliberately
+// does not: connecting to someone else's socket under a read-only grant is the hole, not
+// a feature.
+//
+// BestEffort strips the right from the handled set below ABI 9, so on those kernels the
+// tier keeps today's behaviour; the degraded run report discloses that next to the
+// truncate and ioctl_dev residuals. Granting a right the downgraded set no longer handles
+// is safe: go-landlock intersects it away per rule (v0.9.0 path_opt.go, FSRule.downgrade)
+// rather than collapsing the ruleset to v0, which it does only for refer.
+var degradedFS = ll.V9
 
 // errUnavailableABI is returned by RestrictDegraded when the effective Landlock ABI is
 // below the usable floor, so the degraded tier refuses rather than run unconfined.
@@ -125,13 +153,21 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // when it is its own compiled-binary interpreter; that right overlaps the read-file
 // right above and is kept explicit. Missing paths are skipped, as in RestrictTo.
 //
+// Write paths additionally grant resolve_unix, because degradedFS handles it: with no
+// mount namespace hiding the host's sockets, connect(2) to a pathname AF_UNIX socket is
+// governed by the grants like any other filesystem access, and a socket the target
+// creates under its own scratch or write grant stays reachable. A read grant does not
+// get it - see degradedFS.
+//
 // It still uses BestEffort, which downgrades the ruleset to the kernel's Landlock
-// ABI. That downgrade has a sharp edge: handledFS declares it HANDLES every access
-// right through ABI 8, and BestEffort strips handled_access_fs down to the kernel's
+// ABI. That downgrade has a sharp edge: degradedFS declares it HANDLES every access
+// right through ABI 9, and BestEffort strips handled_access_fs down to the kernel's
 // ABI on anything older - and a right absent from handled_access_fs is not restricted
 // at all. So on a kernel below ABI 3
 // (5.13-6.1) truncate is unhandled and a read-granted file can still be truncated
-// (zeroed), and below ABI 5 (pre-6.10) the ioctl_dev right is unhandled. The read/
+// (zeroed), below ABI 5 (pre-6.10) the ioctl_dev right is unhandled, and below ABI 9 the
+// resolve_unix right is unhandled so connect(2) to any pathname socket on the host is
+// unrestricted whatever the grants say. The read/
 // write/execute access this tier grants all exists at the v1 floor, so path access is
 // confined as intended; the residual is the newer rights BestEffort silently drops.
 // Both residuals are disclosed in the degraded run report so an operator on an old
@@ -149,20 +185,32 @@ func RestrictDegraded(read, write, exec []string) error {
 	// silent-success path - a config it cannot satisfy collapses to v0 and returns nil,
 	// having restricted nothing - which an ABI check cannot see. Nothing reaches it
 	// today because it needs a refer rule on ABI 1, and this package never asks for
-	// one; adding WithRefer or WithIoctlDev would put a total fail-open back behind a
-	// guard that still passes.
+	// one; adding WithRefer would put a total fail-open back behind a guard that still
+	// passes. WithResolveUnix below does not: refer is the only right whose absence
+	// from the downgraded handled set makes a rule unsatisfiable rather than merely
+	// intersected down.
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
 	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
-	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
+	rules = classifyRules(rules, write, withResolveUnix(ll.RWDirs), withResolveUnix(ll.RWFiles))
 	if e := existing(exec); len(e) > 0 {
 		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
 	}
-	if err := handledFS.BestEffort().RestrictPaths(rules...); err != nil {
+	if err := degradedFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying degraded ruleset: %w", err)
 	}
 	return nil
+}
+
+// withResolveUnix wraps a rule constructor so the rules it builds also grant
+// resolve_unix, keeping a socket the target creates under its own write grant
+// connectable once degradedFS handles the right. It wraps the constructor rather than
+// the rule so both write kinds go through classifyRules unchanged.
+func withResolveUnix(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
+	return func(paths ...string) ll.FSRule {
+		return rule(paths...).WithResolveUnix()
+	}
 }
 
 func existing(paths []string) []string {
@@ -213,6 +261,17 @@ func TruncateRestricted() bool {
 // reason truncate is: 5.13 through 6.9 is most of the field.
 func IoctlDevRestricted() bool {
 	return effectiveABI() >= 5
+}
+
+// ResolveUnixRestricted reports whether this kernel's Landlock ABI (>= 9) can restrict
+// connect(2) and sendmsg(2) on pathname AF_UNIX sockets. Below it the right is absent
+// from handled_access_fs and therefore unrestricted, so the degraded tier's target can
+// connect to any host daemon socket its path reaches - and with no mount namespace that
+// is every socket on the host, whatever the file grants say. That is an egress route as
+// much as a filesystem one, since the daemon has its own network access, which is why
+// the degraded run report names it alongside truncate and ioctl_dev.
+func ResolveUnixRestricted() bool {
+	return effectiveABI() >= 9
 }
 
 // signalScopeErratum is the errata bit go-landlock checks: when it is clear the

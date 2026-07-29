@@ -247,3 +247,68 @@ func TestUnixConnectOutsideTheGrantStaysAllowed(t *testing.T) {
 		t.Errorf("connecting to a pathname unix socket outside the grant was denied: %q", got)
 	}
 }
+
+// The degraded tier handles resolve_unix and grants it back only on the write rules, and
+// that asymmetry has to be observed against a real kernel: which rights a rule ends up
+// carrying is decided inside go-landlock's BestEffort downgrade, so nothing about it is
+// visible from the rules this package builds.
+//
+// The outside read is the assertion that must not be dropped as redundant. The write
+// rules request a right that leaves the handled set the moment BestEffort downgrades
+// below ABI 9 - every kernel in the field today - and go-landlock has a shape where an
+// unsatisfiable rule collapses the whole ruleset to v0 and returns nil (it takes that
+// route only for refer, which is exactly why the resolve_unix path is worth pinning from
+// outside). A collapse leaves RestrictDegraded returning no error and the launcher
+// recording the layer applied, with the target unconfined; only reading a non-granted
+// path catches it.
+//
+// The two socket assertions are ABI-conditional, since below 9 the kernel cannot restrict
+// either connect - so on those kernels this is the collapse regression test and no more.
+func TestRestrictDegradedGrantsResolveUnixOnWritesOnly(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	read, write := t.TempDir(), t.TempDir()
+	outside := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Bound in the parent, so its server is outside the domain the probe creates - the
+	// only case resolve_unix covers - and under no grant of the probe's.
+	socket := filepath.Join(t.TempDir(), "s.sock")
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	out, err := exec.Command(bin, "degraded", read, write, outside, socket).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, "degraded_outside=DENIED") {
+		t.Errorf("the degraded ruleset confined nothing - a path outside every grant stayed readable: %q", got)
+	}
+	if !strings.Contains(got, "degraded_ownsocket=OK") {
+		t.Errorf("a socket the target created under its own write grant must stay reachable: %q", got)
+	}
+	wantOutside := "degraded_unixconnect=OK"
+	if ResolveUnixRestricted() {
+		wantOutside = "degraded_unixconnect=DENIED"
+	}
+	if !strings.Contains(got, wantOutside) {
+		t.Errorf("connecting to a socket outside every grant: got %q, want %s (ABI %d)", got, wantOutside, effectiveABI())
+	}
+}
