@@ -113,10 +113,11 @@ func Run(cfg Config) (int, error) {
 	// or not the policy grants egress: with no egress it falsifies the claim outright,
 	// and with egress it bypasses the host proxy's allowlist. So the refusal is
 	// unconditional, and the one caller that means to pass a connection says so.
-	if err := refuseNetworkStdio(); err != nil {
-		// Only the socket itself is opt-in-able. A descriptor that could not be
-		// classified at all is still fatal: the embedder permitted a connection it
-		// knows it passed, not an unreadable stream.
+	// Every failing descriptor is examined, not just the first: only the socket itself
+	// is opt-in-able, and a descriptor that could not be classified at all stays fatal
+	// even under the opt-in - the embedder permitted a connection it knows it passed,
+	// not an unreadable stream.
+	for _, err := range networkStdioRefusals() {
 		var passed *networkStdio
 		if !cfg.AllowNetworkStdio || !errors.As(err, &passed) {
 			return 0, err
@@ -351,12 +352,25 @@ const firstInheritableFD = 3
 // passes a per-connection handler its accepted conn - opts in through
 // enforce.Process.AllowNetworkStdio, which no manifest and no CLI flag can set.
 func refuseNetworkStdio() error {
-	for fd := range firstInheritableFD {
-		if err := refuseNetworkFD(fd); err != nil {
-			return err
-		}
+	if errs := networkStdioRefusals(); len(errs) > 0 {
+		return errs[0]
 	}
 	return nil
+}
+
+// networkStdioRefusals reports one error per standard descriptor that fails the check,
+// rather than the first. The opt-in in Run may waive a socket but never an
+// unclassifiable descriptor, and it can only tell them apart if it sees every fd:
+// stopping at the first would let a waived socket on fd 0 hide a descriptor on fd 1
+// that could not be examined at all.
+func networkStdioRefusals() []error {
+	var errs []error
+	for fd := range firstInheritableFD {
+		if err := refuseNetworkFD(fd); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
 }
 
 // refuseNetworkFD refuses one descriptor that is a socket of a family able to reach a

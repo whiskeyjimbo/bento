@@ -101,6 +101,43 @@ func TestRefuseNetworkFD(t *testing.T) {
 
 // rawFile hands back the listener's own descriptor. net.Listener.File dups it, which is
 // what the check needs to see: a real socket description, not a pipe.
+// The opt-in in Run waives a socket but never a descriptor that could not be
+// classified, and it can only tell them apart if every standard descriptor is
+// examined. Stopping at the first failure would let a waived socket on fd 0 hide an
+// unexaminable fd 1, so the collection must not short-circuit. Two sockets stand in
+// for the pair: the unclassifiable case needs an errno no test can provoke, and which
+// descriptors report is what is actually load-bearing here.
+func TestNetworkStdioRefusalsReportsEveryDescriptor(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no loopback TCP available: %v", err)
+	}
+	defer ln.Close()
+	sock := int(rawFile(t, ln.(*net.TCPListener)).Fd())
+
+	for _, fd := range []int{0, 1} {
+		saved, err := unix.Dup(fd)
+		if err != nil {
+			t.Fatalf("saving fd %d: %v", fd, err)
+		}
+		defer func() {
+			// Restoring matters beyond this test: fd 0/1 belong to the whole test binary,
+			// so a silent failure here would leave later tests writing into a socket.
+			if err := unix.Dup2(saved, fd); err != nil {
+				t.Errorf("restoring fd %d: %v", fd, err)
+			}
+			unix.Close(saved)
+		}()
+		if err := unix.Dup2(sock, fd); err != nil {
+			t.Fatalf("planting a socket on fd %d: %v", fd, err)
+		}
+	}
+
+	if got := len(networkStdioRefusals()); got != 2 {
+		t.Errorf("refusals = %d, want 2: a socket on fd 0 must not hide what fd 1 carries", got)
+	}
+}
+
 func rawFile(t *testing.T, ln interface{ File() (*os.File, error) }) *os.File {
 	t.Helper()
 	f, err := ln.File()
