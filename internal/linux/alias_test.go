@@ -52,18 +52,23 @@ func scanAliases(t *testing.T, sb sandbox, trees, optIns []string) []credentialA
 	return scan.found
 }
 
-// scanOf builds the scan value the split takes. Production carries the host's whole
-// shielded set here; a case that only exercises acceptance needs no more than the stores
-// its own aliases name, and the cases that turn on the difference say so themselves.
-func scanOf(found ...credentialAlias) aliasScan {
-	var creds []string
-	for _, a := range found {
-		if !slices.Contains(creds, a.Credential) {
-			creds = append(creds, a.Credential)
-		}
-	}
-	return aliasScan{found: found, credentials: creds}
+// scanOf builds the scan value the split takes. The credential set is spelled out by
+// each caller rather than derived from found, because deriving it is exactly the bug
+// the guard was fixed for: what the host shields does not depend on what this run
+// aliased, and a helper that tied the two together would quietly weaken every test
+// written with it.
+func scanOf(credentials []string, found ...credentialAlias) aliasScan {
+	return aliasScan{found: found, credentials: credentials}
 }
+
+// shieldedStores is what the host in these cases shields. It deliberately holds more
+// than any single case's aliases name: the guard's whole point is that a tree is judged
+// against every store, so a fixture where the two coincided would prove nothing.
+var shieldedStores = []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"}
+
+// The same set on a host whose home sits behind a symlink; the scan resolves before it
+// compares, so this is the form the guard actually meets there.
+var relocatedShieldedStores = []string{"/var/home/u/.ssh/id_rsa", "/var/home/u/.aws/credentials"}
 
 // The whole cost structure rests on one fact: a hardlink needs a second directory
 // entry pointing at the credential's inode, so nlink==1 on every credential *proves*
@@ -822,7 +827,7 @@ func TestSplitAcknowledgedAliasesAcceptsByTree(t *testing.T) {
 		{Path: "/home/u/project/stolen", Credential: "/home/u/.aws/credentials"},
 	}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(shieldedStores, found...), []string{"/home/u/backups"})
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -845,7 +850,7 @@ func TestSplitAcknowledgedAliasesIgnoresANonMatchingTree(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backup"}) // typo: no trailing s
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(shieldedStores, found...), []string{"/home/u/backup"}) // typo: no trailing s
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -865,7 +870,7 @@ func TestSplitAcknowledgedAliasesResolvesTheAcknowledgedTree(t *testing.T) {
 	sb.resolve = func(p string) string { return strings.Replace(p, "/home/u", "/var/home/u", 1) }
 	found := []credentialAlias{{Path: "/var/home/u/backups/snap/.ssh/id_rsa", Credential: "/var/home/u/.ssh/id_rsa"}}
 
-	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(relocatedShieldedStores, found...), []string{"/home/u/backups"})
 	if err != nil {
 		t.Fatalf("acknowledging a backup tree must not error: %v", err)
 	}
@@ -998,7 +1003,7 @@ func TestSplitAcknowledgedAliasesRejectsAnOffSwitch(t *testing.T) {
 	found := []credentialAlias{{Path: "/home/u/backups/x", Credential: "/home/u/.ssh/id_rsa"}}
 
 	for _, tree := range []string{"/", "/home/u", "/home/u/.."} {
-		_, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{tree})
+		_, accepted, err := splitAcknowledgedAliases(sb, scanOf(shieldedStores, found...), []string{tree})
 		if err == nil {
 			t.Errorf("--accept-alias %s must be refused as an off-switch; accepted %v", tree, accepted)
 		}
@@ -1006,7 +1011,7 @@ func TestSplitAcknowledgedAliasesRejectsAnOffSwitch(t *testing.T) {
 
 	// The legitimate case must still pass: a backup root holds second NAMES for
 	// credentials, not the credentials themselves.
-	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(found...), []string{"/home/u/backups"})
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scanOf(shieldedStores, found...), []string{"/home/u/backups"})
 	if err != nil || len(refuse) != 0 || len(accepted) != 1 {
 		t.Errorf("a backup root must be acceptable; err=%v refuse=%v accepted=%v", err, refuse, accepted)
 	}
