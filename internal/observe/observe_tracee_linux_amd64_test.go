@@ -28,6 +28,7 @@ import (
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
 //	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
+//	nullpath   N utimensat/futimesat calls with a NULL pathname.
 //	lostrename N renames with BOTH pathnames unmapped, from one call site.
 //	badhow     openat2 with a readable pathname but an unmapped open_how.
 //	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
@@ -102,6 +103,30 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// drop key that does not distinguish the two arguments reports it as one.
 		for range n {
 			_, _, _ = syscall.Syscall(syscall.SYS_RENAME, 0x1, 0x2, 0)
+		}
+	case "nullpath":
+		// utimensat(fd, NULL, ...) and futimesat(fd, NULL, ...) - the kernel forms of
+		// futimens(3) and futimes(3). Both act on the descriptor and name no file. The
+		// calls must actually SUCCEED, or they would prove nothing about a decoder that
+		// only mishandles the pathname.
+		f, err := os.CreateTemp(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), "nullpath")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_TMP_ERR", err)
+			os.Exit(10)
+		}
+		var ts [2]syscall.Timespec
+		var tv [2]syscall.Timeval
+		for range n {
+			if _, _, errno := syscall.Syscall6(unix.SYS_UTIMENSAT, f.Fd(), 0,
+				uintptr(unsafe.Pointer(&ts[0])), 0, 0, 0); errno != 0 {
+				fmt.Fprintln(os.Stderr, "TRACEE_UTIMENSAT_ERRNO", errno)
+				os.Exit(10)
+			}
+			if _, _, errno := syscall.Syscall(unix.SYS_FUTIMESAT, f.Fd(), 0,
+				uintptr(unsafe.Pointer(&tv[0]))); errno != 0 {
+				fmt.Fprintln(os.Stderr, "TRACEE_FUTIMESAT_ERRNO", errno)
+				os.Exit(10)
+			}
 		}
 	case "badhow":
 		// A real pathname the decoder can read, with an open_how pointer that is not
@@ -440,5 +465,19 @@ func TestTraceCountsBothLostPathsOfARename(t *testing.T) {
 	res := traceHelper(t, "lostrename", t.TempDir(), calls)
 	if res.Dropped < lost || res.Dropped > lost+observerSlack {
 		t.Errorf("Dropped = %d after %d renames losing both pathnames each, want %d..%d; ~%d is the signature of one drop key serving both arguments", res.Dropped, calls, lost, lost+observerSlack, calls)
+	}
+}
+
+// A syscall that names no file must not report a lost one. utimensat and futimesat both
+// take a NULL pathname and then act on the descriptor itself; decoding that as a pathname
+// reads address zero, fails, and counts a drop - inflating the one channel that tells the
+// user their manifest is incomplete, for a run that lost nothing. cp -p, tar -x, install
+// and rsync all reach utimensat this way, so extracting an archive alone did it hundreds
+// of times.
+func TestTraceDoesNotCountANullPathnameAsALostAccess(t *testing.T) {
+	const calls = 100
+	res := traceHelper(t, "nullpath", t.TempDir(), calls)
+	if res.Dropped > observerSlack {
+		t.Errorf("Dropped = %d after %d utimensat+futimesat calls that name no file, want at most %d; ~%d is the signature of decoding a NULL pathname as one", res.Dropped, 2*calls, observerSlack, 2*calls)
 	}
 }

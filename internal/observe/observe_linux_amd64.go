@@ -778,12 +778,14 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		at(0, atFdCwd, regs.Rdi, true)
 	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_MKNODAT,
 		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT:
-		// utimensat with a NULL pathname is the kernel's form of futimens(3): it acts on
-		// the descriptor itself and names no file. Reading address zero fails, so decoding
-		// it as a pathname reported a lost access for a call that lost nothing - and cp -p,
-		// tar -x, install and rsync all use it, so extracting an archive alone put hundreds
-		// of phantom losses on the channel that tells the user their manifest is short.
-		if regs.Orig_rax == unix.SYS_UTIMENSAT && regs.Rsi == 0 {
+		// utimensat and futimesat accept a NULL pathname, and then act on the descriptor
+		// itself rather than naming a file - the kernel forms of futimens(3) and futimes(3).
+		// Reading address zero fails, so decoding one as a pathname reported a lost access
+		// for a call that lost nothing: cp -p, tar -x, install and rsync all use utimensat,
+		// so extracting an archive alone put hundreds of phantom losses on the channel that
+		// tells the user their manifest is short. No other syscall here takes a NULL path,
+		// so the exemption is named rather than applied to every zero pathname register.
+		if regs.Rsi == 0 && (regs.Orig_rax == unix.SYS_UTIMENSAT || regs.Orig_rax == unix.SYS_FUTIMESAT) {
 			return
 		}
 		at(0, int32(regs.Rdi), regs.Rsi, true)
