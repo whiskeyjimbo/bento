@@ -350,11 +350,13 @@ func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 // miscounts only ever add.
 //
 // observerSlack is the one addition that is not a miscount. A tracee thread that exits
-// between its syscall stop and the observer's register read answers ESRCH, and that stop
-// is counted as a lost observation deliberately - the read failed, so what it was cannot
-// be known, and an uncounted loss is the failure the channel exists to prevent. A Go
-// tracee retires a thread or two on its way out, so a run carries at most a couple. The
-// band is wide enough to absorb them and far too tight for either counting bug.
+// between its syscall stop and the observer's read of it answers ESRCH. Where inspect's
+// register read fails that way at an entry stop, the observer now knows nothing ran and
+// does not count it; where PTRACE_GET_SYSCALL_INFO is the read that failed there is no op
+// to say which stop it was, so that one is still counted deliberately - an uncounted loss
+// is the failure the channel exists to prevent. A Go tracee retires a thread or two on its
+// way out, so a run carries at most a couple. The band is wide enough to absorb them and
+// far too tight for either counting bug.
 const observerSlack = 3
 
 func TestTraceCountsEveryLostAccessOnce(t *testing.T) {

@@ -291,9 +291,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// foreign ABI and the amd64 table would misread it. Recording on both entry
 			// and exit is deduplicated, so no enter/exit bookkeeping beyond the drop
 			// counter's own.
-			if nativeSyscall(wpid, &res.Dropped) {
+			if op, native := nativeSyscall(wpid, &res.Dropped); native {
 				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, record, count, release, held, &res)
+				inspect(wpid, op, record, count, release, held, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -347,23 +347,25 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 // what the stop was. That one is counted per stop rather than per call, because a
 // failure leaves no op field to tell them apart; with the request's availability already
 // established at the initial stop, the only failure left is a tracee that died mid-pair,
-// which has no second stop to count.
+// which has no second stop to count. That one is a phantom whenever the thread died at an
+// entry stop, but the read that fails here is the read that would say so - unlike
+// inspect's, which has this op in hand - so it stays counted rather than guessed.
 //
 // This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
 // and passes here, and inspect drops it on the tag its syscall numbers carry.
-func nativeSyscall(pid int, dropped *int) bool {
+func nativeSyscall(pid int, dropped *int) (op byte, native bool) {
 	op, arch, err := syscallInfo(pid)
 	if err != nil {
 		*dropped++
-		return false
+		return 0, false
 	}
 	if arch == auditArchX8664 {
-		return true
+		return op, true
 	}
 	if op == unix.PTRACE_SYSCALL_INFO_ENTRY {
 		*dropped++
 	}
-	return false
+	return op, false
 }
 
 // syscallInfo reads the op and dispatch arch of the stop the tracee is in, via
@@ -510,13 +512,27 @@ type heldPath struct {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, record func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
+func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
 		// access at all - a tracee killed between the stop and this read fails here on
-		// whatever it was running. Counted anyway: an uncounted lost access is the
-		// failure this channel exists to prevent, and the alternative is to guess.
+		// whatever it was running.
+		//
+		// ESRCH at an ENTRY stop is the one case that can be resolved rather than counted:
+		// a ptrace-stopped thread runs nothing until the observer resumes it, so a thread
+		// that is already gone died holding this stop and never executed the syscall. No
+		// access happened, and counting it reports a loss the tracee never had. The op
+		// comes from the caller's own read at this same stop, before any resume, so it
+		// describes this stop and not a later one.
+		//
+		// Every other failure is counted: an uncounted lost access is what this channel
+		// exists to prevent. An EIO or EFAULT says nothing about whether the thread is
+		// alive, and ESRCH at the EXIT stop means the syscall did complete - the
+		// existence probes are read there, so its result is genuinely lost.
+		if op == unix.PTRACE_SYSCALL_INFO_ENTRY && errors.Is(err, syscall.ESRCH) {
+			return
+		}
 		countDrop(&regs, 0)
 		return
 	}
