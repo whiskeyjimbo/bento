@@ -9,7 +9,37 @@ Later releases will list changes since the previous tag. This first entry
 describes the boundary as it ships, not the 380-odd commits that built it -
 none of them were ever in a release.
 
-## 0.1.0 (unreleased)
+## 0.1.1 (2026-07-29)
+
+### Boundary Hardening
+
+- **Refused network stdio**: The launcher now refuses execution if `stdin`, `stdout`, or `stderr` are network sockets, regardless of manifest egress grants. This closes socket-inheritance bypasses where a sandboxed process could communicate over pre-opened network file descriptors without passing through the host proxy.
+- **Refused `write: /`**: Manifest validation now rejects a write grant of the root directory (`write: /`) outright.
+- **Fail closed on non-amd64 architectures**: The seccomp filter now explicitly refuses execution on non-amd64 architectures rather than quietly skipping the seccomp architecture guard.
+- **Fail closed on proxy & NAT64 failure**: The HTTP CONNECT egress proxy fails closed (refuses connection) when NAT64 prefix discovery cannot answer, when RFC 6052 address layout is invalid, or when NAT64 translation fails to derive a target.
+- **Fail closed on unwalkable credential paths**: Credential alias resolution and home directory traversal fail closed when directory walking cannot complete due to permission errors or unreadable paths.
+- **Expanded default shields**: Added `.claude.json.backup` to default credential denylist shields and ensured relocated `XDG_RUNTIME_DIR` paths are shielded across all user anchors.
+- **Normalized proxy hostnames**: Trailing DNS root dots (e.g. `example.com.`) in HTTP CONNECT targets are stripped before matching against manifest host rules.
+
+### Boundary & Information Disclosure Fixes
+
+- **Proxy refusal privacy**: Proxy refusal bodies no longer disclose resolved destination IP addresses to the sandboxed caller.
+- **Embedder observer protection**: Embedder observer panic handling prevents proxy panics from disrupting host enforcement.
+- **Standardized guard refusal**: Guard-blocked connection attempts return standard dial failure responses rather than disclosing internal gate errors.
+
+### Profiling & Observability (`bento profile`)
+
+- **Entry-stop syscall decoding**: Syscall pathnames and `execve` events are now decoded at entry stops rather than exit stops, preventing missed system calls (such as `execveat`) and eliminating false phantom drop counts.
+- **Thread probe accounting**: Fixed probe leak and drop accounting during thread termination, `execve` thread retirement, and root exit.
+- **Credential alias scanning in profiling**: `bento profile` now executes credential alias scanning to detect foreign-home credential stores during profiling runs.
+
+### Operator Surface & Platform Refinements
+
+- **Surfaced guard blocks**: Operator and supervisor summaries now report destinations blocked by network guards.
+- **Landlock degraded tier**: Added `resolve_unix` handling to Landlock's degraded tier and stopped requesting ungranted Landlock rights.
+- **Shield mount cleanup**: Shield mount points created during a sandbox run are explicitly reclaimed upon exit.
+
+## 0.1.0 (2026-07-27)
 
 First release. Linux (amd64) is the enforced platform; arm64 and macOS are not
 yet supported.
