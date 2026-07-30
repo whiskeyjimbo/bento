@@ -1009,6 +1009,42 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 	}
 }
 
+// A tid the kernel has reaped is one the kernel can hand out again, and stopKey is keyed on
+// it. So a pathname left held past its thread's death is not merely an uncounted drop: the
+// next tracee to land on that tid at the same call site matches the stale key, and the
+// success filter it passes is the NEW call's return value. The dead thread's pathname then
+// reaches the manifest attributed to a call that never touched it - the same consent-surface
+// failure TestTraceDoesNotRecordAPathPlantedBySibling covers by the other route.
+//
+// The record assertion is the one that matters here. Only the count moves if the sweep is
+// removed while the drop total is taken elsewhere, so counting alone would not have caught
+// this.
+func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
+	const tid = 100
+	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0xdeadbeef}
+	tracees := map[int]bool{tid: true}
+	lastOp := map[int]byte{tid: unix.PTRACE_SYSCALL_INFO_ENTRY}
+	held := map[string]heldPath{stopKey(tid, &regs): {path: "/etc/shadow", readOK: true}}
+
+	if lost := forgetExitedTid(tid, tracees, lastOp, held); lost != 1 {
+		t.Errorf("lost = %d, want 1 - the probe's exit stop can never arrive, so whether it succeeded is unknowable", lost)
+	}
+	if tracees[tid] {
+		t.Errorf("tracees[%d] is still set, so reapTracees would SIGKILL whatever host process next holds that tid", tid)
+	}
+	if _, ok := lastOp[tid]; ok {
+		t.Errorf("lastOp[%d] is still set, so a new tracee's first stop would be judged on a dead thread's parity", tid)
+	}
+
+	// The reused tid arrives at an exit stop of the same syscall at the same call site, and
+	// its call succeeded.
+	var recorded []string
+	recordHeldExistence(tid, &regs, func(path string, _ bool) { recorded = append(recorded, path) }, func() {}, held)
+	if len(recorded) != 0 {
+		t.Errorf("recorded %q for a tid the kernel reused; a pathname left held is one the next thread's exit stop will claim", recorded)
+	}
+}
+
 // A sibling sharing the address space must not be able to plant a path in the observation.
 // The pathname argument lives in the tracee's memory, so when the observer reads it decides
 // what it records: read at the syscall EXIT stop, the sibling has had the whole syscall to

@@ -296,15 +296,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			})
 			return res, nil
 		case ws.Exited() || ws.Signaled():
-			// A subprocess ended and is reaped; drop it so the guard does not wait on a
-			// freed pid, and nothing to resume. A thread killed between the entry and exit
-			// stop of an existence probe leaves that pathname held with no stop left to
-			// resolve it, and no ptrace request fails to say so - deadThreadLoss
-			// only speaks for a thread that dies AT a stop. A non-leader execve makes this
-			// routine: de_thread kills every sibling and each one arrives here.
-			delete(tracees, wpid)
-			delete(lastOp, wpid)
-			res.Dropped += releaseHeldOf(held, wpid)
+			// A subprocess ended and is reaped; forget it so the guard does not wait on a
+			// freed pid, and nothing to resume.
+			res.Dropped += forgetExitedTid(wpid, tracees, lastOp, held)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones, unless it came through a
@@ -672,6 +666,27 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 	delete(tracees, old)
 	delete(lastOp, old)
 	return releaseHeldOf(held, old) + releaseHeldOf(held, wpid)
+}
+
+// forgetExitedTid drops every trace of a tid whose wait status has arrived, and reports how
+// many observations went with it. The sibling of forgetRetiredTid for the disappearance the
+// kernel does announce.
+//
+// A thread killed between the entry and exit stop of an existence probe leaves that pathname
+// held with no stop left to resolve it, and no ptrace request fails to say so - deadThreadLoss
+// only speaks for a thread that dies AT a stop. A non-leader execve makes this routine:
+// de_thread kills every sibling and each one arrives here.
+//
+// The release is load-bearing for what gets recorded, not only for the count. held is keyed on
+// stopKey, whose tid the kernel is free to hand to a new tracee once this one is reaped; a
+// stale entry left behind then matches the new thread's exit stop at the same call site, and
+// recordHeldExistence records the dead thread's pathname gated on the live call's return
+// value - a path the run never touched, in the manifest the user consents to. Dropping it here
+// is what keeps that key from ever being reachable by another thread.
+func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
+	delete(tracees, wpid)
+	delete(lastOp, wpid)
+	return releaseHeldOf(held, wpid)
 }
 
 // releaseHeldOf drops every pathname a vanished tid was still holding and reports how many
