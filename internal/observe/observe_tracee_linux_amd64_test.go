@@ -233,8 +233,12 @@ func TestObserveTraceeHelper(t *testing.T) {
 			// that end this loop.
 			time.Sleep(time.Millisecond)
 		}
-		if err := child.Wait(); err == nil {
-			fmt.Fprintln(os.Stderr, "TRACEE_KILLED_CHILD_EXITED_CLEAN")
+		// The status is checked for the signal and not merely for an error: a child that
+		// exited on its own, or a wait that failed for some other reason, is a fixture that
+		// no longer kills anything mid-probe, and it must not read as success.
+		var exited *exec.ExitError
+		if err := child.Wait(); !errors.As(err, &exited) || !exited.Sys().(syscall.WaitStatus).Signaled() {
+			fmt.Fprintln(os.Stderr, "TRACEE_KILLED_CHILD_NOT_SIGNALLED", err)
 			os.Exit(12)
 		}
 	case "probeforever":
@@ -332,7 +336,8 @@ const badHowName = "openat2-how-unreadable"
 const probeName = "sibling-probe-target"
 
 // plantProbeTarget writes the file the prober threads probe, reached through a chain of
-// symlinks that each re-walk a long run of directories.
+// symlinks that each re-walk a long run of directories, and returns the directory to hand
+// the tracee.
 //
 // What the chain buys is the width of the window the drop counters need open: a pathname is
 // held from its entry stop until its exit stop, and only a thread caught inside that window
@@ -353,10 +358,21 @@ const probeName = "sibling-probe-target"
 //
 // The depth is derived rather than fixed because those targets are absolute paths under the
 // test's temporary directory, and a host with a long TMPDIR would otherwise push them past
-// PATH_MAX.
-func plantProbeTarget(t *testing.T, dir string) {
+// PATH_MAX. The prefix is resolved for the same reason in the other budget: every hop
+// re-walks it, so ONE symlink in the temporary directory's own path - a host where /tmp is
+// a link - costs a symlink of the kernel's limit of 40 per hop rather than once, and the
+// whole chain answers ELOOP.
+//
+// A failed resolution would not fail these tests, because a pathname is held from its entry
+// stop whether or not the call goes on to succeed, so the probe is checked here: silently
+// probing a path that cannot resolve is a fixture that no longer tests what it claims.
+func plantProbeTarget(t *testing.T, dir string) string {
 	t.Helper()
 	const hops = 38
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	bottom := dir
 	for range min(1900, (4000-len(dir))/2) {
 		bottom = filepath.Join(bottom, "a")
@@ -378,6 +394,10 @@ func plantProbeTarget(t *testing.T, dir string) {
 		}
 		link = next
 	}
+	if _, err := os.Stat(filepath.Join(dir, probeName)); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // heldBy counts the pathnames a pid is still waiting on an exit stop to resolve. The
@@ -878,8 +898,7 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 // itself; TestTraceCountsProbesHeldByAKilledDescendant is the one that pins the branch.
 func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 	const probers = 16
-	dir := t.TempDir()
-	plantProbeTarget(t, dir)
+	dir := plantProbeTarget(t, t.TempDir())
 	res := traceUntilDropped(t, "execthread", dir, probers)
 	if !res.Execed {
 		t.Fatal("the tracee did not exec, so no sibling was killed and nothing was lost mid-probe")
@@ -899,8 +918,7 @@ func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 // and from nothing else.
 func TestTraceCountsProbesHeldWhenRootExits(t *testing.T) {
 	const probers = 16
-	dir := t.TempDir()
-	plantProbeTarget(t, dir)
+	dir := plantProbeTarget(t, t.TempDir())
 	res := traceUntilDropped(t, "outliveroot", dir, probers)
 	if res.Dropped == 0 {
 		t.Errorf("Dropped = 0 after root exited while %d backgrounded threads were probing %s; a pathname the entry stop resolved for a tracee that is about to be SIGKILLed is an access the manifest is short by",
@@ -912,19 +930,25 @@ func TestTraceCountsProbesHeldWhenRootExits(t *testing.T) {
 // descendant killed mid-probe, whose every thread the observer has already dequeued by the
 // time root exits.
 //
-// This is the fixture that pins the exit branch specifically. The dying-thread test above
-// cannot: a non-leader execve retires two tids whose held pathnames the exec event sweeps
-// instead, so with the exit branch's release deleted that test still reported a drop in
-// roughly a fifth of runs - measured, not conjectured. Here there is no exec at all, so
-// that channel does not exist, and root outliving the drain keeps its own sweep out of it:
-// by the time root exits, every prober's death has been dequeued and nothing is left held.
+// This is the fixture that pins the exit branch. The dying-thread test above cannot: a
+// non-leader execve retires two tids whose held pathnames the exec event sweeps instead, and
+// that sweep is systematic - it happens on every run of that route, so deleting the exit
+// branch's count leaves it passing most of the time. Here there is no exec at all, so that
+// channel does not exist, and root outliving the drain keeps root's own sweep out of it: by
+// the time root exits, every prober's death has been dequeued and nothing is left held.
+//
+// One channel besides the exit branch can still count a probe here, and it is a race rather
+// than a sweep: a thread killed after the tracer's wait reported its stop but before the
+// tracer reads that stop is counted by deadThreadLoss instead. That window is microseconds
+// wide per thread, against sixteen threads whose deaths otherwise all arrive as wait
+// statuses. So deleting the exit branch's count fails this test in all but the occasional
+// run, where it leaves the one above passing more often than not.
 func TestTraceCountsProbesHeldByAKilledDescendant(t *testing.T) {
 	const probers = 16
-	dir := t.TempDir()
-	plantProbeTarget(t, dir)
+	dir := plantProbeTarget(t, t.TempDir())
 	res := traceUntilDropped(t, "killedprobes", dir, probers)
 	if res.Dropped == 0 {
-		t.Errorf("Dropped = 0 after a descendant probing %s was killed with %d threads mid-probe and fully drained before root exited; the pathnames they held can only be reported by the wait-status branch, and nothing else in this run can lose an observation",
+		t.Errorf("Dropped = 0 after a descendant probing %s was killed with %d threads mid-probe and fully drained before root exited; the pathnames they held are reported by the wait-status branch, and root's own sweep cannot stand in for it here",
 			probeName, probers)
 	}
 }
