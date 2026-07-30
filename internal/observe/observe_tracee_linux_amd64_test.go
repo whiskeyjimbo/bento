@@ -41,7 +41,8 @@ import (
 //	execthread execve's from a non-leader thread, which retires that thread's tid;
 //	           N sibling threads probe a path in a loop until de_thread kills them.
 //	outliveroot backgrounds a probeforever child and exits while it is still probing.
-//	probeforever N threads probe a path in a loop and never stop; started by outliveroot.
+//	killedprobes SIGKILLs a probeforever child mid-probe and outlives its whole drain.
+//	probeforever N threads probe a path in a loop and never stop; started by the two above.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -204,25 +205,36 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// than a bare block so the runtime's deadlock detector has no claim on it.
 		time.Sleep(time.Minute)
 	case "outliveroot":
-		// A backgrounded descendant that is still probing when root exits. Root starts it,
-		// waits on the pipe until every prober is in its loop - otherwise root can exit
-		// before the first entry stop and the tracer has nothing held to lose - then exits
-		// clean and leaves the whole process behind.
-		ready, signal, err := os.Pipe()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "TRACEE_PIPE_ERR", err)
+		// A backgrounded descendant that is still probing when root exits: root starts it
+		// and exits clean, leaving the whole process behind for the observer to reap.
+		startProbeForever()
+	case "killedprobes":
+		// The same descendant, killed while it probes - and drained before root exits, so
+		// every pathname it was holding reaches the loop's exit branch and not root's
+		// sweep.
+		//
+		// The drain is waited for rather than slept through. A killed non-leader tid stays
+		// in /proc/<pid>/task until the tracer has dequeued its wait status, and the
+		// leader's status reaches root - the real parent - only once the tracer has taken
+		// it first. Both waits are therefore direct evidence that the exit branch ran for
+		// every thread that could have been holding a pathname.
+		child := startProbeForever()
+		if err := child.Process.Kill(); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_KILL_ERR", err)
 			os.Exit(12)
 		}
-		child := exec.Command(os.Args[0], "-test.run=^TestObserveTraceeHelper$")
-		child.Env = append(os.Environ(), "BENTO_OBSERVE_TRACEE=probeforever")
-		child.ExtraFiles = []*os.File{signal}
-		if err := child.Start(); err != nil {
-			fmt.Fprintln(os.Stderr, "TRACEE_START_ERR", err)
-			os.Exit(12)
+		for {
+			tids, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(child.Process.Pid), "task"))
+			if err != nil || len(tids) <= 1 {
+				break
+			}
+			// Root's own polling is traced too, so it competes with the tracer for the
+			// drain it is waiting on; the pause keeps it from crowding out the very stops
+			// that end this loop.
+			time.Sleep(time.Millisecond)
 		}
-		signal.Close()
-		if _, err := ready.Read(make([]byte, 1)); err != nil {
-			fmt.Fprintln(os.Stderr, "TRACEE_READY_ERR", err)
+		if err := child.Wait(); err == nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_KILLED_CHILD_EXITED_CLEAN")
 			os.Exit(12)
 		}
 	case "probeforever":
@@ -287,12 +299,86 @@ func TestObserveTraceeHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+// startProbeForever spawns the probeforever mode and returns once every one of its probers
+// is in its loop. The wait is what makes the child's probes overlap whatever the caller does
+// next: without it root can exit - or kill the child - before the first entry stop, and the
+// tracer has nothing held to lose.
+func startProbeForever() *exec.Cmd {
+	ready, signal, err := os.Pipe()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TRACEE_PIPE_ERR", err)
+		os.Exit(12)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestObserveTraceeHelper$")
+	child.Env = append(os.Environ(), "BENTO_OBSERVE_TRACEE=probeforever")
+	child.ExtraFiles = []*os.File{signal}
+	if err := child.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "TRACEE_START_ERR", err)
+		os.Exit(12)
+	}
+	signal.Close()
+	if _, err := ready.Read(make([]byte, 1)); err != nil {
+		fmt.Fprintln(os.Stderr, "TRACEE_READY_ERR", err)
+		os.Exit(12)
+	}
+	return child
+}
+
 // badHowName is the pathname the badhow mode passes to openat2. Distinctive, so its
 // presence in a Result can only have come from that one call.
 const badHowName = "openat2-how-unreadable"
 
-// probeName is the path execthread's sibling threads probe while they wait to be killed.
+// probeName is the path the prober threads probe while they wait to be killed or reaped.
 const probeName = "sibling-probe-target"
+
+// plantProbeTarget writes the file the prober threads probe, reached through a chain of
+// symlinks that each re-walk a long run of directories.
+//
+// What the chain buys is the width of the window the drop counters need open: a pathname is
+// held from its entry stop until its exit stop, and only a thread caught inside that window
+// when it dies - or when the trace ends - loses an observation. At a plain pathname the
+// window is barely wider than the tracer's own per-stop work, so a run held one or two
+// probes and sometimes none, which is a lower-bound assertion that fails outright on the
+// fixture rather than on the decoder.
+//
+// Lengthening the pathname does not widen it: the observer reads the pathname out of the
+// tracee at every stop, so a deep path costs the tracer what it costs the kernel and the
+// ratio does not move (measured: no change from a flat path to a 1500-deep one). Symlinks
+// are what separate the two - the kernel walks every component of every hop for an
+// argument the tracer reads as one short name.
+//
+// Every hop lives in the same bottom directory and names the next one by absolute path, so
+// each of them re-walks the one chain and the kernel's work is hops*depth while the tree
+// this has to build and tear down is only depth deep.
+//
+// The depth is derived rather than fixed because those targets are absolute paths under the
+// test's temporary directory, and a host with a long TMPDIR would otherwise push them past
+// PATH_MAX.
+func plantProbeTarget(t *testing.T, dir string) {
+	t.Helper()
+	const hops = 38
+	bottom := dir
+	for range min(1900, (4000-len(dir))/2) {
+		bottom = filepath.Join(bottom, "a")
+	}
+	if err := os.MkdirAll(bottom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bottom, "target"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, probeName)
+	for h := range hops {
+		next := filepath.Join(bottom, "target")
+		if h < hops-1 {
+			next = filepath.Join(bottom, fmt.Sprintf("hop%d", h))
+		}
+		if err := os.Symlink(next, link); err != nil {
+			t.Fatal(err)
+		}
+		link = next
+	}
+}
 
 // heldBy counts the pathnames a pid is still waiting on an exit stop to resolve. The
 // observer only ever releases them in bulk, so nothing in the package answers this.
@@ -387,6 +473,26 @@ const traceeExecTarget = "/bin/true"
 
 func threadFile(dir string, i int) string {
 	return filepath.Join(dir, fmt.Sprintf("thread-%d", i))
+}
+
+// traceUntilDropped runs a prober fixture until the observer reports a lost observation,
+// giving up after a few attempts, and returns the last Result either way.
+//
+// Which threads are inside an existence probe's entry/exit window when the kill or the exit
+// arrives is the scheduler's business, and a run that catches none held nothing to lose -
+// which is not the same thing as a decoder that fails to count what was lost. Retrying
+// separates the two without weakening what is asserted: a decoder that does not count the
+// loss reports zero on every attempt, however many are given. plantProbeTarget makes a
+// zero-attempt uncommon; this is what keeps an uncommon one from failing the suite.
+func traceUntilDropped(t *testing.T, mode, dir string, probers int) Result {
+	t.Helper()
+	var res Result
+	for range 4 {
+		if res = traceHelper(t, mode, dir, probers); res.Dropped > 0 {
+			return res
+		}
+	}
+	return res
 }
 
 // traceHelper runs the tracee above under the real observer.
@@ -765,18 +871,21 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 // threads dying mid-syscall. Which of them is caught between the two stops is the
 // scheduler's business, so the assertion is that at least one loss reaches Dropped, not an
 // exact count.
+//
+// The count it asserts on is not this branch's alone: the same exec retires two tids whose
+// held pathnames the exec event sweeps instead, so most of these runs still report a drop
+// with the exit branch's count deleted. What this fixture is for is the de_thread route
+// itself; TestTraceCountsProbesHeldByAKilledDescendant is the one that pins the branch.
 func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 	const probers = 16
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := traceHelper(t, "execthread", dir, probers)
+	plantProbeTarget(t, dir)
+	res := traceUntilDropped(t, "execthread", dir, probers)
 	if !res.Execed {
 		t.Fatal("the tracee did not exec, so no sibling was killed and nothing was lost mid-probe")
 	}
 	if res.Dropped == 0 {
-		t.Errorf("Dropped = 0 after %d threads were killed probing %s; a pathname held by a thread that dies before its exit stop is an access the manifest is short by, and nothing else reports it",
+		t.Errorf("Dropped = 0 after %d threads were killed probing %s; a pathname held by a thread that dies before its exit stop is an access the manifest is short by",
 			probers, probeName)
 	}
 }
@@ -791,13 +900,32 @@ func TestTraceCountsAProbeLostWithADyingThread(t *testing.T) {
 func TestTraceCountsProbesHeldWhenRootExits(t *testing.T) {
 	const probers = 16
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := traceHelper(t, "outliveroot", dir, probers)
+	plantProbeTarget(t, dir)
+	res := traceUntilDropped(t, "outliveroot", dir, probers)
 	if res.Dropped == 0 {
 		t.Errorf("Dropped = 0 after root exited while %d backgrounded threads were probing %s; a pathname the entry stop resolved for a tracee that is about to be SIGKILLed is an access the manifest is short by",
 			probers, probeName)
+	}
+}
+
+// The same loss through the branch that reports it for a tracee the trace outlives: a
+// descendant killed mid-probe, whose every thread the observer has already dequeued by the
+// time root exits.
+//
+// This is the fixture that pins the exit branch specifically. The dying-thread test above
+// cannot: a non-leader execve retires two tids whose held pathnames the exec event sweeps
+// instead, so with the exit branch's release deleted that test still reported a drop in
+// roughly a fifth of runs - measured, not conjectured. Here there is no exec at all, so
+// that channel does not exist, and root outliving the drain keeps its own sweep out of it:
+// by the time root exits, every prober's death has been dequeued and nothing is left held.
+func TestTraceCountsProbesHeldByAKilledDescendant(t *testing.T) {
+	const probers = 16
+	dir := t.TempDir()
+	plantProbeTarget(t, dir)
+	res := traceUntilDropped(t, "killedprobes", dir, probers)
+	if res.Dropped == 0 {
+		t.Errorf("Dropped = 0 after a descendant probing %s was killed with %d threads mid-probe and fully drained before root exited; the pathnames they held can only be reported by the wait-status branch, and nothing else in this run can lose an observation",
+			probeName, probers)
 	}
 }
 
