@@ -112,7 +112,7 @@ func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
 	writeGuardBlockedWarning(&b, enforce.Result{GuardBlocked: []enforce.HostPort{
 		{Host: "evil.example\n[bento] nothing was blocked", Port: "443"},
 	}})
-	for _, line := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(b.String(), "\n"), "\n") {
 		if !strings.HasPrefix(line, "[bento] ") {
 			t.Errorf("a crafted host forged the line %q in %q", line, b.String())
 		}
@@ -185,7 +185,7 @@ func TestWriteShieldedGrantWarningQuotesBothNames(t *testing.T) {
 	})
 	out := b.String()
 
-	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		if !strings.HasPrefix(line, "[bento]") {
 			t.Errorf("a host-derived name must not be able to start a line of its own; got %q in:\n%s", line, out)
 		}

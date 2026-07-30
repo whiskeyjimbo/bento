@@ -64,9 +64,7 @@ func TestObserveTraceeHelper(t *testing.T) {
 		start.Add(1)
 		var wg sync.WaitGroup
 		for i := range n {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				// Locked so the opener is a thread the tracer sees as its own tid rather
 				// than one the scheduler may swap under it mid-syscall.
 				runtime.LockOSThread()
@@ -78,7 +76,7 @@ func TestObserveTraceeHelper(t *testing.T) {
 					os.Exit(4)
 				}
 				f.Close()
-			}()
+			})
 		}
 		ready.Wait()
 		start.Done()
@@ -458,9 +456,7 @@ func plantPathTracee(dir string, n int) {
 
 	done := make(chan struct{})
 	var sibling sync.WaitGroup
-	sibling.Add(1)
-	go func() {
-		defer sibling.Done()
+	sibling.Go(func() {
 		runtime.LockOSThread()
 		for {
 			select {
@@ -473,7 +469,7 @@ func plantPathTracee(dir string, n int) {
 				os.Exit(8)
 			}
 		}
-	}()
+	})
 
 	runtime.LockOSThread()
 	var st unix.Stat_t
