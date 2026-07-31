@@ -29,10 +29,29 @@ import (
 // link points there, so a caller checking whether a grant reaches its store would be
 // told no while the sandbox binds it. Resolve first - bento does not do it for you here,
 // because a predicate that touched the filesystem could not live in this package.
+// It is called once per rule for every file of a whole-home walk, so it is written to
+// allocate nothing and to touch filepath.Clean only when cleaning could change the
+// answer. Only a ".." segment or a trailing separator can: an empty ("//") or "."
+// segment leaves a component prefix a component prefix either way. The ".." test is
+// deliberately loose - a file honestly named "..bashrc" pays a Clean it does not need,
+// which costs time and never correctness.
 func CoversResolved(grant, path string) bool {
-	rel, err := filepath.Rel(grant, path)
-	if err != nil {
-		return false
+	const sep = string(filepath.Separator)
+	if strings.Contains(grant, "..") || strings.Contains(path, "..") || strings.HasSuffix(grant, sep) {
+		grant, path = filepath.Clean(grant), filepath.Clean(path)
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if grant == path {
+		return true
+	}
+	// The root covers every absolute path. It is its own case because the test below
+	// wants a separator BETWEEN grant and the rest, and the root already ends in one.
+	// A relative path is not under it - nor under anything else here - which is the
+	// safe answer for a caller that skipped the preconditions.
+	if grant == sep {
+		return strings.HasPrefix(path, sep)
+	}
+	// Spelled as an index comparison rather than HasPrefix(path, grant+sep): the
+	// concatenation allocates, and this runs once per rule for every file of a
+	// whole-home walk.
+	return len(path) > len(grant) && path[len(grant)] == filepath.Separator && path[:len(grant)] == grant
 }
