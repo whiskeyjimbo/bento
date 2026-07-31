@@ -33,7 +33,8 @@ Bento surfaces any gap between what a manifest requests and what the host kernel
 
 ### Build from Source
 ```sh
-go build -o bento ./cmd/bento
+make build                    # reproducible static binary (trimmed paths, source-derived stamp)
+go build -o bento ./cmd/bento # plain build
 ```
 
 ---
@@ -97,6 +98,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 ### Built-in Shields & Exceptions
 - **Directory-Granular Write Grants:** Write grants name directories, not individual files (preserving save-via-rename workflows like `os.replace` or `git`). Write grants covering shielded paths (e.g., `write: "~"`) are strictly refused - by `validate` and `approve` where the grant names home in the manifest's own vocabulary, and by `run` once the host makes the rest recognizable.
 - **Explicit Shield Opt-In:** An explicit read grant naming an exact shield path (e.g., `read: ~/.ssh`) is honored as a deliberate, read-only exception with loud warnings. Write grants to shield paths remain forbidden.
+- **Manifest Integrity Warnings:** `validate`, `approve`, and `run` inspect the manifest's own ownership and permissions - including POSIX ACLs, which the mode bits cannot show - and warn when someone other than you can rewrite it. An approval stamp only attests to what whoever can write the file left there.
 - **Fail-Closed Principle:** Any ambiguity, missing permission, unhandled network request, or missing kernel feature fails closed by default.
 
 ---
@@ -261,25 +263,25 @@ When building a supervised wrapper (such as an editor agent or interactive CLI t
 
 Run tests and checks locally:
 
+This checkout is not part of the parent `go.work`, so every `go` command needs
+`GOWORK=off`. The Makefile sets it for you - prefer the targets over raw commands.
+
 ```sh
-# Run tests (sandbox tests automatically skip if bwrap/userns are missing)
-GOWORK=off go test ./...
+make test      # unit and integration tests (sandbox tests skip if bwrap/userns are missing;
+               # the denylist parity tests also want firejail and its apparmor profiles)
+make vet
+make lint      # golangci-lint, pinned
+make audit     # denylist parity against upstream firejail reference definitions
+make race      # the proxy's concurrency tests under the race detector (needs a C toolchain)
+make examples  # each examples/*/verify.sh; the root go test does not reach them
 
-# Run vet
-GOWORK=off go vet ./...
-
-# Audit denylist against upstream firejail reference definitions
-./scripts/denylist-audit.sh
-
-# The proxy's concurrency tests under the race detector, or `make check` for all gates
-GOWORK=off CGO_ENABLED=1 go test -race ./internal/proxy/...
+make check     # every gate above - the bar before merging
 ```
 
 `-race` on `internal/proxy` is a gate, not extra credit: the proxy's
 cross-connection properties - a gate or egress-guard verdict never landing on
 another connection - rest on shared state whose narrower breakages pass hundreds
-of plain runs and fail immediately under the race detector. It needs a C toolchain
-(`-race` requires cgo).
+of plain runs and fail immediately under the race detector.
 
 The test suite executes real probes inside real bubblewrap sandboxes to verify that security boundaries strictly hold.
 
