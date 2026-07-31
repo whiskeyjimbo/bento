@@ -279,3 +279,54 @@ func TestApproveClampsAnAlreadyApprovedManifest(t *testing.T) {
 		t.Errorf("mode = %#o, want the group/world write bits cleared", got)
 	}
 }
+
+// Profiling proposes what one run did rather than what a script should be allowed to do,
+// and the four-step workflow makes typing the fourth command the path of least
+// resistance. Approve has to show the entries it is about to hand over - each of these is
+// something profiling proposes unprompted.
+func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "tool.py.manifest.yaml")
+
+	callouts := func(p *policy.Policy) string {
+		t.Helper()
+		var buf strings.Builder
+		writeApprovalCallouts(&buf, manifestPath, p, resolvedGrants(p, manifestPath))
+		return buf.String()
+	}
+
+	// A write over the directory holding the manifest is what profiling proposes for a
+	// script that wrote anything beside itself.
+	got := callouts(&policy.Policy{Entrypoint: "./tool.py", Write: []string{dir}, Exec: policy.ExecAll})
+	for _, want := range []string{"covers the manifest itself", "exec: all"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("callouts missing %q; got:\n%s", want, got)
+		}
+	}
+
+	// A write reaching the entrypoint but not the manifest still lets the script rewrite
+	// its own code after the approval attests it.
+	sub := filepath.Join(dir, "src")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got = callouts(&policy.Policy{Entrypoint: "./src/tool.py", Write: []string{sub}})
+	if !strings.Contains(got, "covers the entrypoint") {
+		t.Errorf("callouts missing the entrypoint warning; got:\n%s", got)
+	}
+
+	// A whole home is the other thing worth stopping on, and it is a read grant that
+	// nothing else here would flag.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got = callouts(&policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}})
+	if !strings.Contains(got, "whole home or top-level directory") {
+		t.Errorf("callouts missing the broad-grant warning; got:\n%s", got)
+	}
+
+	// A narrow policy is the common case and must print nothing: a block that fires on
+	// every manifest is a block nobody reads.
+	if got := callouts(&policy.Policy{Entrypoint: "./tool.py", Read: []string{filepath.Join(dir, "data")}, Exec: policy.ExecNone}); got != "" {
+		t.Errorf("a narrow policy must produce no callouts; got:\n%s", got)
+	}
+}

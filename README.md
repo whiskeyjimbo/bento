@@ -58,7 +58,8 @@ cd examples/probe
 # 2. Validate: Check manifest syntax and review requested permissions.
 ./bento validate ./probe.py.manifest.yaml --strict
 
-# 3. Approve: Stamp an approval fingerprint over the reviewed manifest policy fields.
+# 3. Approve: Review the permissions and stamp an approval fingerprint over them.
+#    It prints the policy, calls out what deserves a second look, and asks. --yes for CI.
 ./bento approve ./probe.py.manifest.yaml
 
 # 4. Run: Execute the script inside the enforced sandbox.

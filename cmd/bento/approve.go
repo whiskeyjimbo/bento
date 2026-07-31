@@ -1,22 +1,33 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func newApproveCmd() *cobra.Command {
-	return &cobra.Command{
+	var assumeYes bool
+
+	cmd := &cobra.Command{
 		Use:   "approve <manifest>",
-		Short: "Stamp a manifest as approved for its current permissions",
+		Short: "Review a manifest's permissions and stamp them as approved",
 		Long: "approve records that a human has reviewed the manifest's current permissions.\n\n" +
+			"It prints the permissions it is about to stamp, calls out the entries that\n" +
+			"deserve a second look, and asks before writing. --yes skips the question for\n" +
+			"scripts; so does a stdin that is not a terminal, which keeps the command usable\n" +
+			"from CI.\n\n" +
 			"It writes a provenance fingerprint of the policy into the manifest. `validate`\n" +
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
@@ -54,6 +65,18 @@ func newApproveCmd() *cobra.Command {
 				return nil
 			}
 
+			// The judgement approve exists to record lives in reading the policy, and
+			// nothing here showed it: a numbered four-step list whose fourth command
+			// printed one line made typing it the path of least resistance. The summary
+			// is validate's own, so there is one rendering of a policy rather than two
+			// that can drift.
+			resolved := resolvedGrants(doc.Policy, path)
+			writePolicySummary(os.Stdout, path, doc.Policy, resolved)
+			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved)
+			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
+				return err
+			}
+
 			doc.Provenance = manifest.Provenance{
 				GeneratedBy: "bento approve",
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -69,6 +92,92 @@ func newApproveCmd() *cobra.Command {
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
 			return nil
 		},
+	}
+
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "stamp without asking, for scripts and CI")
+	return cmd
+}
+
+// writeApprovalCallouts names the entries in a policy that deserve a second look before
+// the stamp goes on. Profiling proposes what one run did rather than what a script should
+// be allowed to do, so every one of these is something it will hand over unprompted -
+// approving the probe example's own proposal grants `exec: all` and a write over the
+// directory holding the manifest being approved.
+//
+// None of them is a refusal: each is a legitimate thing to approve, and a manifest with
+// no callouts prints nothing here. The ask is only that approving one be a decision.
+//
+// manifestPath is the symlink-resolved location the stamp will be written to, and the
+// grants are resolved the same way before they are compared - CoversResolved is lexical,
+// so an unresolved path is the one input that makes it answer "no" exactly where it
+// matters.
+func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy) {
+	// A host that could not resolve the grants (an unusable $HOME) yields nil, the same
+	// degradation validate's summary makes. The containment checks below have nothing to
+	// compare against then; exec, which is not a path, still does.
+	var reads, writes []string
+	if resolved != nil {
+		reads, writes = resolved.Read, resolved.Write
+	}
+
+	var notes []string
+	if p.Exec == policy.ExecAll {
+		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
+	}
+	entrypoint := pathresolve.Existing(resolvedEntrypoint(p, manifestPath))
+	for _, g := range writes {
+		g = pathresolve.Existing(g)
+		switch {
+		case policy.CoversResolved(g, manifestPath):
+			notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
+		case policy.CoversResolved(g, entrypoint):
+			notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
+		}
+	}
+	for kind, grants := range map[string][]string{"read": reads, "write": writes} {
+		for _, g := range grants {
+			if isBroadDir(g) {
+				notes = append(notes, fmt.Sprintf("%s: %q is a whole home or top-level directory, far more than a script needs.", kind, g))
+			}
+		}
+	}
+	// Sorted because the map walk above is not, and an approval prompt that reorders
+	// itself between runs of the same manifest cannot be read as a diff.
+	slices.Sort(notes)
+	if len(notes) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nWorth a second look before stamping:\n")
+	for _, n := range notes {
+		fmt.Fprintf(w, "  - %s\n", n)
+	}
+}
+
+// resolvedEntrypoint is the entrypoint as an absolute path. A relative one is written
+// against the manifest, which is how manifest.Resolve reads it, so it is joined to the
+// manifest's own directory rather than the working directory approve was invoked from.
+func resolvedEntrypoint(p *policy.Policy, manifestPath string) string {
+	if filepath.IsAbs(p.Entrypoint) {
+		return p.Entrypoint
+	}
+	return filepath.Join(filepath.Dir(manifestPath), p.Entrypoint)
+}
+
+// confirmApproval asks before the stamp goes on. A stdin that is not a terminal answers
+// yes, matching profiling's own non-interactive contract: there is no human to ask, and
+// blocking would hang every wrapper script and CI job that already calls approve. --yes
+// says so explicitly, which is what a script should do.
+func confirmApproval(w io.Writer, assumeYes bool) error {
+	if assumeYes || !isTerminal(os.Stdin) {
+		return nil
+	}
+	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
+	line, _ := bufio.NewReader(openTTY()).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return nil
+	default:
+		return fmt.Errorf("not approved: edit the manifest, or re-run approve once the permissions above are what you want")
 	}
 }
 
