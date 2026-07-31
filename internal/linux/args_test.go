@@ -1516,7 +1516,6 @@ func TestCompiledBinaryRunsItself(t *testing.T) {
 	}
 }
 
-
 func TestInterpreterPrefix(t *testing.T) {
 	cases := map[string]string{
 		"/usr/bin/python3":                    "",
