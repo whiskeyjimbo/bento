@@ -131,11 +131,20 @@ provenance:
   approves: <sha256-fingerprint-over-policy-fields>
 ```
 
-Read and write paths accept a leading `~` for your home directory (`~/projects/api`,
-or `"~"` for home itself). Quote the bare tilde: unquoted, YAML reads `~` as null,
-not as a path. Another user's home (`~operator/...`) is not expanded - write it out,
-and prefix a file genuinely named with a tilde as `./~backup`. A `~` grant resolves
-against `$HOME` at run time, not at approval time.
+### Paths and `~`
+
+Read and write paths may start with `~`. Bento replaces it with your home directory as
+it builds the sandbox, so `read: [~/projects/api]` grants `/home/you/projects/api`.
+Three details: quote a bare `"~"`, because unquoted YAML reads it as null; only your own
+home expands, so spell out another user's (`/home/operator/...`); and a file whose name
+really starts with a tilde needs a `./` prefix (`./~backup`).
+
+Your script does not see that same home directory. Bento sets `HOME=/tmp` in the
+sandbox to keep credential files under the real home out of reach, so a script that
+expands `~` itself gets `/tmp/projects/api` and fails to open a file you granted. Either
+have the script use the full path (`/home/you/projects/api`), or add `HOME` to the
+manifest's `env:` list so the real value is passed through. `bento validate` prints the
+`HOME` your script will see.
 
 ---
 

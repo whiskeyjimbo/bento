@@ -1607,9 +1607,7 @@ func envArgs(proc enforce.Process) []string {
 		args = append(args, "--setenv", "PATH", "/usr/bin:/bin")
 	}
 	if _, ok := proc.Env["HOME"]; !ok {
-		// The sandbox's HOME is the tmpfs, never the host's: a script that writes
-		// dotfiles must not reach the real home directory.
-		args = append(args, "--setenv", "HOME", "/tmp")
+		args = append(args, "--setenv", "HOME", enforce.SandboxHome)
 	}
 	return args
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -290,5 +291,23 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 	}
 	if _, _, err := loadDocument(broken, io.Discard); err == nil || strings.Contains(err.Error(), "looks like a script") {
 		t.Errorf("err = %v, want the parser's own error for a malformed manifest", err)
+	}
+}
+
+// A manifest that does not pass HOME through still gets one injected, pointing at the
+// sandbox tmpfs rather than the caller's home. Nothing else at the CLI says so, and a
+// script using the ordinary ~/... idiom otherwise fails on a path its author never wrote.
+func TestValidateStatesTheSandboxHome(t *testing.T) {
+	var buf bytes.Buffer
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}, nil)
+	if out := buf.String(); !strings.Contains(out, enforce.SandboxHome) || !strings.Contains(out, "HOME is not passed through") {
+		t.Errorf("summary must say what HOME becomes inside the sandbox; got:\n%s", out)
+	}
+
+	// Passed through, so ~ means what the author expects and the note would be wrong.
+	buf.Reset()
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil)
+	if strings.Contains(buf.String(), "HOME is not passed through") {
+		t.Errorf("a manifest allowlisting HOME must not be told it was remapped; got:\n%s", buf.String())
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -292,6 +293,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
+	writeSandboxHome(w, p)
 
 	if len(p.Network) == 0 {
 		fmt.Fprintf(w, "network:      denied (no egress)\n")
@@ -342,6 +344,22 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
+}
+
+// writeSandboxHome states what HOME will be inside the box when the manifest does not
+// pass the caller's through. The remap is deliberate - a sandbox inheriting the real HOME
+// would put every credential store one expanduser away - but nothing says it happened, so
+// a script using the ordinary `~/.config/...` idiom fails on a path its author never
+// wrote and reads as a bug in their own code. validate is where the reader is already
+// reviewing permissions, which is before the first confusing traceback rather than after.
+func writeSandboxHome(w io.Writer, p *policy.Policy) {
+	if slices.Contains(p.Env, "HOME") {
+		return
+	}
+	fmt.Fprintf(w, "  note: HOME is not passed through, so inside the sandbox it is %s and `~`\n", enforce.SandboxHome)
+	fmt.Fprintf(w, "        expands there, not to your home directory. Grants above are matched\n")
+	fmt.Fprintf(w, "        against host paths, so a script resolving ~ itself will miss them -\n")
+	fmt.Fprintf(w, "        write the paths it opens absolute, or allowlist HOME here.\n")
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal
