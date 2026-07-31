@@ -330,3 +330,20 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 		t.Errorf("a narrow policy must produce no callouts; got:\n%s", got)
 	}
 }
+
+// approve grew a prompt, and every caller that already scripted it - a CI job, a wrapper
+// around profile-then-approve - has no terminal to answer on. Both ways out have to stamp
+// rather than block, and neither may print a question nobody can see.
+func TestConfirmApprovalDoesNotBlockAScript(t *testing.T) {
+	for name, yes := range map[string]bool{"--yes": true, "stdin is not a terminal": false} {
+		t.Run(name, func(t *testing.T) {
+			var buf strings.Builder
+			if err := confirmApproval(&buf, yes); err != nil {
+				t.Errorf("confirmApproval must proceed; got %v", err)
+			}
+			if buf.String() != "" {
+				t.Errorf("nothing may be asked when there is nobody to answer; got %q", buf.String())
+			}
+		})
+	}
+}
