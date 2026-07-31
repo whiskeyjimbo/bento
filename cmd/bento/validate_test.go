@@ -242,3 +242,53 @@ func TestValidateJSONNamesWhatGrantsReach(t *testing.T) {
 		t.Errorf("resolved_read = %v, want %v - the absolute grant names its own target and needs no entry", got.ResolvedRead, want)
 	}
 }
+
+// Passing the script where the manifest belongs is the highest-frequency first-day
+// mistake, and the parser's answer quotes the script's own first lines - which reads as
+// a problem with the file's contents rather than with which file was named. Every
+// command that takes a manifest loads through loadDocument, so the replacement is
+// checked there.
+func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tool.py")
+	if err := os.WriteFile(script, []byte("#!/usr/bin/env python3\nprint('hi')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// No sibling manifest yet: the answer has to be how to draft one, not a file that
+	// is not there.
+	_, _, err := loadDocument(script, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "looks like a script, not a manifest") {
+		t.Fatalf("err = %v, want it to say the file is a script", err)
+	}
+	if !strings.Contains(err.Error(), "bento profile") {
+		t.Errorf("err = %v, want the draft command when no manifest sits beside it", err)
+	}
+
+	sibling := script + ".manifest.yaml"
+	if err := os.WriteFile(sibling, []byte("entrypoint: ./tool.py\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = loadDocument(script, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), sibling) {
+		t.Errorf("err = %v, want it to name %s once that manifest exists", err, sibling)
+	}
+
+	// A shebang with no extension bento knows is the other signal.
+	shell := filepath.Join(dir, "tool")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadDocument(shell, io.Discard); err == nil || !strings.Contains(err.Error(), "looks like a script") {
+		t.Errorf("err = %v, want a shebang alone to be enough", err)
+	}
+
+	// A manifest that is merely malformed keeps the parser's diagnosis, which says
+	// where the YAML went wrong.
+	broken := filepath.Join(dir, "m.yaml")
+	if err := os.WriteFile(broken, []byte("entrypoint: ./x\n  read: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadDocument(broken, io.Discard); err == nil || strings.Contains(err.Error(), "looks like a script") {
+		t.Errorf("err = %v, want the parser's own error for a malformed manifest", err)
+	}
+}

@@ -79,7 +79,55 @@ func loadDocument(path string, warn io.Writer) (*manifest.Document, manifestTrus
 	}
 	warnUntrusted(warn, trust.flaws(uint32(os.Geteuid())))
 	doc, err := manifest.Parse(f)
-	return doc, trust, err
+	if err != nil {
+		return doc, trust, notAManifest(f, path, err)
+	}
+	return doc, trust, nil
+}
+
+// notAManifest replaces a parse error with the mistake it usually is: the script was
+// named where its manifest belongs. The parser's own complaint quotes the script's first
+// lines, which reads as a problem with the file's contents rather than with which file
+// was named, and nothing in it points at the manifest. Every command that takes one
+// loads through here, so run, validate and approve all get the same answer.
+//
+// It replaces the error only where the file plainly is a program, so a genuinely
+// malformed manifest still gets the parser's diagnosis, and never adds to it - a second
+// line beside a diagnosis this specific is one more thing to skim past.
+func notAManifest(f *os.File, path string, parseErr error) error {
+	if !looksLikeScript(f, path) {
+		return parseErr
+	}
+	// The suggestion is stat-ed before it is offered: profile writes the manifest beside
+	// the script under this name, so it is usually there, and naming one that is not would
+	// send the reader to a file they would have to draft anyway.
+	if suggestion := path + ".manifest.yaml"; fileExists(suggestion) {
+		return fmt.Errorf("%s looks like a script, not a manifest. Did you mean %s?", path, suggestion)
+	}
+	return fmt.Errorf("%s looks like a script, not a manifest. Run `bento profile %s` to draft one, then pass that", path, path)
+}
+
+// looksLikeScript reports whether a file bento failed to parse is a program rather than a
+// mangled manifest. A shebang is the cheap signal; the extensions bento already maps to an
+// interpreter are the other, since a manifest never carries one.
+func looksLikeScript(f *os.File, path string) bool {
+	if guessInterpreter(path) != "" {
+		return true
+	}
+	// Parse consumed the file, so the shebang is behind the offset. A seek that fails
+	// leaves the parser's error in place, which is the right answer when nothing here
+	// could be read.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return false
+	}
+	var head [2]byte
+	n, _ := io.ReadFull(f, head[:])
+	return n == 2 && string(head[:]) == "#!"
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // approvalState describes how a manifest's stored approval relates to its current
