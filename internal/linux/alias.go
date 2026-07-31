@@ -18,6 +18,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // fileID identifies a file's content on the host. A hardlink and a bind alias both
@@ -213,7 +214,7 @@ func splitAcknowledgedAliases(sb sandbox, scan aliasScan, acceptUnder []string) 
 		trees = append(trees, t)
 	}
 	for _, a := range scan.found {
-		if slices.ContainsFunc(trees, func(t string) bool { return under(a.Path, t) }) {
+		if slices.ContainsFunc(trees, func(t string) bool { return policy.CoversResolved(t, a.Path) }) {
 			accepted = append(accepted, a)
 			continue
 		}
@@ -243,7 +244,7 @@ func overbroadAcknowledgement(tree string, credentials []string) bool {
 	if tree == "/" || tree == "." || tree == "" {
 		return true
 	}
-	return slices.ContainsFunc(credentials, func(c string) bool { return under(c, tree) })
+	return slices.ContainsFunc(credentials, func(c string) bool { return policy.CoversResolved(tree, c) })
 }
 
 // reportedAliases converts accepted aliases for the run's result. The scan already sorts
@@ -389,7 +390,7 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 					if shielded[alias] {
 						continue
 					}
-					if slices.ContainsFunc(trees, func(t string) bool { return under(alias, t) }) {
+					if slices.ContainsFunc(trees, func(t string) bool { return policy.CoversResolved(t, alias) }) {
 						out = append(out, credentialAlias{Path: alias, Credential: c.path})
 					}
 				}
@@ -468,7 +469,7 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 		if seen[path] {
 			continue
 		}
-		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return under(path, o) }) {
+		if slices.ContainsFunc(resolvedOptIns, func(o string) bool { return policy.CoversResolved(o, path) }) {
 			continue
 		}
 		seen[path] = true

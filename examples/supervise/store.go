@@ -568,7 +568,7 @@ func deniesUnderAllows(grants, denies []string, kind string) []denyUnderAllow {
 	var out []denyUnderAllow
 	for _, path := range denies {
 		for _, g := range grants {
-			if underComponent(path, g) {
+			if policy.CoversResolved(g, path) {
 				out = append(out, denyUnderAllow{kind, path, g})
 			}
 		}
@@ -617,7 +617,7 @@ func (s *store) decidePath(key, kind, path string) (decision, bool) {
 func longestPrefixMatch(m map[string]decision, path string) (decision, bool) {
 	best, bestDec := "", decision("")
 	for stored, d := range m {
-		if !underComponent(path, stored) {
+		if !policy.CoversResolved(stored, path) {
 			continue
 		}
 		if len(stored) > len(best) || (len(stored) == len(best) && d == deny) {
@@ -652,16 +652,6 @@ func execDecision(e string) decision {
 	default:
 		return deny
 	}
-}
-
-// underComponent reports whether child is parent or lies beneath it on a path
-// component boundary (so /a/b is under /a but /ab is not).
-func underComponent(child, parent string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // rememberNetwork records a network decision, per-app or (global) for every app.
@@ -747,7 +737,7 @@ func coversStore(grant, dir string) bool {
 	if !filepath.IsAbs(g) || !filepath.IsAbs(d) {
 		return true
 	}
-	return underComponent(d, g) || underComponent(g, d)
+	return policy.CoversResolved(g, d) || policy.CoversResolved(d, g)
 }
 
 // resolveSymlinks resolves p through its deepest EXISTING ancestor, rejoining the

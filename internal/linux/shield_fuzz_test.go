@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // The security invariant the sandbox rests on: a policy the grant checks ACCEPT
@@ -165,7 +167,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 	// it may be shielded at all - a residual interior shield would blank it.
 	for _, d := range optInRes {
 		for _, dst := range allDests {
-			if dst == d || under(dst, d) {
+			if dst == d || policy.CoversResolved(d, dst) {
 				t.Fatalf("opt-in %q blanked: shield emitted at %q (opt-in %v)", d, dst, optInLit)
 			}
 		}

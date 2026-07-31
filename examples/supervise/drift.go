@@ -113,7 +113,7 @@ func driftManifestAllows(kind, disp string) string {
 // directory covers everything beneath it, the same containment bento enforces).
 func pathCoveredBy(path string, grants []string) bool {
 	for _, g := range grants {
-		if underComponent(path, g) {
+		if policy.CoversResolved(g, path) {
 			return true
 		}
 	}

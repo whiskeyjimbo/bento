@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // Deny is how completely a rule shields its path.
@@ -810,7 +812,7 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	// podman/skopeo auth.json, the gpg-agent socket, the dbus and wayland sockets. The
 	// /run shield names none of them at that location, so `read: /tmp` - or `read: /` -
 	// would hand them out. Follow the shield to wherever the variable points.
-	if runtimeDir == "" || under(runtimeDir, "/run") || under(runtimeDir, "/var/run") || !Shieldable(runtimeDir, homes) {
+	if runtimeDir == "" || policy.CoversResolved("/run", runtimeDir) || policy.CoversResolved("/var/run", runtimeDir) || !Shieldable(runtimeDir, homes) {
 		return rules
 	}
 	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true})
@@ -829,18 +831,13 @@ func Covers(path string, rules []Rule) (Rule, bool) {
 	var best Rule
 	found := false
 	for _, r := range rules {
-		if r.Path == path || (r.Dir && under(path, r.Path)) {
+		if r.Path == path || (r.Dir && policy.CoversResolved(r.Path, path)) {
 			if !found || r.Deny < best.Deny {
 				best, found = r, true
 			}
 		}
 	}
 	return best, found
-}
-
-// under reports whether path is at or inside dir.
-func under(path, dir string) bool {
-	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
 // Workspace returns the rules that apply inside a directory a policy grants

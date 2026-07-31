@@ -30,7 +30,7 @@ func testSandbox(existing ...string) sandbox {
 		// directory get its workspace shields while a plain-file grant does not.
 		isDir: func(p string) bool {
 			for e := range set {
-				if e != p && under(e, p) {
+				if e != p && policy.CoversResolved(p, e) {
 					return true
 				}
 			}
@@ -1516,22 +1516,6 @@ func TestCompiledBinaryRunsItself(t *testing.T) {
 	}
 }
 
-func TestUnderPathContainment(t *testing.T) {
-	cases := []struct {
-		child, parent string
-		want          bool
-	}{
-		{"/home/u/.ssh", "/home/u", true},
-		{"/home/u", "/home/u", true},
-		{"/home/user2", "/home/u", false}, // prefix-string trap: must not match
-		{"/tmp", "/home/u", false},
-	}
-	for _, tc := range cases {
-		if got := under(tc.child, tc.parent); got != tc.want {
-			t.Errorf("under(%q, %q) = %v, want %v", tc.child, tc.parent, got, tc.want)
-		}
-	}
-}
 
 func TestInterpreterPrefix(t *testing.T) {
 	cases := map[string]string{
@@ -1678,7 +1662,7 @@ func TestInterpreterUnderSymlinkedHomeBindsOnlyItself(t *testing.T) {
 	sb.homes = []string{"/home/u"}
 	sb.interpreter = "/var/home/u/bin/python3"
 	sb.resolve = func(p string) string {
-		if p == "/home/u" || under(p, "/home/u") {
+		if p == "/home/u" || policy.CoversResolved("/home/u", p) {
 			return filepath.Join("/var", p)
 		}
 		return p

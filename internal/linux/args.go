@@ -559,7 +559,7 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 		// sandbox whose policy granted none of them. A prefix INSIDE the home (a pyenv or
 		// pipx install root) is allowed - that is the case this whole function exists to
 		// serve, and the deny-list shields the credential stores beside it.
-		if prefix == home || under(home, prefix) {
+		if prefix == home || policy.CoversResolved(prefix, home) {
 			return true
 		}
 		// A sibling of this user's home, for a host whose home base is not one of the
@@ -787,7 +787,7 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	}
 	underExposed := func(p string) bool {
 		for _, d := range exposed {
-			if under(p, d) {
+			if policy.CoversResolved(d, p) {
 				return true
 			}
 		}
@@ -894,7 +894,7 @@ func insideAWriteGrant(path string, writes []string) bool {
 		if path == w {
 			return false
 		}
-		if under(path, w) {
+		if policy.CoversResolved(w, path) {
 			inside = true
 		}
 	}
@@ -1075,7 +1075,7 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// grant strictly inside a shield is likewise refused - the shield covers the
 			// whole directory and cannot be partly lifted - so opting one file in means
 			// reading the shield directory itself.
-			if under(g, rp) && !slices.Contains(optInShields, rp) {
+			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
 				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
 			}
 		}
@@ -1127,7 +1127,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 			if rp == "/" {
 				continue
 			}
-			if under(g, rp) {
+			if policy.CoversResolved(rp, g) {
 				return fmt.Errorf("linux: write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
 			}
 		}
@@ -1270,7 +1270,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 			// .ssh there - the exact key-planting this check exists to stop. Refusing on
 			// either namespace costs nothing: a shield with no symlink above it resolves to
 			// itself, so the two tests coincide everywhere else.
-			if under(loc, w) || under(r.Path, w) {
+			if policy.CoversResolved(w, loc) || policy.CoversResolved(w, r.Path) {
 				return fmt.Errorf("linux: write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
 			}
 		}
@@ -1383,20 +1383,11 @@ func isProcessPath(path string) bool {
 // contains it, or because it contains a grant.
 func reachable(path string, grants []string) bool {
 	for _, g := range grants {
-		if path == g || under(path, g) || under(g, path) {
+		if path == g || policy.CoversResolved(g, path) || policy.CoversResolved(path, g) {
 			return true
 		}
 	}
 	return false
-}
-
-// under reports whether child is inside parent.
-func under(child, parent string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // resolveGrants makes every granted path absolute and symlink-free.
@@ -1544,7 +1535,7 @@ func missingHop(sb sandbox, abs, real string, filled []string) string {
 // coveredBy reports whether path is one of roots or sits inside one.
 func coveredBy(path string, roots []string) bool {
 	for _, r := range roots {
-		if path == r || under(path, r) {
+		if path == r || policy.CoversResolved(r, path) {
 			return true
 		}
 	}

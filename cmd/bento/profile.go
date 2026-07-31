@@ -842,7 +842,7 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	}
 	inShield := func(g string) bool {
 		for _, s := range shields {
-			if g == s || underDir(s, g) {
+			if g == s || policy.CoversResolved(s, g) {
 				return true
 			}
 		}
@@ -901,7 +901,7 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 	for _, g := range writes {
 		shielded := false
 		for _, s := range shields {
-			if g == s || underDir(s, g) {
+			if g == s || policy.CoversResolved(s, g) {
 				shielded = true
 				break
 			}
@@ -966,7 +966,7 @@ func foreignHomeShields(grants []string) []string {
 			continue
 		}
 		for _, r := range denylist.Home(root, anchors...) {
-			if g == r.Path || underDir(r.Path, g) || underDir(g, r.Path) {
+			if g == r.Path || policy.CoversResolved(r.Path, g) || policy.CoversResolved(g, r.Path) {
 				seen[g] = true
 				out = append(out, g)
 				break
@@ -995,14 +995,6 @@ func homeRoot(path string) (string, bool) {
 }
 
 // underDir reports whether child is inside parent (parent contains child).
-func underDir(parent, child string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 // clampProposal filters a synthesized proposal for review, in an order that is
 // load-bearing (bv2-2wy): drop grants inside a mandatory shield, then drop over-broad
 // read and write grants, and ONLY THEN dedup reads a surviving write already covers.
