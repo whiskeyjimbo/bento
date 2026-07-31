@@ -29,17 +29,16 @@ import (
 // link points there, so a caller checking whether a grant reaches its store would be
 // told no while the sandbox binds it. Resolve first - bento does not do it for you here,
 // because a predicate that touched the filesystem could not live in this package.
-// It is called once per rule for every file of a whole-home walk, so it is written to
-// allocate nothing and to touch filepath.Clean only when cleaning could change the
-// answer. Only a ".." segment or a trailing separator can: an empty ("//") or "."
-// segment leaves a component prefix a component prefix either way. The ".." test is
-// deliberately loose - a file honestly named "..bashrc" pays a Clean it does not need,
-// which costs time and never correctness.
+// Both sides are cleaned first, so the containment test below can be a plain byte
+// comparison. Cleaning unconditionally is deliberate: an earlier version tried to skip
+// it when no ".." was present, which got "/home/u//.ssh//id_rsa" wrong against a
+// "/home/u/.ssh" grant - an empty segment INSIDE the grant's span shifts every offset
+// after it, so a prefix comparison misses a path the grant really does cover. Deciding
+// cheaply whether cleaning is needed is most of the work of cleaning. filepath.Clean
+// does not allocate when its input is already clean, which is the ordinary case.
 func CoversResolved(grant, path string) bool {
 	const sep = string(filepath.Separator)
-	if strings.Contains(grant, "..") || strings.Contains(path, "..") || strings.HasSuffix(grant, sep) {
-		grant, path = filepath.Clean(grant), filepath.Clean(path)
-	}
+	grant, path = filepath.Clean(grant), filepath.Clean(path)
 	if grant == path {
 		return true
 	}

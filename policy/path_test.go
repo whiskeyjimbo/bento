@@ -35,8 +35,13 @@ func TestCoversResolved(t *testing.T) {
 		{"/home/u/", "/home/u", true},
 		// A leading ".." in a real filename is not a traversal segment.
 		{"/home/u", "/home/u/..bashrc", true},
-		// Empty and "." segments do not change containment either way.
+		// Empty and "." segments anywhere, including INSIDE the grant's own span, where
+		// they shift the byte offsets a prefix comparison depends on.
 		{"/home/u", "/home/u//./.ssh", true},
+		{"/home/u/.ssh", "/home/u//.ssh//id_rsa", true},
+		{"/home/u/.ssh", "/home/u/./.ssh/id_rsa", true},
+		{"/home/u/.gnupg", "/home/u/./.gnupg", true},
+		{"/home/u/.ssh", "/home/u//.sshx/id_rsa", false},
 	}
 	for _, tc := range cases {
 		if got := CoversResolved(tc.grant, tc.path); got != tc.want {
