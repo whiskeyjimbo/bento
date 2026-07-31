@@ -145,7 +145,7 @@ func TestApproveWritesThroughASymlink(t *testing.T) {
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the symlink must survive approve; lstat = %v, %v", fi, err)
 	}
-	doc, _, err := loadDocument(target, io.Discard)
+	doc, _, err := loadDocument(target)
 	if err != nil {
 		t.Fatal(err)
 	}

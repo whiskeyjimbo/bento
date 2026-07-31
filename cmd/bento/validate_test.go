@@ -257,7 +257,7 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 	}
 	// No sibling manifest yet: the answer has to be how to draft one, not a file that
 	// is not there.
-	_, _, err := loadDocument(script, io.Discard)
+	_, _, err := loadDocument(script)
 	if err == nil || !strings.Contains(err.Error(), "looks like a script, not a manifest") {
 		t.Fatalf("err = %v, want it to say the file is a script", err)
 	}
@@ -269,7 +269,7 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 	if err := os.WriteFile(sibling, []byte("entrypoint: ./tool.py\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = loadDocument(script, io.Discard)
+	_, _, err = loadDocument(script)
 	if err == nil || !strings.Contains(err.Error(), sibling) {
 		t.Errorf("err = %v, want it to name %s once that manifest exists", err, sibling)
 	}
@@ -279,7 +279,7 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 	if err := os.WriteFile(shell, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadDocument(shell, io.Discard); err == nil || !strings.Contains(err.Error(), "looks like a script") {
+	if _, _, err := loadDocument(shell); err == nil || !strings.Contains(err.Error(), "looks like a script") {
 		t.Errorf("err = %v, want a shebang alone to be enough", err)
 	}
 
@@ -289,7 +289,7 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 	if err := os.WriteFile(broken, []byte("entrypoint: ./x\n  read: [\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadDocument(broken, io.Discard); err == nil || strings.Contains(err.Error(), "looks like a script") {
+	if _, _, err := loadDocument(broken); err == nil || strings.Contains(err.Error(), "looks like a script") {
 		t.Errorf("err = %v, want the parser's own error for a malformed manifest", err)
 	}
 }

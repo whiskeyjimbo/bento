@@ -544,21 +544,31 @@ func trustOf(t *testing.T, path string) manifestTrust {
 	return trust
 }
 
-// run, validate and profile keep working on a permissive checkout: a second writer is
-// reported, not refused, since a shared box or a loose umask is ordinary.
-func TestLoadDocumentWarnsAboutAWorldWritableDirectory(t *testing.T) {
+// run and validate keep working on a permissive checkout: a second writer is reported,
+// not refused, since a shared box or a loose umask is ordinary. It is reported only for a
+// manifest carrying a stamp, though - the warning is about what that stamp is worth, and
+// the profile-then-run inner loop runs unstamped manifests over and over.
+func TestWarnStampAtRiskOnlySpeaksForAStampedManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := manifestIn(t, dir)
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
-
-	var warn bytes.Buffer
-	if _, _, err := loadDocument(path, &warn); err != nil {
+	doc, trust, err := loadDocument(path)
+	if err != nil {
 		t.Fatalf("loadDocument: %v", err)
 	}
+
+	var warn bytes.Buffer
+	warnStampAtRisk(&warn, doc, trust)
+	if warn.String() != "" {
+		t.Errorf("an unstamped manifest has no approval to devalue; got %q", warn.String())
+	}
+
+	doc.Provenance.Approves = doc.Policy.Fingerprint()
+	warnStampAtRisk(&warn, doc, trust)
 	if !strings.Contains(warn.String(), "the directory holding it") {
-		t.Errorf("a world-writable directory must be reported; got %q", warn.String())
+		t.Errorf("a world-writable directory must be reported for a stamped manifest; got %q", warn.String())
 	}
 }
 
@@ -649,7 +659,7 @@ func TestInspectManifestRefusesADirectorySwappedMidWalk(t *testing.T) {
 // and the verdict would describe somewhere the manifest never came from, so the load
 // fails instead.
 func TestLoadDocumentRefusesANonRegularFile(t *testing.T) {
-	_, _, err := loadDocument(os.DevNull, io.Discard)
+	_, _, err := loadDocument(os.DevNull)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("a manifest with no location on disk must not load; got %v", err)
 	}
@@ -659,7 +669,7 @@ func TestLoadDocumentRefusesANonRegularFile(t *testing.T) {
 // read the manifest.
 func approvable(t *testing.T, path string) error {
 	t.Helper()
-	_, trust, err := loadDocument(path, io.Discard)
+	_, trust, err := loadDocument(path)
 	if err != nil {
 		t.Fatalf("loadDocument: %v", err)
 	}

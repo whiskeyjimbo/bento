@@ -1080,9 +1080,7 @@ func guessInterpreter(path string) string {
 // for a different entrypoint is not honored here, and why converge still prompts for a
 // seeded path the enforced run will not re-shield. A missing path is the first run.
 func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
-	// io.Discard: the write at the end of the session reports the manifest's location, and
-	// it does so for the non-interactive runs this is never reached from too.
-	doc, _, err := loadDocument(path, io.Discard)
+	doc, _, err := loadDocument(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, nil
@@ -1129,7 +1127,7 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 // at the name resolved a second time; it is zero on the first run, where there is no file
 // to have gathered it from.
 func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manifestTrust, error) {
-	existing, trust, err := loadDocument(path, io.Discard) // seedGrants already reported this manifest
+	existing, trust, err := loadDocument(path)
 	switch {
 	case err == nil:
 		// Resolve before the union: a proposal names absolute paths, so a relative grant

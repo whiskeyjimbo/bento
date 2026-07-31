@@ -33,10 +33,11 @@ func newValidateCmd() *cobra.Command {
 			"--json carries the same verdict as an `approval` field and honors --strict too.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			doc, _, err := loadDocument(args[0], cmd.ErrOrStderr())
+			doc, trust, err := loadDocument(args[0])
 			if err != nil {
 				return err
 			}
+			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolvedGrants(doc.Policy, args[0]))
 				out.Approval = approvalName(checkApproval(doc))
@@ -63,12 +64,12 @@ func newValidateCmd() *cobra.Command {
 // written. (run resolves paths for execution; the fingerprint attests the
 // manifest, so it must not depend on where bento was invoked.)
 //
-// Anyone else who can write the manifest or a directory leading to it is reported to
-// warn, since the approval it carries is only worth what its location is; callers that
-// report the same thing themselves pass io.Discard. The trust is returned alongside so
-// approve can refuse on it without a second open - the facts must describe the same
-// inode these bytes came from.
-func loadDocument(path string, warn io.Writer) (*manifest.Document, manifestTrust, error) {
+// The trust facts are returned alongside so a caller can report or refuse on them
+// without a second open - they must describe the same inode these bytes came from. It
+// does not report them itself: whether anyone else can change the manifest only costs
+// something once there is a stamp to devalue, which is not knowable until it is parsed.
+// See warnStampAtRisk.
+func loadDocument(path string) (*manifest.Document, manifestTrust, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, manifestTrust{}, err
@@ -78,7 +79,6 @@ func loadDocument(path string, warn io.Writer) (*manifest.Document, manifestTrus
 	if err != nil {
 		return nil, manifestTrust{}, err
 	}
-	warnUntrusted(warn, trust.flaws(uint32(os.Geteuid())))
 	doc, err := manifest.Parse(f)
 	if err != nil {
 		return doc, trust, notAManifest(f, path, err)

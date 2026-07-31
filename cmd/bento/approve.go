@@ -41,9 +41,9 @@ func newApproveCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
-			// io.Discard, not stderr: approve reports the same facts itself below, as a
-			// refusal for what it cannot fix and as the clamp warning for what it can.
-			doc, trust, err := loadDocument(path, io.Discard)
+			// approve reports the location facts itself below, as a refusal for what it
+			// cannot fix and as the clamp warning for what it can.
+			doc, trust, err := loadDocument(path)
 			if err != nil {
 				return err
 			}
