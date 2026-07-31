@@ -352,16 +352,36 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+s.Kind+" on a host that can shield)"))
 		}
 	}
+	// The exit code is bento's, not the script's. Reporting it as the script's answer is
+	// the one summary line that would be actively wrong rather than merely incomplete -
+	// 125 is also a code a script may exit itself, so nothing else here can tell them
+	// apart. Worded as the heuristic it is: a stage killed outright reads as silent too.
+	if res.Setup != enforce.SetupAttested {
+		fmt.Fprintf(w, "\n%s\n", t.warn("the sandbox did not run your script: "+setupReason(res.Setup)))
+		fmt.Fprintf(w, "%s\n", t.dim("exit code "+strconv.Itoa(res.ExitCode)+" is bento's, not the script's."))
+	}
 	// A failed run that reached nothing through the proxy is what a bypass looks like:
 	// bento intercepts egress cooperatively through HTTP_PROXY, so a script that ignores
 	// proxy settings dials into an empty network namespace and fails closed. The count is
 	// meaningful here even over a manifest declaring no network, because the enforced run
 	// always carries a live gate. A heuristic, so it is worded as one.
-	if res.ExitCode != 0 && res.EgressConnections == 0 {
+	// Only for a run that actually reached the script: a stage that died in setup also
+	// made no connection, and blaming the script's proxy handling there sends the human
+	// hunting a network problem that is not one.
+	if res.Setup == enforce.SetupAttested && res.ExitCode != 0 && res.EgressConnections == 0 {
 		fmt.Fprintf(w, "\n%s\n", t.dim("the script failed having made no connection through the egress proxy; if it needs"))
 		fmt.Fprintf(w, "%s\n", t.dim("network, note that bento intercepts egress via HTTP_PROXY - a script that ignores"))
 		fmt.Fprintf(w, "%s\n", t.dim("proxy settings cannot reach even its approved hosts."))
 	}
+}
+
+// setupReason words a non-attested SetupState for the human. The states are bento's
+// vocabulary; this is the sentence a person can act on.
+func setupReason(s enforce.SetupState) string {
+	if s == enforce.SetupTargetUnreached {
+		return "the sandbox came up but the script could not be started in it (check the interpreter and the entrypoint path)"
+	}
+	return "the sandbox failed while setting itself up, so nothing ran confined"
 }
 
 // reportInterrupt is the exit for a signalled run: it is supervise's own failure code,

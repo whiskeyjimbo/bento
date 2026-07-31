@@ -21,7 +21,11 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 	report.Set(enforce.LayerNetwork, enforce.Degraded, "the egress proxy stopped accepting mid-run")
 
 	res := enforce.Result{
-		ExitCode:          3,
+		ExitCode: 3,
+		// The target ran and exited 3, so every field below accounts for a run that
+		// happened. A setup that never reached the target is its own case: it reports
+		// the opposite and suppresses the bypass hint.
+		Setup:             enforce.SetupAttested,
 		Report:            report,
 		EgressConnections: 0, // with p.Network below and a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
@@ -98,6 +102,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
+		"Setup": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {
@@ -112,5 +117,34 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 				"or record in notWarnings why it needs no warning. An unread honesty field is a "+
 				"frontend that is silent about it.", f.Name)
 		}
+	}
+}
+
+// A stage that never reached the target must say so and must NOT print the bypass hint:
+// a setup failure makes no connection either, and the hint would point an operator at a
+// network problem that does not exist.
+func TestWriteResultReportsSetupFailure(t *testing.T) {
+	for name, setup := range map[string]enforce.SetupState{
+		"silent":           enforce.SetupSilent,
+		"target unreached": enforce.SetupTargetUnreached,
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, pol := populatedResult()
+			res.Setup, res.ExitCode, res.EgressConnections = setup, 125, 0
+
+			var out strings.Builder
+			writeResult(&out, pol, true, res)
+			got := out.String()
+
+			if !strings.Contains(got, "the sandbox did not reach the target ("+setup.String()+")") {
+				t.Errorf("a non-attested setup was not reported by name; got:\n%s", got)
+			}
+			if !strings.Contains(got, "exit code 125 is bento's, not the target's") {
+				t.Errorf("the output did not disown the exit code; got:\n%s", got)
+			}
+			if strings.Contains(got, "no connection through the egress proxy") {
+				t.Errorf("the bypass hint fired for a run that never reached the target; got:\n%s", got)
+			}
+		})
 	}
 }

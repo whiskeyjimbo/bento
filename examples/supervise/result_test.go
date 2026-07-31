@@ -20,8 +20,12 @@ func populatedResult() enforce.Result {
 	report.Set(enforce.LayerNetwork, enforce.Degraded, "the egress proxy stopped accepting mid-run")
 
 	return enforce.Result{
-		ExitCode:          3,
-		Report:            report,
+		ExitCode: 3,
+		Report:   report,
+		// The script ran and exited 3: every field below is an account of a run that
+		// happened. The setup-failure surface is its own case, since it reports the
+		// opposite (that the exit code is bento's) and suppresses the bypass hint.
+		Setup:             enforce.SetupAttested,
 		EgressConnections: 0, // with a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
@@ -97,6 +101,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
+		"Setup": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {
@@ -111,5 +116,40 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 				"or record in notWarnings why it needs no warning. An unread honesty field is a "+
 				"frontend that is silent about it.", f.Name)
 		}
+	}
+}
+
+// A stage that never reached the script must say so, and must NOT print the bypass
+// hint: a setup failure also makes no connection, and blaming the script's proxy
+// handling there sends the human after a network problem that does not exist.
+func TestWriteSummaryReportsSetupFailure(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup enforce.SetupState
+		want  string
+	}{
+		"silent":           {enforce.SetupSilent, "failed while setting itself up"},
+		"target unreached": {enforce.SetupTargetUnreached, "could not be started in it"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := populatedResult()
+			res.Setup, res.ExitCode, res.EgressConnections = tc.setup, 125, 0
+
+			var out strings.Builder
+			writeSummary(&out, theme{}, res)
+			got := out.String()
+
+			if !strings.Contains(got, "the sandbox did not run your script") {
+				t.Errorf("a non-attested setup was not reported; got:\n%s", got)
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("summary is missing %q; got:\n%s", tc.want, got)
+			}
+			if !strings.Contains(got, "exit code 125 is bento's, not the script's") {
+				t.Errorf("the summary did not disown the exit code; got:\n%s", got)
+			}
+			if strings.Contains(got, "no connection through the egress proxy") {
+				t.Errorf("the bypass hint fired for a run that never reached the script; got:\n%s", got)
+			}
+		})
 	}
 }

@@ -298,6 +298,14 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, s := range res.Exposed {
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
 	}
+	// Setup: whether the exit code above is the TARGET's answer or bento's. 125 is
+	// bento's "could not run the target" code and a target may exit it too, so nothing
+	// else in this Result separates the two - an embedder mapping them onto different
+	// codes of its own reads this rather than the Report's human-facing prose.
+	if res.Setup != enforce.SetupAttested {
+		fmt.Fprintf(w, "embed: the sandbox did not reach the target (%s); exit code %d is bento's, not the target's\n",
+			res.Setup, res.ExitCode)
+	}
 	// EgressConnections, read as a bypass signature. bento intercepts egress
 	// cooperatively through HTTP_PROXY, so a target that ignores proxy settings dials
 	// into the empty network namespace and fails closed; a network run that failed having
@@ -310,7 +318,9 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	// which is precisely this example's demo: reach.yaml declares none and relies on the
 	// gate, so gating only on the declared rules would skip the hint in the one scenario
 	// the example is built around.
-	if (len(p.Network) > 0 || gated) && res.ExitCode != 0 && res.EgressConnections == 0 {
+	// Gated on an attested setup: a stage that died before the target also made no
+	// connection, and the proxy hint there points at a network problem that is not one.
+	if res.Setup == enforce.SetupAttested && (len(p.Network) > 0 || gated) && res.ExitCode != 0 && res.EgressConnections == 0 {
 		fmt.Fprintln(w, "embed: the target exited non-zero having made no connection through the egress proxy;")
 		fmt.Fprintln(w, "embed: if it needs network, note that bento intercepts egress via HTTP_PROXY, so a target")
 		fmt.Fprintln(w, "embed: that ignores proxy settings cannot reach even its allowlisted hosts.")
