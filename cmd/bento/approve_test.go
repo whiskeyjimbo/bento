@@ -324,6 +324,29 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 		t.Errorf("callouts missing the broad-grant warning; got:\n%s", got)
 	}
 
+	// A ~ entrypoint is legal and manifest.Resolve expands it against $HOME, so a second
+	// implementation that only handles "absolute or relative-to-manifest" builds a path
+	// that does not exist and CoversResolved silently answers no - the callout most worth
+	// having, missing, in the review step that exists to give it.
+	tildeHome := t.TempDir()
+	t.Setenv("HOME", tildeHome)
+	bin := filepath.Join(tildeHome, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got = callouts(&policy.Policy{Entrypoint: "~/bin/tool.py", Write: []string{"~/bin"}})
+	if !strings.Contains(got, "covers the entrypoint") {
+		t.Errorf("a ~ entrypoint must resolve the same way the enforced run resolves it; got:\n%s", got)
+	}
+
+	// A host that cannot resolve the grants must say so rather than print a clean block:
+	// resolution fails on a ~ it cannot expand, which is the likeliest whole-home grant.
+	var buf strings.Builder
+	writeApprovalCallouts(&buf, manifestPath, &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}, nil)
+	if !strings.Contains(buf.String(), "could not be resolved") {
+		t.Errorf("unresolvable grants must be reported, not silently skipped; got:\n%s", buf.String())
+	}
+
 	// A narrow policy is the common case and must print nothing: a block that fires on
 	// every manifest is a block nobody reads.
 	if got := callouts(&policy.Policy{Entrypoint: "./tool.py", Read: []string{filepath.Join(dir, "data")}, Exec: policy.ExecNone}); got != "" {

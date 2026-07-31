@@ -192,9 +192,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// Before the bypass hint: a guard block is a connection that DID reach the proxy,
 		// so it explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
-		// A strict shortfall gets its own line below; adding "profile it" to a run whose
-		// posture did not hold would point at the wrong problem.
-		if !writeEgressHint(stderr, p, res) && shortfall == nil {
+		// Last, and only where nothing above already explained the failure. A strict
+		// shortfall gets its own line below, and a guard block is a destination no amount
+		// of profiling will widen the manifest into reaching - pointing at profile there
+		// sends the reader at the wrong problem.
+		if !writeEgressHint(stderr, p, res) && shortfall == nil && len(res.GuardBlocked) == 0 {
 			writeProfileHint(stderr, p, res)
 		}
 	}

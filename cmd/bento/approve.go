@@ -112,32 +112,36 @@ func newApproveCmd() *cobra.Command {
 // so an unresolved path is the one input that makes it answer "no" exactly where it
 // matters.
 func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy) {
-	// A host that could not resolve the grants (an unusable $HOME) yields nil, the same
-	// degradation validate's summary makes. The containment checks below have nothing to
-	// compare against then; exec, which is not a path, still does.
-	var reads, writes []string
-	if resolved != nil {
-		reads, writes = resolved.Read, resolved.Write
-	}
-
 	var notes []string
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}
-	entrypoint := pathresolve.Existing(resolvedEntrypoint(p, manifestPath))
-	for _, g := range writes {
-		g = pathresolve.Existing(g)
-		switch {
-		case policy.CoversResolved(g, manifestPath):
-			notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
-		case policy.CoversResolved(g, entrypoint):
-			notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
+	// Resolution fails only where a grant carries a ~ this host cannot expand, which is
+	// the spelling most likely to be a whole home - so the review that exists to catch
+	// that must say it could not rather than print a clean-looking block. validate can
+	// degrade quietly here because it reports; this is the gate.
+	if resolved == nil {
+		notes = append(notes, "the grants could not be resolved on this host (an unusable $HOME), so nothing below was checked against what they reach - read them yourself.")
+	} else {
+		// Taken from the resolved policy rather than re-derived: manifest.Resolve expands a
+		// leading ~ against $HOME and anchors the rest to the manifest's directory, and a
+		// second implementation of that would answer differently for `entrypoint: ~/bin/x`
+		// exactly where CoversResolved's lexical test then reports no coverage.
+		entrypoint := pathresolve.Existing(resolved.Entrypoint)
+		for _, g := range resolved.Write {
+			g = pathresolve.Existing(g)
+			switch {
+			case policy.CoversResolved(g, manifestPath):
+				notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
+			case policy.CoversResolved(g, entrypoint):
+				notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
+			}
 		}
-	}
-	for kind, grants := range map[string][]string{"read": reads, "write": writes} {
-		for _, g := range grants {
-			if isBroadDir(g) {
-				notes = append(notes, fmt.Sprintf("%s: %q is a whole home or top-level directory, far more than a script needs.", kind, g))
+		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
+			for _, g := range grants {
+				if isBroadDir(g) {
+					notes = append(notes, fmt.Sprintf("%s: %q is a whole home or top-level directory, far more than a script needs.", kind, g))
+				}
 			}
 		}
 	}
@@ -151,16 +155,6 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 	for _, n := range notes {
 		fmt.Fprintf(w, "  - %s\n", n)
 	}
-}
-
-// resolvedEntrypoint is the entrypoint as an absolute path. A relative one is written
-// against the manifest, which is how manifest.Resolve reads it, so it is joined to the
-// manifest's own directory rather than the working directory approve was invoked from.
-func resolvedEntrypoint(p *policy.Policy, manifestPath string) string {
-	if filepath.IsAbs(p.Entrypoint) {
-		return p.Entrypoint
-	}
-	return filepath.Join(filepath.Dir(manifestPath), p.Entrypoint)
 }
 
 // confirmApproval asks before the stamp goes on. A stdin that is not a terminal answers

@@ -609,10 +609,6 @@ func writerClass(shared fs.FileMode) string {
 	}
 }
 
-// warnUntrusted reports every flaw as advisory. The read commands do not refuse on one:
-// a permissive umask or a shared checkout is ordinary, and failing run, validate and
-// profile over it would break working setups to describe a risk the user may already
-// accept. approve, where a human is establishing the trust, does refuse.
 // warnStampAtRisk reports who besides this user can change the manifest - but only for a
 // manifest carrying an approval stamp, which is the only thing the warning is about. An
 // unstamped one is the profile-then-run inner loop, run with --allow-unapproved, where
@@ -629,6 +625,10 @@ func warnStampAtRisk(w io.Writer, doc *manifest.Document, trust manifestTrust) {
 	warnUntrusted(w, trust.flaws(uint32(os.Geteuid())))
 }
 
+// warnUntrusted reports every flaw as advisory. The read commands do not refuse on one:
+// a permissive umask or a shared checkout is ordinary, and failing run and validate over
+// it would break working setups to describe a risk the user may already accept. approve,
+// where a human is establishing the trust, does refuse.
 func warnUntrusted(w io.Writer, flaws []trustFlaw) {
 	for _, f := range flaws {
 		fmt.Fprintf(w, "[bento] %s - its approval stamp attests only what whoever can write it leaves there.\n", f.reason)

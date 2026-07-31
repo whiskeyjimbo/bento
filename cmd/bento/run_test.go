@@ -440,6 +440,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 		{"succeeded", granted, enforce.Result{ExitCode: 0}, false, false},
 		{"the egress hint already explained it", networked, enforce.Result{ExitCode: 1}, false, false},
 		{"a strict shortfall has its own line", granted, enforce.Result{ExitCode: 1}, true, false},
+		{"a guard block is not something profiling widens", granted, enforce.Result{ExitCode: 1, GuardBlocked: []enforce.HostPort{{Host: "a.com", Port: "443"}}}, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
