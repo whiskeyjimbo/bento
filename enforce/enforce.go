@@ -52,6 +52,10 @@ type RunOptions struct {
 	// backend through this flag.
 	Degraded bool
 
+	// DenyPaths are absolute host paths the run must not reach, shielded on top of the
+	// built-in deny-list. See Options.DenyPaths for what the guarantee covers.
+	DenyPaths []string
+
 	// AcceptAliasesUnder are host trees whose credential aliases the caller has
 	// acknowledged. A shield hides a credential's path, not the content behind it, so a
 	// second name for one inside a tree the run can read is normally a refusal. Naming a
@@ -196,7 +200,8 @@ type Result struct {
 	// own target.
 	ShieldedGrantTargets []CredentialAlias
 	// Shields lists the always-on shields the run actually engaged: the credential
-	// and host-service paths the sandbox hid or made read-only for this policy. It is
+	// and host-service paths the sandbox hid or made read-only for this policy, plus
+	// any path the caller shielded through Options.DenyPaths. It is
 	// the operator-visible evidence that the boundary engaged, and shows which
 	// credential classes a reachable grant would otherwise have exposed. Sorted by
 	// path. Empty means the run shielded nothing - either no grant reached a shield,

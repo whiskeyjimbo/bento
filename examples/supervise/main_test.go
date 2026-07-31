@@ -71,7 +71,7 @@ func TestPrompterDrainDiscardsStaleInput(t *testing.T) {
 	}
 }
 
-// The enforced run carries no DenyPaths, so the store shield rests on approve()
+// This wrapper shields the store by refusing a covering grant, not by DenyPaths, so it rests on approve()
 // refusing a covering grant. assertStoreShielded is the backstop for a policy built
 // by some other path: it must refuse a final policy whose read OR write grant covers
 // the store dir (in either direction), and pass a policy that stays clear of it.

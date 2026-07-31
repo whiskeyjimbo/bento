@@ -253,3 +253,81 @@ func TestProfileDenyPathsShieldsCallerStore(t *testing.T) {
 		t.Errorf("the shielded store access should still appear in obs.Reads; got %v", obs.Reads)
 	}
 }
+
+// The enforced run honors caller deny paths the same way the profiling run does: a
+// read grant covering the store no longer reaches its contents, and the shield is
+// reported so an audit shows the boundary engaged rather than assuming it.
+func TestRunDenyPathsShieldsCallerStore(t *testing.T) {
+	requireSandbox(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	storeDir, err := os.MkdirTemp(home, "bento-denytest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(storeDir)
+	const secret = "TOPSECRET-ENFORCED-STORE"
+	if err := os.WriteFile(filepath.Join(storeDir, "perms.json"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("cat "+filepath.Join(storeDir, "perms.json")+" 2>&1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{home}, Exec: policy.ExecAll}
+
+	run := func(deny []string) (enforce.Result, string) {
+		var out bytes.Buffer
+		res, err := sandboxEnforcer(t).Run(context.Background(), p,
+			enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{DenyPaths: deny})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return res, out.String()
+	}
+
+	// Without the deny the home read grant reaches the store, which is the exposure
+	// this option exists to close - if it did not, the shielded case below would pass
+	// for the wrong reason.
+	if _, base := run(nil); !strings.Contains(base, secret) {
+		t.Fatalf("baseline: the home read grant should reach the store with no deny path; got %q", base)
+	}
+
+	res, shielded := run([]string{storeDir})
+	if strings.Contains(shielded, secret) {
+		t.Errorf("the deny path did not shield the store on the enforced run; leaked %q", shielded)
+	}
+	reported := false
+	for _, s := range res.Shields {
+		if s.Path == storeDir {
+			reported = true
+			if s.Kind != "hidden" {
+				t.Errorf("Shields[%q].Kind = %q, want hidden", s.Path, s.Kind)
+			}
+		}
+	}
+	if !reported {
+		t.Errorf("the caller deny is missing from Result.Shields; got %v", res.Shields)
+	}
+}
+
+// The degraded tier applies no shields at all, so a caller deny it cannot honor is
+// refused rather than silently dropped - the same call the tier already makes for a
+// network gate it has no proxy for. Admitting the run and reporting the gap afterwards
+// would hand back a target that had already read the caller's control state.
+func TestRunDegradedRefusesDenyPaths(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecAll}
+	_, err := New().Run(context.Background(), p, enforce.Process{},
+		enforce.RunOptions{Degraded: true, DenyPaths: []string{"/home/u/store"}})
+	if err == nil {
+		t.Fatal("a degraded run with caller deny paths must be refused")
+	}
+	if !strings.Contains(err.Error(), "deny path") {
+		t.Errorf("error = %v, want it to name the caller deny paths as the reason", err)
+	}
+}

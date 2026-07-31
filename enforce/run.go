@@ -24,6 +24,39 @@ type Options struct {
 	// (the declarative default). A gate admission is surfaced in
 	// Result.GateAdmitted, never folded into the policy or its fingerprint.
 	NetworkGate NetworkGate
+	// DenyPaths are absolute host paths this run must not reach, shielded on top of
+	// the built-in deny-list. It is how an embedder says "never let the target read
+	// X" over a policy that grants a tree covering X, and how it protects its own
+	// control state (a permission store) without having to refuse every grant that
+	// covers it. A deny nested inside a granted tree is the normal mode - it is how
+	// ~/.ssh survives a home read grant. A policy cannot lift one: the shield opt-in
+	// path covers the built-in credential shields only.
+	//
+	// It is not a policy field for the same reason AcceptAliasesUnder is not: it is a
+	// fact about this host and this caller, and folding it into a portable,
+	// fingerprinted manifest would carry one deployment's layout to every other. What
+	// it shields is reported in Result.Shields alongside the built-in shields.
+	//
+	// Four limits, because callers reach for this for security:
+	//
+	//   - It shields a PATH, not the content behind it. A second name for the content
+	//     inside a tree the run can read still reaches it. The credential-alias hunt
+	//     that would catch that covers a deny naming an existing file, but not one
+	//     naming a directory (nor a path that does not exist yet, which is shielded as
+	//     a directory so no host artifact is left behind).
+	//   - It covers read-covering grants only. A WRITE grant containing a deny path is
+	//     refused outright rather than shielded, per ADR-0004: a shield inside a
+	//     writable tree is not a boundary the sandbox can hold.
+	//   - Shielding a single file leaves its siblings exposed. Widening a file deny to
+	//     its directory is the caller's job; the built-in list shields directories for
+	//     exactly this reason.
+	//   - A run that actually lands on the degraded tier (AllowDegraded on a host whose
+	//     filesystem layer probes Degraded) is REFUSED rather than admitted without the
+	//     deny: that tier applies no shields at all. It is refused, not reported through
+	//     Result.Exposed the way the built-in shields it drops are, because by the time
+	//     a report is read the target has already had the path.
+	DenyPaths []string
+
 	// AcceptAliasesUnder acknowledges the credential aliases inside the named host
 	// trees, which would otherwise refuse the run. See RunOptions.AcceptAliasesUnder
 	// for why it is a tree and why it is not a policy field.
@@ -62,6 +95,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	res, err := e.Run(ctx, p, proc, RunOptions{
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,
+		DenyPaths:          opts.DenyPaths,
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
 	})
 

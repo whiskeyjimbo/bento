@@ -62,6 +62,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if opts.Gate != nil {
 			return enforce.Result{}, fmt.Errorf("linux: a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in")
 		}
+		// Same shape as the gate above: this tier has no mount namespace and applies no
+		// shields, so a caller deny would silently not be enforced. Reporting it through
+		// Exposed instead would hand back a run that read the caller's control state and
+		// an audit record saying so after the fact, which is the false confidence a
+		// fail-closed posture exists to refuse.
+		if len(opts.DenyPaths) > 0 {
+			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
+		}
 		return e.runDegraded(ctx, p, proc)
 	}
 
@@ -73,9 +81,8 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	// A gate forces the egress stack up even with zero rules: a supervised run with
 	// no manifest network means "prompt on every host", so the proxy must exist for
-	// the gate to be consulted at all. Enforced runs take no caller deny paths - that
-	// seam is profiling-only (see Profile).
-	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, nil)
+	// the gate to be consulted at all.
+	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, opts.DenyPaths)
 	if err != nil {
 		return enforce.Result{}, err
 	}
