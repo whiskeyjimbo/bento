@@ -466,7 +466,7 @@ func TestLoadStoreDropsNullAppEntries(t *testing.T) {
 }
 
 // coversStore compared a relative grant against the absolute store dir, and
-// filepath.Rel errors on that pair - which underComponent reads as "not under". A
+// filepath.Rel errors on that pair - which CoversResolved reads as "not under". A
 // remembered grant spelled relatively (a manifest's read path, seeded by `perms
 // import`; nothing validates it as absolute) therefore reported false and reached the
 // store it names (bv2-tr2u). The working directory is the anchor this pins, which is

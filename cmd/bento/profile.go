@@ -994,7 +994,6 @@ func homeRoot(path string) (string, bool) {
 	}
 }
 
-// underDir reports whether child is inside parent (parent contains child).
 // clampProposal filters a synthesized proposal for review, in an order that is
 // load-bearing (bv2-2wy): drop grants inside a mandatory shield, then drop over-broad
 // read and write grants, and ONLY THEN dedup reads a surviving write already covers.

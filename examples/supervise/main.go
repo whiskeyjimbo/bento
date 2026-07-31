@@ -242,9 +242,9 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// run (enforce.Options.DenyPaths), because a refusal tells the operator which grant
 	// was the problem where a shield would leave the script failing on an absent path.
 	// So the protection rests entirely on approve() having refused. Re-check the
-	// assembled policy so a future edit that builds it by some
-	// path other than consider/coversStore cannot silently expose the store. Reaching
-	// here with a covering grant is a bug, so fail closed rather than run.
+	// assembled policy so a future edit that builds it by some path other than
+	// consider/coversStore cannot silently expose the store. Reaching here with a
+	// covering grant is a bug, so fail closed rather than run.
 	if err := assertStoreShielded(approved, s.dir); err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: refusing to run: %v\n", err)
 		return 1
@@ -408,11 +408,11 @@ func finalExitCode(targetExit int, saveErr error, recordedDeny bool) int {
 }
 
 // assertStoreShielded refuses a policy that grants any path covering the permission
-// store. This wrapper shields the store by refusing rather than by DenyPaths, so this is the last
-// check that a copyist widening the approval path cannot expose the store to the
-// supervised script; `perms export` runs it too, since a manifest leaves the wrapper's
-// shielding behind entirely. Both callers word the refusal, so this names only the
-// grant.
+// store. This wrapper shields the store by refusing rather than by DenyPaths, so this
+// is the last check that a copyist widening the approval path cannot expose the store
+// to the supervised script; `perms export` runs it too, since a manifest leaves the
+// wrapper's shielding behind entirely. Both callers word the refusal, so this names
+// only the grant.
 func assertStoreShielded(final *policy.Policy, storeDir string) error {
 	for _, g := range append(append([]string{}, final.Read...), final.Write...) {
 		if coversStore(g, storeDir) {

@@ -729,7 +729,7 @@ func (s *store) app(key string) *appPerms {
 func coversStore(grant, dir string) bool {
 	g, d := resolveSymlinks(grant), resolveSymlinks(dir)
 	// Both sides must be absolute for the comparison to mean anything: filepath.Rel
-	// errors out on a relative/absolute pair and underComponent reads that error as
+	// errors out on a relative/absolute pair and CoversResolved reads that error as
 	// "not under", which answers "this grant does not touch the store" about a path
 	// that does. resolveSymlinks anchors to the working directory, so this only fires
 	// when there is no working directory to anchor to (it was deleted out from under

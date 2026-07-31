@@ -45,8 +45,8 @@ type Options struct {
 	//     naming a directory (nor a path that does not exist yet, which is shielded as
 	//     a directory so no host artifact is left behind).
 	//   - It covers read-covering grants only. A WRITE grant containing a deny path is
-	//     refused outright rather than shielded, per ADR-0004: a shield inside a
-	//     writable tree is not a boundary the sandbox can hold.
+	//     refused outright rather than shielded: a shield inside a writable tree is not
+	//     a boundary the sandbox can hold.
 	//   - Shielding a single file leaves its siblings exposed. Widening a file deny to
 	//     its directory is the caller's job; the built-in list shields directories for
 	//     exactly this reason.
