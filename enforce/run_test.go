@@ -3,6 +3,7 @@ package enforce
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -25,6 +26,7 @@ type fakeEnforcer struct {
 	// the reduced-confinement tier is selected only when the probe reports it.
 	gotDegraded      bool
 	gotAcceptAliases []string
+	gotDenyPaths     []string
 }
 
 func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
@@ -34,6 +36,7 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opt
 	f.gateNil = opts.Gate == nil
 	f.gotDegraded = opts.Degraded
 	f.gotAcceptAliases = opts.AcceptAliasesUnder
+	f.gotDenyPaths = opts.DenyPaths
 	if opts.Gate != nil {
 		f.gotGate = opts.Gate(ctx, "example.com", "443")
 	}
@@ -767,5 +770,61 @@ func TestSetCollapsesDuplicateLayers(t *testing.T) {
 	}
 	if r.StateOf(LayerFilesystem) != Enforced {
 		t.Error("Set dropped an unrelated layer")
+	}
+}
+
+// Options.DenyPaths must reach the backend verbatim. It is the whole mechanism: a
+// deny the core silently dropped would leave the caller believing a path was shielded
+// on a run that read it.
+func TestRunForwardsDenyPaths(t *testing.T) {
+	deny := []string{"/home/u/.local/state/tack"}
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{DenyPaths: deny}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(f.gotDenyPaths, deny) {
+		t.Errorf("backend got DenyPaths %v, want %v", f.gotDenyPaths, deny)
+	}
+}
+
+// Result.Setup must survive enforce.Run, which rebuilds Report from the probe and
+// overlays the backend's. A tri-state stored in Report would be erased by that; on
+// Result it is the only thing separating a setup failure from a mid-run lapse, both of
+// which strict reports as a populated Result plus a *Shortfall.
+func TestRunPreservesSetupState(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup  SetupState
+		strict bool
+	}{
+		"attested":                 {SetupAttested, false},
+		"silent":                   {SetupSilent, false},
+		"target unreached":         {SetupTargetUnreached, false},
+		"silent under a shortfall": {SetupSilent, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backend := fullyEnforced()
+			if tc.strict {
+				// A layer the backend worsened mid-run is what turns strict into a
+				// *Shortfall - the case where the exit code and the error look the same
+				// whether setup failed or a guarantee slipped while the target ran.
+				backend.Set(LayerFilesystem, Unavailable, "the sandboxed launcher did not report what it applied")
+			}
+			f := &fakeEnforcer{
+				probe:  fullyEnforced(),
+				result: Result{ExitCode: 125, Setup: tc.setup, Report: backend},
+			}
+			res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: tc.strict})
+			if tc.strict {
+				var short *Shortfall
+				if !errors.As(err, &short) {
+					t.Fatalf("strict with a worsened layer: err = %v, want a *Shortfall", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if res.Setup != tc.setup {
+				t.Errorf("Result.Setup = %v, want %v", res.Setup, tc.setup)
+			}
+		})
 	}
 }

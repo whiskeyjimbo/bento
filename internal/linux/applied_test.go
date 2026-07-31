@@ -360,3 +360,37 @@ func TestNoteDeadListenerDegradesTheNetworkLayer(t *testing.T) {
 		t.Errorf("reason = %q, want the listener's error named", r.Degradations()[0].Reason)
 	}
 }
+
+// reconcile is the one place that decides how far the stage got, so the SetupState it
+// returns must track the same three cases the layer verdicts above are drawn from: a
+// stage that never reported, one that applied its layers but never reached the target,
+// and one that completed. An embedder maps these onto its own exit codes, so a state
+// that disagreed with the layers would be worse than no state at all.
+func TestReconcileReportsSetupState(t *testing.T) {
+	complete := launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n"
+	for name, tc := range map[string]struct {
+		report string
+		want   enforce.SetupState
+	}{
+		"no report at all":             {"", enforce.SetupSilent},
+		"setup died before the marker": {launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n", enforce.SetupSilent},
+		"target never reached": {complete + launcher.AppliedTargetUnreached + " " + `"launcher: starting target: no such file or directory"` + "\n",
+			enforce.SetupTargetUnreached},
+		"setup completed and the target ran": {complete, enforce.SetupAttested},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte(tc.report), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := enforce.Report{}
+			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
+				r.Add(l, enforce.Enforced, "")
+			}
+			if got := parseApplied(path).reconcile(&r, true, true, 125); got != tc.want {
+				t.Errorf("reconcile setup state = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

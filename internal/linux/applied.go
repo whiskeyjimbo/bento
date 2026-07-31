@@ -130,7 +130,11 @@ func parseApplied(path string) applied {
 // taken at face value. exitCode goes into the reason for a silent child: the exit code
 // alone cannot separate a bento setup failure from a target that exits 125 itself, and
 // the report is what does.
-func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, exitCode int) {
+//
+// The returned SetupState is that same separation made readable by an embedder: it is
+// derived here rather than re-decided anywhere else, so the state and the layer
+// verdicts can never disagree about whether the target ran.
+func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, exitCode int) enforce.SetupState {
 	if !a.complete {
 		// The reason states what is known - no report, and the code the run ended with -
 		// rather than asserting a cause: the same absence covers a launcher that died in
@@ -141,7 +145,7 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		r.Set(enforce.LayerExec, enforce.Unavailable, silent)
 		r.Set(enforce.LayerExecStrict, enforce.Unavailable, silent)
 		r.Set(enforce.LayerFilesystem, enforce.Unavailable, silent)
-		return
+		return enforce.SetupSilent
 	}
 	if a.targetUnreached {
 		// The layers really were installed - on the launcher, which then could not reach
@@ -157,7 +161,7 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		r.Set(enforce.LayerExec, enforce.Unavailable, unreached)
 		r.Set(enforce.LayerExecStrict, enforce.Unavailable, unreached)
 		r.Set(enforce.LayerFilesystem, enforce.Unavailable, unreached)
-		return
+		return enforce.SetupTargetUnreached
 	}
 	// The exec layers are only as strong as the filter that actually landed. A report
 	// naming no filter (or a value this host does not recognize) where the policy asked
@@ -193,4 +197,8 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 			"the Landlock backstop could not be applied inside the sandbox ("+why+
 				"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
 	}
+	// The stage reported a complete setup and reached the target, so the exit code the
+	// caller sees is the target's own - whatever the layer verdicts above say about how
+	// well it was confined while it ran.
+	return enforce.SetupAttested
 }

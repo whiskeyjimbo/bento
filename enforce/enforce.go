@@ -128,11 +128,61 @@ type CredentialAlias struct {
 	Credential string
 }
 
+// SetupState is how far the in-sandbox stage got before the target ran: whether the
+// exit code in a Result is the TARGET's answer or bento's.
+//
+// It is a heuristic, deliberately, and the names say which way it errs. The stage
+// attests its own setup by writing a marker after every layer decision, so a stage
+// killed outright mid-setup is indistinguishable from one that never started - both
+// read as SetupSilent. What it will not do is claim SetupAttested for a stage that did
+// not say so, which is what makes it safe to branch on.
+type SetupState int
+
+const (
+	// SetupSilent means the stage reported nothing: it died during setup (the usual
+	// case, exiting 125), never ran, or its report could not be read back. The exit
+	// code is bento's, not the target's. It is the zero value so a Result that never
+	// reached a stage at all never reads as attested.
+	SetupSilent SetupState = iota
+	// SetupTargetUnreached means the stage installed its layers and then could not
+	// execute the target. Setup succeeded; the target never ran.
+	SetupTargetUnreached
+	// SetupAttested means the stage completed setup and reached the target, so the
+	// exit code is the target's own.
+	SetupAttested
+)
+
+func (s SetupState) String() string {
+	switch s {
+	case SetupTargetUnreached:
+		return "target-unreached"
+	case SetupAttested:
+		return "attested"
+	default:
+		return "silent"
+	}
+}
+
 // Result is the outcome of a Run: the target's exit code and the report of what
 // the sandbox actually enforced around it.
 type Result struct {
 	ExitCode int
 	Report   Report
+	// Setup separates a bento setup failure from a target that exited with the same
+	// code. Bento's "could not run the target" code is 125, which a target may also
+	// exit itself, so the code alone cannot tell them apart - an embedder mapping the
+	// two onto different exit codes of its own reads this instead of the Report's prose
+	// reasons, which are written for humans and will change wording.
+	//
+	// It matters most under Strict, where it is the ONLY thing that separates two
+	// outcomes that arrive identically as a populated Result plus a *Shortfall: a
+	// genuine mid-run lapse (SetupAttested - the target ran, and a guarantee slipped)
+	// and a stage that never got the layers up (SetupSilent). An embedder treating
+	// those as disjoint on the error alone reports the wrong one.
+	//
+	// It lives on Result rather than in Report because Report is overlaid after the
+	// backend returns; see SetupState for what the states do and do not attest.
+	Setup SetupState
 	// EgressConnections is how many outbound connections reached the egress proxy
 	// during the run, including any the proxy turned away at its concurrency limit
 	// before reading their request. A count of zero on a run that could egress (the
