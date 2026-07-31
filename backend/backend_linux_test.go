@@ -66,3 +66,56 @@ func TestDispatchReexecFailsSetupWith125(t *testing.T) {
 		})
 	}
 }
+
+// An embedder that never calls DispatchReexec gets a panic naming the cause, not a
+// silent hang. The staged child otherwise runs the embedding program normally while
+// still carrying the sentinel, and for a test binary that means re-running the suite,
+// which stages again - so the diagnosis has to come from the entry points the resumed
+// program reaches, which are New and Profile.
+func TestUndispatchedStagePanics(t *testing.T) {
+	for name, sentinel := range map[string]string{
+		"launch":   launcher.SentinelLaunch,
+		"degraded": launcher.SentinelLaunchDegraded,
+		"bridge":   launcher.SentinelBridge,
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("an undispatched stage reached New without panicking")
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, "DispatchReexec") {
+					t.Errorf("panic = %v, want the message to name DispatchReexec", r)
+				}
+			}()
+			swapArgs(t, []string{"embedder", sentinel})
+			_, _ = New()
+		})
+	}
+}
+
+// An ordinary invocation must not trip the guard, whatever its arguments - only the
+// reserved sentinel namespace does.
+func TestOrdinaryArgsDoNotPanic(t *testing.T) {
+	for name, argv := range map[string][]string{
+		"no arguments":     {"embedder"},
+		"a normal flag":    {"embedder", "--verbose"},
+		"a sentinel later": {"embedder", "run", launcher.SentinelLaunch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			swapArgs(t, argv)
+			if _, err := New(); err != nil {
+				t.Fatalf("New: %v", err)
+			}
+		})
+	}
+}
+
+// swapArgs points os.Args at argv for the duration of the test. The guard reads the
+// real os.Args because that is what a re-exec stage is handed; there is no seam.
+func swapArgs(t *testing.T, argv []string) {
+	t.Helper()
+	saved := os.Args
+	t.Cleanup(func() { os.Args = saved })
+	os.Args = argv
+}

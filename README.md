@@ -179,6 +179,19 @@ Bento is architected around a platform-decoupled enforcement seam:
 
 Bento can be imported directly into Go applications to enforce sandbox policies in-process, receive structured execution results, or supply custom interactive network gates (such as prompting a human when an agent attempts undeclared network egress).
 
+### `DispatchReexec` is mandatory
+
+Confining a target re-invokes the embedding binary as a hidden launch stage, so `backend.DispatchReexec()` must be the first statement in `main()` - before flag parsing, before any other initialization. **This applies to tests too:** any test package that performs an enforced or profiling run needs it at the top of `TestMain`, before the testing package parses flags. Without it the staged child runs the whole test suite again, which re-enters the sandbox and stages again.
+
+```go
+func TestMain(m *testing.M) {
+	backend.DispatchReexec()
+	os.Exit(m.Run())
+}
+```
+
+`backend.New` and `backend.Profile` panic if they detect a stage that was never dispatched, so the mistake surfaces immediately rather than as a hang.
+
 ### Minimal Example
 
 ```go

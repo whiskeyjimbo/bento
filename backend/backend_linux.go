@@ -20,7 +20,30 @@ import (
 
 // New returns the enforcer for this platform.
 func New() (enforce.Enforcer, error) {
+	requireDispatched()
 	return linux.New(), nil
+}
+
+// requireDispatched panics when this process is a re-exec stage that was never
+// dispatched. DispatchReexec never returns for a stage sentinel - it runs the stage
+// and exits - so a process still carrying one in os.Args[1] by the time it asks for
+// an enforcer has provably skipped the call, and no ordinary invocation looks like
+// that (the sentinels are a reserved argv namespace).
+//
+// It is a panic rather than a returned error because the condition is an embedder
+// contract violation, not a runtime failure a caller could handle. It is also the
+// only symptom that carries: the staged child otherwise runs the program normally,
+// and in a test binary that means re-running the suite, which re-enters the sandbox
+// and stages again - a fork bomb whose presenting symptom is a silent hang.
+func requireDispatched() {
+	if len(os.Args) < 2 {
+		return
+	}
+	switch os.Args[1] {
+	case launcher.SentinelLaunch, launcher.SentinelLaunchDegraded, launcher.SentinelBridge:
+		panic("bento: this process was launched as a sandbox stage but DispatchReexec was not called first; " +
+			"call backend.DispatchReexec() as the first statement in main() (and in TestMain for tests that run enforced)")
+	}
 }
 
 // DispatchReexec runs bento's launch stages. To confine a target the linux backend
@@ -58,6 +81,9 @@ func New() (enforce.Enforcer, error) {
 // started with. Keep package init cheap and free of
 // environment or other side-effect dependencies, and (for tests) call this from
 // TestMain, before the testing package parses flags.
+//
+// Skipping the call is caught rather than tolerated: New and Profile panic when they
+// find a stage sentinel still in os.Args[1] (see requireDispatched).
 func DispatchReexec() {
 	if len(os.Args) < 2 {
 		return
@@ -111,5 +137,6 @@ func reexecFail(err error) {
 // profiling untrusted code cannot exfiltrate; opts.DenyPaths shields caller-owned
 // paths from the profiling run (see ProfileOptions).
 func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, opts ProfileOptions) (profile.Observation, error) {
+	requireDispatched()
 	return linux.New().Profile(ctx, p, proc, opts.AllowNetwork, opts.DenyPaths, opts.AcceptAliasesUnder)
 }
