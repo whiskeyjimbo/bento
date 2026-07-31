@@ -242,14 +242,39 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 // This is a heuristic, not proof: without syscall observation we cannot tell a
 // bypass from a script that simply made no network calls and failed for another
 // reason, so the wording is hedged ("if it needs network") rather than asserting.
-func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) {
+// It reports whether it said anything, so the filesystem hint below does not stack a
+// second explanation of the same failure onto it.
+func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if len(p.Network) == 0 || res.ExitCode == 0 || res.EgressConnections > 0 {
-		return
+		return false
 	}
 	fmt.Fprintln(w, "[bento] the script exited non-zero and made no connections through the egress proxy.")
 	fmt.Fprintln(w, "[bento] if it needs network: bento intercepts egress via HTTP_PROXY, so a program that")
 	fmt.Fprintln(w, "[bento] ignores proxy settings (some static binaries) cannot reach allowlisted hosts and")
 	fmt.Fprintln(w, "[bento] fails to connect. Programs that honor HTTP_PROXY (curl, requests, pip, npm) work.")
+	return true
+}
+
+// writeProfileHint points at profiling when a run fails, because a denied path is silent
+// by construction: there is no observer at enforce time, and a script that fails closed on
+// a file it needed reports its OWN error and nothing else. Under a manifest that does not
+// pass HOME through, the path in that error is not even one the author wrote. Nothing
+// otherwise connects it back to the manifest, and the reader debugs their code.
+//
+// A heuristic, and worded as one - the script may simply have failed for its own reasons.
+// It is silent when the egress hint already explained the same non-zero exit, and under
+// --json, where the outcome is a field. Bento's own 125 and 124 never reach here: a
+// refusal returns before the output, and a strict shortfall is reported by its own line.
+func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
+	if res.ExitCode == 0 {
+		return
+	}
+	fmt.Fprintf(w, "[bento] the script exited %d. It ran with %d read and %d write path(s) granted, and the\n", res.ExitCode, len(p.Read), len(p.Write))
+	fmt.Fprintln(w, "[bento] sandbox denies silently - so if it failed on a missing file or a permission")
+	fmt.Fprintln(w, "[bento] error, the script's own message is all you get. To see what it actually touches:")
+	// Quoted: the entrypoint is manifest text, and a newline in it would otherwise forge a
+	// line of this hint.
+	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
 }
 
 // writeGuardBlockedWarning names the destinations the allowlist permitted but the

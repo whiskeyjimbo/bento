@@ -419,3 +419,55 @@ func TestRefuseJSONPassesHumanErrorThrough(t *testing.T) {
 		t.Errorf("human mode must write no envelope; got %q", buf.String())
 	}
 }
+
+// A script that fails because the sandbox denied a path it needed reports its own error
+// and nothing else - there is no observer at enforce time. The hint is the only thing
+// connecting that back to the manifest, so it fires on any non-zero exit; and it must not
+// stack onto the two cases that already explain the same failure.
+func TestProfileHintOnANonZeroExit(t *testing.T) {
+	granted := &policy.Policy{Entrypoint: "./t.py", Read: []string{"/data"}, Write: []string{"/out"}}
+	networked := &policy.Policy{Entrypoint: "./t.py", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
+
+	cases := []struct {
+		name      string
+		p         *policy.Policy
+		res       enforce.Result
+		shortfall bool
+		want      bool
+	}{
+		{"failed with grants", granted, enforce.Result{ExitCode: 1}, false, true},
+		{"failed with none at all", &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{ExitCode: 1}, false, true},
+		{"succeeded", granted, enforce.Result{ExitCode: 0}, false, false},
+		{"the egress hint already explained it", networked, enforce.Result{ExitCode: 1}, false, false},
+		{"a strict shortfall has its own line", granted, enforce.Result{ExitCode: 1}, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			var runErr error
+			if tc.shortfall {
+				runErr = &enforce.Shortfall{}
+			}
+			_ = writeRunResult(&out, &errOut, false, tc.p, tc.res, "", "", runErr)
+			if got := strings.Contains(errOut.String(), "bento profile"); got != tc.want {
+				t.Errorf("profile hint emitted = %v, want %v; got:\n%s", got, tc.want, errOut.String())
+			}
+		})
+	}
+
+	// --json carries the outcome as a field, and the hint on stdout would corrupt it.
+	var out, errOut bytes.Buffer
+	_ = writeRunResult(&out, &errOut, true, granted, enforce.Result{ExitCode: 1}, "", "", nil)
+	if strings.Contains(out.String()+errOut.String(), "bento profile") {
+		t.Errorf("--json must not carry the hint; got:\n%s%s", out.String(), errOut.String())
+	}
+
+	// The counts are the point: they say how little was granted.
+	errOut.Reset()
+	_ = writeRunResult(&out, &errOut, false, granted, enforce.Result{ExitCode: 3}, "", "", nil)
+	for _, want := range []string{"exited 3", "1 read and 1 write"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("hint missing %q; got:\n%s", want, errOut.String())
+		}
+	}
+}
