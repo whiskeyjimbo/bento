@@ -15,6 +15,17 @@ import (
 )
 
 // Enforcer applies a policy around a process under platform isolation.
+//
+// An Enforcer is reusable and safe for concurrent use: it holds no per-run state, so
+// one value serves a whole process and several Runs may be in flight at once, each
+// reporting its own target's outcome. Two concurrent runs that WRITE the same host tree
+// are the caller's problem, not this seam's - they are two processes writing one
+// directory, and the sandbox does not serialize them.
+//
+// Reusing the value is not what makes a second run cheaper, though, and an embedder
+// structuring itself around this should know which one it is: the expensive host probes
+// are memoized per PROCESS, not per Enforcer. A long-lived process amortizes them
+// however many Enforcers it builds; a fresh exec per invocation pays them every time.
 type Enforcer interface {
 	// Probe reports what this host can enforce, per layer, without running a
 	// target. It backs both `doctor` and strict-mode's pre-run refusal.

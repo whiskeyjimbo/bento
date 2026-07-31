@@ -19,6 +19,14 @@ import (
 )
 
 // New returns the enforcer for this platform.
+//
+// Keep the result rather than calling this per run: the enforcer is reusable and safe
+// for concurrent Runs (see enforce.Enforcer). Calling it again is cheap and equally
+// correct - what an embedder actually wants to avoid is a fresh PROCESS per run, since
+// that is what re-pays the host probes. On one Linux/amd64 host a no-op target with no
+// network and no limits cost ~60 ms on the first run of a process and ~31 ms on every
+// run after it, whether or not the same Enforcer was used. Treat the numbers as the
+// shape, not a budget: they move with the host and with what the policy asks for.
 func New() (enforce.Enforcer, error) {
 	requireDispatched()
 	return linux.New(), nil
