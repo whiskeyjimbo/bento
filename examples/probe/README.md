@@ -108,7 +108,10 @@ The two environment variables:
 - **`BENTO_PROBE_HOME`** - bento rewrites `HOME` to `/tmp` inside the sandbox and
   does not bind `/etc/passwd`, so the probe cannot find the real home directory
   on its own. Without this the shield probes report SKIPPED rather than guessing.
-  It is allowlisted in the manifests' `env:`.
+  Exporting it is only half: env does not cross into the sandbox unless the
+  manifest names it, so every manifest here allowlists it in `env:`. A manifest
+  `bento profile` drafts does not, which is why the shield probes skip under the
+  root README's quick start and run under this tour.
   It doubles as the witness for `env.passthrough`: `PATH` and `HOME` are injected
   by bento itself, so only an explicitly allowlisted host variable shows that
   passthrough works.

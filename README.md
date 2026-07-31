@@ -76,6 +76,12 @@ a write grant over the whole example directory, and *both* hosts the probe
 tried - including the one it was denied. Profiling drafts a manifest; approving
 one is a judgement you make.
 
+The credential shields are the headline feature and this sequence does not show them:
+the probe demonstrates them against `BENTO_PROBE_HOME`, and a profiled manifest
+allowlists only the variables the run actually read, so the shield probes report SKIPPED
+here. Env does not cross into the sandbox unless the manifest names it - which is the
+same lesson, arriving the hard way. The tour below runs them.
+
 The probe example also ships hand-written manifests covering the deny-all floor,
 narrow grants, a broad home grant with the credential shields still holding,
 per-host egress, and the hardening tier. See its

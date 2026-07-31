@@ -20,7 +20,9 @@ Two host environment variables shape the run:
   BENTO_PROBE_HOME    The real host home directory. Bento rewrites HOME to /tmp
                       inside the box and does not bind /etc/passwd, so the probe
                       cannot find it unaided; the shield probes skip without it.
-                      Export it and allowlist it in the manifest's `env`.
+                      Export it AND allowlist it in the manifest's `env` - both,
+                      or it does not cross into the box. A manifest drafted by
+                      `bento profile` does not carry it.
   BENTO_PROBE_CANARY  A value that must NOT reach the sandbox. Export it on the
                       host and leave it out of the `env` allowlist.
 """
@@ -45,6 +47,13 @@ SHIELDED_READS = [
     "~/.bashrc",
     "/run/docker.sock",
 ]
+
+# What a probe reports when BENTO_PROBE_HOME did not reach the sandbox. From in here
+# the two reasons are indistinguishable - never exported on the host, or exported and
+# not allowlisted - and the second is the one that bites: a manifest bento profile drafts
+# does not carry it, so the shield probes skip under exactly the manifest the root
+# README's quick start produces.
+NO_HOST_HOME = "BENTO_PROBE_HOME did not reach the sandbox (export it, and allowlist it in the manifest's env:)"
 
 ALLOWED_HOST = "example.com"
 DENIED_HOST = "api.github.com"
@@ -94,13 +103,13 @@ def probe_read():
     if home:
         attempt("read", "home-listing", lambda: f"{len(os.listdir(home))} entries")
     else:
-        report("read", "home-listing", None, "BENTO_PROBE_HOME not set")
+        report("read", "home-listing", None, NO_HOST_HOME)
 
     for path in SHIELDED_READS:
         name = "shield" + path.replace("~", "").replace("/", "-")
         resolved = host_path(path)
         if resolved is None:
-            report("read", name, None, "BENTO_PROBE_HOME not set")
+            report("read", name, None, NO_HOST_HOME)
             continue
         attempt("read", name, lambda p=resolved: read_head(p))
 
@@ -123,7 +132,7 @@ def probe_write():
     if host_home:
         attempt("write", "shield-home", lambda: write_file(host_home, ".bashrc-probe"))
     else:
-        report("write", "shield-home", None, "BENTO_PROBE_HOME not set")
+        report("write", "shield-home", None, NO_HOST_HOME)
 
     # Positive control: bento grants write on directories rather than files so
     # that save-via-rename keeps working. Over-blocking shows up here.
@@ -141,7 +150,7 @@ def probe_env():
     # crosses if the allowlist carried it. PATH and HOME are injected by bento
     # itself, so their presence would say nothing about passthrough.
     witness = os.environ.get("BENTO_PROBE_HOME")
-    report("env", "passthrough", bool(witness), witness or "BENTO_PROBE_HOME did not cross")
+    report("env", "passthrough", bool(witness), witness or NO_HOST_HOME)
 
     injected = [k for k in ("PATH", "HOME", "LANG") if k in os.environ]
     report("env", "sandbox-injected", bool(injected), ",".join(injected) or "none present")
