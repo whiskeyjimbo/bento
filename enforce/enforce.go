@@ -191,6 +191,12 @@ type Result struct {
 	// and a stage that never got the layers up (SetupSilent). An embedder treating
 	// those as disjoint on the error alone reports the wrong one.
 	//
+	// It is meaningful only when Run returned nil or a *Shortfall - the cases where a
+	// target was actually launched. Every other error means the run was refused or
+	// failed before any stage existed (a nil enforcer, an invalid policy, a host that
+	// admission turned away), and the zero value reads as SetupSilent there without a
+	// stage having died: read the error first, this second.
+	//
 	// It lives on Result rather than in Report because Report is overlaid after the
 	// backend returns; see SetupState for what the states do and do not attest.
 	Setup SetupState
