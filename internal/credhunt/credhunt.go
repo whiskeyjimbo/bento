@@ -139,6 +139,11 @@ type Options struct {
 func Hunt(opts Options) ([]Finding, int, error) {
 	var out []Finding
 	pruned := 0
+	// Prepared once for the whole walk: coverage is asked about every entry in the home,
+	// and a linear scan of the rule set per entry measured as a third of this function's
+	// CPU time. See denylist.Index for why that is a different access pattern rather than
+	// a different definition of coverage.
+	shields := denylist.NewIndex(opts.Rules)
 	err := filepath.WalkDir(opts.Home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// The root is the exception to the skip-and-continue rule below: a home that
@@ -159,7 +164,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		// are DenyWrite precisely so the agent can read its own settings, which is why
 		// each carries a separate DenyAll rule on the credential file inside it. Those
 		// files are what the hunt is looking for.
-		if r, covered := denylist.Covers(path, opts.Rules); covered && r.Deny == denylist.DenyAll {
+		if r, covered := shields.Covers(path); covered && r.Deny == denylist.DenyAll {
 			if d.IsDir() {
 				return fs.SkipDir
 			}
