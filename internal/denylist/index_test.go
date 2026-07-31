@@ -40,20 +40,36 @@ func TestIndexAgreesWithCovers(t *testing.T) {
 	rules := auditRules()
 	ix := NewIndex(rules)
 
-	// Every rule path, every ancestor of one, and a child under each: the boundaries
-	// where an exact/enclosing/strictest disagreement would show up.
+	// Derived from the rules themselves rather than hand-listed, so a rule shape nobody
+	// thought to write a case for is still covered. Hand-listing is what let the
+	// file-rule divergence below go unnoticed: every uncleaned spelling in the first
+	// version of this test happened to land on a DIRECTORY rule, which agreed.
 	var paths []string
 	for _, r := range rules {
-		paths = append(paths, r.Path, r.Path+"/child", r.Path+"/a/b/c", filepath.Dir(r.Path))
-		// The prefix-string trap, which an index keyed on components cannot fall into
-		// but a careless one could.
-		paths = append(paths, r.Path+"sibling")
+		dir, base := filepath.Dir(r.Path), filepath.Base(r.Path)
+		paths = append(paths,
+			r.Path,
+			r.Path+"/child",
+			r.Path+"/a/b/c",
+			dir,
+			// The prefix-string trap, which an index keyed on components cannot fall
+			// into but a careless one could.
+			r.Path+"sibling",
+			// Uncleaned spellings of this very rule's path. A DenyAll rule on a FILE is
+			// reachable only through the exact match, so these are the shapes where a
+			// raw equality and a cleaned enclosure test come apart.
+			dir+"/./"+base,
+			dir+"//"+base,
+			r.Path+"/",
+			dir+"/x/../"+base,
+		)
 	}
 	paths = append(paths,
 		"/home/u", "/home/u/", "/home/u/proj/src/main.go", "/home/u/.ssh/id_rsa",
 		"/", "/tmp", "/run/user/1000/bus", "/var/run/docker.sock",
-		// Uncleaned spellings: Covers cleans through the predicate, so the index must too.
 		"/home/u/proj/../.ssh/id_rsa", "/home/u//.ssh//id_rsa", "/home/u/./.gnupg",
+		// Neither implementation covers a relative path; nothing pinned that before.
+		"rel/path", ".", "..",
 	)
 
 	for _, p := range paths {
@@ -63,7 +79,10 @@ func TestIndexAgreesWithCovers(t *testing.T) {
 			t.Errorf("Covers(%q): index covered = %v, linear = %v", p, gotOK, wantOK)
 			continue
 		}
-		if wantOK && (gotRule.Path != wantRule.Path || gotRule.Deny != wantRule.Deny || gotRule.Dir != wantRule.Dir) {
+		// Deny is the whole contract - it is all either caller reads, and Covers leaves
+		// the choice among equally strict matches undefined, so comparing rule identity
+		// here would pin an arbitrary tie-break neither side promises.
+		if wantOK && gotRule.Deny != wantRule.Deny {
 			t.Errorf("Covers(%q): index returned %+v, linear returned %+v", p, gotRule, wantRule)
 		}
 	}

@@ -50,10 +50,12 @@ func TestCoversResolved(t *testing.T) {
 	}
 }
 
-// CoversResolved runs once per deny rule for every file of a whole-home credential
-// walk - hundreds of rules times tens of thousands of files - so allocating even once
-// per call puts real pressure on that walk. This pins the allocation-free property;
-// the obvious spellings (filepath.Rel, or HasPrefix(path, grant+sep)) both allocate.
+// CoversResolved sits under every coverage question bento asks, including one per
+// ancestor for every file of a whole-home credential walk, so its cost and its
+// allocations both matter. The two obvious spellings - filepath.Rel, or
+// HasPrefix(path, grant+sep) - each allocate on every call; this one allocates only
+// when an input is not already clean, which the preconditions say it should be.
+// Reported, not asserted: a benchmark cannot fail on an allocation.
 func BenchmarkCoversResolved(b *testing.B) {
 	for _, tc := range []struct {
 		name, grant, path string

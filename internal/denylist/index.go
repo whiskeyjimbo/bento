@@ -13,7 +13,10 @@ import (
 // same few hundred rules are re-tested tens of thousands of times.
 //
 // So this is not a second definition of coverage, and must never become one: Covers
-// stays the reference, and TestIndexAgreesWithCovers drives both over the same paths.
+// stays the reference, and TestIndexAgreesWithCovers drives both over the same paths -
+// including uncleaned spellings of every rule path, which is where the two last came
+// apart.
+//
 // This only reorganizes the same rules for a different access pattern - instead of
 // testing every rule against one path, it looks the path and its ancestors up directly,
 // which costs the path's depth rather than the rule count.
@@ -51,11 +54,13 @@ func NewIndex(rules []Rule) *Index {
 	return ix
 }
 
-// Covers finds the rule shielding path, returning it and true, with the semantics of the
-// package's Covers: an exact match or an enclosing directory rule, strictest wins.
+// Covers finds the rule shielding path, returning it and true: an exact match or an
+// enclosing directory rule, strictest wins. It answers what the package's Covers
+// answers, down to the same undefined choice among equally strict matches - only the
+// returned Deny is specified.
 func (ix *Index) Covers(path string) (Rule, bool) {
-	// Once per query rather than once per rule, which is the whole point: Covers reaches
-	// path cleaning through policy.CoversResolved on every one of its comparisons.
+	// Once per query. Covers cleans too, but pays for it once per rule in the scan it
+	// runs; here the cost is paid before any lookup and the maps can compare literally.
 	path = filepath.Clean(path)
 
 	best, found := ix.exact[path]

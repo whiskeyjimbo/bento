@@ -827,7 +827,16 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // question about Rule, and the parity audit and the credential hunt both have to answer
 // it the same way - a second copy is how they would come to disagree about what bento
 // covers.
+// Only the returned rule's Deny is specified. When two rules match with equal
+// strictness - nested directory shields of the same class - which of them comes back is
+// not defined, and no caller reads more than the strength.
 func Covers(path string, rules []Rule) (Rule, bool) {
+	// Cleaned once, so the exact match below judges the same spelling the enclosing-
+	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
+	// cargo credentials store, the fileEnvs rules) is reachable only through the equality,
+	// so "/x/./credentials.toml" missed a shield that "/x/credentials.toml" hit.
+	path = filepath.Clean(path)
+
 	var best Rule
 	found := false
 	for _, r := range rules {
