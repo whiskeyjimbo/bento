@@ -3,9 +3,10 @@
 # run it under supervision (a terminal prompt, or BENTO_GATE_ALLOW=example.com)
 # and the gate can admit it - which then shows up in the run's GateAdmitted.
 #
-# The entrypoint is relative, so run the example from this directory
-# (examples/embed). No read grants are needed: /usr, /bin, /lib and the CA certs
-# are bound read-only in every sandbox, and the proxy resolves DNS host-side.
-entrypoint: demo/reach.sh
+# A relative entrypoint is anchored beside the manifest, not against the cwd, so
+# this runs the same from anywhere. No read grants are needed: /usr, /bin, /lib and
+# the CA certs are bound read-only in every sandbox, and the proxy resolves DNS
+# host-side.
+entrypoint: reach.sh
 interpreter: sh
 exec: all
