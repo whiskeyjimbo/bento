@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package linux enforces a policy with bubblewrap.
 //
 // It is an adapter behind the enforce.Enforcer seam: the core hands it a

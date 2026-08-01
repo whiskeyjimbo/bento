@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command probe confines itself to a single directory with Landlock, then
 // reports whether an inside and an outside path are readable, so a test can
 // observe Landlock's real effect in a fresh process (Landlock is irreversible

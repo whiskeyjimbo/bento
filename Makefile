@@ -42,7 +42,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test race vet lint audit examples vuln repro check install clean help
+.PHONY: all build test race vet crossbuild lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -92,6 +92,16 @@ vet: ## Run go vet checks
 	@GOWORK=off go vet ./...
 	@printf "$(GREEN)$(BOLD)✓ go vet clean!$(RESET)\n"
 
+# The enforcement backend is linux/amd64, but the CLI and the public API are meant to
+# compile everywhere and refuse at runtime - a build that only ever runs on amd64 Linux
+# drifts back to raw `undefined: unix.O_PATH` errors the first time a syscall constant
+# lands in an untagged file. One target off each axis is enough to catch that.
+crossbuild: ## Check the tree still compiles for the unsupported platforms
+	@printf "$(CYAN)$(BOLD)==> Cross-compiling for unsupported platforms...$(RESET)\n"
+	@GOWORK=off GOOS=darwin GOARCH=arm64 go vet ./...
+	@GOWORK=off GOOS=linux GOARCH=arm64 go vet ./...
+	@printf "$(GREEN)$(BOLD)✓ Cross-compile clean!$(RESET)\n"
+
 lint: ## Run golangci-lint (pinned; part of check)
 	@printf "$(CYAN)$(BOLD)==> Linting ($(GOLANGCI_LINT_VERSION))...$(RESET)\n"
 	@GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
@@ -120,7 +130,7 @@ examples: ## Build, vet and test every example module against the public API
 	@for f in examples/*/verify.sh; do "$$f" || exit 1; done
 	@printf "$(GREEN)$(BOLD)✓ Examples verified!$(RESET)\n"
 
-check: vet lint test race audit examples ## Run all quality gates (vet, lint, test, race, audit, examples)
+check: vet crossbuild lint test race audit examples ## Run all quality gates (vet, crossbuild, lint, test, race, audit, examples)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities

@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package launcher is the in-sandbox stage bento re-execs into.
 //
 // bwrap runs a single entrypoint; when a run needs setup that must happen inside
