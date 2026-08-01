@@ -37,6 +37,12 @@ type HostPort struct {
 type Observation struct {
 	Reads  []string
 	Writes []string
+	// Absent is the subset of the accessed paths that nothing was ever found at: every
+	// open of one returned "no such file". They stay in Reads/Writes because the run
+	// meant to open them and enforcement has to reproduce the same answer, but a path
+	// that never resolved cannot have been read, which is what lets a warning about a
+	// deceptive filename say whether there was a file behind it.
+	Absent []string
 	Hosts  []HostPort
 	// Blocked is the subset of Hosts whose egress the proxy's upstream guard refused,
 	// because the name resolved to an address the sandbox must not reach (loopback,

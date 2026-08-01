@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -354,5 +355,33 @@ func TestProfileCreatesAWriteGrantsDirectory(t *testing.T) {
 	// be bound: --bind-try would have skipped a missing source without a word.
 	if _, err := os.Stat(filepath.Join(unborn, "f")); err != nil {
 		t.Errorf("the profiled write did not persist, so the write grant was never bound: %v\noutput:\n%s", err, out.String())
+	}
+}
+
+// The absence annotation rides alongside the access it describes rather than replacing
+// it: the run meant to open the path and the manifest still has to grant it. An
+// unquotable one is skipped without counting a drop, unlike its R/W neighbours - the
+// access was already counted on its own line, and all that is lost is the precision of a
+// warning.
+func TestParseObservationsReadsAbsentAnnotations(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "report")
+	content := fmt.Sprintf("R %q\nABSENT %q\nR %q\nABSENT /unquoted\n%s\n",
+		"/tmp/gone", "/tmp/gone", "/tmp/there", observe.ReportEnd)
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	obs, err := parseObservations(p)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !slices.Equal(obs.Reads, []string{"/tmp/gone", "/tmp/there"}) {
+		t.Errorf("reads = %q, want both paths recorded", obs.Reads)
+	}
+	if !slices.Equal(obs.Absent, []string{"/tmp/gone"}) {
+		t.Errorf("absent = %q, want only the annotated path", obs.Absent)
+	}
+	if obs.Dropped != 0 {
+		t.Errorf("dropped = %d, want 0: an unquotable annotation loses no access", obs.Dropped)
 	}
 }

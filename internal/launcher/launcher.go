@@ -327,6 +327,12 @@ func runObserve(cfg Config, env []string) (int, error) {
 				verb = "W"
 			}
 			fmt.Fprintf(&b, "%s %q\n", verb, a.Path)
+			// The access is reported either way; this only says nothing was ever found
+			// at the path, so the host can report a probe as a probe rather than as a
+			// file the run read.
+			if a.Absent {
+				fmt.Fprintf(&b, "ABSENT %q\n", a.Path)
+			}
 		}
 		if res.Execed {
 			b.WriteString("EXEC\n")

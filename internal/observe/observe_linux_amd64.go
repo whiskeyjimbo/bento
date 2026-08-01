@@ -33,6 +33,13 @@ import (
 type Access struct {
 	Path  string
 	Write bool // the open requested write access
+	// Absent reports that every open of this path whose return the observer saw came
+	// back with the file not there. The access is recorded either way - the program
+	// meant to open that file, and enforcement must reproduce the same answer - but a
+	// path nothing was ever found at cannot have been read, which is what lets a
+	// reporting layer tell a probe apart from a resolved file. It is keyed on the path
+	// alone, so a probe that misses and a create that succeeds do not disagree.
+	Absent bool
 }
 
 // Result is what a traced run observed.
@@ -216,6 +223,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// The op of each pid's last syscall stop that was read successfully - the parity a
 	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
+	// Whether an open of each path was ever seen to return a file. Keyed on the path
+	// alone rather than on seen's path+write key: a program that probes a path read-only,
+	// gets ENOENT, then creates it has opened one file, and letting the two entries carry
+	// opposite answers would report a file that demonstrably exists as absent.
+	resolved := map[string]bool{}
+	missed := map[string]bool{}
 	var res Result
 	record := func(path string, write bool) {
 		if path == "" {
@@ -227,6 +240,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		}
 		seen[key] = true
 		res.Accesses = append(res.Accesses, Access{Path: path, Write: write})
+	}
+	openResult := func(path string, found bool) {
+		if found {
+			resolved[path] = true
+			return
+		}
+		missed[path] = true
 	}
 
 	if err := syscall.PtraceSyscall(root, 0); err != nil {
@@ -280,7 +300,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// per-pid sweep is needed because at this point they are all lost, and no
 			// phantom is counted on a clean run: each descendant's held is swept at its own
 			// exit, so a script whose children have finished leaves this empty.
-			res.Dropped += len(held)
+			res.Dropped += existenceHeld(held)
 			reapTracees(tracees)
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {
@@ -294,6 +314,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			slices.SortFunc(res.Accesses, func(a, b Access) int {
 				return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(boolKey(a.Write), boolKey(b.Write)))
 			})
+			for i, a := range res.Accesses {
+				res.Accesses[i].Absent = missed[a.Path] && !resolved[a.Path]
+			}
 			return res, nil
 		case ws.Exited() || ws.Signaled():
 			// A subprocess ended and is reaped; forget it so the guard does not wait on a
@@ -307,7 +330,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// counter's own.
 			if op, native := nativeSyscall(wpid, lastOp, held, &res.Dropped); native {
 				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, op, record, count, release, held, &res)
+				inspect(wpid, op, record, openResult, count, release, held, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -696,6 +719,10 @@ func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held m
 // thread that dies at an exit stop holding one, and it is counted here for the same reason:
 // an access the observer could not read must reach Dropped or the manifest is silently short.
 //
+// A held OPEN is released the same way and counted at none: its pathname reached Accesses
+// at the entry stop, so what the missing exit stop costs is only the answer to whether the
+// open found a file. Counting it would report a recorded access as lost.
+//
 // It takes a tid rather than a stop key because a vanished thread leaves no registers to
 // form one. A tid has at most one pair open - its syscall stops alternate, and a signal
 // handler's own stops cannot fall between one pair's two, because the exit stop is reported
@@ -705,9 +732,12 @@ func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held m
 func releaseHeldOf(held map[string]heldPath, pid int) int {
 	prefix := fmt.Sprintf("%d\x00", pid)
 	lost := 0
-	for key := range held {
-		if strings.HasPrefix(key, prefix) {
-			delete(held, key)
+	for key, h := range held {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		delete(held, key)
+		if !h.open {
 			lost++
 		}
 	}
@@ -718,9 +748,26 @@ func releaseHeldOf(held map[string]heldPath, pid int) int {
 // whether the call succeeded. readOK is false when the pathname could not be read at all;
 // the drop is deferred with it, because a failed existence probe needs no grant and so
 // must not be reported as a lost access.
+// An open holds for a different reason: its pathname was already recorded at the entry
+// stop, and the exit stop only says whether the open found a file. Losing that answer
+// costs a reporting nuance rather than an access, which is why the sweeps below count
+// existence probes and not opens.
 type heldPath struct {
 	path   string
 	readOK bool
+	open   bool
+	write  bool
+}
+
+// existenceHeld counts the held pathnames whose loss is a lost access. See heldPath.
+func existenceHeld(held map[string]heldPath) int {
+	n := 0
+	for _, h := range held {
+		if !h.open {
+			n++
+		}
+	}
+	return n
 }
 
 // inspect decodes a syscall stop and records file opens / subprocess execs. The numbers
@@ -729,7 +776,7 @@ type heldPath struct {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
+func inspect(pid int, op byte, record func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -793,13 +840,15 @@ func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscal
 	// to. The exit stop is still needed for one thing, the existence syscalls' success
 	// filter, and that replays what was captured here rather than reading again.
 	if !atSyscallEntry(&regs) {
-		recordHeldExistence(pid, &regs, record, drop, held)
+		recordHeldExistence(pid, &regs, record, openResult, drop, held)
 		return
 	}
 	switch regs.Orig_rax {
 	case sysOpenat:
 		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {
-			record(path, regs.Rdx&writeFlags != 0)
+			write := regs.Rdx&writeFlags != 0
+			record(path, write)
+			holdOpen(pid, &regs, held, path, write)
 		} else {
 			drop()
 		}
@@ -824,20 +873,25 @@ func inspect(pid int, op byte, record func(string, bool), countDrop func(*syscal
 				drop()
 				break
 			}
-			record(anchoredPath, flags&uint64(writeFlags) != 0)
+			write := flags&uint64(writeFlags) != 0
+			record(anchoredPath, write)
+			holdOpen(pid, &regs, held, anchoredPath, write)
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
 		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
 		// a relative open after a chdir would be mis-anchored.
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
-			record(path, regs.Rsi&writeFlags != 0)
+			write := regs.Rsi&writeFlags != 0
+			record(path, write)
+			holdOpen(pid, &regs, held, path, write)
 		} else {
 			drop()
 		}
 	case sysCreat:
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
 			record(path, true)
+			holdOpen(pid, &regs, held, path, true)
 		} else {
 			drop()
 		}
@@ -944,21 +998,38 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 	held[stopKey(pid, regs)] = heldPath{path: path, readOK: ok}
 }
 
+// holdOpen keeps an open's pathname until its exit stop can say whether it found a file.
+// The access itself is already recorded by the time this is called and stays recorded
+// whatever the return value says - a failed open still needs a grant, because the program
+// meant to open that file. What the exit stop adds is the difference between a path that
+// resolved to something and one that was only probed, which is a distinction the reporting
+// layer needs and the grant does not. Replaying the entry stop's pathname rather than
+// reading it again at the exit stop is what keeps a sibling sharing the address space from
+// swapping in a path the call never touched.
+func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path string, write bool) {
+	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, open: true, write: write}
+}
+
 // recordHeldExistence applies the existence syscalls' success filter at the exit stop, to
-// the pathname the entry stop resolved, and releases the held entry either way.
+// the pathname the entry stop resolved, and releases the held entry either way. A held
+// open takes the same exit stop to report what its return value found; see holdOpen.
 //
 // Only a call that SUCCEEDED is recorded. A failed open still needs a grant, because the
 // script meant to open that file; a stat that already returned ENOENT needs none, because
 // enforcement reproduces that exact answer. The filter is what keeps manifests tight: a
 // shell's PATH search misses hundreds of times per command, and recording those probes
 // would bury the paths the run actually needs.
-func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[string]heldPath) {
+func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[string]heldPath) {
 	key := stopKey(pid, regs)
 	h, ok := held[key]
 	if !ok {
 		return
 	}
 	delete(held, key)
+	if h.open {
+		openResult(h.path, int64(regs.Rax) >= 0)
+		return
+	}
 	if int64(regs.Rax) < 0 {
 		return
 	}
@@ -966,6 +1037,10 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 		drop()
 		return
 	}
+	// A probe that succeeded found the path, which settles the same question an open's
+	// return value does - so a file that a stat reached but an open missed is not
+	// reported as absent.
+	openResult(h.path, true)
 	record(h.path, false)
 }
 

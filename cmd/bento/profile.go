@@ -1011,6 +1011,10 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 	for _, w := range obs.Writes {
 		names = append(names, kindedPath{"write", filepath.Dir(w)})
 	}
+	absent := map[string]bool{}
+	for _, p := range obs.Absent {
+		absent[p] = true
+	}
 	seen := map[string]bool{}
 	for _, e := range names {
 		p := e.path
@@ -1019,6 +1023,17 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 		}
 		seen[p] = true
 		notes = append(notes, accessNoteJSON{Kind: e.kind, Path: p, Reason: "unrepresentable"})
+		// The deception the full warning describes needs a file to deceive about. A path
+		// nothing was ever found at was probed and no more: nothing was read, and no
+		// grant of it would have meant anything either way - so saying the name is how a
+		// path is made to read as something other than what it grants would be noise on
+		// the case that produces it most often, an interpreter's search miss. Only the
+		// read side can be told apart this way; a write is judged at its parent
+		// directory, which no observation names the existence of.
+		if absent[p] {
+			fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8). Nothing was found at that path, so the run only probed for it; if the script genuinely needs a file there, rename it.\n", p)
+			continue
+		}
 		fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
 	}
 	seenHosts := map[string]bool{}

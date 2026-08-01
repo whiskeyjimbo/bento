@@ -232,9 +232,10 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 }
 
 // parseObservations reads the launcher's observation report: "R <path>" and
-// "W <path>" lines for opens, an "EXEC" line if the target spawned a subprocess,
-// an "EXIT <code>" or "SIGNAL <n>" line carrying the run's exit status, and a
-// "DROPPED <n>" line counting accesses the observer could not name.
+// "W <path>" lines for opens, an "ABSENT <path>" line for each of those the run never
+// found a file at, an "EXEC" line if the target spawned a subprocess, an "EXIT <code>"
+// or "SIGNAL <n>" line carrying the run's exit status, and a "DROPPED <n>" line
+// counting accesses the observer could not name.
 func parseObservations(path string) (profile.Observation, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -279,6 +280,13 @@ func parseObservations(path string) (profile.Observation, error) {
 				obs.Writes = append(obs.Writes, p)
 			} else {
 				obs.Dropped++
+			}
+		// Alone in this switch an unquotable record counts nothing: the access it
+		// annotates was already counted on its own R/W line, and all that is lost is
+		// the precision of a warning.
+		case strings.HasPrefix(line, "ABSENT "):
+			if p, err := strconv.Unquote(line[7:]); err == nil {
+				obs.Absent = append(obs.Absent, p)
 			}
 		// The status lines have no honest partial reading, which is why they refuse
 		// rather than count a drop like an unquotable path does. A malformed EXIT

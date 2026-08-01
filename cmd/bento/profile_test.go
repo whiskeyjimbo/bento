@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/user"
@@ -1176,5 +1177,30 @@ func TestMissingGrantedWriteDirsSkipsADanglingSymlink(t *testing.T) {
 
 	if got := missingGrantedWriteDirs([]string{tree}, []string{link}); len(got) != 0 {
 		t.Errorf("missingGrantedWriteDirs = %v, want the dangling symlink left alone", got)
+	}
+}
+
+// The full warning's framing - a name made to read as something other than what it grants
+// - describes a deception that needs a file behind it. When every open of the path missed,
+// nothing was read and no grant of it would have meant anything, so the report says the
+// run only probed. A write is judged at its parent directory, whose existence no
+// observation names, so it keeps the unqualified text.
+func TestUnrepresentableWarningSeparatesProbedFromResolved(t *testing.T) {
+	resolved := "/data/re\u202eal.txt"
+	probed := "/data/pro\u202ebed.txt"
+	var buf bytes.Buffer
+	printUnrepresentable(&buf, profile.Observation{
+		Reads:  []string{resolved, probed},
+		Absent: []string{probed},
+	})
+	got := buf.String()
+	if !strings.Contains(got, fmt.Sprintf("%q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path", resolved)) {
+		t.Errorf("a path that resolved lost the full warning:\n%s", got)
+	}
+	if !strings.Contains(got, fmt.Sprintf("%q - the name carries", probed)) || !strings.Contains(got, "Nothing was found at that path, so the run only probed for it") {
+		t.Errorf("a path nothing was found at did not get the probe wording:\n%s", got)
+	}
+	if strings.Count(got, "which is how a path is made to read as something other than what it grants") != 1 {
+		t.Errorf("the deception framing was applied to a path that was only probed:\n%s", got)
 	}
 }

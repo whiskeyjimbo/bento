@@ -9,8 +9,9 @@ import (
 
 // Access is one file the program opened.
 type Access struct {
-	Path  string
-	Write bool
+	Path   string
+	Write  bool
+	Absent bool
 }
 
 // Result is what a traced run observed.

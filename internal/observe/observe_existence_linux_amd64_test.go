@@ -85,3 +85,56 @@ func TestTraceAnchorsRelativeChdirBeforeTheMove(t *testing.T) {
 		t.Errorf("relative chdir anchored at the post-move directory: %q", filepath.Join(sub, "sub"))
 	}
 }
+
+// A failed open is still recorded - the program meant to open that file, and enforcement
+// has to reproduce the same answer - but a path nothing was ever found at needs to be
+// distinguishable from one that resolved, so a reporting layer can tell a search miss
+// from a file the run read. The probe-then-create case is the one that decides the key:
+// the two opens differ in their write bit, and letting each carry its own answer would
+// report a file the run created as absent.
+func TestTraceMarksPathsNothingWasFoundAt(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	dir := t.TempDir()
+	present := filepath.Join(dir, "there.toml")
+	missing := filepath.Join(dir, "gone.toml")
+	created := filepath.Join(dir, "made.toml")
+	if err := os.WriteFile(present, []byte("k = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := fmt.Sprintf(`
+import os
+open(%q).close()
+try:
+    open(%q).close()
+except FileNotFoundError:
+    pass
+try:
+    open(%q).close()
+except FileNotFoundError:
+    pass
+open(%q, "w").close()
+`, present, missing, created, created)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	for _, path := range []string{present, created} {
+		for _, a := range res.Accesses {
+			if a.Path == path && a.Absent {
+				t.Errorf("%q was opened successfully but is marked absent (write=%v)", path, a.Write)
+			}
+		}
+	}
+	a, ok := find(res, missing)
+	if !ok {
+		t.Fatalf("a failed open was not recorded: %q; accesses: %v", missing, res.Accesses)
+	}
+	if !a.Absent {
+		t.Errorf("open of %q returned ENOENT and was not marked absent", missing)
+	}
+}
