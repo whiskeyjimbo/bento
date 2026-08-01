@@ -266,14 +266,64 @@ func writeJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
-// writeReportTable renders the enforcement matrix for a human.
+// textWidth is the column the human-readable prose wraps at. It is fixed rather than
+// read from the terminal because this output is piped into logs and CI transcripts at
+// least as often as it is read on a tty, and a report whose line breaks depend on the
+// window it was produced in cannot be diffed against another run's.
+const textWidth = 78
+
+// detailInline is the longest DETAIL cell that still fits the table. The degraded
+// filesystem tier's disclosure runs past a thousand characters on one line: inline it
+// destroys the column alignment the table exists for and pushes the other rows off
+// any reasonable terminal, so anything this long moves below the table as a note.
+const detailInline = 100
+
+// writeReportTable renders the enforcement matrix for a human. The layer's full
+// detail is never dropped, only relocated - the machine-readable --json carries it
+// whole either way.
 func writeReportTable(w io.Writer, r enforce.Report) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "LAYER\tTIER\tSTATE\tDETAIL")
+	var notes []enforce.LayerStatus
 	for _, l := range r.Layers {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
+		detail := l.Reason
+		if len(detail) > detailInline {
+			detail = "see note below"
+			notes = append(notes, l)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l.Layer, l.Layer.Tier(), l.State, detail)
 	}
 	tw.Flush()
+	for _, l := range notes {
+		fmt.Fprintf(w, "\n%s (%s):\n", l.Layer, l.State)
+		for _, line := range wrapText(l.Reason, textWidth-2) {
+			fmt.Fprintf(w, "  %s\n", line)
+		}
+	}
+}
+
+// wrapText breaks s into lines of at most width columns on word boundaries. A word
+// longer than width keeps its own line rather than being split: these details name
+// paths, sysctls and syscalls that a reader copies out, and a break inside one turns
+// an actionable name into two unusable halves.
+func wrapText(s string, width int) []string {
+	var lines []string
+	var line string
+	for _, word := range strings.Fields(s) {
+		switch {
+		case line == "":
+			line = word
+		case len(line)+1+len(word) <= width:
+			line += " " + word
+		default:
+			lines = append(lines, line)
+			line = word
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // writeEgressHint explains a likely proxy-bypass. Bento intercepts egress
@@ -615,7 +665,13 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 	}
 	fmt.Fprintln(w, "[bento] this host does not enforce everything your policy asked for:")
 	for _, l := range short {
-		fmt.Fprintf(w, "[bento]   %s (%s tier): %s - %s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
+		// Wrapped, not one line: the degraded filesystem tier's reason is a
+		// thousand-character paragraph, and a disclosure the reader scrolls past
+		// sideways discloses nothing.
+		head := fmt.Sprintf("%s (%s tier): %s - %s", l.Layer, l.Layer.Tier(), l.State, l.Reason)
+		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
+			fmt.Fprintf(w, "[bento]   %s\n", line)
+		}
 	}
 	// The sharpest consequence of the degraded filesystem tier is not in the layer line
 	// above: it never scans for aliases at all, so an alias inside a granted tree was

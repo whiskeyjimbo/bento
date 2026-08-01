@@ -58,6 +58,37 @@ func TestWriteReportTableSurfacesShortfallDetail(t *testing.T) {
 	}
 }
 
+// A detail too long for a cell has to leave the cell, or the alignment the table
+// exists for is gone and the other rows go off screen with it. Relocating is not
+// dropping: the text still has to appear in full, wrapped, below the table.
+func TestWriteReportTableRelocatesAnOversizedDetail(t *testing.T) {
+	long := "the degraded tier discloses a great deal " + strings.Repeat("and keeps going ", 40) + "to the end"
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Degraded, long)
+	r.Add(enforce.LayerLimits, enforce.Enforced, "")
+
+	var b bytes.Buffer
+	writeReportTable(&b, r)
+	out := b.String()
+
+	header, rest, _ := strings.Cut(out, "\n")
+	rows, notes, _ := strings.Cut(rest, "\n\n")
+	for _, line := range strings.Split(header+"\n"+rows, "\n") {
+		if len(line) > textWidth {
+			t.Errorf("table row is %d columns wide:\n%s", len(line), line)
+		}
+	}
+	if !strings.Contains(rows, "see note below") {
+		t.Errorf("the oversized row must point at its note; got:\n%s", rows)
+	}
+	if !strings.Contains(notes, string(enforce.LayerFilesystem)) {
+		t.Errorf("the note must name its layer; got:\n%s", notes)
+	}
+	if flat := strings.Join(strings.Fields(notes), " "); !strings.Contains(flat, long) {
+		t.Errorf("the note must carry the detail in full; got:\n%s", notes)
+	}
+}
+
 func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	networked := &policy.Policy{Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 	noNetwork := &policy.Policy{}
