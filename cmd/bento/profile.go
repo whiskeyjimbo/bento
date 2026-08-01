@@ -776,6 +776,8 @@ func mergeNotes(a, b []accessNoteJSON) []accessNoteJSON {
 	return a
 }
 
+// sameNote is the equality for a note carrying Absent, which is a pointer: == and
+// slices.Equal compare which round built it rather than what it says.
 func sameNote(a, b accessNoteJSON) bool {
 	if a.Kind != b.Kind || a.Path != b.Path || a.Host != b.Host || a.Port != b.Port || a.Reason != b.Reason {
 		return false
