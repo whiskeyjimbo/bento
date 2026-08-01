@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -974,5 +975,28 @@ func TestRelocatableIgnoresARootHome(t *testing.T) {
 	got := relocatable(&policy.Policy{Entrypoint: filepath.Join(dir, "x"), Read: []string{"/etc/hosts"}}, filepath.Join(dir, "m.yaml"))
 	if !slices.Equal(got.Read, []string{"/etc/hosts"}) {
 		t.Errorf("read = %v, want /etc/hosts left absolute", got.Read)
+	}
+}
+
+// The host shortfall profiling refuses on is the one doctor gates its exit code on, and
+// it is worded for the command the user actually invoked - a profiling session told it
+// is "refusing to run" sends the reader looking for a manifest they never named.
+func TestProfileRefusalNamesProfiling(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Unavailable, "bubblewrap (bwrap) is not installed")
+	if len(gatedShortfall(report)) == 0 {
+		t.Fatal("a filesystem shortfall must gate, or profile has nothing to refuse on")
+	}
+
+	var out bytes.Buffer
+	writeRefusal(&out, "refusing to profile", &enforce.Refusal{
+		Report: report, Reason: "a core guarantee cannot be fully enforced on this host", Short: gatedShortfall(report),
+	})
+	got := out.String()
+	if !strings.HasPrefix(got, "bento: refusing to profile: ") {
+		t.Errorf("refusal = %q, want it to say what is being refused", got)
+	}
+	if !strings.Contains(got, "bwrap") {
+		t.Errorf("refusal = %q, want the layer reason bento authored rather than bwrap's own stderr", got)
 	}
 }

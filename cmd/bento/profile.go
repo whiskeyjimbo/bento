@@ -80,6 +80,12 @@ func newProfileCmd() *cobra.Command {
 			if _, err := os.Stat(script); err != nil {
 				return fmt.Errorf("entrypoint %q: %w", args[0], err)
 			}
+			// Before the banner too, and for a stronger reason than the typo above: a host
+			// that cannot sandbox announced a profiling session, passed bwrap's own stderr
+			// through, and then hedged about a condition bento can state exactly.
+			if err := preflightHost(cmd.Context(), os.Stderr); err != nil {
+				return err
+			}
 			if interpreter == "" {
 				interpreter = guessInterpreter(script)
 			}
@@ -222,6 +228,42 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// preflightHost refuses to profile on a host that cannot fully enforce a guarantee
+// every run needs, before any session is announced. It asks the same question doctor
+// gates its exit code on, so the two agree by construction rather than by two rules kept
+// in step by hand - and so the reader meets bento's own account of the shortfall rather
+// than the distro bubblewrap's advice, which bento did not author.
+//
+// It is not enforce.Run's admission: that judges the layers a policy needs, and the
+// discovery policy's open network and exec describe the observation, not a posture to
+// enforce (see linux.Profile). The baseline is what profiling really depends on.
+//
+// run offers --allow-degraded against the same shortfall and profiling deliberately
+// does not. The reduced tier applies no deny-list shields at all, and profiling runs the
+// target against the real $HOME so it names the credential paths it reaches - so the
+// hatch that makes a run possible would turn profiling into the exposure it exists to
+// avoid. The refusal points at doctor instead.
+func preflightHost(ctx context.Context, w io.Writer) error {
+	e, err := backend.New()
+	if err != nil {
+		return err
+	}
+	report := e.Probe(ctx)
+	short := gatedShortfall(report)
+	if len(short) == 0 {
+		return nil
+	}
+	writeRefusal(w, "refusing to profile", &enforce.Refusal{
+		Report: report,
+		Reason: "a core guarantee cannot be fully enforced on this host, and profiling has no reduced " +
+			"tier to fall back on - it always needs the full sandbox, because it runs the target against " +
+			"your real environment to record what it reaches. Fix the shortfall below; `bento doctor` " +
+			"reports every layer",
+		Short: short,
+	})
+	return &exitError{code: bentoFailed}
 }
 
 // relocatable rewrites a proposal's paths into the vocabulary the manifest format

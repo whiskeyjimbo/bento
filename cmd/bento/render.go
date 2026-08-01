@@ -463,9 +463,14 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 // short on its own indented lines. The generic printer cannot do this itself: a manifest
 // parse error carries caret alignment that wrapping would mangle, so only the caller that
 // knows it holds a refusal can wrap it.
-func writeRefusal(w io.Writer, r *enforce.Refusal) {
+//
+// lead names what is being refused ("refusing to run", "refusing to profile"). It is the
+// caller's word rather than Refusal.Error()'s because the same host shortfall reaches
+// two commands, and a profiling session told it is refusing to run sends the reader
+// looking for a manifest they never invoked.
+func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 	const prefix = "bento: "
-	for i, line := range wrapText("refusing to run: "+r.Reason, textWidth-len(prefix)) {
+	for i, line := range wrapText(lead+": "+r.Reason, textWidth-len(prefix)) {
 		if i == 0 {
 			fmt.Fprintf(w, "%s%s\n", prefix, line)
 			continue

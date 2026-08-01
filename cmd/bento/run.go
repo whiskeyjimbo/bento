@@ -144,7 +144,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// Rendered here rather than returned to main's generic printer: the shortfall
 		// reasons include the degraded filesystem tier's thousand-character disclosure,
 		// which that printer would put on one unreadable line.
-		writeRefusal(stderr, refusal)
+		writeRefusal(stderr, "refusing to run", refusal)
 		return &exitError{code: bentoFailed}
 	case errors.As(runErr, &shortfall):
 		// The target ran, so its output and report are reported exactly as a clean run's
