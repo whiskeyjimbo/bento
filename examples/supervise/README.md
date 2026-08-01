@@ -33,6 +33,9 @@ built to make the difference visible.
 
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces.
 - Go, and `curl` (the demo agent uses it to make requests).
+- A terminal on stdin. Every access the trial finds is a question for a human, so
+  `supervise run` refuses rather than answer them itself; `supervise perms` is the
+  scriptable half.
 
 ## Build
 

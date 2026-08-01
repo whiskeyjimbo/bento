@@ -92,6 +92,16 @@ func run(scriptArg string) int {
 		return 2
 	}
 
+	// Stdin decides whether a human is here to answer; /dev/tty below is only where the
+	// dialogue is drawn. Refuse before the store is even loaded, since every unanswered
+	// prompt reads as a decline: the run would otherwise enforce a policy nobody chose
+	// and leave that session's verdicts behind for the next one. cmd/bento's approve
+	// gates on stdin the same way.
+	if !isTerminal(os.Stdin) {
+		fmt.Fprintln(os.Stderr, "supervise: run needs a terminal - every access the trial finds is a question for a human, and stdin is not one. Attach a terminal, or set the decisions ahead of time with `supervise perms`.")
+		return 1
+	}
+
 	// Ctrl-C at a prompt used to kill the process where it stood, discarding every deny
 	// and standing block the run had recorded. Catching it instead cancels the run's
 	// context, which unwinds the normal path (prompts return a non-answer, the enforced
@@ -170,8 +180,9 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// still writes to the same screen through its inherited stderr and can forge lines
 	// there. What it cannot do either way is read the human's keystrokes, and on the
 	// full tier it cannot inject into the terminal (the sandbox starts a new session;
-	// the degraded tier only starts a new process group). Fall back to stdin/stderr when
-	// there is no tty, so the demo is still drivable through a pipe.
+	// the degraded tier only starts a new process group). Where /dev/tty cannot be opened
+	// the dialogue falls back to stdin/stderr, which the check above has already
+	// established is a terminal.
 	termIn, termOut := io.Reader(os.Stdin), io.Writer(os.Stderr)
 	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 		defer tty.Close()
