@@ -145,8 +145,14 @@ provenance:
   generated-by: bento profile
   generated-at: 2026-07-14T00:00:00Z
   approves: <sha256-fingerprint-over-policy-fields>
-  blocked-hosts: []             # Destinations the profiling run reached for and bento refused
+  blocked-hosts: []             # Destinations bento's own egress guard refused to reach
 ```
+
+A destination lands there only when the guard refused it because the name resolved into
+space the sandbox must not reach - loopback, private ranges, cloud metadata - not because
+a profiling run declined to forward it. A default `bento profile` forwards no egress at
+all, so nothing is dialed and the list stays empty; it is populated only under
+`--allow-network`.
 
 The `blocked-hosts` list records how the manifest was drafted, not what it grants, so it
 stays out of the `approves` fingerprint. `bento approve` calls out any `network:` rule
