@@ -186,6 +186,11 @@ func wantsJSON(cmd *cobra.Command, args []string) bool {
 // shell completion on every keystroke and refuse to print `bento help run`. `version` is
 // left out for the same reason and one more - which build this is, is the first thing a
 // bug report needs and the only answer that holds everywhere.
+//
+// `run` and `profile` are left out and check inside their RunE instead: their --json
+// contract is that stdout carries the refusal, and a hook fires before the RunE that
+// knows how to write one - so gating them here would answer a machine consumer with the
+// empty stdout that jsonRefusalAnnotation exists to eliminate.
 func gatePlatform(cmds ...*cobra.Command) []*cobra.Command {
 	for _, cmd := range cmds {
 		cmd.PersistentPreRunE = func(*cobra.Command, []string) error { return checkPlatform() }
@@ -211,8 +216,8 @@ func newRootCmd() *cobra.Command {
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
-	root.AddCommand(gatePlatform(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd())...)
-	root.AddCommand(newVersionCmd())
+	root.AddCommand(gatePlatform(newDoctorCmd(), newValidateCmd(), newApproveCmd())...)
+	root.AddCommand(newRunCmd(), newProfileCmd(), newVersionCmd())
 	checkJSONRefusalShapes(root)
 	return root
 }

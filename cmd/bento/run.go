@@ -54,6 +54,14 @@ func newRunCmd() *cobra.Command {
 			// gate could not tell a refusal from a crash.
 			refuse := func(err error) error { return refuseStreamJSON(os.Stdout, asJSON, err) }
 
+			// Answered inside RunE rather than through the platform gate the other
+			// commands carry, for the same reason the mutually-exclusive flags below are:
+			// a refusal raised before RunE leaves --json an empty stdout, which is the one
+			// thing a machine consumer cannot tell from a crash.
+			if err := checkPlatform(); err != nil {
+				return refuse(err)
+			}
+
 			// Rejected here rather than with MarkFlagsMutuallyExclusive, which refuses
 			// before RunE and so would leave --json an empty stdout.
 			if strict && allowDegraded {
@@ -93,7 +101,8 @@ func newRunCmd() *cobra.Command {
 
 			// Statted before the script runs, and carried through to the envelope, so
 			// what --json reports is the same verdict the note above gave: a grant the
-			// script itself then created was still missing when the run started.
+			// script itself then created was still missing when the run started. The
+			// file-ish write note beside it stays on stderr - see writeFileishWriteNotes.
 			missingReads := missingReadGrants(p.Read)
 			writeMissingReadNotes(os.Stderr, missingReads)
 			writeFileishWriteNotes(os.Stderr, fileishWriteGrants(p.Write))

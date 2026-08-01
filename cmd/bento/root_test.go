@@ -232,12 +232,17 @@ func TestNonMistakesAreNotTreatedAsUsageErrors(t *testing.T) {
 // is attached: setting it on the root instead would inherit it onto cobra's own `help`,
 // `completion` and hidden `__complete`, which answer fine on a host bento cannot run on -
 // and gating them refuses `bento help run` and errors on every completion keystroke.
+//
+// The commands carrying the refusal envelope are the other half. A hook fires before the
+// RunE that writes one, so gating `run` or `profile` here would leave --json the empty
+// stdout on a host with no backend; they check inside their RunE instead, and every
+// command that opts into the envelope must stay out of this map.
 func TestPlatformGateCoversOnlyTheCommandsThatNeedABackend(t *testing.T) {
 	root := newRootCmd()
 	if root.PersistentPreRunE != nil {
 		t.Error("the root must not carry the gate; cobra's help and completion commands inherit it")
 	}
-	gated := map[string]bool{"run": true, "doctor": true, "validate": true, "approve": true, "profile": true}
+	gated := map[string]bool{"doctor": true, "validate": true, "approve": true}
 	for _, cmd := range root.Commands() {
 		if got := cmd.PersistentPreRunE != nil; got != gated[cmd.Name()] {
 			t.Errorf("%s: gated = %v, want %v", cmd.Name(), got, gated[cmd.Name()])
@@ -246,6 +251,11 @@ func TestPlatformGateCoversOnlyTheCommandsThatNeedABackend(t *testing.T) {
 	for name := range gated {
 		if _, _, err := root.Find([]string{name}); err != nil {
 			t.Errorf("%s: no such command, so the gate names one that does not exist: %v", name, err)
+		}
+	}
+	for _, cmd := range root.Commands() {
+		if cmd.Annotations[jsonRefusalAnnotation] != "" && cmd.PersistentPreRunE != nil {
+			t.Errorf("%s promises a refusal envelope, so the gate must not fire before its RunE", cmd.Name())
 		}
 	}
 }

@@ -87,6 +87,12 @@ func newProfileCmd() *cobra.Command {
 			// here at all - the frontend answers that one, off the annotation below.
 			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
 
+			// Answered here rather than through the platform gate the other commands
+			// carry: a refusal raised before RunE would bypass the envelope above.
+			if err := checkPlatform(); err != nil {
+				return refuse(err)
+			}
+
 			script, err := filepath.Abs(args[0])
 			if err != nil {
 				return refuse(err)
