@@ -215,7 +215,7 @@ func TestMain(m *testing.M) {
 }
 ```
 
-`backend.New` and `backend.Profile` panic if they detect a stage that was never dispatched, so the mistake surfaces immediately rather than as a hang.
+`backend.New` and `backend.Profile` panic when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb. That catches the staged child only if it gets as far as asking for an enforcer, so it is not the guarantee - the guarantee is on the parent side: the stage writes what it applied before it dispatches the target, so a run whose stage stayed silent provably never ran the target, and `enforce.Run` returns an `*enforce.Refusal` saying so. The `log.Fatalf` on `err` in the example below is enough to catch a forgotten `DispatchReexec`; it will never report a clean exit 0 for a target that never started.
 
 ### Minimal Example
 

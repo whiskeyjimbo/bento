@@ -3,7 +3,9 @@ package enforce
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -27,6 +29,11 @@ type fakeEnforcer struct {
 	gotDegraded      bool
 	gotAcceptAliases []string
 	gotDenyPaths     []string
+	// silentStage makes the fake return a stage that never attested its setup, which
+	// Run refuses. A backend that reached the target attests, so that is the default
+	// here rather than Result.Setup's zero value - otherwise every test that only
+	// cares about admission would be asserting against a refused run.
+	silentStage bool
 }
 
 func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
@@ -40,7 +47,11 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opt
 	if opts.Gate != nil {
 		f.gotGate = opts.Gate(ctx, "example.com", "443")
 	}
-	return f.result, f.err
+	res := f.result
+	if res.Setup == SetupSilent && !f.silentStage {
+		res.Setup = SetupAttested
+	}
+	return res, f.err
 }
 
 // validPolicy is the minimal policy that passes validation: no network, no
@@ -796,18 +807,16 @@ func TestRunPreservesSetupState(t *testing.T) {
 		setup  SetupState
 		strict bool
 	}{
-		"attested":                 {SetupAttested, false},
-		"silent":                   {SetupSilent, false},
-		"target unreached":         {SetupTargetUnreached, false},
-		"silent under a shortfall": {SetupSilent, true},
+		"attested":                           {SetupAttested, false},
+		"target unreached":                   {SetupTargetUnreached, false},
+		"target unreached under a shortfall": {SetupTargetUnreached, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			backend := fullyEnforced()
 			if tc.strict {
 				// A layer the backend worsened mid-run is what turns strict into a
-				// *Shortfall - the case where the exit code and the error look the same
-				// whether setup failed or a guarantee slipped while the target ran.
-				backend.Set(LayerFilesystem, Unavailable, "the sandboxed launcher did not report what it applied")
+				// *Shortfall.
+				backend.Set(LayerFilesystem, Unavailable, "the sandboxed launcher applied its layers but never reached the target")
 			}
 			f := &fakeEnforcer{
 				probe:  fullyEnforced(),
@@ -824,6 +833,38 @@ func TestRunPreservesSetupState(t *testing.T) {
 			}
 			if res.Setup != tc.setup {
 				t.Errorf("Result.Setup = %v, want %v", res.Setup, tc.setup)
+			}
+		})
+	}
+}
+
+// A stage that never reported what it applied never reached the target - the marker it
+// would have written comes before the dispatch. Run must refuse rather than hand back
+// Result's zero exit code as the target's own answer, which is what an embedder that
+// forgot backend.DispatchReexec() would otherwise read as a clean success.
+func TestSilentStageIsRefused(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			backend := fullyEnforced()
+			backend.Set(LayerFilesystem, Unavailable, "the sandboxed launcher did not report what it applied")
+			f := &fakeEnforcer{
+				probe:       fullyEnforced(),
+				result:      Result{ExitCode: 0, Setup: SetupSilent, Report: backend},
+				silentStage: true,
+			}
+			res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: strict})
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("err = %v, want a *Refusal", err)
+			}
+			if !strings.Contains(refusal.Reason, "DispatchReexec") {
+				t.Errorf("refusal reason %q does not name the call an embedder must make", refusal.Reason)
+			}
+			if !hasLayer(refusal.Short, LayerFilesystem) {
+				t.Errorf("refusal shortfall %v does not name the filesystem layer", refusal.Short)
+			}
+			if res.Setup != SetupSilent {
+				t.Errorf("Result.Setup = %v, want %v", res.Setup, SetupSilent)
 			}
 		})
 	}

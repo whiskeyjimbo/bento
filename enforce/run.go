@@ -126,6 +126,22 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err != nil {
 		return res, err
 	}
+	// A stage that never wrote its marker never reached the target: the marker is
+	// written after every layer decision and before the target is dispatched, so
+	// SetupSilent is proof the run did not happen, not merely that its layers are
+	// unattested. Returning nil here would hand back Result's zero exit code as the
+	// target's own answer - which is how an embedder that forgot DispatchReexec gets a
+	// clean success for a target that never ran. It is a Refusal rather than a
+	// Shortfall for the same reason: nothing ran, so retrying is safe, and only strict
+	// mode looks at a Shortfall at all.
+	if res.Setup == SetupSilent {
+		return res, &Refusal{
+			Report: res.Report,
+			Reason: "the sandbox stage never reported what it applied, so the target did not run. " +
+				"An embedder that hosts the backend must call backend.DispatchReexec() as the first statement in main()",
+			Short: res.Report.Degradations(),
+		}
+	}
 	// Strict admitted this run against the pre-run probe, but the overlay above can
 	// have worsened a layer with what the backend learned while running - a proxy
 	// listener that died mid-run leaves the egress guarantee strict required unmet. A

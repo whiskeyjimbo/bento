@@ -202,11 +202,10 @@ type Result struct {
 	// two onto different exit codes of its own reads this instead of the Report's prose
 	// reasons, which are written for humans and will change wording.
 	//
-	// It matters most under Strict, where it is the ONLY thing that separates two
-	// outcomes that arrive identically as a populated Result plus a *Shortfall: a
-	// genuine mid-run lapse (SetupAttested - the target ran, and a guarantee slipped)
-	// and a stage that never got the layers up (SetupSilent). An embedder treating
-	// those as disjoint on the error alone reports the wrong one.
+	// A stage that never got its layers up (SetupSilent) does not reach a caller as a
+	// nil error: Run turns it into a *Refusal, because the marker this reads is written
+	// before the target is dispatched and so its absence proves the target never ran. A
+	// *Shortfall therefore always means the target ran and a guarantee slipped.
 	//
 	// It is meaningful only when Run returned nil or a *Shortfall - the cases where a
 	// target was actually launched. Every other error means the run was refused or
