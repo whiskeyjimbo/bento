@@ -202,7 +202,7 @@ func newProfileCmd() *cobra.Command {
 						if !mayRun {
 							// The first pass already proposes the directory, so the cost of stopping
 							// here is the verdict, not the manifest.
-							fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, but a second pass would repeat the target's egress under --allow-network, so this keeps the first pass's proposal.\n", strings.Join(dirs, ", "))
+							fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, but a second pass would repeat the target's egress under --allow-network, so this keeps the first pass's proposal - re-run without --allow-network, or create the directory, to profile it as a finished run.\n", strings.Join(dirs, ", "))
 						} else {
 							fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, so this runs the target a second time with it created.\n", strings.Join(dirs, ", "))
 							retry := *base
@@ -608,17 +608,6 @@ func kinded(kind string, paths []string) []kindedPath {
 	return out
 }
 
-// missingGrantedWriteDirs returns the proposal's write grants that are absent from the
-// host and lie inside a tree profiling already granted write to. Those are exactly the
-// directories an enforced run creates for a granted write (prepareWriteDirs), so a
-// target that failed only on one of them is describing a manifest that already works.
-//
-// Confined to the already-granted tree deliberately. Profiling mounted that tree
-// writable during this same pass, so creating a directory inside it exposes nothing the
-// round did not already permit; a proposed write anywhere else is a path the target
-// chose, and profiling must not create host directories at an untrusted target's
-// request. Like the mkdir the convergence loop's grants produce, the directory is not
-// removed afterwards - an enforced run of the resulting manifest would create it anyway.
 // retryWriteDirs names the directories a non-interactive second pass would create, and
 // says whether that pass may run. The trigger is a missing write dir plus an unfinished
 // round, which is not evidence that the one caused the other: a target that failed for
@@ -633,6 +622,17 @@ func retryWriteDirs(status roundStatus, allowNetwork bool, granted, proposed []s
 	return missingGrantedWriteDirs(granted, proposed), !allowNetwork
 }
 
+// missingGrantedWriteDirs returns the proposal's write grants that are absent from the
+// host and lie inside a tree profiling already granted write to. Those are exactly the
+// directories an enforced run creates for a granted write (prepareWriteDirs), so a
+// target that failed only on one of them is describing a manifest that already works.
+//
+// Confined to the already-granted tree deliberately. Profiling mounted that tree
+// writable during this same pass, so creating a directory inside it exposes nothing the
+// round did not already permit; a proposed write anywhere else is a path the target
+// chose, and profiling must not create host directories at an untrusted target's
+// request. Like the mkdir the convergence loop's grants produce, the directory is not
+// removed afterwards - an enforced run of the resulting manifest would create it anyway.
 func missingGrantedWriteDirs(granted, proposed []string) []string {
 	var out []string
 	for _, w := range proposed {
