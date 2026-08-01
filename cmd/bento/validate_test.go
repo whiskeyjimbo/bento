@@ -479,3 +479,85 @@ func TestValidateNotesAReadGrantThatNamesNothingWithoutFailing(t *testing.T) {
 		t.Errorf("summary must note the grant that matches nothing; got:\n%s", out)
 	}
 }
+
+// A write grant that already exists as a file is refused by the backend before the script
+// starts, so validate has to say so where the manifest is being reviewed - that is the
+// gate's whole point - and --strict has to fail on it.
+func TestValidateStrictFailsOnAWriteGrantThatIsAFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "already-a-file")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: "./x", Write: []string{target}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err == nil {
+		t.Fatalf("--strict must fail on a write grant run refuses; got:\n%s", out)
+	}
+	if !strings.Contains(out, "runnable:     NO") || !strings.Contains(out, "grant its parent directory instead") {
+		t.Errorf("summary must refuse the file grant in run's words; got:\n%s", out)
+	}
+
+	jsonOut, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
+	if err == nil {
+		t.Errorf("--json --strict must fail too; got:\n%s", jsonOut)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, jsonOut)
+	}
+	if got.Runnable == nil || *got.Runnable {
+		t.Errorf("runnable = %v, want false", got.Runnable)
+	}
+}
+
+// A write grant naming nothing yet cannot be refused - run creates it, and a directory may
+// be exactly what was meant. But run creates a DIRECTORY, so a grant spelled like a file
+// silently produces `out.json/` on the host and the script's file never appears. A note,
+// like a read grant that names nothing, and never a --strict failure: it is a guess about
+// a naming convention.
+func TestValidateNotesAWriteGrantSpelledLikeAFileWithoutFailing(t *testing.T) {
+	dir := t.TempDir()
+	fileish := filepath.Join(dir, "build_output", "file.txt")
+	dotfile := filepath.Join(dir, "state", ".env")
+	p := &policy.Policy{Entrypoint: "./x", Write: []string{fileish, dotfile}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err != nil {
+		t.Fatalf("a grant spelled like a file must not fail --strict: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "runnable:     yes") {
+		t.Errorf("a file-ish write grant is a note, not a verdict; got:\n%s", out)
+	}
+	if !strings.Contains(out, strconv.Quote(fileish)) || !strings.Contains(out, "write grants name") {
+		t.Errorf("summary must note the file-ish write grant; got:\n%s", out)
+	}
+	// A name that is all extension is an ordinary dotfile directory, not a signal.
+	if strings.Contains(out, strconv.Quote(dotfile)) {
+		t.Errorf("a dotfile-named grant must not be flagged; got:\n%s", out)
+	}
+
+	jsonOut, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
+	if err != nil {
+		t.Fatalf("--json --strict must not fail either: %v\n%s", err, jsonOut)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, jsonOut)
+	}
+	if got.Runnable == nil || !*got.Runnable {
+		t.Errorf("runnable = %v, want true", got.Runnable)
+	}
+	if len(got.FileishWriteGrants) != 1 || got.FileishWriteGrants[0] != fileish {
+		t.Errorf("fileish_write_grants = %v, want just %q", got.FileishWriteGrants, fileish)
+	}
+}

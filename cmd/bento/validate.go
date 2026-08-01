@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -209,6 +212,12 @@ type runnability struct {
 	// problems are the reasons run would refuse before the script started. Worded as run
 	// words them, since that is the message the reader will meet if they ignore this one.
 	problems []string
+	// fileishWrites are write grants that name nothing on this host and are spelled like
+	// a file. Not a problem, because nothing here can know: run creates the directory and
+	// the script may well have meant one. Silence is still wrong - write grants name
+	// directories, so a grant meant as a file leaves a host directory called
+	// `output.json` and the file the script wanted never appears.
+	fileishWrites []string
 	// missingReads are read grants naming nothing on this host. Not a problem: a grant
 	// may name a path the script creates, or one that exists only on the target machine.
 	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
@@ -240,8 +249,44 @@ func checkRunnable(resolved *policy.Policy) runnability {
 			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
+	r.problems = append(r.problems, fileWriteGrantProblems(resolved.Write)...)
+	r.fileishWrites = fileishWriteGrants(resolved.Write)
 	r.missingReads = missingReadGrants(resolved.Read)
 	return r
+}
+
+// fileWriteGrantProblems reports the write grants that already exist as something other
+// than a directory, in the words the backend refuses them with - the case validate exists
+// to catch before run's first step.
+func fileWriteGrantProblems(write []string) []string {
+	var problems []string
+	for _, g := range write {
+		// Only an answered stat decides anything: a grant bento cannot stat for another
+		// reason says nothing about what run will find, exactly as a read grant does not.
+		if fi, err := os.Stat(g); err == nil && !fi.IsDir() {
+			problems = append(problems, fmt.Sprintf("write grant %q is a file; grant its parent directory instead", g))
+		}
+	}
+	return problems
+}
+
+// fileishWriteGrants returns the write grants naming nothing on this host whose last
+// element is spelled like a file. A guess, so it is reported as a note and never as a
+// problem: --strict must not fail on a naming convention.
+func fileishWriteGrants(write []string) []string {
+	var fileish []string
+	for _, g := range write {
+		if _, err := os.Stat(g); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an
+		// ordinary directory name and not a signal of anything.
+		base := filepath.Base(g)
+		if ext := filepath.Ext(base); ext != "" && ext != base {
+			fileish = append(fileish, g)
+		}
+	}
+	return fileish
 }
 
 // writeRunnability prints the host's verdict in the same shape as the approval line
@@ -257,6 +302,13 @@ func writeRunnability(w io.Writer, r runnability) {
 		}
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
+	}
+	for _, g := range r.fileishWrites {
+		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
+		fmt.Fprintf(w, "        directories: %q.\n", g)
+		fmt.Fprintf(w, "        run will create a directory under that name and the script's own writes\n")
+		fmt.Fprintf(w, "        inside it will land elsewhere. Grant the parent directory instead, unless\n")
+		fmt.Fprintf(w, "        a directory is what was meant.\n")
 	}
 	for _, g := range r.missingReads {
 		fmt.Fprintf(w, "  note: this read grant names nothing on this host, so it grants nothing and\n")
@@ -334,6 +386,10 @@ type policyJSON struct {
 	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
 	// runnable stays true beside them, and --strict does not fail on them.
 	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
+	// FileishWriteGrants are write grants naming nothing here that are spelled like a
+	// file. A note beside missing_read_grants and read the same way: runnable stays true
+	// and --strict does not fail on it.
+	FileishWriteGrants []string `json:"fileish_write_grants,omitempty"`
 }
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent
@@ -346,6 +402,7 @@ func (o *policyJSON) setRunnable(r runnability) {
 	o.Runnable = &ok
 	o.RunnableProblems = r.problems
 	o.MissingReadGrants = r.missingReads
+	o.FileishWriteGrants = r.fileishWrites
 }
 
 type limitsJSON struct {
