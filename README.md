@@ -51,6 +51,15 @@ docker run --security-opt seccomp=unconfined \
            ...
 ```
 
+The image also has to carry `bubblewrap` itself. It is not in the stock
+`ubuntu`, `debian`, or `alpine` images, and without it `doctor` reports the
+filesystem layer degraded and the network layer unavailable, naming the missing
+package - the flags above change nothing until it is installed:
+
+```dockerfile
+RUN apt-get update && apt-get install -y bubblewrap   # Debian/Ubuntu
+```
+
 - `seccomp=unconfined` - the default profile blocks `unshare(CLONE_NEWUSER)` and
   `pivot_root` for a container without `CAP_SYS_ADMIN`, which is how bubblewrap
   builds its namespace and root.
@@ -60,8 +69,9 @@ docker run --security-opt seccomp=unconfined \
   but it is a change to the *host*, which in CI you may not control.
 - `systempaths=unconfined` - Docker masks paths under `/proc`, and bubblewrap
   cannot mount a fresh `procfs` over a masked one. Without it `doctor` reports
-  the filesystem layer degraded and names this flag, and a run is refused rather
-  than failing at setup with `Can't mount proc on /newroot/proc`.
+  the filesystem layer degraded - unavailable on a kernel with no Landlock to
+  fall back to - and names this flag, and a run is refused rather than failing
+  at setup with `Can't mount proc on /newroot/proc`.
 
 Weigh this honestly: those flags loosen the *outer* container, so the isolation
 the container gave you is traded for the isolation Bento gives you. That is a
@@ -88,6 +98,11 @@ go build -o examples/probe/bento ./cmd/bento
 cd examples/probe
 
 # 1. Profile: Observe what a script touches under default-deny to generate a draft manifest.
+#    On a terminal this is a loop, not one shot: each round asks per path
+#    ([y]es / [n]o / [a]ll / [q]uit), mounts what you accept, and runs again until the
+#    target stops finding new ones. With stdin not a terminal (a pipe, CI, `< /dev/null`)
+#    it makes a single non-interactive default-deny pass instead - nothing is granted, so
+#    a target that branches on a missing file under-reports and you profile again with grants.
 #    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
 #    Profiling again merges into the manifest rather than replacing it, so what you end up
 #    with is this run unioned with whatever was already there - profile says what it changed,
