@@ -259,6 +259,19 @@ type Result struct {
 	// that no name resolved into private space: a run that made no connections, or one
 	// with no egress at all, reports empty too.
 	GuardBlocked []HostPort
+	// Denied lists the destinations the allowlist refused outright - no rule named them,
+	// and no gate admitted them - deduped and sorted. It is the answer to what the target
+	// tried to reach and what was refused, which nothing else in the result carries: the
+	// sandbox meets the refusal as a 403 from the proxy inside its own error, with nothing
+	// naming the rule it fell outside of.
+	//
+	// Distinct from GuardBlocked because the operator action differs: a denial is fixed by
+	// naming the destination in the manifest, a guard block is not fixable that way at all.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
+	// a consumer rendering it to a terminal must quote it. Empty is not evidence the target
+	// stayed inside the allowlist: a run that made no connections reports empty too.
+	Denied []HostPort
 	// AcceptedAliases lists the credential aliases this run was allowed to read past a
 	// shield because the caller acknowledged the tree they sit in. Each names the path
 	// that reaches the content and the credential it reaches. Non-empty means the run

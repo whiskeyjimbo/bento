@@ -1,10 +1,8 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -242,15 +240,7 @@ func checkRunnable(resolved *policy.Policy) runnability {
 			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
-	// Only a path that is absent is worth a note. A grant bento cannot stat for any other
-	// reason - a directory above it the invoker cannot traverse - says nothing about
-	// whether the sandbox will reach it, since the sandbox binds it as a different user's
-	// view of the tree.
-	for _, g := range resolved.Read {
-		if _, err := os.Stat(g); errors.Is(err, fs.ErrNotExist) {
-			r.missingReads = append(r.missingReads, g)
-		}
-	}
+	r.missingReads = missingReadGrants(resolved.Read)
 	return r
 }
 

@@ -346,6 +346,77 @@ func (failWriter) Write([]byte) (int, error) { return 0, errors.New("stdout is g
 
 // validPolicy is the minimal policy writeRunResult needs (writeEgressHint reads its
 // Network); no network means the hint stays quiet.
+// The two refusal sets are separate fields of the same type in a positional struct
+// literal, so a run carrying one of each is what proves they did not get transposed -
+// and they call for opposite operator action, so a swap would send a reader at the
+// wrong fix. egress_connections alone answers neither question.
+func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	res := enforce.Result{
+		ExitCode:     1,
+		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}},
+		Denied:       []enforce.HostPort{{Host: "api.githb.com", Port: "443"}},
+	}
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+	var env struct {
+		GuardBlocked []hostPortJSON `json:"guard_blocked"`
+		EgressDenied []hostPortJSON `json:"egress_denied"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(env.GuardBlocked) != 1 || env.GuardBlocked[0].Host != "internal.example" {
+		t.Errorf("guard_blocked = %+v, want the guard's refusal", env.GuardBlocked)
+	}
+	if len(env.EgressDenied) != 1 || env.EgressDenied[0].Host != "api.githb.com" {
+		t.Errorf("egress_denied = %+v, want the allowlist's refusal", env.EgressDenied)
+	}
+
+	stdout.Reset()
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	var raw map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := raw["egress_denied"]; present {
+		t.Error("egress_denied must be omitted when nothing was refused (omitempty), not emitted as null/[]")
+	}
+}
+
+// The generic profile hint sends the reader to reproduce the run, and a plain reprofile
+// records egress without forwarding it - the same failure again. The denial notice has
+// already named the destination and the flag that would rediscover it, so the hint's own
+// account of a silently denied path must not follow it.
+func TestNoProfileHintAfterADenial(t *testing.T) {
+	var out, errOut bytes.Buffer
+	p := &policy.Policy{Entrypoint: "./t.py", Read: []string{"/data"}}
+	res := enforce.Result{ExitCode: 1, EgressConnections: 1, Denied: []enforce.HostPort{{Host: "api.githb.com", Port: "443"}}}
+	_ = writeRunResult(&out, &errOut, false, p, res, "", "", nil)
+	if strings.Contains(errOut.String(), "the sandbox denies silently") {
+		t.Errorf("the generic profile hint must not follow a denial; got:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "api.githb.com") {
+		t.Errorf("the denial must still be named; got:\n%s", errOut.String())
+	}
+}
+
+// The two flags are opposites, and strict silently winning discards an explicit
+// opt-in. The pair is refused inside RunE rather than by cobra, so --json still gets
+// its envelope on stdout - a machine gate cannot tell a bare refusal from a crash.
+func TestRunRefusesStrictWithAllowDegraded(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"--strict", "--allow-degraded", "nonexistent.manifest.yaml"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--allow-degraded") {
+		t.Fatalf("Execute() error = %v, want a refusal naming both flags", err)
+	}
+	if strings.Contains(err.Error(), "nonexistent.manifest.yaml") {
+		t.Errorf("the flags must be refused before the manifest is opened; got %v", err)
+	}
+}
+
 func validPolicy() *policy.Policy { return &policy.Policy{Entrypoint: "./x"} }
 
 // A strict run whose guarantee lapsed while the target ran is neither a refusal (the

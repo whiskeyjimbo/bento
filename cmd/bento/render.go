@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -650,6 +652,40 @@ func writeBlockedHostNotes(w io.Writer, p *policy.Policy, blockedHosts []string)
 	}
 }
 
+// missingReadGrants returns the already-resolved read grants naming nothing on this
+// host, in the order they were declared. Only a path that is absent is worth reporting:
+// a grant bento cannot stat for any other reason - a directory above it the invoker
+// cannot traverse - says nothing about whether the sandbox will reach it, since the
+// sandbox binds it as a different user's view of the tree.
+//
+// Read grants only. A write grant that names nothing is created by the backend, so its
+// absence before the run is not a miss.
+func missingReadGrants(read []string) []string {
+	var missing []string
+	for _, g := range read {
+		if _, err := os.Stat(g); errors.Is(err, fs.ErrNotExist) {
+			missing = append(missing, g)
+		}
+	}
+	return missing
+}
+
+// writeMissingReadNotes says before the script starts what validate says while the
+// reader is looking at the manifest: a read grant naming nothing grants nothing, and the
+// sandbox then denies that path silently. An approved manifest is not re-validated - the
+// stamp covers the policy, which has not changed when the directory it names is deleted -
+// so run is the only place left to notice.
+//
+// Said on the way in rather than in the epilogue, so it is already on screen when the
+// script dies on the file it could not open.
+func writeMissingReadNotes(w io.Writer, p *policy.Policy) {
+	for _, g := range missingReadGrants(p.Read) {
+		fmt.Fprintf(w, "[bento] note: the read grant %q names nothing on this host, so it grants nothing and\n", g)
+		fmt.Fprintln(w, "[bento] the sandbox denies that path without saying why. Fine if the script creates it;")
+		fmt.Fprintln(w, "[bento] otherwise it is a typo or a moved directory that will read as a permission bug.")
+	}
+}
+
 // writeGuardBlockedWarning names the destinations the allowlist permitted but the
 // egress guard refused to dial, because the name resolved somewhere the sandbox must
 // not reach. The script saw only "could not reach", deliberately - telling it apart
@@ -678,6 +714,31 @@ func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] adding the name to the allowlist will not help: to reach a private address, list")
 	fmt.Fprintln(w, "[bento] that address itself as an explicit IP rule. Loopback and cloud metadata can never")
 	fmt.Fprintln(w, "[bento] be reached, by any rule.")
+}
+
+// writeDeniedWarning names the destinations the allowlist refused. The target met the
+// refusal as a 403 from the proxy, buried in whatever its HTTP client made of it, with
+// nothing naming the manifest - so a rule with one letter wrong presents as the script
+// being broken. This is the only place the destination it actually asked for is said.
+//
+// The hosts came from the sandbox's own CONNECT requests, so they are quoted for the same
+// reason writeGuardBlockedWarning quotes its own.
+//
+// It reports whether it said anything, so no second explanation of the same failure
+// stacks on top of it.
+func writeDeniedWarning(w io.Writer, res enforce.Result) bool {
+	if len(res.Denied) == 0 {
+		return false
+	}
+	fmt.Fprintln(w, "[bento] the egress allowlist refused these destinations - no network rule covers them:")
+	for _, hp := range res.Denied {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	fmt.Fprintln(w, "[bento] the script saw only a 403 from the proxy. To allow one, add it under network: in")
+	fmt.Fprintln(w, "[bento] the manifest and re-approve. To rediscover them: bento profile --allow-network,")
+	fmt.Fprintln(w, "[bento] which forwards egress as it records - the default records without forwarding, so")
+	fmt.Fprintln(w, "[bento] a plain re-profile reproduces this same failure.")
+	return true
 }
 
 // writeShieldedGrantWarning tells the user that the policy granted a path bento would

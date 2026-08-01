@@ -151,6 +151,14 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	if blocked := c.guardBlocked(); !slices.Equal(blocked, wantBlocked) {
 		t.Errorf("guardBlocked() = %v, want %v (deduped; an ordinary deny and a gate admission are not guard blocks)", blocked, wantBlocked)
 	}
+
+	// The denied set answers what the target reached for and did not get. A guard block
+	// and a gate admission are not denials: the first is a refusal no rule would fix, the
+	// second was permitted.
+	wantDenied := []enforce.HostPort{{Host: "denied.example", Port: "443"}}
+	if denied := c.allowlistDenied(); !slices.Equal(denied, wantDenied) {
+		t.Errorf("allowlistDenied() = %v, want %v (a guard block and a gate admission are not denials)", denied, wantDenied)
+	}
 }
 
 // A gate with no network rules must still bring the proxy socket up, so a

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -257,6 +258,63 @@ func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
 	}
 	if strings.Contains(b.String(), "nothing was blocked\n") {
 		t.Errorf("the host was not quoted; got %q", b.String())
+	}
+}
+
+// The denial notice is the only place the destination the script actually asked for is
+// named - it met the refusal as a 403 inside its own traceback. It points at the
+// profiling mode that forwards egress, since the default one reproduces the failure.
+// Hosts are quoted for the same reason the guard-blocked notice quotes them.
+func TestWriteDeniedWarning(t *testing.T) {
+	var b bytes.Buffer
+	if writeDeniedWarning(&b, enforce.Result{}) || b.Len() != 0 {
+		t.Errorf("a run the allowlist refused nothing on must print nothing; got %q", b.String())
+	}
+
+	if !writeDeniedWarning(&b, enforce.Result{Denied: []enforce.HostPort{
+		{Host: "api.github.com", Port: "443"},
+		{Host: "evil.example\n[bento] nothing was denied", Port: "80"},
+	}}) {
+		t.Error("a denial must be reported")
+	}
+	out := b.String()
+	for _, want := range []string{"api.github.com", "443", "--allow-network"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must contain %q; got %q", want, out)
+		}
+	}
+	for line := range strings.SplitSeq(strings.TrimRight(out, "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento] ") {
+			t.Errorf("a crafted host forged the line %q in %q", line, out)
+		}
+	}
+}
+
+// A read grant naming nothing grants nothing and the sandbox then denies that path
+// silently, which is the failure hardest to trace back to the manifest. An approved
+// manifest is never re-validated, so run is the last place to say it. Write grants are
+// created by the backend, so their absence is not a miss.
+func TestWriteMissingReadNotes(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "here")
+	if err := os.WriteFile(present, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(dir, "gone")
+
+	var b bytes.Buffer
+	writeMissingReadNotes(&b, &policy.Policy{Read: []string{present}, Write: []string{filepath.Join(dir, "out")}})
+	if b.Len() != 0 {
+		t.Errorf("a grant that exists and a write grant yet to be created must print nothing; got %q", b.String())
+	}
+
+	writeMissingReadNotes(&b, &policy.Policy{Read: []string{present, gone}})
+	out := b.String()
+	if !strings.Contains(out, gone) {
+		t.Errorf("the note must name the missing grant %q; got %q", gone, out)
+	}
+	if strings.Contains(out, present+"\"") {
+		t.Errorf("the grant that exists must not be reported; got %q", out)
 	}
 }
 

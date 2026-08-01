@@ -46,6 +46,13 @@ func newRunCmd() *cobra.Command {
 			// could not tell a refusal from a crash.
 			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
 
+			// Rejected here rather than with MarkFlagsMutuallyExclusive, which refuses
+			// before RunE and so would leave --json an empty stdout.
+			if strict && allowDegraded {
+				return refuse(errors.New("--strict and --allow-degraded are opposites: strict refuses anything less " +
+					"than full enforcement, allow-degraded opts into less. Pass one"))
+			}
+
 			overrides, err := parseEnvFlags(envFlags)
 			if err != nil {
 				return refuse(err)
@@ -76,6 +83,7 @@ func newRunCmd() *cobra.Command {
 					"the script will not see it. Pass it with --env %s=VALUE.\n", name, name)
 			}
 
+			writeMissingReadNotes(os.Stderr, p)
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
 
 			e, err := backend.New()
@@ -194,7 +202,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// the operator's only signal that a permitted name resolved somewhere it must not
 			// reach. Each host is the sandbox's own CONNECT target, so a consumer rendering it
 			// is rendering attacker-chosen bytes.
-			GuardBlocked    []hostPortJSON `json:"guard_blocked,omitempty"`
+			GuardBlocked []hostPortJSON `json:"guard_blocked,omitempty"`
+			// EgressDenied names the destinations the allowlist refused outright, which
+			// egress_connections counts but does not identify - it is what lets a consumer
+			// answer "what did it try to reach and what did we refuse". Attacker-chosen bytes,
+			// like guard_blocked.
+			EgressDenied    []hostPortJSON `json:"egress_denied,omitempty"`
 			Shields         []shieldJSON   `json:"shields,omitempty"`
 			Exposed         []shieldJSON   `json:"exposed,omitempty"`
 			AcceptedAliases []aliasJSON    `json:"accepted_aliases,omitempty"`
@@ -204,7 +217,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// whose posture did not hold. Without it a machine consumer reading the envelope
 			// alone would see an ordinary completed run.
 			StrictShortfall bool `json:"strict_shortfall,omitempty"`
-		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
+		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
@@ -213,19 +226,22 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		writeShieldedGrantWarning(stderr, res)
 		writeExposedWarning(stderr, res)
 		writeDegradations(stderr, res.Report)
-		// Before the bypass hint: a guard block is a connection that DID reach the proxy,
-		// so it explains a network failure the hint would otherwise blame on a bypass.
+		// Before the bypass hint: each is a connection that DID reach the proxy, so it
+		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
+		denied := writeDeniedWarning(stderr, res)
 		// Last, and only where nothing above already explained the failure. A signal
 		// death is not a script failure at all, a strict shortfall gets its own line
 		// below, and a guard block is a destination no amount of profiling will widen
 		// the manifest into reaching - pointing at profile in any of those sends the
-		// reader at the wrong problem. Both hints below explain a failure the TARGET
-		// reported, so a run whose target never started gets its own line instead.
+		// reader at the wrong problem. A denial has just named the destination and the
+		// one profiling mode that would rediscover it, which the bare hint would send
+		// the reader around the wrong loop for. Both hints below explain a failure the
+		// TARGET reported, so a run whose target never started gets its own line instead.
 		if res.Setup == enforce.SetupTargetUnreached {
 			writeTargetUnreached(stderr, res)
 		} else if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
-			shortfall == nil && len(res.GuardBlocked) == 0 {
+			shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
 			writeSandboxHomeMiss(stderr, p, res)

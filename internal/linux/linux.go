@@ -200,7 +200,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -212,7 +212,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -605,7 +605,8 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 
 // egressCollector records the proxy's per-connection decisions for the run
 // result: a total count, the deduped set of hosts the gate admitted beyond
-// the manifest, and the deduped set the upstream guard refused to dial. The
+// the manifest, the deduped set the upstream guard refused to dial, and the
+// deduped set the allowlist itself refused. The
 // observer runs in each handler's own goroutine, so a mutex guards the shared
 // state; the gate itself is never called under this lock (it runs in the handler,
 // the observer only records the outcome).
@@ -614,18 +615,19 @@ type egressCollector struct {
 	count    int
 	admitted map[string]enforce.HostPort
 	blocked  map[string]enforce.HostPort
+	denied   map[string]enforce.HostPort
 }
 
 func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.count++
-	// Key both sets on JoinHostPort so an IPv6 host:port dedupes correctly. Each
+	// Key each set on JoinHostPort so an IPv6 host:port dedupes correctly. Each
 	// CONNECT lands in at most one of them - the guard's refusal replaces the gate's
 	// admission rather than following it, which keeps the admitted list from claiming a
-	// host that never got past the guard - but a destination can appear in both across
-	// connections, when the name resolved public on one and private on another. That is
-	// the rebinding case the guard exists for, so both lists are reported as they are
+	// host that never got past the guard - but a destination can appear in more than one
+	// across connections, when the name resolved public on one and private on another.
+	// That is the rebinding case the guard exists for, so every list is reported as it is
 	// rather than one being suppressed.
 	switch d {
 	case proxy.AdmittedByGate:
@@ -638,6 +640,11 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.blocked = make(map[string]enforce.HostPort)
 		}
 		c.blocked[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.Denied:
+		if c.denied == nil {
+			c.denied = make(map[string]enforce.HostPort)
+		}
+		c.denied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	}
 }
 
@@ -661,6 +668,14 @@ func (c *egressCollector) guardBlocked() []enforce.HostPort {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return sortedHostPorts(c.blocked)
+}
+
+// allowlistDenied returns a copy of the set the allowlist refused, sorted for the same reason
+// gateAdmitted is.
+func (c *egressCollector) allowlistDenied() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.denied)
 }
 
 func sortedHostPorts(m map[string]enforce.HostPort) []enforce.HostPort {
