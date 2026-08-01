@@ -98,39 +98,38 @@ visible output rather than a silent success.
 go build -o examples/probe/bento ./cmd/bento
 cd examples/probe
 
-# 1. Profile: Observe what a script touches under default-deny to generate a draft manifest.
-#    On a terminal this is a loop, not one shot: each round asks per path
-#    ([y]es / [n]o / [a]ll / [q]uit), mounts what you accept, and runs again until the
-#    target stops finding new ones. With stdin not a terminal (a pipe, CI, `< /dev/null`)
-#    it makes one non-interactive default-deny pass instead, granting nothing you were not
-#    asked about (only a write directory the target died on is created for a second pass),
-#    so a target that branches on a missing file under-reports and you profile again with grants.
-#    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
-#    Profiling again merges into the manifest rather than replacing it, so what you end up
-#    with is this run unioned with whatever was already there - profile says what it changed,
-#    including an exec widened to `all` and an approval stamp the write drops.
-./bento profile ./probe.py
+./bento profile  ./probe.py                  # 1. observe what it touches, draft a manifest
+./bento validate ./probe.py.manifest.yaml    # 2. check it, and read what it grants
+./bento approve  ./probe.py.manifest.yaml    # 3. stamp a fingerprint over the permissions
+./bento run      ./probe.py.manifest.yaml    # 4. execute under them
 
-# 2. Validate: Check manifest syntax and review requested permissions.
-#    Plain validate reports the approval state; --strict makes a missing or stale
-#    approval a failure, so it belongs after step 3 (in CI), not here.
-#    It also reports whether this host can start what the manifest names - an entrypoint
-#    that is not there, an interpreter not on PATH - which --strict fails on too.
-./bento validate ./probe.py.manifest.yaml
-
-# 3. Approve: Review the permissions and stamp an approval fingerprint over them.
-#    It prints the policy, calls out what deserves a second look, and asks. --yes for CI;
-#    a stdin that is not a terminal (a pipe, a Makefile recipe) is refused rather than
-#    answered, so an unreviewed stamp is something a caller asked for with --yes.
-./bento approve ./probe.py.manifest.yaml
-
-# 4. Run: Execute the script inside the enforced sandbox.
-#    Refuses to run if the manifest is unapproved or modified unless --allow-unapproved is passed.
-./bento run ./probe.py.manifest.yaml
-
-# Inspect Host Capabilities: Verify what isolation mechanisms this host kernel enforces.
-./bento doctor
+./bento doctor                               # what this host can actually enforce
 ```
+
+Each step has a detail worth knowing before you rely on it:
+
+**1. Profile** is a loop on a terminal, not one shot: each round asks per path
+(`[y]es` / `[n]o` / `[a]ll` / `[q]uit`), mounts what you accept, and runs again until the
+target stops finding new ones. With stdin not a terminal (a pipe, CI, `< /dev/null`) it
+makes one non-interactive default-deny pass instead, granting nothing you were not asked
+about - only a write directory the target died on is created for a second pass - so a
+target that branches on a missing file under-reports, and you profile again with grants.
+Egress is recorded but blocked by default; host credentials are never exposed during
+profiling. Profiling again merges rather than replaces, so you end up with this run
+unioned with whatever was already there. Profile says what it changed, including an exec
+widened to `all` and an approval stamp the write drops.
+
+**2. Validate** reports the approval state; `--strict` makes a missing or stale approval a
+failure, so it belongs after step 3 (in CI), not here. It also reports whether this host
+can start what the manifest names - an entrypoint that is not there, an interpreter not on
+PATH - which `--strict` fails on too.
+
+**3. Approve** prints the policy, calls out what deserves a second look, and asks. `--yes`
+for CI; a stdin that is not a terminal (a pipe, a Makefile recipe) is refused rather than
+answered, so an unreviewed stamp is something a caller asked for with `--yes`.
+
+**4. Run** refuses if the manifest is unapproved or modified, unless `--allow-unapproved`
+is passed.
 
 Step 2 is where the work is. A profiled manifest describes what that one run
 did, not what the script should be allowed to do: here it proposes `exec: all`,
