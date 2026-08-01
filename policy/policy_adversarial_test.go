@@ -279,7 +279,7 @@ func TestAdversarialPolicyValidation(t *testing.T) {
 			mutate: func(p *Policy) {
 				p.Limits = Limits{Memory: "100MB"}
 			},
-			errSubstr: "invalid size",
+			errSubstr: `invalid size "100MB", want a plain byte count or a K/M/G suffix (e.g. "128M")`,
 		},
 		{
 			name: "reject_limits_memory_negative",
@@ -293,7 +293,7 @@ func TestAdversarialPolicyValidation(t *testing.T) {
 			mutate: func(p *Policy) {
 				p.Limits = Limits{Memory: "8000000000000000000K"}
 			},
-			errSubstr: "invalid size",
+			errSubstr: "is too large",
 		},
 	}
 

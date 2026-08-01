@@ -560,8 +560,14 @@ func parseBytes(s string) (int64, error) {
 		num = s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(num, 10, 64)
-	if err != nil || n < 0 || n > math.MaxInt64/mult {
-		return 0, fmt.Errorf("invalid size %q", s)
+	if err != nil || n < 0 {
+		// "128MB" and "1.5G" are the natural spellings and both land here, so the
+		// message has to say what to write instead - the accepted form is nowhere in
+		// the value the reader typed.
+		return 0, fmt.Errorf("invalid size %q, want a plain byte count or a K/M/G suffix (e.g. \"128M\")", s)
+	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("size %q is too large", s)
 	}
 	return n * mult, nil
 }
