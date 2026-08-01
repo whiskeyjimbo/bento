@@ -116,12 +116,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "credhunt: walking %s: %v\n", h, err)
 			os.Exit(1)
 		}
+		// Every path below is a name off the walked tree, quoted for the reason bento's
+		// own reports quote one: a filename carries whatever bytes whoever wrote it chose,
+		// and this output is what a human reads to decide whether a lead is a credential -
+		// a name with escapes in it could rewrite the lines around itself on a terminal.
 		leads, dense := summarize(h, found)
 		for _, f := range leads {
-			fmt.Printf("  %-70s %04o  %s\n", f.Path, f.Mode, strings.Join(f.Signals, ","))
+			fmt.Printf("  %-70q %04o  %s\n", f.Path, f.Mode, strings.Join(f.Signals, ","))
 		}
 		for _, d := range dense {
-			fmt.Printf("  %-70s %d hits, not listed - an installed-tool tree? add it to machineStores\n", d.prefix+"/...", d.count)
+			fmt.Printf("  %-70q %d hits, not listed - an installed-tool tree? add it to machineStores\n", d.prefix+"/...", d.count)
 		}
 		fmt.Printf("%d lead(s) and %d dense tree(s) under %s that no shield covers (%d tree(s) pruned)\n\n", len(leads), len(dense), h, pruned)
 	}
