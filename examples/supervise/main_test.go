@@ -192,10 +192,12 @@ func requireSandbox(t *testing.T) {
 		t.Skip("bwrap not installed")
 	}
 	// bwrap in PATH is not enough: a host with unprivileged user namespaces disabled
-	// cannot create the namespace, so the trial fails to confine rather than shielding.
-	// Probe it the way admission does, so this skips (not fails) on that host class.
-	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
-		t.Skip("unprivileged user namespaces unavailable on this host")
+	// cannot create the namespace, and one that masks paths under /proc (docker's
+	// default) grants the namespace but refuses the procfs mount inside it - either way
+	// the trial fails to confine rather than shielding. Probe it the way admission does,
+	// so this skips (not fails) on those host classes.
+	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "--proc", "/proc", "/bin/true").Run(); err != nil {
+		t.Skip("the bwrap sandbox cannot be built on this host (user namespace or /proc mount refused)")
 	}
 }
 

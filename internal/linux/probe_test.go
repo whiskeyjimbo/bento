@@ -351,42 +351,52 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 // tier plus AppArmor remediation on a host where bwrap works.
 func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 	cases := []struct {
-		name      string
-		err       error
-		want      namespaceProbe
-		reasonHas string
+		name       string
+		err        error
+		want       namespaceProbe
+		reasonHas  string
+		reasonNots string
 	}{
 		{
 			"bwrap refused the namespace",
 			&usernsError{output: "bwrap: No permissions to create new user namespace", err: errors.New("exit status 1")},
-			namespacesBlocked, "cannot create an unprivileged user namespace",
+			namespacesBlocked, "cannot create an unprivileged user namespace", "",
 		},
 		{
 			"permission denied",
 			&usernsError{output: "bwrap: Permission denied", err: errors.New("exit status 1")},
-			namespacesBlocked, "cannot create an unprivileged user namespace",
+			namespacesBlocked, "cannot create an unprivileged user namespace", "",
 		},
 		{
 			"probe timed out",
 			&usernsError{output: "", err: errors.New("signal: killed"), ctxErr: context.DeadlineExceeded},
-			namespacesUnknown, "did not finish",
+			namespacesUnknown, "did not finish", "",
 		},
 		{
 			// A deadline that also produced bwrap output must still be unanswered: the
 			// output is whatever the canary managed before the kill, not a verdict.
 			"timed out with namespace-shaped output",
 			&usernsError{output: "bwrap: No permissions to create new user namespace", err: errors.New("signal: killed"), ctxErr: context.Canceled},
-			namespacesUnknown, "did not finish",
+			namespacesUnknown, "did not finish", "",
+		},
+		{
+			// The host granted the namespace and refused the mount inside it, so the
+			// reason must not claim the namespace was refused - and the verdict must not
+			// be "unanswered" either, since this message names neither of the strings the
+			// namespace match looks for.
+			"procfs refused inside a granted namespace",
+			&usernsError{output: "bwrap: Can't mount proc on /newroot/proc: Operation not permitted", err: errors.New("exit status 1")},
+			namespacesBlocked, "systempaths=unconfined", "cannot create an unprivileged user namespace",
 		},
 		{
 			"canary reaped without a namespace error",
 			&usernsError{output: "bwrap: execvp true: Cannot allocate memory", err: errors.New("exit status 1")},
-			namespacesUnknown, "is unknown",
+			namespacesUnknown, "is unknown", "",
 		},
 		{
 			"bwrap could not be run at all",
 			errors.New("fork/exec /usr/bin/bwrap: resource temporarily unavailable"),
-			namespacesUnknown, "is unknown",
+			namespacesUnknown, "is unknown", "",
 		},
 	}
 	for _, tc := range cases {
@@ -397,6 +407,9 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			}
 			if !strings.Contains(reason, tc.reasonHas) {
 				t.Errorf("reason %q does not mention %q", reason, tc.reasonHas)
+			}
+			if tc.reasonNots != "" && strings.Contains(reason, tc.reasonNots) {
+				t.Errorf("reason %q claims %q, which is not what this host refused", reason, tc.reasonNots)
 			}
 		})
 	}

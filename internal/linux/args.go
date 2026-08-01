@@ -426,14 +426,22 @@ var namespaceFlags = []string{
 	"--cap-drop", "ALL",
 }
 
+// pseudoFSFlags are the pseudo-filesystem mounts the real run (baseFlags) and the
+// pre-run probe (canUnshare) MUST exercise identically, for the same reason as
+// namespaceFlags: creating the namespace and mounting into it are separate host
+// permissions. Docker masks paths under /proc by default, which makes the kernel
+// refuse a fresh procfs inside the new namespace while the namespace itself is
+// permitted - so a probe that only unshared reported the filesystem layer enforced
+// on a host where every run died at "Can't mount proc on /newroot/proc".
+var pseudoFSFlags = []string{
+	"--proc", "/proc",
+	"--dev", "/dev",
+	"--tmpfs", "/tmp",
+}
+
 func baseFlags() []string {
 	flags := append([]string{"--die-with-parent", "--new-session"}, namespaceFlags...)
-	return append(
-		flags,
-		"--proc", "/proc",
-		"--dev", "/dev",
-		"--tmpfs", "/tmp",
-	)
+	return append(flags, pseudoFSFlags...)
 }
 
 // nixStore holds Nix-provided packages, each in its own immutable directory.

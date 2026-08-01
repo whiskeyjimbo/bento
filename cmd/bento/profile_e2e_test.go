@@ -28,8 +28,12 @@ func requireSandbox(t *testing.T) {
 	if err != nil {
 		skipMissingDep(t, "bwrap not installed")
 	}
-	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "/bin/true").Run(); err != nil {
-		skipMissingDep(t, "unprivileged user namespaces unavailable on this host")
+	// --proc is part of the guard, not decoration: a container that permits the user
+	// namespace but masks paths under /proc refuses the procfs mount every real sandbox
+	// makes, and a guard that only unshares would let these tests run on to fail there
+	// instead of skipping.
+	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "--proc", "/proc", "/bin/true").Run(); err != nil {
+		skipMissingDep(t, "the bwrap sandbox cannot be built on this host (user namespace or /proc mount refused)")
 	}
 }
 

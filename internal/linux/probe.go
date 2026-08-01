@@ -34,14 +34,15 @@ var (
 // Probe reports what this host can actually enforce.
 //
 // It reports what it can prove, not what it hopes: the filesystem layer is only
-// Enforced if bwrap is present and a user namespace can really be created here,
-// which is checked by creating one rather than by inspecting sysctls. Ubuntu's
+// Enforced if bwrap is present and the namespaces and base mounts the run makes can
+// really be built here, which is checked by building them rather than by inspecting
+// sysctls. Ubuntu's
 // AppArmor restriction, container policies, and kernel builds all interact, and
 // the only trustworthy answer is an empirical one.
 func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	var r enforce.Report
 
-	// bwrap's filesystem and network confinement both depend on creating an
+	// bwrap's filesystem and network confinement both depend on standing up an
 	// unprivileged user namespace here; probe that once and report both layers
 	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
 	ns, nsReason := usableNamespaces(ctx)
@@ -301,8 +302,8 @@ const (
 	namespacesUnknown
 )
 
-// usableNamespaces reports whether bwrap is installed and can create here the
-// unprivileged user namespace its filesystem and network confinement depend on,
+// usableNamespaces reports whether bwrap is installed and can build here the
+// namespaces and base mounts its filesystem and network confinement depend on,
 // with a reason a user can act on when it cannot.
 func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
 	bwrap, err := exec.LookPath("bwrap")
@@ -320,8 +321,8 @@ func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
 	return namespacesUsable, ""
 }
 
-// canUnshare reports whether an unprivileged user namespace can be created here,
-// by asking bwrap to create one.
+// canUnshare reports whether the sandbox's namespaces and base mounts can be built
+// here, by asking bwrap to build them.
 func canUnshare(ctx context.Context, bwrap string) error {
 	// Bound the probe like every sibling (runScopeProbe, measureDelegatedControllers):
 	// it runs on the hot path of every Run, and a bwrap that hangs - a wedged canary, a
@@ -345,8 +346,17 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// network manifest, and downgrade the run to the Landlock-only tier while sending
 	// the user off to flip AppArmor sysctls on a host where userns works. limits.go's
 	// trueBinary resolves it the same way for the same reason.
+	// The pseudo-filesystem mounts are exercised for the same reason and from the same
+	// shared list (pseudoFSFlags): mounting a fresh procfs into the namespace is a
+	// permission separate from creating it, and a container that masks paths under
+	// /proc grants the second and refuses the first. --dev and --tmpfs are probed
+	// alongside it because the run makes them too; unlike the procfs refusal they have
+	// no known host remedy to name, so a failure there is reported as the unclassified
+	// probe failure it is.
 	args := append([]string{}, namespaceFlags...)
-	args = append(args, "--unshare-net", "--bind", "/", "/", trueBinary())
+	args = append(args, "--unshare-net", "--bind", "/", "/")
+	args = append(args, pseudoFSFlags...)
+	args = append(args, trueBinary())
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
 	// the output pipe to close, and any descendant still holding it keeps the probe
@@ -373,13 +383,13 @@ type usernsError struct {
 
 func (e *usernsError) Error() string { return e.err.Error() }
 
-// classifyUnshare turns a failed namespace creation into a verdict about the host
+// classifyUnshare turns a failed sandbox-base probe into a verdict about the host
 // plus a reason a user can act on. The bare bwrap message ("No permissions to create
 // a new user namespace") tells a user nothing about why or what to do, and on current
 // Ubuntu the cause is a specific, fixable AppArmor policy.
 //
-// Only output naming a namespace refusal counts as "blocked": that is the host
-// answering. Everything else - the probe timing out, bwrap failing to start, an exit
+// Only output naming a namespace refusal, or the procfs mount the sandbox root needs,
+// counts as "blocked": that is the host answering. Everything else - the probe timing out, bwrap failing to start, an exit
 // whose output names no namespace failure (a reaped canary, EAGAIN under load) -
 // leaves the question open, and saying "userns blocked" there costs the user the full
 // sandbox on a host that supports it. The match is on bwrap's message, so an
@@ -395,6 +405,17 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 			return namespacesUnknown, "the user-namespace probe did not finish (" + ue.ctxErr.Error() +
 				"), so whether bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 		}
+	}
+	// Checked before the namespace-refusal match below, which this message would
+	// otherwise fall through as "not a namespace refusal" - it names neither. The host
+	// did answer here, and with a fact worth stating on its own: the namespace was
+	// granted and the mount inside it was not, so the reason must not borrow base's
+	// "cannot create an unprivileged user namespace", which is false on this host.
+	if strings.Contains(out, "Can't mount proc") {
+		return namespacesBlocked, "bubblewrap can create a user namespace here but cannot mount a private " +
+			"/proc inside it, which the sandbox's root filesystem needs, so it cannot isolate anything: " +
+			strings.TrimSpace(out) + ". Under docker this is the default masking of paths under /proc; " +
+			"--security-opt systempaths=unconfined lifts it."
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
