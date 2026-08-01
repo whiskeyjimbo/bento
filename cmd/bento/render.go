@@ -285,6 +285,9 @@ func describeLimits(l policy.Limits) string {
 // the code-only case is worded as the likelihood it is. Bento's own 124 and 125 sit
 // below the range and cannot be mistaken for one.
 //
+// It says the RUN was killed, never the script: a scope torn down during setup arrives
+// signaled too, and the script it names there was never started.
+//
 // It reports whether it said anything, so no second explanation stacks on top.
 func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	sig, certain := signalDeath(res)
@@ -292,10 +295,10 @@ func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		return false
 	}
 	if certain {
-		fmt.Fprintf(w, "[bento] the script did not exit: it was killed by signal %d (%s), reported as exit %d.\n",
+		fmt.Fprintf(w, "[bento] the run did not exit: it was killed by signal %d (%s), reported as exit %d.\n",
 			sig, syscall.Signal(sig), res.ExitCode)
 	} else {
-		fmt.Fprintf(w, "[bento] the script ended with exit %d, which is how a process killed by signal %d (%s)\n", res.ExitCode, sig, syscall.Signal(sig))
+		fmt.Fprintf(w, "[bento] the run ended with exit %d, which is how a process killed by signal %d (%s)\n", res.ExitCode, sig, syscall.Signal(sig))
 		fmt.Fprintln(w, "[bento] is reported - though a script can also exit that code on its own.")
 	}
 	// Only the two signals a cgroup kill actually arrives on. Blaming the caps for any

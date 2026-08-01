@@ -131,6 +131,15 @@ func TestSignalNoticeNamesTheKill(t *testing.T) {
 			want:    []string{"signal 13 (broken pipe)"},
 			notWant: []string{"declares limits"},
 		},
+		{
+			// A scope torn down during setup arrives signaled with no script behind it, so
+			// the notice must not attribute the death to one.
+			name:    "the scope came down before the script started",
+			p:       limited,
+			res:     enforce.Result{ExitCode: 143, Signaled: true, Signal: 15, Setup: enforce.SetupSilent},
+			want:    []string{"the run did not exit"},
+			notWant: []string{"the script"},
+		},
 		{name: "an ordinary failure", p: plain, res: enforce.Result{ExitCode: 1}, skip: true},
 		{name: "a clean run", p: limited, res: enforce.Result{ExitCode: 0}, skip: true},
 		{name: "bento's own could-not-run code", p: limited, res: enforce.Result{ExitCode: bentoFailed}, skip: true},
