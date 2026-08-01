@@ -128,7 +128,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin. A refusal - including a mistake in this command line - is an envelope too, so stdout is never empty")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin. A refusal - including a mistake in this command line - is an envelope too, and so is a run that failed part-way, so stdout is never empty. Switch on refused, then failed, then exit_code")
 	return cmd
 }
 
@@ -187,6 +187,46 @@ func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
 	return &exitError{code: bentoFailed}
 }
 
+// failJSON reports a run that neither refused nor completed - an error from enforce.Run
+// that is neither a Refusal nor a Shortfall - so --json answers it with an envelope
+// instead of an empty stdout. Outside --json the error is returned untouched and main
+// renders it, exactly as refuseJSON leaves the human path alone.
+//
+// It is deliberately not the refusal envelope. The target may already have started, and
+// refused:true would say bento declined a run it in fact began. It cannot say which
+// happened either: Result.Setup answers that only when Run returned nil or a Shortfall,
+// and on this path its zero value reads as a silent stage without one having died. So
+// the envelope reports what is known - the reason, the streams captured before it went
+// wrong, and the report of what was enforced around them - and claims nothing about
+// where the target got to.
+//
+// exit_code carries bentoFailed rather than being omitted, because a consumer written
+// against the two shapes that existed before this one switches on refused and then reads
+// exit_code: absent, it would decode as 0 and read this as a clean run. 125 is the code
+// the process really exits with here, and it is the one thing about this envelope an
+// unaware consumer cannot misread.
+func failJSON(stdout io.Writer, asJSON bool, res enforce.Result, capturedOut, capturedErr string, runErr error) error {
+	if !asJSON {
+		return runErr
+	}
+	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
+	// carries the zero Report, which toReportJSON would answer fully_enforced:true for -
+	// a clean posture on a run that never had one. See noReport.
+	report := noReport
+	if len(res.Report.Layers) > 0 {
+		report = toReportJSON(res.Report)
+	}
+	_ = writeJSON(stdout, struct {
+		Failed   bool       `json:"failed"`
+		Reason   string     `json:"reason"`
+		ExitCode int        `json:"exit_code"`
+		Stdout   string     `json:"stdout"`
+		Stderr   string     `json:"stderr"`
+		Report   reportJSON `json:"report"`
+	}{true, runErr.Error(), bentoFailed, capturedOut, capturedErr, report})
+	return &exitError{code: bentoFailed}
+}
+
 // writeRunResult turns the outcome of enforce.Run into the frontend's contract: it
 // writes the human or --json output and returns the error the command propagates. The
 // exit-code mapping is the load-bearing invariant - a refusal (bento could not run the
@@ -216,7 +256,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// The target ran, so its output and report are reported exactly as a clean run's
 		// are; only the exit code differs, below.
 	case runErr != nil:
-		return runErr
+		return failJSON(stdout, asJSON, res, capturedOut, capturedErr, runErr)
 	}
 
 	if asJSON {

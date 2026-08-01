@@ -107,22 +107,88 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 	}
 }
 
-// A setup failure that is not a refusal (a nil-enforcer, a validation error) is
-// returned verbatim in both modes, so main reports it and exits bentoFailed. It must
-// never be swallowed into a success envelope.
+// A failure that is neither a refusal nor a shortfall (a nil-enforcer, a validation
+// error, a backend that died mid-run) is returned verbatim in human mode, so main
+// reports it and exits bentoFailed. It must never be swallowed into a success envelope.
 func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 	setupErr := errors.New("enforce: nil enforcer")
-	for _, asJSON := range []bool{false, true} {
-		var stdout, stderr bytes.Buffer
-		err := writeRunResult(&stdout, &stderr, asJSON, validPolicy(),
-			enforce.Result{}, nil, "", "", setupErr)
-		if !errors.Is(err, setupErr) {
-			t.Errorf("json=%v: setup error must propagate verbatim; got %v", asJSON, err)
-		}
-		var ee *exitError
-		if errors.As(err, &ee) {
-			t.Errorf("json=%v: setup error must not become an exitError; got code %d", asJSON, ee.code)
-		}
+	var stdout, stderr bytes.Buffer
+	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
+		enforce.Result{}, nil, "", "", setupErr)
+	if !errors.Is(err, setupErr) {
+		t.Errorf("setup error must propagate verbatim; got %v", err)
+	}
+	var ee *exitError
+	if errors.As(err, &ee) {
+		t.Errorf("setup error must not become an exitError; got code %d", ee.code)
+	}
+}
+
+// The same failure under --json is an envelope rather than an empty stdout, and one a
+// consumer can tell from both other shapes: failed says so outright, and exit_code says
+// bentoFailed for a consumer that only knows refused and exit_code. It carries the
+// streams captured before the run went wrong, which are otherwise dropped, and it must
+// not claim refused - the target may already have started.
+func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	res := enforce.Result{ExitCode: 7, Report: report}
+	runErr := errors.New("the sandbox stage died while the target ran")
+
+	var stdout, stderr bytes.Buffer
+	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "partial-out", "partial-err", runErr)
+	if got := asExitError(t, err).code; got != bentoFailed {
+		t.Fatalf("mid-flight failure exit code = %d, want %d", got, bentoFailed)
+	}
+	if stderr.Len() > 0 {
+		t.Errorf("--json must leave stderr to the live copy; got %q", stderr.String())
+	}
+
+	var env struct {
+		Failed   bool       `json:"failed"`
+		Refused  bool       `json:"refused"`
+		Reason   string     `json:"reason"`
+		ExitCode int        `json:"exit_code"`
+		Stdout   string     `json:"stdout"`
+		Stderr   string     `json:"stderr"`
+		Report   reportJSON `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("failure envelope is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !env.Failed || env.Refused {
+		t.Errorf("failure envelope = failed:%v refused:%v, want failed:true refused:false", env.Failed, env.Refused)
+	}
+	if env.Reason != runErr.Error() {
+		t.Errorf("reason = %q, want %q", env.Reason, runErr.Error())
+	}
+	// Never the target's own code: this envelope cannot say the target produced one.
+	if env.ExitCode != bentoFailed {
+		t.Errorf("exit_code = %d, want %d", env.ExitCode, bentoFailed)
+	}
+	if env.Stdout != "partial-out" || env.Stderr != "partial-err" {
+		t.Errorf("captured streams = (%q, %q), want (partial-out, partial-err)", env.Stdout, env.Stderr)
+	}
+	if len(env.Report.Layers) == 0 {
+		t.Error("failure envelope must carry the report of what was enforced around the run")
+	}
+}
+
+// A failure raised before any stage existed carries the zero Report, which must not be
+// rendered as a fully-enforced posture on a run that never had one.
+func TestWriteRunResultMidFlightFailureJSONNoReport(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(),
+		enforce.Result{}, nil, "", "", errors.New("enforce: nil enforcer"))
+
+	var env struct {
+		Report reportJSON `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("failure envelope is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if env.Report.FullyEnforced {
+		t.Error("a run that never reached a stage must not report fully_enforced")
 	}
 }
 
