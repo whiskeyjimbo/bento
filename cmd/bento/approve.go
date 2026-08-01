@@ -27,7 +27,8 @@ func newApproveCmd() *cobra.Command {
 			"It prints the permissions it is about to stamp, calls out the entries that\n" +
 			"deserve a second look, and asks before writing. --yes skips the question for\n" +
 			"scripts; so does a stdin that is not a terminal, which keeps the command usable\n" +
-			"from CI.\n\n" +
+			"from CI - that one says so in its output, so a stamp nobody read does not look\n" +
+			"like one somebody did.\n\n" +
 			"It writes a provenance fingerprint of the policy into the manifest. `validate`\n" +
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
@@ -60,7 +61,8 @@ func newApproveCmd() *cobra.Command {
 			// attested. The rewrite is what clamps those and says so, and it is skipped here,
 			// so a manifest still needing the clamp goes through it rather than being
 			// reported as already approved for a mode approve never vouched for.
-			if checkApproval(doc) == approvalCurrent && trust.file.sharedWrite() == 0 {
+			approval := checkApproval(doc)
+			if approval == approvalCurrent && trust.file.sharedWrite() == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
 			}
@@ -72,6 +74,7 @@ func newApproveCmd() *cobra.Command {
 			// that can drift.
 			resolved := resolvedGrants(doc.Policy, path)
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved)
+			writeReapprovalNotice(os.Stdout, approval)
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
@@ -99,6 +102,24 @@ func newApproveCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "stamp without asking, for scripts and CI")
 	return cmd
+}
+
+// writeReapprovalNotice tells the reviewer that the policy above is not the one that was
+// stamped. Re-approving a manifest whose permissions drifted prints the same block as a
+// first approval, so the added grant that sent the reader here - `run` refuses a drifted
+// manifest and points at this command - has to be found by memory.
+//
+// It cannot mark the added lines: the stamp is a sha256 of the policy, not a copy of it,
+// so the shape that was approved is not on disk anywhere. Saying which is which needs the
+// previous shape stored, which is a change to the manifest's on-disk contract. Saying that
+// it changed at all needs nothing, and is the half a reader most needs before stamping.
+func writeReapprovalNotice(w io.Writer, approval approvalState) {
+	if approval != approvalStale {
+		return
+	}
+	fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
+	fmt.Fprintf(w, "The stamp is a hash of the policy, not a copy of it, so bento cannot mark the\n")
+	fmt.Fprintf(w, "lines that are new - read the whole policy above as if it were unapproved.\n")
 }
 
 // writeApprovalCallouts names the entries in a policy that deserve a second look before
@@ -180,8 +201,18 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 // yes, matching profiling's own non-interactive contract: there is no human to ask, and
 // blocking would hang every wrapper script and CI job that already calls approve. --yes
 // says so explicitly, which is what a script should do.
+//
+// The silent branch is the one that says so out loud, in the prompt's own position and on
+// the same stream as the rest of the report: `bento approve m.yaml | tee log` and any
+// Makefile recipe redirect stdin, and without the line their unreviewed stamp reads
+// exactly like a reviewed one. --yes prints nothing because passing it was already the
+// operator saying it.
 func confirmApproval(w io.Writer, assumeYes bool) error {
-	if assumeYes || !isTerminal(os.Stdin) {
+	if assumeYes {
+		return nil
+	}
+	if !isTerminal(os.Stdin) {
+		fmt.Fprint(w, "\nstdin is not a terminal, so there was nobody to ask: approving as if --yes\nwere passed. Nothing above was reviewed.\n")
 		return nil
 	}
 	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")

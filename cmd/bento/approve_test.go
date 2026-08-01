@@ -357,18 +357,60 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 
 // approve grew a prompt, and every caller that already scripted it - a CI job, a wrapper
 // around profile-then-approve - has no terminal to answer on. Both ways out have to stamp
-// rather than block, and neither may print a question nobody can see.
+// rather than block, and neither may print a question nobody can see. The one that was
+// never asked for has to say so: a piped approve is otherwise byte-identical to a reviewed
+// one, which is the only signal a reader of the log has.
 func TestConfirmApprovalDoesNotBlockAScript(t *testing.T) {
-	for name, yes := range map[string]bool{"--yes": true, "stdin is not a terminal": false} {
-		t.Run(name, func(t *testing.T) {
-			var buf strings.Builder
-			if err := confirmApproval(&buf, yes); err != nil {
-				t.Errorf("confirmApproval must proceed; got %v", err)
-			}
-			if buf.String() != "" {
-				t.Errorf("nothing may be asked when there is nobody to answer; got %q", buf.String())
-			}
-		})
+	t.Run("--yes", func(t *testing.T) {
+		var buf strings.Builder
+		if err := confirmApproval(&buf, true); err != nil {
+			t.Errorf("confirmApproval must proceed; got %v", err)
+		}
+		if buf.String() != "" {
+			t.Errorf("--yes was the operator answering, so nothing is printed; got %q", buf.String())
+		}
+	})
+
+	t.Run("stdin is not a terminal", func(t *testing.T) {
+		var buf strings.Builder
+		if err := confirmApproval(&buf, false); err != nil {
+			t.Errorf("confirmApproval must proceed; got %v", err)
+		}
+		got := buf.String()
+		if strings.Contains(got, "?") {
+			t.Errorf("nothing may be asked when there is nobody to answer; got %q", got)
+		}
+		if !strings.Contains(got, "not a terminal") || !strings.Contains(got, "--yes") {
+			t.Errorf("a stamp nobody read must say so, and name the flag it acted as; got %q", got)
+		}
+	})
+}
+
+// The fingerprint's job is catching permission creep, and `run` refuses a drifted manifest
+// by sending the reader here - where the policy printed for a re-approval was identical to
+// one printed for a first approval, so the grant that caused the refusal had to be spotted
+// from memory. bento cannot mark it (the stamp is a hash, not a copy), but it must not let
+// the two reads look the same.
+func TestApproveSaysTheManifestWasApprovedForSomethingElse(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/etc/shadow"}}
+	stale := writeManifest(t, p, manifest.Provenance{Approves: "0badc0de"})
+
+	out, err := runCapturingStdout(t, newApproveCmd(), stale, "--yes")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if !strings.Contains(out, "approved before and its permissions have changed") {
+		t.Errorf("re-approving a drifted manifest must say the policy is not the one stamped:\n%s", out)
+	}
+
+	// And a first approval must not: a notice printed over every manifest says nothing.
+	fresh := writeManifest(t, p, manifest.Provenance{})
+	out, err = runCapturingStdout(t, newApproveCmd(), fresh, "--yes")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if strings.Contains(out, "permissions have changed") {
+		t.Errorf("an unstamped manifest has no prior approval to differ from:\n%s", out)
 	}
 }
 
