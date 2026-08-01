@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
@@ -29,8 +30,26 @@ import (
 // shape, not a budget: they move with the host and with what the policy asks for.
 func New() (enforce.Enforcer, error) {
 	requireDispatched()
+	if !dispatched.Load() {
+		return nil, errNotDispatched
+	}
 	return linux.New(), nil
 }
+
+// dispatched records that DispatchReexec ran. Nothing else in the parent process is
+// evidence of it: the parent's own argv carries no sentinel, so requireDispatched below
+// answers only for a process that already IS a stage. Without this the omission surfaces
+// after the run, as a report that attests nothing and a Refusal that can only offer the
+// missed call as one candidate cause among several (see the SetupSilent branch of
+// enforce.Run).
+var dispatched atomic.Bool
+
+// errNotDispatched is a returned error and not the panic requireDispatched raises: this
+// is the embedder's own process asking for an enforcer, where a returned error is the
+// contract, and unlike a live stage there is no fork-bomb risk to cut short.
+var errNotDispatched = fmt.Errorf("bento: backend.DispatchReexec() was not called; " +
+	"call it as the first statement in main() (and in TestMain for tests that run enforced), " +
+	"or the sandbox stages this backend re-execs have nowhere to land")
 
 // requireDispatched panics when this process is a re-exec stage that was never
 // dispatched. DispatchReexec never returns for a stage sentinel - it runs the stage
@@ -90,9 +109,13 @@ func requireDispatched() {
 // environment or other side-effect dependencies, and (for tests) call this from
 // TestMain, before the testing package parses flags.
 //
-// Skipping the call is caught rather than tolerated: New and Profile panic when they
-// find a stage sentinel still in os.Args[1] (see requireDispatched).
+// Skipping the call is caught rather than tolerated: New and Profile refuse when it was
+// never made, and panic when they find a stage sentinel still in os.Args[1], where the
+// caller is a live stage that must not go on to run the program (see requireDispatched).
 func DispatchReexec() {
+	// Recorded before the argv screen: an ordinary invocation takes the early return
+	// below, and that is exactly the process New and Profile need the record for.
+	dispatched.Store(true)
 	if len(os.Args) < 2 {
 		return
 	}
@@ -146,5 +169,8 @@ func reexecFail(err error) {
 // paths from the profiling run (see ProfileOptions).
 func Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, opts ProfileOptions) (profile.Observation, error) {
 	requireDispatched()
+	if !dispatched.Load() {
+		return profile.Observation{}, errNotDispatched
+	}
 	return linux.New().Profile(ctx, p, proc, opts.AllowNetwork, opts.DenyPaths, opts.AcceptAliasesUnder)
 }

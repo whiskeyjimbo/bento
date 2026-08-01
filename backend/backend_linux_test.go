@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
 )
 
@@ -21,6 +22,30 @@ func TestNewReturnsLinuxEnforcer(t *testing.T) {
 	}
 	if e == nil {
 		t.Fatal("New on linux returned a nil enforcer")
+	}
+}
+
+// An embedder that never called DispatchReexec must be told so when it asks for the
+// backend, not after a run: the stages have nowhere to land, so the run it would go on
+// to start attests nothing, and the Refusal that comes back can only offer the missed
+// call as one candidate cause among several.
+func TestNewRefusesWithoutDispatchReexec(t *testing.T) {
+	dispatched.Store(false)
+	defer dispatched.Store(true)
+
+	e, err := New()
+	if err == nil {
+		t.Fatal("New must refuse a process that never dispatched")
+	}
+	if e != nil {
+		t.Error("New returned an enforcer beside its error")
+	}
+	if !strings.Contains(err.Error(), "DispatchReexec") {
+		t.Errorf("err = %v, want the missed call named", err)
+	}
+	if _, err := Profile(t.Context(), nil, enforce.Process{}, ProfileOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "DispatchReexec") {
+		t.Errorf("Profile err = %v, want the same refusal", err)
 	}
 }
 
