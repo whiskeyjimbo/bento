@@ -74,7 +74,9 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 		{"--json after the bad flag", []string{"run", "--nosuchflag", "--json", "m.yaml"}, true},
 		{"a missing script on profile", []string{"profile", "--json"}, true},
 		{"--json=true spells the same thing", []string{"run", "--json=true", "--nosuchflag"}, true},
+		{"--json=1 spells it too", []string{"run", "--json=1", "--nosuchflag"}, true},
 		{"--json=false asked for no envelope", []string{"run", "--json=false", "--nosuchflag"}, false},
+		{"--json=0 asked for no envelope", []string{"run", "--json=0", "--nosuchflag"}, false},
 		{"without --json nothing is written", []string{"run", "--nosuchflag", "m.yaml"}, false},
 		// validate answers --json in its own shape; a refusalJSON there would be a shape
 		// its consumers were never told to expect.

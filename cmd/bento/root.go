@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -106,6 +108,13 @@ const jsonRefusalAnnotation = "bento.json_refusal"
 // parses left to right and stops at the error, so Changed("json") answers on where the
 // bad flag happened to sit. Everything after a bare -- is the target's, not bento's.
 //
+// The scan cannot know the arity of the flag that failed, so a --json consumed as
+// another flag's value (`--env --json`) reads here as a request for the envelope, and
+// the operator gets one instead of the message naming their mistake. Nothing short of
+// re-running cobra's own resolution can tell the two apart, and the case it protects -
+// a machine gate that asked for --json and would otherwise get an empty stdout - is the
+// one worth being wrong in this direction about.
+//
 // Only errors main would otherwise print: an *exitError is a command that already ran
 // and wrote its own envelope.
 func refuseUsageJSON(stdout io.Writer, cmd *cobra.Command, args []string, err error) error {
@@ -116,13 +125,21 @@ func refuseUsageJSON(stdout io.Writer, cmd *cobra.Command, args []string, err er
 	return refuseJSON(stdout, true, err)
 }
 
+// wantsJSON reports whether argv asked for --json. The value is parsed rather than
+// matched against "true": pflag takes every spelling strconv.ParseBool does, so
+// --json=1 asks for the envelope as surely as --json does, and a scan that missed it
+// would leave exactly the empty stdout this exists to prevent.
 func wantsJSON(args []string) bool {
 	for _, a := range args {
-		switch a {
-		case "--":
+		if a == "--" {
 			return false
-		case "--json", "--json=true":
+		}
+		if a == "--json" {
 			return true
+		}
+		if v, ok := strings.CutPrefix(a, "--json="); ok {
+			on, err := strconv.ParseBool(v)
+			return err == nil && on
 		}
 	}
 	return false
