@@ -306,11 +306,17 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 			rules = append(rules, r.Host+":"+r.Port)
 		}
 		fmt.Fprintf(w, "network:      %v\n", rules)
-		for _, r := range rulesCoveringBlockedHost(p, blockedHosts) {
+		covering, unreadable := rulesCoveringBlockedHost(p, blockedHosts)
+		for _, r := range covering {
 			fmt.Fprintf(w, "  note: the profiling run reached a destination %q port %q covers and bento's\n", r.Host, r.Port)
 			fmt.Fprintf(w, "        egress guard refused it - the name resolved to an address a sandbox must\n")
 			fmt.Fprintf(w, "        not reach (loopback, private space, or cloud metadata). An enforced run\n")
 			fmt.Fprintf(w, "        refuses it the same way; this rule does not widen it.\n")
+		}
+		for _, key := range unreadable {
+			fmt.Fprintf(w, "  note: the manifest records %q as a destination profiling was refused, but that\n", key)
+			fmt.Fprintf(w, "        is not a host:port anything can match against the rules above - it was\n")
+			fmt.Fprintf(w, "        hand-edited.\n")
 		}
 		for _, r := range p.Network {
 			if isLoopbackHost(r.Host) {

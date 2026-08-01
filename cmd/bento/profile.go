@@ -342,15 +342,32 @@ func grantsAnyBlockedHost(r policy.NetworkRule, blocked []string) bool {
 
 // rulesCoveringBlockedHost returns the policy's network rules that cover a recorded
 // refusal, for the readers that report them as a group rather than deciding rule by
-// rule (validate's summary, run's pre-flight note).
-func rulesCoveringBlockedHost(p *policy.Policy, blocked []string) []policy.NetworkRule {
-	var covering []policy.NetworkRule
+// rule (validate's summary, run's pre-flight note). unreadable holds the recorded keys
+// nothing can be asked about, which those readers report on their own line.
+//
+// The split is the difference between those readers and approve's. grantsBlockedHost
+// answers an unsplittable key with "covered", so approve's per-rule "worth a second
+// look" degrades into telling the reader to look - the safe direction for a prompt. The
+// grouped note is a statement of fact instead ("the profiling run reached a destination
+// this rule covers"), and inheriting that answer would print it against every rule in
+// the manifest, including the ones that work. So the unjudgeable key is named as what it
+// is - a provenance record nothing can read - rather than turned into a false claim
+// about rules it says nothing about.
+func rulesCoveringBlockedHost(p *policy.Policy, blocked []string) (covering []policy.NetworkRule, unreadable []string) {
+	var judgeable []string
+	for _, key := range blocked {
+		if _, _, err := net.SplitHostPort(key); err != nil {
+			unreadable = append(unreadable, key)
+			continue
+		}
+		judgeable = append(judgeable, key)
+	}
 	for _, r := range p.Network {
-		if grantsAnyBlockedHost(r, blocked) {
+		if grantsAnyBlockedHost(r, judgeable) {
 			covering = append(covering, r)
 		}
 	}
-	return covering
+	return covering, unreadable
 }
 
 // blockedHostKeys renders the destinations the round's egress guard refused as the
@@ -417,20 +434,26 @@ const sandboxTmp = "/tmp"
 // sibling of that tree, not inside it. The exclusion needs the entrypoint to be in a
 // directory under /tmp rather than in /tmp itself, where it would cover everything.
 //
-// Lexical, on the manifest's own text: profile writes these absolute, and this is the
-// spelling the reviewer is looking at.
+// Lexical, but on the CLEANED spelling rather than the manifest's own text. profile
+// writes these absolute and already cleaned, so on its own output the two agree; a
+// hand-edited manifest is where they part, and that is the reader this serves. Both
+// `//tmp/guessed` and a `/tmp/work/../guessed` written to hide inside the entrypoint's
+// directory name a path the kernel binds under /tmp, and an uncleaned prefix test drops
+// each from the note while the grant stands.
+//
 // A nil policy has no grants to disclose - approve passes one when this host could not
 // resolve the manifest, and says so on its own line.
 func tmpGrants(p *policy.Policy) []string {
 	if p == nil {
 		return nil
 	}
-	home := filepath.Dir(p.Entrypoint)
+	home := filepath.Dir(filepath.Clean(p.Entrypoint))
 	if !strings.HasPrefix(home, sandboxTmp+"/") {
 		home = ""
 	}
 	var out []string
 	for _, g := range slices.Concat(p.Read, p.Write) {
+		g = filepath.Clean(g)
 		if g != sandboxTmp && !strings.HasPrefix(g, sandboxTmp+"/") {
 			continue
 		}

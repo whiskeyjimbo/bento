@@ -748,3 +748,42 @@ func TestTmpGrantsNamesWhatATargetCouldHaveSteered(t *testing.T) {
 		t.Errorf("tmpGrants(nil) = %v, want nothing", got)
 	}
 }
+
+// The note is the one thing a hand-edited manifest most wants to dodge, and the tests
+// are prefix comparisons - so they run on the cleaned spelling. Both of these name a
+// path the kernel binds under /tmp while reading, uncleaned, as something else.
+func TestTmpGrantsIsNotDodgedByAnUncleanSpelling(t *testing.T) {
+	doubled := &policy.Policy{Entrypoint: "/srv/run.py", Read: []string{"//tmp/guessed"}}
+	if got := tmpGrants(doubled); !slices.Equal(got, []string{"/tmp/guessed"}) {
+		t.Errorf("tmpGrants = %v, want the doubled-slash grant named as the /tmp path it binds", got)
+	}
+
+	// Written to sit inside the entrypoint's directory, where the workspace exclusion
+	// would drop it, while actually naming a sibling of that workspace.
+	escaped := &policy.Policy{Entrypoint: "/tmp/work/run.py", Read: []string{"/tmp/work/../guessed"}}
+	if got := tmpGrants(escaped); !slices.Equal(got, []string{"/tmp/guessed"}) {
+		t.Errorf("tmpGrants = %v, want the grant that climbs out of the workspace named", got)
+	}
+}
+
+// grantsBlockedHost answers an unjudgeable key with "covered" so approve's per-rule
+// prompt degrades into telling the reader to look. The grouped note states a fact
+// instead, so inheriting that answer would assert of every rule in the manifest that
+// profiling was refused it - false for the rules that work, and printed once each.
+func TestRulesCoveringBlockedHostSetsAsideAnUnjudgeableKey(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Network: []policy.NetworkRule{
+			{Host: ".internal", Port: "80"},
+			{Host: "example.com", Port: "443"},
+		},
+	}
+
+	covering, unreadable := rulesCoveringBlockedHost(p, []string{"metadata.internal:80", "not-a-host-port"})
+	if len(covering) != 1 || covering[0].Host != ".internal" {
+		t.Errorf("covering = %v, want only the rule that reaches the judgeable refusal", covering)
+	}
+	if !slices.Equal(unreadable, []string{"not-a-host-port"}) {
+		t.Errorf("unreadable = %v, want the key nothing can match reported as its own fact", unreadable)
+	}
+}

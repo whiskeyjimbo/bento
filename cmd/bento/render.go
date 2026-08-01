@@ -307,7 +307,7 @@ func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	// x32 case - a policy refusal returns EPERM and lets the target handle it. So the
 	// layer is named as the likelihood it is: a target may install its own filter.
 	if sig == int(syscall.SIGSYS) {
-		fmt.Fprintln(w, "[bento] that signal means a seccomp filter killed the process over a syscall, and the")
+		fmt.Fprintln(w, "[bento] that signal is sent when a seccomp filter kills a process over a syscall, and the")
 		fmt.Fprintln(w, "[bento] filters bento installs kill only on a foreign-architecture call - a 32-bit or")
 		fmt.Fprintln(w, "[bento] x32 syscall from a 64-bit process. A permission the manifest withholds is")
 		fmt.Fprintln(w, "[bento] refused with EPERM instead, so this is most likely that guard rather than a")
@@ -371,10 +371,15 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 // hand-edited manifest can carry any of it - and the run refuses the destination itself
 // when it comes to it, which is where the enforcement belongs.
 func writeBlockedHostNotes(w io.Writer, p *policy.Policy, blockedHosts []string) {
-	for _, r := range rulesCoveringBlockedHost(p, blockedHosts) {
+	covering, unreadable := rulesCoveringBlockedHost(p, blockedHosts)
+	for _, r := range covering {
 		fmt.Fprintf(w, "[bento] note: network %q port %q covers a destination the profiling run reached and bento's\n", r.Host, r.Port)
 		fmt.Fprintf(w, "[bento] egress guard refused - it resolved to loopback, private space, or cloud metadata.\n")
 		fmt.Fprintf(w, "[bento] This run refuses it the same way; the rule does not widen it.\n")
+	}
+	for _, key := range unreadable {
+		fmt.Fprintf(w, "[bento] note: the manifest records %q as a destination profiling was refused, but that is\n", key)
+		fmt.Fprintf(w, "[bento] not a host:port anything can match against the rules above - it was hand-edited.\n")
 	}
 }
 
