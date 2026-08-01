@@ -222,7 +222,8 @@ type policyJSON struct {
 	NetworkBlockedUnreadable []string `json:"network_blocked_unreadable,omitempty"`
 	// ShieldedGrants are the read grants that name a mandatory credential shield
 	// exactly, which lifts it for the run. The same exposure the human summary and
-	// approve's callouts raise; a CI gate reads it here.
+	// approve's callouts raise; a CI gate reads it here. Absent, like ResolvedRead,
+	// on a host that could not answer - see toPolicyJSON.
 	ShieldedGrants []string    `json:"shielded_grants,omitempty"`
 	Exec           string      `json:"exec"`
 	Limits         *limitsJSON `json:"limits,omitempty"`
@@ -240,6 +241,16 @@ type limitsJSON struct {
 
 // blockedHosts is the manifest's record of the destinations the profiling run's egress
 // guard refused, the same provenance the human summary marks its network rules with.
+// networkKeys renders network rules in the host:port spelling every reader of a policy
+// uses, so the summary, the envelope and profile's merge diff agree on one form.
+func networkKeys(rules []policy.NetworkRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Host+":"+r.Port)
+	}
+	return out
+}
+
 func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON {
 	out := policyJSON{
 		Entrypoint:  p.Entrypoint,
@@ -249,16 +260,13 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 		Read:        p.Read,
 		Write:       p.Write,
 		Exec:        string(p.Exec),
-		Network:     []string{},
+		Network:     networkKeys(p.Network),
 	}
-	for _, r := range p.Network {
-		out.Network = append(out.Network, r.Host+":"+r.Port)
-	}
-	// Rendered in the same host:port spelling as the network field above, so a consumer
-	// can match an entry back to the rule it marks without re-deriving the join.
+	// Rendered in the same spelling as the network field above, so a consumer can match
+	// an entry back to the rule it marks without re-deriving the join.
 	covering, unreadable := rulesCoveringBlockedHost(p, blockedHosts)
-	for _, r := range covering {
-		out.NetworkBlocked = append(out.NetworkBlocked, r.Host+":"+r.Port)
+	if len(covering) > 0 {
+		out.NetworkBlocked = networkKeys(covering)
 	}
 	out.NetworkBlockedUnreadable = unreadable
 	if !p.Limits.IsZero() {
@@ -270,7 +278,11 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 	if resolved != nil {
 		out.ResolvedRead = toGrantTargetsJSON(p.Read, resolved.Read)
 		out.ResolvedWrite = toGrantTargetsJSON(p.Write, resolved.Write)
-		out.ShieldedGrants = explicitShieldGrants(resolved.Read)
+		// An error is dropped for the same reason a failed resolve is: the verdict this
+		// command exists to give is a property of the manifest. It leaves the field absent
+		// beside a resolved_read that is also absent, which is the pair a consumer reads
+		// as "this host could not answer" - the human summary says it in words.
+		out.ShieldedGrants, _ = explicitShieldGrants(resolved.Read)
 	}
 	return out
 }
@@ -316,7 +328,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	writeResolvedGrants(w, p.Read, resolvedRead)
-	shieldGrants := explicitShieldGrants(resolvedRead)
+	shieldGrants, shieldErr := explicitShieldGrants(resolvedRead)
 	for _, g := range shieldGrants {
 		fmt.Fprintf(w, "  note: this grant names a credential store bento shields on every run, exactly\n")
 		fmt.Fprintf(w, "        and not merely under it: %q. bento honors that as a\n", g)
@@ -331,11 +343,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	if len(p.Network) == 0 {
 		fmt.Fprintf(w, "network:      denied (no egress)\n")
 	} else {
-		rules := make([]string, 0, len(p.Network))
-		for _, r := range p.Network {
-			rules = append(rules, r.Host+":"+r.Port)
-		}
-		fmt.Fprintf(w, "network:      %v\n", rules)
+		fmt.Fprintf(w, "network:      %v\n", networkKeys(p.Network))
 		covering, unreadable := rulesCoveringBlockedHost(p, blockedHosts)
 		for _, r := range covering {
 			fmt.Fprintf(w, "  note: the profiling run reached a destination %q port %q covers and bento's\n", r.Host, r.Port)
@@ -377,10 +385,16 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "limits:       %s\n", describeLimits(p.Limits))
 	}
 
-	// The footer asserts the shields hold over everything above it, so a grant that
-	// lifts one has to be named here too: the unqualified sentence is the last thing the
-	// approve prompt prints before asking, and it says the opposite of what is about to
-	// be stamped.
+	// The footer asserts the shields hold over everything above it, so anything that
+	// unsettles that has to be named here too: the unqualified sentence is the last thing
+	// the approve prompt prints before asking, and printing it over a grant that lifts a
+	// shield says the opposite of what is about to be stamped.
+	if shieldErr != nil {
+		fmt.Fprintf(w, "\nEverything not listed above is denied, but bento could not work out where the\n")
+		fmt.Fprintf(w, "credential shields anchor on this host (%v), so nothing above was\n", shieldErr)
+		fmt.Fprintf(w, "checked against them - and a run here is refused for the same reason.\n")
+		return
+	}
 	if len(shieldGrants) > 0 {
 		fmt.Fprintf(w, "\nEverything not listed above is denied, and credentials, SSH keys, and shell\n")
 		fmt.Fprintf(w, "profiles are shielded - EXCEPT the %d credential store(s) noted above, which\n", len(shieldGrants))

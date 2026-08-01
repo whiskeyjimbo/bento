@@ -126,19 +126,27 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err != nil {
 		return res, err
 	}
-	// A stage that never wrote its marker never reached the target: the marker is
-	// written after every layer decision and before the target is dispatched, so
-	// SetupSilent is proof the run did not happen, not merely that its layers are
-	// unattested. Returning nil here would hand back Result's zero exit code as the
-	// target's own answer - which is how an embedder that forgot DispatchReexec gets a
-	// clean success for a target that never ran. It is a Refusal rather than a
-	// Shortfall for the same reason: nothing ran, so retrying is safe, and only strict
-	// mode looks at a Shortfall at all.
+	// A silent stage leaves no attestation for any layer, so the exit code beside it is
+	// not an answer this run is entitled to hand back: returning nil would present
+	// Result's zero as the target's own, which is how an embedder that forgot
+	// DispatchReexec reads a clean success for a target that never started.
+	//
+	// The reason states what is known and offers the causes, rather than asserting one,
+	// for the same reason reconcile's does: the marker is written before the target is
+	// dispatched, so the usual silent stage is one that died in setup and never ran
+	// anything - but a report the host could not read back, or one it read as tampered,
+	// covers a target that ran and whose outcome is simply unattested. A caller that
+	// retries must expect either.
+	//
+	// A Refusal and not a Shortfall: a Shortfall means the target ran and a guarantee
+	// slipped, only strict mode looks at one, and the whole point here is that a default
+	// run must not pass this by.
 	if res.Setup == SetupSilent {
 		return res, &Refusal{
 			Report: res.Report,
-			Reason: "the sandbox stage never reported what it applied, so the target did not run. " +
-				"An embedder that hosts the backend must call backend.DispatchReexec() as the first statement in main()",
+			Reason: "the sandbox stage never reported what it applied, so nothing about this run is attested. " +
+				"Usually the stage died during setup and the target never ran; an embedder that hosts the backend " +
+				"and did not call backend.DispatchReexec() as the first statement in main() looks the same",
 			Short: res.Report.Degradations(),
 		}
 	}
@@ -247,9 +255,11 @@ func unenforcedRequestedLimits(r Report) []LayerStatus {
 	return out
 }
 
-// Refusal is returned when Bento declines to run because this host cannot
-// enforce what the policy requires. It carries the shortfall so a frontend can
-// name exactly which guarantees fell short and why.
+// Refusal is returned when Bento declines to run because this host cannot enforce what
+// the policy requires, or when a run it admitted came back with nothing attested at all.
+// It carries the shortfall so a frontend can name exactly which guarantees fell short and
+// why. In the second case the target usually never started, but a caller must not assume
+// it - see the SetupSilent branch in Run.
 type Refusal struct {
 	// Report covers only the layers the policy required.
 	Report Report

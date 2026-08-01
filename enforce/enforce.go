@@ -202,10 +202,14 @@ type Result struct {
 	// two onto different exit codes of its own reads this instead of the Report's prose
 	// reasons, which are written for humans and will change wording.
 	//
-	// A stage that never got its layers up (SetupSilent) does not reach a caller as a
-	// nil error: Run turns it into a *Refusal, because the marker this reads is written
-	// before the target is dispatched and so its absence proves the target never ran. A
-	// *Shortfall therefore always means the target ran and a guarantee slipped.
+	// A backend must set it on every Result it returns without an error. Run refuses a
+	// run that comes back SetupSilent - nothing about it is attested, so its exit code
+	// is not an answer to hand back - and SetupSilent is the zero value, so a backend
+	// that leaves the field alone has every run refused. That is the fail-closed
+	// direction, and it is why the field is not optional.
+	//
+	// A *Shortfall therefore always means the target ran and a guarantee slipped, never
+	// a stage that never got its layers up.
 	//
 	// It is meaningful only when Run returned nil or a *Shortfall - the cases where a
 	// target was actually launched. Every other error means the run was refused or

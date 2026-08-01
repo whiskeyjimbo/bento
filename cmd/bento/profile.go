@@ -1381,10 +1381,9 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 }
 
 // mergeOutcome is what folding a round's proposal into whatever was already at --out
-// produced. It carries the deltas as well as the result because the merge is the part of
-// profiling nothing at the point of use said out loud: the closing line claimed the
-// manifest reflected only this run, when it reflects this run unioned with a file the
-// user may not remember writing.
+// produced. It carries the deltas as well as the result because what lands on disk is
+// this run unioned with a file the user is not shown again and may not remember writing,
+// and only the deltas can say which half a grant came from.
 type mergeOutcome struct {
 	policy *policy.Policy
 	// carried is the existing provenance, kept for the same reason the grants are
@@ -1406,8 +1405,8 @@ type mergeOutcome struct {
 	// execWidened is whether the union escalated exec from a blocked mode to `all`.
 	execWidened bool
 	// approvalVoided is whether the file being widened carried a current approval, which
-	// the re-profile drops. validate reports it afterwards; by then the user has been
-	// told the manifest is ready to approve, not that their approval is gone.
+	// the re-profile drops. validate reports it on the next command; saying it here is
+	// what keeps "profile again to converge" from quietly costing an approval.
 	approvalVoided bool
 }
 
@@ -1450,7 +1449,7 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 		keptRead:    only(existing.Policy.Read, proposed.Read),
 		keptWrite:   only(existing.Policy.Write, proposed.Write),
 		keptEnv:     only(existing.Policy.Env, proposed.Env),
-		keptNetwork: only(networkKeys(existing.Policy), networkKeys(proposed)),
+		keptNetwork: only(networkKeys(existing.Policy.Network), networkKeys(proposed.Network)),
 		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
 		// Reported whenever the file was approved: profile writes its own provenance
 		// block, so the stamp is dropped by the write regardless of whether the grants
@@ -1507,21 +1506,11 @@ func only(a, b []string) []string {
 	return out
 }
 
-// networkKeys renders a policy's rules in the host:port spelling the rest of the
-// frontend uses, so the merge can diff them as plain strings.
-func networkKeys(p *policy.Policy) []string {
-	out := make([]string, 0, len(p.Network))
-	for _, r := range p.Network {
-		out = append(out, r.Host+":"+r.Port)
-	}
-	return out
-}
-
 // writeMergeNotice says what folding this run's proposal into an existing manifest
-// changed. The closing line it replaces claimed the manifest reflected only this run,
-// which is exactly wrong for the case the merge exists to serve: what is on disk is this
-// run unioned with a file whose grants the user is not being shown again, and whose
-// approval this write has just dropped.
+// changed. Profiling ends by sending the user to validate and approve, so this is the
+// last thing said before they review: a manifest that is partly the session they watched
+// and partly a file they are not being shown, with an exec the union may have widened
+// and an approval this write has just dropped.
 func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 	if !m.widened {
 		fmt.Fprintf(w, "[bento] it reflects only this run; profile again with other inputs to widen it.\n")

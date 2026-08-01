@@ -417,7 +417,10 @@ func TestExplicitShieldGrants(t *testing.T) {
 	t.Setenv("HOME", home)
 	sshDir := filepath.Join(home, ".ssh")
 
-	got := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
+	got, err := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
+	if err != nil {
+		t.Fatalf("explicitShieldGrants: %v", err)
+	}
 	if !slices.Contains(got, sshDir) {
 		t.Errorf("a grant naming the shield exactly must be reported; got %v", got)
 	}
@@ -426,7 +429,8 @@ func TestExplicitShieldGrants(t *testing.T) {
 			t.Errorf("%q is not an opt-in the run honors and must not be reported; got %v", unwanted, got)
 		}
 	}
-	if len(explicitShieldGrants([]string{home, "/srv/app"})) != 0 {
-		t.Error("a policy touching no shield must report nothing")
+	quiet, err := explicitShieldGrants([]string{home, "/srv/app"})
+	if err != nil || len(quiet) != 0 {
+		t.Errorf("a policy touching no shield must report nothing; got %v, %v", quiet, err)
 	}
 }

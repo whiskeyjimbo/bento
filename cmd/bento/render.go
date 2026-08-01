@@ -210,12 +210,14 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // grant the run does not treat as an opt-in.
 //
 // reads are the policy's resolved grants (absolute, ~ expanded, symlinks NOT followed),
-// which is the same spelling the backend compares. A host with no anchor at all yields
-// nothing: there are no shields to opt into, and such a host refuses the run anyway.
-func explicitShieldGrants(reads []string) []string {
+// which is the same spelling the backend compares. A host with no usable anchor at all
+// has no shield rules to compare against, which is returned as an error rather than as
+// an empty answer: the footer this feeds asserts the shields hold, and printing that
+// unqualified for a host that can build none of them is the one wrong thing to say.
+func explicitShieldGrants(reads []string) ([]string, error) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var rules []denylist.Rule
 	for _, h := range anchors {
@@ -231,7 +233,7 @@ func explicitShieldGrants(reads []string) []string {
 		}
 	}
 	slices.Sort(out)
-	return out
+	return out, nil
 }
 
 // writeShieldSummary prints one concise line confirming the boundary engaged: how many

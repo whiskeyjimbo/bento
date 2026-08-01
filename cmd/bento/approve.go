@@ -192,7 +192,11 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 		// run, and a grant naming one exactly is the only way to lift that shield. The
 		// run-time warning comes after the target has already printed whatever it read,
 		// so this prompt is where the exposure can still be declined.
-		for _, g := range explicitShieldGrants(resolved.Read) {
+		shieldGrants, err := explicitShieldGrants(resolved.Read)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("bento could not work out where the credential shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
+		}
+		for _, g := range shieldGrants {
 			notes = append(notes, fmt.Sprintf("read: %q is a credential store bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script read the credentials in it.", g))
 		}
 		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {

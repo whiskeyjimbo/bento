@@ -58,9 +58,11 @@ func newAppliedReport() (*os.File, func(), error) {
 	return f, func() { f.Close(); os.Remove(f.Name()) }, nil
 }
 
-// parseApplied reads back what the stage reported. A read failure is reported as an
-// absent report rather than an error: the run already happened, and the honest
-// outcome is a report that claims nothing, not a failed run.
+// parseApplied reads back what the stage reported. A read failure, and a report whose
+// contents did not come from the stage's own writes, are both reported as an absent
+// report: the honest outcome is one that claims nothing, since neither can be told from
+// a stage that never wrote. It is not the same as knowing the target did not run -
+// enforce.Run refuses on an absent report and words it accordingly.
 func parseApplied(path string) applied {
 	f, err := os.Open(path)
 	if err != nil {
