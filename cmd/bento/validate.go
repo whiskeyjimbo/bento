@@ -1,10 +1,8 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -261,32 +259,17 @@ func checkRunnable(resolved *policy.Policy) runnability {
 func fileWriteGrantProblems(write []string) []string {
 	var problems []string
 	for _, g := range write {
+		// Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
+		// otherwise be neither a problem nor a note - while run resolves the trailing
+		// slash away and refuses it as the file it is.
+		//
 		// Only an answered stat decides anything: a grant bento cannot stat for another
 		// reason says nothing about what run will find, exactly as a read grant does not.
-		if fi, err := os.Stat(g); err == nil && !fi.IsDir() {
+		if fi, err := os.Stat(filepath.Clean(g)); err == nil && !fi.IsDir() {
 			problems = append(problems, fmt.Sprintf("write grant %q is a file; grant its parent directory instead", g))
 		}
 	}
 	return problems
-}
-
-// fileishWriteGrants returns the write grants naming nothing on this host whose last
-// element is spelled like a file. A guess, so it is reported as a note and never as a
-// problem: --strict must not fail on a naming convention.
-func fileishWriteGrants(write []string) []string {
-	var fileish []string
-	for _, g := range write {
-		if _, err := os.Stat(g); !errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an
-		// ordinary directory name and not a signal of anything.
-		base := filepath.Base(g)
-		if ext := filepath.Ext(base); ext != "" && ext != base {
-			fileish = append(fileish, g)
-		}
-	}
-	return fileish
 }
 
 // writeRunnability prints the host's verdict in the same shape as the approval line

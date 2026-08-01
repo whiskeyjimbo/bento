@@ -176,6 +176,23 @@ func wantsJSON(cmd *cobra.Command, args []string) bool {
 	return false
 }
 
+// gatePlatform makes each command refuse before its RunE on a host bento has no backend
+// for, so a macOS build - which the tree compiles deliberately, see backend/backend_other.go -
+// says that rather than meeting whichever platform stub the command reaches first.
+//
+// Named per command rather than set once on the root, even though the hook is inherited:
+// cobra hangs `help`, `completion` and the hidden `__complete` off the root too, and
+// those answer perfectly well on a host that cannot run anything. Gating them would break
+// shell completion on every keystroke and refuse to print `bento help run`. `version` is
+// left out for the same reason and one more - which build this is, is the first thing a
+// bug report needs and the only answer that holds everywhere.
+func gatePlatform(cmds ...*cobra.Command) []*cobra.Command {
+	for _, cmd := range cmds {
+		cmd.PersistentPreRunE = func(*cobra.Command, []string) error { return checkPlatform() }
+	}
+	return cmds
+}
+
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "bento",
@@ -189,15 +206,13 @@ func newRootCmd() *cobra.Command {
 		Version:       versionInfo(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// Inherited by every subcommand that does not set its own, so a host with no
-		// backend is answered once, before any command starts work it cannot finish.
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return checkPlatform() },
 	}
 	root.SetVersionTemplate("bento {{.Version}}\n")
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
-	root.AddCommand(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd(), newVersionCmd())
+	root.AddCommand(gatePlatform(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd())...)
+	root.AddCommand(newVersionCmd())
 	checkJSONRefusalShapes(root)
 	return root
 }

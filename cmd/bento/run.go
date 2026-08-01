@@ -96,6 +96,7 @@ func newRunCmd() *cobra.Command {
 			// script itself then created was still missing when the run started.
 			missingReads := missingReadGrants(p.Read)
 			writeMissingReadNotes(os.Stderr, missingReads)
+			writeFileishWriteNotes(os.Stderr, fileishWriteGrants(p.Write))
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
 
 			e, err := backend.New()

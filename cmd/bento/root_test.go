@@ -226,3 +226,26 @@ func TestNonMistakesAreNotTreatedAsUsageErrors(t *testing.T) {
 		})
 	}
 }
+
+// The platform gate belongs on the commands that need a backend and nowhere else. It
+// cannot be exercised on Linux, where checkPlatform passes, so what is pinned is where it
+// is attached: setting it on the root instead would inherit it onto cobra's own `help`,
+// `completion` and hidden `__complete`, which answer fine on a host bento cannot run on -
+// and gating them refuses `bento help run` and errors on every completion keystroke.
+func TestPlatformGateCoversOnlyTheCommandsThatNeedABackend(t *testing.T) {
+	root := newRootCmd()
+	if root.PersistentPreRunE != nil {
+		t.Error("the root must not carry the gate; cobra's help and completion commands inherit it")
+	}
+	gated := map[string]bool{"run": true, "doctor": true, "validate": true, "approve": true, "profile": true}
+	for _, cmd := range root.Commands() {
+		if got := cmd.PersistentPreRunE != nil; got != gated[cmd.Name()] {
+			t.Errorf("%s: gated = %v, want %v", cmd.Name(), got, gated[cmd.Name()])
+		}
+	}
+	for name := range gated {
+		if _, _, err := root.Find([]string{name}); err != nil {
+			t.Errorf("%s: no such command, so the gate names one that does not exist: %v", name, err)
+		}
+	}
+}

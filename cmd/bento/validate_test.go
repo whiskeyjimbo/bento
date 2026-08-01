@@ -545,6 +545,9 @@ func TestValidateNotesAWriteGrantSpelledLikeAFileWithoutFailing(t *testing.T) {
 	if strings.Contains(out, strconv.Quote(dotfile)) {
 		t.Errorf("a dotfile-named grant must not be flagged; got:\n%s", out)
 	}
+	if !strings.Contains(out, "approval:     current") {
+		t.Errorf("a note must not disturb the approval; got:\n%s", out)
+	}
 
 	jsonOut, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
 	if err != nil {
@@ -559,5 +562,48 @@ func TestValidateNotesAWriteGrantSpelledLikeAFileWithoutFailing(t *testing.T) {
 	}
 	if len(got.FileishWriteGrants) != 1 || got.FileishWriteGrants[0] != fileish {
 		t.Errorf("fileish_write_grants = %v, want just %q", got.FileishWriteGrants, fileish)
+	}
+}
+
+// The note is about a grant that names nothing yet. A directory that already exists under
+// a version-suffixed name is the host answering the question, and there is nothing left to
+// guess at - the heuristic must not talk over it.
+func TestValidateDoesNotNoteAWriteGrantThatIsAlreadyADirectory(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "python3.11")
+	if err := os.MkdirAll(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: "./x", Write: []string{existing}}
+	out, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, p, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "spelled like a file") {
+		t.Errorf("an existing directory must not be noted; got:\n%s", out)
+	}
+}
+
+// `write: [/some/file.txt/]` stats as ENOTDIR rather than as a file or as absent, so it
+// fell through both the problem and the note while run refused it all the same - the exact
+// gate-passes-what-run-refuses gap this is here to close.
+func TestValidateRefusesAWriteGrantNamingAFileWithATrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "already-a-file")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: "./x", Write: []string{target + "/"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err == nil {
+		t.Fatalf("--strict must fail on a file grant however it is spelled; got:\n%s", out)
+	}
+	if !strings.Contains(out, "grant its parent directory instead") {
+		t.Errorf("summary must refuse the trailing-slash file grant; got:\n%s", out)
 	}
 }

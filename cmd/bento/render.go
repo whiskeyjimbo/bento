@@ -810,6 +810,55 @@ func missingReadGrants(read []string) []string {
 	return missing
 }
 
+// fileishWriteGrants returns the already-resolved write grants naming nothing on this
+// host whose last element is spelled like a file. Write grants name directories, so the
+// backend creates one - and a grant meant as a file leaves `out.json/` on the host while
+// the file the script wanted lands inside it, where no later grant names it.
+//
+// A guess about a naming convention, so every caller reports it as a note and none as a
+// verdict: --strict must not fail on it. A versioned directory (`python3.11`, `conf.d`)
+// reads as file-ish here and is knowingly accepted noise - the alternative is a list of
+// extensions that is wrong the first time someone writes to a directory nobody thought
+// of. A name with no extension at all (`Makefile`) is missed for the same reason.
+//
+// Write grants only. A read grant naming nothing is missingReadGrants' answer, and it is
+// a different one: nothing is created for it.
+func fileishWriteGrants(write []string) []string {
+	var fileish []string
+	for _, g := range write {
+		if _, err := os.Stat(filepath.Clean(g)); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an
+		// ordinary directory name and not a signal of anything. A trailing slash is
+		// stripped by Base, so a grant that spells the directory out stays flagged: the
+		// backend treats the two spellings identically, and so does the mistake.
+		base := filepath.Base(g)
+		if ext := filepath.Ext(base); ext != "" && ext != base {
+			fileish = append(fileish, g)
+		}
+	}
+	return fileish
+}
+
+// writeFileishWriteNotes says on the way in what validate says while the reader is
+// looking at the manifest, and for the same reason writeMissingReadNotes does: an
+// approved manifest is not re-validated, so a grant that was file-ish when it was
+// approved is still file-ish here and nothing has told anyone.
+//
+// Said on stderr only, not in run's verdict envelope, where missing_read_grants sits. A
+// missing read grant is the field that explains a script dying on a file it could not
+// open; this one explains a directory that appeared where a file was wanted, which the
+// run itself does not fail on and the host says plainly the moment anyone looks.
+func writeFileishWriteNotes(w io.Writer, fileish []string) {
+	for _, g := range fileish {
+		fmt.Fprintf(w, "[bento] note: the write grant %q is spelled like a file, but write grants name\n", g)
+		fmt.Fprintln(w, "[bento] directories - this run creates a directory under that name, and a file the")
+		fmt.Fprintln(w, "[bento] script writes there is inside it. Grant the parent directory instead, unless")
+		fmt.Fprintln(w, "[bento] a directory is what was meant.")
+	}
+}
+
 // writeMissingReadNotes says before the script starts what validate says while the
 // reader is looking at the manifest: a read grant naming nothing grants nothing, and the
 // sandbox then denies that path silently. An approved manifest is not re-validated - the
