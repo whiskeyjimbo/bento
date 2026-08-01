@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -94,10 +95,18 @@ func newRunCmd() *cobra.Command {
 			// In --json mode the script's streams are captured into the envelope
 			// rather than shared with bento's own stdout - otherwise the script's
 			// output interleaves with the JSON and corrupts the machine contract.
+			// They are also copied to stderr as they arrive, since the envelope alone
+			// says nothing until the script exits: a pipeline running a long build
+			// under bento would show no logs at all, and none if it was killed on a
+			// timeout. One writer for both, because exec pumps them from separate
+			// goroutines and unsynchronized writes would splice their lines together.
 			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
 			var out, errOut bytes.Buffer
 			if asJSON {
-				proc.Stdin, proc.Stdout, proc.Stderr = nil, &out, &errOut
+				live := &syncWriter{w: os.Stderr}
+				proc.Stdin = nil
+				proc.Stdout = io.MultiWriter(&out, live)
+				proc.Stderr = io.MultiWriter(&errOut, live)
 			}
 
 			res, err := enforce.Run(cmd.Context(), e, p, proc, enforce.Options{
@@ -114,8 +123,23 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output instead of the script's own streams being summarized")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin")
 	return cmd
+}
+
+// syncWriter serializes writes from the two stream pumps onto one destination, so a
+// write that arrives mid-write on the other goroutine follows it instead of splicing
+// into it. It holds the lock across the write rather than buffering: the point of the
+// live copy is that it appears while the script runs.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // refuseJSON reports a refusal raised before enforce.Run was ever reached in the same

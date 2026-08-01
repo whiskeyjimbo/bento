@@ -328,6 +328,16 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
+	// A denial is what the human never saw a prompt for: the gate is asked only about
+	// hosts the manifest does not cover, and a gate that said no - or a rule with a typo
+	// in it - leaves the target with a 403 it reports as its own failure. Quoted for the
+	// reason the admitted list is.
+	if len(res.Denied) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("the egress allowlist refused these destinations: no network rule covers them"))
+		for _, hp := range res.Denied {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
+		}
+	}
 	// A grant over a built-in credential shield is caveat-emptor: approve() can hand one
 	// out because the human said yes to a path, and bento honors it rather than refusing.
 	// ShieldedGrantTargets names the store it landed on where that differs from the

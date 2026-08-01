@@ -267,6 +267,13 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, hp := range res.GuardBlocked {
 		fmt.Fprintf(w, "embed: the egress guard refused %q port %s: it resolved to an address the sandbox may not reach (list a private address as an explicit IP rule to allow it)\n", hp.Host, hp.Port)
 	}
+	// Denied: destinations the allowlist refused outright. The target met the refusal as
+	// a 403 from the proxy inside its own error, with nothing naming the rule it fell
+	// outside of, so an embedder that stays quiet turns a one-letter typo in a manifest
+	// into a script that looks broken. Quoted: the target chose the name.
+	for _, hp := range res.Denied {
+		fmt.Fprintf(w, "embed: the egress allowlist refused %q port %s: no network rule covers it\n", hp.Host, hp.Port)
+	}
 	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
 	// so the backend honored the grant over its own shield. bento does not refuse this -
 	// the operator chose it - so a frontend that stays quiet makes the exposure silent.

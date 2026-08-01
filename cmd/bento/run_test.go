@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -380,6 +381,31 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 	if _, present := raw["egress_denied"]; present {
 		t.Error("egress_denied must be omitted when nothing was refused (omitempty), not emitted as null/[]")
+	}
+}
+
+// The two stream pumps run in their own goroutines, so the live copy they share has to
+// serialize them: without the lock a write landing mid-write splices the two scripts'
+// lines together, and the pipeline reading stderr sees neither line whole. Meaningful
+// under -race, which is where the unsynchronized version fails.
+func TestSyncWriterSerializesTheLiveCopy(t *testing.T) {
+	var dest bytes.Buffer
+	live := &syncWriter{w: &dest}
+	var wg sync.WaitGroup
+	for _, line := range []string{"out\n", "err\n"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				_, _ = live.Write([]byte(line))
+			}
+		}()
+	}
+	wg.Wait()
+	for l := range strings.SplitSeq(strings.TrimSuffix(dest.String(), "\n"), "\n") {
+		if l != "out" && l != "err" {
+			t.Fatalf("a spliced line %q; the writes were not serialized", l)
+		}
 	}
 }
 

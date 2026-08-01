@@ -29,6 +29,7 @@ func populatedResult() enforce.Result {
 		EgressConnections: 0, // with a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
+		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		ShieldedGrants:    []string{"/home/u/.ssh"},
 		// Keyed to the ShieldedGrants entry above, which is what pairs the two in the
@@ -54,6 +55,8 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		"the live gate admitted egress",              // GateAdmitted
 		`"internal.example\x1b[2K" port 443`,         // GuardBlocked, quoted
 		"the egress guard refused",                   // GuardBlocked
+		`"api.githb.example\x1b[2K" port 443`,        // Denied, quoted
+		"the egress allowlist refused",               // Denied
 		`"/home/u/.ssh"`,                             // ShieldedGrants
 		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrantTargets, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted
@@ -99,7 +102,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"Report":   "warned about through Degradations(), which is the part that fell short",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true,
 	}

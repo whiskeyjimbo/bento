@@ -30,6 +30,7 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		EgressConnections: 0, // with p.Network below and a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
+		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		ShieldedGrants:    []string{"/home/u/.ssh"},
 		// Keyed to the ShieldedGrants entry above, which is what pairs the two in the
@@ -55,6 +56,8 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		`"ads.example\x1b[2K"`,                                 // GateAdmitted, quoted
 		`"internal.example\x1b[2K"`,                            // GuardBlocked, quoted
 		"the egress guard refused",                             // GuardBlocked
+		`"api.githb.example\x1b[2K"`,                           // Denied, quoted
+		"the egress allowlist refused",                         // Denied
 		"1 credential/host-service path(s) shielded",           // Shields
 		`"/home/u/.ssh"`,                                       // ShieldedGrants
 		`on this host that path is "/home/u/real\x1b[2K/.ssh"`, // ShieldedGrantTargets, quoted
@@ -122,7 +125,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 		"Report":   "warned about through Degradations(), which is the part that fell short",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true,
 	}
