@@ -1000,3 +1000,23 @@ func TestProfileRefusalNamesProfiling(t *testing.T) {
 		t.Errorf("refusal = %q, want the layer reason bento authored rather than bwrap's own stderr", got)
 	}
 }
+
+// A proposed write directory that is missing from the host but sits inside the tree
+// profiling already granted write to is one an enforced run would create, so the
+// single pass retries with it created rather than reporting a correct proposal as
+// unfinished. A proposal outside that tree is a path the target chose: profiling does
+// not create host directories on its say-so.
+func TestMissingGrantedWriteDirs(t *testing.T) {
+	tree := t.TempDir()
+	existing := filepath.Join(tree, "have")
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "guessed")
+
+	got := missingGrantedWriteDirs([]string{tree}, []string{existing, filepath.Join(tree, "out"), elsewhere, tree})
+	want := []string{filepath.Join(tree, "out")}
+	if !slices.Equal(got, want) {
+		t.Errorf("missingGrantedWriteDirs = %v, want %v", got, want)
+	}
+}

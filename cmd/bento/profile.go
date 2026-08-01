@@ -64,6 +64,10 @@ func newProfileCmd() *cobra.Command {
 			"round instead of being asked again, so quitting mid-session and re-running\n" +
 			"picks up where you left off. An unapproved or stale manifest mounts nothing\n" +
 			"and every path is asked again.\n\n" +
+			"A run that failed only because a directory it writes into does not exist yet is\n" +
+			"profiled once more with that directory created, the way an enforced run creates a\n" +
+			"granted write directory - so a first proposal that is already correct is not\n" +
+			"reported as one bento cannot vouch for.\n\n" +
 			"The manifest is always written, but profile exits 4 when it cannot vouch for\n" +
 			"it: the profiled run did not finish, the observer dropped accesses it could\n" +
 			"not name, or the granting session ended before it converged. That is what\n" +
@@ -152,8 +156,9 @@ func newProfileCmd() *cobra.Command {
 				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
-				// one default-deny pass and write. A content-branching target under-reports;
-				// the footer says to profile again with grants to widen it.
+				// one default-deny pass and write, plus at most the one retry below. A
+				// content-branching target under-reports; the footer says to profile again
+				// with grants to widen it.
 				cfg.targetStdin = os.Stdin
 				if allowNetwork {
 					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress allowed)...\n", args[0])
@@ -161,6 +166,21 @@ func newProfileCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny (egress recorded, not forwarded; --allow-network to permit)...\n", args[0])
 				}
 				proposed, status, err = profileRound(cfg, base)
+				// A target that died only because a directory it writes into does not exist
+				// yet described a manifest that works: `bento run` creates a granted write
+				// directory. Reporting that pass as unfinished tells a first-time user their
+				// first profile is untrustworthy when it is correct, and the advice - widen
+				// the proposal - names nothing to widen. So do here what the run does and
+				// profile once more. The interactive loop reaches the same place through its
+				// prompts, which is why this is only the single-pass path.
+				if err == nil && status.unfinished {
+					if dirs := missingGrantedWriteDirs(base.Write, proposed.Write); len(dirs) > 0 {
+						fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, so profiling again with it created.\n", strings.Join(dirs, ", "))
+						retry := *base
+						retry.Write = append(slices.Clone(base.Write), dirs...)
+						proposed, status, err = profileRound(cfg, &retry)
+					}
+				}
 			}
 			if err != nil {
 				return err
@@ -437,6 +457,35 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 		dropped:    obs.Dropped > 0,
 		blocked:    blockedHostKeys(obs.Blocked),
 	}, nil
+}
+
+// missingGrantedWriteDirs returns the proposal's write grants that are absent from the
+// host and lie inside a tree profiling already granted write to. Those are exactly the
+// directories an enforced run creates for a granted write (prepareWriteDirs), so a
+// target that failed only on one of them is describing a manifest that already works.
+//
+// Confined to the already-granted tree deliberately. Profiling mounted that tree
+// writable during this same pass, so creating a directory inside it exposes nothing the
+// round did not already permit; a proposed write anywhere else is a path the target
+// chose, and profiling must not create host directories at an untrusted target's
+// request. Like the mkdir the convergence loop's grants produce, the directory is not
+// removed afterwards - an enforced run of the resulting manifest would create it anyway.
+func missingGrantedWriteDirs(granted, proposed []string) []string {
+	var out []string
+	for _, w := range proposed {
+		if _, err := os.Stat(w); !os.IsNotExist(err) {
+			continue
+		}
+		for _, g := range granted {
+			// Strictly inside: a grant that IS the granted tree cannot be the missing one,
+			// since profiling just bound it.
+			if rel, ok := under(g, w); ok && rel != "." {
+				out = append(out, w)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // blockedHostsGranted narrows the recorded guard refusals to the ones the written
