@@ -615,5 +615,14 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 	for _, l := range short {
 		fmt.Fprintf(w, "[bento]   %s (%s tier): %s - %s\n", l.Layer, l.Layer.Tier(), l.State, l.Reason)
 	}
+	// The sharpest consequence of the degraded filesystem tier is not in the layer line
+	// above: it never scans for aliases at all, so an alias inside a granted tree was
+	// readable and nothing counted it. The guarantee is absent rather than waived, which
+	// is also why --accept-alias cannot cover it. Keyed on the probed layer state, not on
+	// --allow-degraded: the flag on a host where bwrap works still scans.
+	if r.StateOf(enforce.LayerFilesystem) == enforce.Degraded {
+		fmt.Fprintln(w, "[bento]   this tier never scans for credential aliases, so a second name for a shielded")
+		fmt.Fprintln(w, "[bento]   credential under a granted tree was exposed rather than acknowledged.")
+	}
 	fmt.Fprintln(w, "[bento] run `bento doctor` for the full picture, or --strict to refuse rather than degrade.")
 }

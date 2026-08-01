@@ -375,6 +375,30 @@ func TestWriteAcceptedAliasWarning(t *testing.T) {
 	}
 }
 
+// The degraded filesystem tier skips the credential-alias scan entirely, which is the
+// widest thing --allow-degraded gives up - and it was readable only from the help text of
+// --accept-alias, the flag such a run did not pass. The disclosure keys on the probed
+// filesystem state and not on the flag: --allow-degraded on a host where bwrap works
+// still scans, so claiming otherwise there would be its own dishonesty.
+func TestWriteDegradationsNamesTheSkippedAliasScan(t *testing.T) {
+	var degraded enforce.Report
+	degraded.Add(enforce.LayerFilesystem, enforce.Degraded, "no user namespaces")
+	var b bytes.Buffer
+	writeDegradations(&b, degraded)
+	if !strings.Contains(b.String(), "never scans for credential aliases") {
+		t.Errorf("a degraded filesystem run must disclose the skipped alias scan; got:\n%s", b.String())
+	}
+
+	var other enforce.Report
+	other.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	other.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this host")
+	var full bytes.Buffer
+	writeDegradations(&full, other)
+	if strings.Contains(full.String(), "never scans for credential aliases") {
+		t.Errorf("a run whose filesystem tier scanned must not claim it skipped the scan; got:\n%s", full.String())
+	}
+}
+
 // run's only account of a guard refusal was writeGuardBlockedWarning, which fires after
 // the connection was already refused. The manifest records what the profiling run met,
 // so the rule can be marked before the script starts - and stays a note, since the
