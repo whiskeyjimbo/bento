@@ -1189,18 +1189,48 @@ func TestUnrepresentableWarningSeparatesProbedFromResolved(t *testing.T) {
 	resolved := "/data/re\u202eal.txt"
 	probed := "/data/pro\u202ebed.txt"
 	var buf bytes.Buffer
-	printUnrepresentable(&buf, profile.Observation{
+	notes := printUnrepresentable(&buf, profile.Observation{
 		Reads:  []string{resolved, probed},
+		Writes: []string{"/data/wr\u202eite/f.txt"},
 		Absent: []string{probed},
 	})
 	got := buf.String()
+
+	// The same distinction reaches --json, so the prose and the envelope cannot disagree.
+	// The write note leaves absent unset rather than answering false: it is judged at its
+	// parent directory, which no observation says the existence of.
+	found, missing := false, true
+	want := []struct {
+		path   string
+		absent *bool
+	}{
+		{resolved, &found},
+		{probed, &missing},
+		{"/data/wr\u202eite", nil},
+	}
+	if len(notes) != len(want) {
+		t.Fatalf("notes = %+v, want one per unrepresentable path", notes)
+	}
+	for i, w := range want {
+		n := notes[i]
+		if n.Path != w.path || n.Reason != "unrepresentable" {
+			t.Errorf("note %d = %+v, want %q unrepresentable", i, n, w.path)
+		}
+		switch {
+		case w.absent == nil && n.Absent != nil:
+			t.Errorf("note %d says absent=%v for a path whose existence is unknown", i, *n.Absent)
+		case w.absent != nil && (n.Absent == nil || *n.Absent != *w.absent):
+			t.Errorf("note %d absent = %v, want %v", i, n.Absent, *w.absent)
+		}
+	}
 	if !strings.Contains(got, fmt.Sprintf("%q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path", resolved)) {
 		t.Errorf("a path that resolved lost the full warning:\n%s", got)
 	}
 	if !strings.Contains(got, fmt.Sprintf("%q - the name carries", probed)) || !strings.Contains(got, "Nothing was found at that path, so the run only probed for it") {
 		t.Errorf("a path nothing was found at did not get the probe wording:\n%s", got)
 	}
-	if strings.Count(got, "which is how a path is made to read as something other than what it grants") != 1 {
+	// The resolved read and the write keep it; only the probed read loses it.
+	if strings.Count(got, "which is how a path is made to read as something other than what it grants") != 2 {
 		t.Errorf("the deception framing was applied to a path that was only probed:\n%s", got)
 	}
 }

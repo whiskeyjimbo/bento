@@ -77,13 +77,14 @@ func newProfileCmd() *cobra.Command {
 			"it: the profiled run did not finish, the observer dropped accesses it could\n" +
 			"not name, or the granting session ended before it converged. That is what\n" +
 			"keeps `profile && approve` from stamping a manifest built on a crashed run.",
-		Args: minArgs(1, "a script path"),
+		Args:        minArgs(1, "a script path"),
+		Annotations: map[string]string{jsonRefusalAnnotation: "yes"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal this command raises goes through this, so --json never
 			// answers one with an empty stdout and a machine gate can tell a refusal from
 			// a crash. It is run's refuseJSON, which carries the host report when the
-			// error is one. A usage error cobra rejects before RunE is reached does not
-			// pass here; that is the frontend's own contract, not this command's.
+			// error is one. A usage error cobra rejects before RunE is reached never gets
+			// here at all - the frontend answers that one, off the annotation below.
 			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
 
 			script, err := filepath.Abs(args[0])
@@ -762,13 +763,27 @@ type roundStatus struct {
 
 // mergeNotes appends the notes of b that a does not already carry, so a converging
 // session reports each decision once rather than once per round.
+//
+// Compared field by field rather than with slices.Contains: a note's Absent is a
+// pointer, and each round builds its own, so the equality that matters here is what the
+// two notes say and not which round said it.
 func mergeNotes(a, b []accessNoteJSON) []accessNoteJSON {
 	for _, n := range b {
-		if !slices.Contains(a, n) {
+		if !slices.ContainsFunc(a, func(have accessNoteJSON) bool { return sameNote(have, n) }) {
 			a = append(a, n)
 		}
 	}
 	return a
+}
+
+func sameNote(a, b accessNoteJSON) bool {
+	if a.Kind != b.Kind || a.Path != b.Path || a.Host != b.Host || a.Port != b.Port || a.Reason != b.Reason {
+		return false
+	}
+	if a.Absent == nil || b.Absent == nil {
+		return a.Absent == b.Absent
+	}
+	return *a.Absent == *b.Absent
 }
 
 // The tmpfs every run mounts, and so the prefix that makes a grant target-steerable.
@@ -1022,7 +1037,12 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 			continue
 		}
 		seen[p] = true
-		notes = append(notes, accessNoteJSON{Kind: e.kind, Path: p, Reason: "unrepresentable"})
+		note := accessNoteJSON{Kind: e.kind, Path: p, Reason: "unrepresentable"}
+		if e.kind == "read" {
+			probed := absent[p]
+			note.Absent = &probed
+		}
+		notes = append(notes, note)
 		// The deception the full warning describes needs a file to deceive about. A path
 		// nothing was ever found at was probed and no more: nothing was read, and no
 		// grant of it would have meant anything either way - so saying the name is how a

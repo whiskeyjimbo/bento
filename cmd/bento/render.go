@@ -112,6 +112,12 @@ type accessNoteJSON struct {
 	// shielded-credential, write-shielded, too-broad (withheld); foreign-home-shield,
 	// target-steerable-tmp, whole-workdir (proposed and flagged).
 	Reason string `json:"reason"`
+	// Absent says nothing was found at Path, so the run only probed for it - the
+	// difference between a file the script read under a name a manifest cannot hold and
+	// an interpreter's search miss, which is the routine case. A pointer because unknown
+	// is a third answer, as with policyJSON.Runnable: only a read note carries it, since
+	// a write is judged at its parent directory and a network note has no path at all.
+	Absent *bool `json:"absent,omitempty"`
 }
 
 // profileJSON is `bento profile`'s machine-readable result: what it wrote, whether it
