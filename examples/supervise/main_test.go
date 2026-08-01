@@ -74,8 +74,6 @@ func TestApproveSkipsTheChainDownToTheScript(t *testing.T) {
 	}
 }
 
-// A sibling of the script's directory shares a textual prefix with it but is not on the
-// path down to it, so it stays a real decision.
 // A deliberate grant on an ancestor has to survive the trimming, or the remedy for the
 // case it hides - a script that lists one of its own parents - is one the store records,
 // perms list reports, and the run silently ignores.
@@ -101,6 +99,18 @@ func TestApproveKeepsAnAncestorTheStoreDecided(t *testing.T) {
 	}
 }
 
+// Root is the ancestor a routine yes hurts most, and its own trailing separator is what
+// a naive prefix test trips over.
+func TestTrimAncestorsTrimsRoot(t *testing.T) {
+	undecided := func(string) bool { return false }
+	got := trimAncestors([]string{"/", "/home", "/home/u/src/app"}, "/home/u/src/app/run.sh", undecided)
+	if len(got) != 1 || got[0] != "/home/u/src/app" {
+		t.Errorf("trimAncestors = %v, want just the script's own directory", got)
+	}
+}
+
+// A sibling of the script's directory shares a textual prefix with it but is not on the
+// path down to it, so it stays a real decision.
 func TestTrimAncestorsKeepsASiblingPrefix(t *testing.T) {
 	undecided := func(string) bool { return false }
 	got := trimAncestors([]string{"/home/u/app", "/home/u/appendix", "/home/u/app/sub"}, "/home/u/app/sub/run.sh", undecided)

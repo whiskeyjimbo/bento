@@ -170,23 +170,26 @@ func TestExecHintFiresOnlyWhenRelevant(t *testing.T) {
 // exit 0 under a blocking manifest - a script that continued past a refused write or
 // exec, which every other hint reads as success.
 func TestDenialLegendFiresOnACleanRun(t *testing.T) {
-	execEnforced := func() enforce.Report {
+	// Both layers are named in every report a real run produces, and each line of the
+	// legend answers for its own, so a case that omits one is not a case bento can be in.
+	report := func(fs, exec enforce.State) enforce.Report {
 		var r enforce.Report
-		r.Add(enforce.LayerExec, enforce.Enforced, "")
+		r.Add(enforce.LayerFilesystem, fs, "")
+		r.Add(enforce.LayerExec, exec, "")
 		return r
 	}
-	execUnavailable := func() enforce.Report {
-		var r enforce.Report
-		r.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this platform")
-		return r
-	}
+	execEnforced := func() enforce.Report { return report(enforce.Enforced, enforce.Enforced) }
+	execUnavailable := func() enforce.Report { return report(enforce.Enforced, enforce.Unavailable) }
+	// The Landlock-only tier: no read-only remount behind it, so a refused write answers
+	// EACCES and naming EROFS would map an error the script cannot emit.
+	degradedFS := func() enforce.Report { return report(enforce.Degraded, enforce.Enforced) }
 
 	cases := []struct {
-		name     string
-		p        *policy.Policy
-		res      enforce.Result
-		wantExec string // the exec: line, or "" if it must not appear
-		wantAny  bool
+		name      string
+		p         *policy.Policy
+		res       enforce.Result
+		wantExec  string // the exec: line, or "" if it must not appear
+		wantWrite bool   // the "Read-only file system" line
 	}{
 		{"a clean run under a blocking manifest still says so", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
 		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
@@ -196,6 +199,10 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		// there, it is certain for any write the script attempts.
 		{"no write grant is the most restricted, not the least", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", true},
 		{"a block that never landed names no exec field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", true},
+		// Each line answers for its own layer, so a tier that cannot produce EROFS drops
+		// the write line and keeps the exec one.
+		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS()}, "exec: none", false},
+		{"neither layer in force says nothing at all", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false},
 		// The hints that explain a failure have already spoken by here, and the legend's
 		// own subject is the run that reported nothing.
 		{"a failing run is somebody else's to explain", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: execEnforced()}, "", false},
@@ -205,25 +212,23 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
 			writeDenialLegend(&b, tc.p, tc.res)
-			if got := b.Len() > 0; got != tc.wantAny {
-				t.Errorf("legend emitted = %v, want %v (output: %q)", got, tc.wantAny, b.String())
-			}
-			if !tc.wantAny {
-				return
+			out := b.String()
+			if wantAny := tc.wantWrite || tc.wantExec != ""; (b.Len() > 0) != wantAny {
+				t.Errorf("legend emitted = %v, want %v (output: %q)", b.Len() > 0, wantAny, out)
 			}
 			// The whole point is the mapping from the errno string the script printed to
 			// the manifest field, so both halves have to survive a reword.
-			if !strings.Contains(b.String(), "Read-only file system") || !strings.Contains(b.String(), "write:") {
-				t.Errorf("legend does not map the write errno to write: %q", b.String())
+			if gotWrite := strings.Contains(out, "Read-only file system") && strings.Contains(out, "write:"); gotWrite != tc.wantWrite {
+				t.Errorf("write errno mapped = %v, want %v: %q", gotWrite, tc.wantWrite, out)
 			}
 			if tc.wantExec == "" {
-				if strings.Contains(b.String(), "Operation not permitted") {
-					t.Errorf("legend names an exec block that is not in force: %q", b.String())
+				if strings.Contains(out, "Operation not permitted") {
+					t.Errorf("legend names an exec block that is not in force: %q", out)
 				}
 				return
 			}
-			if !strings.Contains(b.String(), "Operation not permitted") || !strings.Contains(b.String(), tc.wantExec) {
-				t.Errorf("legend does not map the exec errno to %q: %q", tc.wantExec, b.String())
+			if !strings.Contains(out, "Operation not permitted") || !strings.Contains(out, tc.wantExec) {
+				t.Errorf("legend does not map the exec errno to %q: %q", tc.wantExec, out)
 			}
 		})
 	}

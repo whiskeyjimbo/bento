@@ -893,10 +893,15 @@ func trimScratch(paths []string) []string {
 // remembered answer is also why a decision made before this trimming existed keeps
 // working instead of disappearing from the run while `perms list` still reports it.
 func trimAncestors(paths []string, script string, decided func(string) bool) []string {
-	dir := filepath.Dir(script)
+	dir := filepath.Dir(script) + string(filepath.Separator)
 	var out []string
 	for _, p := range paths {
-		if p != dir && strings.HasPrefix(dir, p+string(filepath.Separator)) && !decided(p) {
+		// The separator is appended to both sides rather than only to p, so that "/" -
+		// whose own trailing separator would otherwise make the test read "//" and never
+		// match - is the ancestor of every absolute path, which is what it is. Root is the
+		// one worth catching: a routine yes to it grants a recursive read of the host.
+		anc := strings.TrimSuffix(p, string(filepath.Separator)) + string(filepath.Separator)
+		if anc != dir && strings.HasPrefix(dir, anc) && !decided(p) {
 			continue
 		}
 		out = append(out, p)

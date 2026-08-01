@@ -494,17 +494,29 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 	if res.ExitCode != 0 || res.Signal != 0 {
 		return
 	}
-	// No write grant is the most restricted write posture, not the least: the root is
-	// remounted read-only, so every path outside the sandbox's own scratch answers
-	// EROFS. Gating the legend on having grants would silence it exactly where the
-	// error is certain, so only the wording turns on them.
+	// Each line answers for the layer that produces its errno, because the two do not
+	// stand or fall together. EROFS comes from bubblewrap's read-only remount, so it is
+	// what a refused write says only on the bwrap tier; the Landlock-only tier has no
+	// remount and answers EACCES instead, and naming EROFS there would map an error the
+	// script cannot emit - the opposite failure to the silence this exists to fix.
+	//
+	// Enforced, not merely "not Unavailable": the filesystem layer also reads Degraded on
+	// the bwrap tier when only the Landlock backstop failed, where EROFS does still hold.
+	// Requiring Enforced drops a true line in that one case, which is the safe direction
+	// to be wrong in, and writeDegradations has already spoken there.
+	writesAreEROFS := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
 	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
+	if !writesAreEROFS && !blocksExec {
+		return
+	}
 	fmt.Fprintln(w, "[bento] a denial inside the box is reported by the script, not by bento:")
-	if len(p.Write) == 0 {
+	switch {
+	case !writesAreEROFS:
+	case len(p.Write) == 0:
 		// Naming a field the manifest does not carry sends the reader grepping for a
 		// line that is not there, the same trap writeExecHint's "runs under" avoids.
 		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
-	} else {
+	default:
 		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
 	}
 	if blocksExec {
