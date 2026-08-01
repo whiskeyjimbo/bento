@@ -52,9 +52,10 @@ docker run --security-opt seccomp=unconfined \
 ```
 
 The image also has to carry `bubblewrap` itself. It is not in the stock
-`ubuntu`, `debian`, or `alpine` images, and without it `doctor` reports the
-filesystem layer degraded and the network layer unavailable, naming the missing
-package - the flags above change nothing until it is installed:
+`ubuntu`, `debian`, or `alpine` images, and without it neither core layer is
+enforced: the network layer is unavailable and the filesystem layer falls to
+Landlock at best, with `doctor` naming the missing package. The flags above
+change nothing until it is installed:
 
 ```dockerfile
 RUN apt-get update && apt-get install -y bubblewrap   # Debian/Ubuntu
@@ -101,8 +102,9 @@ cd examples/probe
 #    On a terminal this is a loop, not one shot: each round asks per path
 #    ([y]es / [n]o / [a]ll / [q]uit), mounts what you accept, and runs again until the
 #    target stops finding new ones. With stdin not a terminal (a pipe, CI, `< /dev/null`)
-#    it makes a single non-interactive default-deny pass instead - nothing is granted, so
-#    a target that branches on a missing file under-reports and you profile again with grants.
+#    it makes one non-interactive default-deny pass instead, granting nothing you were not
+#    asked about (only a write directory the target died on is created for a second pass),
+#    so a target that branches on a missing file under-reports and you profile again with grants.
 #    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
 #    Profiling again merges into the manifest rather than replacing it, so what you end up
 #    with is this run unioned with whatever was already there - profile says what it changed,
