@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build darwin
 
 package backend
 
@@ -11,7 +11,7 @@ import (
 
 // Off Linux, New must REFUSE (error, nil enforcer) rather than substitute a
 // permissive stand-in - the product's core "refuse rather than run unconfined"
-// invariant. Runs only on non-Linux builds.
+// invariant. Runs on darwin, the one platform the stub is built for.
 func TestNewRefusesOffLinux(t *testing.T) {
 	e, err := New()
 	if err == nil {
