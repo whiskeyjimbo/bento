@@ -383,7 +383,9 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 	// The same gate Parse applies on the way in, so a manifest bento writes is one bento
 	// can read back - Marshal used to write files Parse would then refuse, and an empty
 	// policy marshalled to "{}" with no error at all. It runs BEFORE fromPolicy, which
-	// dereferences p.
+	// dereferences p. The first problem is enough here, where Parse lists them all: a
+	// manifest bento writes is one it built or already parsed, so a problem in it is a
+	// bug in bento rather than a field an author is about to fix.
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}

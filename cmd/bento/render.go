@@ -459,7 +459,7 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 }
 
 // writeRefusal prints a pre-run refusal in the shape main's generic error printer gives
-// every other one - "bento: " and the reason - but wrapped, and with each layer that fell
+// every other one - the "bento: " prefix it writes in main.go and the reason - but wrapped, and with each layer that fell
 // short on its own indented lines. The generic printer cannot do this itself: a manifest
 // parse error carries caret alignment that wrapping would mangle, so only the caller that
 // knows it holds a refusal can wrap it.
@@ -490,9 +490,12 @@ func writeRefusal(w io.Writer, r *enforce.Refusal) {
 // script that never started reported nothing. The layer lines above carry the launcher's
 // own error; this says what it means for the code the run ended with.
 func writeTargetUnreached(w io.Writer, res enforce.Result) {
-	fmt.Fprintf(w, "[bento] the sandbox applied its layers but could not start the target, so the script\n")
-	fmt.Fprintf(w, "[bento] never ran and exit %d is bento's, not its own. Check that the entrypoint and\n", res.ExitCode)
-	fmt.Fprintln(w, "[bento] interpreter name a program this host can execute (`bento validate` reports both).")
+	notice := fmt.Sprintf("the sandbox applied its layers but could not start the target, so the script "+
+		"never ran and exit %d is bento's, not its own. Check that the entrypoint and interpreter "+
+		"name a program this host can execute (`bento validate` reports both).", res.ExitCode)
+	for _, line := range wrapText(notice, textWidth-len("[bento] ")) {
+		fmt.Fprintf(w, "[bento] %s\n", line)
+	}
 }
 
 // writeSandboxHomeNote states what HOME is inside the box and what that does to a `~`

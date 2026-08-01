@@ -120,22 +120,19 @@ func (p *Policy) Validate() error {
 	return nil
 }
 
-// Problems returns every malformed field, in the order the fields are declared, so a
+// Problems returns every malformed field, in the order the checks below run, so a
 // manifest with several mistakes can be fixed in one pass rather than one run per
 // mistake. Empty means the policy is well-formed.
 //
-// Two screens still stop the walk where continuing would be worse than terse: a nil
-// policy has no fields to examine, and a value carrying a deceiving character is echoed
-// back in its own refusal - listing it beside unrelated problems buries the one line the
-// reader has to look at closely. Exec and Limits report their own first problem each,
+// Two screens still answer on their own, where a list would be worse than a terse
+// answer: a nil policy has no fields to examine, and a value carrying a deceiving
+// character is echoed back in its own refusal - listing it beside unrelated problems
+// buries the one line the reader has to look at closely, which is why that screen runs
+// before anything is collected. Exec and Limits report their own first problem each,
 // which is where the list stops being exhaustive.
 func (p *Policy) Problems() []error {
 	if p == nil {
 		return []error{fmt.Errorf("policy: nil policy")}
-	}
-	var probs []error
-	if p.Entrypoint == "" {
-		probs = append(probs, fmt.Errorf("policy: entrypoint is required"))
 	}
 	// The path and argument fields are echoed verbatim by the frontends - the
 	// validate summary, error messages naming a bad path - so a deceiving character in
@@ -154,6 +151,10 @@ func (p *Policy) Problems() []error {
 		if r, ok := FirstUnsafeRune(f); ok {
 			return []error{fmt.Errorf("policy: value %q contains %s, which is not allowed in a path or argument", f, DescribeUnsafeRune(r))}
 		}
+	}
+	var probs []error
+	if p.Entrypoint == "" {
+		probs = append(probs, fmt.Errorf("policy: entrypoint is required"))
 	}
 	// An empty path grant is not a grant of nothing. It survives the manifest-dir
 	// anchoring untouched, renders as "read: []" in the validate summary - so an operator

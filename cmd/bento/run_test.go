@@ -482,6 +482,11 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 			t.Errorf("unreached-target notice missing %q; got:\n%s", want, unreached.String())
 		}
 	}
+	for _, line := range strings.Split(strings.TrimSuffix(unreached.String(), "\n"), "\n") {
+		if len(line) > textWidth {
+			t.Errorf("notice line is %d columns, want at most %d: %q", len(line), textWidth, line)
+		}
+	}
 
 	// --json carries the outcome as a field, and the hint on stdout would corrupt it.
 	var out, errOut bytes.Buffer
