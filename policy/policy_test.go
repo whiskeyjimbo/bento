@@ -244,6 +244,47 @@ func TestValidateRejects(t *testing.T) {
 	}
 }
 
+// A tilde that survives to the enforcer grants nothing while the run still succeeds
+// and attests every layer, so every field manifest.Resolve expands has to be screened
+// - a Go embedder who never called Resolve reaches all four the same way.
+func TestRequireExpandedRejectsEveryResolvedField(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Policy)
+		want string
+	}{
+		{"read", func(p *Policy) { p.Read = []string{"~/.config"} }, "read[0] \"~/.config\""},
+		{"later read", func(p *Policy) { p.Read = []string{"/data", "~"} }, "read[1] \"~\""},
+		{"write", func(p *Policy) { p.Write = []string{"~/out"} }, "write[0] \"~/out\""},
+		{"entrypoint", func(p *Policy) { p.Entrypoint = "~/run.sh" }, "entrypoint \"~/run.sh\""},
+		{"interpreter", func(p *Policy) { p.Interpreter = "~/venv/bin/python" }, "interpreter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := valid()
+			tc.mut(&p)
+			err := p.RequireExpanded()
+			if err == nil {
+				t.Fatal("an unexpanded tilde must not reach the enforcer")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Only a leading tilde names home; "./~backup" and "data/~x" are ordinary files, and
+// Args are never expanded, so neither may be refused here.
+func TestRequireExpandedAcceptsResolvedPaths(t *testing.T) {
+	p := valid()
+	p.Read = []string{"/home/u/.config", "./~backup", "data/~x"}
+	p.Args = []string{"~/notes.txt"}
+	if err := p.RequireExpanded(); err != nil {
+		t.Fatalf("resolved paths must pass: %v", err)
+	}
+}
+
 func TestValidateNilPolicy(t *testing.T) {
 	var p *Policy
 	if err := p.Validate(); err == nil {

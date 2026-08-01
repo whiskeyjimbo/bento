@@ -248,6 +248,46 @@ func NamesOtherUserHome(path string) bool {
 	return ok && rest != "" && !strings.HasPrefix(rest, "/")
 }
 
+// RequireExpanded refuses a policy whose paths still carry a leading "~", which means
+// manifest.Resolve has not run on it. It is the enforcement boundary's precondition,
+// not a well-formedness check, which is why it is separate from Validate: on the CLI
+// path Validate runs at the parse gate, before the fingerprint check and therefore
+// before resolution, where "~/.config" is exactly what the manifest is supposed to say.
+//
+// Past that boundary a tilde is no longer a home reference - enforce takes it as a
+// relative path, so `read: ["~/.config"]` mounts a directory of that literal name,
+// which does not exist. The run then succeeds, attests every layer, and grants
+// nothing: the same silent no-grant expandHome exists to prevent, reached by a Go
+// embedder who built the policy by hand and never called Resolve.
+func (p *Policy) RequireExpanded() error {
+	for _, f := range []struct {
+		name string
+		path string
+	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}} {
+		if err := screenExpanded(f.name, f.path); err != nil {
+			return err
+		}
+	}
+	for _, l := range []struct {
+		name  string
+		paths []string
+	}{{"read", p.Read}, {"write", p.Write}} {
+		for i, path := range l.paths {
+			if err := screenExpanded(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func screenExpanded(field, path string) error {
+	if strings.HasPrefix(path, "~") {
+		return fmt.Errorf("policy: %s %q still names home with a tilde; the enforcer does not expand it and would take it as a relative path, granting nothing. Resolve the policy first (manifest.Resolve) or write the path out in full", field, path)
+	}
+	return nil
+}
+
 func screenTilde(field, path string) error {
 	if NamesOtherUserHome(path) {
 		return fmt.Errorf("policy: %s %q names another user's home directory, which bento does not expand; write the path out in full (a file of that name beside the manifest is \"./%s\")", field, path, path)

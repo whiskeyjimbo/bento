@@ -76,6 +76,9 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := p.Validate(); err != nil {
 		return Result{}, err
 	}
+	if err := p.RequireExpanded(); err != nil {
+		return Result{}, err
+	}
 	// One required set for both the admission below and the report overlay further
 	// down: judging admission on one set and reporting on another is how a layer gets
 	// admitted on and then erased from the report.

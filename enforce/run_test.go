@@ -396,6 +396,25 @@ func TestRunValidatesPolicy(t *testing.T) {
 	}
 }
 
+// An embedder who builds a policy by hand never goes through manifest.Resolve, so the
+// tilde is still there when Run gets it. Enforcement would take it as a relative path
+// and grant nothing while the run succeeded and attested every layer, which is the one
+// outcome the refusal exists to prevent.
+func TestRunRefusesAnUnexpandedTilde(t *testing.T) {
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	p := &policy.Policy{Entrypoint: "/bin/true", Read: []string{"~/.config"}}
+	_, err := Run(context.Background(), f, p, Process{}, Options{})
+	if err == nil {
+		t.Fatal("expected an unexpanded tilde grant to be rejected")
+	}
+	if !strings.Contains(err.Error(), "read[0]") {
+		t.Errorf("the refusal must name the grant; got %v", err)
+	}
+	if f.ran {
+		t.Error("a policy granting nothing reached the enforcer")
+	}
+}
+
 // A policy that asks for no network must not be blocked by a host that cannot
 // run the egress stack: it never requested egress, and namespace isolation alone
 // denies it.

@@ -47,6 +47,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
 	}
+	if err := p.RequireExpanded(); err != nil {
+		return profile.Observation{}, err
+	}
 	// Refuse before launching anything. The observation backend is amd64-only at
 	// build time, and without this the run would start, the launcher would fail
 	// inside the sandbox, and the host would meet a report with no completion marker
