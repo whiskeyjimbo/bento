@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/user"
@@ -607,26 +609,24 @@ func TestSeedGrants(t *testing.T) {
 // fails EACCES at enforce time and the reviewer has nothing to read. Every other
 // withheld class prints; this must too.
 func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
-	stderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	printFlooredWrites([]string{
+	var buf bytes.Buffer
+	notes := printFlooredWrites(&buf, []string{
 		"/var/lib/app/state.db",
 		"/var/lib/app/other.db", // same collapsed dir: reported once
 		"/home/other/.bashrc",
 		"relative/path", // no absolute anchor, nothing to name
 		"/work/ok.txt",  // an ordinary grant, reported by the clamps instead
 	})
-	w.Close()
-	os.Stderr = stderr
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatal(err)
-	}
 	got := buf.String()
+
+	// The same decision reaches --json, so the prose and the envelope cannot disagree.
+	want := []accessNoteJSON{
+		{Kind: "write", Path: "/var/lib/app", Reason: "system-tree"},
+		{Kind: "write", Path: "/home/other", Reason: "system-tree"},
+	}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %+v, want %+v", notes, want)
+	}
 
 	for _, want := range []string{`"/var/lib/app"`, `"/home/other"`} {
 		if !strings.Contains(got, want) {
@@ -1042,5 +1042,76 @@ func TestPrintWorkdirGrantsNamesTheWholeDirectory(t *testing.T) {
 	printWorkdirGrants(&out, &policy.Policy{Read: []string{filepath.Join(dir, "data")}}, script)
 	if out.Len() != 0 {
 		t.Errorf("output = %q, want nothing for a grant that is not the working directory", out.String())
+	}
+}
+
+// The --json envelope carries what the exit code cannot: the policy as the manifest
+// spells it, why the proposal cannot be vouched for, the accesses profiling declined,
+// the grants it wants reviewed, and which half of a widened manifest came from the file.
+func TestProfileResultJSON(t *testing.T) {
+	written := &policy.Policy{
+		Entrypoint: "./s.py", Interpreter: "python3", Read: []string{"./data"},
+		Exec: policy.ExecNone, Env: []string{"HOME"},
+		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}},
+	}
+	status := roundStatus{
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+		flagged:  []accessNoteJSON{{Kind: "read", Path: "/work", Reason: "whole-workdir"}},
+	}
+	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, approvalVoided: true}
+	doc := manifest.Provenance{BlockedHosts: []string{"metadata.internal:80"}}
+
+	env := profileResultJSON("s.py.manifest.yaml", written, doc, status, merge, "the profiled run did not finish")
+
+	if env.Complete || env.IncompleteReason == "" {
+		t.Errorf("complete=%v reason=%q, want an incomplete result that says why", env.Complete, env.IncompleteReason)
+	}
+	if env.Policy.Exec != "none" || !slices.Equal(env.Policy.Read, []string{"./data"}) {
+		t.Errorf("policy = %+v, want the manifest's own spelling", env.Policy)
+	}
+	if len(env.Policy.Network) != 1 || env.Policy.Network[0].Host != "example.com" {
+		t.Errorf("network = %+v, want the proposed rule", env.Policy.Network)
+	}
+	if !slices.Equal(env.BlockedHosts, doc.BlockedHosts) {
+		t.Errorf("blocked_hosts = %v, want the provenance record %v", env.BlockedHosts, doc.BlockedHosts)
+	}
+	if !slices.Equal(env.Withheld, status.withheld) || !slices.Equal(env.Flagged, status.flagged) {
+		t.Errorf("notes = %+v/%+v, want the round's own", env.Withheld, env.Flagged)
+	}
+	if env.Merged == nil || !slices.Equal(env.Merged.KeptRead, []string{"./old"}) || !env.Merged.ApprovalVoided {
+		t.Errorf("merged = %+v, want the grants kept from the file and the voided approval", env.Merged)
+	}
+
+	// No manifest to widen: the consumer is told nothing came from a file, rather than
+	// reading an empty merge block as "merged, and it kept nothing".
+	if got := profileResultJSON("m.yaml", written, doc, roundStatus{}, mergeOutcome{}, ""); got.Merged != nil || !got.Complete {
+		t.Errorf("first-run envelope = %+v, want complete and unmerged", got)
+	}
+}
+
+// A profiling refusal answers --json with the envelope every refusal uses, carrying the
+// probe that judged the host - so a harness reading stdout alone sees which layer fell
+// short instead of an empty stream it cannot tell from a crash.
+func TestProfileRefusalJSONCarriesTheReport(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Unavailable, "bubblewrap (bwrap) is not installed")
+	refusal := &enforce.Refusal{Report: report, Reason: "a core guarantee cannot be fully enforced on this host", Short: gatedShortfall(report)}
+
+	var stdout bytes.Buffer
+	err := refuseJSON(&stdout, true, refusal)
+
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != bentoFailed {
+		t.Fatalf("refusal = %v, want exitError{%d}", err, bentoFailed)
+	}
+	var env refusalJSON
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("refusal envelope is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !env.Refused || env.Reason != refusal.Reason {
+		t.Errorf("envelope = %+v, want refused=true with the refusal's own reason", env)
+	}
+	if len(env.Report.Layers) == 0 {
+		t.Error("the envelope must carry the report, or a consumer cannot see which layer fell short")
 	}
 }

@@ -115,11 +115,23 @@ func newRunCmd() *cobra.Command {
 // empty stdout. Outside --json the error is returned untouched and main renders it;
 // inside it, the message is the envelope's reason and the exit code is bentoFailed,
 // mirroring the enforcement path exactly - including that nothing is written to stderr.
+//
+// A host shortfall arrives here as an *enforce.Refusal, which carries the probe that
+// judged it: report that rather than noReport, so a consumer reading the envelope alone
+// sees which layer fell short. Its Reason, not Error(), for the same reason
+// writeRunResult uses it - Error() prepends a verb the caller may not have refused with.
+// Shared with `bento profile`, which raises every one of its refusals before any sandbox
+// exists.
 func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
 	if err == nil || !asJSON {
 		return err
 	}
-	_ = writeJSON(stdout, refusalJSON{true, err.Error(), noReport})
+	reason, report := err.Error(), noReport
+	var refusal *enforce.Refusal
+	if errors.As(err, &refusal) {
+		reason, report = refusal.Reason, toReportJSON(refusal.Report)
+	}
+	_ = writeJSON(stdout, refusalJSON{true, reason, report})
 	return &exitError{code: bentoFailed}
 }
 

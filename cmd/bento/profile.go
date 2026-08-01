@@ -30,6 +30,7 @@ func newProfileCmd() *cobra.Command {
 		out           string
 		allowNetwork  bool
 		acceptAliases []string
+		asJSON        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "profile <script> [-- args...]",
@@ -68,27 +69,44 @@ func newProfileCmd() *cobra.Command {
 			"profiled once more with that directory created, the way an enforced run creates a\n" +
 			"granted write directory - so a first proposal that is already correct is not\n" +
 			"reported as one bento cannot vouch for.\n\n" +
+			"--json puts the result on stdout as one envelope - the policy as written, whether\n" +
+			"it can be vouched for, every access profiling declined to propose and why, and\n" +
+			"every grant it proposes but wants reviewed - so a harness that generates manifests\n" +
+			"reads those decisions rather than scraping them. Everything else stays on stderr.\n\n" +
 			"The manifest is always written, but profile exits 4 when it cannot vouch for\n" +
 			"it: the profiled run did not finish, the observer dropped accesses it could\n" +
 			"not name, or the granting session ended before it converged. That is what\n" +
 			"keeps `profile && approve` from stamping a manifest built on a crashed run.",
 		Args: minArgs(1, "a script path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Every refusal goes through this, so --json never answers with an empty
+			// stdout and a machine gate can tell a refusal from a crash. It is run's
+			// refuseJSON, which carries the host report when the error is one.
+			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
+
 			script, err := filepath.Abs(args[0])
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			// The sandbox stats the entrypoint too, but not until after the banner below
 			// has announced a profiling session - so a typo would read as a session that
 			// started and then fell over. Checked here, it reads as what it is.
 			if _, err := os.Stat(script); err != nil {
-				return fmt.Errorf("entrypoint %q: %w", args[0], err)
+				return refuse(fmt.Errorf("entrypoint %q: %w", args[0], err))
 			}
 			// Before the banner too, and for a stronger reason than the typo above: a host
 			// that cannot sandbox announced a profiling session, passed bwrap's own stderr
 			// through, and then hedged about a condition bento can state exactly.
-			if err := preflightHost(cmd.Context(), os.Stderr); err != nil {
-				return err
+			if err := preflightHost(cmd.Context()); err != nil {
+				var refusal *enforce.Refusal
+				if !asJSON && errors.As(err, &refusal) {
+					// Rendered here rather than by main's generic printer for the reason run
+					// renders its own: the layer reasons are paragraphs, and that printer
+					// would put each on one unreadable line.
+					writeRefusal(os.Stderr, "refusing to profile", refusal)
+					return &exitError{code: bentoFailed}
+				}
+				return refuse(err)
 			}
 			if interpreter == "" {
 				interpreter = guessInterpreter(script)
@@ -97,7 +115,7 @@ func newProfileCmd() *cobra.Command {
 				out = args[0] + ".manifest.yaml"
 			}
 			if err := checkMergeable(out, script); err != nil {
-				return err
+				return refuse(err)
 			}
 
 			// Run with the real HOME (and the config-anchor vars derived from it) so a
@@ -136,12 +154,12 @@ func newProfileCmd() *cobra.Command {
 				}
 				if allowNetwork {
 					if err := confirmNetworkExfil(tty, os.Stderr); err != nil {
-						return err
+						return refuse(err)
 					}
 				}
 				var seedErr error
 				if seed, seedErr = seedGrants(out, script, os.Stderr); seedErr != nil {
-					return seedErr
+					return refuse(seedErr)
 				}
 				fmt.Fprintf(os.Stderr, "[bento] profiling %s under default-deny; grant what it needs to converge (real content is mounted only for paths you accept)...\n", args[0])
 				round := func(d *policy.Policy) (*policy.Policy, error) {
@@ -151,6 +169,8 @@ func newProfileCmd() *cobra.Command {
 					status.unfinished = s.unfinished
 					status.dropped = status.dropped || s.dropped
 					status.blocked = union(status.blocked, s.blocked)
+					status.withheld = mergeNotes(status.withheld, s.withheld)
+					status.flagged = mergeNotes(status.flagged, s.flagged)
 					return p, err
 				}
 				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
@@ -178,12 +198,19 @@ func newProfileCmd() *cobra.Command {
 						fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, so profiling again with it created.\n", strings.Join(dirs, ", "))
 						retry := *base
 						retry.Write = append(slices.Clone(base.Write), dirs...)
+						first := status
 						proposed, status, err = profileRound(cfg, &retry)
+						// The retry supersedes the first pass's verdict, but not what it saw:
+						// an access declined in round 1 is declined for good.
+						status.withheld = mergeNotes(first.withheld, status.withheld)
+						status.flagged = mergeNotes(first.flagged, status.flagged)
+						status.dropped = status.dropped || first.dropped
+						status.blocked = union(first.blocked, status.blocked)
 					}
 				}
 			}
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 
 			// Merge into an existing manifest rather than overwriting it, so a second
@@ -191,7 +218,7 @@ func newProfileCmd() *cobra.Command {
 			accepted := proposed
 			merge, err := mergeExisting(out, script, proposed)
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			proposed, trust := merge.policy, merge.trust
 			// A manifest that does not exist yet still has a location to judge, and the first
@@ -199,7 +226,7 @@ func newProfileCmd() *cobra.Command {
 			// and only an interactive session calls it at all.
 			if trust.realPath == "" {
 				if trust, err = inspectNewManifest(out); err != nil {
-					return err
+					return refuse(err)
 				}
 			}
 			warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
@@ -216,7 +243,7 @@ func newProfileCmd() *cobra.Command {
 			// From the final policy rather than per round: this names a grant the script's own
 			// directory produces, so it survives every round and a per-round callout would
 			// repeat itself until the reviewer learned to skip it.
-			printWorkdirGrants(os.Stderr, proposed, script)
+			status.flagged = mergeNotes(status.flagged, printWorkdirGrants(os.Stderr, proposed, script))
 
 			doc := manifest.Provenance{
 				GeneratedBy:  "bento profile",
@@ -226,22 +253,32 @@ func newProfileCmd() *cobra.Command {
 			// Last, after every merge, drop and union above: those all compare grant
 			// strings, and comparing two spellings of one directory would leave both in
 			// the file or fail to collapse a covered one.
-			data, err := manifest.Marshal(relocatable(proposed, out), doc)
+			written := relocatable(proposed, out)
+			data, err := manifest.Marshal(written, doc)
 			if err != nil {
-				return err
+				return refuse(err)
 			}
 			if err := writeManifestAtomically(trust, data, os.Stderr); err != nil {
-				return err
+				return refuse(err)
 			}
 
 			fmt.Fprintf(os.Stderr, "\n[bento] wrote %s - review it, then run `bento validate %s` and `bento approve %s`.\n", out, out, out)
 			writeMergeNotice(os.Stderr, out, merge)
 
+			reason := incompleteReason(status, stop)
+			if asJSON {
+				if err := writeJSON(os.Stdout, profileResultJSON(out, written, doc, status, merge, reason)); err != nil {
+					// The manifest is already on disk, so a stdout that is full or gone must
+					// not be reported as a profiling failure. Warn and keep the outcome the
+					// exit code below already carries.
+					fmt.Fprintf(os.Stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
+				}
+			}
 			// The manifest is written either way - it is where the next pass starts from -
 			// but a proposal built on a partial observation, or on a session the user left
 			// before it converged, is not what the target needs. Exiting 0 would let
 			// `profile && approve` stamp it as though it were.
-			if reason := incompleteReason(status, stop); reason != "" {
+			if reason != "" {
 				fmt.Fprintf(os.Stderr, "[bento] the proposal is incomplete (%s), so this exits %d rather than 0 - review and widen it before approving.\n", reason, profileIncomplete)
 				return &exitError{code: profileIncomplete}
 			}
@@ -251,8 +288,39 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the extension if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the result as a JSON envelope on stdout: what was written, whether it can be vouched for, and every proposal decision. Everything else - the target's own output, the prose, any grant prompts - stays on stderr, so the envelope is the only thing on stdout")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// profileResultJSON assembles the --json envelope from what the session decided.
+//
+// written is the policy as the manifest carries it - the relocatable spelling, so a
+// consumer comparing the envelope against the file agrees with it - while the notes and
+// the blocked hosts come from the rounds, which observed absolute paths. That mismatch
+// is deliberate: a note names the host path profiling saw and declined, which is not a
+// grant in the file and has no relocatable spelling to be given.
+func profileResultJSON(path string, written *policy.Policy, doc manifest.Provenance, status roundStatus, merge mergeOutcome, incomplete string) profileJSON {
+	env := profileJSON{
+		Manifest:         path,
+		Complete:         incomplete == "",
+		IncompleteReason: incomplete,
+		Policy:           toProfilePolicyJSON(written),
+		Withheld:         status.withheld,
+		Flagged:          status.flagged,
+		BlockedHosts:     doc.BlockedHosts,
+	}
+	if merge.widened {
+		env.Merged = &mergeJSON{
+			KeptRead:       merge.keptRead,
+			KeptWrite:      merge.keptWrite,
+			KeptEnv:        merge.keptEnv,
+			KeptNetwork:    merge.keptNetwork,
+			ExecWidened:    merge.execWidened,
+			ApprovalVoided: merge.approvalVoided,
+		}
+	}
+	return env
 }
 
 // preflightHost refuses to profile on a host that cannot fully enforce a guarantee
@@ -270,7 +338,7 @@ func newProfileCmd() *cobra.Command {
 // target against the real $HOME so it names the credential paths it reaches - so the
 // hatch that makes a run possible would turn profiling into the exposure it exists to
 // avoid. The refusal points at doctor instead.
-func preflightHost(ctx context.Context, w io.Writer) error {
+func preflightHost(ctx context.Context) error {
 	e, err := backend.New()
 	if err != nil {
 		return err
@@ -280,15 +348,14 @@ func preflightHost(ctx context.Context, w io.Writer) error {
 	if len(short) == 0 {
 		return nil
 	}
-	writeRefusal(w, "refusing to profile", &enforce.Refusal{
+	return &enforce.Refusal{
 		Report: report,
 		Reason: "a core guarantee cannot be fully enforced on this host, and profiling has no reduced " +
 			"tier to fall back on - it always needs the full sandbox, because it runs the target against " +
 			"your real environment to record what it reaches. Fix the shortfall below; `bento doctor` " +
 			"reports every layer",
 		Short: short,
-	})
-	return &exitError{code: bentoFailed}
+	}
 }
 
 // relocatable rewrites a proposal's paths into the vocabulary the manifest format
@@ -451,17 +518,34 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
 	// the same names profiling recorded and granted.
 	proposed.Env = sortedKeys(cfg.env)
-	printFlooredWrites(obs.Writes)
-	printScratchWrites(obs.Writes)
-	printSocketAccesses(obs)
-	printUnrepresentable(obs)
-	printProposalWarnings(proposed)
-	printTmpGrants(os.Stderr, proposed)
+	// Each of these says on stderr what it decided and returns the same decision as a
+	// note, so --json carries what the prose does rather than a consumer scraping it.
+	withheld := slices.Concat(
+		printFlooredWrites(os.Stderr, obs.Writes),
+		printScratchWrites(os.Stderr, obs.Writes),
+		printSocketAccesses(os.Stderr, obs),
+		printUnrepresentable(os.Stderr, obs),
+	)
+	clamped, flagged := printProposalWarnings(os.Stderr, proposed)
 	return proposed, roundStatus{
 		unfinished: partialRunWarning(obs) != "",
 		dropped:    obs.Dropped > 0,
 		blocked:    blockedHostKeys(obs.Blocked),
+		withheld:   append(withheld, clamped...),
+		flagged:    append(flagged, printTmpGrants(os.Stderr, proposed)...),
 	}, nil
+}
+
+// kindedPath pairs an observed path with the access that produced it, so the printers
+// that report reads and writes in one pass can still say which a note came from.
+type kindedPath struct{ kind, path string }
+
+func kinded(kind string, paths []string) []kindedPath {
+	out := make([]kindedPath, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, kindedPath{kind, p})
+	}
+	return out
 }
 
 // missingGrantedWriteDirs returns the proposal's write grants that are absent from the
@@ -610,6 +694,23 @@ func blockedHostKeys(blocked []profile.HostPort) []string {
 type roundStatus struct {
 	unfinished, dropped bool
 	blocked             []string
+	// withheld and flagged are the round's proposal decisions, for --json. They
+	// accumulate like blocked and for the same reason: a path round 1 declined to
+	// propose is a fact about the drafting, and a later round that never reached for it
+	// again does not undo it. Duplicates across rounds are collapsed (mergeNotes),
+	// because the same path is decided the same way every round it is seen.
+	withheld, flagged []accessNoteJSON
+}
+
+// mergeNotes appends the notes of b that a does not already carry, so a converging
+// session reports each decision once rather than once per round.
+func mergeNotes(a, b []accessNoteJSON) []accessNoteJSON {
+	for _, n := range b {
+		if !slices.Contains(a, n) {
+			a = append(a, n)
+		}
+	}
+	return a
 }
 
 // The tmpfs every run mounts, and so the prefix that makes a grant target-steerable.
@@ -674,16 +775,25 @@ func tmpGrants(p *policy.Policy) []string {
 
 // printTmpGrants tells the reviewer which of the proposal's grants the target could have
 // steered. See tmpGrants for why they are disclosed rather than withheld.
-func printTmpGrants(w io.Writer, p *policy.Policy) {
+func printTmpGrants(w io.Writer, p *policy.Policy) []accessNoteJSON {
 	grants := tmpGrants(p)
 	if len(grants) == 0 {
-		return
+		return nil
+	}
+	var notes []accessNoteJSON
+	for _, g := range grants {
+		kind := "read"
+		if slices.Contains(p.Write, g) {
+			kind = "write"
+		}
+		notes = append(notes, accessNoteJSON{Kind: kind, Path: g, Reason: "target-steerable-tmp"})
 	}
 	fmt.Fprintf(w, "[bento] %d proposed grant(s) name a path under /tmp: %s.\n", len(grants), strings.Join(grants, ", "))
 	fmt.Fprintf(w, "[bento] Those reach the proposal because the name exists on this host, which is the only way\n")
 	fmt.Fprintf(w, "[bento] a real workspace there can be told from the sandbox's own scratch - so a script that\n")
 	fmt.Fprintf(w, "[bento] opens guessed names under /tmp can put them here. Treat them as the script's request\n")
 	fmt.Fprintf(w, "[bento] rather than as something profiling discovered, and keep only the ones it needs.\n")
+	return notes
 }
 
 // printWorkdirGrants names a proposed grant that is the whole directory the script runs
@@ -700,8 +810,9 @@ func printTmpGrants(w io.Writer, p *policy.Policy) {
 // Said, not withheld, for the same reason the /tmp grants are: it is often the right
 // resolution - a script and its data files are one tree - and dropping it would draft a
 // manifest that cannot run. The reviewer decides.
-func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) {
+func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNoteJSON {
 	dir := filepath.Dir(script)
+	var notes []accessNoteJSON
 	for _, g := range []struct {
 		kind   string
 		grants []string
@@ -709,11 +820,13 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) {
 		if !slices.Contains(g.grants, dir) {
 			continue
 		}
+		notes = append(notes, accessNoteJSON{Kind: g.kind, Path: dir, Reason: "whole-workdir"})
 		fmt.Fprintf(w, "[bento] proposing %s %q - that is the entire directory the script runs from, not only\n", g.kind, dir)
 		fmt.Fprintf(w, "[bento] the paths this run opened, so the grant covers whatever else is in there when it\n")
 		fmt.Fprintf(w, "[bento] runs. Narrow it to the paths the script needs if the directory holds more than it\n")
 		fmt.Fprintf(w, "[bento] should see.\n")
 	}
+	return notes
 }
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or
@@ -722,7 +835,8 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) {
 // no trace: the script fails EACCES at enforce time and the reviewer has nothing to
 // read. It reports the collapsed directory, which is the granularity the grant would
 // have had.
-func printFlooredWrites(writes []string) {
+func printFlooredWrites(out io.Writer, writes []string) []accessNoteJSON {
+	var notes []accessNoteJSON
 	var seen map[string]bool
 	for _, w := range writes {
 		if !filepath.IsAbs(w) {
@@ -736,8 +850,10 @@ func printFlooredWrites(writes []string) {
 			seen = map[string]bool{}
 		}
 		seen[dir] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
+		notes = append(notes, accessNoteJSON{Kind: "write", Path: dir, Reason: "system-tree"})
+		fmt.Fprintf(out, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
 	}
+	return notes
 }
 
 // printScratchWrites names the observed writes to a /tmp path that is not on the host,
@@ -752,7 +868,8 @@ func printFlooredWrites(writes []string) {
 // directory during the run and is indistinguishable from tmpfs scratch by the time this
 // runs. Both want the same thing said - there is no host path left to grant - and only
 // one of them wants to hear about the tmpfs.
-func printScratchWrites(writes []string) {
+func printScratchWrites(out io.Writer, writes []string) []accessNoteJSON {
+	var notes []accessNoteJSON
 	seen := map[string]bool{}
 	for _, w := range writes {
 		if !filepath.IsAbs(w) {
@@ -763,8 +880,10 @@ func printScratchWrites(writes []string) {
 			continue
 		}
 		seen[dir] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - no such directory exists on the host, so inside the box that name is in the private /tmp every run mounts and there is nothing to grant. Nothing written there survives the run; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
+		notes = append(notes, accessNoteJSON{Kind: "write", Path: dir, Reason: "sandbox-scratch"})
+		fmt.Fprintf(out, "[bento] not proposing write access to %q - no such directory exists on the host, so inside the box that name is in the private /tmp every run mounts and there is nothing to grant. Nothing written there survives the run; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
 	}
+	return notes
 }
 
 // printSocketAccesses names the observed accesses to a unix socket, which Synthesize
@@ -775,15 +894,19 @@ func printScratchWrites(writes []string) {
 // The observed name is reported rather than the resolved one, because that is the name
 // the reviewer would go looking for. Writes are named at the file, not at the directory
 // they would have collapsed to, since the collapse is what Synthesize declined to do.
-func printSocketAccesses(obs profile.Observation) {
+func printSocketAccesses(out io.Writer, obs profile.Observation) []accessNoteJSON {
+	var notes []accessNoteJSON
 	seen := map[string]bool{}
-	for _, p := range append(append([]string{}, obs.Reads...), obs.Writes...) {
+	for _, e := range append(kinded("read", obs.Reads), kinded("write", obs.Writes)...) {
+		p := e.path
 		if !filepath.IsAbs(p) || seen[p] || !profile.Socket(p) {
 			continue
 		}
 		seen[p] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a unix socket, which is a two-way channel to whatever process is listening rather than storage of the script's own, so a grant of it confers whatever that process will do (an X11 socket is control of your session; an ssh-agent socket is use of your keys). The access was recorded; if the script genuinely needs that socket, add the grant by hand.\n", p)
+		notes = append(notes, accessNoteJSON{Kind: e.kind, Path: p, Reason: "unix-socket"})
+		fmt.Fprintf(out, "[bento] not proposing access to %q - it is a unix socket, which is a two-way channel to whatever process is listening rather than storage of the script's own, so a grant of it confers whatever that process will do (an X11 socket is control of your session; an ssh-agent socket is use of your keys). The access was recorded; if the script genuinely needs that socket, add the grant by hand.\n", p)
 	}
+	return notes
 }
 
 // printUnrepresentable names the observations Synthesize withheld because a manifest
@@ -793,22 +916,25 @@ func printSocketAccesses(obs profile.Observation) {
 // hostile or merely sloppy one can produce them, and proposing one would fail the
 // marshal that ends the run. Like the floored writes above, they are dropped inside
 // Synthesize, so without this the reviewer has no trace of the access at all.
-func printUnrepresentable(obs profile.Observation) {
+func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJSON {
+	var notes []accessNoteJSON
 	// A write collapses to its parent before Synthesize screens it, so the write side is
 	// judged and reported at that same granularity: a bad filename in a clean directory
 	// still yields the directory grant, and warning about the file would name a grant
 	// that was in fact proposed.
-	names := append([]string{}, obs.Reads...)
+	names := kinded("read", obs.Reads)
 	for _, w := range obs.Writes {
-		names = append(names, filepath.Dir(w))
+		names = append(names, kindedPath{"write", filepath.Dir(w)})
 	}
 	seen := map[string]bool{}
-	for _, p := range names {
+	for _, e := range names {
+		p := e.path
 		if !profile.Unrepresentable(p) || seen[p] {
 			continue
 		}
 		seen[p] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
+		notes = append(notes, accessNoteJSON{Kind: e.kind, Path: p, Reason: "unrepresentable"})
+		fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
 	}
 	seenHosts := map[string]bool{}
 	for _, h := range obs.Hosts {
@@ -819,35 +945,47 @@ func printUnrepresentable(obs profile.Observation) {
 			continue
 		}
 		seenHosts[key] = true
+		notes = append(notes, accessNoteJSON{Kind: "network", Host: h.Host, Port: h.Port, Reason: "unrepresentable"})
 		// Quoted, not %s: the host is target-chosen, and this is the one place such a
 		// value is echoed to the operator's terminal. readConnect holds a CONNECT target
 		// to the same screen, so nothing deceiving should reach here - but a rendering
 		// that depends on a screen upstream is one refactor away from being wrong, and
 		// quoting also delimits a host that is empty or carries spaces.
-		fmt.Fprintf(os.Stderr, "[bento] not proposing network access to %q port %q - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
+		fmt.Fprintf(out, "[bento] not proposing network access to %q port %q - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
 	}
+	return notes
 }
 
 // printProposalWarnings clamps p in place (dropping shielded credential paths and
 // over-broad grants from the auto-proposal) and prints why each was withheld, so a
 // path the tool wants but bento will not auto-grant is never silently missing.
-func printProposalWarnings(p *policy.Policy) {
+func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged []accessNoteJSON) {
 	shielded, writeShielded, broadReads, broadWrites := clampProposal(p)
 	for _, d := range shielded {
-		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
+		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d, Reason: "shielded-credential"})
+		fmt.Fprintf(out, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
 	}
 	for _, d := range writeShielded {
-		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is always write-shielded, because a file planted there is run by the host later. Unlike a credential path there is no hand-added opt-in: a write: grant for it is refused, not warned. The path stays readable; if the script must install there, run it outside bento.\n", d)
+		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "write-shielded"})
+		fmt.Fprintf(out, "[bento] not proposing write access to %q - it is always write-shielded, because a file planted there is run by the host later. Unlike a credential path there is no hand-added opt-in: a write: grant for it is refused, not warned. The path stays readable; if the script must install there, run it outside bento.\n", d)
 	}
 	for _, d := range broadReads {
-		fmt.Fprintf(os.Stderr, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
+		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d, Reason: "too-broad"})
+		fmt.Fprintf(out, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
 	}
 	for _, d := range broadWrites {
-		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
+		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "too-broad"})
+		fmt.Fprintf(out, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
 	}
 	for _, d := range foreignHomeShields(append(append([]string{}, p.Read...), p.Write...)) {
-		fmt.Fprintf(os.Stderr, "[bento] proposing %q - it reaches shielded credential or persistence paths in a home directory profiling did not shield; the enforced run only shields the home it executes as, so these would be exposed. Confirm the script needs it before approving.\n", d)
+		kind := "read"
+		if slices.Contains(p.Write, d) {
+			kind = "write"
+		}
+		flagged = append(flagged, accessNoteJSON{Kind: kind, Path: d, Reason: "foreign-home-shield"})
+		fmt.Fprintf(out, "[bento] proposing %q - it reaches shielded credential or persistence paths in a home directory profiling did not shield; the enforced run only shields the home it executes as, so these would be exposed. Confirm the script needs it before approving.\n", d)
 	}
+	return withheld, flagged
 }
 
 // maxConvergeRounds bounds the convergence loop so a tool that touches a new path each

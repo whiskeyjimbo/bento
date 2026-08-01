@@ -86,6 +86,98 @@ func toReportJSON(r enforce.Report) reportJSON {
 	return out
 }
 
+// accessNoteJSON is one decision a profiling run made about an access it observed,
+// for `bento profile --json`. It carries the two lists that decision can land in - the
+// accesses profiling declined to propose, and the grants it proposed but wants a
+// reviewer to weigh - because both answer the same question a harness has to ask: what
+// did profiling do about this path, and why.
+//
+// Reason is a stable code rather than the prose the same decision writes to stderr. The
+// prose exists to be read once and reworded when it reads badly; a machine gate that
+// matched on it would break on that rewording. Path and Host/Port are alternatives: a
+// filesystem note carries the first, an egress one the second.
+type accessNoteJSON struct {
+	// Kind is "read", "write", or "network".
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
+	Host string `json:"host,omitempty"`
+	Port string `json:"port,omitempty"`
+	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
+	// shielded-credential, write-shielded, too-broad (withheld); foreign-home-shield,
+	// target-steerable-tmp, whole-workdir (proposed and flagged).
+	Reason string `json:"reason"`
+}
+
+// profileJSON is `bento profile`'s machine-readable result: what it wrote, whether it
+// can vouch for it, and every decision that is otherwise only prose on stderr.
+//
+// It is what the exit code cannot carry. A harness that generates manifests reads which
+// paths profiling declined and why, which grants want review, and which hosts the egress
+// guard refused - none of which a code can say, and all of which it would otherwise have
+// to scrape.
+type profileJSON struct {
+	// Manifest is the path written, as it was passed or defaulted. It is written whether
+	// or not profiling can vouch for it - see Complete.
+	Manifest string `json:"manifest"`
+	// Complete is false when the proposal is one profiling cannot vouch for, which is the
+	// same condition as exit 4. IncompleteReason names it.
+	Complete         bool   `json:"complete"`
+	IncompleteReason string `json:"incomplete_reason,omitempty"`
+	// Policy is the manifest as written - the relocatable spelling, not the absolute
+	// paths profiling observed - so a consumer comparing it against the file agrees.
+	Policy profilePolicyJSON `json:"policy"`
+	// Withheld are the accesses the run observed and did not propose; Flagged are grants
+	// it did propose and asks a reviewer to weigh.
+	Withheld []accessNoteJSON `json:"withheld,omitempty"`
+	Flagged  []accessNoteJSON `json:"flagged,omitempty"`
+	// BlockedHosts are the recorded egress destinations the guard refused that the
+	// written manifest nonetheless grants - the provenance block's own record.
+	BlockedHosts []string `json:"blocked_hosts,omitempty"`
+	// Merged is present only when there was a manifest at --out to widen, and says which
+	// half of the result came from the file rather than from this run.
+	Merged *mergeJSON `json:"merged,omitempty"`
+}
+
+// profilePolicyJSON is the proposed policy as the manifest carries it.
+type profilePolicyJSON struct {
+	Entrypoint  string         `json:"entrypoint"`
+	Interpreter string         `json:"interpreter,omitempty"`
+	Read        []string       `json:"read,omitempty"`
+	Write       []string       `json:"write,omitempty"`
+	Exec        string         `json:"exec"`
+	Env         []string       `json:"env,omitempty"`
+	Network     []hostPortJSON `json:"network,omitempty"`
+}
+
+// mergeJSON says what folding this run's proposal into an existing manifest changed. A
+// consumer that treats the written file as "what this run observed" is wrong whenever
+// this is present, which is why the kept grants are named rather than counted.
+type mergeJSON struct {
+	KeptRead    []string `json:"kept_read,omitempty"`
+	KeptWrite   []string `json:"kept_write,omitempty"`
+	KeptEnv     []string `json:"kept_env,omitempty"`
+	KeptNetwork []string `json:"kept_network,omitempty"`
+	// ExecWidened is whether the union escalated exec to `all`; ApprovalVoided whether the
+	// file carried a current approval that this write dropped.
+	ExecWidened    bool `json:"exec_widened"`
+	ApprovalVoided bool `json:"approval_voided"`
+}
+
+func toProfilePolicyJSON(p *policy.Policy) profilePolicyJSON {
+	out := profilePolicyJSON{
+		Entrypoint:  p.Entrypoint,
+		Interpreter: p.Interpreter,
+		Read:        p.Read,
+		Write:       p.Write,
+		Exec:        string(p.Exec),
+		Env:         p.Env,
+	}
+	for _, r := range p.Network {
+		out.Network = append(out.Network, hostPortJSON{Host: r.Host, Port: r.Port})
+	}
+	return out
+}
+
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is
 // "hidden" or "read-only"; see enforce.ShieldApplied.
 type shieldJSON struct {
