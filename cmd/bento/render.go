@@ -726,7 +726,7 @@ func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
 //
 // It reports whether it said anything, so no second explanation of the same failure
 // stacks on top of it.
-func writeDeniedWarning(w io.Writer, res enforce.Result) bool {
+func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if len(res.Denied) == 0 {
 		return false
 	}
@@ -735,9 +735,11 @@ func writeDeniedWarning(w io.Writer, res enforce.Result) bool {
 		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
 	}
 	fmt.Fprintln(w, "[bento] the script saw only a 403 from the proxy. To allow one, add it under network: in")
-	fmt.Fprintln(w, "[bento] the manifest and re-approve. To rediscover them: bento profile --allow-network,")
-	fmt.Fprintln(w, "[bento] which forwards egress as it records - the default records without forwarding, so")
-	fmt.Fprintln(w, "[bento] a plain re-profile reproduces this same failure.")
+	fmt.Fprintln(w, "[bento] the manifest and re-approve. To rediscover them, profile with egress forwarded -")
+	// Quoted for the reason writeProfileHint quotes it: the entrypoint is manifest text.
+	fmt.Fprintf(w, "[bento]   bento profile %q --allow-network\n", p.Entrypoint)
+	fmt.Fprintln(w, "[bento] the default records destinations without forwarding them, so a plain re-profile")
+	fmt.Fprintln(w, "[bento] reproduces this same failure.")
 	return true
 }
 

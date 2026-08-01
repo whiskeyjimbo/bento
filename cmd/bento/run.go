@@ -131,15 +131,30 @@ func newRunCmd() *cobra.Command {
 // write that arrives mid-write on the other goroutine follows it instead of splicing
 // into it. It holds the lock across the write rather than buffering: the point of the
 // live copy is that it appears while the script runs.
+//
+// It never reports an error, and abandons the destination after the first one. It is
+// half of an io.MultiWriter whose other half is the buffer the envelope is built from,
+// and MultiWriter stops at the first writer that fails - so a stderr that goes away
+// mid-run (a supervisor died, a redirect target closed) would otherwise stop exec from
+// draining the target's pipe: the envelope's own streams would be silently truncated
+// and the target would block once the pipe filled. The live copy is a courtesy; the
+// envelope is the contract, and it must not be able to fail with it.
 type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu   sync.Mutex
+	w    io.Writer
+	gone bool
 }
 
 func (s *syncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.w.Write(p)
+	if s.gone {
+		return len(p), nil
+	}
+	if _, err := s.w.Write(p); err != nil {
+		s.gone = true
+	}
+	return len(p), nil
 }
 
 // refuseJSON reports a refusal raised before enforce.Run was ever reached in the same
@@ -253,7 +268,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// Before the bypass hint: each is a connection that DID reach the proxy, so it
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
-		denied := writeDeniedWarning(stderr, res)
+		denied := writeDeniedWarning(stderr, p, res)
 		// Last, and only where nothing above already explained the failure. A signal
 		// death is not a script failure at all, a strict shortfall gets its own line
 		// below, and a guard block is a destination no amount of profiling will widen

@@ -328,12 +328,13 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
-	// A denial is what the human never saw a prompt for: the gate is asked only about
-	// hosts the manifest does not cover, and a gate that said no - or a rule with a typo
-	// in it - leaves the target with a 403 it reports as its own failure. Quoted for the
-	// reason the admitted list is.
+	// A denial is either half of this wrapper's own decision: a host no rule covered and
+	// the human declined at the prompt, or one the manifest simply does not carry. Both
+	// leave the target with a 403 it reports as its own failure, so the summary names the
+	// destination without claiming which - the human who answered a prompt already knows
+	// which one they said no to. Quoted for the reason the admitted list is.
 	if len(res.Denied) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("the egress allowlist refused these destinations: no network rule covers them"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused: no network rule covers them, and none was admitted"))
 		for _, hp := range res.Denied {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
 		}

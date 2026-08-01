@@ -56,7 +56,7 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		`"internal.example\x1b[2K" port 443`,         // GuardBlocked, quoted
 		"the egress guard refused",                   // GuardBlocked
 		`"api.githb.example\x1b[2K" port 443`,        // Denied, quoted
-		"the egress allowlist refused",               // Denied
+		"egress to these destinations was refused",   // Denied
 		`"/home/u/.ssh"`,                             // ShieldedGrants
 		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrantTargets, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted

@@ -57,7 +57,7 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		`"internal.example\x1b[2K"`,                            // GuardBlocked, quoted
 		"the egress guard refused",                             // GuardBlocked
 		`"api.githb.example\x1b[2K"`,                           // Denied, quoted
-		"the egress allowlist refused",                         // Denied
+		"was refused: no network rule covers it",               // Denied
 		"1 credential/host-service path(s) shielded",           // Shields
 		`"/home/u/.ssh"`,                                       // ShieldedGrants
 		`on this host that path is "/home/u/real\x1b[2K/.ssh"`, // ShieldedGrantTargets, quoted

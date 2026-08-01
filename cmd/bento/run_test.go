@@ -384,6 +384,31 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 }
 
+// The live copy shares an io.MultiWriter with the buffer the envelope is built from, and
+// MultiWriter stops at the first writer that fails - so a stderr that goes away mid-run
+// must not become an error exec sees. If it did, exec would stop draining the target's
+// pipe: the envelope's streams would be truncated and the target would block once the
+// pipe filled, which is the one thing --json promises does not happen.
+func TestSyncWriterSurvivesADeadDestination(t *testing.T) {
+	var captured bytes.Buffer
+	live := &syncWriter{w: errWriter{}}
+	w := io.MultiWriter(&captured, live)
+
+	for _, line := range []string{"first\n", "second\n"} {
+		n, err := w.Write([]byte(line))
+		if err != nil || n != len(line) {
+			t.Fatalf("Write = %d, %v; a dead live copy must not fail the capture", n, err)
+		}
+	}
+	if captured.String() != "first\nsecond\n" {
+		t.Errorf("captured = %q, want both lines: the envelope must not lose output to a dead stderr", captured.String())
+	}
+}
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
 // The two stream pumps run in their own goroutines, so the live copy they share has to
 // serialize them: without the lock a write landing mid-write splices the two scripts'
 // lines together, and the pipeline reading stderr sees neither line whole. Meaningful

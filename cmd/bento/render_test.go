@@ -267,18 +267,18 @@ func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
 // Hosts are quoted for the same reason the guard-blocked notice quotes them.
 func TestWriteDeniedWarning(t *testing.T) {
 	var b bytes.Buffer
-	if writeDeniedWarning(&b, enforce.Result{}) || b.Len() != 0 {
+	if writeDeniedWarning(&b, &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{}) || b.Len() != 0 {
 		t.Errorf("a run the allowlist refused nothing on must print nothing; got %q", b.String())
 	}
 
-	if !writeDeniedWarning(&b, enforce.Result{Denied: []enforce.HostPort{
+	if !writeDeniedWarning(&b, &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{Denied: []enforce.HostPort{
 		{Host: "api.github.com", Port: "443"},
 		{Host: "evil.example\n[bento] nothing was denied", Port: "80"},
 	}}) {
 		t.Error("a denial must be reported")
 	}
 	out := b.String()
-	for _, want := range []string{"api.github.com", "443", "--allow-network"} {
+	for _, want := range []string{"api.github.com", "443", `bento profile "./t.py" --allow-network`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the notice must contain %q; got %q", want, out)
 		}
