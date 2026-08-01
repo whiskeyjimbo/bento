@@ -79,6 +79,34 @@ func TestFilesystemLayerDegradedLeadsWithProbeReason(t *testing.T) {
 	}
 }
 
+// classifyUnshare's sysctl diagnoses end with an instruction to the reader, so every
+// branch that continues a probe reason has to join a full sentence to its own clause
+// without leaving ".;" in the middle of the detail a user reads.
+func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
+	const nsReason = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate " +
+		"anything: unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=0). " +
+		"Set it to 1 to allow them."
+	for _, tc := range []struct {
+		name          string
+		landlockAvail bool
+		fencesOK      bool
+	}{
+		{"degraded", true, true},
+		{"no seccomp fences", true, false},
+		{"no landlock", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, reason := filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK)
+			if strings.Contains(reason, ".;") {
+				t.Errorf("reason runs a period into a semicolon: %q", reason)
+			}
+			if !strings.Contains(reason, "Set it to 1 to allow them") {
+				t.Errorf("reason dropped the probe's instruction: %q", reason)
+			}
+		})
+	}
+}
+
 // A limit is enforced by the systemd scope both tiers wrap their command in, so the
 // report must hang on scope creation alone - and must never claim Enforced without a
 // creatable scope, which would report a memory/pids/cpu cap that does not hold.

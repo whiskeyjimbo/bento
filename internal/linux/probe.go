@@ -185,33 +185,41 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 		// PID namespace it lacks - and those need an amd64 kernel with seccomp BPF.
 		// Without them the tier cannot run at all, so report it unavailable rather than
 		// offer a --allow-degraded that would only refuse at launch.
-		return enforce.Unavailable, nsReason +
-			"; and the reduced-confinement fallback needs a seccomp egress and cross-process " +
-			"block (an amd64 kernel with seccomp BPF) to stand in for the missing namespaces, " +
-			"unavailable here"
+		return enforce.Unavailable, joinReason(nsReason,
+			"and the reduced-confinement fallback needs a seccomp egress and cross-process "+
+				"block (an amd64 kernel with seccomp BPF) to stand in for the missing namespaces, "+
+				"unavailable here")
 	case landlockAvail:
 		// Leads with nsReason rather than a hardcoded userns clause: this branch is
 		// reached whenever bwrap cannot give a namespace, which includes bwrap simply
 		// not being installed. Asserting "user namespaces are blocked" there sends a
 		// reader to enable a namespace the host already permits.
-		return enforce.Degraded, nsReason + "; " +
-			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially " +
-			"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of " +
-			"an allowed tree, and any granted /proc is the host's), no PID namespace (the target shares the " +
-			"host process table, so it can see and signal same-user processes - though seccomp blocks the " +
-			"cross-process memory read/write and ptrace injection that would let it take one over - and a " +
-			"background process it leaves is swept only best-effort by killing the run's process group, which " +
-			"a setsid() escapes and which also stops a target that reads an interactive terminal), and no " +
-			"network namespace " +
-			"(seccomp blocks IP egress but not netlink interface enumeration, nor " +
-			unixSocketClause(resolveUnixRestricted) + "). It confines filesystem " +
-			"read/write/exec, nothing more" +
-			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
-			resolveUnixResidual(resolveUnixRestricted)
+		return enforce.Degraded, joinReason(nsReason,
+			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially "+
+				"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of "+
+				"an allowed tree, and any granted /proc is the host's), no PID namespace (the target shares the "+
+				"host process table, so it can see and signal same-user processes - though seccomp blocks the "+
+				"cross-process memory read/write and ptrace injection that would let it take one over - and a "+
+				"background process it leaves is swept only best-effort by killing the run's process group, which "+
+				"a setsid() escapes and which also stops a target that reads an interactive terminal), and no "+
+				"network namespace "+
+				"(seccomp blocks IP egress but not netlink interface enumeration, nor "+
+				unixSocketClause(resolveUnixRestricted)+"). It confines filesystem "+
+				"read/write/exec, nothing more"+
+				truncateResidual(truncateRestricted)+ioctlDevResidual(ioctlDevRestricted)+
+				resolveUnixResidual(resolveUnixRestricted))
 	default:
-		return enforce.Unavailable, nsReason +
-			"; and this kernel has no Landlock, so no filesystem confinement is available at all"
+		return enforce.Unavailable, joinReason(nsReason,
+			"and this kernel has no Landlock, so no filesystem confinement is available at all")
 	}
+}
+
+// joinReason continues a probe reason with the clause the calling branch concludes
+// from it. The trailing period matters: classifyUnshare's sysctl diagnoses close with
+// an instruction to the reader ("Set it to 1 to allow them."), and joining that to a
+// clause raw produces "...to allow them.; confinement falls back to".
+func joinReason(reason, clause string) string {
+	return strings.TrimRight(reason, ".") + "; " + clause
 }
 
 // truncateResidual is the degraded-tier disclosure clause for a kernel whose Landlock

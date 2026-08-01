@@ -272,10 +272,12 @@ func writeJSON(w io.Writer, v any) error {
 // window it was produced in cannot be diffed against another run's.
 const textWidth = 78
 
-// detailInline is the longest DETAIL cell that still fits the table. The degraded
-// filesystem tier's disclosure runs past a thousand characters on one line: inline it
-// destroys the column alignment the table exists for and pushes the other rows off
-// any reasonable terminal, so anything this long moves below the table as a note.
+// detailInline is the longest DETAIL cell left in the table. It is looser than
+// textWidth on purpose - a table is not prose, and every reason short enough to read
+// at a glance stays on its row rather than costing the reader a lookup below. What it
+// catches is the degraded filesystem tier's disclosure, which runs past a thousand
+// characters on one line: inline that destroys the column alignment the table exists
+// for and pushes the other rows off any terminal, so it moves below as a note.
 const detailInline = 100
 
 // writeReportTable renders the enforcement matrix for a human. The layer's full

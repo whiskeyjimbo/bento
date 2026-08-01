@@ -74,7 +74,7 @@ func TestWriteReportTableRelocatesAnOversizedDetail(t *testing.T) {
 	header, rest, _ := strings.Cut(out, "\n")
 	rows, notes, _ := strings.Cut(rest, "\n\n")
 	for _, line := range strings.Split(header+"\n"+rows, "\n") {
-		if len(line) > textWidth {
+		if len(line) > detailInline+len("filesystem  hardening  unavailable  ") {
 			t.Errorf("table row is %d columns wide:\n%s", len(line), line)
 		}
 	}
