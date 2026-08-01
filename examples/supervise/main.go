@@ -603,7 +603,10 @@ func approve(ctx context.Context, p *prompter, s *store, key, script, interp str
 		}
 	}
 
-	for _, r := range trimAncestors(trimScratch(proposal.Read), script) {
+	for _, r := range trimAncestors(trimScratch(proposal.Read), script, func(p string) bool {
+		_, ok := s.decidePath(key, "read", p)
+		return ok
+	}) {
 		if consider("read", quotePath(r), r,
 			func() (decision, bool) { return s.decidePath(key, "read", r) },
 			func(d decision) { s.rememberPath(key, "read", r, d, false) }) {
@@ -879,15 +882,21 @@ func trimScratch(paths []string) []string {
 // anything the script named. The chain also grows with checkout depth, so the deeper the
 // script lives the more of the dialogue is spent on it.
 //
-// Strict ancestors only: the script's own directory is a real grant and stays. The case
-// this hides is a script that lists a directory that happens to be one of its own
-// parents, which the trial cannot tell from a walk; `perms global allow read` is where
-// that gets granted deliberately, which is the right weight for it.
-func trimAncestors(paths []string, script string) []string {
+// Strict ancestors only: the script's own directory is a real grant and stays.
+//
+// A path the store already has an answer for stays too, whichever layer answered. The
+// case this protects is the one the walk genuinely hides: a script that lists a
+// directory that happens to be one of its own parents, which the trial cannot tell
+// from the walk. `perms global allow read` is how that gets granted deliberately - and
+// since this runs ahead of the approval loop, which is the only thing that consults the
+// store, skipping such a path would drop the grant rather than apply it silently. A
+// remembered answer is also why a decision made before this trimming existed keeps
+// working instead of disappearing from the run while `perms list` still reports it.
+func trimAncestors(paths []string, script string, decided func(string) bool) []string {
 	dir := filepath.Dir(script)
 	var out []string
 	for _, p := range paths {
-		if p != dir && strings.HasPrefix(dir, p+string(filepath.Separator)) {
+		if p != dir && strings.HasPrefix(dir, p+string(filepath.Separator)) && !decided(p) {
 			continue
 		}
 		out = append(out, p)

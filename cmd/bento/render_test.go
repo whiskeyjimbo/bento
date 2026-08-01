@@ -192,8 +192,14 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
 		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none-strict", true},
 		{"write grants alone are worth decoding", &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}, enforce.Result{Report: execEnforced()}, "", true},
-		{"a block that never landed names no field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", false},
-		{"nothing restricted, nothing to decode", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", false},
+		// No write grant leaves the whole tree read-only, so EROFS is not merely possible
+		// there, it is certain for any write the script attempts.
+		{"no write grant is the most restricted, not the least", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", true},
+		{"a block that never landed names no exec field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", true},
+		// The hints that explain a failure have already spoken by here, and the legend's
+		// own subject is the run that reported nothing.
+		{"a failing run is somebody else's to explain", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: execEnforced()}, "", false},
+		{"a signal death is not a clean exit", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Signal: 9, Report: execEnforced()}, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

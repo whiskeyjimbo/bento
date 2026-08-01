@@ -487,16 +487,26 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 // manifest open; what they do not have is the mapping from an errno string to the field
 // that produced it.
 func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
-	// Nothing to decode where nothing was restricted. Read grants are always narrower
-	// than the host, so a denial is always possible - but exec: all with a write grant
-	// covering the working directory is the profile-then-run shape, where the legend
-	// would print on every iteration of a loop that is not hitting denials.
-	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
-	if !blocksExec && len(p.Write) == 0 {
+	// A clean exit only. Every hint above explains a failure the target reported, and on
+	// a failing run the profile hint already says the sandbox denies silently - a second
+	// telling there would stack onto it and close by explaining an exit 0 that did not
+	// happen. What none of them cover is the run that reported nothing.
+	if res.ExitCode != 0 || res.Signal != 0 {
 		return
 	}
+	// No write grant is the most restricted write posture, not the least: the root is
+	// remounted read-only, so every path outside the sandbox's own scratch answers
+	// EROFS. Gating the legend on having grants would silence it exactly where the
+	// error is certain, so only the wording turns on them.
+	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
 	fmt.Fprintln(w, "[bento] a denial inside the box is reported by the script, not by bento:")
-	fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
+	if len(p.Write) == 0 {
+		// Naming a field the manifest does not carry sends the reader grepping for a
+		// line that is not there, the same trap writeExecHint's "runs under" avoids.
+		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
+	} else {
+		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
+	}
 	if blocksExec {
 		// The zero value is the empty string, not "none", so a manifest that never
 		// mentions exec would name a field spelled nothing at all.

@@ -76,8 +76,34 @@ func TestApproveSkipsTheChainDownToTheScript(t *testing.T) {
 
 // A sibling of the script's directory shares a textual prefix with it but is not on the
 // path down to it, so it stays a real decision.
+// A deliberate grant on an ancestor has to survive the trimming, or the remedy for the
+// case it hides - a script that lists one of its own parents - is one the store records,
+// perms list reports, and the run silently ignores.
+func TestApproveKeepsAnAncestorTheStoreDecided(t *testing.T) {
+	s := newTestStore()
+	s.rememberPath("", "read", "/home/u/src", allow, true)
+
+	proposal := &policy.Policy{Read: []string{"/home/u", "/home/u/src", "/home/u/src/app"}}
+	// Only the script's own directory prompts: /home/u is trimmed as an undecided part
+	// of the walk, and /home/u/src applies from the store without asking.
+	p := newPrompter(strings.NewReader("y\n"), &strings.Builder{})
+
+	got := approve(t.Context(), p, s, "k", "/home/u/src/app/run.sh", "sh", proposal)
+
+	want := []string{"/home/u/src", "/home/u/src/app"}
+	if len(got.Read) != len(want) {
+		t.Fatalf("Read = %v, want %v (a globally allowed ancestor must reach the policy)", got.Read, want)
+	}
+	for i, w := range want {
+		if got.Read[i] != w {
+			t.Errorf("Read[%d] = %q, want %q", i, got.Read[i], w)
+		}
+	}
+}
+
 func TestTrimAncestorsKeepsASiblingPrefix(t *testing.T) {
-	got := trimAncestors([]string{"/home/u/app", "/home/u/appendix", "/home/u/app/sub"}, "/home/u/app/sub/run.sh")
+	undecided := func(string) bool { return false }
+	got := trimAncestors([]string{"/home/u/app", "/home/u/appendix", "/home/u/app/sub"}, "/home/u/app/sub/run.sh", undecided)
 	want := []string{"/home/u/appendix", "/home/u/app/sub"}
 	if len(got) != len(want) {
 		t.Fatalf("trimAncestors = %v, want %v", got, want)
