@@ -92,12 +92,26 @@ func writeUsageHint(w io.Writer, cmd *cobra.Command, err error) {
 	fmt.Fprintf(w, "Run `%s --help` for what it does and the flags it takes.\n", cmd.CommandPath())
 }
 
-// jsonRefusalAnnotation marks the commands whose --json contract is the refusal
-// envelope, so an error raised before their RunE is answered in that shape rather than
-// with an empty stdout. It is an opt-in and not "the command has a --json flag":
-// validate and doctor answer --json in their own shapes, and a refusalJSON on stdout
-// would be a shape their consumers were never told to expect.
+// jsonRefusalAnnotation marks the commands whose --json contract answers a refusal, so
+// an error raised before their RunE is answered in that shape rather than with an empty
+// stdout. It is an opt-in and not "the command has a --json flag": validate and doctor
+// answer --json in their own shapes, and a refusal on stdout would be a shape their
+// consumers were never told to expect.
+//
+// Its value names WHICH shape, because the two that opt in do not share one: profile
+// answers with a single indented document, run with one object on its event stream. A
+// command carrying the annotation with any other value is a bug, and is treated as not
+// having opted in.
 const jsonRefusalAnnotation = "bento.json_refusal"
+
+const (
+	// jsonRefusalDocument is `bento profile`'s shape: refusalJSON, indented, one document.
+	jsonRefusalDocument = "document"
+	// jsonRefusalStream is `bento run`'s: one refusal object on the JSON-lines stream its
+	// stdout is, so a consumer switches on event whether the run produced output or was
+	// refused before it started.
+	jsonRefusalStream = "stream"
+)
 
 // refuseUsageJSON answers an error that never reached RunE in the refusal envelope that
 // command's --json promises. cobra rejects an unknown flag or a bad argument count
@@ -112,10 +126,16 @@ const jsonRefusalAnnotation = "bento.json_refusal"
 // answer - it knows whether the target ran, and calling one refused here would report a
 // run bento declined over one it started and could not finish.
 func refuseUsageJSON(stdout io.Writer, root, cmd *cobra.Command, args []string, err error) error {
-	if cmd == nil || !isUsageMistake(root, cmd, err) || cmd.Annotations[jsonRefusalAnnotation] == "" || !wantsJSON(cmd, args) {
+	if cmd == nil || !isUsageMistake(root, cmd, err) || !wantsJSON(cmd, args) {
 		return err
 	}
-	return refuseJSON(stdout, true, err)
+	switch cmd.Annotations[jsonRefusalAnnotation] {
+	case jsonRefusalDocument:
+		return refuseJSON(stdout, true, err)
+	case jsonRefusalStream:
+		return refuseStreamJSON(stdout, true, err)
+	}
+	return err
 }
 
 // wantsJSON reports whether argv asked cmd for --json.

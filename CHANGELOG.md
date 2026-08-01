@@ -9,6 +9,39 @@ Later releases will list changes since the previous tag. This first entry
 describes the boundary as it ships, not the 380-odd commits that built it -
 none of them were ever in a release.
 
+## Unreleased
+
+### Breaking: `bento run --json` is now a stream
+
+The boundary did not move. What changed is the machine contract: `run --json`
+put one indented JSON document on stdout at the end of a run, with the script's
+whole output carried in its `stdout` and `stderr` fields. It is now a stream of
+JSON objects, one per line, written as the run happens.
+
+Every object carries an `event` field, which is what a consumer switches on:
+`stdout` and `stderr` for chunks of the script's own output as it arrives, then
+exactly one `verdict`, `refusal` or `failed` object last. The verdict is the
+old envelope minus the two stream fields; `refusal` is what `refused: true`
+used to say. Chunk bytes are base64, because a script is untrusted and can
+print anything - the old string fields silently replaced invalid UTF-8 with
+U+FFFD, so a script emitting binary had its output corrupted with nothing to
+say so.
+
+Two things this answers that the document could not. A run no longer costs
+memory proportional to what the script printed: measured peak RSS was ~1x the
+output volume (12.5 MB at 1 MB of output, 75.2 MB at 64 MB) and is now flat at
+~11-12.7 MB across the same range. And the two streams are labelled as they
+arrive - the old shape copied both undistinguished onto bento's stderr for
+progress, so nothing could tell them apart until the run had ended.
+
+There is no compatibility mode. Two output shapes behind one flag is the thing
+to avoid, not the compromise; a consumer of the old envelope pins the previous
+release until it reads the stream.
+
+`bento profile --json`, `validate --json` and `doctor --json` are unchanged -
+they answer with a single document, and a refusal from `profile` still carries
+`refused: true`.
+
 ## 0.1.1 (2026-07-29)
 
 ### Boundary Hardening

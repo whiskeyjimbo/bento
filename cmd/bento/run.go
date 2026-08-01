@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,16 +37,22 @@ func newRunCmd() *cobra.Command {
 			"could not be executed\", so it is distinct from any code the script itself returns.\n" +
 			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
 			"124, reserved the same way. A script can return any code itself, so a machine\n" +
-			"gate should read --json, where the outcome is a field rather than a code.",
+			"gate should read --json, where the outcome is a field rather than a code.\n\n" +
+			"--json makes stdout a stream of JSON objects, one per line: the script's own\n" +
+			"output as it arrives, each object saying which of its streams it came from and\n" +
+			"carrying the bytes base64-encoded, then exactly one final object with the\n" +
+			"outcome. Switch on the event field - \"stdout\" and \"stderr\" for the script's\n" +
+			"output, then \"verdict\", \"refusal\" or \"failed\". Nothing is held in memory\n" +
+			"until the run ends, so a chatty job costs no more than a quiet one.",
 		Args:        exactArgs(1, "a manifest path"),
-		Annotations: map[string]string{jsonRefusalAnnotation: "yes"},
+		Annotations: map[string]string{jsonRefusalAnnotation: jsonRefusalStream},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal raised before enforce.Run - a bad --env, an unparseable or
 			// unapproved manifest, an env that cannot be resolved, a backend this host
-			// cannot provide - goes through refuse, so --json always leaves an envelope
-			// on stdout. Returning these bare wrote nothing there, and a machine gate
-			// could not tell a refusal from a crash.
-			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
+			// cannot provide - goes through refuse, so --json always leaves a refusal
+			// object on stdout. Returning these bare wrote nothing there, and a machine
+			// gate could not tell a refusal from a crash.
+			refuse := func(err error) error { return refuseStreamJSON(os.Stdout, asJSON, err) }
 
 			// Rejected here rather than with MarkFlagsMutuallyExclusive, which refuses
 			// before RunE and so would leave --json an empty stdout.
@@ -97,21 +103,20 @@ func newRunCmd() *cobra.Command {
 				return refuse(err)
 			}
 
-			// In --json mode the script's streams are captured into the envelope
-			// rather than shared with bento's own stdout - otherwise the script's
-			// output interleaves with the JSON and corrupts the machine contract.
-			// They are also copied to stderr as they arrive, since the envelope alone
-			// says nothing until the script exits: a pipeline running a long build
-			// under bento would show no logs at all, and none if it was killed on a
-			// timeout. One writer for both, because exec pumps them from separate
-			// goroutines and unsynchronized writes would splice their lines together.
+			// In --json mode the script's streams become events on the stream stdout
+			// carries, each tagged with which stream it came from, rather than being
+			// shared with bento's own stdout - the script's output interleaved with the
+			// JSON would corrupt the machine contract. They go out as they arrive, so a
+			// pipeline running a long build shows its logs and a job killed on a timeout
+			// leaves them behind, and nothing is held: the memory a run costs no longer
+			// grows with what the target printed. It is given no stdin.
 			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
-			var out, errOut bytes.Buffer
+			var stream *eventStream
 			if asJSON {
-				live := &syncWriter{w: os.Stderr}
+				stream = newEventStream(os.Stdout)
 				proc.Stdin = nil
-				proc.Stdout = io.MultiWriter(&out, live)
-				proc.Stderr = io.MultiWriter(&errOut, live)
+				proc.Stdout = stream.output("stdout")
+				proc.Stderr = stream.output("stderr")
 			}
 
 			res, err := enforce.Run(cmd.Context(), e, p, proc, enforce.Options{
@@ -119,7 +124,7 @@ func newRunCmd() *cobra.Command {
 				AllowDegraded:      allowDegraded,
 				AcceptAliasesUnder: acceptAliases,
 			})
-			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, missingReads, out.String(), errOut.String(), err)
+			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, missingReads, stream, err)
 		},
 	}
 
@@ -128,38 +133,85 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin. A refusal - including a mistake in this command line - is an envelope too, and so is a run that failed part-way, so stdout is never empty. Switch on refused, then failed, then exit_code")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON on stdout, one object per line: the script's own output as it arrives, tagged with which stream produced it and base64-encoded, then one final object with the outcome. The script is given no stdin. Switch on the event field - stdout, stderr, then verdict, refusal or failed. A refusal, including a mistake in this command line, is an object too, so stdout is never empty")
 	return cmd
 }
 
-// syncWriter serializes writes from the two stream pumps onto one destination, so a
-// write that arrives mid-write on the other goroutine follows it instead of splicing
-// into it. It holds the lock across the write rather than buffering: the point of the
-// live copy is that it appears while the script runs.
+// eventStream is what `bento run --json` puts on stdout: JSON objects, one per line, in
+// the order they happened. Every object carries an event naming its shape - "stdout" and
+// "stderr" for the target's own output as it arrives, and exactly one "verdict",
+// "refusal" or "failed" object, always last. A consumer switches on that field.
 //
-// It never reports an error, and abandons the destination after the first one. It is
-// half of an io.MultiWriter whose other half is the buffer the envelope is built from,
-// and MultiWriter stops at the first writer that fails - so a stderr that goes away
-// mid-run (a supervisor died, a redirect target closed) would otherwise stop exec from
-// draining the target's pipe: the envelope's own streams would be silently truncated
-// and the target would block once the pipe filled. The live copy is a courtesy; the
-// envelope is the contract, and it must not be able to fail with it.
-type syncWriter struct {
-	mu   sync.Mutex
-	w    io.Writer
-	gone bool
+// The lock serializes the two stream pumps, which exec runs from separate goroutines: an
+// object written mid-write by the other would splice into it and the line would not
+// parse. It is held across the write rather than buffering, because appearing while the
+// target runs is the whole point.
+type eventStream struct {
+	mu  sync.Mutex
+	enc *json.Encoder
+	err error
 }
 
-func (s *syncWriter) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.gone {
-		return len(p), nil
+func newEventStream(w io.Writer) *eventStream {
+	// No SetIndent, unlike every other envelope bento writes: one object per line is the
+	// contract here, and an indented object spans lines.
+	return &eventStream{enc: json.NewEncoder(w)}
+}
+
+// emit writes one object, keeping the first error and dropping every write after it.
+//
+// It does not report that error to its caller, and the reason is the target rather than
+// the stream: exec pumps the target's output through this, and an error returned there
+// stops it draining the pipe, so the target blocks once the pipe fills. Dropping keeps
+// it running. The error is not swallowed, though - failed() is what the run reports at
+// the end, because a truncated stream capped with a verdict that reads clean is the one
+// answer this must never give.
+func (e *eventStream) emit(v any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.err != nil {
+		return
 	}
-	if _, err := s.w.Write(p); err != nil {
-		s.gone = true
-	}
+	e.err = e.enc.Encode(v)
+}
+
+// failed reports the first write error the stream hit, if any. Everything after it is
+// missing from stdout.
+func (e *eventStream) failed() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
+}
+
+// output returns the writer exec pumps one of the target's streams into, tagging each
+// chunk with the stream it came from.
+func (e *eventStream) output(name string) io.Writer { return &eventWriter{stream: e, name: name} }
+
+type eventWriter struct {
+	stream *eventStream
+	name   string
+}
+
+func (w *eventWriter) Write(p []byte) (int, error) {
+	w.stream.emit(streamEventJSON{w.name, p})
 	return len(p), nil
+}
+
+// streamEventJSON is one chunk of the target's output, tagged with which of its two
+// streams produced it. That labelling is live, which the shape this replaced could not
+// do: it merged both onto bento's stderr as they arrived and separated them only in the
+// envelope, after the run.
+//
+// A chunk is whatever exec's pump happened to read, not a line. Bounding what a run
+// costs is the point, so nothing here waits for a newline a target may never write.
+//
+// Data is []byte, so it is base64 in the JSON. A target is untrusted and prints whatever
+// it likes; encoding/json replaces invalid UTF-8 in a Go string with U+FFFD, so a string
+// field would hand a consumer corrupted bytes for any target that emits binary, with
+// nothing to tell it that happened. base64 round-trips whatever the target wrote.
+type streamEventJSON struct {
+	Event string `json:"event"`
+	Data  []byte `json:"data"`
 }
 
 // refuseJSON reports a refusal raised before enforce.Run was ever reached in the same
@@ -178,34 +230,64 @@ func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
 	if err == nil || !asJSON {
 		return err
 	}
-	reason, report := err.Error(), noReport
-	var refusal *enforce.Refusal
-	if errors.As(err, &refusal) {
-		reason, report = refusal.Reason, toReportJSON(refusal.Report)
-	}
+	reason, report := refusalDetail(err)
 	_ = writeJSON(stdout, refusalJSON{true, reason, report})
 	return &exitError{code: bentoFailed}
 }
 
-// failJSON reports a run that neither refused nor completed - an error from enforce.Run
-// that is neither a Refusal nor a Shortfall - so --json answers it with an envelope
-// instead of an empty stdout. Outside --json the error is returned untouched and main
-// renders it, exactly as refuseJSON leaves the human path alone.
+// refuseStreamJSON is refuseJSON in `bento run`'s shape: one refusal object on the event
+// stream rather than the single indented document profile answers with. The two cannot
+// share a shape - a consumer of the stream switches on event, and a run's stdout must be
+// one object per line whether the run produced output or was refused before it started.
+func refuseStreamJSON(stdout io.Writer, asJSON bool, err error) error {
+	if err == nil || !asJSON {
+		return err
+	}
+	reason, report := refusalDetail(err)
+	newEventStream(stdout).emit(streamRefusalJSON{"refusal", reason, report})
+	return &exitError{code: bentoFailed}
+}
+
+// refusalDetail pulls the reason and the report out of a refusal raised before the
+// target ran, for whichever shape the command answers in.
 //
-// It is deliberately not the refusal envelope. The target may already have started, and
-// refused:true would say bento declined a run it in fact began. It cannot say which
-// happened either: Result.Setup answers that only when Run returned nil or a Shortfall,
-// and on this path its zero value reads as a silent stage without one having died. So
-// the envelope reports what is known - the reason, the streams captured before it went
-// wrong, and the report of what was enforced around them - and claims nothing about
-// where the target got to.
+// A host shortfall arrives as an *enforce.Refusal, which carries the probe that judged
+// it: report that rather than noReport, so a consumer reading stdout alone sees which
+// layer fell short. Its Reason, not Error(), for the same reason writeRunResult uses it
+// - Error() prepends a verb the caller may not have refused with.
+func refusalDetail(err error) (string, reportJSON) {
+	var refusal *enforce.Refusal
+	if errors.As(err, &refusal) {
+		return refusal.Reason, toReportJSON(refusal.Report)
+	}
+	return err.Error(), noReport
+}
+
+// streamRefusalJSON ends a stream that produced no verdict, under whichever of the two
+// events applies: "refusal" for a run bento declined, where the target never started,
+// and "failed" for one that began and could not be finished. Distinct events rather than
+// one with a flag, because they are answers to different questions - a gate retries a
+// refusal against a different host and does not retry the other.
+type streamRefusalJSON struct {
+	Event  string     `json:"event"`
+	Reason string     `json:"reason"`
+	Report reportJSON `json:"report"`
+}
+
+// failJSON ends the stream for a run that neither refused nor completed - an error from
+// enforce.Run that is neither a Refusal nor a Shortfall - so --json answers it with an
+// object instead of a stream that just stops. Outside --json the error is returned
+// untouched and main renders it, exactly as refuseJSON leaves the human path alone.
 //
-// exit_code carries bentoFailed rather than being omitted, because a consumer written
-// against the two shapes that existed before this one switches on refused and then reads
-// exit_code: absent, it would decode as 0 and read this as a clean run. 125 is the code
-// the process really exits with here, and it is the one thing about this envelope an
-// unaware consumer cannot misread.
-func failJSON(stdout io.Writer, asJSON bool, res enforce.Result, capturedOut, capturedErr string, runErr error) error {
+// Deliberately not the refusal event. The target may already have started, and refusal
+// would say bento declined a run it in fact began. It cannot say which happened either:
+// Result.Setup answers that only when Run returned nil or a Shortfall, and on this path
+// its zero value reads as a silent stage without one having died. So it reports what is
+// known - the reason, and the report of what was enforced around the run - and claims
+// nothing about where the target got to. Whatever the target printed before it went
+// wrong is already on the stream above, which is what the buffered envelope could not
+// do: it dropped the captured streams on this path entirely.
+func failJSON(stream *eventStream, asJSON bool, res enforce.Result, runErr error) error {
 	if !asJSON {
 		return runErr
 	}
@@ -216,14 +298,7 @@ func failJSON(stdout io.Writer, asJSON bool, res enforce.Result, capturedOut, ca
 	if len(res.Report.Layers) > 0 {
 		report = toReportJSON(res.Report)
 	}
-	_ = writeJSON(stdout, struct {
-		Failed   bool       `json:"failed"`
-		Reason   string     `json:"reason"`
-		ExitCode int        `json:"exit_code"`
-		Stdout   string     `json:"stdout"`
-		Stderr   string     `json:"stderr"`
-		Report   reportJSON `json:"report"`
-	}{true, runErr.Error(), bentoFailed, capturedOut, capturedErr, report})
+	stream.emit(streamRefusalJSON{"failed", runErr.Error(), report})
 	return &exitError{code: bentoFailed}
 }
 
@@ -231,12 +306,12 @@ func failJSON(stdout io.Writer, asJSON bool, res enforce.Result, capturedOut, ca
 // writes the human or --json output and returns the error the command propagates. The
 // exit-code mapping is the load-bearing invariant - a refusal (bento could not run the
 // script) becomes exitError{bentoFailed}, distinct from the target's own code, which is
-// passed through untouched via exitError{res.ExitCode}. capturedOut/capturedErr are the
-// target's streams, captured only in --json mode (empty otherwise, where they went
-// straight to the real streams). missingReads is the pre-run verdict on the read grants,
+// passed through untouched via exitError{res.ExitCode}. stream is the event stream the
+// target's output already went out on, set only in --json mode (nil otherwise, where it
+// went straight to the real streams); the verdict is the last object on it. missingReads is the pre-run verdict on the read grants,
 // not re-taken here: a grant the script created during the run was still missing when it
 // started, which is what the note on the way in said and what validate answers.
-func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, missingReads []string, capturedOut, capturedErr string, runErr error) error {
+func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
@@ -244,7 +319,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
-			_ = writeJSON(stdout, refusalJSON{true, refusal.Reason, toReportJSON(refusal.Report)})
+			stream.emit(streamRefusalJSON{"refusal", refusal.Reason, toReportJSON(refusal.Report)})
 			return &exitError{code: bentoFailed}
 		}
 		// Rendered here rather than returned to main's generic printer: the shortfall
@@ -256,24 +331,23 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// The target ran, so its output and report are reported exactly as a clean run's
 		// are; only the exit code differs, below.
 	case runErr != nil:
-		return failJSON(stdout, asJSON, res, capturedOut, capturedErr, runErr)
+		return failJSON(stream, asJSON, res, runErr)
 	}
 
 	if asJSON {
-		// The script already ran and its exit code is the result. If writing the
-		// JSON envelope fails (a redirected stdout that is full or gone), reporting
-		// that as bentoFailed would overwrite the real exit code with 125 - a lie
-		// that bento could not run the script. Warn and still pass the code through.
-		if err := writeJSON(stdout, struct {
-			ExitCode int `json:"exit_code"`
+		stream.emit(struct {
+			// Event is "verdict", the last object on the stream and the only one that
+			// carries an outcome. See eventStream for the others.
+			Event    string `json:"event"`
+			ExitCode int    `json:"exit_code"`
 			// Signal names the signal that killed the sandbox, present only where that is
 			// KNOWN: exit_code is 128+signal there. The human output additionally reads a
 			// code in that range as a probable signal and says so, hedged; this field does
 			// not, because a machine consumer cannot hedge - it would read an inference
 			// about a target that chose to exit 137 as the fact that something killed it.
-			Signal            int      `json:"signal,omitempty"`
-			Stdout            string   `json:"stdout"`
-			Stderr            string   `json:"stderr"`
+			Signal int `json:"signal,omitempty"`
+			// The target's own output is not here: it went out as stdout and stderr events
+			// while the run happened, so nothing about a run is held in memory until it ends.
 			EgressConnections int      `json:"egress_connections"`
 			ShieldedGrants    []string `json:"shielded_grants,omitempty"`
 			// ShieldedGrantTargets names what an opted-in grant bound, for the entries where
@@ -309,8 +383,16 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads}); err != nil {
-			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
+		// The stream carries the target's own output, so a write that failed part-way
+		// through it left stdout truncated - and a verdict written after that either did
+		// not land or landed on a stream missing everything before it. Say so rather than
+		// passing the target's code through, which would tell a gate to trust what is
+		// there. Bento's own code, not the target's: what could not be delivered is
+		// bento's answer about the run, not the run.
+		if err := stream.failed(); err != nil {
+			fmt.Fprintf(stderr, "[bento] the JSON event stream could not be written (%v), so what is on stdout is truncated - the target's exit code is not reported.\n", err)
+			return &exitError{code: bentoFailed}
 		}
 	} else {
 		writeAcceptedAliasWarning(stderr, res)

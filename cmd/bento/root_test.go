@@ -81,8 +81,8 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 		// --env takes a value, so this is a malformed --env and not a request for an
 		// envelope; answering it with JSON would swallow the message naming the mistake.
 		{"a --json eaten as another flag's value", []string{"run", "--env", "--json", "--nosuchflag"}, false},
-		// validate answers --json in its own shape; a refusalJSON there would be a shape
-		// its consumers were never told to expect.
+		// validate answers --json in its own shape; a refusal there would be a shape its
+		// consumers were never told to expect.
 		{"validate keeps its own contract", []string{"validate", "--json", "a.yaml", "b.yaml"}, false},
 	}
 	for _, tc := range cases {
@@ -110,12 +110,22 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 			if code := asExitError(t, got).code; code != bentoFailed {
 				t.Errorf("exit code = %d, want %d, as a refusal raised inside RunE", code, bentoFailed)
 			}
-			var env refusalJSON
+			// The two commands that opt in answer in different shapes - profile with
+			// refused:true in one indented document, run with a refusal event on the
+			// JSON-lines stream its stdout is - so this reads whichever the command
+			// promised rather than asserting one on both.
+			var env struct {
+				Refused bool       `json:"refused"`
+				Event   string     `json:"event"`
+				Reason  string     `json:"reason"`
+				Report  reportJSON `json:"report"`
+			}
 			if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 				t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
 			}
-			if !env.Refused || env.Reason == "" {
-				t.Errorf("envelope = %+v, want refused with the usage error as its reason", env)
+			refused := env.Refused || env.Event == "refusal"
+			if !refused || env.Reason == "" {
+				t.Errorf("envelope = %+v, want a refusal with the usage error as its reason", env)
 			}
 			if env.Report.FullyEnforced || env.Report.Layers == nil {
 				t.Errorf("report = %+v, want the empty report of a run that built no sandbox", env.Report)

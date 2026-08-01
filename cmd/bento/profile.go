@@ -78,7 +78,7 @@ func newProfileCmd() *cobra.Command {
 			"not name, or the granting session ended before it converged. That is what\n" +
 			"keeps `profile && approve` from stamping a manifest built on a crashed run.",
 		Args:        minArgs(1, "a script path"),
-		Annotations: map[string]string{jsonRefusalAnnotation: "yes"},
+		Annotations: map[string]string{jsonRefusalAnnotation: jsonRefusalDocument},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal this command raises goes through this, so --json never
 			// answers one with an empty stdout and a machine gate can tell a refusal from

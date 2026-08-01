@@ -33,7 +33,7 @@ func TestWriteRunResultPassesTargetExitCode(t *testing.T) {
 	for _, code := range []int{0, 1, 7, 42, bentoFailed} {
 		var stdout, stderr bytes.Buffer
 		err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-			enforce.Result{ExitCode: code}, nil, "", "", nil)
+			enforce.Result{ExitCode: code}, nil, nil, nil)
 		if got := asExitError(t, err).code; got != code {
 			t.Errorf("target exit %d passed up as %d", code, got)
 		}
@@ -41,8 +41,8 @@ func TestWriteRunResultPassesTargetExitCode(t *testing.T) {
 }
 
 // A refusal means bento itself could not run the script, so it must map to
-// bentoFailed (125) in --json mode - never to the target's code, which never ran.
-// The envelope carries refused/reason/report so a machine consumer sees the refusal.
+// bentoFailed (125) in --json mode - never to the target's code, which never ran. The
+// stream carries one refusal event with the reason and report, and no verdict.
 func TestWriteRunResultRefusalJSON(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerFilesystem, enforce.Degraded, "userns blocked")
@@ -52,24 +52,24 @@ func TestWriteRunResultRefusalJSON(t *testing.T) {
 	// A non-zero target code in the (unused) Result must not leak through: a refused
 	// run never produced one.
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 7}, nil, "", "", refusal)
+		enforce.Result{ExitCode: 7}, nil, newEventStream(&stdout), refusal)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("refusal exit code = %d, want %d", got, bentoFailed)
 	}
 
 	var env struct {
-		Refused bool       `json:"refused"`
-		Reason  string     `json:"reason"`
-		Report  reportJSON `json:"report"`
+		Event  string     `json:"event"`
+		Reason string     `json:"reason"`
+		Report reportJSON `json:"report"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
-		t.Fatalf("refusal envelope is not valid JSON: %v\n%s", err, stdout.String())
+		t.Fatalf("refusal event is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if !env.Refused || env.Reason != refusal.Reason {
-		t.Errorf("refusal envelope = %+v, want refused=true reason=%q", env, refusal.Reason)
+	if env.Event != "refusal" || env.Reason != refusal.Reason {
+		t.Errorf("refusal event = %+v, want event=refusal reason=%q", env, refusal.Reason)
 	}
 	if len(env.Report.Layers) == 0 {
-		t.Error("refusal envelope must carry the report so a consumer sees which layer fell short")
+		t.Error("a refusal must carry the report so a consumer sees which layer fell short")
 	}
 }
 
@@ -87,7 +87,7 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-		enforce.Result{ExitCode: 7}, nil, "", "", refusal)
+		enforce.Result{ExitCode: 7}, nil, nil, refusal)
 
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != bentoFailed {
@@ -114,7 +114,7 @@ func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 	setupErr := errors.New("enforce: nil enforcer")
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-		enforce.Result{}, nil, "", "", setupErr)
+		enforce.Result{}, nil, nil, setupErr)
 	if !errors.Is(err, setupErr) {
 		t.Errorf("setup error must propagate verbatim; got %v", err)
 	}
@@ -124,11 +124,11 @@ func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 	}
 }
 
-// The same failure under --json is an envelope rather than an empty stdout, and one a
-// consumer can tell from both other shapes: failed says so outright, and exit_code says
-// bentoFailed for a consumer that only knows refused and exit_code. It carries the
-// streams captured before the run went wrong, which are otherwise dropped, and it must
-// not claim refused - the target may already have started.
+// The same failure under --json ends the stream with a failed event rather than just
+// stopping. It must not claim refusal - the target may already have started - and it
+// carries no exit code, because nothing here knows whether the target produced one.
+// Whatever the target printed went out as events while it ran, so nothing is lost by the
+// event itself carrying no streams.
 func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
@@ -136,41 +136,34 @@ func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
 	runErr := errors.New("the sandbox stage died while the target ran")
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "partial-out", "partial-err", runErr)
+	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, newEventStream(&stdout), runErr)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("mid-flight failure exit code = %d, want %d", got, bentoFailed)
 	}
 	if stderr.Len() > 0 {
-		t.Errorf("--json must leave stderr to the live copy; got %q", stderr.String())
+		t.Errorf("--json answers on the stream and says nothing on stderr; got %q", stderr.String())
 	}
 
 	var env struct {
-		Failed   bool       `json:"failed"`
-		Refused  bool       `json:"refused"`
+		Event    string     `json:"event"`
 		Reason   string     `json:"reason"`
-		ExitCode int        `json:"exit_code"`
-		Stdout   string     `json:"stdout"`
-		Stderr   string     `json:"stderr"`
+		ExitCode *int       `json:"exit_code"`
 		Report   reportJSON `json:"report"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
-		t.Fatalf("failure envelope is not valid JSON: %v\n%s", err, stdout.String())
+		t.Fatalf("failure event is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if !env.Failed || env.Refused {
-		t.Errorf("failure envelope = failed:%v refused:%v, want failed:true refused:false", env.Failed, env.Refused)
+	if env.Event != "failed" {
+		t.Errorf("event = %q, want failed - never refusal, which would say bento declined a run it began", env.Event)
 	}
 	if env.Reason != runErr.Error() {
 		t.Errorf("reason = %q, want %q", env.Reason, runErr.Error())
 	}
-	// Never the target's own code: this envelope cannot say the target produced one.
-	if env.ExitCode != bentoFailed {
-		t.Errorf("exit_code = %d, want %d", env.ExitCode, bentoFailed)
-	}
-	if env.Stdout != "partial-out" || env.Stderr != "partial-err" {
-		t.Errorf("captured streams = (%q, %q), want (partial-out, partial-err)", env.Stdout, env.Stderr)
+	if env.ExitCode != nil {
+		t.Errorf("exit_code = %d, want it absent: nothing here knows whether the target produced one", *env.ExitCode)
 	}
 	if len(env.Report.Layers) == 0 {
-		t.Error("failure envelope must carry the report of what was enforced around the run")
+		t.Error("a failed run must carry the report of what was enforced around it")
 	}
 }
 
@@ -179,7 +172,7 @@ func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
 func TestWriteRunResultMidFlightFailureJSONNoReport(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	_ = writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{}, nil, "", "", errors.New("enforce: nil enforcer"))
+		enforce.Result{}, nil, newEventStream(&stdout), errors.New("enforce: nil enforcer"))
 
 	var env struct {
 		Report reportJSON `json:"report"`
@@ -192,9 +185,10 @@ func TestWriteRunResultMidFlightFailureJSONNoReport(t *testing.T) {
 	}
 }
 
-// The --json success envelope is the machine contract: it carries the target's real
-// exit code and its captured streams, and the command still returns exitError{code}
-// so the process exits with the target's code.
+// The verdict is the machine contract and the last object on the stream: it carries the
+// target's real exit code, and the command still returns exitError{code} so the process
+// exits with that code. The target's own output is not in it - it went out as events
+// while the run happened, which is what keeps a run's memory off what it printed.
 func TestWriteRunResultSuccessJSON(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
@@ -205,15 +199,14 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "hello-stdout", "warn-stderr", nil)
+	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, newEventStream(&stdout), nil)
 	if got := asExitError(t, err).code; got != 3 {
 		t.Fatalf("success exit code = %d, want 3", got)
 	}
 
 	var env struct {
+		Event             string   `json:"event"`
 		ExitCode          int      `json:"exit_code"`
-		Stdout            string   `json:"stdout"`
-		Stderr            string   `json:"stderr"`
 		EgressConnections int      `json:"egress_connections"`
 		ShieldedGrants    []string `json:"shielded_grants"`
 		Shields           []struct {
@@ -222,16 +215,23 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 		} `json:"shields"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
-		t.Fatalf("success envelope is not valid JSON: %v\n%s", err, stdout.String())
+		t.Fatalf("verdict is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if env.ExitCode != 3 || env.Stdout != "hello-stdout" || env.Stderr != "warn-stderr" {
-		t.Errorf("success envelope = %+v, want exit 3 with captured streams", env)
+	if env.Event != "verdict" || env.ExitCode != 3 {
+		t.Errorf("verdict = %+v, want event=verdict exit 3", env)
 	}
 	if env.EgressConnections != 2 || len(env.ShieldedGrants) != 1 {
-		t.Errorf("success envelope dropped egress/shielded-grant fields: %+v", env)
+		t.Errorf("verdict dropped egress/shielded-grant fields: %+v", env)
+	}
+	// The buffered envelope this replaced carried them; a consumer reading only the
+	// verdict must not find an empty pair of fields where the output used to be.
+	var raw map[string]any
+	_ = json.Unmarshal(stdout.Bytes(), &raw)
+	if _, ok := raw["stdout"]; ok {
+		t.Error("the verdict must not carry a stdout field; the target's output is its own events")
 	}
 	if len(env.Shields) != 2 || env.Shields[0].Path != "/home/u/.aws" || env.Shields[0].Kind != "hidden" || env.Shields[1].Kind != "read-only" {
-		t.Errorf("success envelope dropped or mangled the shield audit: %+v", env.Shields)
+		t.Errorf("verdict dropped or mangled the shield audit: %+v", env.Shields)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 		ShieldedGrants:       []string{granted, "/etc/hosts"},
 		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
 	}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, newEventStream(&stdout), nil)
 
 	var env struct {
 		ShieldedGrants       []string `json:"shielded_grants"`
@@ -280,14 +280,14 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 		Shields:  []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
 	}
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, nil, nil, nil)
 	got := stderr.String()
 	if !strings.Contains(got, "3 credential/host-service path(s) shielded") || !strings.Contains(got, "2 hidden, 1 read-only") {
 		t.Errorf("shield summary line missing or wrong: %q", got)
 	}
 
 	var none bytes.Buffer
-	_ = writeRunResult(&none, &none, false, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	_ = writeRunResult(&none, &none, false, validPolicy(), enforce.Result{ExitCode: 0}, nil, nil, nil)
 	if strings.Contains(none.String(), "sandbox engaged") {
 		t.Errorf("a run that shielded nothing must not print the summary: %q", none.String())
 	}
@@ -299,7 +299,7 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: bentoFailed}, nil, "", "", nil)
+		enforce.Result{ExitCode: bentoFailed}, nil, newEventStream(&stdout), nil)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("exit code = %d, want %d passed through", got, bentoFailed)
 	}
@@ -307,27 +307,29 @@ func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	if _, refused := env["refused"]; refused {
-		t.Error("a successful run must emit the success envelope, never the refusal envelope")
+	if env["event"] != "verdict" {
+		t.Errorf("event = %v, want verdict - a completed run is never a refusal", env["event"])
 	}
 	if _, ok := env["exit_code"]; !ok {
-		t.Error("success envelope must carry exit_code")
+		t.Error("the verdict must carry exit_code")
 	}
 }
 
-// A --json envelope write that fails (a redirected stdout that is full or gone) must
-// NOT be re-minted as a bento refusal: the script already ran, so its exit code still
-// passes through and the failure is only a warning on stderr. Overwriting it with
-// bentoFailed would lie that bento could not run the script.
-func TestWriteRunResultJSONWriteFailureKeepsExitCode(t *testing.T) {
+// A stream write that fails (a redirected stdout that is full or gone) leaves stdout
+// truncated - and the target's own output is on that stream, so what is there is not
+// what the run produced. Passing the target's exit code through would tell a gate to
+// trust it, so the run answers with bento's own code and says why on stderr. The
+// buffered envelope could pass the code through, because the only thing it lost was
+// bento's summary of a run whose output had already gone to the real stderr.
+func TestWriteRunResultStreamWriteFailureRefusesTheTargetCode(t *testing.T) {
 	var stderr bytes.Buffer
 	err := writeRunResult(failWriter{}, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 5}, nil, "out", "err", nil)
-	if got := asExitError(t, err).code; got != 5 {
-		t.Fatalf("a failed JSON write must still pass the target code; got %d, want 5", got)
+		enforce.Result{ExitCode: 5}, nil, newEventStream(failWriter{}), nil)
+	if got := asExitError(t, err).code; got != bentoFailed {
+		t.Fatalf("a truncated stream must not report the target code; got %d, want %d", got, bentoFailed)
 	}
-	if !strings.Contains(stderr.String(), "could not encode the JSON result") {
-		t.Errorf("a failed JSON write must warn on stderr; got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "could not be written") {
+		t.Errorf("a failed stream write must say so on stderr; got %q", stderr.String())
 	}
 }
 
@@ -346,7 +348,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stdout, &stderr, false, netPolicy, res, nil, "", "", nil)
+	err := writeRunResult(&stdout, &stderr, false, netPolicy, res, nil, nil, nil)
 	if got := asExitError(t, err).code; got != 1 {
 		t.Fatalf("exit code = %d, want 1", got)
 	}
@@ -365,7 +367,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 // none (omitempty), so a machine consumer keying on the field's presence is not misled.
 func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var env map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -382,7 +384,7 @@ func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 // missing_read_grants, and the envelope has to agree with that spelling.
 func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, []string{"/data/gone"}, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, []string{"/data/gone"}, newEventStream(&stdout), nil)
 	var env struct {
 		MissingReadGrants []string `json:"missing_read_grants"`
 	}
@@ -394,7 +396,7 @@ func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -409,7 +411,7 @@ func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	res := enforce.Result{ExitCode: 0, GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		GuardBlocked []struct {
 			Host string `json:"host"`
@@ -424,7 +426,7 @@ func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -453,7 +455,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}},
 		Denied:       []enforce.HostPort{{Host: "api.githb.com", Port: "443"}},
 	}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		GuardBlocked []hostPortJSON `json:"guard_blocked"`
 		EgressDenied []hostPortJSON `json:"egress_denied"`
@@ -469,7 +471,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -479,24 +481,22 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 }
 
-// The live copy shares an io.MultiWriter with the buffer the envelope is built from, and
-// MultiWriter stops at the first writer that fails - so a stderr that goes away mid-run
-// must not become an error exec sees. If it did, exec would stop draining the target's
-// pipe: the envelope's streams would be truncated and the target would block once the
-// pipe filled, which is the one thing --json promises does not happen.
-func TestSyncWriterSurvivesADeadDestination(t *testing.T) {
-	var captured bytes.Buffer
-	live := &syncWriter{w: errWriter{}}
-	w := io.MultiWriter(&captured, live)
+// exec pumps the target's output into the stream, and an error returned there stops it
+// draining the pipe: the target would block once the pipe filled. So a stdout that goes
+// away mid-run must not become an error exec sees - the stream keeps accepting writes and
+// remembers the failure for the run to report at the end.
+func TestEventStreamAbsorbsADeadStdout(t *testing.T) {
+	stream := newEventStream(errWriter{})
+	w := stream.output("stdout")
 
 	for _, line := range []string{"first\n", "second\n"} {
 		n, err := w.Write([]byte(line))
 		if err != nil || n != len(line) {
-			t.Fatalf("Write = %d, %v; a dead live copy must not fail the capture", n, err)
+			t.Fatalf("Write = %d, %v; a dead stdout must not fail the pump", n, err)
 		}
 	}
-	if captured.String() != "first\nsecond\n" {
-		t.Errorf("captured = %q, want both lines: the envelope must not lose output to a dead stderr", captured.String())
+	if stream.failed() == nil {
+		t.Error("the stream must remember the write failure, not swallow it")
 	}
 }
 
@@ -504,28 +504,158 @@ type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
 
-// The two stream pumps run in their own goroutines, so the live copy they share has to
-// serialize them: without the lock a write landing mid-write splices the two scripts'
-// lines together, and the pipeline reading stderr sees neither line whole. Meaningful
-// under -race, which is where the unsynchronized version fails.
-func TestSyncWriterSerializesTheLiveCopy(t *testing.T) {
+// The two stream pumps run in their own goroutines, so the stream has to serialize them:
+// without the lock an object written mid-write splices into the other and neither line
+// parses. Meaningful under -race, which is where the unsynchronized version fails.
+func TestEventStreamSerializesTheTwoPumps(t *testing.T) {
 	var dest bytes.Buffer
-	live := &syncWriter{w: &dest}
+	stream := newEventStream(&dest)
 	var wg sync.WaitGroup
-	for _, line := range []string{"out\n", "err\n"} {
+	for _, name := range []string{"stdout", "stderr"} {
 		wg.Add(1)
+		w := stream.output(name)
 		go func() {
 			defer wg.Done()
 			for range 100 {
-				_, _ = live.Write([]byte(line))
+				_, _ = w.Write([]byte("line\n"))
 			}
 		}()
 	}
 	wg.Wait()
+
+	lines := 0
 	for l := range strings.SplitSeq(strings.TrimSuffix(dest.String(), "\n"), "\n") {
-		if l != "out" && l != "err" {
+		var ev streamEventJSON
+		if err := json.Unmarshal([]byte(l), &ev); err != nil {
 			t.Fatalf("a spliced line %q; the writes were not serialized", l)
 		}
+		if ev.Event != "stdout" && ev.Event != "stderr" {
+			t.Fatalf("event = %q, want the stream that produced it", ev.Event)
+		}
+		if string(ev.Data) != "line\n" {
+			t.Fatalf("data = %q, want the bytes the target wrote", ev.Data)
+		}
+		lines++
+	}
+	if lines != 200 {
+		t.Errorf("got %d events, want 200: the stream dropped writes", lines)
+	}
+}
+
+// The point of the change: nothing about a run is held until it ends. The buffered
+// envelope grew with everything the target printed - measured at ~1x the output volume -
+// so what this pins is that a chunk has reached the destination before the next one is
+// written, with nothing accumulated in between.
+func TestEventStreamHoldsNothingBetweenWrites(t *testing.T) {
+	var dest bytes.Buffer
+	w := newEventStream(&dest).output("stdout")
+	for i, chunk := range []string{"first", "second", "third"} {
+		before := dest.Len()
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+		if dest.Len() <= before {
+			t.Fatalf("chunk %d was buffered rather than written; destination stayed at %d bytes", i, before)
+		}
+	}
+}
+
+// The refusal `bento run --json` answers with, which is not profile's: run's stdout is
+// one object per line whether the run produced output or was refused before it started,
+// so a consumer switches on event either way.
+func TestRefuseStreamJSONEndsTheStreamWithARefusal(t *testing.T) {
+	var buf bytes.Buffer
+	want := errors.New("refusing to run: the manifest is not approved")
+	err := refuseStreamJSON(&buf, true, want)
+	if got := asExitError(t, err).code; got != bentoFailed {
+		t.Fatalf("exit code = %d, want %d", got, bentoFailed)
+	}
+
+	var env struct {
+		Event   string     `json:"event"`
+		Refused bool       `json:"refused"`
+		Reason  string     `json:"reason"`
+		Report  reportJSON `json:"report"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("refusal event is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if env.Event != "refusal" || env.Reason != want.Error() {
+		t.Errorf("refusal event = %+v, want event=refusal with the error as its reason", env)
+	}
+	if env.Refused {
+		t.Error("the stream discriminates on event; a refused field would be a second way to say it")
+	}
+	if env.Report.FullyEnforced || env.Report.Layers == nil {
+		t.Errorf("report = %+v, want the empty report of a run that built no sandbox", env.Report)
+	}
+	// One line, so a consumer parsing the stream line by line reads it like any other.
+	if strings.Count(strings.TrimSuffix(buf.String(), "\n"), "\n") != 0 {
+		t.Errorf("refusal spans lines; the stream is one object per line:\n%s", buf.String())
+	}
+}
+
+// Without --json the error is the frontend's own, rendered by main.
+func TestRefuseStreamJSONLeavesTheHumanPathAlone(t *testing.T) {
+	var buf bytes.Buffer
+	want := errors.New("--env \"X\": want NAME=VALUE")
+	if got := refuseStreamJSON(&buf, false, want); !errors.Is(got, want) {
+		t.Errorf("err = %v, want the error returned untouched", got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing written outside --json", buf.String())
+	}
+}
+
+// The labelling half of what the stream is for. The buffered envelope merged both of the
+// target's streams onto bento's stderr as they arrived, so a consumer could only separate
+// them from the envelope, after the run; each chunk now says which stream it came from as
+// it happens, and the two interleave in the order they were written.
+func TestEventStreamLabelsEachStreamInOrder(t *testing.T) {
+	var dest bytes.Buffer
+	stream := newEventStream(&dest)
+	out, errOut := stream.output("stdout"), stream.output("stderr")
+	for _, w := range []struct {
+		w    io.Writer
+		data string
+	}{{out, "building\n"}, {errOut, "warning: slow\n"}, {out, "done\n"}} {
+		if _, err := w.w.Write([]byte(w.data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got []string
+	for l := range strings.SplitSeq(strings.TrimSuffix(dest.String(), "\n"), "\n") {
+		var ev streamEventJSON
+		if err := json.Unmarshal([]byte(l), &ev); err != nil {
+			t.Fatalf("event is not valid JSON: %v\n%s", err, l)
+		}
+		got = append(got, ev.Event+":"+string(ev.Data))
+	}
+	want := []string{"stdout:building\n", "stderr:warning: slow\n", "stdout:done\n"}
+	if !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
+	}
+}
+
+// A target is untrusted and prints whatever it likes. encoding/json replaces invalid
+// UTF-8 in a Go string with U+FFFD, so the string field the old envelope used handed back
+// corrupted bytes for any target that emitted binary, with nothing to say it had happened.
+// The event carries []byte, which base64 round-trips.
+func TestEventStreamRoundTripsNonUTF8Output(t *testing.T) {
+	var dest bytes.Buffer
+	stream := newEventStream(&dest)
+	raw := []byte{0x00, 0xff, 0xfe, 'o', 'k', 0x80}
+	if _, err := stream.output("stdout").Write(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	var ev streamEventJSON
+	if err := json.Unmarshal(dest.Bytes(), &ev); err != nil {
+		t.Fatalf("event is not valid JSON: %v\n%s", err, dest.String())
+	}
+	if !slices.Equal(ev.Data, raw) {
+		t.Errorf("data = %v, want the target's bytes %v back unchanged", ev.Data, raw)
 	}
 }
 
@@ -537,7 +667,7 @@ func TestNoProfileHintAfterADenial(t *testing.T) {
 	var out, errOut bytes.Buffer
 	p := &policy.Policy{Entrypoint: "./t.py", Read: []string{"/data"}}
 	res := enforce.Result{ExitCode: 1, EgressConnections: 1, Denied: []enforce.HostPort{{Host: "api.githb.com", Port: "443"}}}
-	_ = writeRunResult(&out, &errOut, false, p, res, nil, "", "", nil)
+	_ = writeRunResult(&out, &errOut, false, p, res, nil, nil, nil)
 	if strings.Contains(errOut.String(), "the sandbox denies silently") {
 		t.Errorf("the generic profile hint must not follow a denial; got:\n%s", errOut.String())
 	}
@@ -577,7 +707,7 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-		enforce.Result{ExitCode: 0, Report: report}, nil, "", "", shortfall)
+		enforce.Result{ExitCode: 0, Report: report}, nil, nil, shortfall)
 	if got := asExitError(t, err).code; got != strictShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, strictShortfall)
 	}
@@ -588,35 +718,34 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	err = writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 7, Report: report}, nil, "out", "", shortfall)
+		enforce.Result{ExitCode: 7, Report: report}, nil, newEventStream(&stdout), shortfall)
 	if got := asExitError(t, err).code; got != strictShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, strictShortfall)
 	}
 	var env struct {
+		Event           string `json:"event"`
 		ExitCode        int    `json:"exit_code"`
-		Stdout          string `json:"stdout"`
-		Refused         bool   `json:"refused"`
 		StrictShortfall bool   `json:"strict_shortfall"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
 	if !env.StrictShortfall {
-		t.Error("the envelope must mark the strict shortfall")
+		t.Error("the verdict must mark the strict shortfall")
 	}
-	if env.Refused {
-		t.Error("a shortfall is not a refusal: the target ran")
-	}
-	// The run happened, so the envelope still reports what it produced.
-	if env.ExitCode != 7 || env.Stdout != "out" {
-		t.Errorf("envelope = %+v, want the target's own code and output", env)
+	// The target ran, so this ends in a verdict - not the refusal or failed event, which
+	// both say it did not produce the code below.
+	if env.Event != "verdict" || env.ExitCode != 7 {
+		t.Errorf("verdict = %+v, want event=verdict with the target's own code", env)
 	}
 }
 
 // A refusal raised before enforce.Run was ever reached - a bad --env, an unparseable
 // or unapproved manifest - used to return bare, leaving --json's stdout empty so jq
 // could not tell a refusal from a crash (bv2-w4n5). It must produce the SAME refusal
-// envelope the enforcement layer's own refusals produce, not a fourth shape.
+// envelope the enforcement layer's own refusals produce, not a fourth shape. This is
+// profile's shape; run answers the same case with a refusal event, see
+// TestRefuseStreamJSONEndsTheStreamWithARefusal.
 func TestRefuseJSONUsesTheRefusalEnvelope(t *testing.T) {
 	var buf bytes.Buffer
 	err := refuseJSON(&buf, true, errors.New("refusing to run: the manifest is not approved"))
@@ -682,7 +811,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 			if tc.shortfall {
 				runErr = &enforce.Shortfall{}
 			}
-			_ = writeRunResult(&out, &errOut, false, tc.p, tc.res, nil, "", "", runErr)
+			_ = writeRunResult(&out, &errOut, false, tc.p, tc.res, nil, nil, runErr)
 			if got := strings.Contains(errOut.String(), "bento profile"); got != tc.want {
 				t.Errorf("profile hint emitted = %v, want %v; got:\n%s", got, tc.want, errOut.String())
 			}
@@ -693,7 +822,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 	// with bento's code, and nothing else on that path says so.
 	var unreached bytes.Buffer
 	_ = writeRunResult(io.Discard, &unreached, false, granted,
-		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, nil, "", "", nil)
+		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, nil, nil, nil)
 	for _, want := range []string{"could not start the target", "exit 125 is bento's"} {
 		if !strings.Contains(unreached.String(), want) {
 			t.Errorf("unreached-target notice missing %q; got:\n%s", want, unreached.String())
@@ -707,14 +836,14 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 
 	// --json carries the outcome as a field, and the hint on stdout would corrupt it.
 	var out, errOut bytes.Buffer
-	_ = writeRunResult(&out, &errOut, true, granted, enforce.Result{ExitCode: 1}, nil, "", "", nil)
+	_ = writeRunResult(&out, &errOut, true, granted, enforce.Result{ExitCode: 1}, nil, newEventStream(&out), nil)
 	if strings.Contains(out.String()+errOut.String(), "bento profile") {
 		t.Errorf("--json must not carry the hint; got:\n%s%s", out.String(), errOut.String())
 	}
 
 	// The counts are the point: they say how little was granted.
 	errOut.Reset()
-	_ = writeRunResult(&out, &errOut, false, granted, enforce.Result{ExitCode: 3}, nil, "", "", nil)
+	_ = writeRunResult(&out, &errOut, false, granted, enforce.Result{ExitCode: 3}, nil, nil, nil)
 	for _, want := range []string{"exited 3", "1 read and 1 write"} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("hint missing %q; got:\n%s", want, errOut.String())
