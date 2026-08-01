@@ -52,7 +52,10 @@ func main() {
 	// parsing; a normal invocation falls through and returns here.
 	backend.DispatchReexec()
 
-	err := newRootCmd().Execute()
+	// ExecuteC rather than Execute: a usage error is raised against the command the user
+	// was trying to reach, and that command is the only thing that knows how it should
+	// have been called.
+	cmd, err := newRootCmd().ExecuteC()
 	if err == nil {
 		return
 	}
@@ -61,5 +64,9 @@ func main() {
 		os.Exit(ee.code)
 	}
 	fmt.Fprintf(os.Stderr, "bento: %v\n", err)
+	var ue *usageError
+	if errors.As(err, &ue) {
+		writeUsageHint(os.Stderr, cmd)
+	}
 	os.Exit(bentoFailed)
 }

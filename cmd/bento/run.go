@@ -37,7 +37,7 @@ func newRunCmd() *cobra.Command {
 			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
 			"124, reserved the same way. A script can return any code itself, so a machine\n" +
 			"gate should read --json, where the outcome is a field rather than a code.",
-		Args: cobra.ExactArgs(1),
+		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal raised before enforce.Run - a bad --env, an unparseable or
 			// unapproved manifest, an env that cannot be resolved, a backend this host

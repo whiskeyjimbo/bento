@@ -21,7 +21,7 @@ func newDoctorCmd() *cobra.Command {
 			"Core layers are the guarantees bento makes everywhere; a core layer that falls\n" +
 			"short refuses a run by default. Hardening layers have no equivalent on every\n" +
 			"platform - when one is unavailable, runs proceed and say so.",
-		Args: cobra.NoArgs,
+		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := backend.New()
 			if err != nil {

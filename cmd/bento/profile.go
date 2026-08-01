@@ -64,7 +64,7 @@ func newProfileCmd() *cobra.Command {
 			"it: the profiled run did not finish, the observer dropped accesses it could\n" +
 			"not name, or the granting session ended before it converged. That is what\n" +
 			"keeps `profile && approve` from stamping a manifest built on a crashed run.",
-		Args: cobra.MinimumNArgs(1),
+		Args: minArgs(1, "a script path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script, err := filepath.Abs(args[0])
 			if err != nil {

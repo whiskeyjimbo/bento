@@ -29,7 +29,7 @@ func newValidateCmd() *cobra.Command {
 			"approved is reported. --strict makes a stale or missing approval a failure (exit\n" +
 			"non-zero), for use as a CI gate; without it, a stale approval is only a warning.\n" +
 			"--json carries the same verdict as an `approval` field and honors --strict too.",
-		Args: cobra.ExactArgs(1),
+		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			doc, trust, err := loadDocument(args[0])
 			if err != nil {

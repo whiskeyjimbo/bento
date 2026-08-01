@@ -39,7 +39,7 @@ func newApproveCmd() *cobra.Command {
 			"approving it - a shipped stamp is its author's, not your review.\n\n" +
 			"The manifest is rewritten in canonical form (it is machine-owned); review the\n" +
 			"diff as you would any change.",
-		Args: cobra.ExactArgs(1),
+		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
 			// approve reports the location facts itself below, as a refusal for what it
