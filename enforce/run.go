@@ -128,8 +128,8 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	}
 	// A silent stage leaves no attestation for any layer, so the exit code beside it is
 	// not an answer this run is entitled to hand back: returning nil would present
-	// Result's zero as the target's own, which is how an embedder that forgot
-	// DispatchReexec reads a clean success for a target that never started.
+	// Result's zero as the target's own, which is how an embedder whose stages never
+	// dispatched reads a clean success for a target that never started.
 	//
 	// The reason states what is known and offers the causes, rather than asserting one,
 	// for the same reason reconcile's does: the marker is written before the target is
@@ -146,7 +146,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 			Report: res.Report,
 			Reason: "the sandbox stage never reported what it applied, so nothing about this run is attested. " +
 				"Usually the stage died during setup and the target never ran; an embedder that hosts the backend " +
-				"and did not call backend.DispatchReexec() as the first statement in main() looks the same",
+				"and called backend.DispatchReexec() somewhere other than the first statement in main() looks the same",
 			Short: res.Report.Degradations(),
 		}
 	}
