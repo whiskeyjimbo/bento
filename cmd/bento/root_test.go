@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // A mistake in the command line is the one error class where bento knows the right
@@ -146,6 +148,32 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A shape refuseUsageJSON does not answer has to be caught where the commands are
+// assembled. It is the failure mode with no other symptom: the switch falls through, and
+// the command ships with exactly the empty stdout its annotation was added to prevent.
+func TestAnUnknownRefusalShapeIsRejectedAtConstruction(t *testing.T) {
+	t.Run("the real command tree is well-formed", func(t *testing.T) {
+		checkJSONRefusalShapes(newRootCmd())
+	})
+	t.Run("a typo'd shape panics", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("a command annotated with an unknown shape must not be assembled")
+			}
+			if msg, _ := r.(string); !strings.Contains(msg, "streem") {
+				t.Errorf("panic = %v, want the offending value named", r)
+			}
+		}()
+		root := &cobra.Command{Use: "bento"}
+		root.AddCommand(&cobra.Command{
+			Use:         "typo",
+			Annotations: map[string]string{jsonRefusalAnnotation: "streem"},
+		})
+		checkJSONRefusalShapes(root)
+	})
 }
 
 // The invocations that are NOT mistakes have to stay that way. Recognizing an unknown

@@ -99,9 +99,10 @@ func writeUsageHint(w io.Writer, cmd *cobra.Command, err error) {
 // consumers were never told to expect.
 //
 // Its value names WHICH shape, because the two that opt in do not share one: profile
-// answers with a single indented document, run with one object on its event stream. A
-// command carrying the annotation with any other value is a bug, and is treated as not
-// having opted in.
+// answers with a single indented document, run with one object on its event stream. Any
+// other value is a construction mistake newRootCmd panics on: treating it as not opted in
+// would leave --json the empty stdout the annotation exists to eliminate, on a command
+// whose author had asked for the envelope.
 const jsonRefusalAnnotation = "bento.json_refusal"
 
 const (
@@ -194,5 +195,22 @@ func newRootCmd() *cobra.Command {
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
 	root.AddCommand(newRunCmd(), newDoctorCmd(), newValidateCmd(), newApproveCmd(), newProfileCmd(), newVersionCmd())
+	checkJSONRefusalShapes(root)
 	return root
+}
+
+// checkJSONRefusalShapes rejects a command that opts into the refusal envelope under a
+// shape refuseUsageJSON does not answer. This is the one place that sees every command,
+// and the mistake is otherwise invisible: the switch would fall through, and the command
+// would ship with the empty stdout on a usage error that its annotation was added to
+// prevent. A panic because it is a construction error, reachable on any invocation.
+func checkJSONRefusalShapes(root *cobra.Command) {
+	for _, cmd := range root.Commands() {
+		switch shape, ok := cmd.Annotations[jsonRefusalAnnotation]; {
+		case !ok, shape == jsonRefusalDocument, shape == jsonRefusalStream:
+		default:
+			panic(fmt.Sprintf("bento: command %q carries %s=%q, which names no refusal shape; want %q or %q",
+				cmd.Name(), jsonRefusalAnnotation, shape, jsonRefusalDocument, jsonRefusalStream))
+		}
+	}
 }
