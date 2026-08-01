@@ -155,6 +155,15 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 		// name came from the profiled target, and this is a line printed to a terminal.
 		notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached a destination this rule covers and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
 	}
+	// Raised as one note over the whole group: individually each is an ordinary grant,
+	// and what the reader needs is that the set of them is partly the script's choosing.
+	// See tmpGrants.
+	// Asked of the resolved policy: the test is prefix-based, so a grant still spelled
+	// relative to the manifest would answer no on a manifest that reaches /tmp. Where
+	// resolution failed, the note below already tells the reader nothing was checked.
+	if g := tmpGrants(resolved); len(g) > 0 {
+		notes = append(notes, fmt.Sprintf("%d grant(s) under /tmp (%s) - a path there reaches a profiled proposal by existing on this host, so a script that opens guessed names under /tmp can put them in front of you. Keep only the ones it needs.", len(g), strings.Join(g, ", ")))
+	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}

@@ -709,3 +709,42 @@ func TestBlockedHostKeysDropUnrepresentableHosts(t *testing.T) {
 		t.Errorf("blockedHostKeys = %v, want the representable host once", got)
 	}
 }
+
+// A path under /tmp reaches a proposal by existing on the HOST - inside the box /tmp is
+// an empty tmpfs, so every probe there fails identically and only real names survive
+// (profile.SandboxScratch). That test is what tells a real workspace from scratch and
+// cannot be dropped, so the target's ability to steer it is disclosed instead: the
+// entries it can choose are named as a group.
+func TestTmpGrantsNamesWhatATargetCouldHaveSteered(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "/tmp/work-1234/run.py",
+		Read:       []string{"/tmp/work-1234/data", "/tmp/probed-name", "/etc/hostname"},
+		Write:      []string{"/tmp/work-1234", "/tmp/other"},
+	}
+	got := tmpGrants(p)
+	want := []string{"/tmp/other", "/tmp/probed-name"}
+	if !slices.Equal(got, want) {
+		t.Errorf("tmpGrants = %v, want %v - the script's own workspace is where the user put it, not a guess", got, want)
+	}
+
+	// Running out of a mktemp -d workspace is ordinary. A note on every such run is one
+	// the reader learns to skip, which costs the runs where it means something.
+	only := &policy.Policy{Entrypoint: "/tmp/work-1234/run.py", Write: []string{"/tmp/work-1234"}}
+	if got := tmpGrants(only); len(got) != 0 {
+		t.Errorf("tmpGrants = %v, want nothing for a run confined to its own temp workspace", got)
+	}
+
+	// An entrypoint sitting directly in /tmp would make the exclusion cover everything
+	// under it, hiding exactly the grants this exists to name.
+	loose := &policy.Policy{Entrypoint: "/tmp/run.py", Read: []string{"/tmp/probed-name"}}
+	if got := tmpGrants(loose); !slices.Equal(got, []string{"/tmp/probed-name"}) {
+		t.Errorf("tmpGrants = %v, want the sibling grant still named", got)
+	}
+
+	if got := tmpGrants(&policy.Policy{Entrypoint: "/srv/x", Read: []string{"/srv/data"}}); len(got) != 0 {
+		t.Errorf("tmpGrants = %v, want nothing for a policy that names no /tmp path", got)
+	}
+	if got := tmpGrants(nil); len(got) != 0 {
+		t.Errorf("tmpGrants(nil) = %v, want nothing", got)
+	}
+}

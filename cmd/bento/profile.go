@@ -279,6 +279,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	printSocketAccesses(obs)
 	printUnrepresentable(obs)
 	printProposalWarnings(proposed)
+	printTmpGrants(os.Stderr, proposed)
 	return proposed, roundStatus{
 		unfinished: partialRunWarning(obs) != "",
 		dropped:    obs.Dropped > 0,
@@ -386,6 +387,74 @@ func blockedHostKeys(blocked []profile.HostPort) []string {
 type roundStatus struct {
 	unfinished, dropped bool
 	blocked             []string
+}
+
+// The tmpfs every run mounts, and so the prefix that makes a grant target-steerable.
+// profile.SandboxScratch is the authority on what is scratch under it; this is only the
+// prefix test, which that package does not export.
+const sandboxTmp = "/tmp"
+
+// tmpGrants returns the proposed read and write grants that name a path under /tmp,
+// which are the grants a profiled target can steer.
+//
+// Everything under /tmp reaches the proposal through an existence test: inside the box
+// /tmp is an empty tmpfs, so every probe there fails identically, and only the names that
+// exist on the HOST survive as grants (SandboxScratch). That test is what makes a real
+// workspace under /tmp - a `mktemp -d`, a CI checkout - distinguishable from scratch, so
+// it cannot be dropped; but it means a target that opens a list of guessed names reads
+// the answer back out of the manifest it is handed, and chooses part of what the reviewer
+// is asked to approve.
+//
+// Which is why they are named as a group rather than filtered out. Nothing here is a
+// grant without a human stamping it, and a reviewer told these entries are target-chosen
+// can weigh them as such; one who is not told reads them as the same discovered fact as
+// every other line.
+//
+// Grants inside the entrypoint's own directory are excluded. Running from a `mktemp -d`
+// workspace or a CI checkout under /tmp is ordinary, and there the script's own tree is
+// where the user put it rather than anything the script guessed - flagging it would put
+// the note on most temp-dir runs and teach the reader to skip it. A guessed name is a
+// sibling of that tree, not inside it. The exclusion needs the entrypoint to be in a
+// directory under /tmp rather than in /tmp itself, where it would cover everything.
+//
+// Lexical, on the manifest's own text: profile writes these absolute, and this is the
+// spelling the reviewer is looking at.
+// A nil policy has no grants to disclose - approve passes one when this host could not
+// resolve the manifest, and says so on its own line.
+func tmpGrants(p *policy.Policy) []string {
+	if p == nil {
+		return nil
+	}
+	home := filepath.Dir(p.Entrypoint)
+	if !strings.HasPrefix(home, sandboxTmp+"/") {
+		home = ""
+	}
+	var out []string
+	for _, g := range slices.Concat(p.Read, p.Write) {
+		if g != sandboxTmp && !strings.HasPrefix(g, sandboxTmp+"/") {
+			continue
+		}
+		if home != "" && (g == home || strings.HasPrefix(g, home+"/")) {
+			continue
+		}
+		out = append(out, g)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// printTmpGrants tells the reviewer which of the proposal's grants the target could have
+// steered. See tmpGrants for why they are disclosed rather than withheld.
+func printTmpGrants(w io.Writer, p *policy.Policy) {
+	grants := tmpGrants(p)
+	if len(grants) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "[bento] %d proposed grant(s) name a path under /tmp: %s.\n", len(grants), strings.Join(grants, ", "))
+	fmt.Fprintf(w, "[bento] Those reach the proposal because the name exists on this host, which is the only way\n")
+	fmt.Fprintf(w, "[bento] a real workspace there can be told from the sandbox's own scratch - so a script that\n")
+	fmt.Fprintf(w, "[bento] opens guessed names under /tmp can put them here. Treat them as the script's request\n")
+	fmt.Fprintf(w, "[bento] rather than as something profiling discovered, and keep only the ones it needs.\n")
 }
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or
