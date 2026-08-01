@@ -26,18 +26,31 @@ echo "OK: example builds and tests against bento's public API only"
 # their documented output. Both are offline-safe: with no route out, the target
 # reports "blocked" either way, and mode 2's honesty line comes from the gate
 # being consulted at connect time, not from the connection succeeding.
-if ! command -v bwrap >/dev/null 2>&1; then
-	echo "SKIP: demo run needs bwrap (bubblewrap); the API checks above still ran" >&2
+#
+# setsid is what makes them non-interactive. The gate opens /dev/tty itself, and a
+# command substitution redirects stdout, not the controlling terminal - so run from
+# a developer's shell these would sit at the README's mode-3 prompt with the
+# question drawn on a terminal this script is not reading. A new session has no
+# controlling terminal to find.
+if ! command -v bwrap >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; then
+	echo "SKIP: demo run needs bwrap (bubblewrap) and setsid; the API checks above still ran" >&2
+	exit 0
+fi
+# bwrap on the PATH does not mean the kernel grants unprivileged user namespaces;
+# without them the run is refused before the target speaks, which is a host gap
+# rather than the regression this guards.
+if ! bwrap --unshare-user --ro-bind / / true 2>/dev/null; then
+	echo "SKIP: demo run needs unprivileged user namespaces; the API checks above still ran" >&2
 	exit 0
 fi
 
-out="$("$bin" demo/reach.yaml 2>&1)" || {
+out="$(setsid --wait "$bin" demo/reach.yaml 2>&1)" || {
 	echo "$out" >&2
 	echo "FAIL: README mode 1 (./embed demo/reach.yaml) did not succeed" >&2
 	exit 1
 }
 case "$out" in
-*blocked) ;;
+*blocked*) ;;
 *)
 	echo "$out" >&2
 	echo "FAIL: README mode 1 admitted undeclared egress instead of blocking it" >&2
@@ -45,7 +58,7 @@ case "$out" in
 	;;
 esac
 
-out="$(BENTO_GATE_ALLOW=example.com "$bin" demo/reach.yaml 2>&1)" || {
+out="$(BENTO_GATE_ALLOW=example.com setsid --wait "$bin" demo/reach.yaml 2>&1)" || {
 	echo "$out" >&2
 	echo "FAIL: README mode 2 (BENTO_GATE_ALLOW=example.com) did not succeed" >&2
 	exit 1
