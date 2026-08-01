@@ -321,6 +321,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// profiled code is.
 	var b strings.Builder
 	if traceErr == nil {
+		absent := map[string]bool{}
 		for _, a := range res.Accesses {
 			verb := "R"
 			if a.Write {
@@ -329,8 +330,10 @@ func runObserve(cfg Config, env []string) (int, error) {
 			fmt.Fprintf(&b, "%s %q\n", verb, a.Path)
 			// The access is reported either way; this only says nothing was ever found
 			// at the path, so the host can report a probe as a probe rather than as a
-			// file the run read.
-			if a.Absent {
+			// file the run read. It is a fact about the path, so a path recorded both
+			// read and written annotates once rather than twice.
+			if a.Absent && !absent[a.Path] {
+				absent[a.Path] = true
 				fmt.Fprintf(&b, "ABSENT %q\n", a.Path)
 			}
 		}

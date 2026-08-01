@@ -97,11 +97,18 @@ func TestTraceMarksPathsNothingWasFoundAt(t *testing.T) {
 	if err != nil {
 		skipMissingDep(t, "python3 not available")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root opens an unreadable file, so the EACCES case cannot be produced")
+	}
 	dir := t.TempDir()
 	present := filepath.Join(dir, "there.toml")
 	missing := filepath.Join(dir, "gone.toml")
 	created := filepath.Join(dir, "made.toml")
+	unreadable := filepath.Join(dir, "locked.toml")
 	if err := os.WriteFile(present, []byte("k = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unreadable, []byte("k = 1\n"), 0o000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,16 +124,22 @@ try:
 except FileNotFoundError:
     pass
 open(%q, "w").close()
-`, present, missing, created, created)
+try:
+    open(%q).close()
+except PermissionError:
+    pass
+`, present, missing, created, created, unreadable)
 
 	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Trace: %v", err)
 	}
-	for _, path := range []string{present, created} {
+	// unreadable is here for the errno the answer turns on: it exists, and an open of it
+	// fails with EACCES rather than ENOENT, so nothing was found is the wrong reading.
+	for _, path := range []string{present, created, unreadable} {
 		for _, a := range res.Accesses {
 			if a.Path == path && a.Absent {
-				t.Errorf("%q was opened successfully but is marked absent (write=%v)", path, a.Write)
+				t.Errorf("%q exists but is marked absent (write=%v)", path, a.Write)
 			}
 		}
 	}

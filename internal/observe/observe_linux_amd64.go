@@ -34,7 +34,8 @@ type Access struct {
 	Path  string
 	Write bool // the open requested write access
 	// Absent reports that every open of this path whose return the observer saw came
-	// back with the file not there. The access is recorded either way - the program
+	// back ENOENT, with nothing at the path at all. An open that failed for any other
+	// reason answers nothing: a file can exist and still refuse to open. The access is recorded either way - the program
 	// meant to open that file, and enforcement must reproduce the same answer - but a
 	// path nothing was ever found at cannot have been read, which is what lets a
 	// reporting layer tell a probe apart from a resolved file. It is keyed on the path
@@ -756,7 +757,6 @@ type heldPath struct {
 	path   string
 	readOK bool
 	open   bool
-	write  bool
 }
 
 // existenceHeld counts the held pathnames whose loss is a lost access. See heldPath.
@@ -846,9 +846,8 @@ func inspect(pid int, op byte, record func(string, bool), openResult func(string
 	switch regs.Orig_rax {
 	case sysOpenat:
 		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {
-			write := regs.Rdx&writeFlags != 0
-			record(path, write)
-			holdOpen(pid, &regs, held, path, write)
+			record(path, regs.Rdx&writeFlags != 0)
+			holdOpen(pid, &regs, held, path)
 		} else {
 			drop()
 		}
@@ -873,25 +872,23 @@ func inspect(pid int, op byte, record func(string, bool), openResult func(string
 				drop()
 				break
 			}
-			write := flags&uint64(writeFlags) != 0
-			record(anchoredPath, write)
-			holdOpen(pid, &regs, held, anchoredPath, write)
+			record(anchoredPath, flags&uint64(writeFlags) != 0)
+			holdOpen(pid, &regs, held, anchoredPath)
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
 		// directory, exactly the AT_FDCWD case, so route them through resolveAt too or
 		// a relative open after a chdir would be mis-anchored.
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
-			write := regs.Rsi&writeFlags != 0
-			record(path, write)
-			holdOpen(pid, &regs, held, path, write)
+			record(path, regs.Rsi&writeFlags != 0)
+			holdOpen(pid, &regs, held, path)
 		} else {
 			drop()
 		}
 	case sysCreat:
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
 			record(path, true)
-			holdOpen(pid, &regs, held, path, true)
+			holdOpen(pid, &regs, held, path)
 		} else {
 			drop()
 		}
@@ -1006,8 +1003,8 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 // layer needs and the grant does not. Replaying the entry stop's pathname rather than
 // reading it again at the exit stop is what keeps a sibling sharing the address space from
 // swapping in a path the call never touched.
-func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path string, write bool) {
-	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, open: true, write: write}
+func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path string) {
+	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, open: true}
 }
 
 // recordHeldExistence applies the existence syscalls' success filter at the exit stop, to
@@ -1027,7 +1024,18 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	}
 	delete(held, key)
 	if h.open {
-		openResult(h.path, int64(regs.Rax) >= 0)
+		// Only the two errnos that mean nothing is there answer the question, and every
+		// other outcome leaves it unanswered rather than answering it no. A failure with
+		// EACCES, EISDIR, ELOOP or a process out of descriptors is a file that exists and
+		// refused the open for its own reason, and calling that absence would soften the
+		// warning about a deceptive name on the file most worth warning about: one that is
+		// present but unreadable.
+		ret := int64(regs.Rax)
+		if ret >= 0 {
+			openResult(h.path, true)
+		} else if errno := syscall.Errno(-ret); errno == syscall.ENOENT || errno == syscall.ENOTDIR {
+			openResult(h.path, false)
+		}
 		return
 	}
 	if int64(regs.Rax) < 0 {
