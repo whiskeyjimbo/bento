@@ -63,7 +63,7 @@ func usage(w io.Writer) {
 
 Usage:
   supervise run <script>
-  supervise perms list | forget | reset
+  supervise perms list | global | forget | reset | export | import
   supervise -h | --help
 
 It runs the script twice. First a TRIAL pass observes what the script reads,
@@ -72,8 +72,9 @@ writes, and reaches (nothing leaves the host), and asks you to approve each with
 approved, denying the rest - and prompts you LIVE for any host it reaches that you
 did not declare, where you can also [B]lock it for every script.
 
-Prompts read the controlling terminal, so answer at the keyboard even when the
-script has its own stdin.
+Prompts are drawn on the controlling terminal, so answer at the keyboard even when
+the script has its own stdin. "run" needs a terminal on stdin and refuses without
+one; "perms" is the scriptable half.
 
 Try it (from this directory):
   go build -o supervise .
@@ -98,7 +99,7 @@ func run(scriptArg string) int {
 	// and leave that session's verdicts behind for the next one. cmd/bento's approve
 	// gates on stdin the same way.
 	if !isTerminal(os.Stdin) {
-		fmt.Fprintln(os.Stderr, "supervise: run needs a terminal - every access the trial finds is a question for a human, and stdin is not one. Attach a terminal, or set the decisions ahead of time with `supervise perms`.")
+		fmt.Fprintln(os.Stderr, "supervise: run needs a terminal - every access the trial finds is a question for a human, and stdin is not one. Attach a terminal, or set the decisions ahead of time with `supervise perms global` or `supervise perms import`.")
 		return 1
 	}
 
