@@ -60,6 +60,11 @@ func main() {
 	if err == nil {
 		return
 	}
+	// A usage error is raised before RunE, so a command whose --json contract is the
+	// refusal envelope has written nothing to stdout yet; this is the last place that
+	// can. It answers in the envelope and says nothing on stderr, exactly as a refusal
+	// raised inside RunE does.
+	err = refuseUsageJSON(os.Stdout, cmd, os.Args, err)
 	var ee *exitError
 	if errors.As(err, &ee) {
 		os.Exit(ee.code)

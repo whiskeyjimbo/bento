@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -53,6 +55,65 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 			}
 			if cmd.HasParent() && !strings.Contains(b.String(), "usage: "+cmd.UseLine()) {
 				t.Errorf("hint = %q, want the use line of %q", b.String(), cmd.CommandPath())
+			}
+		})
+	}
+}
+
+// A usage error is raised before RunE, so the command that promised a refusal envelope
+// on stdout never got to write one - and an empty stdout is the case the envelope exists
+// to eliminate, indistinguishable from a crash to the machine gate `run --help` sends
+// there. The commands that answer --json in their own shapes must not gain this one.
+func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
+	cases := []struct {
+		name    string
+		argv    []string
+		refused bool
+	}{
+		{"an unknown flag on run", []string{"run", "--json", "--nosuchflag", "m.yaml"}, true},
+		{"--json after the bad flag", []string{"run", "--nosuchflag", "--json", "m.yaml"}, true},
+		{"a missing script on profile", []string{"profile", "--json"}, true},
+		{"--json=true spells the same thing", []string{"run", "--json=true", "--nosuchflag"}, true},
+		{"--json=false asked for no envelope", []string{"run", "--json=false", "--nosuchflag"}, false},
+		{"without --json nothing is written", []string{"run", "--nosuchflag", "m.yaml"}, false},
+		// validate answers --json in its own shape; a refusalJSON there would be a shape
+		// its consumers were never told to expect.
+		{"validate keeps its own contract", []string{"validate", "--json", "a.yaml", "b.yaml"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newRootCmd()
+			root.SetArgs(tc.argv)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			cmd, err := root.ExecuteC()
+			if err == nil {
+				t.Fatalf("argv %v must fail", tc.argv)
+			}
+
+			var stdout bytes.Buffer
+			got := refuseUsageJSON(&stdout, cmd, tc.argv, err)
+			if !tc.refused {
+				if stdout.Len() != 0 {
+					t.Fatalf("stdout = %q, want nothing written", stdout.String())
+				}
+				if !errors.Is(got, err) {
+					t.Errorf("err = %v, want the error returned untouched for main to print", got)
+				}
+				return
+			}
+			if code := asExitError(t, got).code; code != bentoFailed {
+				t.Errorf("exit code = %d, want %d, as a refusal raised inside RunE", code, bentoFailed)
+			}
+			var env refusalJSON
+			if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+				t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
+			}
+			if !env.Refused || env.Reason == "" {
+				t.Errorf("envelope = %+v, want refused with the usage error as its reason", env)
+			}
+			if env.Report.FullyEnforced || env.Report.Layers == nil {
+				t.Errorf("report = %+v, want the empty report of a run that built no sandbox", env.Report)
 			}
 		})
 	}

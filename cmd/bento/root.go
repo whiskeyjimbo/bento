@@ -90,6 +90,44 @@ func writeUsageHint(w io.Writer, cmd *cobra.Command, err error) {
 	fmt.Fprintf(w, "Run `%s --help` for what it does and the flags it takes.\n", cmd.CommandPath())
 }
 
+// jsonRefusalAnnotation marks the commands whose --json contract is the refusal
+// envelope, so an error raised before their RunE is answered in that shape rather than
+// with an empty stdout. It is an opt-in and not "the command has a --json flag":
+// validate and doctor answer --json in their own shapes, and a refusalJSON on stdout
+// would be a shape their consumers were never told to expect.
+const jsonRefusalAnnotation = "bento.json_refusal"
+
+// refuseUsageJSON answers an error that never reached RunE in the refusal envelope that
+// command's --json promises. cobra rejects an unknown flag or a bad argument count
+// itself, so `bento run --json --bogus` exited with an empty stdout - the case the
+// envelope exists to eliminate, and the one a machine gate cannot tell from a crash.
+//
+// Whether --json was asked for is read from argv rather than from the flag set: cobra
+// parses left to right and stops at the error, so Changed("json") answers on where the
+// bad flag happened to sit. Everything after a bare -- is the target's, not bento's.
+//
+// Only errors main would otherwise print: an *exitError is a command that already ran
+// and wrote its own envelope.
+func refuseUsageJSON(stdout io.Writer, cmd *cobra.Command, args []string, err error) error {
+	var ee *exitError
+	if cmd == nil || errors.As(err, &ee) || cmd.Annotations[jsonRefusalAnnotation] == "" || !wantsJSON(args) {
+		return err
+	}
+	return refuseJSON(stdout, true, err)
+}
+
+func wantsJSON(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--":
+			return false
+		case "--json", "--json=true":
+			return true
+		}
+	}
+	return false
+}
+
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "bento",
