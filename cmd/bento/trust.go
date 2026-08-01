@@ -610,11 +610,15 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 		// "nobody else is in the group" reading is the one thing it rules out.
 		fatal := shared&0o002 != 0
 		reason := fmt.Sprintf("%s, %s, is %s-writable (%#o), so anyone there can replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
+		hint := fmt.Sprintf("chmod %s %s narrows it, if nobody else is meant to write there", chmodNarrowing(shared), d.path)
 		if shared&0o020 != 0 && d.mode&fs.ModeSetgid != 0 {
 			fatal = true
 			reason = fmt.Sprintf("%s, %s, is setgid and group-writable (%#o), which is the shared-project layout, so the group holds other people who can replace the manifest", d.path, role, d.mode.Perm())
+			// Not chmod: the directory is that mode on purpose, for people whose write it is
+			// not this manifest's business to take away. Somewhere else is the remedy.
+			hint = fmt.Sprintf("keep the manifest somewhere only you can write, and point bento at it there, rather than narrowing %s", d.path)
 		}
-		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: fmt.Sprintf("chmod %s %s narrows it, if nobody else is meant to write there", chmodNarrowing(shared), d.path)})
+		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: hint})
 	}
 	if d.foreignOwner(euid) {
 		out = append(out, trustFlaw{

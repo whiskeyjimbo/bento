@@ -102,8 +102,14 @@ func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 
 	setgid := private
 	setgid.mode |= fs.ModeSetgid
-	if got := dirFlaws(setgid, "the directory holding it", me); len(got) != 1 || !got[0].fatal {
-		t.Errorf("the shared-project layout outranks what the group database reads as; got %+v", got)
+	got = dirFlaws(setgid, "the directory holding it", me)
+	if len(got) != 1 || !got[0].fatal {
+		t.Fatalf("the shared-project layout outranks what the group database reads as; got %+v", got)
+	}
+	// And there the remedy is not chmod: the mode is deliberate, and the write belongs to
+	// people it is not this manifest's business to lock out.
+	if strings.Contains(got[0].hint, "chmod") {
+		t.Errorf("a shared-project directory is not for this manifest to narrow; got %q", got[0].hint)
 	}
 }
 
