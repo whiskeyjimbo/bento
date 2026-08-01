@@ -260,6 +260,12 @@ func NamesOtherUserHome(path string) bool {
 // nothing: the same silent no-grant expandHome exists to prevent, reached by a Go
 // embedder who built the policy by hand and never called Resolve.
 func (p *Policy) RequireExpanded() error {
+	// Answered here rather than left to the callers' Validate, which refuses nil first
+	// on every path bento itself takes: this is exported for the same embedders, who can
+	// reach it on its own.
+	if p == nil {
+		return fmt.Errorf("policy: nil policy")
+	}
 	for _, f := range []struct {
 		name string
 		path string

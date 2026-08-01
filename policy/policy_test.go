@@ -290,6 +290,9 @@ func TestValidateNilPolicy(t *testing.T) {
 	if err := p.Validate(); err == nil {
 		t.Error("nil policy should not validate")
 	}
+	if err := p.RequireExpanded(); err == nil {
+		t.Error("nil policy should not pass the enforcement precondition")
+	}
 }
 
 func TestLimitsIsZero(t *testing.T) {
