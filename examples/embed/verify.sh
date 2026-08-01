@@ -36,11 +36,12 @@ if ! command -v bwrap >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; th
 	echo "SKIP: demo run needs bwrap (bubblewrap) and setsid; the API checks above still ran" >&2
 	exit 0
 fi
-# bwrap on the PATH does not mean the kernel grants unprivileged user namespaces;
-# without them the run is refused before the target speaks, which is a host gap
-# rather than the regression this guards.
-if ! bwrap --unshare-user --ro-bind / / true 2>/dev/null; then
-	echo "SKIP: demo run needs unprivileged user namespaces; the API checks above still ran" >&2
+# bwrap on the PATH does not mean the kernel grants the sandbox: a host can refuse
+# the user namespace, or grant it and refuse the procfs mount inside it (docker's
+# default masking of /proc). Either way the run is refused before the target speaks,
+# which is a host gap rather than the regression this guards.
+if ! bwrap --unshare-user --ro-bind / / --proc /proc true 2>/dev/null; then
+	echo "SKIP: demo run needs a host bubblewrap can build its sandbox on; the API checks above still ran" >&2
 	exit 0
 fi
 

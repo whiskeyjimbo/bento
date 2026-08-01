@@ -33,7 +33,7 @@ func requireSandbox(t *testing.T) {
 		skipMissingDep(t, "bwrap not installed")
 	}
 	if err := canUnshare(context.Background(), "bwrap"); err != nil {
-		skipMissingDep(t, "unprivileged user namespaces unavailable on this host")
+		skipMissingDep(t, "the bwrap sandbox cannot be built on this host (user namespace or /proc mount refused)")
 	}
 }
 

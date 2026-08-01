@@ -351,8 +351,8 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// permission separate from creating it, and a container that masks paths under
 	// /proc grants the second and refuses the first. --dev and --tmpfs are probed
 	// alongside it because the run makes them too; unlike the procfs refusal they have
-	// no known host remedy to name, so a failure there is reported as the unclassified
-	// probe failure it is.
+	// no known host remedy to name, so classifyUnshare reports them as a mount the host
+	// refused and stops there.
 	args := append([]string{}, namespaceFlags...)
 	args = append(args, "--unshare-net", "--bind", "/", "/")
 	args = append(args, pseudoFSFlags...)
@@ -388,14 +388,14 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // a new user namespace") tells a user nothing about why or what to do, and on current
 // Ubuntu the cause is a specific, fixable AppArmor policy.
 //
-// Only output naming a namespace refusal, or the procfs mount the sandbox root needs,
-// counts as "blocked": that is the host answering. Everything else - the probe timing out, bwrap failing to start, an exit
-// whose output names no namespace failure (a reaped canary, EAGAIN under load) -
-// leaves the question open, and saying "userns blocked" there costs the user the full
-// sandbox on a host that supports it. The match is on bwrap's message, so an
-// unrelated "Permission denied" (a mount it could not make) still reads as blocked;
-// that is the pre-existing reading, and it errs toward the tier that confines less
-// rather than toward claiming a guarantee.
+// Only output naming a namespace refusal, or one of the base mounts the sandbox root
+// needs, counts as "blocked": that is the host answering. Everything else - the probe
+// timing out, bwrap failing to start, an exit whose output names no such failure (a
+// reaped canary, EAGAIN under load) - leaves the question open, and saying "userns
+// blocked" there costs the user the full sandbox on a host that supports it. The match
+// is on bwrap's message, so a "Permission denied" naming neither still reads as
+// blocked; that is the pre-existing reading, and it errs toward the tier that confines
+// less rather than toward claiming a guarantee.
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError
@@ -406,16 +406,21 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 				"), so whether bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 		}
 	}
-	// Checked before the namespace-refusal match below, which this message would
-	// otherwise fall through as "not a namespace refusal" - it names neither. The host
-	// did answer here, and with a fact worth stating on its own: the namespace was
-	// granted and the mount inside it was not, so the reason must not borrow base's
-	// "cannot create an unprivileged user namespace", which is false on this host.
-	if strings.Contains(out, "Can't mount proc") {
-		return namespacesBlocked, "bubblewrap can create a user namespace here but cannot mount a private " +
-			"/proc inside it, which the sandbox's root filesystem needs, so it cannot isolate anything: " +
-			strings.TrimSpace(out) + ". The usual cause is a container runtime masking paths under /proc, " +
-			"which docker does by default; there --security-opt systempaths=unconfined lifts it."
+	// Checked before both matches below, and matching every base mount rather than only
+	// proc: the host did answer here, and with a fact worth stating on its own - the
+	// namespace was granted and the mount inside it was not. Falling through, a refusal
+	// worded "Operation not permitted" would read as an unclassified probe failure and
+	// one worded "Permission denied" would borrow base's "cannot create an unprivileged
+	// user namespace", which is false on this host. Only proc carries a remedy, because
+	// masking paths under /proc is the one cause established for this class.
+	if strings.Contains(out, "Can't mount ") {
+		reason := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
+			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
+		if strings.Contains(out, "Can't mount proc") {
+			reason += ". The usual cause is a container runtime masking paths under /proc, " +
+				"which docker does by default; there --security-opt systempaths=unconfined lifts it."
+		}
+		return namespacesBlocked, reason
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +

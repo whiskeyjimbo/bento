@@ -389,6 +389,14 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			namespacesBlocked, "systempaths=unconfined", "cannot create an unprivileged user namespace",
 		},
 		{
+			// The other base mounts get the same reading and no remedy: bento has
+			// established a cause for the procfs refusal and none for these, but a
+			// "Permission denied" wording must still not be read as a userns refusal.
+			"a base mount other than proc refused",
+			&usernsError{output: "bwrap: Can't mount devpts on /newroot/dev/pts: Permission denied", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot mount the pseudo-filesystems", "unprivileged user namespace",
+		},
+		{
 			"canary reaped without a namespace error",
 			&usernsError{output: "bwrap: execvp true: Cannot allocate memory", err: errors.New("exit status 1")},
 			namespacesUnknown, "is unknown", "",
