@@ -339,6 +339,19 @@ func grantsAnyBlockedHost(r policy.NetworkRule, blocked []string) bool {
 	return false
 }
 
+// rulesCoveringBlockedHost returns the policy's network rules that cover a recorded
+// refusal, for the readers that report them as a group rather than deciding rule by
+// rule (validate's summary, run's pre-flight note).
+func rulesCoveringBlockedHost(p *policy.Policy, blocked []string) []policy.NetworkRule {
+	var covering []policy.NetworkRule
+	for _, r := range p.Network {
+		if grantsAnyBlockedHost(r, blocked) {
+			covering = append(covering, r)
+		}
+	}
+	return covering
+}
+
 // blockedHostKeys renders the destinations the round's egress guard refused as the
 // "host:port" keys the provenance block carries, dropping any the manifest grammar
 // could not hold - the same screen Synthesize applies to the proposed network rules,

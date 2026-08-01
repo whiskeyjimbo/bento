@@ -76,6 +76,8 @@ func newRunCmd() *cobra.Command {
 					"the script will not see it. Pass it with --env %s=VALUE.\n", name, name)
 			}
 
+			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
+
 			e, err := backend.New()
 			if err != nil {
 				return refuse(err)

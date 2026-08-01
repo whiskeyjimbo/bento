@@ -361,6 +361,23 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
 }
 
+// writeBlockedHostNotes marks the rules whose destination the profiling run already
+// found the egress guard refusing. It runs before the script does, not after: the guard
+// refuses at connect time and the target meets that as a 502 from the proxy, with
+// nothing tying it back to the rule it was granted under. The manifest carries the
+// answer, so it is said while the reader is still looking at the manifest they passed.
+//
+// It is a note, never a refusal. The record is provenance rather than permission - a
+// hand-edited manifest can carry any of it - and the run refuses the destination itself
+// when it comes to it, which is where the enforcement belongs.
+func writeBlockedHostNotes(w io.Writer, p *policy.Policy, blockedHosts []string) {
+	for _, r := range rulesCoveringBlockedHost(p, blockedHosts) {
+		fmt.Fprintf(w, "[bento] note: network %q port %q covers a destination the profiling run reached and bento's\n", r.Host, r.Port)
+		fmt.Fprintf(w, "[bento] egress guard refused - it resolved to loopback, private space, or cloud metadata.\n")
+		fmt.Fprintf(w, "[bento] This run refuses it the same way; the rule does not widen it.\n")
+	}
+}
+
 // writeGuardBlockedWarning names the destinations the allowlist permitted but the
 // egress guard refused to dial, because the name resolved somewhere the sandbox must
 // not reach. The script saw only "could not reach", deliberately - telling it apart

@@ -73,7 +73,7 @@ func newApproveCmd() *cobra.Command {
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
 			resolved := resolvedGrants(doc.Policy, path)
-			writePolicySummary(os.Stdout, path, doc.Policy, resolved)
+			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil)
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.

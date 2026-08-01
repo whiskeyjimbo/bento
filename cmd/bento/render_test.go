@@ -372,3 +372,34 @@ func TestWriteAcceptedAliasWarning(t *testing.T) {
 		t.Errorf("the ordinary run with no acknowledged alias must print nothing; got %q", empty.String())
 	}
 }
+
+// run's only account of a guard refusal was writeGuardBlockedWarning, which fires after
+// the connection was already refused. The manifest records what the profiling run met,
+// so the rule can be marked before the script starts - and stays a note, since the
+// record is provenance a hand-edited manifest can carry.
+func TestWriteBlockedHostNotes(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Network: []policy.NetworkRule{
+			{Host: ".internal", Port: "80"},
+			{Host: "example.com", Port: "443"},
+		},
+	}
+
+	var b bytes.Buffer
+	writeBlockedHostNotes(&b, p, []string{"metadata.internal:80"})
+	out := b.String()
+	if !strings.Contains(out, `".internal" port "80"`) || !strings.Contains(out, "egress guard refused") {
+		t.Errorf("the note must name the rule covering the refusal; got:\n%s", out)
+	}
+	if strings.Contains(out, "example.com") {
+		t.Errorf("a rule covering no refusal must not be named; got:\n%s", out)
+	}
+
+	// The ordinary run: nothing was refused during profiling, so nothing is said.
+	var quiet bytes.Buffer
+	writeBlockedHostNotes(&quiet, p, nil)
+	if quiet.Len() != 0 {
+		t.Errorf("with no record the note must stay silent; got %q", quiet.String())
+	}
+}

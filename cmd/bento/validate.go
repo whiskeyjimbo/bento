@@ -48,7 +48,7 @@ func newValidateCmd() *cobra.Command {
 				// stderr and the non-zero exit, exactly as the human mode's does.
 				return strictApprovalError(doc, strict)
 			}
-			writePolicySummary(os.Stdout, args[0], doc.Policy, resolvedGrants(doc.Policy, args[0]))
+			writePolicySummary(os.Stdout, args[0], doc.Policy, resolvedGrants(doc.Policy, args[0]), doc.Provenance.BlockedHosts)
 			return reportApproval(os.Stdout, doc, strict)
 		},
 	}
@@ -275,7 +275,11 @@ func resolvedGrants(p *policy.Policy, manifestPath string) *policy.Policy {
 	return &cp
 }
 
-func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
+// blockedHosts is the manifest's record of the destinations the profiling run's egress
+// guard refused (provenance, not permission), used to mark the network rules that cover
+// one. approve passes nil: writeApprovalCallouts raises the same rules where the reader
+// is deciding, and printing it twice on one screen teaches them to skim the block.
+func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, blockedHosts []string) {
 	var resolvedRead, resolvedWrite []string
 	if resolved != nil {
 		resolvedRead, resolvedWrite = resolved.Read, resolved.Write
@@ -302,6 +306,12 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 			rules = append(rules, r.Host+":"+r.Port)
 		}
 		fmt.Fprintf(w, "network:      %v\n", rules)
+		for _, r := range rulesCoveringBlockedHost(p, blockedHosts) {
+			fmt.Fprintf(w, "  note: the profiling run reached a destination %q port %q covers and bento's\n", r.Host, r.Port)
+			fmt.Fprintf(w, "        egress guard refused it - the name resolved to an address a sandbox must\n")
+			fmt.Fprintf(w, "        not reach (loopback, private space, or cloud metadata). An enforced run\n")
+			fmt.Fprintf(w, "        refuses it the same way; this rule does not widen it.\n")
+		}
 		for _, r := range p.Network {
 			if isLoopbackHost(r.Host) {
 				fmt.Fprintf(w, "  note: %q is a loopback address. The sandbox exempts loopback from the egress\n", r.Host)

@@ -24,7 +24,7 @@ func TestValidateShowsLimits(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M", CPU: "50%", PIDs: 64}}
 
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", p, nil)
+	writePolicySummary(&buf, "m.yaml", p, nil, nil)
 	out := buf.String()
 	for _, want := range []string{"limits:", "memory 128M", "cpu 50%", "pids 64"} {
 		if !strings.Contains(out, want) {
@@ -299,15 +299,48 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 // script using the ordinary ~/... idiom otherwise fails on a path its author never wrote.
 func TestValidateStatesTheSandboxHome(t *testing.T) {
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}, nil)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}, nil, nil)
 	if out := buf.String(); !strings.Contains(out, enforce.SandboxHome) || !strings.Contains(out, "HOME is not passed through") {
 		t.Errorf("summary must say what HOME becomes inside the sandbox; got:\n%s", out)
 	}
 
 	// Passed through, so ~ means what the author expects and the note would be wrong.
 	buf.Reset()
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil, nil)
 	if strings.Contains(buf.String(), "HOME is not passed through") {
 		t.Errorf("a manifest allowlisting HOME must not be told it was remapped; got:\n%s", buf.String())
+	}
+}
+
+// The blocked-hosts record is provenance the profiling run wrote, and until now approve
+// was its only reader - so profile -> run, and validate's own summary, never said that a
+// rule in the manifest names a destination bento itself refuses.
+func TestValidateNotesRulesCoveringABlockedHost(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Network: []policy.NetworkRule{
+			{Host: ".internal", Port: "80"},
+			{Host: "example.com", Port: "443"},
+		},
+	}
+
+	var buf bytes.Buffer
+	writePolicySummary(&buf, "m.yaml", p, nil, []string{"metadata.internal:80"})
+	out := buf.String()
+	// Matched through the wildcard, not by spelling: a rule that covers the refusal
+	// without naming it is the one the reader is least able to see for themselves.
+	if !strings.Contains(out, `".internal" port "80"`) || !strings.Contains(out, "egress guard refused") {
+		t.Errorf("the summary must mark the rule covering the refusal; got:\n%s", out)
+	}
+	if strings.Contains(out, `"example.com"`) && strings.Contains(out, `note: the profiling run reached a destination "example.com"`) {
+		t.Errorf("a rule covering no refusal must not be marked; got:\n%s", out)
+	}
+
+	// approve prints the same rules through writeApprovalCallouts, where the reader is
+	// deciding, so it passes nil rather than saying it twice on one screen.
+	var quiet bytes.Buffer
+	writePolicySummary(&quiet, "m.yaml", p, nil, nil)
+	if strings.Contains(quiet.String(), "egress guard refused") {
+		t.Errorf("with no blocked hosts recorded the summary must stay silent; got:\n%s", quiet.String())
 	}
 }
