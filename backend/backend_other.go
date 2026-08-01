@@ -1,4 +1,11 @@
-//go:build !linux
+//go:build darwin
+
+// darwin rather than !linux, so the tag claims only what the tree can deliver. macOS is
+// the one planned platform, and it is the only non-linux target cmd/bento compiles for:
+// windows has no syscall.SIGSYS or syscall.Stat_t, and the BSDs have no unix.ENODATA.
+// A "no backend here yet" stub that says those platforms build, on a tree that does not
+// compile there, reports a backend gap where the real answer is that bento does not
+// build at all.
 
 package backend
 
