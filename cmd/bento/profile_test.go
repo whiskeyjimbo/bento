@@ -922,3 +922,57 @@ func TestRelocatableLeavesAPathOutsideBothAnchorsAlone(t *testing.T) {
 		t.Errorf("read = %v, want the absolute paths untouched (%v)", got.Read, want)
 	}
 }
+
+// A path-shaped interpreter names a machine exactly as an entrypoint does, and a
+// re-profile resolves an existing manifest's to an absolute path before the merge - so
+// leaving the field out of the rewrite de-relativized a manifest that already had it
+// right. A bare name means "the host's python3" and must survive untouched.
+func TestRelocatableRewritesOnlyAPathShapedInterpreter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	m := filepath.Join(dir, "m.yaml")
+
+	got := relocatable(&policy.Policy{
+		Entrypoint:  filepath.Join(dir, "x.py"),
+		Interpreter: filepath.Join(dir, "venv", "bin", "python"),
+	}, m)
+	if got.Interpreter != "./venv/bin/python" {
+		t.Errorf("interpreter = %q, want ./venv/bin/python", got.Interpreter)
+	}
+
+	bare := relocatable(&policy.Policy{Entrypoint: filepath.Join(dir, "x.py"), Interpreter: "python3"}, m)
+	if bare.Interpreter != "python3" {
+		t.Errorf("interpreter = %q, want the bare name untouched", bare.Interpreter)
+	}
+}
+
+// The rewrite changes spelling, not policy, so it must never produce a manifest Marshal's
+// own gate refuses - that would end a whole granting session over a spelling the user
+// never wrote. `write: /home/you` passes validation; `write: ~` is refused outright.
+func TestRelocatableKeepsTheAbsoluteFormWhenTheRewriteWouldNotValidate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+
+	p := &policy.Policy{Entrypoint: filepath.Join(dir, "x"), Write: []string{home}}
+	got := relocatable(p, filepath.Join(dir, "m.yaml"))
+	if !slices.Equal(got.Write, []string{home}) {
+		t.Errorf("write = %v, want the absolute home grant kept", got.Write)
+	}
+	if _, err := manifest.Marshal(got, manifest.Provenance{}); err != nil {
+		t.Errorf("what relocatable returns must always marshal; got %v", err)
+	}
+}
+
+// A $HOME of "/" - a system account, a minimal container - is under every absolute path,
+// so home-anchoring there would write the whole policy as ~/-relative and land it
+// somewhere else entirely on a host whose home is a real directory.
+func TestRelocatableIgnoresARootHome(t *testing.T) {
+	t.Setenv("HOME", "/")
+	dir := t.TempDir()
+
+	got := relocatable(&policy.Policy{Entrypoint: filepath.Join(dir, "x"), Read: []string{"/etc/hosts"}}, filepath.Join(dir, "m.yaml"))
+	if !slices.Equal(got.Read, []string{"/etc/hosts"}) {
+		t.Errorf("read = %v, want /etc/hosts left absolute", got.Read)
+	}
+}

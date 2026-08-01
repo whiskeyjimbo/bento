@@ -249,9 +249,12 @@ func relocatable(p *policy.Policy, manifestPath string) *policy.Policy {
 	}
 	// An unusable $HOME is not worth refusing over: home-anchoring is the second-best of
 	// the two rewrites, and dropping it leaves absolute paths, which is what profiling
-	// wrote before any of this.
+	// wrote before any of this. A $HOME of "/" - a system account, a minimal container -
+	// is unusable in the way that matters here: every absolute path is under it, so the
+	// whole policy would be written `~/`-anchored and land somewhere else entirely on a
+	// host whose home is a real directory.
 	home, homeErr := os.UserHomeDir()
-	if homeErr != nil || !filepath.IsAbs(home) {
+	if homeErr != nil || !filepath.IsAbs(home) || filepath.Clean(home) == string(filepath.Separator) {
 		home = ""
 	}
 	rewrite := func(path string) string {
@@ -276,8 +279,24 @@ func relocatable(p *policy.Policy, manifestPath string) *policy.Policy {
 	}
 	cp := *p
 	cp.Entrypoint = rewrite(p.Entrypoint)
+	// A bare interpreter name means "the host's python3" and is already relocatable;
+	// only a path-shaped one names a machine. Spelled as manifest.Resolve's own rule,
+	// since that is what reads this field back - and a re-profile resolves an existing
+	// manifest's interpreter to an absolute path before the merge, so leaving the field
+	// alone here would quietly de-relativize a manifest that already had it right.
+	if strings.ContainsRune(p.Interpreter, filepath.Separator) {
+		cp.Interpreter = rewrite(p.Interpreter)
+	}
 	cp.Read = mapSlice(p.Read, rewrite)
 	cp.Write = mapSlice(p.Write, rewrite)
+	// The rewrite is a change of spelling, not of policy, so it must not turn a policy
+	// bento would write into one Marshal's gate refuses - `write: /home/you` spelled
+	// absolutely passes, and `write: ~` is refused outright. Failing there would end a
+	// whole granting session over a spelling the user never wrote; the absolute form is
+	// the same permissions and is what profiling wrote before any of this.
+	if cp.Validate() != nil {
+		return p
+	}
 	return &cp
 }
 

@@ -231,7 +231,7 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 		return nil
 	}
 	if !isTerminal(os.Stdin) {
-		return fmt.Errorf("not approved: approving is a human reading the permissions above, and stdin is not a terminal, so there was nobody to ask. " +
+		return fmt.Errorf("not approved: approving is a human reading the permissions above, and stdin is not a terminal, so there is nothing to read an answer from. " +
 			"Attach a terminal, or pass --yes to stamp them unreviewed")
 	}
 	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
