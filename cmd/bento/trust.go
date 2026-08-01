@@ -42,7 +42,13 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 	if !ok {
 		return fileFacts{}, fmt.Errorf("cannot read ownership of %s", path)
 	}
-	return withGroup(fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, st.Gid), nil
+	// No group lookup, unlike the directories: this comes from fstat, which carries no ACL,
+	// and on a file with one the group bits are the mask every named entry is filtered
+	// through rather than a grant to the group. Reading them as reaching only a private
+	// group would say nothing about a named writer the mask lets through. The false positive
+	// that lookup exists to stop is not here either - the warning is only for a stamped
+	// manifest, and approve clamps group write off the ones it stamps.
+	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, nil
 }
 
 // withGroup fills in privateGroup, and only where a group-write bit makes the answer

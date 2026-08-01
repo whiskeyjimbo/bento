@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,7 +74,16 @@ var accountDB = sync.OnceValue(func() *accounts {
 	return parseAccounts(string(group), string(passwd))
 })
 
+// parseAccounts reads the two files into the shapes the membership question asks for, or
+// nil where they cannot answer it at all: a compat `+` or `-` entry merges a directory
+// service's users and groups into the local ones, so what the files say about a gid is no
+// longer the whole of it. That routing is nsswitch's `compat`, which nsswitchIsLocal
+// already rejects - the entries are honoured here too, since glibc's built-in default when
+// there is no nsswitch.conf is compat rather than files.
 func parseAccounts(group, passwd string) *accounts {
+	if hasCompatEntry(group) || hasCompatEntry(passwd) {
+		return nil
+	}
 	db := &accounts{
 		members:   map[uint32][]string{},
 		primary:   map[uint32][]uint32{},
@@ -95,7 +105,10 @@ func parseAccounts(group, passwd string) *accounts {
 				named = append(named, member)
 			}
 		}
-		db.members[uint32(gid)] = named
+		// Appended, not assigned: glibc reads membership from every line naming a gid, so a
+		// second line for one already seen adds members rather than replacing them, and
+		// letting it replace them is how a group with a member would read as private.
+		db.members[uint32(gid)] = append(db.members[uint32(gid)], named...)
 	}
 	for _, line := range strings.Split(passwd, "\n") {
 		// name:passwd:uid:gid:...
@@ -117,8 +130,22 @@ func parseAccounts(group, passwd string) *accounts {
 	return db
 }
 
-// localAccountsOnly reports whether nsswitch routes users and groups to the files alone.
-// A missing nsswitch.conf is glibc's own default of files, and is read that way.
+// hasCompatEntry reports the NIS merge lines of the compat routing - `+`, `+name`, `-name`
+// at the start of a line - whose presence means the file is a base the rest is merged onto
+// rather than the whole database.
+func hasCompatEntry(file string) bool {
+	for _, line := range strings.Split(file, "\n") {
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+			return true
+		}
+	}
+	return false
+}
+
+// localAccountsOnly reports whether nsswitch routes users, groups and membership to the
+// files alone. A missing nsswitch.conf leaves glibc's built-in default, which is compat -
+// merged, not local - but compat with no `+` or `-` entry in either file merges nothing,
+// and parseAccounts is what refuses the ones that do.
 func localAccountsOnly() bool {
 	conf, err := os.ReadFile("/etc/nsswitch.conf")
 	if err != nil {
@@ -133,7 +160,11 @@ func nsswitchIsLocal(conf string) bool {
 			line = line[:i]
 		}
 		db, sources, ok := strings.Cut(line, ":")
-		if !ok || (strings.TrimSpace(db) != "passwd" && strings.TrimSpace(db) != "group") {
+		// initgroups as well as group: it routes supplementary membership on its own, and a
+		// host that keeps groups local while resolving membership over LDAP - which is the
+		// point of splitting them, since enumerating a directory's groups is expensive - would
+		// otherwise read as local while people are joined to local gids from elsewhere.
+		if !ok || !slices.Contains([]string{"passwd", "group", "initgroups"}, strings.TrimSpace(db)) {
 			continue
 		}
 		for _, source := range strings.Fields(sources) {

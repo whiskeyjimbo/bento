@@ -25,13 +25,13 @@ peer:x:1001:1200::/home/peer:/bin/zsh
 		gid  uint32
 		want bool
 	}{
-		"private group holds only its owner":             {1000, true},
-		"a named member who is us is not somebody else":  {27, true},
-		"a group naming other people is shared":          {4, false},
-		"a login group somebody else holds is shared":    {1200, false},
-		"a member passwd cannot resolve is not proof":    {1300, false},
-		"a gid the database does not name is not proof":  {4242, false},
-		"root can write anywhere, so its group is ours ": {0, true},
+		"private group holds only its owner":            {1000, true},
+		"a named member who is us is not somebody else": {27, true},
+		"a group naming other people is shared":         {4, false},
+		"a login group somebody else holds is shared":   {1200, false},
+		"a member passwd cannot resolve is not proof":   {1300, false},
+		"a gid the database does not name is not proof": {4242, false},
+		"root can write anywhere, so its group is ours": {0, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := db.holdsOnly(tc.gid, me); got != tc.want {
@@ -44,6 +44,27 @@ peer:x:1001:1200::/home/peer:/bin/zsh
 	var unread *accounts
 	if unread.holdsOnly(1000, me) {
 		t.Error("a database that could not be read proves nothing")
+	}
+
+	// glibc reads membership from every line naming a gid, so a second line for one adds
+	// members rather than replacing them.
+	twice := parseAccounts("jrose:x:1000:peer\njrose:x:1000:\n", passwd)
+	if twice.holdsOnly(1000, me) {
+		t.Error("a member named on an earlier line for the same gid is still in the group")
+	}
+
+	// A compat entry makes the files a base something else is merged onto, so nothing in
+	// them is the whole story about any group.
+	for name, tc := range map[string]struct{ group, passwd string }{
+		"a merged group": {"jrose:x:1000:\n+:::\n", passwd},
+		"a merged user":  {group, passwd + "+@staff\n"},
+		"an exclusion":   {group, passwd + "-ghost\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if parseAccounts(tc.group, tc.passwd).holdsOnly(1000, me) {
+				t.Error("files a directory service is merged into prove nothing on their own")
+			}
+		})
 	}
 }
 
@@ -59,6 +80,7 @@ func TestNsswitchIsLocal(t *testing.T) {
 		"debian default":         {"passwd:         files systemd\ngroup:          files systemd\n", true},
 		"an action qualifier":    {"group: files [SUCCESS=merge] systemd\n", true},
 		"ldap merges members":    {"passwd: files\ngroup: files ldap\n", false},
+		"initgroups is its own":  {"passwd: files\ngroup: files\ninitgroups: ldap\n", false},
 		"sssd merges members":    {"group: sss files\n", false},
 		"another database":       {"hosts: files dns myhostname\n", true},
 		"a commented-out source": {"group: files # ldap\n", true},
