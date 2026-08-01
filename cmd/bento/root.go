@@ -204,13 +204,18 @@ func newRootCmd() *cobra.Command {
 // and the mistake is otherwise invisible: the switch would fall through, and the command
 // would ship with the empty stdout on a usage error that its annotation was added to
 // prevent. A panic because it is a construction error, reachable on any invocation.
-func checkJSONRefusalShapes(root *cobra.Command) {
-	for _, cmd := range root.Commands() {
-		switch shape, ok := cmd.Annotations[jsonRefusalAnnotation]; {
-		case !ok, shape == jsonRefusalDocument, shape == jsonRefusalStream:
-		default:
-			panic(fmt.Sprintf("bento: command %q carries %s=%q, which names no refusal shape; want %q or %q",
-				cmd.Name(), jsonRefusalAnnotation, shape, jsonRefusalDocument, jsonRefusalStream))
-		}
+//
+// It walks the whole tree rather than the root's own children: refuseUsageJSON reads the
+// annotation off whatever command cobra raised the error on, which is at whatever depth
+// that command sits.
+func checkJSONRefusalShapes(cmd *cobra.Command) {
+	switch shape, ok := cmd.Annotations[jsonRefusalAnnotation]; {
+	case !ok, shape == jsonRefusalDocument, shape == jsonRefusalStream:
+	default:
+		panic(fmt.Sprintf("bento: command %q carries %s=%q, which names no refusal shape; want %q or %q",
+			cmd.Name(), jsonRefusalAnnotation, shape, jsonRefusalDocument, jsonRefusalStream))
+	}
+	for _, sub := range cmd.Commands() {
+		checkJSONRefusalShapes(sub)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -154,26 +155,34 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 // assembled. It is the failure mode with no other symptom: the switch falls through, and
 // the command ships with exactly the empty stdout its annotation was added to prevent.
 func TestAnUnknownRefusalShapeIsRejectedAtConstruction(t *testing.T) {
-	t.Run("the real command tree is well-formed", func(t *testing.T) {
-		checkJSONRefusalShapes(newRootCmd())
-	})
-	t.Run("a typo'd shape panics", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("a command annotated with an unknown shape must not be assembled")
+	// A nested command is checked too: refuseUsageJSON reads the annotation off whatever
+	// command cobra raised the error on, at whatever depth it sits.
+	for _, depth := range []int{1, 2} {
+		t.Run(fmt.Sprintf("a typo'd shape %d level(s) down panics", depth), func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("a command annotated with an unknown shape must not be assembled")
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, "streem") {
+					t.Errorf("panic = %v, want the offending value named", r)
+				}
+			}()
+			cmd := &cobra.Command{
+				Use:         "typo",
+				Annotations: map[string]string{jsonRefusalAnnotation: "streem"},
 			}
-			if msg, _ := r.(string); !strings.Contains(msg, "streem") {
-				t.Errorf("panic = %v, want the offending value named", r)
+			root := &cobra.Command{Use: "bento"}
+			parent := root
+			for range depth - 1 {
+				sub := &cobra.Command{Use: "mid"}
+				parent.AddCommand(sub)
+				parent = sub
 			}
-		}()
-		root := &cobra.Command{Use: "bento"}
-		root.AddCommand(&cobra.Command{
-			Use:         "typo",
-			Annotations: map[string]string{jsonRefusalAnnotation: "streem"},
+			parent.AddCommand(cmd)
+			checkJSONRefusalShapes(root)
 		})
-		checkJSONRefusalShapes(root)
-	})
+	}
 }
 
 // The invocations that are NOT mistakes have to stay that way. Recognizing an unknown

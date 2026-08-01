@@ -262,7 +262,9 @@ func TestMain(m *testing.M) {
 }
 ```
 
-`backend.New` and `backend.Profile` panic when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb. That catches the staged child only if it gets as far as asking for an enforcer, so it is not the guarantee - the guarantee is on the parent side: the stage writes what it applied before it dispatches the target, so a run whose stage stayed silent provably never ran the target, and `enforce.Run` returns an `*enforce.Refusal` saying so. The `log.Fatalf` on `err` in the example below is enough to catch a forgotten `DispatchReexec`; it will never report a clean exit 0 for a target that never started.
+A call that never happened is caught before any run starts: `backend.New` and `backend.Profile` return an error naming the missed call. They panic instead when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb.
+
+A call made too late - after flag parsing, where the stage dies on its own argv before reaching it - still reaches neither guard, so the parent-side guarantee stands behind both: the stage writes what it applied before it dispatches the target, so a run whose stage stayed silent provably never ran the target, and `enforce.Run` returns an `*enforce.Refusal` saying so. The `log.Fatalf` on `err` in the example below catches every one of these; it will never report a clean exit 0 for a target that never started.
 
 ### Minimal Example
 

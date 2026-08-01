@@ -840,8 +840,8 @@ func TestRunPreservesSetupState(t *testing.T) {
 
 // A stage that never reported what it applied never reached the target - the marker it
 // would have written comes before the dispatch. Run must refuse rather than hand back
-// Result's zero exit code as the target's own answer, which is what an embedder that
-// forgot backend.DispatchReexec() would otherwise read as a clean success.
+// Result's zero exit code as the target's own answer, which is what an embedder whose
+// stages never dispatched would otherwise read as a clean success.
 func TestSilentStageIsRefused(t *testing.T) {
 	for _, strict := range []bool{false, true} {
 		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {

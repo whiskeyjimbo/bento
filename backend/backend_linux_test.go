@@ -11,6 +11,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // On Linux, New must return a usable enforcer and no error. Pins that the Linux
@@ -29,9 +30,11 @@ func TestNewReturnsLinuxEnforcer(t *testing.T) {
 // backend, not after a run: the stages have nowhere to land, so the run it would go on
 // to start attests nothing, and the Refusal that comes back can only offer the missed
 // call as one candidate cause among several.
+//
+// It clears the package's own record, so it must not run beside a parallel test that
+// needs an enforcer; no test in this package calls t.Parallel().
 func TestNewRefusesWithoutDispatchReexec(t *testing.T) {
-	dispatched.Store(false)
-	defer dispatched.Store(true)
+	defer dispatched.Store(dispatched.Swap(false))
 
 	e, err := New()
 	if err == nil {
@@ -43,7 +46,8 @@ func TestNewRefusesWithoutDispatchReexec(t *testing.T) {
 	if !strings.Contains(err.Error(), "DispatchReexec") {
 		t.Errorf("err = %v, want the missed call named", err)
 	}
-	if _, err := Profile(t.Context(), nil, enforce.Process{}, ProfileOptions{}); err == nil ||
+	p := &policy.Policy{Entrypoint: "/bin/true"}
+	if _, err := Profile(t.Context(), p, enforce.Process{}, ProfileOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "DispatchReexec") {
 		t.Errorf("Profile err = %v, want the same refusal", err)
 	}
