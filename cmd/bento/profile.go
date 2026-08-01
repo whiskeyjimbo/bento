@@ -265,6 +265,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// the same names profiling recorded and granted.
 	proposed.Env = sortedKeys(cfg.env)
 	printFlooredWrites(obs.Writes)
+	printScratchWrites(obs.Writes)
 	printUnrepresentable(obs)
 	printProposalWarnings(proposed)
 	return proposed, roundStatus{unfinished: partialRunWarning(obs) != "", dropped: obs.Dropped > 0}, nil
@@ -299,6 +300,27 @@ func printFlooredWrites(writes []string) {
 		}
 		seen[dir] = true
 		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
+	}
+}
+
+// printScratchWrites names the observed writes that landed in the sandbox's own private
+// tmpfs. There is nothing to propose - the enforced run mounts the same fresh tmpfs, so
+// the write succeeds there too - but it does not persist to the host, and a script whose
+// real output goes to /tmp finishes with an exit status of 0 and nothing to show for it.
+// That is the one withheld class where the manifest is right and the script is wrong, so
+// it is said out loud rather than left for the user to discover from an empty directory.
+func printScratchWrites(writes []string) {
+	seen := map[string]bool{}
+	for _, w := range writes {
+		if !filepath.IsAbs(w) {
+			continue
+		}
+		dir := filepath.Dir(w)
+		if !profile.SandboxScratch(dir) || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it lands in the sandbox's private /tmp, which every run gets already. Nothing needs granting, but nothing written there survives the run either; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
 	}
 }
 
@@ -832,14 +854,24 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	}
 	seenShield := map[string]bool{}
 	var shields []string
-	for _, h := range homes {
-		for _, r := range denylist.Home(h, homes...) {
+	addShields := func(rules []denylist.Rule) {
+		for _, r := range rules {
 			if r.Deny == denylist.DenyAll && !seenShield[r.Path] {
 				seenShield[r.Path] = true
 				shields = append(shields, r.Path)
 			}
 		}
 	}
+	for _, h := range homes {
+		addShields(denylist.Home(h, homes...))
+	}
+	// The runtime shields land at /run on an ordinary host, where the proposal never
+	// reaches them (isSystemPath drops /run outright). They are here for the host that
+	// parks XDG_RUNTIME_DIR under /tmp, which the proposal DOES reach: that directory
+	// holds the gpg-agent, dbus, and wayland sockets and the podman auth.json, and a
+	// grant naming one is refused at run time - so proposing it drafts a manifest that
+	// cannot be approved into a working run.
+	addShields(denylist.Runtime(denylist.RuntimeDir(), homes...))
 	inShield := func(g string) bool {
 		for _, s := range shields {
 			if g == s || policy.CoversResolved(s, g) {

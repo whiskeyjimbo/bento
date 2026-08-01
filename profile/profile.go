@@ -9,6 +9,8 @@ package profile
 
 import (
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -81,10 +83,11 @@ var systemDirs = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64",
 	"/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/alternatives",
 	"/proc", "/sys", "/dev", "/run", "/var/run", "/nix/store",
-	// The sandbox's /tmp is a private tmpfs; anything a run writes there is
-	// ephemeral and randomly named, so it is scratch, never a manifest grant.
-	"/tmp",
 }
+
+// sandboxTmp is the tmpfs every sandbox mounts at /tmp, for the profiling run and the
+// enforced run alike.
+const sandboxTmp = "/tmp"
 
 // systemFiles are the exact /etc files a program reads to resolve users, hosts, and
 // time. Matched by equality, not prefix: a neighbor like /etc/passwd.bak or
@@ -147,7 +150,7 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	}
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || p == obs.InterpreterName ||
-			Unrepresentable(p) || isSystemPath(p) || resolvesIntoProc(p) || inRuntime(p)
+			Unrepresentable(p) || isSystemPath(p) || SandboxScratch(p) || resolvesIntoProc(p) || inRuntime(p)
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
@@ -192,7 +195,7 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 			return true
 		}
 		resolved := pathresolve.Existing(dir)
-		return resolved != dir && (isSystemPath(resolved) || FlooredWrite(resolved))
+		return resolved != dir && (isSystemPath(resolved) || SandboxScratch(resolved) || FlooredWrite(resolved))
 	}
 
 	p := &policy.Policy{
@@ -317,6 +320,35 @@ func resolvesIntoProc(p string) bool {
 func Unrepresentable(path string) bool {
 	_, bad := policy.FirstUnsafeRune(path)
 	return bad
+}
+
+// SandboxScratch reports whether an observed path names the sandbox's own private
+// tmpfs rather than content on the host. Both runs mount a fresh tmpfs at /tmp, so
+// the two cases separate on whether the path exists on the host at all: one that does
+// not is a file the run created inside that tmpfs, which the enforced run gets for
+// free and no grant can name; one that does is host content the sandbox can only see
+// through a grant - a scratch directory from `mktemp -d`, a CI workspace, an agent's
+// working tree - and withholding it drafts a manifest whose script cannot find its own
+// files. /tmp itself is always scratch: the enforced run refuses a grant of it whole,
+// because binding the host's /tmp over the sandbox's would hand the target every other
+// process's temp files.
+//
+// It is exported so a frontend can tell the reviewer that an observed write went to
+// scratch and will not persist. A path outside /tmp is not scratch and is not statted,
+// so the rest of the proposal is decided without touching the filesystem.
+func SandboxScratch(p string) bool {
+	if p == sandboxTmp {
+		return true
+	}
+	if !strings.HasPrefix(p, sandboxTmp+"/") {
+		return false
+	}
+	// Only a definite absence means scratch. A path bento cannot stat for some other
+	// reason (a mode that denies search on a parent) is host content it merely could not
+	// look at, and dropping it there would put back the silent shortfall this test exists
+	// to remove - the reviewer sees the grant and decides.
+	_, err := os.Lstat(p)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // FlooredWrite reports whether a collapsed write-grant directory is one Synthesize

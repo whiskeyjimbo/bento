@@ -57,6 +57,48 @@ func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
 	}
 }
 
+// bv2-pdq5: a scratch directory from `mktemp -d`, a CI workspace, an AI agent's working
+// tree - all of them live under /tmp and hold real host files the script cannot see
+// unless the manifest grants them. Only the sandbox's own tmpfs entries (which exist
+// nowhere on the host) are scratch; dropping the rest drafted a manifest whose script
+// died on FileNotFoundError with nothing in the proposal to explain it.
+func TestSynthesizeKeepsHostPathsUnderTmp(t *testing.T) {
+	work, err := os.MkdirTemp("/tmp", "bentoprofile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(work) })
+	input := filepath.Join(work, "input.txt")
+	if err := os.WriteFile(input, []byte("data\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	obs := Observation{
+		Reads:  []string{input, "/tmp/tmp8f3k/data"},
+		Writes: []string{filepath.Join(work, "out.txt"), "/tmp/tmpq1/scratch"},
+	}
+	p := mustSynthesize(t, filepath.Join(work, "t.py"), "python3", obs)
+	if !reflect.DeepEqual(p.Read, []string{input}) {
+		t.Errorf("read = %v, want the host file under %s (and the tmpfs scratch dropped)", p.Read, work)
+	}
+	if !reflect.DeepEqual(p.Write, []string{work}) {
+		t.Errorf("write = %v, want the host directory %s (and the tmpfs scratch dropped)", p.Write, work)
+	}
+}
+
+// A write directly in /tmp collapses to /tmp itself, which the enforced run refuses as
+// a grant - binding the host's /tmp over the sandbox's would hand the target every
+// other process's temp files. It stays out of the proposal for that reason, not because
+// the path could not be named; the frontend says so.
+func TestSynthesizeDropsWriteCollapsingOntoTmpRoot(t *testing.T) {
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/tmp/out.txt"}})
+	if len(p.Write) != 0 {
+		t.Fatalf("write = %v, want none (a grant of /tmp whole is refused at run time)", p.Write)
+	}
+	if !SandboxScratch("/tmp") {
+		t.Error("SandboxScratch(\"/tmp\") = false, want true so the frontend can report the withheld write")
+	}
+}
+
 func TestSynthesizeKeepsAbsolutePathsAndDirGranularWrites(t *testing.T) {
 	// The observer anchors a relative open at the process's real working directory
 	// (see resolveAt), so observations reaching Synthesize are absolute. An absolute
@@ -201,10 +243,10 @@ func TestSystemWriteFloorsDoNotOvermatchSiblings(t *testing.T) {
 // approves a grant whose text says ~/proj and whose effect is a writable /etc. The
 // floors must judge where the grant lands, not what it is spelled as.
 // nonSystemTempDir returns a scratch directory that is NOT under a system tree.
-// t.TempDir sits under /tmp, which Synthesize drops wholesale as sandbox scratch, so a
-// symlink test rooted there passes no matter what the floors do - the containing grant
-// was already skipped lexically. Anchoring at the test's own working directory keeps
-// the path ordinary, so the floor is the only thing that can drop it.
+// t.TempDir sits under /tmp, where a test's expectations turn on whether the path
+// happens to exist on the host (see SandboxScratch); anchoring at the test's own
+// working directory keeps the path ordinary, so the floor under test is the only thing
+// that can drop it.
 func nonSystemTempDir(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -310,7 +352,7 @@ func TestSynthesizeDedupesHostsAndSorts(t *testing.T) {
 // and procfs). The filter must follow the symlink. resolvesIntoProc is what skip
 // leans on for the case isSystemPath's prefix list cannot see. (The real /etc/mtab
 // is under no system prefix; the temp symlink stands in for it, and is exercised
-// directly here because t.TempDir lives under /tmp, which isSystemPath drops first.)
+// directly here rather than through Synthesize.)
 func TestResolvesIntoProc(t *testing.T) {
 	dir := t.TempDir()
 	mtab := filepath.Join(dir, "mtab")
@@ -345,8 +387,7 @@ func TestResolvesIntoProc(t *testing.T) {
 // The defect-1 scenario as a real distro presents it: /etc/mtab is a host symlink
 // into procfs, and its name is under no system prefix, so only resolvesIntoProc -
 // wired into skip - keeps it out of the proposal. Uses the host's real /etc/mtab so
-// the whole skip path is exercised, not just the helper (t.TempDir lives under /tmp,
-// which isSystemPath would drop first, masking the wiring).
+// the whole skip path is exercised, not just the helper.
 func TestSynthesizeDropsMtabViaSkipWiring(t *testing.T) {
 	if !resolvesIntoProc("/etc/mtab") {
 		t.Skip("this host's /etc/mtab is not a symlink into procfs")
@@ -489,7 +530,7 @@ func TestIsSystemPathDoesNotOvermatchEtcSiblings(t *testing.T) {
 // directory-prefix system path collapses (via writeDir) to the bare directory, which
 // must still be recognized as a system path.
 func TestIsSystemPathMatchesBareDirectory(t *testing.T) {
-	for _, p := range []string{"/run", "/var/run", "/proc", "/sys", "/dev", "/tmp", "/nix/store"} {
+	for _, p := range []string{"/run", "/var/run", "/proc", "/sys", "/dev", "/nix/store"} {
 		if !isSystemPath(p) {
 			t.Errorf("isSystemPath(%q) = false, want true (bare directory of a prefix entry)", p)
 		}
