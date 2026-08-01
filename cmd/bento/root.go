@@ -72,10 +72,17 @@ func isUsageMistake(root, cmd *cobra.Command, err error) bool {
 // writeUsageHint follows a usage error with how the command should have been called.
 // Only the one line, not cobra's full usage block: the message above already named what
 // was wrong, and the flag list belongs behind the --help this points at.
-func writeUsageHint(w io.Writer, cmd *cobra.Command) {
+func writeUsageHint(w io.Writer, cmd *cobra.Command, err error) {
 	// The root's own use line ("bento [flags]") says nothing a reader who just mistyped a
-	// command needs; the command list behind --help is the answer there.
+	// command needs, so the reader is pointed at what they got wrong instead: a bad flag on
+	// the root is the only mistake there that a marked error can be, and every other one is
+	// cobra's lookup answering for a command that does not exist.
 	if !cmd.HasParent() {
+		var ue *usageError
+		if errors.As(err, &ue) {
+			fmt.Fprintf(w, "Run `%s --help` for the flags it takes.\n", cmd.CommandPath())
+			return
+		}
 		fmt.Fprintf(w, "Run `%s --help` to see the commands.\n", cmd.CommandPath())
 		return
 	}

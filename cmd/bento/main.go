@@ -66,7 +66,7 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "bento: %v\n", err)
 	if isUsageMistake(root, cmd, err) {
-		writeUsageHint(os.Stderr, cmd)
+		writeUsageHint(os.Stderr, cmd, err)
 	}
 	os.Exit(bentoFailed)
 }

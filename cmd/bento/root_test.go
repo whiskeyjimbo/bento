@@ -16,14 +16,18 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 		name string
 		argv []string
 		want string
+		// hint is what the hint line must point the reader at. A mistake on the root has no
+		// use line worth printing, so what is left has to name the right thing to go read.
+		hint string
 	}{
-		{"missing manifest", []string{"run"}, "run needs a manifest path"},
-		{"surplus manifest", []string{"validate", "a.yaml", "b.yaml"}, "validate takes a manifest path and nothing else, but got 2 arguments"},
-		{"missing script", []string{"profile"}, "profile needs a script path"},
-		{"doctor takes none", []string{"doctor", "x"}, "doctor takes no arguments, but got 1"},
-		{"unknown flag", []string{"run", "--nosuchflag", "m.yaml"}, "unknown flag: --nosuchflag"},
-		{"unknown command", []string{"badcmd"}, `unknown command "badcmd"`},
-		{"a near miss is suggested", []string{"runn"}, "Did you mean this?"},
+		{"missing manifest", []string{"run"}, "run needs a manifest path", "`bento run --help`"},
+		{"surplus manifest", []string{"validate", "a.yaml", "b.yaml"}, "validate takes a manifest path and nothing else, but got 2 arguments", "`bento validate --help`"},
+		{"missing script", []string{"profile"}, "profile needs a script path", "`bento profile --help`"},
+		{"doctor takes none", []string{"doctor", "x"}, "doctor takes no arguments, but got 1", "`bento doctor --help`"},
+		{"unknown flag", []string{"run", "--nosuchflag", "m.yaml"}, "unknown flag: --nosuchflag", "`bento run --help`"},
+		{"unknown command", []string{"badcmd"}, `unknown command "badcmd"`, "to see the commands"},
+		{"a near miss is suggested", []string{"runn"}, "Did you mean this?", "to see the commands"},
+		{"a bad flag on the root itself", []string{"--nosuchflag"}, "unknown flag: --nosuchflag", "for the flags it takes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,9 +47,9 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 			// The hint is only worth anything if it names the command the user was
 			// reaching for rather than whatever cobra last touched.
 			var b bytes.Buffer
-			writeUsageHint(&b, cmd)
-			if !strings.Contains(b.String(), "--help") {
-				t.Errorf("hint = %q, want a --help pointer", b.String())
+			writeUsageHint(&b, cmd, err)
+			if !strings.Contains(b.String(), tc.hint) {
+				t.Errorf("hint = %q, want it to point at %q", b.String(), tc.hint)
 			}
 			if cmd.HasParent() && !strings.Contains(b.String(), "usage: "+cmd.UseLine()) {
 				t.Errorf("hint = %q, want the use line of %q", b.String(), cmd.CommandPath())
@@ -65,6 +69,10 @@ func TestNonMistakesAreNotTreatedAsUsageErrors(t *testing.T) {
 		want []string
 	}{
 		{"bare invocation prints help", nil, []string{"Available Commands:", "run", "doctor"}},
+		// A stray "--" puts the command name past cobra's lookup. Answering it as a
+		// mistyped command produced the one message that cannot be true - that there is no
+		// "run" command, followed by a suggestion to type "run".
+		{"a stray -- is not a mistyped command", []string{"--", "run"}, []string{"Available Commands:"}},
 		{"an unknown help topic says so", []string{"help", "badcmd"}, []string{"Unknown help topic"}},
 		{"a known help topic is the command's own help", []string{"help", "run"}, []string{"run enforces the manifest's policy"}},
 	}
