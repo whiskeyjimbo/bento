@@ -351,11 +351,11 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 // tier plus AppArmor remediation on a host where bwrap works.
 func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 	cases := []struct {
-		name       string
-		err        error
-		want       namespaceProbe
-		reasonHas  string
-		reasonNots string
+		name        string
+		err         error
+		want        namespaceProbe
+		reasonHas   string
+		reasonLacks string
 	}{
 		{
 			"bwrap refused the namespace",
@@ -408,10 +408,34 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			if !strings.Contains(reason, tc.reasonHas) {
 				t.Errorf("reason %q does not mention %q", reason, tc.reasonHas)
 			}
-			if tc.reasonNots != "" && strings.Contains(reason, tc.reasonNots) {
-				t.Errorf("reason %q claims %q, which is not what this host refused", reason, tc.reasonNots)
+			if tc.reasonLacks != "" && strings.Contains(reason, tc.reasonLacks) {
+				t.Errorf("reason %q claims %q, which is not what this host refused", reason, tc.reasonLacks)
 			}
 		})
+	}
+}
+
+// The probe is only as honest as the flags it shares with the run, and this drift has
+// already happened once: --new-session sits in baseFlags rather than a shared list, so
+// the canary never exercised it (see newsession_test.go). Mounting proc was the second
+// instance and cost a host class a truthful doctor. So every base flag has to be
+// accounted for - either it is in a list the canary appends, or it is a known exception
+// with a test of its own behind it.
+func TestBaseFlagsStayCoveredByTheProbedLists(t *testing.T) {
+	covered := make(map[string]bool)
+	for _, f := range append(append([]string{}, namespaceFlags...), pseudoFSFlags...) {
+		covered[f] = true
+	}
+	// --die-with-parent is a parent-death signal, not a host capability, and
+	// --new-session is asserted directly against a terminal in newsession_test.go.
+	for _, f := range []string{"--die-with-parent", "--new-session"} {
+		covered[f] = true
+	}
+	for _, f := range baseFlags() {
+		if !covered[f] {
+			t.Errorf("baseFlags has %q, which the pre-run probe never exercises: add it to namespaceFlags "+
+				"or pseudoFSFlags, or record here why the probe cannot check it", f)
+		}
 	}
 }
 

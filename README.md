@@ -59,8 +59,9 @@ docker run --security-opt seccomp=unconfined \
   Loading an AppArmor profile that permits `bwrap` is the narrower alternative,
   but it is a change to the *host*, which in CI you may not control.
 - `systempaths=unconfined` - Docker masks paths under `/proc`, and bubblewrap
-  cannot mount a fresh `procfs` over a masked one. Without it `doctor` looks
-  healthy and the run fails at setup with `Can't mount proc on /newroot/proc`.
+  cannot mount a fresh `procfs` over a masked one. Without it `doctor` reports
+  the filesystem layer degraded and names this flag, and a run is refused rather
+  than failing at setup with `Can't mount proc on /newroot/proc`.
 
 Weigh this honestly: those flags loosen the *outer* container, so the isolation
 the container gave you is traded for the isolation Bento gives you. That is a

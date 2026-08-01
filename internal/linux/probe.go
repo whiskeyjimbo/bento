@@ -414,8 +414,8 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	if strings.Contains(out, "Can't mount proc") {
 		return namespacesBlocked, "bubblewrap can create a user namespace here but cannot mount a private " +
 			"/proc inside it, which the sandbox's root filesystem needs, so it cannot isolate anything: " +
-			strings.TrimSpace(out) + ". Under docker this is the default masking of paths under /proc; " +
-			"--security-opt systempaths=unconfined lifts it."
+			strings.TrimSpace(out) + ". The usual cause is a container runtime masking paths under /proc, " +
+			"which docker does by default; there --security-opt systempaths=unconfined lifts it."
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
