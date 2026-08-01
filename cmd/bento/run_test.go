@@ -33,7 +33,7 @@ func TestWriteRunResultPassesTargetExitCode(t *testing.T) {
 	for _, code := range []int{0, 1, 7, 42, bentoFailed} {
 		var stdout, stderr bytes.Buffer
 		err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-			enforce.Result{ExitCode: code}, "", "", nil)
+			enforce.Result{ExitCode: code}, nil, "", "", nil)
 		if got := asExitError(t, err).code; got != code {
 			t.Errorf("target exit %d passed up as %d", code, got)
 		}
@@ -52,7 +52,7 @@ func TestWriteRunResultRefusalJSON(t *testing.T) {
 	// A non-zero target code in the (unused) Result must not leak through: a refused
 	// run never produced one.
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 7}, "", "", refusal)
+		enforce.Result{ExitCode: 7}, nil, "", "", refusal)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("refusal exit code = %d, want %d", got, bentoFailed)
 	}
@@ -87,7 +87,7 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-		enforce.Result{ExitCode: 7}, "", "", refusal)
+		enforce.Result{ExitCode: 7}, nil, "", "", refusal)
 
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != bentoFailed {
@@ -115,7 +115,7 @@ func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 	for _, asJSON := range []bool{false, true} {
 		var stdout, stderr bytes.Buffer
 		err := writeRunResult(&stdout, &stderr, asJSON, validPolicy(),
-			enforce.Result{}, "", "", setupErr)
+			enforce.Result{}, nil, "", "", setupErr)
 		if !errors.Is(err, setupErr) {
 			t.Errorf("json=%v: setup error must propagate verbatim; got %v", asJSON, err)
 		}
@@ -139,7 +139,7 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, "hello-stdout", "warn-stderr", nil)
+	err := writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "hello-stdout", "warn-stderr", nil)
 	if got := asExitError(t, err).code; got != 3 {
 		t.Fatalf("success exit code = %d, want 3", got)
 	}
@@ -183,7 +183,7 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 		ShieldedGrants:       []string{granted, "/etc/hosts"},
 		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
 	}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
 
 	var env struct {
 		ShieldedGrants       []string `json:"shielded_grants"`
@@ -214,14 +214,14 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 		Shields:  []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
 	}
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, false, validPolicy(), res, nil, "", "", nil)
 	got := stderr.String()
 	if !strings.Contains(got, "3 credential/host-service path(s) shielded") || !strings.Contains(got, "2 hidden, 1 read-only") {
 		t.Errorf("shield summary line missing or wrong: %q", got)
 	}
 
 	var none bytes.Buffer
-	_ = writeRunResult(&none, &none, false, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	_ = writeRunResult(&none, &none, false, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
 	if strings.Contains(none.String(), "sandbox engaged") {
 		t.Errorf("a run that shielded nothing must not print the summary: %q", none.String())
 	}
@@ -233,7 +233,7 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: bentoFailed}, "", "", nil)
+		enforce.Result{ExitCode: bentoFailed}, nil, "", "", nil)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("exit code = %d, want %d passed through", got, bentoFailed)
 	}
@@ -256,7 +256,7 @@ func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 func TestWriteRunResultJSONWriteFailureKeepsExitCode(t *testing.T) {
 	var stderr bytes.Buffer
 	err := writeRunResult(failWriter{}, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 5}, "out", "err", nil)
+		enforce.Result{ExitCode: 5}, nil, "out", "err", nil)
 	if got := asExitError(t, err).code; got != 5 {
 		t.Fatalf("a failed JSON write must still pass the target code; got %d, want 5", got)
 	}
@@ -280,7 +280,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stdout, &stderr, false, netPolicy, res, "", "", nil)
+	err := writeRunResult(&stdout, &stderr, false, netPolicy, res, nil, "", "", nil)
 	if got := asExitError(t, err).code; got != 1 {
 		t.Fatalf("exit code = %d, want 1", got)
 	}
@@ -299,7 +299,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 // none (omitempty), so a machine consumer keying on the field's presence is not misled.
 func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
 	var env map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -309,12 +309,41 @@ func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	}
 }
 
+// A read grant naming nothing on this host is the failure hardest to diagnose from the
+// script's own output - an approved manifest whose data directory was since deleted, and
+// a FileNotFoundError with nothing connecting it back. It is said on stderr on the way
+// in, but the gate --help sends to --json read nothing; validate already answers it as
+// missing_read_grants, and the envelope has to agree with that spelling.
+func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, []string{"/data/gone"}, "", "", nil)
+	var env struct {
+		MissingReadGrants []string `json:"missing_read_grants"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if !slices.Equal(env.MissingReadGrants, []string{"/data/gone"}) {
+		t.Errorf("missing_read_grants = %v, want the grant that named nothing", env.MissingReadGrants)
+	}
+
+	stdout.Reset()
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
+	var raw map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := raw["missing_read_grants"]; present {
+		t.Error("missing_read_grants must be omitted when every grant resolves (omitempty)")
+	}
+}
+
 // The guard-blocked destinations reach a machine consumer too, and are omitted for the
 // run the guard never refused.
 func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	res := enforce.Result{ExitCode: 0, GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
 	var env struct {
 		GuardBlocked []struct {
 			Host string `json:"host"`
@@ -329,7 +358,7 @@ func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -358,7 +387,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}},
 		Denied:       []enforce.HostPort{{Host: "api.githb.com", Port: "443"}},
 	}
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), res, nil, "", "", nil)
 	var env struct {
 		GuardBlocked []hostPortJSON `json:"guard_blocked"`
 		EgressDenied []hostPortJSON `json:"egress_denied"`
@@ -374,7 +403,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, "", "", nil)
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), enforce.Result{ExitCode: 0}, nil, "", "", nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -442,7 +471,7 @@ func TestNoProfileHintAfterADenial(t *testing.T) {
 	var out, errOut bytes.Buffer
 	p := &policy.Policy{Entrypoint: "./t.py", Read: []string{"/data"}}
 	res := enforce.Result{ExitCode: 1, EgressConnections: 1, Denied: []enforce.HostPort{{Host: "api.githb.com", Port: "443"}}}
-	_ = writeRunResult(&out, &errOut, false, p, res, "", "", nil)
+	_ = writeRunResult(&out, &errOut, false, p, res, nil, "", "", nil)
 	if strings.Contains(errOut.String(), "the sandbox denies silently") {
 		t.Errorf("the generic profile hint must not follow a denial; got:\n%s", errOut.String())
 	}
@@ -482,7 +511,7 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
-		enforce.Result{ExitCode: 0, Report: report}, "", "", shortfall)
+		enforce.Result{ExitCode: 0, Report: report}, nil, "", "", shortfall)
 	if got := asExitError(t, err).code; got != strictShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, strictShortfall)
 	}
@@ -493,7 +522,7 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	err = writeRunResult(&stdout, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 7, Report: report}, "out", "", shortfall)
+		enforce.Result{ExitCode: 7, Report: report}, nil, "out", "", shortfall)
 	if got := asExitError(t, err).code; got != strictShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, strictShortfall)
 	}
@@ -587,7 +616,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 			if tc.shortfall {
 				runErr = &enforce.Shortfall{}
 			}
-			_ = writeRunResult(&out, &errOut, false, tc.p, tc.res, "", "", runErr)
+			_ = writeRunResult(&out, &errOut, false, tc.p, tc.res, nil, "", "", runErr)
 			if got := strings.Contains(errOut.String(), "bento profile"); got != tc.want {
 				t.Errorf("profile hint emitted = %v, want %v; got:\n%s", got, tc.want, errOut.String())
 			}
@@ -598,7 +627,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 	// with bento's code, and nothing else on that path says so.
 	var unreached bytes.Buffer
 	_ = writeRunResult(io.Discard, &unreached, false, granted,
-		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, "", "", nil)
+		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, nil, "", "", nil)
 	for _, want := range []string{"could not start the target", "exit 125 is bento's"} {
 		if !strings.Contains(unreached.String(), want) {
 			t.Errorf("unreached-target notice missing %q; got:\n%s", want, unreached.String())
@@ -612,14 +641,14 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 
 	// --json carries the outcome as a field, and the hint on stdout would corrupt it.
 	var out, errOut bytes.Buffer
-	_ = writeRunResult(&out, &errOut, true, granted, enforce.Result{ExitCode: 1}, "", "", nil)
+	_ = writeRunResult(&out, &errOut, true, granted, enforce.Result{ExitCode: 1}, nil, "", "", nil)
 	if strings.Contains(out.String()+errOut.String(), "bento profile") {
 		t.Errorf("--json must not carry the hint; got:\n%s%s", out.String(), errOut.String())
 	}
 
 	// The counts are the point: they say how little was granted.
 	errOut.Reset()
-	_ = writeRunResult(&out, &errOut, false, granted, enforce.Result{ExitCode: 3}, "", "", nil)
+	_ = writeRunResult(&out, &errOut, false, granted, enforce.Result{ExitCode: 3}, nil, "", "", nil)
 	for _, want := range []string{"exited 3", "1 read and 1 write"} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("hint missing %q; got:\n%s", want, errOut.String())

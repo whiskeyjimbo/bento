@@ -302,13 +302,14 @@ func TestWriteMissingReadNotes(t *testing.T) {
 	}
 	gone := filepath.Join(dir, "gone")
 
+	p := &policy.Policy{Read: []string{present}, Write: []string{filepath.Join(dir, "out")}}
 	var b bytes.Buffer
-	writeMissingReadNotes(&b, &policy.Policy{Read: []string{present}, Write: []string{filepath.Join(dir, "out")}})
+	writeMissingReadNotes(&b, missingReadGrants(p.Read))
 	if b.Len() != 0 {
 		t.Errorf("a grant that exists and a write grant yet to be created must print nothing; got %q", b.String())
 	}
 
-	writeMissingReadNotes(&b, &policy.Policy{Read: []string{present, gone}})
+	writeMissingReadNotes(&b, missingReadGrants([]string{present, gone}))
 	out := b.String()
 	if !strings.Contains(out, gone) {
 		t.Errorf("the note must name the missing grant %q; got %q", gone, out)

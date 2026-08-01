@@ -684,8 +684,8 @@ func missingReadGrants(read []string) []string {
 //
 // Said on the way in rather than in the epilogue, so it is already on screen when the
 // script dies on the file it could not open.
-func writeMissingReadNotes(w io.Writer, p *policy.Policy) {
-	for _, g := range missingReadGrants(p.Read) {
+func writeMissingReadNotes(w io.Writer, missing []string) {
+	for _, g := range missing {
 		fmt.Fprintf(w, "[bento] note: the read grant %q names nothing on this host, so it grants nothing and\n", g)
 		fmt.Fprintln(w, "[bento] the sandbox denies that path without saying why. Fine if the script creates it;")
 		fmt.Fprintln(w, "[bento] otherwise it is a typo or a moved directory that will read as a permission bug.")

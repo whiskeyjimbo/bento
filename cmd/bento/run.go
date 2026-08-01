@@ -38,7 +38,8 @@ func newRunCmd() *cobra.Command {
 			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
 			"124, reserved the same way. A script can return any code itself, so a machine\n" +
 			"gate should read --json, where the outcome is a field rather than a code.",
-		Args: exactArgs(1, "a manifest path"),
+		Args:        exactArgs(1, "a manifest path"),
+		Annotations: map[string]string{jsonRefusalAnnotation: "yes"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal raised before enforce.Run - a bad --env, an unparseable or
 			// unapproved manifest, an env that cannot be resolved, a backend this host
@@ -84,7 +85,11 @@ func newRunCmd() *cobra.Command {
 					"the script will not see it. Pass it with --env %s=VALUE.\n", name, name)
 			}
 
-			writeMissingReadNotes(os.Stderr, p)
+			// Statted before the script runs, and carried through to the envelope, so
+			// what --json reports is the same verdict the note above gave: a grant the
+			// script itself then created was still missing when the run started.
+			missingReads := missingReadGrants(p.Read)
+			writeMissingReadNotes(os.Stderr, missingReads)
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
 
 			e, err := backend.New()
@@ -114,7 +119,7 @@ func newRunCmd() *cobra.Command {
 				AllowDegraded:      allowDegraded,
 				AcceptAliasesUnder: acceptAliases,
 			})
-			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, out.String(), errOut.String(), err)
+			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, missingReads, out.String(), errOut.String(), err)
 		},
 	}
 
@@ -123,7 +128,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a machine-readable envelope on stdout; the script's own streams are carried in it, and copied to stderr as they arrive so a long run still shows progress, but it is given no stdin. A refusal - including a mistake in this command line - is an envelope too, so stdout is never empty")
 	return cmd
 }
 
@@ -188,8 +193,10 @@ func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
 // script) becomes exitError{bentoFailed}, distinct from the target's own code, which is
 // passed through untouched via exitError{res.ExitCode}. capturedOut/capturedErr are the
 // target's streams, captured only in --json mode (empty otherwise, where they went
-// straight to the real streams).
-func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, capturedOut, capturedErr string, runErr error) error {
+// straight to the real streams). missingReads is the pre-run verdict on the read grants,
+// not re-taken here: a grant the script created during the run was still missing when it
+// started, which is what the note on the way in said and what validate answers.
+func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, missingReads []string, capturedOut, capturedErr string, runErr error) error {
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
@@ -256,7 +263,13 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// whose posture did not hold. Without it a machine consumer reading the envelope
 			// alone would see an ordinary completed run.
 			StrictShortfall bool `json:"strict_shortfall,omitempty"`
-		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
+			// MissingReadGrants are the read grants that named nothing on this host when the
+			// run started, spelled as validate spells them. A note, not a verdict - the run
+			// proceeds - but it is the field that connects a script dying on a file it could
+			// not open to the manifest grant that no longer resolves, which is otherwise only
+			// prose on stderr and unreadable to the gate --help sends here.
+			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
+		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
