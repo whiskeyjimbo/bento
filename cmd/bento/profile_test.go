@@ -291,12 +291,15 @@ func TestMergeExisting(t *testing.T) {
 	proposed := &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/in.txt"}}
 
 	// Missing file: the first run returns the proposal unchanged, ready to write.
-	got, _, _, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
+	got, err := mergeExisting(filepath.Join(dir, "absent.yaml"), "/w/run.py", proposed)
 	if err != nil {
 		t.Fatalf("missing --out should not error (first run); got %v", err)
 	}
-	if got != proposed {
+	if got.policy != proposed {
 		t.Errorf("missing --out should return the proposal unchanged")
+	}
+	if got.widened {
+		t.Errorf("a first run widened nothing")
 	}
 
 	// Corrupt file: refuse, so the prior file's grants are not silently overwritten.
@@ -304,7 +307,7 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := mergeExisting(corrupt, proposed); err == nil {
+	if _, err := mergeExisting(corrupt, "/w/run.py", proposed); err == nil {
 		t.Errorf("a corrupt existing manifest must be refused, not overwritten")
 	}
 
@@ -318,12 +321,17 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(valid, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	merged, _, _, err := mergeExisting(valid, proposed)
+	merged, err := mergeExisting(valid, "/w/run.py", proposed)
 	if err != nil {
 		t.Fatalf("a valid existing manifest should merge; got %v", err)
 	}
-	if !slices.Contains(merged.Read, "/w/prior.txt") || !slices.Contains(merged.Read, "/w/in.txt") {
-		t.Errorf("merge should union prior and proposed reads; got %v", merged.Read)
+	if !slices.Contains(merged.policy.Read, "/w/prior.txt") || !slices.Contains(merged.policy.Read, "/w/in.txt") {
+		t.Errorf("merge should union prior and proposed reads; got %v", merged.policy.Read)
+	}
+	// The delta is what the closing message reports: a grant the file already held and
+	// this run did not show is the part the reviewer cannot infer from the session.
+	if !slices.Equal(merged.keptRead, []string{"/w/prior.txt"}) {
+		t.Errorf("keptRead = %v, want the grant only the existing manifest held", merged.keptRead)
 	}
 
 	// A relative grant in the existing manifest names the same path the (always
@@ -337,12 +345,12 @@ func TestMergeExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	same := &policy.Policy{Entrypoint: filepath.Join(dir, "run.py"), Read: []string{filepath.Join(dir, "in.txt")}}
-	merged, _, _, err = mergeExisting(rel, same)
+	merged, err = mergeExisting(rel, filepath.Join(dir, "run.py"), same)
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}
-	if len(merged.Read) != 1 {
-		t.Errorf("a relative grant naming the proposal's path must merge to one entry; got %v", merged.Read)
+	if len(merged.policy.Read) != 1 {
+		t.Errorf("a relative grant naming the proposal's path must merge to one entry; got %v", merged.policy.Read)
 	}
 }
 
@@ -785,5 +793,78 @@ func TestRulesCoveringBlockedHostSetsAsideAnUnjudgeableKey(t *testing.T) {
 	}
 	if !slices.Equal(unreadable, []string{"not-a-host-port"}) {
 		t.Errorf("unreadable = %v, want the key nothing can match reported as its own fact", unreadable)
+	}
+}
+
+// The union keeps the base's entrypoint, so merging into a manifest written for another
+// program leaves a file naming one and granting what the other did. seedGrants already
+// declines to mount such a manifest, so the run that produced the proposal was not
+// resuming from it either - refusing at the write says so while it can still be acted on.
+func TestMergeExistingRefusesAForeignEntrypoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "probe.py.manifest.yaml")
+	data, err := manifest.Marshal(&policy.Policy{Entrypoint: "/gone/stale.py", Read: []string{"/some/other/machine/dir"}}, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(dir, "probe.py")
+	_, err = mergeExisting(path, script, &policy.Policy{Entrypoint: script})
+	if err == nil {
+		t.Fatal("a manifest for another program must be refused, not merged")
+	}
+	for _, want := range []string{"/gone/stale.py", script, "--out"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// Re-profiling per the help text's "profile again to converge" advice unions the round's
+// proposal into the file, which can escalate exec and always drops the approval stamp.
+// Neither is refused - both are the merge working - but the closing message used to say
+// the manifest reflected only this run, which is the one thing it does not.
+func TestMergeNoticeReportsWideningAndVoidedApproval(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.py")
+	path := filepath.Join(dir, "probe.py.manifest.yaml")
+	base := &policy.Policy{
+		Entrypoint: script,
+		Read:       []string{filepath.Join(dir, "prior")},
+		Exec:       policy.ExecNone,
+	}
+	data, err := manifest.Marshal(base, manifest.Provenance{Approves: base.Fingerprint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Read: []string{filepath.Join(dir, "fresh")}, Exec: policy.ExecAll})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	var b strings.Builder
+	writeMergeNotice(&b, path, merged)
+	out := b.String()
+	for _, want := range []string{"already existed", "unioned with what was already there", filepath.Join(dir, "prior"), "exec was widened", "its approval is gone"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("merge notice missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "reflects only this run") {
+		t.Errorf("the merge notice must not claim the manifest reflects only this run; got:\n%s", out)
+	}
+
+	// A first run has nothing to widen, so it keeps the line that sends the user back
+	// with other inputs.
+	var first strings.Builder
+	writeMergeNotice(&first, path, mergeOutcome{})
+	if !strings.Contains(first.String(), "reflects only this run") {
+		t.Errorf("a first run must keep its own closing line; got:\n%s", first.String())
 	}
 }

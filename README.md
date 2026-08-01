@@ -53,6 +53,9 @@ cd examples/probe
 
 # 1. Profile: Observe what a script touches under default-deny to generate a draft manifest.
 #    Egress is recorded but blocked by default; host credentials are never exposed during profiling.
+#    Profiling again merges into the manifest rather than replacing it, so what you end up
+#    with is this run unioned with whatever was already there - profile says what it changed,
+#    including an exec widened to `all` and an approval stamp the write drops.
 ./bento profile ./probe.py
 
 # 2. Validate: Check manifest syntax and review requested permissions.

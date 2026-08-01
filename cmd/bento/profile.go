@@ -50,7 +50,11 @@ func newProfileCmd() *cobra.Command {
 			"Because nothing sensitive is mounted, a script that reads a credential to\n" +
 			"decide what to do next takes its error branch and never exercises the paths\n" +
 			"beyond it, so one run can under-report. Grant what the proposal shows and\n" +
-			"profile again to converge; grants are merged, not overwritten.\n\n" +
+			"profile again to converge; grants are merged, not overwritten. The merge\n" +
+			"widens more than grants - exec can be escalated to `all`, and any approval\n" +
+			"stamp on the file is dropped - so profile says what it changed, and it\n" +
+			"refuses a manifest at --out written for a different program rather than\n" +
+			"leaving one that names one script and grants what another did.\n\n" +
 			"On a terminal, an existing manifest at --out that is currently approved for\n" +
 			"this same script is resumed: its grants are listed and mounted from the first\n" +
 			"round instead of being asked again, so quitting mid-session and re-running\n" +
@@ -77,6 +81,9 @@ func newProfileCmd() *cobra.Command {
 			}
 			if out == "" {
 				out = args[0] + ".manifest.yaml"
+			}
+			if err := checkMergeable(out, script); err != nil {
+				return err
 			}
 
 			// Run with the real HOME (and the config-anchor vars derived from it) so a
@@ -152,12 +159,11 @@ func newProfileCmd() *cobra.Command {
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
 			accepted := proposed
-			var trust manifestTrust
-			var carried manifest.Provenance
-			proposed, carried, trust, err = mergeExisting(out, proposed)
+			merge, err := mergeExisting(out, script, proposed)
 			if err != nil {
 				return err
 			}
+			proposed, trust := merge.policy, merge.trust
 			// A manifest that does not exist yet still has a location to judge, and the first
 			// run is the case nothing else looks at - seedGrants returns on a missing file,
 			// and only an interactive session calls it at all.
@@ -180,7 +186,7 @@ func newProfileCmd() *cobra.Command {
 			doc := manifest.Provenance{
 				GeneratedBy:  "bento profile",
 				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-				BlockedHosts: blockedHostsGranted(proposed, union(carried.BlockedHosts, status.blocked)),
+				BlockedHosts: blockedHostsGranted(proposed, union(merge.carried.BlockedHosts, status.blocked)),
 			}
 			data, err := manifest.Marshal(proposed, doc)
 			if err != nil {
@@ -191,7 +197,7 @@ func newProfileCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(os.Stderr, "\n[bento] wrote %s - review it, then run `bento validate %s` and `bento approve %s`.\n", out, out, out)
-			fmt.Fprintf(os.Stderr, "[bento] it reflects only this run; profile again with other inputs to widen it.\n")
+			writeMergeNotice(os.Stderr, out, merge)
 
 			// The manifest is written either way - it is where the next pass starts from -
 			// but a proposal built on a partial observation, or on a session the user left
@@ -1374,6 +1380,37 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 	return doc.Policy, nil
 }
 
+// mergeOutcome is what folding a round's proposal into whatever was already at --out
+// produced. It carries the deltas as well as the result because the merge is the part of
+// profiling nothing at the point of use said out loud: the closing line claimed the
+// manifest reflected only this run, when it reflects this run unioned with a file the
+// user may not remember writing.
+type mergeOutcome struct {
+	policy *policy.Policy
+	// carried is the existing provenance, kept for the same reason the grants are
+	// merged: the block a re-profile writes is its own, so without carrying it the hosts
+	// an earlier --allow-network run recorded as guard-refused would be dropped while the
+	// network rules they describe survive the merge.
+	carried manifest.Provenance
+	// trust is where the write must land - the location this load inspected, rather than
+	// the name resolved a second time. Zero on the first run, where there is no file to
+	// have gathered it from.
+	trust manifestTrust
+	// widened is whether there was a manifest to merge into at all. The deltas below are
+	// meaningless without it: on a first run everything is "added".
+	widened bool
+	// kept are the grants that came from the existing manifest and not from this run.
+	// Named rather than counted: the whole point is that the reviewer can no longer
+	// assume the file describes what they just watched.
+	keptRead, keptWrite, keptEnv, keptNetwork []string
+	// execWidened is whether the union escalated exec from a blocked mode to `all`.
+	execWidened bool
+	// approvalVoided is whether the file being widened carried a current approval, which
+	// the re-profile drops. validate reports it afterwards; by then the user has been
+	// told the manifest is ready to approve, not that their approval is gone.
+	approvalVoided bool
+}
+
 // mergeExisting folds proposed into an existing manifest at path so re-profiling
 // widens rather than replaces it. A path that does not exist is the first run, so
 // proposed is returned unchanged. Any other load error means a file is present at
@@ -1381,27 +1418,134 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 // it held - contradicting the merge-not-overwrite contract the help text promises -
 // so it is refused rather than clobbered.
 //
-// The trust comes back so the write lands at the location this load inspected rather than
-// at the name resolved a second time; it is zero on the first run, where there is no file
-// to have gathered it from. The existing provenance comes back for the same reason the
-// grants are merged: the block a re-profile writes is its own, so without carrying it the
-// hosts an earlier --allow-network run recorded as guard-refused would be dropped while
-// the network rules they describe survive the merge.
-func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manifest.Provenance, manifestTrust, error) {
+// script is the target that was profiled, absolute. A manifest whose entrypoint names a
+// different program is refused rather than merged: the union keeps the base's
+// entrypoint, so merging would leave a manifest naming one program and carrying the
+// other's grants - and seedGrants already declines to mount such a file, so the run that
+// produced the proposal was not resuming from it either. Refusing says which file and
+// which two programs, which is what picking a different --out needs.
+func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, error) {
 	existing, trust, err := loadDocument(path)
 	switch {
-	case err == nil:
-		// Resolve before the union: a proposal names absolute paths, so a relative grant
-		// in the existing manifest would survive the merge as a second spelling of a path
-		// the proposal already carries, and the written manifest would hold both.
-		if err := manifest.Resolve(existing.Policy, path); err != nil {
-			return nil, manifest.Provenance{}, manifestTrust{}, err
-		}
-		return mergePolicies(existing.Policy, proposed), existing.Provenance, trust, nil
 	case errors.Is(err, fs.ErrNotExist):
-		return proposed, manifest.Provenance{}, manifestTrust{}, nil
-	default:
-		return nil, manifest.Provenance{}, manifestTrust{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+		return mergeOutcome{policy: proposed}, nil
+	case err != nil:
+		return mergeOutcome{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+	}
+	approved := checkApproval(existing) == approvalCurrent
+	// Resolve before the union: a proposal names absolute paths, so a relative grant
+	// in the existing manifest would survive the merge as a second spelling of a path
+	// the proposal already carries, and the written manifest would hold both.
+	if err := manifest.Resolve(existing.Policy, path); err != nil {
+		return mergeOutcome{}, err
+	}
+	if err := foreignEntrypointError(path, existing.Policy.Entrypoint, script); err != nil {
+		return mergeOutcome{}, err
+	}
+	out := mergeOutcome{
+		policy:      mergePolicies(existing.Policy, proposed),
+		carried:     existing.Provenance,
+		trust:       trust,
+		widened:     true,
+		keptRead:    only(existing.Policy.Read, proposed.Read),
+		keptWrite:   only(existing.Policy.Write, proposed.Write),
+		keptEnv:     only(existing.Policy.Env, proposed.Env),
+		keptNetwork: only(networkKeys(existing.Policy), networkKeys(proposed)),
+		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
+		// Reported whenever the file was approved: profile writes its own provenance
+		// block, so the stamp is dropped by the write regardless of whether the grants
+		// moved.
+		approvalVoided: approved,
+	}
+	return out, nil
+}
+
+// foreignEntrypointError refuses a manifest at --out that was written for a different
+// program. Shared by the write and by the preflight below so the rule is stated once:
+// a session refused at the end is one the user has already spent.
+func foreignEntrypointError(path, existing, script string) error {
+	if existing == script {
+		return nil
+	}
+	return fmt.Errorf("refusing to merge into %s: it is a manifest for %s, not %s - "+
+		"profiling would leave it naming one program and granting what the other did. Pass --out to write elsewhere, or delete it",
+		path, existing, script)
+}
+
+// checkMergeable refuses before the profiling session what mergeExisting would refuse
+// after it. The write is the enforcement point - a manifest can be replaced while the
+// session runs - but finding out that the result cannot be written only once an
+// interactive granting session has converged throws the whole session away. A missing
+// file is the ordinary first run; every other refusal is worded exactly as the write's,
+// because it is the same refusal arriving earlier.
+//
+// It does not replace the checks at the write: the file can be replaced while the
+// session runs, so what this reads is not necessarily what the merge will.
+func checkMergeable(path, script string) error {
+	doc, _, err := loadDocument(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+	}
+	if err := manifest.Resolve(doc.Policy, path); err != nil {
+		return err
+	}
+	return foreignEntrypointError(path, doc.Policy.Entrypoint, script)
+}
+
+// only returns the entries of a that b does not carry - the grants that survive a merge
+// because the existing manifest held them, not because this run showed them.
+func only(a, b []string) []string {
+	var out []string
+	for _, x := range a {
+		if !slices.Contains(b, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// networkKeys renders a policy's rules in the host:port spelling the rest of the
+// frontend uses, so the merge can diff them as plain strings.
+func networkKeys(p *policy.Policy) []string {
+	out := make([]string, 0, len(p.Network))
+	for _, r := range p.Network {
+		out = append(out, r.Host+":"+r.Port)
+	}
+	return out
+}
+
+// writeMergeNotice says what folding this run's proposal into an existing manifest
+// changed. The closing line it replaces claimed the manifest reflected only this run,
+// which is exactly wrong for the case the merge exists to serve: what is on disk is this
+// run unioned with a file whose grants the user is not being shown again, and whose
+// approval this write has just dropped.
+func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
+	if !m.widened {
+		fmt.Fprintf(w, "[bento] it reflects only this run; profile again with other inputs to widen it.\n")
+		return
+	}
+	fmt.Fprintf(w, "[bento] %s already existed, so this widened it rather than replacing it - it reflects\n", path)
+	fmt.Fprintf(w, "[bento] this run unioned with what was already there.\n")
+	// Quoted for the reason every host-enumerated path in this frontend is: these came
+	// off a file bento did not write, and a grant holding a newline would otherwise forge
+	// a line of bento's own.
+	for _, group := range []struct {
+		kind string
+		kept []string
+	}{{"read", m.keptRead}, {"write", m.keptWrite}, {"env", m.keptEnv}, {"network", m.keptNetwork}} {
+		for _, g := range group.kept {
+			fmt.Fprintf(w, "[bento]   kept from the existing manifest, not shown by this run: %s %q\n", group.kind, g)
+		}
+	}
+	if m.execWidened {
+		fmt.Fprintf(w, "[bento] exec was widened to `all` by this run: the manifest no longer blocks subprocesses.\n")
+	}
+	if m.approvalVoided {
+		fmt.Fprintf(w, "[bento] its approval is gone - a re-profile rewrites the provenance block, so review\n")
+		fmt.Fprintf(w, "[bento] the widened policy and `bento approve` it again.\n")
 	}
 }
 
