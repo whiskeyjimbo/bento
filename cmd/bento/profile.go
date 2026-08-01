@@ -66,6 +66,12 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The sandbox stats the entrypoint too, but not until after the banner below
+			// has announced a profiling session - so a typo would read as a session that
+			// started and then fell over. Checked here, it reads as what it is.
+			if _, err := os.Stat(script); err != nil {
+				return fmt.Errorf("entrypoint %q: %w", args[0], err)
+			}
 			if interpreter == "" {
 				interpreter = guessInterpreter(script)
 			}

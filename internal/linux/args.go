@@ -228,7 +228,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		// save-to-temp-then-rename that editors and libraries use. So a grant that
 		// names an existing file is refused, pointing at the directory instead.
 		if sb.exists(path) && !sb.isDir(path) {
-			return nil, nil, fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", path)
+			return nil, nil, fmt.Errorf("write grant %q is a file; grant its parent directory instead", path)
 		}
 		args = append(args, "--bind-try", path, path)
 	}
@@ -1076,7 +1076,7 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// whole directory and cannot be partly lifted - so opting one file in means
 			// reading the shield directory itself.
 			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
-				return fmt.Errorf("linux: grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
+				return fmt.Errorf("grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
 			}
 		}
 	}
@@ -1128,7 +1128,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 				continue
 			}
 			if policy.CoversResolved(rp, g) {
-				return fmt.Errorf("linux: write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
+				return fmt.Errorf("write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
 			}
 		}
 	}
@@ -1228,7 +1228,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 		rules := append(denylist.Workspace(w), gitDirShields(sb, w)...)
 		for _, r := range rules {
 			if real := sb.resolve(r.Path); real != r.Path {
-				return fmt.Errorf("linux: write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink or grant a narrower directory", w, r.Path, real)
+				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink or grant a narrower directory", w, r.Path, real)
 			}
 		}
 	}
@@ -1243,7 +1243,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 // write with nothing above it.
 func checkWriteNotRoot(writes []string) error {
 	if slices.Contains(writes, "/") {
-		return fmt.Errorf("linux: write grant \"/\" would make the entire host root writable; grant a specific directory")
+		return fmt.Errorf("write grant \"/\" would make the entire host root writable; grant a specific directory")
 	}
 	return nil
 }
@@ -1271,7 +1271,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 			// either namespace costs nothing: a shield with no symlink above it resolves to
 			// itself, so the two tests coincide everywhere else.
 			if policy.CoversResolved(w, loc) || policy.CoversResolved(w, r.Path) {
-				return fmt.Errorf("linux: write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
+				return fmt.Errorf("write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
 			}
 		}
 	}
@@ -1303,7 +1303,7 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 			return err
 		}
 		if isProcessPath(real) && sb.exists(real) {
-			return fmt.Errorf("linux: grant %q resolves to %q, a host process's directory in /proc; the sandbox has a pid namespace and a /proc of its own, where that pid is a different process or none at all; remove the grant - /proc is always mounted", g, real)
+			return fmt.Errorf("grant %q resolves to %q, a host process's directory in /proc; the sandbox has a pid namespace and a /proc of its own, where that pid is a different process or none at all; remove the grant - /proc is always mounted", g, real)
 		}
 	}
 	return nil
@@ -1324,7 +1324,7 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 		}
 		for _, m := range baseFlagsPseudoFS {
 			if real == m {
-				return fmt.Errorf("linux: grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", g, real, m, m)
+				return fmt.Errorf("grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", g, real, m, m)
 			}
 		}
 	}
@@ -1361,7 +1361,7 @@ func checkGrantNotLooped(p *policy.Policy) error {
 // loopedGrantError is shared so a looping read grant and a looping write grant -
 // found at different points in the run - are refused in the same words.
 func loopedGrantError(g string) error {
-	return fmt.Errorf("linux: grant %q loops through itself on the host, so it names nothing that can be bound; fix the link or remove the grant", g)
+	return fmt.Errorf("grant %q loops through itself on the host, so it names nothing that can be bound; fix the link or remove the grant", g)
 }
 
 // isProcessPath reports whether path is a per-process procfs directory or

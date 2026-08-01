@@ -67,7 +67,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// free on every host that will go on to profile.
 	if !p.Limits.IsZero() {
 		if ok, reason := canCreateScope(); !ok {
-			return profile.Observation{}, fmt.Errorf("linux: the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+			return profile.Observation{}, fmt.Errorf("the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 		}
 	}
 

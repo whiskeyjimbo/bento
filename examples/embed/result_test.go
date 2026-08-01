@@ -68,6 +68,28 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 	}
 }
 
+// A sandbox killed by a signal did not choose its exit code, and the hints below it are
+// written for a target that reached its own conclusion. The kill is named, and the
+// bypass hint - which would blame the network for a run the host ended - stays quiet.
+func TestWriteResultReportsASignalKill(t *testing.T) {
+	res, p := populatedResult()
+	res.ExitCode, res.Signaled, res.Signal = 137, true, 9
+	p.Limits = policy.Limits{Memory: "128M"}
+
+	var out strings.Builder
+	writeResult(&out, p, true, res)
+	got := out.String()
+
+	for _, want := range []string{"killed by signal 9", "exit 137", "resource limits"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a signal kill must say %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "no connection through the egress proxy") {
+		t.Errorf("the bypass hint must not fire on a run the host killed; got:\n%s", got)
+	}
+}
+
 // A path in a Result can carry bytes a previous run chose, so rendering one raw lets it
 // move the cursor or forge a line of the report around it.
 func TestWriteResultQuotesPathsFromTheHost(t *testing.T) {
@@ -102,7 +124,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
-		"Setup": true,
+		"Setup": true, "Signaled": true, "Signal": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

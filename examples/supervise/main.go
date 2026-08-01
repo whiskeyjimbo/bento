@@ -360,6 +360,15 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 		fmt.Fprintf(w, "\n%s\n", t.warn("the sandbox did not run your script: "+setupReason(res.Setup)))
 		fmt.Fprintf(w, "%s\n", t.dim("exit code "+strconv.Itoa(res.ExitCode)+" is bento's, not the script's."))
 	}
+	// A signalled sandbox did not pick its exit code - it is 128+signal - so reporting
+	// the code alone would present a run the host ended (a resource cap, an OOM) as a
+	// script that failed. It returns rather than adding a line: the bypass hint below is
+	// written for a script that reached its own conclusion, and this one did not.
+	if res.Signaled {
+		fmt.Fprintf(w, "\n%s\n", t.warn(fmt.Sprintf("the sandbox was killed by signal %d; the script did not choose exit code %d", res.Signal, res.ExitCode)))
+		fmt.Fprintf(w, "%s\n", t.dim("a declared resource limit ends a run this way."))
+		return
+	}
 	// A failed run that reached nothing through the proxy is what a bypass looks like:
 	// bento intercepts egress cooperatively through HTTP_PROXY, so a script that ignores
 	// proxy settings dials into an empty network namespace and fails closed. The count is

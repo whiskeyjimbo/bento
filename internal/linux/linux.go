@@ -401,7 +401,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		case err == nil && fi.IsDir():
 			// Already a directory: nothing to prepare.
 		case err == nil:
-			return fmt.Errorf("linux: write grant %q is a file; grant its parent directory instead", w)
+			return fmt.Errorf("write grant %q is a file; grant its parent directory instead", w)
 		case os.IsNotExist(err):
 			// 0700: only the invoking user's own target writes here (bwrap unshares
 			// the user namespace without remapping the uid), so nothing needs group
@@ -416,7 +416,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 			// looping read grant gets rather than leaking a bare stat error.
 			return loopedGrantError(w)
 		default:
-			return fmt.Errorf("linux: checking write grant %q: %w", w, err)
+			return fmt.Errorf("checking write grant %q: %w", w, err)
 		}
 	}
 	return nil
@@ -432,7 +432,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		return sandbox{}, noop, err
 	}
 	if _, err := os.Stat(entrypoint); err != nil {
-		return sandbox{}, noop, fmt.Errorf("linux: entrypoint %q: %w", p.Entrypoint, err)
+		return sandbox{}, noop, fmt.Errorf("entrypoint %q: %w", p.Entrypoint, err)
 	}
 
 	// An empty interpreter means the entrypoint runs itself: a compiled binary.
@@ -440,7 +440,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	if p.Interpreter != "" {
 		found, err := exec.LookPath(p.Interpreter)
 		if err != nil {
-			return sandbox{}, noop, fmt.Errorf("linux: interpreter %q not found: %w", p.Interpreter, err)
+			return sandbox{}, noop, fmt.Errorf("interpreter %q not found: %w", p.Interpreter, err)
 		}
 		if interp, err = resolve(found); err != nil {
 			return sandbox{}, noop, err
@@ -518,7 +518,7 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 	var rules []denylist.Rule
 	for _, p := range denyPaths {
 		if !filepath.IsAbs(p) {
-			return nil, fmt.Errorf("linux: deny path %q must be absolute", p)
+			return nil, fmt.Errorf("deny path %q must be absolute", p)
 		}
 		// Classify by the RESOLVED path, since the shield binds there (denyArgs
 		// resolves r.Path). Only an existing regular file gets a file shield; a
@@ -527,7 +527,7 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		// uncleanable empty host file.
 		rp := sb.resolve(p)
 		if rp == "/" {
-			return nil, fmt.Errorf("linux: deny path %q resolves to the root and cannot be shielded", p)
+			return nil, fmt.Errorf("deny path %q resolves to the root and cannot be shielded", p)
 		}
 		dir := true
 		if sb.exists(rp) && !sb.isDir(rp) {

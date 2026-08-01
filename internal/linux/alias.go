@@ -229,7 +229,7 @@ func splitAcknowledgedAliases(sb sandbox, scan aliasScan, acceptUnder []string) 
 // while accepting an arbitrarily wide one was the gap this closes.
 func checkAcknowledgementScope(tree string, credentials []string) error {
 	if overbroadAcknowledgement(tree, credentials) {
-		return fmt.Errorf("linux: --accept-alias %s would accept every alias of a credential it contains, not the ones you meant; name the tree the aliases actually live in", tree)
+		return fmt.Errorf("--accept-alias %s would accept every alias of a credential it contains, not the ones you meant; name the tree the aliases actually live in", tree)
 	}
 	return nil
 }

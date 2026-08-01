@@ -101,7 +101,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
-		"Setup": true,
+		"Setup": true, "Signaled": true, "Signal": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {
@@ -116,6 +116,26 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 				"or record in notWarnings why it needs no warning. An unread honesty field is a "+
 				"frontend that is silent about it.", f.Name)
 		}
+	}
+}
+
+// A sandbox the host killed did not choose its exit code, and the bypass hint - written
+// for a script that failed on its own - must not blame the network for it.
+func TestWriteSummaryReportsASignalKill(t *testing.T) {
+	res := populatedResult()
+	res.ExitCode, res.Signaled, res.Signal, res.EgressConnections = 137, true, 9, 0
+
+	var out strings.Builder
+	writeSummary(&out, theme{}, res)
+	got := out.String()
+
+	for _, want := range []string{"killed by signal 9", "did not choose exit code 137", "resource limit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a signal kill must say %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "no connection through the egress proxy") {
+		t.Errorf("the bypass hint fired for a run the host killed; got:\n%s", got)
 	}
 }
 
