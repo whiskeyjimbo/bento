@@ -56,6 +56,23 @@ type Provenance struct {
 	// Approves is the policy fingerprint this manifest was approved for. If it no
 	// longer matches the policy, the permissions changed without re-approval.
 	Approves string `yaml:"approves,omitempty"`
+	// BlockedHosts are the "host:port" destinations the profiling run reached for and
+	// its egress guard refused, because the name resolved into space the sandbox must
+	// not reach. approve names any network rule matching one, so a reader is not asked
+	// to approve egress the tool itself refused.
+	//
+	// It describes how the manifest was drafted rather than what it grants, so it stays
+	// out of the approval fingerprint (which covers the policy only) - otherwise a
+	// re-profile that resolved a name differently would report an approved manifest as
+	// stale over a permission that never changed.
+	BlockedHosts []string `yaml:"blocked-hosts,omitempty"`
+}
+
+// isZero reports whether a provenance block carries nothing, so Marshal leaves the key
+// out entirely. It is written out rather than compared against the zero value because
+// Provenance holds a slice and is no longer comparable.
+func (p Provenance) isZero() bool {
+	return p.GeneratedBy == "" && p.GeneratedAt == "" && p.Approves == "" && len(p.BlockedHosts) == 0
 }
 
 // Document is a parsed manifest: its validated policy and its provenance.
@@ -352,7 +369,7 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 		return nil, err
 	}
 	m := fromPolicy(p)
-	if prov != (Provenance{}) {
+	if !prov.isZero() {
 		m.Provenance = &prov
 	}
 	return yaml.Marshal(&m)
@@ -365,7 +382,11 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 // attacker-influenced value would be written to disk and then rendered by the footer that
 // tells the operator to read it.
 func screenProvenance(prov Provenance) error {
-	for _, f := range []string{prov.GeneratedBy, prov.GeneratedAt, prov.Approves} {
+	fields := []string{prov.GeneratedBy, prov.GeneratedAt, prov.Approves}
+	// The blocked hosts are CONNECT targets the profiled code chose, so they are the
+	// most attacker-influenced values the block can carry - and approve echoes them.
+	fields = append(fields, prov.BlockedHosts...)
+	for _, f := range fields {
 		if r, ok := policy.FirstUnsafeRune(f); ok {
 			return fmt.Errorf("manifest: provenance value %q contains %s", f, policy.DescribeUnsafeRune(r))
 		}

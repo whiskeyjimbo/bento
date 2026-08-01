@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -291,7 +292,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	callouts := func(p *policy.Policy) string {
 		t.Helper()
 		var buf strings.Builder
-		writeApprovalCallouts(&buf, manifestPath, p, resolvedGrants(p, manifestPath))
+		writeApprovalCallouts(&buf, manifestPath, p, resolvedGrants(p, manifestPath), nil)
 		return buf.String()
 	}
 
@@ -342,7 +343,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	// A host that cannot resolve the grants must say so rather than print a clean block:
 	// resolution fails on a ~ it cannot expand, which is the likeliest whole-home grant.
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, manifestPath, &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}, nil)
+	writeApprovalCallouts(&buf, manifestPath, &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}, nil, nil)
 	if !strings.Contains(buf.String(), "could not be resolved") {
 		t.Errorf("unresolvable grants must be reported, not silently skipped; got:\n%s", buf.String())
 	}
@@ -368,5 +369,45 @@ func TestConfirmApprovalDoesNotBlockAScript(t *testing.T) {
 				t.Errorf("nothing may be asked when there is nobody to answer; got %q", buf.String())
 			}
 		})
+	}
+}
+
+// bv2-h3db: a manifest lists a host the profiling run's egress guard refused exactly as
+// it lists one that worked, so a reader following profile -> validate -> approve stamps
+// egress bento itself would not permit. The record is provenance, so approve is the one
+// command holding both it and the rule it describes.
+func TestApproveCallsOutAHostTheProfilingRunWasRefused(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Network: []policy.NetworkRule{
+			{Host: "metadata.internal", Port: "80"},
+			{Host: "example.com", Port: "443"},
+		},
+	}
+	prov := manifest.Provenance{GeneratedBy: "bento profile", BlockedHosts: []string{"metadata.internal:80"}}
+	path := writeManifest(t, p, prov)
+
+	out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if !strings.Contains(out, `network: "metadata.internal"`) {
+		t.Errorf("approve output must call out the refused host:\n%s", out)
+	}
+	if strings.Contains(out, `network: "example.com"`) {
+		t.Errorf("a host the run actually reached must not be called out:\n%s", out)
+	}
+
+	// The stamp rewrites the whole provenance block, so without carrying the record
+	// forward the callout would appear once and never again.
+	doc, _, err := loadDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(doc.Provenance.BlockedHosts, []string{"metadata.internal:80"}) {
+		t.Errorf("blocked-hosts = %v, want it carried through the stamp", doc.Provenance.BlockedHosts)
+	}
+	if checkApproval(doc) != approvalCurrent {
+		t.Error("the record is provenance, not permission: it must not shift the approval fingerprint")
 	}
 }

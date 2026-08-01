@@ -114,8 +114,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	sb.observe = true
 
 	var (
-		mu    sync.Mutex
-		hosts []profile.HostPort
+		mu      sync.Mutex
+		hosts   []profile.HostPort
+		blocked []profile.HostPort
 	)
 	var stopProxy func()
 	// Safety net for early error returns; the happy path stops it explicitly below.
@@ -125,9 +126,12 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		}
 	}()
 	if sb.proxySocket != "" {
-		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(host, port string) {
+		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(host, port string, guardBlocked bool) {
 			mu.Lock()
 			hosts = append(hosts, profile.HostPort{Host: host, Port: port})
+			if guardBlocked {
+				blocked = append(blocked, profile.HostPort{Host: host, Port: port})
+			}
 			mu.Unlock()
 		})
 		if err != nil {
@@ -181,7 +185,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		stopProxy = nil
 	}
 	mu.Lock()
-	obs.Hosts = hosts
+	obs.Hosts, obs.Blocked = hosts, blocked
 	mu.Unlock()
 	obs.Interpreter = sb.interpreter
 	obs.InterpreterName = sb.interpreterName
@@ -193,7 +197,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 // CONNECT and refuses it, so the script's data never leaves the host; passing
 // allowNetwork forwards the traffic for a faithful run of network-dependent code.
 // Either way the host is recorded, so the proposed manifest is the same.
-func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(host, port string)) (func(), error) {
+//
+// record's guardBlocked says the upstream guard refused this destination - the name
+// resolved into space the sandbox must not reach. It is the only refusal that
+// distinguishes one recorded host from another (the discovery allowlist is *:* and
+// there is no gate), and it can only happen when a dial is attempted at all, so it is
+// never set without allowNetwork.
+func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(host, port string, guardBlocked bool)) (func(), error) {
 	var opts []proxy.Option
 	if allowNetwork {
 		// Forwarding mode dials upstream, so it needs the same SSRF hardening as the
@@ -211,7 +221,7 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 		if d == proxy.Refused {
 			return
 		}
-		record(host, port)
+		record(host, port, d == proxy.GuardBlocked)
 	}, opts...)
 	if err != nil {
 		return nil, err

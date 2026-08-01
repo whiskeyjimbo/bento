@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	if doc.Policy.Fingerprint() != doc2.Policy.Fingerprint() {
 		t.Errorf("fingerprint changed across marshal round trip:\n%s", out)
 	}
-	if doc2.Provenance != doc.Provenance {
+	if !reflect.DeepEqual(doc2.Provenance, doc.Provenance) {
 		t.Errorf("provenance changed across round trip: %+v vs %+v", doc2.Provenance, doc.Provenance)
 	}
 }

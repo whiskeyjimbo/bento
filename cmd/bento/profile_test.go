@@ -291,7 +291,7 @@ func TestMergeExisting(t *testing.T) {
 	proposed := &policy.Policy{Entrypoint: "/w/run.py", Read: []string{"/w/in.txt"}}
 
 	// Missing file: the first run returns the proposal unchanged, ready to write.
-	got, _, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
+	got, _, _, err := mergeExisting(filepath.Join(dir, "absent.yaml"), proposed)
 	if err != nil {
 		t.Fatalf("missing --out should not error (first run); got %v", err)
 	}
@@ -304,7 +304,7 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(corrupt, []byte("\tnot: [valid: yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := mergeExisting(corrupt, proposed); err == nil {
+	if _, _, _, err := mergeExisting(corrupt, proposed); err == nil {
 		t.Errorf("a corrupt existing manifest must be refused, not overwritten")
 	}
 
@@ -318,7 +318,7 @@ func TestMergeExisting(t *testing.T) {
 	if err := os.WriteFile(valid, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	merged, _, err := mergeExisting(valid, proposed)
+	merged, _, _, err := mergeExisting(valid, proposed)
 	if err != nil {
 		t.Fatalf("a valid existing manifest should merge; got %v", err)
 	}
@@ -337,7 +337,7 @@ func TestMergeExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	same := &policy.Policy{Entrypoint: filepath.Join(dir, "run.py"), Read: []string{filepath.Join(dir, "in.txt")}}
-	merged, _, err = mergeExisting(rel, same)
+	merged, _, _, err = mergeExisting(rel, same)
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}
@@ -629,5 +629,39 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 	}
 	if n := strings.Count(got, "not proposing write access"); n != 2 {
 		t.Errorf("printed %d messages, want 2 (the duplicate directory is reported once):\n%s", n, got)
+	}
+}
+
+// The provenance record exists so approve can name a rule the reader is about to stamp,
+// so it carries exactly the refusals the written manifest grants: a host the guard
+// refused and the proposal then dropped (an unrepresentable name, a rule the merge never
+// produced) has nothing to warn about, and recording it would leave the manifest naming
+// a destination the target chose that appears nowhere else in the file.
+func TestBlockedHostsRecordedOnlyForRulesTheManifestGrants(t *testing.T) {
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Network: []policy.NetworkRule{
+			{Host: "example.com", Port: "443"},
+			{Host: "metadata.internal", Port: "80"},
+		},
+	}
+	got := blockedRulesIn(p, []string{"metadata.internal:80", "dropped.example:443"})
+	if !slices.Equal(got, []string{"metadata.internal:80"}) {
+		t.Errorf("blockedRulesIn = %v, want only the refusal the manifest grants", got)
+	}
+}
+
+// A CONNECT host is target-chosen, so it can be one the manifest grammar cannot hold.
+// Such a host is already withheld from the proposal, and recording it in provenance
+// would fail the marshal that ends the profiling run - discarding the session's work
+// over a fact about it rather than a permission in it.
+func TestBlockedHostKeysDropUnrepresentableHosts(t *testing.T) {
+	got := blockedHostKeys([]profile.HostPort{
+		{Host: "metadata.internal", Port: "80"},
+		{Host: "bad host\n", Port: "443"},
+		{Host: "metadata.internal", Port: "80"},
+	})
+	if !slices.Equal(got, []string{"metadata.internal:80"}) {
+		t.Errorf("blockedHostKeys = %v, want the representable host once", got)
 	}
 }

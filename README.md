@@ -136,7 +136,12 @@ provenance:
   generated-by: bento profile
   generated-at: 2026-07-14T00:00:00Z
   approves: <sha256-fingerprint-over-policy-fields>
+  blocked-hosts: []             # Destinations the profiling run reached for and bento refused
 ```
+
+The `blocked-hosts` list records how the manifest was drafted, not what it grants, so it
+stays out of the `approves` fingerprint. `bento approve` calls out any `network:` rule
+that matches one, so you are not asked to stamp egress bento itself would refuse.
 
 ### Paths and `~`
 

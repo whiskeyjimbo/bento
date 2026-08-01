@@ -38,7 +38,15 @@ type Observation struct {
 	Reads  []string
 	Writes []string
 	Hosts  []HostPort
-	Execed bool
+	// Blocked is the subset of Hosts whose egress the proxy's upstream guard refused,
+	// because the name resolved to an address the sandbox must not reach (loopback,
+	// private space, cloud metadata). It is the one refusal a profiling run can tell
+	// apart: the discovery allowlist is *:* and consults no gate, so nothing is denied
+	// by policy, and with egress not forwarded (the default) nothing is dialed at all -
+	// so this is populated only under --allow-network. A host recorded here is one an
+	// enforced run would refuse the same way, whatever the manifest grants.
+	Blocked []HostPort
+	Execed  bool
 	// Interpreter is the absolute, resolved path the interpreter ran from (empty
 	// for a self-interpreting binary). It anchors dropping the interpreter's own
 	// runtime tree from the proposal - under a version manager that tree lives in

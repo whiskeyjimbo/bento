@@ -72,7 +72,7 @@ func newApproveCmd() *cobra.Command {
 			// that can drift.
 			resolved := resolvedGrants(doc.Policy, path)
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved)
-			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved)
+			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}
@@ -81,6 +81,9 @@ func newApproveCmd() *cobra.Command {
 				GeneratedBy: "bento approve",
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				Approves:    doc.Policy.Fingerprint(),
+				// Carried, not re-derived: approve observes nothing, and dropping the record
+				// here would clear the callout for every later re-approval of the same file.
+				BlockedHosts: doc.Provenance.BlockedHosts,
 			}
 			out, err := manifest.Marshal(doc.Policy, doc.Provenance)
 			if err != nil {
@@ -107,12 +110,25 @@ func newApproveCmd() *cobra.Command {
 // None of them is a refusal: each is a legitimate thing to approve, and a manifest with
 // no callouts prints nothing here. The ask is only that approving one be a decision.
 //
+// blockedHosts is the manifest's own record of the destinations the profiling run's
+// egress guard refused (provenance, not permission - see manifest.Provenance). Without
+// it the proposal lists a host bento itself would not let the target reach exactly as it
+// lists one that worked, and the reader stamps the difference blind.
+//
 // manifestPath is the symlink-resolved location the stamp will be written to, and the
 // grants are resolved the same way before they are compared - CoversResolved is lexical,
 // so an unresolved path is the one input that makes it answer "no" exactly where it
 // matters.
-func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy) {
+func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy, blockedHosts []string) {
 	var notes []string
+	for _, r := range p.Network {
+		if !slices.Contains(blockedHosts, r.Host+":"+r.Port) {
+			continue
+		}
+		// Quoted for the same reason profile quotes a host it declines to propose: the
+		// name came from the profiled target, and this is a line printed to a terminal.
+		notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached for this host and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
+	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}

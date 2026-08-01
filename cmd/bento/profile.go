@@ -122,6 +122,7 @@ func newProfileCmd() *cobra.Command {
 					// the one that matters; a dropped access from any round is gone for good.
 					status.unfinished = s.unfinished
 					status.dropped = status.dropped || s.dropped
+					status.blocked = union(status.blocked, s.blocked)
 					return p, err
 				}
 				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
@@ -145,7 +146,8 @@ func newProfileCmd() *cobra.Command {
 			// profile run widens the policy instead of replacing it.
 			accepted := proposed
 			var trust manifestTrust
-			proposed, trust, err = mergeExisting(out, proposed)
+			var carried manifest.Provenance
+			proposed, carried, trust, err = mergeExisting(out, proposed)
 			if err != nil {
 				return err
 			}
@@ -169,8 +171,9 @@ func newProfileCmd() *cobra.Command {
 			}
 
 			doc := manifest.Provenance{
-				GeneratedBy: "bento profile",
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedBy:  "bento profile",
+				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+				BlockedHosts: blockedRulesIn(proposed, union(carried.BlockedHosts, status.blocked)),
 			}
 			data, err := manifest.Marshal(proposed, doc)
 			if err != nil {
@@ -268,16 +271,61 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	printScratchWrites(obs.Writes)
 	printUnrepresentable(obs)
 	printProposalWarnings(proposed)
-	return proposed, roundStatus{unfinished: partialRunWarning(obs) != "", dropped: obs.Dropped > 0}, nil
+	return proposed, roundStatus{
+		unfinished: partialRunWarning(obs) != "",
+		dropped:    obs.Dropped > 0,
+		blocked:    blockedHostKeys(obs.Blocked),
+	}, nil
 }
 
-// roundStatus says what a profiling round could not see. The two accumulate
-// differently across a convergence loop: unfinished is per-round and a later round
-// supersedes it, because the early rounds of a loop routinely exit nonzero - a target
-// failing on the config it has not been granted yet is the premise of the loop, not a
-// defect. dropped is cumulative: an access the observer could not name in round 1 is
-// simply absent from the proposal, and no later round puts it back.
-type roundStatus struct{ unfinished, dropped bool }
+// blockedRulesIn narrows the recorded guard refusals to the ones the written manifest
+// actually grants. The record exists so approve can name a rule the reader is about to
+// stamp; a refusal with no matching rule has nothing to warn about, and keeping it would
+// leave the manifest carrying hostnames the target chose that nothing in the file
+// otherwise mentions.
+func blockedRulesIn(p *policy.Policy, blocked []string) []string {
+	var out []string
+	for _, r := range p.Network {
+		key := r.Host + ":" + r.Port
+		if slices.Contains(blocked, key) {
+			out = append(out, key)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// blockedHostKeys renders the destinations the round's egress guard refused as the
+// "host:port" keys the provenance block carries, dropping any the manifest grammar
+// could not hold - the same screen Synthesize applies to the proposed network rules,
+// so what is recorded here stays a subset of what the manifest can name.
+func blockedHostKeys(blocked []profile.HostPort) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range blocked {
+		key := h.Host + ":" + h.Port
+		if seen[key] || (policy.NetworkRule{Host: h.Host, Port: h.Port}).Validate() != nil {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// roundStatus says what a profiling round could not see. They accumulate differently
+// across a convergence loop: unfinished is per-round and a later round supersedes it,
+// because the early rounds of a loop routinely exit nonzero - a target failing on the
+// config it has not been granted yet is the premise of the loop, not a defect. dropped
+// is cumulative: an access the observer could not name in round 1 is simply absent from
+// the proposal, and no later round puts it back. blocked is cumulative for the same
+// reason - a host the guard refused in one round is a fact about the drafting, and a
+// later round that never reached for it again does not undo it.
+type roundStatus struct {
+	unfinished, dropped bool
+	blocked             []string
+}
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or
 // another user's home. Those are dropped inside Synthesize, before the proposal the
@@ -1157,8 +1205,11 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 //
 // The trust comes back so the write lands at the location this load inspected rather than
 // at the name resolved a second time; it is zero on the first run, where there is no file
-// to have gathered it from.
-func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manifestTrust, error) {
+// to have gathered it from. The existing provenance comes back for the same reason the
+// grants are merged: the block a re-profile writes is its own, so without carrying it the
+// hosts an earlier --allow-network run recorded as guard-refused would be dropped while
+// the network rules they describe survive the merge.
+func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manifest.Provenance, manifestTrust, error) {
 	existing, trust, err := loadDocument(path)
 	switch {
 	case err == nil:
@@ -1166,13 +1217,13 @@ func mergeExisting(path string, proposed *policy.Policy) (*policy.Policy, manife
 		// in the existing manifest would survive the merge as a second spelling of a path
 		// the proposal already carries, and the written manifest would hold both.
 		if err := manifest.Resolve(existing.Policy, path); err != nil {
-			return nil, manifestTrust{}, err
+			return nil, manifest.Provenance{}, manifestTrust{}, err
 		}
-		return mergePolicies(existing.Policy, proposed), trust, nil
+		return mergePolicies(existing.Policy, proposed), existing.Provenance, trust, nil
 	case errors.Is(err, fs.ErrNotExist):
-		return proposed, manifestTrust{}, nil
+		return proposed, manifest.Provenance{}, manifestTrust{}, nil
 	default:
-		return nil, manifestTrust{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+		return nil, manifest.Provenance{}, manifestTrust{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
 	}
 }
 
