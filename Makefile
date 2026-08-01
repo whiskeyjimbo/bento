@@ -93,10 +93,13 @@ vet: ## Run go vet checks
 	@printf "$(GREEN)$(BOLD)✓ go vet clean!$(RESET)\n"
 
 # The enforcement backend is linux/amd64, but the CLI and the public API are meant to
-# compile everywhere and refuse at runtime - a build that only ever runs on amd64 Linux
+# compile on any Unix and refuse at runtime - a build that only ever runs on amd64 Linux
 # drifts back to raw `undefined: unix.O_PATH` errors the first time a syscall constant
-# lands in an untagged file. One target off each axis is enough to catch that.
-crossbuild: ## Check the tree still compiles for the unsupported platforms
+# lands in an untagged file. darwin catches a constant that is Linux-only; linux/arm64
+# catches one that is amd64-only, and compiles the `linux && !amd64` seccomp and observe
+# variants that nothing else here builds. Windows is not covered: the untagged CLI files
+# still reach for syscall.Stat_t and SIGSYS, which it has no answer for.
+crossbuild: ## Check the tree still compiles for the other Unix targets
 	@printf "$(CYAN)$(BOLD)==> Cross-compiling for unsupported platforms...$(RESET)\n"
 	@GOWORK=off GOOS=darwin GOARCH=arm64 go vet ./...
 	@GOWORK=off GOOS=linux GOARCH=arm64 go vet ./...
