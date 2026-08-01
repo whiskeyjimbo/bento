@@ -60,6 +60,25 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	}
 }
 
+// The degraded tier is reached whenever bwrap cannot give a namespace, and a missing
+// bwrap is one of those ways. Its detail has to lead with what the probe actually
+// found: a hardcoded "user namespaces are blocked" sends a reader off to enable a
+// namespace this host already permits, and the real cause used to sit ~1200
+// characters downstream where nobody acts on it.
+func TestFilesystemLayerDegradedLeadsWithProbeReason(t *testing.T) {
+	const nsReason = "bubblewrap (bwrap) is not installed, so it cannot isolate anything"
+	state, reason := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true)
+	if state != enforce.Degraded {
+		t.Fatalf("state = %v, want Degraded", state)
+	}
+	if !strings.HasPrefix(reason, nsReason) {
+		t.Errorf("reason does not lead with the probe reason: %q", reason)
+	}
+	if strings.Contains(reason, "unprivileged user namespaces are blocked") {
+		t.Errorf("reason asserts a userns block the probe did not find: %q", reason)
+	}
+}
+
 // A limit is enforced by the systemd scope both tiers wrap their command in, so the
 // report must hang on scope creation alone - and must never claim Enforced without a
 // creatable scope, which would report a memory/pids/cpu cap that does not hold.

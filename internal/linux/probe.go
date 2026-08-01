@@ -156,7 +156,8 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 //
 //   - userns OK: bwrap gives full confinement (fresh rootfs, mount namespace, the
 //     deny-list binds); Landlock, when present, is a second kernel backstop behind it.
-//   - userns blocked but Landlock present: the Landlock-only degraded tier - path
+//   - no usable namespace (blocked, or bwrap absent) but Landlock present: the
+//     Landlock-only degraded tier - path
 //     read/write/exec rules and nothing else. No mount namespace means no rootfs, no
 //     hidden /proc, and critically no deny-list binds, so it is materially weaker
 //     than the full sandbox, not the same thing by another mechanism (design 6.2).
@@ -189,7 +190,11 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"block (an amd64 kernel with seccomp BPF) to stand in for the missing namespaces, " +
 			"unavailable here"
 	case landlockAvail:
-		return enforce.Degraded, "unprivileged user namespaces are blocked, so bubblewrap cannot run; " +
+		// Leads with nsReason rather than a hardcoded userns clause: this branch is
+		// reached whenever bwrap cannot give a namespace, which includes bwrap simply
+		// not being installed. Asserting "user namespaces are blocked" there sends a
+		// reader to enable a namespace the host already permits.
+		return enforce.Degraded, nsReason + "; " +
 			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially " +
 			"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of " +
 			"an allowed tree, and any granted /proc is the host's), no PID namespace (the target shares the " +
@@ -200,7 +205,7 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"network namespace " +
 			"(seccomp blocks IP egress but not netlink interface enumeration, nor " +
 			unixSocketClause(resolveUnixRestricted) + "). It confines filesystem " +
-			"read/write/exec, nothing more (" + nsReason + ")" +
+			"read/write/exec, nothing more" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted)
 	default:
@@ -294,7 +299,12 @@ const (
 func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		return namespacesBlocked, "bubblewrap (bwrap) is not installed; no filesystem or network confinement is possible"
+		// Cause only, no verdict: every caller leads with this string and each one
+		// reaches a different conclusion from it - the network layer is unavailable,
+		// but the filesystem layer may still have Landlock to fall back on. A reason
+		// asserting "no confinement is possible" contradicts the degraded tier that
+		// then describes itself in the same sentence.
+		return namespacesBlocked, "bubblewrap (bwrap) is not installed, so it cannot isolate anything"
 	}
 	if err := canUnshare(ctx, bwrap); err != nil {
 		return classifyUnshare(err)
