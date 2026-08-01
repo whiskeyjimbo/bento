@@ -37,6 +37,41 @@ make build                    # reproducible static binary (trimmed paths, sourc
 go build -o bento ./cmd/bento # plain build
 ```
 
+### Running Inside a Container
+
+A stock container cannot run Bento: it builds its sandbox out of the same kernel
+features the container runtime already restricts, so `bento doctor` reports the
+core layers degraded or unavailable and runs are refused. On Docker, three
+default restrictions are in the way, and all three have to be lifted:
+
+```sh
+docker run --security-opt seccomp=unconfined \
+           --security-opt apparmor=unconfined \
+           --security-opt systempaths=unconfined \
+           ...
+```
+
+- `seccomp=unconfined` - the default profile blocks `unshare(CLONE_NEWUSER)` and
+  `pivot_root` for a container without `CAP_SYS_ADMIN`, which is how bubblewrap
+  builds its namespace and root.
+- `apparmor=unconfined` - needed on hosts with
+  `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu 23.10 and later).
+  Loading an AppArmor profile that permits `bwrap` is the narrower alternative,
+  but it is a change to the *host*, which in CI you may not control.
+- `systempaths=unconfined` - Docker masks paths under `/proc`, and bubblewrap
+  cannot mount a fresh `procfs` over a masked one. Without it `doctor` looks
+  healthy and the run fails at setup with `Can't mount proc on /newroot/proc`.
+
+Weigh this honestly: those flags loosen the *outer* container, so the isolation
+the container gave you is traded for the isolation Bento gives you. That is a
+reasonable trade when the container is a CI job runner whose purpose is to run
+Bento, and a poor one when it is a shared multi-tenant sandbox. Running Bento
+directly on the CI host - GitHub-hosted runners permit unprivileged user
+namespaces - needs none of it.
+
+Resource limits stay unavailable in a container without a systemd user manager;
+that is a hardening layer, so runs proceed unless `--strict` is passed.
+
 ---
 
 ## Quick Start Workflow
