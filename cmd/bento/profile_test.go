@@ -868,3 +868,57 @@ func TestMergeNoticeReportsWideningAndVoidedApproval(t *testing.T) {
 		t.Errorf("a first run must keep its own closing line; got:\n%s", first.String())
 	}
 }
+
+// A generated manifest must be the same artifact a hand-written one is. Profiling
+// observes host paths, so emitting them verbatim produced a manifest that named one
+// machine: a teammate, or CI, or the same directory after a move, got a stat failure,
+// and the author's home landed in a tracked file (bv2-sz7v).
+func TestRelocatableRewritesPathsIntoTheManifestsVocabulary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+
+	p := &policy.Policy{
+		Entrypoint: filepath.Join(dir, "probe.py"),
+		Read:       []string{filepath.Join(home, ".config", "app"), dir, "/etc/hosts"},
+		Write:      []string{filepath.Join(dir, "out")},
+	}
+	got := relocatable(p, filepath.Join(dir, "m.yaml"))
+
+	if got.Entrypoint != "./probe.py" {
+		t.Errorf("entrypoint = %q, want ./probe.py", got.Entrypoint)
+	}
+	// The manifest directory wins over home for a path under both - manifests usually
+	// live under home, and ~-anchoring them leaves the artifact just as unshareable.
+	if want := []string{"~/.config/app", ".", "/etc/hosts"}; !slices.Equal(got.Read, want) {
+		t.Errorf("read = %v, want %v", got.Read, want)
+	}
+	if want := []string{"./out"}; !slices.Equal(got.Write, want) {
+		t.Errorf("write = %v, want %v", got.Write, want)
+	}
+	// The rewrite must be lossless: what run enforces has to be what profiling saw.
+	back := *got
+	back.Read, back.Write = slices.Clone(got.Read), slices.Clone(got.Write)
+	if err := manifest.Resolve(&back, filepath.Join(dir, "m.yaml")); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if back.Entrypoint != p.Entrypoint || !slices.Equal(back.Read, p.Read) || !slices.Equal(back.Write, p.Write) {
+		t.Errorf("resolving the rewrite must return the observed paths; got %+v, want %+v", back, p)
+	}
+}
+
+// A sibling of the anchor is not under it. A prefix test reads /home/alice-backup as
+// living inside /home/alice and would emit a ../ path, which is less relocatable than
+// the absolute one it replaced.
+func TestRelocatableLeavesAPathOutsideBothAnchorsAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+
+	sibling := dir + "-backup"
+	p := &policy.Policy{Entrypoint: filepath.Join(dir, "x"), Read: []string{sibling, home + "-backup"}}
+	got := relocatable(p, filepath.Join(dir, "m.yaml"))
+	if want := []string{sibling, home + "-backup"}; !slices.Equal(got.Read, want) {
+		t.Errorf("read = %v, want the absolute paths untouched (%v)", got.Read, want)
+	}
+}

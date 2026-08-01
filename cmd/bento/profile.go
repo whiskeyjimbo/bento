@@ -37,6 +37,10 @@ func newProfileCmd() *cobra.Command {
 		Long: "profile runs the script under the same default-deny sandbox a real run\n" +
 			"gets, recording every file it tries to open and every host it reaches, then\n" +
 			"writes a proposed manifest of exactly that.\n\n" +
+			"The manifest is written in the relocatable form: a path under the manifest's\n" +
+			"own directory is emitted as ./-relative and one under your home as ~/-prefixed,\n" +
+			"so the result can be committed and used by someone else. A path under neither\n" +
+			"stays absolute, and names this machine.\n\n" +
 			"Nothing under your home directory is mounted during profiling: the script\n" +
 			"runs with your real HOME so it probes the real paths (~/.ssh, ~/.aws), but\n" +
 			"those paths are absent in the sandbox, so the attempt is recorded without\n" +
@@ -188,7 +192,10 @@ func newProfileCmd() *cobra.Command {
 				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 				BlockedHosts: blockedHostsGranted(proposed, union(merge.carried.BlockedHosts, status.blocked)),
 			}
-			data, err := manifest.Marshal(proposed, doc)
+			// Last, after every merge, drop and union above: those all compare grant
+			// strings, and comparing two spellings of one directory would leave both in
+			// the file or fail to collapse a covered one.
+			data, err := manifest.Marshal(relocatable(proposed, out), doc)
 			if err != nil {
 				return err
 			}
@@ -215,6 +222,84 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
+}
+
+// relocatable rewrites a proposal's paths into the vocabulary the manifest format
+// already documents, so a generated manifest is the same artifact a hand-written one is:
+// a path under the manifest's own directory becomes `./`-relative, one under the invoking
+// user's home becomes `~/`-prefixed, and anything under neither stays absolute.
+//
+// Profiling observed host paths, so without this every generated manifest names one
+// machine. Committing it hands a teammate a manifest that cannot run for them and hands
+// the repository the author's home directory and directory layout. The hand-written
+// example manifests already use the relative form; only the generated ones did not.
+//
+// The manifest directory wins over home because manifests usually live under home, and
+// `~/`-anchoring the common case would leave the artifact just as unshareable. A rewrite
+// is taken only where filepath.Rel stays inside the anchor: `..` climbing out is less
+// relocatable than the absolute path, and a prefix test would read /home/alice-backup as
+// living under /home/alice.
+func relocatable(p *policy.Policy, manifestPath string) *policy.Policy {
+	base, err := filepath.Abs(filepath.Dir(manifestPath))
+	if err != nil {
+		// The manifest is about to be written to this path, so a directory that cannot be
+		// named absolutely is a problem the write itself will report. Here it only means
+		// the paths stay as profiling found them.
+		return p
+	}
+	// An unusable $HOME is not worth refusing over: home-anchoring is the second-best of
+	// the two rewrites, and dropping it leaves absolute paths, which is what profiling
+	// wrote before any of this.
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil || !filepath.IsAbs(home) {
+		home = ""
+	}
+	rewrite := func(path string) string {
+		if !filepath.IsAbs(path) {
+			return path
+		}
+		if s, ok := under(base, path); ok {
+			if s == "." {
+				return "."
+			}
+			return "./" + s
+		}
+		if home != "" {
+			if s, ok := under(home, path); ok {
+				if s == "." {
+					return "~"
+				}
+				return "~/" + s
+			}
+		}
+		return path
+	}
+	cp := *p
+	cp.Entrypoint = rewrite(p.Entrypoint)
+	cp.Read = mapSlice(p.Read, rewrite)
+	cp.Write = mapSlice(p.Write, rewrite)
+	return &cp
+}
+
+// under reports path's spelling relative to anchor, and whether it is beneath it at all.
+// The anchor itself yields ".".
+func under(anchor, path string) (string, bool) {
+	rel, err := filepath.Rel(anchor, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+func mapSlice(in []string, f func(string) string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, v := range in {
+		out[i] = f(v)
+	}
+	return out
 }
 
 // incompleteReason names why a profiling session cannot vouch for the manifest it
