@@ -65,25 +65,29 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 // to eliminate, indistinguishable from a crash to the machine gate `run --help` sends
 // there. The commands that answer --json in their own shapes must not gain this one.
 func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
+	// shape is what the command promised: "stream" for run, whose stdout is one JSON
+	// object per line, "document" for profile's single indented envelope. Asserting the
+	// specific one is the point - a test that accepted either would pass with the two
+	// commands' annotations swapped, which is the regression the split exists to prevent.
 	cases := []struct {
-		name    string
-		argv    []string
-		refused bool
+		name  string
+		argv  []string
+		shape string
 	}{
-		{"an unknown flag on run", []string{"run", "--json", "--nosuchflag", "m.yaml"}, true},
-		{"--json after the bad flag", []string{"run", "--nosuchflag", "--json", "m.yaml"}, true},
-		{"a missing script on profile", []string{"profile", "--json"}, true},
-		{"--json=true spells the same thing", []string{"run", "--json=true", "--nosuchflag"}, true},
-		{"--json=1 spells it too", []string{"run", "--json=1", "--nosuchflag"}, true},
-		{"--json=false asked for no envelope", []string{"run", "--json=false", "--nosuchflag"}, false},
-		{"--json=0 asked for no envelope", []string{"run", "--json=0", "--nosuchflag"}, false},
-		{"without --json nothing is written", []string{"run", "--nosuchflag", "m.yaml"}, false},
+		{"an unknown flag on run", []string{"run", "--json", "--nosuchflag", "m.yaml"}, "stream"},
+		{"--json after the bad flag", []string{"run", "--nosuchflag", "--json", "m.yaml"}, "stream"},
+		{"a missing script on profile", []string{"profile", "--json"}, "document"},
+		{"--json=true spells the same thing", []string{"run", "--json=true", "--nosuchflag"}, "stream"},
+		{"--json=1 spells it too", []string{"run", "--json=1", "--nosuchflag"}, "stream"},
+		{"--json=false asked for no envelope", []string{"run", "--json=false", "--nosuchflag"}, ""},
+		{"--json=0 asked for no envelope", []string{"run", "--json=0", "--nosuchflag"}, ""},
+		{"without --json nothing is written", []string{"run", "--nosuchflag", "m.yaml"}, ""},
 		// --env takes a value, so this is a malformed --env and not a request for an
 		// envelope; answering it with JSON would swallow the message naming the mistake.
-		{"a --json eaten as another flag's value", []string{"run", "--env", "--json", "--nosuchflag"}, false},
+		{"a --json eaten as another flag's value", []string{"run", "--env", "--json", "--nosuchflag"}, ""},
 		// validate answers --json in its own shape; a refusal there would be a shape its
 		// consumers were never told to expect.
-		{"validate keeps its own contract", []string{"validate", "--json", "a.yaml", "b.yaml"}, false},
+		{"validate keeps its own contract", []string{"validate", "--json", "a.yaml", "b.yaml"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,7 +102,7 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 
 			var stdout bytes.Buffer
 			got := refuseUsageJSON(&stdout, root, cmd, tc.argv, err)
-			if !tc.refused {
+			if tc.shape == "" {
 				if stdout.Len() != 0 {
 					t.Fatalf("stdout = %q, want nothing written", stdout.String())
 				}
@@ -110,10 +114,6 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 			if code := asExitError(t, got).code; code != bentoFailed {
 				t.Errorf("exit code = %d, want %d, as a refusal raised inside RunE", code, bentoFailed)
 			}
-			// The two commands that opt in answer in different shapes - profile with
-			// refused:true in one indented document, run with a refusal event on the
-			// JSON-lines stream its stdout is - so this reads whichever the command
-			// promised rather than asserting one on both.
 			var env struct {
 				Refused bool       `json:"refused"`
 				Event   string     `json:"event"`
@@ -123,9 +123,23 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 				t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
 			}
-			refused := env.Refused || env.Event == "refusal"
-			if !refused || env.Reason == "" {
-				t.Errorf("envelope = %+v, want a refusal with the usage error as its reason", env)
+			if env.Reason == "" {
+				t.Errorf("envelope = %+v, want the usage error as its reason", env)
+			}
+			switch tc.shape {
+			case "stream":
+				if env.Event != "refusal" || env.Refused {
+					t.Errorf("envelope = %+v, want run's refusal event and no refused field", env)
+				}
+				// One object per line, so a consumer parsing the stream reads it like any
+				// other. An indented document here would be several lines that each fail.
+				if strings.Count(strings.TrimSuffix(stdout.String(), "\n"), "\n") != 0 {
+					t.Errorf("run's refusal spans lines; its stdout is one object per line:\n%s", stdout.String())
+				}
+			case "document":
+				if !env.Refused || env.Event != "" {
+					t.Errorf("envelope = %+v, want profile's refused:true and no event field", env)
+				}
 			}
 			if env.Report.FullyEnforced || env.Report.Layers == nil {
 				t.Errorf("report = %+v, want the empty report of a run that built no sandbox", env.Report)

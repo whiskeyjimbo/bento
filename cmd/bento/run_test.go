@@ -316,20 +316,60 @@ func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 }
 
 // A stream write that fails (a redirected stdout that is full or gone) leaves stdout
-// truncated - and the target's own output is on that stream, so what is there is not
-// what the run produced. Passing the target's exit code through would tell a gate to
-// trust it, so the run answers with bento's own code and says why on stderr. The
-// buffered envelope could pass the code through, because the only thing it lost was
-// bento's summary of a run whose output had already gone to the real stderr.
-func TestWriteRunResultStreamWriteFailureRefusesTheTargetCode(t *testing.T) {
-	var stderr bytes.Buffer
-	err := writeRunResult(failWriter{}, &stderr, true, validPolicy(),
-		enforce.Result{ExitCode: 5}, nil, newEventStream(failWriter{}), nil)
-	if got := asExitError(t, err).code; got != bentoFailed {
-		t.Fatalf("a truncated stream must not report the target code; got %d, want %d", got, bentoFailed)
+// truncated - and the target's own output is on that stream, so what is there is not what
+// the run produced, with nothing in it to say how much is missing. Passing the target's
+// exit code through would tell a gate to trust it, so every outcome answers with bento's
+// own code and says why on stderr. All three, not just the verdict: a consumer reads the
+// stream by its terminal object, and a refusal or failure that never landed leaves one
+// that ends in nothing at all.
+func TestWriteRunResultStreamWriteFailureRefusesEveryOutcome(t *testing.T) {
+	report := enforce.Report{}
+	report.Add(enforce.LayerFilesystem, enforce.Degraded, "userns blocked")
+	for _, tc := range []struct {
+		name string
+		res  enforce.Result
+		err  error
+	}{
+		{"verdict", enforce.Result{ExitCode: 5}, nil},
+		{"refusal", enforce.Result{}, &enforce.Refusal{Report: report, Reason: "cannot enforce here"}},
+		{"failed", enforce.Result{}, errors.New("the sandbox stage died")},
+		{"strict shortfall", enforce.Result{ExitCode: 5}, &enforce.Shortfall{Report: report}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			err := writeRunResult(failWriter{}, &stderr, true, validPolicy(),
+				tc.res, nil, newEventStream(failWriter{}), tc.err)
+			if got := asExitError(t, err).code; got != bentoFailed {
+				t.Errorf("a truncated stream reported %d, want %d - nothing on stdout can be trusted", got, bentoFailed)
+			}
+			if !strings.Contains(stderr.String(), "could not be written") {
+				t.Errorf("a failed stream write must say so on stderr; got %q", stderr.String())
+			}
+		})
 	}
-	if !strings.Contains(stderr.String(), "could not be written") {
-		t.Errorf("a failed stream write must say so on stderr; got %q", stderr.String())
+}
+
+// The same run with a stream that took the writes keeps its own answer, so the check
+// above is a response to the failure and not a code the --json path always returns.
+func TestWriteRunResultStreamIntactKeepsTheEarnedCode(t *testing.T) {
+	report := enforce.Report{}
+	report.Add(enforce.LayerFilesystem, enforce.Degraded, "userns blocked")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"verdict", nil, 5},
+		{"strict shortfall", &enforce.Shortfall{Report: report}, strictShortfall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := writeRunResult(&stdout, &stderr, true, validPolicy(),
+				enforce.Result{ExitCode: 5}, nil, newEventStream(&stdout), tc.err)
+			if got := asExitError(t, err).code; got != tc.want {
+				t.Errorf("exit code = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
