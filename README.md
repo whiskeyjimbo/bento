@@ -56,7 +56,9 @@ cd examples/probe
 ./bento profile ./probe.py
 
 # 2. Validate: Check manifest syntax and review requested permissions.
-./bento validate ./probe.py.manifest.yaml --strict
+#    Plain validate reports the approval state; --strict makes a missing or stale
+#    approval a failure, so it belongs after step 3 (in CI), not here.
+./bento validate ./probe.py.manifest.yaml
 
 # 3. Approve: Review the permissions and stamp an approval fingerprint over them.
 #    It prints the policy, calls out what deserves a second look, and asks. --yes for CI;
