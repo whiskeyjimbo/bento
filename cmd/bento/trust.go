@@ -31,6 +31,10 @@ type fileFacts struct {
 	// rewrite, which zeroes the group class and with it the mask every named entry is
 	// filtered through.
 	aclWrite bool
+	// privateGroup marks a group-write grant that reaches nobody: the owning group was
+	// resolved and holds no member but the owner. False whenever that could not be
+	// established, so a group nothing could be learned about is read as holding somebody.
+	privateGroup bool
 }
 
 func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
@@ -38,7 +42,17 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 	if !ok {
 		return fileFacts{}, fmt.Errorf("cannot read ownership of %s", path)
 	}
-	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, nil
+	return withGroup(fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, st.Gid), nil
+}
+
+// withGroup fills in privateGroup, and only where a group-write bit makes the answer
+// matter: the lookup reads the account database, and the modes that grant the group
+// nothing have no question to ask of it.
+func withGroup(f fileFacts, gid uint32) fileFacts {
+	if f.mode.Perm()&0o020 != 0 {
+		f.privateGroup = groupHoldsOnly(gid, f.uid)
+	}
+	return f
 }
 
 // POSIX ACL entry tags and permission bits, as the kernel lays them out in
@@ -102,12 +116,19 @@ func aclNamedWrite(path string) (bool, error) {
 	return named&mask&aclPermWrite != 0, nil
 }
 
-// sharedWrite is the write bits granted to someone other than the owner.
+// sharedWrite is the write bits granted to someone other than the owner. A group bit whose
+// group holds nobody else is not one of them: it grants write to a set of one, and the
+// owner is already the owner. Setgid says the group is a real one - see dirFlaws - so the
+// bit stands there whatever the membership reads as.
 func (f fileFacts) sharedWrite() fs.FileMode {
 	if f.stickyDir() {
 		return 0
 	}
-	return f.mode.Perm() & 0o022
+	shared := f.mode.Perm() & 0o022
+	if f.privateGroup && f.mode&fs.ModeSetgid == 0 {
+		shared &^= 0o020
+	}
+	return shared
 }
 
 // aclSharedWrite is aclWrite once the sticky exemption is applied, so both ways of granting
@@ -162,6 +183,10 @@ type manifestTrust struct {
 type trustFlaw struct {
 	reason string
 	fatal  bool
+	// hint is the command that resolves the flaw, where one does. A permissive umask is the
+	// usual cause and chmod is the whole fix, but the reader has to be told so: a warning on
+	// every command that never names its remedy is the shape of a line people learn to skip.
+	hint string
 }
 
 // inspectManifest reads the trust facts for an already-open manifest. The file's come from
@@ -430,7 +455,7 @@ func fdFacts(fd int, path string) (fileFacts, error) {
 	if err := unix.Fstat(fd, &st); err != nil {
 		return fileFacts{}, err
 	}
-	facts := fileFacts{path: path, mode: statMode(st.Mode), uid: st.Uid}
+	facts := withGroup(fileFacts{path: path, mode: statMode(st.Mode), uid: st.Uid}, st.Gid)
 	aclWrite, err := aclNamedWrite(procFD(fd))
 	if err != nil {
 		return fileFacts{}, noProcError(err)
@@ -576,8 +601,10 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 	}
 	if shared := d.sharedWrite(); shared != 0 {
 		// World write is always fatal. Group write on its own is not: it is what a umask of
-		// 002 leaves on every directory it creates, and on a distro with per-user groups the
-		// group holds nobody else - refusing it would fail approve on ordinary machines.
+		// 002 leaves on every directory it creates, and the group it grants may hold nobody -
+		// refusing it would fail approve on ordinary machines. sharedWrite has already dropped
+		// the ones proven to hold nobody, so what reaches here is a group with other people in
+		// it or one nothing could be learned about, and neither is worth a refusal on its own.
 		// Setgid is what says otherwise. A setgid group-writable directory is the shared
 		// project layout, made that way so a group of people can all write there, so the
 		// "nobody else is in the group" reading is the one thing it rules out.
@@ -587,7 +614,7 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 			fatal = true
 			reason = fmt.Sprintf("%s, %s, is setgid and group-writable (%#o), which is the shared-project layout, so the group holds other people who can replace the manifest", d.path, role, d.mode.Perm())
 		}
-		out = append(out, trustFlaw{reason: reason, fatal: fatal})
+		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: fmt.Sprintf("chmod %s %s narrows it, if nobody else is meant to write there", chmodNarrowing(shared), d.path)})
 	}
 	if d.foreignOwner(euid) {
 		out = append(out, trustFlaw{
@@ -596,6 +623,20 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 		})
 	}
 	return out
+}
+
+// chmodNarrowing is the argument to chmod that takes the reported write away, and only
+// that: a directory group-writable on purpose within a world-writable one should not be
+// told to drop the group bit it meant to have.
+func chmodNarrowing(shared fs.FileMode) string {
+	switch {
+	case shared&0o002 != 0 && shared&0o020 != 0:
+		return "go-w"
+	case shared&0o002 != 0:
+		return "o-w"
+	default:
+		return "g-w"
+	}
 }
 
 func writerClass(shared fs.FileMode) string {
@@ -632,5 +673,8 @@ func warnStampAtRisk(w io.Writer, doc *manifest.Document, trust manifestTrust) {
 func warnUntrusted(w io.Writer, flaws []trustFlaw) {
 	for _, f := range flaws {
 		fmt.Fprintf(w, "[bento] %s - its approval stamp attests only what whoever can write it leaves there.\n", f.reason)
+		if f.hint != "" {
+			fmt.Fprintf(w, "[bento] %s\n", f.hint)
+		}
 	}
 }

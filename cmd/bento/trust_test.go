@@ -76,6 +76,37 @@ func TestDirFlawsFatality(t *testing.T) {
 	}
 }
 
+// A group-write bit whose group holds nobody grants write to a set of one, and the owner is
+// already the owner. Reported as a flaw it fired on every command of every host whose umask
+// is 002 - which is most of them - and said "anyone there can replace the manifest" about a
+// group with a single member. Setgid still overrides: that is the directory saying the group
+// is a real one whatever a single-member reading of it would conclude.
+func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
+	const me = 1000
+	private := fileFacts{path: "/home/me/proj", mode: fs.ModeDir | 0o775, uid: me, privateGroup: true}
+	if got := dirFlaws(private, "the directory holding it", me); len(got) != 0 {
+		t.Errorf("a group nobody else is in grants nobody anything; got %+v", got)
+	}
+
+	shared := private
+	shared.privateGroup = false
+	got := dirFlaws(shared, "the directory holding it", me)
+	if len(got) != 1 || got[0].fatal {
+		t.Fatalf("a group with other people in it is reported, not refused; got %+v", got)
+	}
+	// The reader is left with something to do about it, which is the other half of why the
+	// warning was ignorable.
+	if !strings.Contains(got[0].hint, "chmod g-w /home/me/proj") {
+		t.Errorf("the warning must name the remedy; got %q", got[0].hint)
+	}
+
+	setgid := private
+	setgid.mode |= fs.ModeSetgid
+	if got := dirFlaws(setgid, "the directory holding it", me); len(got) != 1 || !got[0].fatal {
+		t.Errorf("the shared-project layout outranks what the group database reads as; got %+v", got)
+	}
+}
+
 // setACL writes a POSIX access ACL, so the parse is exercised against what the kernel
 // actually stores rather than a blob this test made up. entries are {tag, perm, id}
 // triples in the order the kernel requires: USER_OBJ, USER*, GROUP_OBJ, GROUP*, MASK,

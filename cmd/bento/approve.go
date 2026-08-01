@@ -62,7 +62,10 @@ func newApproveCmd() *cobra.Command {
 			// so a manifest still needing the clamp goes through it rather than being
 			// reported as already approved for a mode approve never vouched for.
 			approval := checkApproval(doc)
-			if approval == approvalCurrent && trust.file.sharedWrite() == 0 {
+			// The raw bits, not sharedWrite: the rewrite below clamps group write off whatever
+			// the group holds, so reading a private group as granting nothing here would report
+			// a manifest as already approved for a mode the rewrite would still have narrowed.
+			if approval == approvalCurrent && trust.file.mode.Perm()&0o022 == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
 			}
@@ -253,6 +256,9 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 func requireApprovableLocation(path string, trust manifestTrust) error {
 	for _, flaw := range trust.flaws(uint32(os.Geteuid())) {
 		if flaw.fatal {
+			if flaw.hint != "" {
+				return fmt.Errorf("refusing to approve %s: %s; %s", path, flaw.reason, flaw.hint)
+			}
 			return fmt.Errorf("refusing to approve %s: %s", path, flaw.reason)
 		}
 	}
