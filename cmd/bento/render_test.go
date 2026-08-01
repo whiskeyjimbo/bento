@@ -166,6 +166,63 @@ func TestExecHintFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// The legend is the only line that fires on a CLEAN run, so the case that matters is
+// exit 0 under a blocking manifest - a script that continued past a refused write or
+// exec, which every other hint reads as success.
+func TestDenialLegendFiresOnACleanRun(t *testing.T) {
+	execEnforced := func() enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, enforce.Enforced, "")
+		return r
+	}
+	execUnavailable := func() enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this platform")
+		return r
+	}
+
+	cases := []struct {
+		name     string
+		p        *policy.Policy
+		res      enforce.Result
+		wantExec string // the exec: line, or "" if it must not appear
+		wantAny  bool
+	}{
+		{"a clean run under a blocking manifest still says so", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
+		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
+		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none-strict", true},
+		{"write grants alone are worth decoding", &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}, enforce.Result{Report: execEnforced()}, "", true},
+		{"a block that never landed names no field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", false},
+		{"nothing restricted, nothing to decode", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			writeDenialLegend(&b, tc.p, tc.res)
+			if got := b.Len() > 0; got != tc.wantAny {
+				t.Errorf("legend emitted = %v, want %v (output: %q)", got, tc.wantAny, b.String())
+			}
+			if !tc.wantAny {
+				return
+			}
+			// The whole point is the mapping from the errno string the script printed to
+			// the manifest field, so both halves have to survive a reword.
+			if !strings.Contains(b.String(), "Read-only file system") || !strings.Contains(b.String(), "write:") {
+				t.Errorf("legend does not map the write errno to write: %q", b.String())
+			}
+			if tc.wantExec == "" {
+				if strings.Contains(b.String(), "Operation not permitted") {
+					t.Errorf("legend names an exec block that is not in force: %q", b.String())
+				}
+				return
+			}
+			if !strings.Contains(b.String(), "Operation not permitted") || !strings.Contains(b.String(), tc.wantExec) {
+				t.Errorf("legend does not map the exec errno to %q: %q", tc.wantExec, b.String())
+			}
+		})
+	}
+}
+
 // A cgroup kill is not a script failure, and the two shapes it arrives in - the
 // wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
 // one. The relayed shape is the common one, and is hedged because a script can exit

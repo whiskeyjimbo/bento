@@ -425,13 +425,24 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// a cause the bypass hint would otherwise blame on the network.
 		if res.Setup == enforce.SetupTargetUnreached {
 			writeTargetUnreached(stderr, res)
-		} else if !writeSignalNotice(stderr, p, res) && !writeExecHint(stderr, p, res) &&
-			!writeEgressHint(stderr, p, res) &&
-			shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
-			// Before the hint, not after: profiling reproduces the same wrong path, so a
-			// reader who has this cause in hand should not be sent around that loop first.
-			writeSandboxHomeMiss(stderr, p, res)
-			writeProfileHint(stderr, p, res)
+		} else {
+			execExplained := false
+			if !writeSignalNotice(stderr, p, res) {
+				execExplained = writeExecHint(stderr, p, res)
+				if !execExplained && !writeEgressHint(stderr, p, res) &&
+					shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
+					// Before the hint, not after: profiling reproduces the same wrong path, so a
+					// reader who has this cause in hand should not be sent around that loop first.
+					writeSandboxHomeMiss(stderr, p, res)
+					writeProfileHint(stderr, p, res)
+				}
+			}
+			// Last, and outside every branch above: those explain a failure, and the case
+			// this covers is a run that reported none. Skipped only where the exec hint
+			// already named the same field for the same run.
+			if !execExplained {
+				writeDenialLegend(stderr, p, res)
+			}
 		}
 	}
 

@@ -473,6 +473,42 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
+// writeDenialLegend decodes the two errors the kernel reports for a bento denial, which
+// the target prints itself and bento never sees.
+//
+// The hints above all key on a failure - a signal, exit 126, a non-zero exit with no
+// egress - because each explains one. This explains none: it is the standing note that
+// a script continuing past a refused write or exec exits 0, so a clean exit is not
+// evidence the box let everything through. That case has no signal at all to key on,
+// and it is the one that reads as success.
+//
+// Deliberately naming no paths. Spelling the grants back would need the manifest's own
+// wording rather than the resolved absolutes this side holds, and the reader has the
+// manifest open; what they do not have is the mapping from an errno string to the field
+// that produced it.
+func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
+	// Nothing to decode where nothing was restricted. Read grants are always narrower
+	// than the host, so a denial is always possible - but exec: all with a write grant
+	// covering the working directory is the profile-then-run shape, where the legend
+	// would print on every iteration of a loop that is not hitting denials.
+	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
+	if !blocksExec && len(p.Write) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] a denial inside the box is reported by the script, not by bento:")
+	fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
+	if blocksExec {
+		// The zero value is the empty string, not "none", so a manifest that never
+		// mentions exec would name a field spelled nothing at all.
+		mode := policy.ExecNone
+		if p.Exec == policy.ExecNoneStrict {
+			mode = policy.ExecNoneStrict
+		}
+		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
+	}
+	fmt.Fprintln(w, "[bento] bento observes neither, so a script that continues past one still exits 0.")
+}
+
 // describeLimits names the declared limits the way the manifest spells them, for the
 // summary and for the kill notice that has to say which caps were in play.
 func describeLimits(l policy.Limits) string {
