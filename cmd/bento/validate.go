@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -415,10 +414,7 @@ func writeSandboxHome(w io.Writer, p *policy.Policy) {
 	if slices.Contains(p.Env, "HOME") {
 		return
 	}
-	fmt.Fprintf(w, "  note: HOME is not passed through, so inside the sandbox it is %s and `~`\n", enforce.SandboxHome)
-	fmt.Fprintf(w, "        expands there, not to your home directory. Grants above are matched\n")
-	fmt.Fprintf(w, "        against host paths, so a script resolving ~ itself will miss them -\n")
-	fmt.Fprintf(w, "        write the paths it opens absolute, or allowlist HOME here.\n")
+	writeSandboxHomeNote(w, "  ")
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal

@@ -404,6 +404,54 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
 }
 
+// writeSandboxHomeNote states what HOME is inside the box and what that does to a `~`
+// the script expands itself. Both callers say it about the same manifest at different
+// moments - validate while the reader reviews the grants, run once a `~` has already
+// sent the script at the wrong path - so the wording lives here rather than in two
+// copies that drift. prefix opens each line: the continuation lines align under the
+// first word after it.
+func writeSandboxHomeNote(w io.Writer, prefix string) {
+	fmt.Fprintf(w, "%snote: HOME is not passed through, so inside the sandbox it is %s and `~`\n", prefix, enforce.SandboxHome)
+	fmt.Fprintf(w, "%s      expands there, not to your home directory. The manifest's grants are\n", prefix)
+	fmt.Fprintf(w, "%s      matched against host paths, so a script resolving ~ itself will miss\n", prefix)
+	fmt.Fprintf(w, "%s      them - write the paths it opens absolute, or allowlist HOME in env:.\n", prefix)
+}
+
+// writeSandboxHomeMiss repeats the HOME note when a failed run has every mark of having
+// tripped it: the manifest grants something under the caller's own home but does not pass
+// HOME through, so a `~` the script expanded landed in the sandbox's home instead and the
+// grant it was meant to reach never matched. The script reports its own missing-file error
+// against a path nobody wrote, and the profile hint below sends the reader around the loop
+// to reproduce exactly that path. bento holds all three facts here, so it says so.
+//
+// A heuristic like the profile hint, and silent on a clean exit: a manifest can grant a
+// path under $HOME and open it absolutely, in which case nothing was missed.
+func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
+	if res.ExitCode == 0 || slices.Contains(p.Env, "HOME") {
+		return
+	}
+	// os.UserHomeDir returns $HOME verbatim, so a relative or unset value names no tree
+	// a grant can be under - there is nothing to conclude from it either way.
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return
+	}
+	home = filepath.Clean(home)
+	if !slices.ContainsFunc(slices.Concat(p.Read, p.Write), func(g string) bool { return underHome(g, home) }) {
+		return
+	}
+	writeSandboxHomeNote(w, "[bento] ")
+}
+
+// underHome reports whether an already-resolved grant lies in the host home tree.
+func underHome(grant, home string) bool {
+	rel, err := filepath.Rel(home, grant)
+	if err != nil {
+		return false
+	}
+	return rel == "." || !strings.HasPrefix(rel, "..")
+}
+
 // writeBlockedHostNotes marks the rules whose destination the profiling run already
 // found the egress guard refusing. It runs before the script does, not after: the guard
 // refuses at connect time and the target meets that as a 502 from the proxy, with

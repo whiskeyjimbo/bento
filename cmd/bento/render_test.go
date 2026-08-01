@@ -434,3 +434,39 @@ func TestExplicitShieldGrants(t *testing.T) {
 		t.Errorf("a policy touching no shield must report nothing; got %v, %v", quiet, err)
 	}
 }
+
+// The HOME remap is the headline gotcha, and the moment it costs someone is a run that
+// failed on a path nobody wrote. Bento holds all three facts then - nonzero exit, a
+// grant under the caller's home, HOME absent from env: - so the note validate prints
+// while the grants are being reviewed has to fire here too. It stays quiet in the cases
+// that look similar but are not: HOME passed through, a clean exit, and a grant that is
+// nowhere near the home tree.
+func TestSandboxHomeMissFiresOnlyWhenRelevant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	granted := filepath.Join(home, "bento-journey-data")
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want bool
+	}{
+		{"failed run, grant under home, HOME not passed", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 1}, true},
+		{"the write grants are checked too", &policy.Policy{Write: []string{granted}}, enforce.Result{ExitCode: 1}, true},
+		{"HOME is passed through, so ~ lands where the author meant", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, enforce.Result{ExitCode: 1}, false},
+		{"the run succeeded", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 0}, false},
+		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, enforce.Result{ExitCode: 1}, false},
+		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, enforce.Result{ExitCode: 1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			writeSandboxHomeMiss(&b, tc.p, tc.res)
+			got := strings.Contains(b.String(), "HOME is not passed through")
+			if got != tc.want {
+				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			}
+		})
+	}
+}

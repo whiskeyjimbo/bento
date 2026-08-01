@@ -207,6 +207,9 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// reader at the wrong problem.
 		if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
 			shortfall == nil && len(res.GuardBlocked) == 0 {
+			// Before the hint, not after: profiling reproduces the same wrong path, so a
+			// reader who has this cause in hand should not be sent around that loop first.
+			writeSandboxHomeMiss(stderr, p, res)
 			writeProfileHint(stderr, p, res)
 		}
 	}
