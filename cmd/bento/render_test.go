@@ -140,6 +140,27 @@ func TestSignalNoticeNamesTheKill(t *testing.T) {
 			want:    []string{"the run did not exit"},
 			notWant: []string{"the script"},
 		},
+		{
+			name: "SIGSYS names the filter that did it",
+			p:    plain,
+			res:  enforce.Result{ExitCode: 159, Signaled: true, Signal: 31},
+			want: []string{"signal 31 (bad system call)", "seccomp filter", "foreign-architecture", "EPERM"},
+		},
+		{
+			// The cap wording would read as an explanation of the SIGSYS, and a foreign-arch
+			// kill has nothing to do with a declared limit.
+			name:    "SIGSYS under declared limits is not a cap",
+			p:       limited,
+			res:     enforce.Result{ExitCode: 159, Signaled: true, Signal: 31},
+			want:    []string{"foreign-architecture"},
+			notWant: []string{"declares limits"},
+		},
+		{
+			name:    "a cap kill is not blamed on seccomp",
+			p:       limited,
+			res:     enforce.Result{ExitCode: 137, Signaled: true, Signal: 9},
+			notWant: []string{"seccomp filter"},
+		},
 		{name: "an ordinary failure", p: plain, res: enforce.Result{ExitCode: 1}, skip: true},
 		{name: "a clean run", p: limited, res: enforce.Result{ExitCode: 0}, skip: true},
 		{name: "bento's own could-not-run code", p: limited, res: enforce.Result{ExitCode: bentoFailed}, skip: true},

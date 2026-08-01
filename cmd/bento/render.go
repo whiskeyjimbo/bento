@@ -301,6 +301,18 @@ func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		fmt.Fprintf(w, "[bento] the run ended with exit %d, which is how a process killed by signal %d (%s)\n", res.ExitCode, sig, syscall.Signal(sig))
 		fmt.Fprintln(w, "[bento] is reported - though a script can also exit that code on its own.")
 	}
+	// SIGSYS is the one death bento can usually attribute: it means a kill-mode seccomp
+	// filter refused a syscall, and every kill branch in bento's own filters (strict
+	// exec, egress, terminal injection, the foreign-arch guard) is the foreign-arch or
+	// x32 case - a policy refusal returns EPERM and lets the target handle it. So the
+	// layer is named as the likelihood it is: a target may install its own filter.
+	if sig == int(syscall.SIGSYS) {
+		fmt.Fprintln(w, "[bento] that signal means a seccomp filter killed the process over a syscall, and the")
+		fmt.Fprintln(w, "[bento] filters bento installs kill only on a foreign-architecture call - a 32-bit or")
+		fmt.Fprintln(w, "[bento] x32 syscall from a 64-bit process. A permission the manifest withholds is")
+		fmt.Fprintln(w, "[bento] refused with EPERM instead, so this is most likely that guard rather than a")
+		fmt.Fprintln(w, "[bento] grant you can add - though a target can install a killing filter of its own.")
+	}
 	// Only the two signals a cgroup kill actually arrives on. Blaming the caps for any
 	// signal would tell a script that took a SIGPIPE off a closed stdout, or segfaulted,
 	// that it ran out of memory - a wrong explanation is worse than the bare naming
