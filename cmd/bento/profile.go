@@ -133,6 +133,14 @@ func newProfileCmd() *cobra.Command {
 				ctx: cmd.Context(), script: script, interpreter: interpreter,
 				args: args[1:], env: env, allowNetwork: allowNetwork,
 				acceptAliases: acceptAliases,
+				// The target's stdout goes where `bento run` puts it, so profiling a
+				// script for its output does not need a different redirect than running
+				// it. Under --json stdout carries the envelope alone, so it goes to
+				// stderr with the prose instead.
+				targetStdout: os.Stdout,
+			}
+			if asJSON {
+				cfg.targetStdout = os.Stderr
 			}
 			base := discoveryPolicy(script, interpreter, args[1:])
 
@@ -544,6 +552,7 @@ type profileConfig struct {
 	allowNetwork  bool
 	acceptAliases []string  // host trees whose credential aliases the user has acknowledged; profiling scans for them exactly as an enforced run does
 	targetStdin   io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
+	targetStdout  io.Writer // where the target's own stdout goes: this command's stdout, or stderr under --json where the envelope owns stdout alone
 }
 
 // profileRound runs one profiling pass under discovery and returns the clamped
@@ -555,7 +564,7 @@ type profileConfig struct {
 // proposal it cannot vouch for.
 func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, roundStatus, error) {
 	obs, err := backend.Profile(cfg.ctx, discovery,
-		enforce.Process{Stdin: cfg.targetStdin, Stdout: os.Stderr, Stderr: os.Stderr, Env: cfg.env},
+		enforce.Process{Stdin: cfg.targetStdin, Stdout: cfg.targetStdout, Stderr: os.Stderr, Env: cfg.env},
 		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork, AcceptAliasesUnder: cfg.acceptAliases})
 	if err != nil {
 		return nil, roundStatus{}, err
