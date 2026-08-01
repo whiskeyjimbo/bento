@@ -189,6 +189,9 @@ func newRootCmd() *cobra.Command {
 		Version:       versionInfo(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Inherited by every subcommand that does not set its own, so a host with no
+		// backend is answered once, before any command starts work it cannot finish.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return checkPlatform() },
 	}
 	root.SetVersionTemplate("bento {{.Version}}\n")
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is
