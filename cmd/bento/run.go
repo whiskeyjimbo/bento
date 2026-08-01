@@ -154,10 +154,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// that bento could not run the script. Warn and still pass the code through.
 		if err := writeJSON(stdout, struct {
 			ExitCode int `json:"exit_code"`
-			// Signal names the signal that killed the sandbox, present only when one did.
-			// exit_code is 128+signal there, which a target can also exit on its own - so
-			// a consumer deciding whether a run hit its declared limits reads this, not
-			// the code.
+			// Signal names the signal that killed the sandbox, present only where that is
+			// KNOWN: exit_code is 128+signal there. The human output additionally reads a
+			// code in that range as a probable signal and says so, hedged; this field does
+			// not, because a machine consumer cannot hedge - it would read an inference
+			// about a target that chose to exit 137 as the fact that something killed it.
 			Signal            int      `json:"signal,omitempty"`
 			Stdout            string   `json:"stdout"`
 			Stderr            string   `json:"stderr"`

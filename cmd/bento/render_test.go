@@ -92,11 +92,12 @@ func TestSignalNoticeNamesTheKill(t *testing.T) {
 	plain := &policy.Policy{}
 
 	cases := []struct {
-		name string
-		p    *policy.Policy
-		res  enforce.Result
-		want []string
-		skip bool
+		name    string
+		p       *policy.Policy
+		res     enforce.Result
+		want    []string
+		notWant []string
+		skip    bool
 	}{
 		{
 			name: "the scope came down on the wrapper",
@@ -116,6 +117,20 @@ func TestSignalNoticeNamesTheKill(t *testing.T) {
 			res:  enforce.Result{ExitCode: 139},
 			want: []string{"signal 11 (segmentation fault)"},
 		},
+		{
+			name:    "a segfault under declared limits is not a cap",
+			p:       limited,
+			res:     enforce.Result{ExitCode: 139},
+			want:    []string{"signal 11 (segmentation fault)"},
+			notWant: []string{"declares limits"},
+		},
+		{
+			name:    "a broken pipe under declared limits is not a cap",
+			p:       limited,
+			res:     enforce.Result{ExitCode: 141},
+			want:    []string{"signal 13 (broken pipe)"},
+			notWant: []string{"declares limits"},
+		},
 		{name: "an ordinary failure", p: plain, res: enforce.Result{ExitCode: 1}, skip: true},
 		{name: "a clean run", p: limited, res: enforce.Result{ExitCode: 0}, skip: true},
 		{name: "bento's own could-not-run code", p: limited, res: enforce.Result{ExitCode: bentoFailed}, skip: true},
@@ -134,8 +149,10 @@ func TestSignalNoticeNamesTheKill(t *testing.T) {
 					t.Errorf("the notice must say %q; got:\n%s", want, b.String())
 				}
 			}
-			if !tc.skip && !strings.Contains(b.String(), "limits") && !tc.p.Limits.IsZero() {
-				t.Errorf("a limited run must name its caps; got:\n%s", b.String())
+			for _, notWant := range tc.notWant {
+				if strings.Contains(b.String(), notWant) {
+					t.Errorf("the notice must not say %q for a signal no cap kill sends; got:\n%s", notWant, b.String())
+				}
 			}
 		})
 	}

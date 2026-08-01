@@ -298,7 +298,11 @@ func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		fmt.Fprintf(w, "[bento] the script ended with exit %d, which is how a process killed by signal %d (%s)\n", res.ExitCode, sig, syscall.Signal(sig))
 		fmt.Fprintln(w, "[bento] is reported - though a script can also exit that code on its own.")
 	}
-	if !p.Limits.IsZero() {
+	// Only the two signals a cgroup kill actually arrives on. Blaming the caps for any
+	// signal would tell a script that took a SIGPIPE off a closed stdout, or segfaulted,
+	// that it ran out of memory - a wrong explanation is worse than the bare naming
+	// above, which is true whatever killed it.
+	if !p.Limits.IsZero() && (sig == int(syscall.SIGKILL) || sig == int(syscall.SIGTERM)) {
 		fmt.Fprintf(w, "[bento] the manifest declares limits (%s), and exceeding one kills the run exactly\n", describeLimits(p.Limits))
 		fmt.Fprintln(w, "[bento] this way - so it most likely hit a cap rather than failing on its own.")
 	}
