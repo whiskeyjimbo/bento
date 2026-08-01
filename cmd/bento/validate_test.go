@@ -114,7 +114,7 @@ func TestValidateJSONHonorsStrict(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := writeManifest(t, p, manifest.Provenance{Approves: tc.approves})
 			if tc.approve {
-				if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+				if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
 					t.Fatalf("approve: %v", err)
 				}
 			}
@@ -148,7 +148,7 @@ func TestValidateShowsResolvedGrantsWithoutDisturbingApproval(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~", "./data", "/etc/hosts"}}
 	path := writeManifest(t, p, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 

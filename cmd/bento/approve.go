@@ -26,9 +26,9 @@ func newApproveCmd() *cobra.Command {
 		Long: "approve records that a human has reviewed the manifest's current permissions.\n\n" +
 			"It prints the permissions it is about to stamp, calls out the entries that\n" +
 			"deserve a second look, and asks before writing. --yes skips the question for\n" +
-			"scripts; so does a stdin that is not a terminal, which keeps the command usable\n" +
-			"from CI - that one says so in its output, so a stamp nobody read does not look\n" +
-			"like one somebody did.\n\n" +
+			"scripts and CI. A stdin that is not a terminal is refused rather than answered:\n" +
+			"a stamp nobody read should be something a caller asked for, not something the\n" +
+			"absence of a terminal decided.\n\n" +
 			"It writes a provenance fingerprint of the policy into the manifest. `validate`\n" +
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
@@ -219,23 +219,20 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 	}
 }
 
-// confirmApproval asks before the stamp goes on. A stdin that is not a terminal answers
-// yes, matching profiling's own non-interactive contract: there is no human to ask, and
-// blocking would hang every wrapper script and CI job that already calls approve. --yes
-// says so explicitly, which is what a script should do.
-//
-// The silent branch is the one that says so out loud, in the prompt's own position and on
-// the same stream as the rest of the report: `bento approve m.yaml | tee log` and any
-// Makefile recipe redirect stdin, and without the line their unreviewed stamp reads
-// exactly like a reviewed one. --yes prints nothing because passing it was already the
-// operator saying it.
+// confirmApproval asks before the stamp goes on. A stdin that is not a terminal is
+// refused rather than answered: an approval is the record that a human read the
+// permissions above, and a pipeline reaching here without --yes would stamp whatever the
+// manifest currently holds, with the disclosure landing in a CI log instead of in front
+// of anyone. --yes still stamps without asking, which is what a script should say, and
+// makes the unreviewed stamp deliberate rather than a side effect of where stdin points.
+// examples/supervise gates its own prompts on stdin the same way.
 func confirmApproval(w io.Writer, assumeYes bool) error {
 	if assumeYes {
 		return nil
 	}
 	if !isTerminal(os.Stdin) {
-		fmt.Fprint(w, "\nstdin is not a terminal, so there was nobody to ask: approving as if --yes\nwere passed. Nothing above was reviewed.\n")
-		return nil
+		return fmt.Errorf("not approved: approving is a human reading the permissions above, and stdin is not a terminal, so there was nobody to ask. " +
+			"Attach a terminal, or pass --yes to stamp them unreviewed")
 	}
 	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
 	line, _ := bufio.NewReader(openTTY()).ReadString('\n')

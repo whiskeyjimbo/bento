@@ -67,8 +67,8 @@ cd examples/probe
 
 # 3. Approve: Review the permissions and stamp an approval fingerprint over them.
 #    It prints the policy, calls out what deserves a second look, and asks. --yes for CI;
-#    a stdin that is not a terminal (a pipe, a Makefile recipe) stamps the same way and
-#    says so in its output, since there is nobody there to answer.
+#    a stdin that is not a terminal (a pipe, a Makefile recipe) is refused rather than
+#    answered, so an unreviewed stamp is something a caller asked for with --yes.
 ./bento approve ./probe.py.manifest.yaml
 
 # 4. Run: Execute the script inside the enforced sandbox.

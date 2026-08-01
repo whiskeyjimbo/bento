@@ -35,10 +35,10 @@ cp -R probe.py data secret "$box/"
 
 GOWORK=off go build -o "$bin" "$root/cmd/bento"
 
-# setsid is what makes approve non-interactive. It opens /dev/tty itself, so a
-# redirected stdin alone would still draw its prompt on the terminal a developer
-# is running this from; a new session has no controlling terminal to find. The
-# README documents that path: a stdin that is not a terminal stamps and says so.
+# setsid keeps every step off the developer's terminal: approve opens /dev/tty
+# itself, so a redirected stdin alone would still draw its prompt there, and a new
+# session has no controlling terminal to find. approve refuses a stdin it cannot ask
+# on, so step 3 passes --yes - the README's own CI spelling.
 step() {
 	name="$1"
 	shift
@@ -67,7 +67,7 @@ case "$out" in
 	;;
 esac
 
-out="$(step 3-approve approve ./probe.py.manifest.yaml)"
+out="$(step 3-approve approve --yes ./probe.py.manifest.yaml)"
 case "$out" in
 *'approved ./probe.py.manifest.yaml'*) ;;
 *)

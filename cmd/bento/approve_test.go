@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestApproveDropsSharedWriteBits(t *testing.T) {
 	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -140,7 +141,7 @@ func TestApproveWritesThroughASymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCapturingStdout(t, newApproveCmd(), link); err != nil {
+	if _, err := runCapturingStdout(t, newApproveCmd(), link, "--yes"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -263,13 +264,13 @@ func TestWriteManifestAtomicallyLeavesNoTempFiles(t *testing.T) {
 // it never checked, so the clamp runs regardless of the stamp.
 func TestApproveClampsAnAlreadyApprovedManifest(t *testing.T) {
 	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runCapturingStdout(t, newApproveCmd(), path)
+	out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
 	if err != nil {
 		t.Fatalf("second approve: %v", err)
 	}
@@ -361,12 +362,12 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	}
 }
 
-// approve grew a prompt, and every caller that already scripted it - a CI job, a wrapper
-// around profile-then-approve - has no terminal to answer on. Both ways out have to stamp
-// rather than block, and neither may print a question nobody can see. The one that was
-// never asked for has to say so: a piped approve is otherwise byte-identical to a reviewed
-// one, which is the only signal a reader of the log has.
-func TestConfirmApprovalDoesNotBlockAScript(t *testing.T) {
+// approve's prompt is the review it exists to record, so the two ways past it must differ:
+// --yes is a caller saying "stamp it unreviewed", and a stdin that is not a terminal is
+// nobody there to ask at all. The second used to stamp too, which made a piped approve
+// byte-identical in effect to a reviewed one - a pipeline reaching approve without --yes
+// stamped whatever the manifest held. examples/supervise refuses the same condition.
+func TestConfirmApprovalNeedsAnAnswerOrTheFlag(t *testing.T) {
 	t.Run("--yes", func(t *testing.T) {
 		var buf strings.Builder
 		if err := confirmApproval(&buf, true); err != nil {
@@ -379,15 +380,15 @@ func TestConfirmApprovalDoesNotBlockAScript(t *testing.T) {
 
 	t.Run("stdin is not a terminal", func(t *testing.T) {
 		var buf strings.Builder
-		if err := confirmApproval(&buf, false); err != nil {
-			t.Errorf("confirmApproval must proceed; got %v", err)
+		err := confirmApproval(&buf, false)
+		if err == nil {
+			t.Fatal("a stdin nobody can answer on must refuse rather than stamp")
 		}
-		got := buf.String()
-		if strings.Contains(got, "?") {
-			t.Errorf("nothing may be asked when there is nobody to answer; got %q", got)
+		if !strings.Contains(err.Error(), "not a terminal") || !strings.Contains(err.Error(), "--yes") {
+			t.Errorf("the refusal must name the condition and the way past it; got %v", err)
 		}
-		if !strings.Contains(got, "not a terminal") || !strings.Contains(got, "--yes") {
-			t.Errorf("a stamp nobody read must say so, and name the flag it acted as; got %q", got)
+		if strings.Contains(buf.String(), "?") {
+			t.Errorf("nothing may be asked when there is nobody to answer; got %q", buf.String())
 		}
 	})
 }
@@ -401,20 +402,14 @@ func TestApproveSaysTheManifestWasApprovedForSomethingElse(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/etc/shadow"}}
 	stale := writeManifest(t, p, manifest.Provenance{Approves: "0badc0de"})
 
-	// Deliberately without --yes: `go test` has no terminal, so this is the piped
-	// re-approval of a drifted manifest - the CI case both notices exist for, and the one
-	// place they have to be able to fire together.
-	out, err := runCapturingStdout(t, newApproveCmd(), stale)
+	// --yes because `go test` has no terminal, and approve refuses one it cannot ask on.
+	out, err := runCapturingStdout(t, newApproveCmd(), stale, "--yes")
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if !strings.Contains(out, "approved before and its permissions have changed") {
 		t.Errorf("re-approving a drifted manifest must say the policy is not the one stamped:\n%s", out)
 	}
-	if !strings.Contains(out, "not a terminal") {
-		t.Errorf("a drifted manifest stamped by a script must still say nobody read it:\n%s", out)
-	}
-
 	// And a first approval must not: a notice printed over every manifest says nothing.
 	fresh := writeManifest(t, p, manifest.Provenance{})
 	out, err = runCapturingStdout(t, newApproveCmd(), fresh, "--yes")
@@ -491,5 +486,28 @@ func TestApprovalCalloutsNameAnExplicitShieldGrant(t *testing.T) {
 	writeApprovalCallouts(&broad, manifestPath, q, resolvedGrants(q, manifestPath), nil)
 	if strings.Contains(broad.String(), "lifts the shield") {
 		t.Errorf("a grant containing shields does not lift one; got:\n%s", broad.String())
+	}
+}
+
+// bv2-7hak: the whole point of an approval is that a human read the permissions, so a
+// pipeline reaching approve without --yes must not have that decided for it by where
+// stdin happens to point. Nothing may be stamped: the manifest is left as it was found.
+func TestApproveRefusesANonTerminalStdinWithoutWritingAnything(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// `go test` has no terminal, so the plain invocation is the piped one.
+	if _, err := runCapturingStdout(t, newApproveCmd(), path); err == nil {
+		t.Fatal("approve must refuse a stdin nobody can answer on")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("a refused approval must leave the manifest untouched; got:\n%s", after)
 	}
 }
