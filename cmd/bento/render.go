@@ -473,14 +473,21 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
-// writeDenialLegend decodes the two errors the kernel reports for a bento denial, which
-// the target prints itself and bento never sees.
+// writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
+// target prints itself and bento never sees.
 //
 // The hints above all key on a failure - a signal, exit 126, a non-zero exit with no
-// egress - because each explains one. This explains none: it is the standing note that
-// a script continuing past a refused write or exec exits 0, so a clean exit is not
-// evidence the box let everything through. That case has no signal at all to key on,
-// and it is the one that reads as success.
+// egress - because each explains one. This explains none: it is the standing note that a
+// script continuing past a refused read, write or exec exits 0, so a clean exit is not
+// evidence the box let everything through. That case has no signal at all to key on, and
+// it is the one that reads as success.
+//
+// The read line states an ambiguity rather than a cause, and has to keep doing so. An
+// ungranted path, a shielded credential and a file that genuinely is not there are one
+// error inside the box - all three are ENOENT, because a deny-by-default root reaches
+// them by not mounting them rather than by refusing. Reading that as "your read: grants
+// are wrong" would blame the manifest for every missing file a script legitimately
+// handles, which is worse than the silence this exists to fix.
 //
 // Deliberately naming no paths. Spelling the grants back would need the manifest's own
 // wording rather than the resolved absolutes this side holds, and the reader has the
@@ -494,30 +501,35 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 	if res.ExitCode != 0 || res.Signal != 0 {
 		return
 	}
-	// Each line answers for the layer that produces its errno, because the two do not
-	// stand or fall together. EROFS comes from bubblewrap's read-only remount, so it is
-	// what a refused write says only on the bwrap tier; the Landlock-only tier has no
-	// remount and answers EACCES instead, and naming EROFS there would map an error the
-	// script cannot emit - the opposite failure to the silence this exists to fix.
+	// Each line answers for the layer that produces its errno, because the layers do not
+	// stand or fall together. Both filesystem errors are facts about the mount namespace
+	// bubblewrap builds: the read-only remount is what answers EROFS, and the
+	// deny-by-default root is what makes an ungranted path absent rather than refused.
+	// The Landlock-only tier has neither - it answers EACCES for both, so naming these
+	// there would map errors the script cannot emit, the opposite failure to the silence
+	// this exists to fix.
 	//
 	// Enforced, not merely "not Unavailable": the filesystem layer also reads Degraded on
-	// the bwrap tier when only the Landlock backstop failed, where EROFS does still hold.
+	// the bwrap tier when only the Landlock backstop failed, where both still hold.
 	// Requiring Enforced drops a true line in that one case, which is the safe direction
 	// to be wrong in, and writeDegradations has already spoken there.
-	writesAreEROFS := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
+	mountNSConfines := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
 	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
-	if !writesAreEROFS && !blocksExec {
+	if !mountNSConfines && !blocksExec {
 		return
 	}
-	fmt.Fprintln(w, "[bento] a denial inside the box is reported by the script, not by bento:")
-	switch {
-	case !writesAreEROFS:
-	case len(p.Write) == 0:
-		// Naming a field the manifest does not carry sends the reader grepping for a
-		// line that is not there, the same trap writeExecHint's "runs under" avoids.
-		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
-	default:
-		fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
+	// One sentence carrying both halves the reader needs: bento is not the one reporting
+	// this, and the exit code will not reflect it either.
+	fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
+	if mountNSConfines {
+		if len(p.Write) == 0 {
+			// Naming a field the manifest does not carry sends the reader grepping for a
+			// line that is not there, the same trap writeExecHint's "runs under" avoids.
+			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
+		} else {
+			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
+		}
+		fmt.Fprintln(w, "[bento]   \"No such file or directory\" - ungranted or shielded, and identical to truly absent")
 	}
 	if blocksExec {
 		// The zero value is the empty string, not "none", so a manifest that never
@@ -528,7 +540,6 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 		}
 		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
 	}
-	fmt.Fprintln(w, "[bento] bento observes neither, so a script that continues past one still exits 0.")
 }
 
 // describeLimits names the declared limits the way the manifest spells them, for the

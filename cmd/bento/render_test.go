@@ -185,11 +185,11 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	degradedFS := func() enforce.Report { return report(enforce.Degraded, enforce.Enforced) }
 
 	cases := []struct {
-		name      string
-		p         *policy.Policy
-		res       enforce.Result
-		wantExec  string // the exec: line, or "" if it must not appear
-		wantWrite bool   // the "Read-only file system" line
+		name     string
+		p        *policy.Policy
+		res      enforce.Result
+		wantExec string // the exec: line, or "" if it must not appear
+		wantFS   bool   // both filesystem lines, which share the mount namespace
 	}{
 		{"a clean run under a blocking manifest still says so", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
 		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
@@ -213,13 +213,21 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 			var b bytes.Buffer
 			writeDenialLegend(&b, tc.p, tc.res)
 			out := b.String()
-			if wantAny := tc.wantWrite || tc.wantExec != ""; (b.Len() > 0) != wantAny {
+			if wantAny := tc.wantFS || tc.wantExec != ""; (b.Len() > 0) != wantAny {
 				t.Errorf("legend emitted = %v, want %v (output: %q)", b.Len() > 0, wantAny, out)
 			}
 			// The whole point is the mapping from the errno string the script printed to
 			// the manifest field, so both halves have to survive a reword.
-			if gotWrite := strings.Contains(out, "Read-only file system") && strings.Contains(out, "write:"); gotWrite != tc.wantWrite {
-				t.Errorf("write errno mapped = %v, want %v: %q", gotWrite, tc.wantWrite, out)
+			if gotWrite := strings.Contains(out, "Read-only file system") && strings.Contains(out, "write:"); gotWrite != tc.wantFS {
+				t.Errorf("write errno mapped = %v, want %v: %q", gotWrite, tc.wantFS, out)
+			}
+			// The read line shares the write line's layer, and must keep stating the
+			// ambiguity: a cause here would blame the manifest for every absent file.
+			if gotRead := strings.Contains(out, "No such file or directory"); gotRead != tc.wantFS {
+				t.Errorf("read errno mapped = %v, want %v: %q", gotRead, tc.wantFS, out)
+			}
+			if tc.wantFS && !strings.Contains(out, "identical to truly absent") {
+				t.Errorf("the read line must not read as a diagnosis: %q", out)
 			}
 			if tc.wantExec == "" {
 				if strings.Contains(out, "Operation not permitted") {
