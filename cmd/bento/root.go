@@ -108,29 +108,30 @@ const jsonRefusalAnnotation = "bento.json_refusal"
 // parses left to right and stops at the error, so Changed("json") answers on where the
 // bad flag happened to sit. Everything after a bare -- is the target's, not bento's.
 //
-// The scan cannot know the arity of the flag that failed, so a --json consumed as
-// another flag's value (`--env --json`) reads here as a request for the envelope, and
-// the operator gets one instead of the message naming their mistake. Nothing short of
-// re-running cobra's own resolution can tell the two apart, and the case it protects -
-// a machine gate that asked for --json and would otherwise get an empty stdout - is the
-// one worth being wrong in this direction about.
-//
-// Only errors main would otherwise print: an *exitError is a command that already ran
-// and wrote its own envelope.
-func refuseUsageJSON(stdout io.Writer, cmd *cobra.Command, args []string, err error) error {
-	var ee *exitError
-	if cmd == nil || errors.As(err, &ee) || cmd.Annotations[jsonRefusalAnnotation] == "" || !wantsJSON(args) {
+// Mistakes in the command line only. An error raised inside RunE is that command's to
+// answer - it knows whether the target ran, and calling one refused here would report a
+// run bento declined over one it started and could not finish.
+func refuseUsageJSON(stdout io.Writer, root, cmd *cobra.Command, args []string, err error) error {
+	if cmd == nil || !isUsageMistake(root, cmd, err) || cmd.Annotations[jsonRefusalAnnotation] == "" || !wantsJSON(cmd, args) {
 		return err
 	}
 	return refuseJSON(stdout, true, err)
 }
 
-// wantsJSON reports whether argv asked for --json. The value is parsed rather than
-// matched against "true": pflag takes every spelling strconv.ParseBool does, so
-// --json=1 asks for the envelope as surely as --json does, and a scan that missed it
-// would leave exactly the empty stdout this exists to prevent.
-func wantsJSON(args []string) bool {
-	for _, a := range args {
+// wantsJSON reports whether argv asked cmd for --json.
+//
+// The value is parsed rather than matched against "true": pflag takes every spelling
+// strconv.ParseBool does, so --json=1 asks for the envelope as surely as --json does,
+// and a scan that missed it would leave exactly the empty stdout this exists to prevent.
+//
+// A flag that takes a value has its value stepped over, so `--env --json` is the malformed
+// --env it is rather than a request for an envelope - which would answer a typo with JSON
+// and swallow the message naming it. Only a flag cmd declares can be told apart that way;
+// an unknown one is the error cobra already raised, and its value, if it had one, reads
+// as a separate word here.
+func wantsJSON(cmd *cobra.Command, args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "--" {
 			return false
 		}
@@ -140,6 +141,15 @@ func wantsJSON(args []string) bool {
 		if v, ok := strings.CutPrefix(a, "--json="); ok {
 			on, err := strconv.ParseBool(v)
 			return err == nil && on
+		}
+		// NoOptDefVal is what a flag stands for when it is given bare, so only a flag
+		// without one consumes the next word. --name=value carries its own and never does.
+		name, ok := strings.CutPrefix(a, "--")
+		if !ok || strings.Contains(name, "=") {
+			continue
+		}
+		if f := cmd.Flags().Lookup(name); f != nil && f.NoOptDefVal == "" {
+			i++
 		}
 	}
 	return false

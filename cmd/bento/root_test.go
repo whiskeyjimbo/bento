@@ -78,6 +78,9 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 		{"--json=false asked for no envelope", []string{"run", "--json=false", "--nosuchflag"}, false},
 		{"--json=0 asked for no envelope", []string{"run", "--json=0", "--nosuchflag"}, false},
 		{"without --json nothing is written", []string{"run", "--nosuchflag", "m.yaml"}, false},
+		// --env takes a value, so this is a malformed --env and not a request for an
+		// envelope; answering it with JSON would swallow the message naming the mistake.
+		{"a --json eaten as another flag's value", []string{"run", "--env", "--json", "--nosuchflag"}, false},
 		// validate answers --json in its own shape; a refusalJSON there would be a shape
 		// its consumers were never told to expect.
 		{"validate keeps its own contract", []string{"validate", "--json", "a.yaml", "b.yaml"}, false},
@@ -94,7 +97,7 @@ func TestUsageErrorUnderJSONStillLeavesARefusalEnvelope(t *testing.T) {
 			}
 
 			var stdout bytes.Buffer
-			got := refuseUsageJSON(&stdout, cmd, tc.argv, err)
+			got := refuseUsageJSON(&stdout, root, cmd, tc.argv, err)
 			if !tc.refused {
 				if stdout.Len() != 0 {
 					t.Fatalf("stdout = %q, want nothing written", stdout.String())
