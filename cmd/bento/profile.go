@@ -303,7 +303,7 @@ func newProfileCmd() *cobra.Command {
 	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the extension if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the result as a JSON envelope on stdout: what was written, whether it can be vouched for, and every proposal decision. Everything else - the target's own output, the prose, any grant prompts - stays on stderr, so the envelope is the only thing on stdout")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the result as a JSON envelope on stdout: what was written, whether it can be vouched for, and every proposal decision. Everything else - the target's own output, the prose, any grant prompts - stays on stderr, so the envelope is the only thing on stdout. A refusal - including a mistake in this command line - is an envelope too, so stdout is never empty")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd
 }
@@ -764,28 +764,28 @@ type roundStatus struct {
 // mergeNotes appends the notes of b that a does not already carry, so a converging
 // session reports each decision once rather than once per round.
 //
-// Compared field by field rather than with slices.Contains: a note's Absent is a
-// pointer, and each round builds its own, so the equality that matters here is what the
-// two notes say and not which round said it.
+// A note is the same decision as one already held when it names the same access for the
+// same reason. Absent is deliberately not part of that: it is what the rounds can
+// disagree about - a path probed and missing in one round exists by the next, because
+// the script created it - and two entries for one decision would be a duplicate to any
+// consumer keying on the access. A round that found the file wins, since that is the
+// stronger claim and the one the full warning is written for.
 func mergeNotes(a, b []accessNoteJSON) []accessNoteJSON {
 	for _, n := range b {
-		if !slices.ContainsFunc(a, func(have accessNoteJSON) bool { return sameNote(have, n) }) {
+		i := slices.IndexFunc(a, func(have accessNoteJSON) bool { return sameDecision(have, n) })
+		if i < 0 {
 			a = append(a, n)
+			continue
+		}
+		if a[i].Absent != nil && *a[i].Absent && n.Absent != nil && !*n.Absent {
+			a[i].Absent = n.Absent
 		}
 	}
 	return a
 }
 
-// sameNote is the equality for a note carrying Absent, which is a pointer: == and
-// slices.Equal compare which round built it rather than what it says.
-func sameNote(a, b accessNoteJSON) bool {
-	if a.Kind != b.Kind || a.Path != b.Path || a.Host != b.Host || a.Port != b.Port || a.Reason != b.Reason {
-		return false
-	}
-	if a.Absent == nil || b.Absent == nil {
-		return a.Absent == b.Absent
-	}
-	return *a.Absent == *b.Absent
+func sameDecision(a, b accessNoteJSON) bool {
+	return a.Kind == b.Kind && a.Path == b.Path && a.Host == b.Host && a.Port == b.Port && a.Reason == b.Reason
 }
 
 // The tmpfs every run mounts, and so the prefix that makes a grant target-steerable.

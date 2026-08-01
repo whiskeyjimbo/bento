@@ -115,8 +115,10 @@ type accessNoteJSON struct {
 	// Absent says nothing was found at Path, so the run only probed for it - the
 	// difference between a file the script read under a name a manifest cannot hold and
 	// an interpreter's search miss, which is the routine case. A pointer because unknown
-	// is a third answer, as with policyJSON.Runnable: only a read note carries it, since
-	// a write is judged at its parent directory and a network note has no path at all.
+	// is a third answer, as with policyJSON.Runnable, and unknown is what most notes
+	// carry: it is answered only for an unrepresentable read, the one decision whose
+	// wording turns on it. A write is judged at its parent directory, whose existence no
+	// observation names, and a network note has no path at all.
 	Absent *bool `json:"absent,omitempty"`
 }
 
