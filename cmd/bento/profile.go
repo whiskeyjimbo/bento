@@ -213,6 +213,11 @@ func newProfileCmd() *cobra.Command {
 				proposed = applyExecAnswer(proposed, accepted)
 			}
 
+			// From the final policy rather than per round: this names a grant the script's own
+			// directory produces, so it survives every round and a per-round callout would
+			// repeat itself until the reviewer learned to skip it.
+			printWorkdirGrants(os.Stderr, proposed, script)
+
 			doc := manifest.Provenance{
 				GeneratedBy:  "bento profile",
 				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
@@ -679,6 +684,36 @@ func printTmpGrants(w io.Writer, p *policy.Policy) {
 	fmt.Fprintf(w, "[bento] a real workspace there can be told from the sandbox's own scratch - so a script that\n")
 	fmt.Fprintf(w, "[bento] opens guessed names under /tmp can put them here. Treat them as the script's request\n")
 	fmt.Fprintf(w, "[bento] rather than as something profiling discovered, and keep only the ones it needs.\n")
+}
+
+// printWorkdirGrants names a proposed grant that is the whole directory the script runs
+// from, rather than the files under it the run actually opened.
+//
+// It is the broadest grant profiling still proposes: isBroadDir already drops the home
+// directory and a top-level one, so the working directory is what survives, and a script
+// that merely lists its own directory produces it. Every other narrowing decision the
+// round makes is said out loud, and this one was not - so the run that printed a
+// paragraph about a single unproposable toolchain path said nothing about a grant on
+// everything beside the script. For the agent-harness case that directory holds whatever
+// the harness put there, which is exactly what a reviewer needs pointed at.
+//
+// Said, not withheld, for the same reason the /tmp grants are: it is often the right
+// resolution - a script and its data files are one tree - and dropping it would draft a
+// manifest that cannot run. The reviewer decides.
+func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) {
+	dir := filepath.Dir(script)
+	for _, g := range []struct {
+		kind   string
+		grants []string
+	}{{"read", p.Read}, {"write", p.Write}} {
+		if !slices.Contains(g.grants, dir) {
+			continue
+		}
+		fmt.Fprintf(w, "[bento] proposing %s %q - that is the entire directory the script runs from, not only\n", g.kind, dir)
+		fmt.Fprintf(w, "[bento] the paths this run opened, so the grant covers whatever else is in there when it\n")
+		fmt.Fprintf(w, "[bento] runs. Narrow it to the paths the script needs if the directory holds more than it\n")
+		fmt.Fprintf(w, "[bento] should see.\n")
+	}
 }
 
 // printFlooredWrites names the observed writes Synthesize withheld as system trees or

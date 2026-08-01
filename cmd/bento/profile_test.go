@@ -1020,3 +1020,27 @@ func TestMissingGrantedWriteDirs(t *testing.T) {
 		t.Errorf("missingGrantedWriteDirs = %v, want %v", got, want)
 	}
 }
+
+// A grant on the whole directory the script runs from is the broadest one profiling
+// still proposes - isBroadDir drops the rest - and the reviewer is told so. A grant on
+// a subdirectory or a sibling is not the working directory and stays quiet.
+func TestPrintWorkdirGrantsNamesTheWholeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.py")
+
+	var out bytes.Buffer
+	printWorkdirGrants(&out, &policy.Policy{Read: []string{dir}, Write: []string{filepath.Join(dir, "out")}}, script)
+	got := out.String()
+	if !strings.Contains(got, "proposing read "+strconv.Quote(dir)) {
+		t.Errorf("output = %q, want the whole-workdir read called out", got)
+	}
+	if strings.Contains(got, "proposing write") {
+		t.Errorf("output = %q, want a subdirectory write left unremarked", got)
+	}
+
+	out.Reset()
+	printWorkdirGrants(&out, &policy.Policy{Read: []string{filepath.Join(dir, "data")}}, script)
+	if out.Len() != 0 {
+		t.Errorf("output = %q, want nothing for a grant that is not the working directory", out.String())
+	}
+}
