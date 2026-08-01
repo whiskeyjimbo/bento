@@ -465,8 +465,10 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		mode = policy.ExecNoneStrict
 	}
 	fmt.Fprintln(w, "[bento] the script exited 126, the code a shell returns when it could not execute a")
-	fmt.Fprintf(w, "[bento] command. This manifest sets exec: %s, which blocks subprocess execution: an\n", mode)
-	fmt.Fprintln(w, "[bento] execve is refused with a permission error, and a shell reports that as 126.")
+	// "runs under", not "sets": exec is the deny default, so a manifest that never
+	// mentions it reaches here too and a reader would grep for a line that is not there.
+	fmt.Fprintf(w, "[bento] command. This manifest runs under exec: %s, which blocks subprocess execution:\n", mode)
+	fmt.Fprintln(w, "[bento] an execve is refused with a permission error, and a shell reports that as 126.")
 	fmt.Fprintln(w, "[bento] Set exec: all if the script needs to run other programs.")
 	return true
 }
