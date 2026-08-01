@@ -92,6 +92,10 @@ func toReportJSON(r enforce.Report) reportJSON {
 // reviewer to weigh - because both answer the same question a harness has to ask: what
 // did profiling do about this path, and why.
 //
+// A note about a grant the manifest carries is spelled the way the manifest spells it,
+// so a consumer can look it up in Policy; a withheld note names the host path profiling
+// observed, which is not a grant and has no spelling in the file to be given.
+//
 // Reason is a stable code rather than the prose the same decision writes to stderr. The
 // prose exists to be read once and reworded when it reads badly; a machine gate that
 // matched on it would break on that rewording. Path and Host/Port are alternatives: a
@@ -124,10 +128,15 @@ type profileJSON struct {
 	Complete         bool   `json:"complete"`
 	IncompleteReason string `json:"incomplete_reason,omitempty"`
 	// Policy is the manifest as written - the relocatable spelling, not the absolute
-	// paths profiling observed - so a consumer comparing it against the file agrees.
-	Policy profilePolicyJSON `json:"policy"`
+	// paths profiling observed - so a consumer comparing it against the file agrees. It
+	// is validate's own shape, so a harness reads a manifest the same way whether it was
+	// just proposed or is being re-checked; the fields validate answers about a stamped
+	// file (approval, runnable) are absent here, where nothing has stamped it.
+	Policy policyJSON `json:"policy"`
 	// Withheld are the accesses the run observed and did not propose; Flagged are grants
-	// it did propose and asks a reviewer to weigh.
+	// the written manifest carries that want a reviewer's attention. A flagged grant can
+	// be one the merge kept from the file rather than one this run showed - it is what
+	// the reviewer is about to approve either way, which is the question it answers.
 	Withheld []accessNoteJSON `json:"withheld,omitempty"`
 	Flagged  []accessNoteJSON `json:"flagged,omitempty"`
 	// BlockedHosts are the recorded egress destinations the guard refused that the
@@ -136,17 +145,6 @@ type profileJSON struct {
 	// Merged is present only when there was a manifest at --out to widen, and says which
 	// half of the result came from the file rather than from this run.
 	Merged *mergeJSON `json:"merged,omitempty"`
-}
-
-// profilePolicyJSON is the proposed policy as the manifest carries it.
-type profilePolicyJSON struct {
-	Entrypoint  string         `json:"entrypoint"`
-	Interpreter string         `json:"interpreter,omitempty"`
-	Read        []string       `json:"read,omitempty"`
-	Write       []string       `json:"write,omitempty"`
-	Exec        string         `json:"exec"`
-	Env         []string       `json:"env,omitempty"`
-	Network     []hostPortJSON `json:"network,omitempty"`
 }
 
 // mergeJSON says what folding this run's proposal into an existing manifest changed. A
@@ -161,21 +159,6 @@ type mergeJSON struct {
 	// file carried a current approval that this write dropped.
 	ExecWidened    bool `json:"exec_widened"`
 	ApprovalVoided bool `json:"approval_voided"`
-}
-
-func toProfilePolicyJSON(p *policy.Policy) profilePolicyJSON {
-	out := profilePolicyJSON{
-		Entrypoint:  p.Entrypoint,
-		Interpreter: p.Interpreter,
-		Read:        p.Read,
-		Write:       p.Write,
-		Exec:        string(p.Exec),
-		Env:         p.Env,
-	}
-	for _, r := range p.Network {
-		out.Network = append(out.Network, hostPortJSON{Host: r.Host, Port: r.Port})
-	}
-	return out
 }
 
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is

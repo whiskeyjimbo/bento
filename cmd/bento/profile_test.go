@@ -1031,10 +1031,10 @@ func TestPrintWorkdirGrantsNamesTheWholeDirectory(t *testing.T) {
 	var out bytes.Buffer
 	printWorkdirGrants(&out, &policy.Policy{Read: []string{dir}, Write: []string{filepath.Join(dir, "out")}}, script)
 	got := out.String()
-	if !strings.Contains(got, "proposing read "+strconv.Quote(dir)) {
+	if !strings.Contains(got, "grants read "+strconv.Quote(dir)) {
 		t.Errorf("output = %q, want the whole-workdir read called out", got)
 	}
-	if strings.Contains(got, "proposing write") {
+	if strings.Contains(got, "grants write") {
 		t.Errorf("output = %q, want a subdirectory write left unremarked", got)
 	}
 
@@ -1061,7 +1061,13 @@ func TestProfileResultJSON(t *testing.T) {
 	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, approvalVoided: true}
 	doc := manifest.Provenance{BlockedHosts: []string{"metadata.internal:80"}}
 
-	env := profileResultJSON("s.py.manifest.yaml", written, doc, status, merge, "the profiled run did not finish")
+	proposed := &policy.Policy{
+		Entrypoint: "/work/s.py", Interpreter: "python3", Read: []string{"/work/data"},
+		Exec: policy.ExecNone, Env: []string{"HOME"},
+		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}},
+	}
+
+	env := profileResultJSON("s.py.manifest.yaml", proposed, written, doc, status, merge, "the profiled run did not finish")
 
 	if env.Complete || env.IncompleteReason == "" {
 		t.Errorf("complete=%v reason=%q, want an incomplete result that says why", env.Complete, env.IncompleteReason)
@@ -1069,14 +1075,14 @@ func TestProfileResultJSON(t *testing.T) {
 	if env.Policy.Exec != "none" || !slices.Equal(env.Policy.Read, []string{"./data"}) {
 		t.Errorf("policy = %+v, want the manifest's own spelling", env.Policy)
 	}
-	if len(env.Policy.Network) != 1 || env.Policy.Network[0].Host != "example.com" {
+	if !slices.Equal(env.Policy.Network, []string{"example.com:443"}) {
 		t.Errorf("network = %+v, want the proposed rule", env.Policy.Network)
 	}
 	if !slices.Equal(env.BlockedHosts, doc.BlockedHosts) {
 		t.Errorf("blocked_hosts = %v, want the provenance record %v", env.BlockedHosts, doc.BlockedHosts)
 	}
-	if !slices.Equal(env.Withheld, status.withheld) || !slices.Equal(env.Flagged, status.flagged) {
-		t.Errorf("notes = %+v/%+v, want the round's own", env.Withheld, env.Flagged)
+	if !slices.Equal(env.Withheld, status.withheld) {
+		t.Errorf("withheld = %+v, want the host paths profiling declined", env.Withheld)
 	}
 	if env.Merged == nil || !slices.Equal(env.Merged.KeptRead, []string{"./old"}) || !env.Merged.ApprovalVoided {
 		t.Errorf("merged = %+v, want the grants kept from the file and the voided approval", env.Merged)
@@ -1084,7 +1090,7 @@ func TestProfileResultJSON(t *testing.T) {
 
 	// No manifest to widen: the consumer is told nothing came from a file, rather than
 	// reading an empty merge block as "merged, and it kept nothing".
-	if got := profileResultJSON("m.yaml", written, doc, roundStatus{}, mergeOutcome{}, ""); got.Merged != nil || !got.Complete {
+	if got := profileResultJSON("m.yaml", proposed, written, doc, roundStatus{}, mergeOutcome{}, ""); got.Merged != nil || !got.Complete {
 		t.Errorf("first-run envelope = %+v, want complete and unmerged", got)
 	}
 }
@@ -1113,5 +1119,62 @@ func TestProfileRefusalJSONCarriesTheReport(t *testing.T) {
 	}
 	if len(env.Report.Layers) == 0 {
 		t.Error("the envelope must carry the report, or a consumer cannot see which layer fell short")
+	}
+}
+
+// A flagged note points at a grant the manifest holds, so it carries the manifest's own
+// spelling: a consumer told to review a grant must be able to find it in the policy
+// beside it. A withheld note is not a grant and keeps the host path profiling saw.
+func TestProfileResultJSONRespellsFlaggedGrants(t *testing.T) {
+	proposed := &policy.Policy{Entrypoint: "/work/s.py", Read: []string{"/work"}, Write: []string{"/tmp/guessed"}}
+	written := &policy.Policy{Entrypoint: "./s.py", Read: []string{"."}, Write: []string{"/tmp/guessed"}}
+	status := roundStatus{
+		flagged: []accessNoteJSON{
+			{Kind: "read", Path: "/work", Reason: "whole-workdir"},
+			{Kind: "write", Path: "/tmp/guessed", Reason: "target-steerable-tmp"},
+		},
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+	}
+
+	env := profileResultJSON("m.yaml", proposed, written, manifest.Provenance{}, status, mergeOutcome{}, "")
+
+	for _, n := range env.Flagged {
+		if !slices.Contains(env.Policy.Read, n.Path) && !slices.Contains(env.Policy.Write, n.Path) {
+			t.Errorf("flagged %+v names no grant in the policy %+v", n, env.Policy)
+		}
+	}
+	if env.Withheld[0].Path != "/home/u/.ssh" {
+		t.Errorf("withheld = %+v, want the observed host path left alone", env.Withheld[0])
+	}
+}
+
+// A grant the manifest carries both ways is named both ways: kind says which access a
+// note is about, so answering "write" for a path that is also read drops half of it.
+func TestGrantKindsNamesBothAccesses(t *testing.T) {
+	p := &policy.Policy{Read: []string{"/tmp/w", "/tmp/r"}, Write: []string{"/tmp/w"}}
+
+	if got := grantKinds(p, "/tmp/w", "target-steerable-tmp"); !slices.Equal(got, []accessNoteJSON{
+		{Kind: "read", Path: "/tmp/w", Reason: "target-steerable-tmp"},
+		{Kind: "write", Path: "/tmp/w", Reason: "target-steerable-tmp"},
+	}) {
+		t.Errorf("grantKinds = %+v, want both accesses", got)
+	}
+	if got := grantKinds(p, "/tmp/r", "target-steerable-tmp"); len(got) != 1 || got[0].Kind != "read" {
+		t.Errorf("grantKinds = %+v, want the read alone", got)
+	}
+}
+
+// A dangling symlink is not a missing directory: Stat follows it and reports ENOENT, and
+// the mkdir the retry would then make fails EEXIST on the link, turning a session that
+// wrote a manifest and exited 4 into one that refuses.
+func TestMissingGrantedWriteDirsSkipsADanglingSymlink(t *testing.T) {
+	tree := t.TempDir()
+	link := filepath.Join(tree, "link")
+	if err := os.Symlink(filepath.Join(tree, "nowhere"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := missingGrantedWriteDirs([]string{tree}, []string{link}); len(got) != 0 {
+		t.Errorf("missingGrantedWriteDirs = %v, want the dangling symlink left alone", got)
 	}
 }
