@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,9 +30,12 @@ func newValidateCmd() *cobra.Command {
 			"permissions it would grant - so the boundary can be reviewed before running\n" +
 			"anything inside it.\n\n" +
 			"It also checks the approval: a manifest whose permissions changed since it was\n" +
-			"approved is reported. --strict makes a stale or missing approval a failure (exit\n" +
-			"non-zero), for use as a CI gate; without it, a stale approval is only a warning.\n" +
-			"--json carries the same verdict as an `approval` field and honors --strict too.",
+			"approved is reported. And it checks that the manifest can actually run here -\n" +
+			"that the entrypoint exists and the interpreter is on PATH - so the gate does not\n" +
+			"pass a manifest `run` refuses at its first step. --strict makes a stale or missing\n" +
+			"approval, or a manifest this host cannot start, a failure (exit non-zero), for use\n" +
+			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
+			"as `approval` and `runnable` fields and honors --strict too.",
 		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			doc, trust, err := loadDocument(args[0])
@@ -36,19 +43,29 @@ func newValidateCmd() *cobra.Command {
 				return err
 			}
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
+			resolved := resolvedGrants(doc.Policy, args[0])
+			run := checkRunnable(resolved)
 			if asJSON {
-				out := toPolicyJSON(doc.Policy, resolvedGrants(doc.Policy, args[0]), doc.Provenance.BlockedHosts)
+				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(checkApproval(doc))
+				out.setRunnable(run)
 				if err := writeJSON(os.Stdout, out); err != nil {
 					return err
 				}
 				// The envelope is written first so a strict failure still leaves the
 				// machine consumer a parseable answer on stdout; the error goes to
 				// stderr and the non-zero exit, exactly as the human mode's does.
-				return strictApprovalError(doc, strict)
+				if err := strictApprovalError(doc, strict); err != nil {
+					return err
+				}
+				return strictRunnableError(run, strict)
 			}
-			writePolicySummary(os.Stdout, args[0], doc.Policy, resolvedGrants(doc.Policy, args[0]), doc.Provenance.BlockedHosts)
-			return reportApproval(os.Stdout, doc, strict)
+			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writeRunnability(os.Stdout, run)
+			if err := reportApproval(os.Stdout, doc, strict); err != nil {
+				return err
+			}
+			return strictRunnableError(run, strict)
 		},
 	}
 
@@ -182,6 +199,94 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 	}
 }
 
+// runnability is what this host makes of the program a manifest names. validate used to
+// answer only "does this parse, and is it approved", so a moved entrypoint or a typo'd
+// interpreter passed the gate and failed at run's first step - the CI case, where the
+// manifest is checked on one machine and the failure lands on another.
+//
+// It is a property of the host, not of the manifest, so it is reported beside the
+// approval rather than folded into it: an unrunnable manifest here may be exactly right
+// where it is meant to run.
+type runnability struct {
+	// problems are the reasons run would refuse before the script started. Worded as run
+	// words them, since that is the message the reader will meet if they ignore this one.
+	problems []string
+	// missingReads are read grants naming nothing on this host. Not a problem: a grant
+	// may name a path the script creates, or one that exists only on the target machine.
+	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
+	// that is the failure run's own epilogue warns is hard to diagnose.
+	missingReads []string
+	// unresolved marks a host that could not answer at all, which resolvedGrants reports
+	// as a nil policy. Reported as unknown rather than as a pass: the summary's footer
+	// already says a run here is refused for the same reason.
+	unresolved bool
+}
+
+// checkRunnable asks the resolved policy - the one naming host paths - what run would
+// find. Passing the manifest's own spelling would stat a relative entrypoint against
+// whatever directory validate was invoked from, and resolving the manifest's policy in
+// place would make every approved manifest read as stale (see resolvedGrants).
+func checkRunnable(resolved *policy.Policy) runnability {
+	if resolved == nil {
+		return runnability{unresolved: true}
+	}
+	var r runnability
+	if _, err := os.Stat(resolved.Entrypoint); err != nil {
+		r.problems = append(r.problems, fmt.Sprintf("entrypoint %q: %v", resolved.Entrypoint, err))
+	}
+	// An empty interpreter means the entrypoint runs itself: a compiled binary. LookPath
+	// covers both spellings the backend accepts - a bare name searched on PATH, and a
+	// path checked where it points.
+	if resolved.Interpreter != "" {
+		if _, err := exec.LookPath(resolved.Interpreter); err != nil {
+			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
+		}
+	}
+	// Only a path that is absent is worth a note. A grant bento cannot stat for any other
+	// reason - a directory above it the invoker cannot traverse - says nothing about
+	// whether the sandbox will reach it, since the sandbox binds it as a different user's
+	// view of the tree.
+	for _, g := range resolved.Read {
+		if _, err := os.Stat(g); errors.Is(err, fs.ErrNotExist) {
+			r.missingReads = append(r.missingReads, g)
+		}
+	}
+	return r
+}
+
+// writeRunnability prints the host's verdict in the same shape as the approval line
+// below it, and lists the notes that are not a verdict at all.
+func writeRunnability(w io.Writer, r runnability) {
+	switch {
+	case r.unresolved:
+		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not resolve the manifest's paths\n")
+	case len(r.problems) > 0:
+		fmt.Fprintf(w, "\nrunnable:     NO - this host cannot start what the manifest names\n")
+		for _, p := range r.problems {
+			fmt.Fprintf(w, "              %s\n", p)
+		}
+	default:
+		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
+	}
+	for _, g := range r.missingReads {
+		fmt.Fprintf(w, "  note: this read grant names nothing on this host, so it grants nothing and\n")
+		fmt.Fprintf(w, "        the sandbox denies that path without saying why: %q.\n", g)
+		fmt.Fprintf(w, "        Fine if the script creates it, or if the manifest is meant for another\n")
+		fmt.Fprintf(w, "        machine; otherwise it is a typo that will read as a permission bug.\n")
+	}
+}
+
+// strictRunnableError is the strict verdict on runnability, shared by the human and
+// --json paths for the same reason strictApprovalError is. A host that could not resolve
+// the paths does not fail: the manifest was not shown to be wrong, and validate's other
+// answers already degrade rather than refuse there.
+func strictRunnableError(r runnability, strict bool) error {
+	if !strict || len(r.problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("manifest cannot run on this host: %s", strings.Join(r.problems, "; "))
+}
+
 // approvalName is the machine-readable spelling of an approval state, so --json
 // can express the same verdict the human summary prints.
 func approvalName(s approvalState) string {
@@ -230,6 +335,27 @@ type policyJSON struct {
 	// summary prints, so a machine gate can read the outcome as a field rather than
 	// inferring it from the exit code.
 	Approval string `json:"approval,omitempty"`
+	// Runnable says whether this host can start what the manifest names, with
+	// RunnableProblems carrying run's own wording for why not. A pointer because absent
+	// is a third answer - the host could not resolve the paths at all - and the same pair
+	// resolved_read makes: see toPolicyJSON.
+	Runnable         *bool    `json:"runnable,omitempty"`
+	RunnableProblems []string `json:"runnable_problems,omitempty"`
+	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
+	// runnable stays true beside them, and --strict does not fail on them.
+	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
+}
+
+// setRunnable folds the host's verdict into the envelope, leaving every field absent
+// where the host could not answer.
+func (o *policyJSON) setRunnable(r runnability) {
+	if r.unresolved {
+		return
+	}
+	ok := len(r.problems) == 0
+	o.Runnable = &ok
+	o.RunnableProblems = r.problems
+	o.MissingReadGrants = r.missingReads
 }
 
 type limitsJSON struct {

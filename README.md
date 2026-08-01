@@ -61,6 +61,8 @@ cd examples/probe
 # 2. Validate: Check manifest syntax and review requested permissions.
 #    Plain validate reports the approval state; --strict makes a missing or stale
 #    approval a failure, so it belongs after step 3 (in CI), not here.
+#    It also reports whether this host can start what the manifest names - an entrypoint
+#    that is not there, an interpreter not on PATH - which --strict fails on too.
 ./bento validate ./probe.py.manifest.yaml
 
 # 3. Approve: Review the permissions and stamp an approval fingerprint over them.

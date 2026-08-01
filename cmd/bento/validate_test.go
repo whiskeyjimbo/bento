@@ -75,9 +75,19 @@ func writeManifest(t *testing.T, p *policy.Policy, prov manifest.Provenance) str
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "m.yaml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.yaml")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	// validate now reports whether the host can start what the manifest names, so a
+	// fixture whose entrypoint is a bare name nobody created reads as unrunnable and
+	// fails --strict for a reason no test here is about. Created beside the manifest,
+	// where a relative entrypoint resolves.
+	if !filepath.IsAbs(p.Entrypoint) {
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(p.Entrypoint)), nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return path
 }
@@ -408,5 +418,64 @@ func TestValidateJSONCarriesBlockedHostsAndShieldGrants(t *testing.T) {
 	}
 	if !slices.Equal(got.ShieldedGrants, []string{filepath.Join(home, ".ssh")}) {
 		t.Errorf("shielded_grants = %v, want the granted shield", got.ShieldedGrants)
+	}
+}
+
+// validate --strict is the pre-merge gate, and it used to pass a manifest run refuses at
+// its first step: an entrypoint that is not there, or an interpreter nobody has. Both
+// modes must fail, since a machine gate reads --json and would otherwise see a green
+// manifest that cannot execute (bv2-clfr).
+func TestValidateStrictFailsOnAManifestThatCannotRun(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/nope/missing.py", Interpreter: "pythno3"}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err == nil {
+		t.Fatalf("--strict must fail on a manifest this host cannot start; got:\n%s", out)
+	}
+	for _, want := range []string{"runnable:     NO", `entrypoint "/nope/missing.py"`, `interpreter "pythno3" not found`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q; got:\n%s", want, out)
+		}
+	}
+
+	jsonOut, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
+	if err == nil {
+		t.Errorf("--json --strict must fail too; got:\n%s", jsonOut)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, jsonOut)
+	}
+	if got.Runnable == nil || *got.Runnable {
+		t.Errorf("runnable = %v, want false", got.Runnable)
+	}
+	if len(got.RunnableProblems) != 2 {
+		t.Errorf("runnable_problems = %v, want the entrypoint and the interpreter", got.RunnableProblems)
+	}
+}
+
+// A read grant naming nothing here is the softer case: it may name a path the script
+// creates, so it is a note rather than a failure - but it must not be silent, because the
+// sandbox denies an unmatched grant without saying why.
+func TestValidateNotesAReadGrantThatNamesNothingWithoutFailing(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/nope/nothere"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err != nil {
+		t.Fatalf("a grant naming nothing must not fail --strict: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "runnable:     yes") {
+		t.Errorf("an existing entrypoint must still read as runnable; got:\n%s", out)
+	}
+	if !strings.Contains(out, `"/nope/nothere"`) || !strings.Contains(out, "names nothing on this host") {
+		t.Errorf("summary must note the grant that matches nothing; got:\n%s", out)
 	}
 }
