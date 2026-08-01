@@ -449,7 +449,9 @@ func underHome(grant, home string) bool {
 	if err != nil {
 		return false
 	}
-	return rel == "." || !strings.HasPrefix(rel, "..")
+	// Not a plain ".." prefix test: a grant named "$HOME/..cache" is inside the tree and
+	// relativizes to "..cache", which such a test reads as an escape.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // writeBlockedHostNotes marks the rules whose destination the profiling run already

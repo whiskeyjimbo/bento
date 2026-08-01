@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -51,19 +52,21 @@ func noArgs() cobra.PositionalArgs {
 	}
 }
 
-// rootArgs answers an unknown subcommand. Cobra raises that one inside its own lookup,
-// with no hook and no error type to match on, so the root has to be runnable for the
-// unmatched argument to reach code that can mark it - which is why the root carries a
-// RunE printing help, the behavior an argument-less `bento` had for free before.
-func rootArgs(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return nil
+// isUsageMistake reports whether the error that ended the run was a mistake in the
+// command line. Most of them say so themselves, being *usageError; an unknown subcommand
+// does not, because cobra raises that one inside its own lookup with neither a hook nor a
+// type to match on. It is recognized by where it landed instead: the root runs nothing
+// itself, so the only errors that can surface against it are that verdict and a flag
+// error, and the flag error arrives already marked. Answering it by giving the root an
+// Args validator of its own works too, but that is the same field cobra's lookup keys on
+// - setting it makes `bento help nosuchthing` print the root help rather than saying the
+// topic does not exist.
+func isUsageMistake(root, cmd *cobra.Command, err error) bool {
+	if err == nil {
+		return false
 	}
-	err := fmt.Errorf("there is no %q command", args[0])
-	if near := cmd.SuggestionsFor(args[0]); len(near) > 0 {
-		err = fmt.Errorf("%w. Did you mean %q?", err, near[0])
-	}
-	return &usageError{err}
+	var ue *usageError
+	return errors.As(err, &ue) || cmd == root
 }
 
 // writeUsageHint follows a usage error with how the command should have been called.
@@ -93,11 +96,6 @@ func newRootCmd() *cobra.Command {
 		Version:       versionInfo(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          rootArgs,
-		// Cobra applies this to its own "unknown command" only, and rootArgs answers that
-		// before cobra does, so the threshold has to be set for SuggestionsFor to match.
-		SuggestionsMinimumDistance: 2,
-		RunE:                       func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 	root.SetVersionTemplate("bento {{.Version}}\n")
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is

@@ -286,12 +286,21 @@ func TestAdversarialPolicyValidation(t *testing.T) {
 			mutate: func(p *Policy) {
 				p.Limits = Limits{Memory: "-1G"}
 			},
-			errSubstr: "invalid size",
+			errSubstr: "cannot be negative",
 		},
 		{
 			name: "detect_integer_overflow_memory_limit",
 			mutate: func(p *Policy) {
 				p.Limits = Limits{Memory: "8000000000000000000K"}
+			},
+			errSubstr: "is too large",
+		},
+		{
+			// A bare count past int64 is spelled exactly the way the format advice would
+			// tell it to be, so it has to reach the range answer rather than that advice.
+			name: "detect_overlong_bare_byte_count",
+			mutate: func(p *Policy) {
+				p.Limits = Limits{Memory: "99999999999999999999"}
 			},
 			errSubstr: "is too large",
 		},

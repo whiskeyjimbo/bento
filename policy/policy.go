@@ -12,6 +12,7 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -560,14 +561,19 @@ func parseBytes(s string) (int64, error) {
 		num = s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(num, 10, 64)
-	if err != nil || n < 0 {
+	// A number too big for int64 is spelled correctly and merely out of range, so it gets
+	// the range answer rather than advice about a format it already followed.
+	if errors.Is(err, strconv.ErrRange) || (err == nil && n > math.MaxInt64/mult) {
+		return 0, fmt.Errorf("size %q is too large", s)
+	}
+	if err == nil && n < 0 {
+		return 0, fmt.Errorf("size %q cannot be negative", s)
+	}
+	if err != nil {
 		// "128MB" and "1.5G" are the natural spellings and both land here, so the
 		// message has to say what to write instead - the accepted form is nowhere in
 		// the value the reader typed.
 		return 0, fmt.Errorf("invalid size %q, want a plain byte count or a K/M/G suffix (e.g. \"128M\")", s)
-	}
-	if n > math.MaxInt64/mult {
-		return 0, fmt.Errorf("size %q is too large", s)
 	}
 	return n * mult, nil
 }

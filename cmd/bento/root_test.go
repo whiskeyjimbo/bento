@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -23,8 +22,8 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 		{"missing script", []string{"profile"}, "profile needs a script path"},
 		{"doctor takes none", []string{"doctor", "x"}, "doctor takes no arguments, but got 1"},
 		{"unknown flag", []string{"run", "--nosuchflag", "m.yaml"}, "unknown flag: --nosuchflag"},
-		{"unknown command", []string{"badcmd"}, `there is no "badcmd" command`},
-		{"a near miss is suggested", []string{"runn"}, `Did you mean "run"?`},
+		{"unknown command", []string{"badcmd"}, `unknown command "badcmd"`},
+		{"a near miss is suggested", []string{"runn"}, "Did you mean this?"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,9 +33,8 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 			root.SetErr(io.Discard)
 
 			cmd, err := root.ExecuteC()
-			var ue *usageError
-			if !errors.As(err, &ue) {
-				t.Fatalf("err = %v (%T), want a *usageError", err, err)
+			if err == nil || !isUsageMistake(root, cmd, err) {
+				t.Fatalf("err = %v (%T), want it recognized as a usage mistake", err, err)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %q, want it to contain %q", err, tc.want)
@@ -56,23 +54,40 @@ func TestUsageErrorsAreMarkedAndNamed(t *testing.T) {
 	}
 }
 
-// Making the root runnable is what lets an unknown command reach code that can mark it,
-// and the argument-less invocation it displaced has to keep printing help - exiting 125
-// with a usage error at someone who typed `bento` to find out what bento is would be a
-// worse dead end than the one this replaced.
-func TestBareInvocationStillPrintsHelp(t *testing.T) {
-	root := newRootCmd()
-	root.SetArgs(nil)
-	var b bytes.Buffer
-	root.SetOut(&b)
-	root.SetErr(&b)
-
-	if err := root.Execute(); err != nil {
-		t.Fatalf("bare `bento` must not fail: %v", err)
+// The invocations that are NOT mistakes have to stay that way. Recognizing an unknown
+// command by the command it landed on rather than by an error type is what keeps the
+// root's Args field free, and cobra's own lookup keys on that field: setting it makes an
+// unknown help topic resolve to the root and print its help as though the topic existed.
+func TestNonMistakesAreNotTreatedAsUsageErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want []string
+	}{
+		{"bare invocation prints help", nil, []string{"Available Commands:", "run", "doctor"}},
+		{"an unknown help topic says so", []string{"help", "badcmd"}, []string{"Unknown help topic"}},
+		{"a known help topic is the command's own help", []string{"help", "run"}, []string{"run enforces the manifest's policy"}},
 	}
-	for _, want := range []string{"Available Commands:", "run", "doctor"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("bare `bento` must print help naming %q; got:\n%s", want, b.String())
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newRootCmd()
+			root.SetArgs(tc.argv)
+			var b bytes.Buffer
+			root.SetOut(&b)
+			root.SetErr(&b)
+
+			cmd, err := root.ExecuteC()
+			if err != nil {
+				t.Fatalf("must not fail: %v", err)
+			}
+			if isUsageMistake(root, cmd, err) {
+				t.Errorf("a nil error must never read as a usage mistake")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(b.String(), want) {
+					t.Errorf("output must name %q; got:\n%s", want, b.String())
+				}
+			}
+		})
 	}
 }

@@ -482,6 +482,7 @@ func TestSandboxHomeMissFiresOnlyWhenRelevant(t *testing.T) {
 		{"the run succeeded", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 0}, false},
 		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, enforce.Result{ExitCode: 1}, false},
 		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, enforce.Result{ExitCode: 1}, false},
+		{"a dotted name inside home has not escaped it", &policy.Policy{Read: []string{filepath.Join(home, "..cache")}}, enforce.Result{ExitCode: 1}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -55,7 +55,8 @@ func main() {
 	// ExecuteC rather than Execute: a usage error is raised against the command the user
 	// was trying to reach, and that command is the only thing that knows how it should
 	// have been called.
-	cmd, err := newRootCmd().ExecuteC()
+	root := newRootCmd()
+	cmd, err := root.ExecuteC()
 	if err == nil {
 		return
 	}
@@ -64,8 +65,7 @@ func main() {
 		os.Exit(ee.code)
 	}
 	fmt.Fprintf(os.Stderr, "bento: %v\n", err)
-	var ue *usageError
-	if errors.As(err, &ue) {
+	if isUsageMistake(root, cmd, err) {
 		writeUsageHint(os.Stderr, cmd)
 	}
 	os.Exit(bentoFailed)
