@@ -79,6 +79,20 @@ func TestFilesystemLayerDegradedLeadsWithProbeReason(t *testing.T) {
 	}
 }
 
+// A missing bwrap is the one probe finding the reader can fix outright, and the binary
+// is not named after the package that carries it - so the reason has to say how to get
+// it, not just that it is absent.
+func TestMissingBwrapReasonNamesTheInstall(t *testing.T) {
+	t.Setenv("PATH", "")
+	state, reason := usableNamespaces(context.Background())
+	if state != namespacesBlocked {
+		t.Fatalf("state = %v, want namespacesBlocked", state)
+	}
+	if !strings.Contains(reason, "apt install bubblewrap") {
+		t.Errorf("reason gives the user no way to install bwrap: %q", reason)
+	}
+}
+
 // classifyUnshare's sysctl diagnoses end with an instruction to the reader, so every
 // branch that continues a probe reason has to join a full sentence to its own clause
 // without leaving ".;" in the middle of the detail a user reads.

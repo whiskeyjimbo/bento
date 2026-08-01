@@ -313,7 +313,13 @@ func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
 		// but the filesystem layer may still have Landlock to fall back on. A reason
 		// asserting "no confinement is possible" contradicts the degraded tier that
 		// then describes itself in the same sentence.
-		return namespacesBlocked, "bubblewrap (bwrap) is not installed, so it cannot isolate anything"
+		// The remedy closes the sentence like classifyUnshare's sysctl diagnoses do, so
+		// joinReason continues from it the same way: this is the one probe finding a user
+		// can fix with a single command, and without it the reason names a binary they
+		// have no reason to know is packaged as "bubblewrap".
+		return namespacesBlocked, "bubblewrap (bwrap) is not installed, so it cannot isolate anything. " +
+			"Install it with your package manager (Debian/Ubuntu: sudo apt install bubblewrap; " +
+			"Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap)."
 	}
 	if err := canUnshare(ctx, bwrap); err != nil {
 		return classifyUnshare(err)
