@@ -16,11 +16,14 @@ Bento surfaces any gap between what a manifest requests and what the host kernel
 
 ## Why Bento?
 
-- **Default-Deny Isolation:** The sandbox only exposes explicitly granted files and directories. Everything else is hidden.
-- **Built-in Credential & Host Shielding:** Sensitive paths (`~/.ssh`, `~/.aws`, GPG keyrings, OS keyrings, environment-relocated secret stores, runtime sockets in `/run`, and persistence targets like `.git/hooks` or `.vscode`) remain shielded even under broad grants like `read: "~"`.
-- **Declarative Permissions & Fingerprinted Approvals:** Policy lives in a human-readable manifest (`manifest.yaml`). Unattended runs (`bento run`) require a valid approval fingerprint over policy fields to prevent unreviewed permission creep in CI or autonomous agents.
-- **Egress-Controlled Proxy:** Network traffic is blocked by default in an unshared network namespace. Per-host egress is strictly routed through a host-side HTTP CONNECT proxy with hostname validation and IP pin checks.
-- **Host Honesty & No Quiet Degradation:** `bento doctor` reports kernel capability support. When host isolation layers (such as seccomp or cgroups) are unavailable, Bento flags the shortfall instead of quietly falling back to a weaker sandbox.
+Bubblewrap and Landlock do the isolation, and Bento uses both. These five are what it
+adds on top:
+
+- **Credentials stay shielded under a grant that covers them.** `read: "~"` does not expose `~/.ssh`, `~/.aws`, GPG and OS keyrings, environment-relocated secret stores, `.netrc`, shell histories, runtime sockets in `/run`, or persistence targets like `.git/hooks` and `.vscode`. The denylist is a maintained corpus, held to parity with firejail's and AppArmor's reference definitions by `make audit`, and it shields paths that do not exist on the host yet. Parity with those corpora is not completeness - both are desktop-application sandboxes, so developer token stores are still found by review.
+- **Permissions you can attest, not just declare.** Policy lives in a readable `manifest.yaml`, and `bento approve` stamps a fingerprint over the policy fields. Edit the manifest afterwards and `bento run` refuses until a human re-reviews it. That is the answer to unreviewed permission creep in CI and autonomous agents, which is a likelier failure than an escape.
+- **Egress decided per host, and decidable live.** Traffic is denied by default in an unshared network namespace; allowed hosts route through a host-side HTTP CONNECT proxy with hostname validation and IP pin checks. An embedder can supply a `NetworkGate` and approve or refuse a connection at connect time, so a wrapper can ask a human.
+- **Discovery that never opens your files.** `bento profile` watches a program under `ptrace`, reading syscall registers rather than opening anything itself, so drafting a manifest for code you do not trust is not its own exposure.
+- **No quiet degradation.** `bento doctor` reports what this kernel actually enforces, layer by layer. A core guarantee that can only be partially enforced stops the run rather than silently becoming a weaker sandbox, and `--strict` extends that to the hardening tier.
 
 ---
 
