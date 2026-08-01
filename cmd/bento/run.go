@@ -421,9 +421,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// one profiling mode that would rediscover it, which the bare hint would send
 		// the reader around the wrong loop for. Both hints below explain a failure the
 		// TARGET reported, so a run whose target never started gets its own line instead.
+		// The exec hint precedes the egress one: 126 under a manifest that blocks exec names
+		// a cause the bypass hint would otherwise blame on the network.
 		if res.Setup == enforce.SetupTargetUnreached {
 			writeTargetUnreached(stderr, res)
-		} else if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
+		} else if !writeSignalNotice(stderr, p, res) && !writeExecHint(stderr, p, res) &&
+			!writeEgressHint(stderr, p, res) &&
 			shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.

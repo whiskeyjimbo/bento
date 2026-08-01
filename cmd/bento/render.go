@@ -436,6 +436,34 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
+// writeExecHint explains exit 126 under a manifest that blocks exec. Bento has no
+// observer at enforce time here either: the filter refuses execve with EPERM and the
+// target reports its own error, so a shell that could not run a command exits 126 and
+// nothing connects that number back to the manifest line that caused it.
+//
+// A heuristic like its siblings, and worded as one - 126 is the shell's code for "found
+// but not executable", which a script can reach on its own (a non-executable file, a
+// missing interpreter) under any exec mode. So it names the manifest setting as what
+// produces that code, not as what definitely produced this one.
+//
+// It reports whether it said anything, so no second explanation stacks on top.
+func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
+	if res.ExitCode != 126 || p.Exec == policy.ExecAll {
+		return false
+	}
+	// Spelled as the manifest spells it, so the reader can find the line to change. The
+	// empty mode is the documented zero value of ExecMode and means none.
+	mode := p.Exec
+	if mode == "" {
+		mode = policy.ExecNone
+	}
+	fmt.Fprintln(w, "[bento] the script exited 126, the code a shell returns when it could not execute a")
+	fmt.Fprintf(w, "[bento] command. This manifest sets exec: %s, which blocks subprocess execution: an\n", mode)
+	fmt.Fprintln(w, "[bento] execve is refused with a permission error, and a shell reports that as 126.")
+	fmt.Fprintln(w, "[bento] Set exec: all if the script needs to run other programs.")
+	return true
+}
+
 // describeLimits names the declared limits the way the manifest spells them, for the
 // summary and for the kill notice that has to say which caps were in play.
 func describeLimits(l policy.Limits) string {

@@ -117,6 +117,43 @@ func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// 126 is what a shell returns when it could not execute a command, which is exactly how
+// the exec block's EPERM surfaces - but only a manifest that blocks exec can have caused
+// it, and only that code is evidence of it. Anything wider claims the manifest for a
+// failure it had no part in.
+func TestExecHintFiresOnlyWhenRelevant(t *testing.T) {
+	blocked := &policy.Policy{Exec: policy.ExecNone}
+	strict := &policy.Policy{Exec: policy.ExecNoneStrict}
+	zero := &policy.Policy{}
+	allowed := &policy.Policy{Exec: policy.ExecAll}
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want bool
+	}{
+		{"exec blocked, target could not exec", blocked, enforce.Result{ExitCode: 126}, true},
+		{"exec blocked strictly", strict, enforce.Result{ExitCode: 126}, true},
+		{"the zero exec mode is none", zero, enforce.Result{ExitCode: 126}, true},
+		{"subprocesses are allowed, so 126 is the script's own", allowed, enforce.Result{ExitCode: 126}, false},
+		{"an ordinary failure under a blocking manifest", blocked, enforce.Result{ExitCode: 1}, false},
+		{"a clean run", blocked, enforce.Result{ExitCode: 0}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			got := writeExecHint(&b, tc.p, tc.res)
+			if got != tc.want {
+				t.Errorf("hint emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			}
+			if got && !strings.Contains(b.String(), "exec: "+string(tc.p.Exec)) && tc.p.Exec != "" {
+				t.Errorf("hint does not name the manifest setting to change: %q", b.String())
+			}
+		})
+	}
+}
+
 // A cgroup kill is not a script failure, and the two shapes it arrives in - the
 // wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
 // one. The relayed shape is the common one, and is hedged because a script can exit
