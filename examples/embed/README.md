@@ -158,7 +158,8 @@ The gate is network-only, on purpose. A denied file read is refused inside the
 kernel (Landlock / the mount set) and the box never learns what was attempted, so
 there is no per-access callback to hang a prompt on. The box-native way to do
 interactive filesystem is the batch loop: `bento profile` (observe a permissive
-run) then `bento approve`. See `docs/network-gate-seam.md` for the full rationale.
+run) then `bento approve`. [`examples/supervise`](../supervise/README.md) works through
+the full rationale under "The two models (and why they differ)", and builds both halves.
 
 ## Code map
 

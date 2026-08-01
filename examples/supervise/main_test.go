@@ -51,6 +51,44 @@ func TestApproveKeepsAnswers(t *testing.T) {
 	}
 }
 
+// The chain down to the script is a walk, not a decision, and asking about it invites a
+// routine yes onto a recursive read grant several levels above anything the script named.
+func TestApproveSkipsTheChainDownToTheScript(t *testing.T) {
+	proposal := &policy.Policy{
+		Read: []string{"/home/u", "/home/u/src", "/home/u/src/app", "/home/u/src/app/data.csv", "/home/u/other"},
+	}
+	// /home/u and /home/u/src are the walk and never reach a human. The script's own
+	// directory is a real grant and stays, so three prompts are left.
+	p := newPrompter(strings.NewReader("y\ny\ny\n"), &strings.Builder{})
+
+	got := approve(t.Context(), p, newTestStore(), "k", "/home/u/src/app/run.sh", "sh", proposal)
+
+	want := []string{"/home/u/src/app", "/home/u/src/app/data.csv", "/home/u/other"}
+	if len(got.Read) != len(want) {
+		t.Fatalf("Read = %v, want %v (the ancestor chain should never be asked about)", got.Read, want)
+	}
+	for i, w := range want {
+		if got.Read[i] != w {
+			t.Errorf("Read[%d] = %q, want %q", i, got.Read[i], w)
+		}
+	}
+}
+
+// A sibling of the script's directory shares a textual prefix with it but is not on the
+// path down to it, so it stays a real decision.
+func TestTrimAncestorsKeepsASiblingPrefix(t *testing.T) {
+	got := trimAncestors([]string{"/home/u/app", "/home/u/appendix", "/home/u/app/sub"}, "/home/u/app/sub/run.sh")
+	want := []string{"/home/u/appendix", "/home/u/app/sub"}
+	if len(got) != len(want) {
+		t.Fatalf("trimAncestors = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
 // drain discards input typed past the approval prompts, so a stray line from Act 1
 // cannot silently answer the first live gate prompt in Act 2 (both share one
 // terminal reader).

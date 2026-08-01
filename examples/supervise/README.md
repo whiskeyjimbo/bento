@@ -171,7 +171,12 @@ supervise perms global allow read /etc/hosts
 supervise perms forget app <handle>         # drop one app's decisions (handle from list)
 supervise perms forget global [host:port]   # drop one global rule, or all of them
 supervise perms reset                       # clear the whole store (asks to confirm)
+supervise perms import <manifest.yaml>      # seed an app's approvals from a manifest
 ```
+
+`import` is how a headless caller gets a store to run against: `run` needs a terminal
+and refuses without one, so seed the decisions first from a manifest you already
+attested, then run. It is `export` backwards.
 
 `list` prints the *effective* decision - a network host is resolved through the
 deny-wins lattice, and one blocked by a global rule is marked `(global)` so you
@@ -190,7 +195,7 @@ script can run under plain `bento run` once you attest it:
 ```sh
 supervise perms export <handle>            # writes <script>.manifest.yaml
 bento approve <script>.manifest.yaml       # a deliberate human attestation
-bento run <script>                         # now runs declared, no wrapper
+bento run <script>.manifest.yaml           # now runs declared, no wrapper
 ```
 
 Export writes the *effective* policy: a host a global rule denies never reaches the
@@ -246,6 +251,6 @@ model maps onto an editor agent's allow choices:
 - `*_test.go` - the store lattice/longest-prefix, the run-twice-silent loop, the
   store-covering-grant refusal, path quoting, and the gate's per-host memory.
 
-For the design rationale (why network but not filesystem), see
-`docs/network-gate-seam.md`. For a stripped-down non-interactive embedder, see
-`examples/embed`.
+The design rationale (why network but not filesystem) is under "The two models (and why
+they differ)" above. For a stripped-down non-interactive embedder, see
+[`examples/embed`](../embed/README.md).

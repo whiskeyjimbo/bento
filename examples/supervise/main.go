@@ -603,7 +603,7 @@ func approve(ctx context.Context, p *prompter, s *store, key, script, interp str
 		}
 	}
 
-	for _, r := range trimScratch(proposal.Read) {
+	for _, r := range trimAncestors(trimScratch(proposal.Read), script) {
 		if consider("read", quotePath(r), r,
 			func() (decision, bool) { return s.decidePath(key, "read", r) },
 			func(d decision) { s.rememberPath(key, "read", r, d, false) }) {
@@ -864,6 +864,33 @@ func trimScratch(paths []string) []string {
 		if !skip {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+// trimAncestors drops the directories on the path down to the script's own, which the
+// trial records because resolving the script walks them.
+//
+// They are not a decision. Reaching a grant does not need its parents granted - the
+// sandbox creates the directories a bind mount hangs off - so denying every one of them
+// leaves the enforced run working exactly as allowing them does. What they are is a
+// hazard: a read grant covers the directory, so a routine "yes" to the first of them
+// grants recursive read of everything under an ancestor like ~/src, several levels above
+// anything the script named. The chain also grows with checkout depth, so the deeper the
+// script lives the more of the dialogue is spent on it.
+//
+// Strict ancestors only: the script's own directory is a real grant and stays. The case
+// this hides is a script that lists a directory that happens to be one of its own
+// parents, which the trial cannot tell from a walk; `perms global allow read` is where
+// that gets granted deliberately, which is the right weight for it.
+func trimAncestors(paths []string, script string) []string {
+	dir := filepath.Dir(script)
+	var out []string
+	for _, p := range paths {
+		if p != dir && strings.HasPrefix(dir, p+string(filepath.Separator)) {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out
 }
