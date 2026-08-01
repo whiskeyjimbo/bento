@@ -74,8 +74,10 @@ func newApproveCmd() *cobra.Command {
 			// that can drift.
 			resolved := resolvedGrants(doc.Policy, path)
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved)
-			writeReapprovalNotice(os.Stdout, approval)
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			// After the callouts, not before: the notice sends the reader back over everything
+			// above it, and the callouts are the part of the report a drift most needs reread.
+			writeReapprovalNotice(os.Stdout, approval)
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}

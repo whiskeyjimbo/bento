@@ -269,8 +269,14 @@ func TestApproveClampsAnAlreadyApprovedManifest(t *testing.T) {
 	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCapturingStdout(t, newApproveCmd(), path); err != nil {
+	out, err := runCapturingStdout(t, newApproveCmd(), path)
+	if err != nil {
 		t.Fatalf("second approve: %v", err)
+	}
+	// The clamp is the one way an unchanged policy reaches the review block twice, so it is
+	// also the one way the drift notice can fire over permissions that never moved.
+	if strings.Contains(out, "permissions have changed") {
+		t.Errorf("the policy is the one that was stamped; only the mode moved:\n%s", out)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -395,12 +401,18 @@ func TestApproveSaysTheManifestWasApprovedForSomethingElse(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/etc/shadow"}}
 	stale := writeManifest(t, p, manifest.Provenance{Approves: "0badc0de"})
 
-	out, err := runCapturingStdout(t, newApproveCmd(), stale, "--yes")
+	// Deliberately without --yes: `go test` has no terminal, so this is the piped
+	// re-approval of a drifted manifest - the CI case both notices exist for, and the one
+	// place they have to be able to fire together.
+	out, err := runCapturingStdout(t, newApproveCmd(), stale)
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if !strings.Contains(out, "approved before and its permissions have changed") {
 		t.Errorf("re-approving a drifted manifest must say the policy is not the one stamped:\n%s", out)
+	}
+	if !strings.Contains(out, "not a terminal") {
+		t.Errorf("a drifted manifest stamped by a script must still say nobody read it:\n%s", out)
 	}
 
 	// And a first approval must not: a notice printed over every manifest says nothing.
