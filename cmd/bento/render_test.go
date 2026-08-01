@@ -127,28 +127,40 @@ func TestExecHintFiresOnlyWhenRelevant(t *testing.T) {
 	zero := &policy.Policy{}
 	allowed := &policy.Policy{Exec: policy.ExecAll}
 
+	enforced := func(code int) enforce.Result {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, enforce.Enforced, "")
+		return enforce.Result{ExitCode: code, Report: r}
+	}
+	unenforced := func(code int) enforce.Result {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this platform")
+		return enforce.Result{ExitCode: code, Report: r}
+	}
+
 	cases := []struct {
 		name string
 		p    *policy.Policy
 		res  enforce.Result
-		want bool
+		want string
 	}{
-		{"exec blocked, target could not exec", blocked, enforce.Result{ExitCode: 126}, true},
-		{"exec blocked strictly", strict, enforce.Result{ExitCode: 126}, true},
-		{"the zero exec mode is none", zero, enforce.Result{ExitCode: 126}, true},
-		{"subprocesses are allowed, so 126 is the script's own", allowed, enforce.Result{ExitCode: 126}, false},
-		{"an ordinary failure under a blocking manifest", blocked, enforce.Result{ExitCode: 1}, false},
-		{"a clean run", blocked, enforce.Result{ExitCode: 0}, false},
+		{"exec blocked, target could not exec", blocked, enforced(126), "exec: none"},
+		{"exec blocked strictly", strict, enforced(126), "exec: none-strict"},
+		{"the zero exec mode is none", zero, enforced(126), "exec: none"},
+		{"subprocesses are allowed, so 126 is the script's own", allowed, enforced(126), ""},
+		{"the block never landed, so it caused nothing", blocked, unenforced(126), ""},
+		{"an ordinary failure under a blocking manifest", blocked, enforced(1), ""},
+		{"a clean run", blocked, enforced(0), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
 			got := writeExecHint(&b, tc.p, tc.res)
-			if got != tc.want {
-				t.Errorf("hint emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			if got != (tc.want != "") {
+				t.Errorf("hint emitted = %v, want %v (output: %q)", got, tc.want != "", b.String())
 			}
-			if got && !strings.Contains(b.String(), "exec: "+string(tc.p.Exec)) && tc.p.Exec != "" {
-				t.Errorf("hint does not name the manifest setting to change: %q", b.String())
+			if tc.want != "" && !strings.Contains(b.String(), tc.want) {
+				t.Errorf("hint does not name %q, the setting to change: %q", tc.want, b.String())
 			}
 		})
 	}

@@ -451,11 +451,18 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if res.ExitCode != 126 || p.Exec == policy.ExecAll {
 		return false
 	}
-	// Spelled as the manifest spells it, so the reader can find the line to change. The
-	// empty mode is the documented zero value of ExecMode and means none.
-	mode := p.Exec
-	if mode == "" {
-		mode = policy.ExecNone
+	// The declared mode is not enough: exec-block is a hardening layer, so a run whose
+	// filter never landed proceeds anyway - and writeDegradations has just said so a few
+	// lines above. Blaming the manifest there both contradicts that line and sends the
+	// reader to change a setting that had no part in the failure.
+	if res.Report.StateOf(enforce.LayerExec) != enforce.Enforced {
+		return false
+	}
+	// Spelled as the manifest spells it, so the reader can find the line to change. Only
+	// the two blocking modes reach here, and the zero value of ExecMode is none.
+	mode := policy.ExecNone
+	if p.Exec == policy.ExecNoneStrict {
+		mode = policy.ExecNoneStrict
 	}
 	fmt.Fprintln(w, "[bento] the script exited 126, the code a shell returns when it could not execute a")
 	fmt.Fprintf(w, "[bento] command. This manifest sets exec: %s, which blocks subprocess execution: an\n", mode)
