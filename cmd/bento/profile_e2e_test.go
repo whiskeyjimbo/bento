@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,4 +128,85 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 	if !hasPath(round2.Read, data) {
 		t.Errorf("granting the config must let the script reach the downstream path %q; got %v", data, round2.Read)
 	}
+}
+
+// The non-interactive retry, driven through the command rather than through
+// profileRound: a target that died only because a granted write directory does not
+// exist yet is profiled a second time with it created, and under --allow-network it is
+// not, because that pass would repeat the target's real egress. retryWriteDirs pins the
+// decision; this pins that the call site honors it. The two runs differ only in the
+// flag, so the envelope's complete - the same condition as the exit code - is the whole
+// assertion: drop the skip branch and the --allow-network case turns complete too.
+func TestProfileRetriesMissingWriteDirUnlessEgressForwarded(t *testing.T) {
+	requireSandbox(t)
+
+	for _, tc := range []struct {
+		name         string
+		allowNetwork bool
+		wantComplete bool
+	}{
+		{"default-deny egress", false, true},
+		{"forwarded egress", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Under the real home, not t.TempDir(): the sandbox overmounts /tmp with its own
+			// tmpfs, so a write discovered there is withheld as scratch and never reaches the
+			// proposal this turns on.
+			realHome, err := os.UserHomeDir()
+			if err != nil {
+				t.Skip("no home directory")
+			}
+			dir, err := os.MkdirTemp(realHome, "bento-retry-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+
+			// Writes into a subdirectory of its own directory - which profiling grants write
+			// to, so the proposal carries it - and dies because nothing created it. That is
+			// exactly the shape the retry exists for.
+			script := filepath.Join(dir, "write.sh")
+			missing := filepath.Join(dir, "outdir")
+			if err := os.WriteFile(script, []byte("echo hi > \"$(dirname \"$0\")/outdir/file\"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"--json", "--out", filepath.Join(t.TempDir(), "m.yaml")}
+			if tc.allowNetwork {
+				args = append(args, "--allow-network")
+			}
+			out, runErr := runProfileNonInteractively(t, append(args, script)...)
+
+			var env struct {
+				Complete bool `json:"complete"`
+			}
+			if err := json.Unmarshal([]byte(out), &env); err != nil {
+				t.Fatalf("decoding the envelope: %v\n%s", err, out)
+			}
+			if env.Complete != tc.wantComplete {
+				t.Errorf("complete = %v, want %v (exit %v)\n%s", env.Complete, tc.wantComplete, runErr, out)
+			}
+			// The envelope alone cannot say whether the retry ran or the first pass merely
+			// finished; the directory on the host can, since only the retry creates it.
+			if _, err := os.Lstat(missing); os.IsNotExist(err) == tc.wantComplete {
+				t.Errorf("Lstat(%q) = %v, want the directory to exist only when the retry ran", missing, err)
+			}
+		})
+	}
+}
+
+// runProfileNonInteractively drives the profile command with stdin pointed at /dev/null,
+// so it takes the single-pass branch whatever the `go test` invocation inherited - a run
+// from a terminal would otherwise reach the convergence loop and block on its prompts.
+func runProfileNonInteractively(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	saved := os.Stdin
+	os.Stdin = devnull
+	defer func() { os.Stdin = saved }()
+	return runCapturingStdout(t, newProfileCmd(), args...)
 }
