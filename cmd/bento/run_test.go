@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -71,23 +72,37 @@ func TestWriteRunResultRefusalJSON(t *testing.T) {
 	}
 }
 
-// Without --json a refusal returns the refusal error itself (main renders it and
-// exits bentoFailed), not an exitError carrying a target code, and writes no JSON.
+// Without --json a refusal is rendered to stderr in main's own shape and exits
+// bentoFailed - never a target's code - and writes no JSON. Rendered here because the
+// layer reasons are too long for one line; see writeRefusal.
 func TestWriteRunResultRefusalHuman(t *testing.T) {
-	refusal := &enforce.Refusal{Reason: "strict mode requires every layer to be fully enforced"}
+	refusal := &enforce.Refusal{
+		Reason: "strict mode requires every layer to be fully enforced",
+		Short: []enforce.LayerStatus{{
+			Layer:  enforce.LayerFilesystem,
+			State:  enforce.Degraded,
+			Reason: strings.Repeat("this host cannot bind-mount the grants, ", 30),
+		}},
+	}
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(),
 		enforce.Result{ExitCode: 7}, "", "", refusal)
 
 	var ee *exitError
-	if errors.As(err, &ee) {
-		t.Fatalf("human refusal must not be an exitError; got code %d", ee.code)
-	}
-	if !errors.Is(err, error(refusal)) {
-		t.Errorf("human refusal must return the refusal itself; got %v", err)
+	if !errors.As(err, &ee) || ee.code != bentoFailed {
+		t.Fatalf("human refusal = %v, want exitError{%d}", err, bentoFailed)
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("human refusal must not write JSON to stdout; got %q", stdout.String())
+	}
+	out := stderr.String()
+	if !strings.HasPrefix(out, "bento: refusing to run: "+refusal.Reason) {
+		t.Errorf("refusal must keep main's own wording; got %q", out)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if len(line) > textWidth {
+			t.Errorf("refusal line is %d columns, want at most %d: %q", len(line), textWidth, line)
+		}
 	}
 }
 
@@ -441,6 +456,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 		{"the egress hint already explained it", networked, enforce.Result{ExitCode: 1}, false, false},
 		{"a strict shortfall has its own line", granted, enforce.Result{ExitCode: 1}, true, false},
 		{"a guard block is not something profiling widens", granted, enforce.Result{ExitCode: 1, GuardBlocked: []enforce.HostPort{{Host: "a.com", Port: "443"}}}, false, false},
+		{"the target never ran, so it failed on nothing profiling can see", granted, enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -454,6 +470,17 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 				t.Errorf("profile hint emitted = %v, want %v; got:\n%s", got, tc.want, errOut.String())
 			}
 		})
+	}
+
+	// Suppressing the hints there must not leave the failure unexplained: the run ended
+	// with bento's code, and nothing else on that path says so.
+	var unreached bytes.Buffer
+	_ = writeRunResult(io.Discard, &unreached, false, granted,
+		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, "", "", nil)
+	for _, want := range []string{"could not start the target", "exit 125 is bento's"} {
+		if !strings.Contains(unreached.String(), want) {
+			t.Errorf("unreached-target notice missing %q; got:\n%s", want, unreached.String())
+		}
 	}
 
 	// --json carries the outcome as a field, and the hint on stdout would corrupt it.

@@ -442,8 +442,10 @@ func signalDeath(res enforce.Result) (sig int, certain bool) {
 //
 // A heuristic, and worded as one - the script may simply have failed for its own reasons.
 // It is silent when the egress hint already explained the same non-zero exit, and under
-// --json, where the outcome is a field. Bento's own 125 and 124 never reach here: a
-// refusal returns before the output, and a strict shortfall is reported by its own line.
+// --json, where the outcome is a field. It explains a code the TARGET returned, so the
+// caller keeps it off a run the target never reached: a refusal returns before the output,
+// a strict shortfall is reported by its own line, and a launcher that applied its layers
+// and then could not exec the target gets writeTargetUnreached instead.
 func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	if res.ExitCode == 0 {
 		return
@@ -454,6 +456,43 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
 	// Quoted: the entrypoint is manifest text, and a newline in it would otherwise forge a
 	// line of this hint.
 	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
+}
+
+// writeRefusal prints a pre-run refusal in the shape main's generic error printer gives
+// every other one - "bento: " and the reason - but wrapped, and with each layer that fell
+// short on its own indented lines. The generic printer cannot do this itself: a manifest
+// parse error carries caret alignment that wrapping would mangle, so only the caller that
+// knows it holds a refusal can wrap it.
+func writeRefusal(w io.Writer, r *enforce.Refusal) {
+	const prefix = "bento: "
+	for i, line := range wrapText("refusing to run: "+r.Reason, textWidth-len(prefix)) {
+		if i == 0 {
+			fmt.Fprintf(w, "%s%s\n", prefix, line)
+			continue
+		}
+		fmt.Fprintf(w, "%*s%s\n", len(prefix), "", line)
+	}
+	for _, l := range r.Short {
+		head := fmt.Sprintf("%s (%s): %s", l.Layer, l.State, l.Reason)
+		for i, line := range wrapText(head, textWidth-4) {
+			if i == 0 {
+				fmt.Fprintf(w, "  %s\n", line)
+				continue
+			}
+			fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
+}
+
+// writeTargetUnreached says what an exit code alone cannot: the sandbox came up and the
+// target never ran, so the code is bento's rather than the script's. It stands in for the
+// profile and HOME hints on that path - both explain a failure the script reported, and a
+// script that never started reported nothing. The layer lines above carry the launcher's
+// own error; this says what it means for the code the run ended with.
+func writeTargetUnreached(w io.Writer, res enforce.Result) {
+	fmt.Fprintf(w, "[bento] the sandbox applied its layers but could not start the target, so the script\n")
+	fmt.Fprintf(w, "[bento] never ran and exit %d is bento's, not its own. Check that the entrypoint and\n", res.ExitCode)
+	fmt.Fprintln(w, "[bento] interpreter name a program this host can execute (`bento validate` reports both).")
 }
 
 // writeSandboxHomeNote states what HOME is inside the box and what that does to a `~`

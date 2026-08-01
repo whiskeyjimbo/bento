@@ -141,7 +141,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			_ = writeJSON(stdout, refusalJSON{true, refusal.Reason, toReportJSON(refusal.Report)})
 			return &exitError{code: bentoFailed}
 		}
-		return runErr
+		// Rendered here rather than returned to main's generic printer: the shortfall
+		// reasons include the degraded filesystem tier's thousand-character disclosure,
+		// which that printer would put on one unreadable line.
+		writeRefusal(stderr, refusal)
+		return &exitError{code: bentoFailed}
 	case errors.As(runErr, &shortfall):
 		// The target ran, so its output and report are reported exactly as a clean run's
 		// are; only the exit code differs, below.
@@ -204,8 +208,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// death is not a script failure at all, a strict shortfall gets its own line
 		// below, and a guard block is a destination no amount of profiling will widen
 		// the manifest into reaching - pointing at profile in any of those sends the
-		// reader at the wrong problem.
-		if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
+		// reader at the wrong problem. Both hints below explain a failure the TARGET
+		// reported, so a run whose target never started gets its own line instead.
+		if res.Setup == enforce.SetupTargetUnreached {
+			writeTargetUnreached(stderr, res)
+		} else if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
 			shortfall == nil && len(res.GuardBlocked) == 0 {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
