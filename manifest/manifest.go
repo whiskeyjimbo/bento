@@ -58,13 +58,17 @@ type Provenance struct {
 	Approves string `yaml:"approves,omitempty"`
 	// BlockedHosts are the "host:port" destinations the profiling run reached for and
 	// its egress guard refused, because the name resolved into space the sandbox must
-	// not reach. approve names any network rule matching one, so a reader is not asked
+	// not reach. approve names any network rule that reaches one (by policy.Allows, so a
+	// wildcard rule covering the destination is called out too), and a reader is not asked
 	// to approve egress the tool itself refused.
 	//
 	// It describes how the manifest was drafted rather than what it grants, so it stays
 	// out of the approval fingerprint (which covers the policy only) - otherwise a
 	// re-profile that resolved a name differently would report an approved manifest as
-	// stale over a permission that never changed.
+	// stale over a permission that never changed. The cost of staying out is that the
+	// record is advisory and unauthenticated: a manifest arriving from elsewhere can carry
+	// a refusal that never happened, or have had one stripped, without the stamp noticing.
+	// It is a prompt to look, never a permission and never a claim of safety.
 	BlockedHosts []string `yaml:"blocked-hosts,omitempty"`
 }
 

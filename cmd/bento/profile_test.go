@@ -645,9 +645,53 @@ func TestBlockedHostsRecordedOnlyForRulesTheManifestGrants(t *testing.T) {
 			{Host: "metadata.internal", Port: "80"},
 		},
 	}
-	got := blockedRulesIn(p, []string{"metadata.internal:80", "dropped.example:443"})
+	got := blockedHostsGranted(p, []string{"metadata.internal:80", "dropped.example:443"})
 	if !slices.Equal(got, []string{"metadata.internal:80"}) {
-		t.Errorf("blockedRulesIn = %v, want only the refusal the manifest grants", got)
+		t.Errorf("blockedHostsGranted = %v, want only the refusal the manifest grants", got)
+	}
+}
+
+// A rule need not be spelled as the destination it admits. Matching the record against a
+// rule's text lost the callout for the broad rules - a suffix wildcard, a `*` - which are
+// the ones a reader most needs warned about, and then dropped the record entirely at the
+// next re-profile, so the warning never came back. The record keeps the destination the
+// guard refused; the rules are asked whether they reach it.
+func TestBlockedHostsMatchedThroughWildcardAndSpellingRules(t *testing.T) {
+	for name, r := range map[string]policy.NetworkRule{
+		"suffix wildcard":   {Host: ".internal", Port: "80"},
+		"any host":          {Host: "*", Port: "*"},
+		"port range":        {Host: "metadata.internal", Port: "80-90"},
+		"case and root dot": {Host: "Metadata.Internal.", Port: "80"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{r}}
+			blocked := []string{"metadata.internal:80"}
+			if got := blockedHostsGranted(p, blocked); !slices.Equal(got, blocked) {
+				t.Errorf("blockedHostsGranted = %v, want the refusal kept", got)
+			}
+			if !grantsAnyBlockedHost(r, blocked) {
+				t.Error("approve must call this rule out")
+			}
+		})
+	}
+	unrelated := policy.NetworkRule{Host: "example.com", Port: "443"}
+	if grantsAnyBlockedHost(unrelated, []string{"metadata.internal:80"}) {
+		t.Error("a rule that reaches no recorded refusal must not be called out")
+	}
+}
+
+// An IPv6 destination carries colons of its own, so the key the record holds and the
+// split that reads it back have to agree on the separator. net.JoinHostPort brackets it
+// on the way in and net.SplitHostPort unbrackets it on the way out; a bare concatenation
+// would make the key unsplittable and the rule unmatched.
+func TestBlockedHostKeysRoundTripAnIPv6Destination(t *testing.T) {
+	keys := blockedHostKeys([]profile.HostPort{{Host: "2001:db8::1", Port: "443"}})
+	if !slices.Equal(keys, []string{"[2001:db8::1]:443"}) {
+		t.Fatalf("blockedHostKeys = %v, want the bracketed form", keys)
+	}
+	r := policy.NetworkRule{Host: "2001:db8::1", Port: "443"}
+	if !grantsAnyBlockedHost(r, keys) {
+		t.Error("a rule naming the same address must match the recorded key")
 	}
 }
 

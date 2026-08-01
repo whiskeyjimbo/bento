@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -173,7 +174,7 @@ func newProfileCmd() *cobra.Command {
 			doc := manifest.Provenance{
 				GeneratedBy:  "bento profile",
 				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-				BlockedHosts: blockedRulesIn(proposed, union(carried.BlockedHosts, status.blocked)),
+				BlockedHosts: blockedHostsGranted(proposed, union(carried.BlockedHosts, status.blocked)),
 			}
 			data, err := manifest.Marshal(proposed, doc)
 			if err != nil {
@@ -269,6 +270,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	proposed.Env = sortedKeys(cfg.env)
 	printFlooredWrites(obs.Writes)
 	printScratchWrites(obs.Writes)
+	printSocketAccesses(obs)
 	printUnrepresentable(obs)
 	printProposalWarnings(proposed)
 	return proposed, roundStatus{
@@ -278,16 +280,20 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	}, nil
 }
 
-// blockedRulesIn narrows the recorded guard refusals to the ones the written manifest
-// actually grants. The record exists so approve can name a rule the reader is about to
-// stamp; a refusal with no matching rule has nothing to warn about, and keeping it would
-// leave the manifest carrying hostnames the target chose that nothing in the file
-// otherwise mentions.
-func blockedRulesIn(p *policy.Policy, blocked []string) []string {
+// blockedHostsGranted narrows the recorded guard refusals to the ones the written
+// manifest grants egress to. The record exists so approve can name a rule the reader is
+// about to stamp; a refusal no rule reaches has nothing to warn about, and keeping it
+// would leave the manifest carrying destinations the target chose that nothing else in
+// the file mentions.
+//
+// It keeps the DESTINATION the guard refused rather than the rule that covers it. The
+// rule can be a wildcard, and rewriting `metadata.internal:80` to the `.internal:80`
+// that admitted it would throw away the only fact the profiling run established, leaving
+// a record that no longer says which host was refused.
+func blockedHostsGranted(p *policy.Policy, blocked []string) []string {
 	var out []string
-	for _, r := range p.Network {
-		key := r.Host + ":" + r.Port
-		if slices.Contains(blocked, key) {
+	for _, key := range blocked {
+		if grantsBlockedHost(p.Network, key) {
 			out = append(out, key)
 		}
 	}
@@ -295,15 +301,51 @@ func blockedRulesIn(p *policy.Policy, blocked []string) []string {
 	return out
 }
 
+// grantsBlockedHost reports whether any of rules permits egress to a recorded refusal.
+//
+// It asks policy.Allows rather than comparing the key against a rule's own text, because
+// a rule need not be spelled as the destination it admits: `.internal` covers
+// metadata.internal, `*` covers everything, and a host differing only in case or a
+// trailing DNS root label is the same name. Comparing text lost the callout for exactly
+// the rules most worth calling out - the broad ones - and, worse, made the next
+// re-profile drop the record for good.
+//
+// A key that cannot be split is not silently treated as unmatched: it came from
+// net.JoinHostPort over a validated rule, so a failure here means the manifest's record
+// was hand-edited into a shape nothing can judge. It is reported as covered, so the
+// reader is told to look rather than told nothing.
+func grantsBlockedHost(rules []policy.NetworkRule, key string) bool {
+	host, port, err := net.SplitHostPort(key)
+	if err != nil {
+		return true
+	}
+	return policy.Allows(rules, host, port)
+}
+
+// grantsAnyBlockedHost reports whether one rule covers any recorded refusal, which is
+// the question approve asks per rule it is about to stamp.
+func grantsAnyBlockedHost(r policy.NetworkRule, blocked []string) bool {
+	for _, key := range blocked {
+		if grantsBlockedHost([]policy.NetworkRule{r}, key) {
+			return true
+		}
+	}
+	return false
+}
+
 // blockedHostKeys renders the destinations the round's egress guard refused as the
 // "host:port" keys the provenance block carries, dropping any the manifest grammar
 // could not hold - the same screen Synthesize applies to the proposed network rules,
 // so what is recorded here stays a subset of what the manifest can name.
+//
+// net.JoinHostPort, not a bare concatenation: an IPv6 destination is recorded with its
+// own colons in it, and the reader that splits the key back apart to match it against
+// the rules has to find the same separator this wrote.
 func blockedHostKeys(blocked []profile.HostPort) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, h := range blocked {
-		key := h.Host + ":" + h.Port
+		key := net.JoinHostPort(h.Host, h.Port)
 		if seen[key] || (policy.NetworkRule{Host: h.Host, Port: h.Port}).Validate() != nil {
 			continue
 		}
@@ -351,12 +393,18 @@ func printFlooredWrites(writes []string) {
 	}
 }
 
-// printScratchWrites names the observed writes that landed in the sandbox's own private
-// tmpfs. There is nothing to propose - the enforced run mounts the same fresh tmpfs, so
-// the write succeeds there too - but it does not persist to the host, and a script whose
-// real output goes to /tmp finishes with an exit status of 0 and nothing to show for it.
-// That is the one withheld class where the manifest is right and the script is wrong, so
-// it is said out loud rather than left for the user to discover from an empty directory.
+// printScratchWrites names the observed writes to a /tmp path that is not on the host,
+// which Synthesize withholds. There is nothing to grant - inside the box that name is in
+// the private tmpfs every run mounts, so the write succeeds under the manifest as it did
+// here - but it does not reach the host, and a script whose real output goes there
+// finishes with an exit status of 0 and nothing to show for it.
+//
+// The message says the name is absent from the host rather than claiming to know where
+// the write landed. It cannot know: a directory the script itself created and then
+// removed on the way out (the `mktemp -d` plus cleanup trap idiom) was a real host
+// directory during the run and is indistinguishable from tmpfs scratch by the time this
+// runs. Both want the same thing said - there is no host path left to grant - and only
+// one of them wants to hear about the tmpfs.
 func printScratchWrites(writes []string) {
 	seen := map[string]bool{}
 	for _, w := range writes {
@@ -368,7 +416,26 @@ func printScratchWrites(writes []string) {
 			continue
 		}
 		seen[dir] = true
-		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - it lands in the sandbox's private /tmp, which every run gets already. Nothing needs granting, but nothing written there survives the run either; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
+		fmt.Fprintf(os.Stderr, "[bento] not proposing write access to %q - no such directory exists on the host, so inside the box that name is in the private /tmp every run mounts and there is nothing to grant. Nothing written there survives the run; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
+	}
+}
+
+// printSocketAccesses names the observed accesses to a unix socket, which Synthesize
+// withholds whether the target read one or wrote one. Like the floored writes above they
+// are dropped before the proposal the clamps report on, so without this the reviewer has
+// no trace: the script fails at enforce time and there is nothing to read.
+//
+// The observed name is reported rather than the resolved one, because that is the name
+// the reviewer would go looking for. Writes are named at the file, not at the directory
+// they would have collapsed to, since the collapse is what Synthesize declined to do.
+func printSocketAccesses(obs profile.Observation) {
+	seen := map[string]bool{}
+	for _, p := range append(append([]string{}, obs.Reads...), obs.Writes...) {
+		if !filepath.IsAbs(p) || seen[p] || !profile.Socket(p) {
+			continue
+		}
+		seen[p] = true
+		fmt.Fprintf(os.Stderr, "[bento] not proposing access to %q - it is a unix socket, which is a two-way channel to whatever process is listening rather than storage of the script's own, so a grant of it confers whatever that process will do (an X11 socket is control of your session; an ssh-agent socket is use of your keys). The access was recorded; if the script genuinely needs that socket, add the grant by hand.\n", p)
 	}
 }
 

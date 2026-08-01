@@ -158,7 +158,8 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	}
 	skip := func(p string) bool {
 		return p == "" || p == entrypoint || p == obs.Interpreter || p == obs.InterpreterName ||
-			Unrepresentable(p) || isSystemPath(p) || SandboxScratch(p) || resolvesIntoProc(p) || inRuntime(p)
+			Unrepresentable(p) || isSystemPath(p) || SandboxScratch(p) || Socket(p) ||
+			resolvesIntoProc(p) || inRuntime(p)
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
@@ -166,6 +167,13 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	// grant of its directory.
 	writeDir := func(p string) string {
 		if !filepath.IsAbs(p) {
+			return ""
+		}
+		// A socket write is dropped by its observed name too, and for a sharper reason than
+		// the runtime case: the collapse would turn a write to /tmp/.X11-unix/X0 into a
+		// writable grant of the directory holding every display's socket, which no later
+		// filter recognizes as anything but an ordinary directory.
+		if Socket(p) {
 			return ""
 		}
 		// A runtime write is dropped by its observed name, before the collapse. mkdir,
@@ -330,6 +338,29 @@ func Unrepresentable(path string) bool {
 	return bad
 }
 
+// Socket reports whether an observed path is a unix socket on the host.
+//
+// A socket is never a script's own storage: it is a read-write channel to whatever
+// process is listening, and the kernel refuses a write through a read-only bind only for
+// regular files, directories, and symlinks, so a `read:` grant of one confers whatever
+// the peer will do. The session sockets sit in the ordinary places a proposal reaches -
+// /tmp/.X11-unix/X0 is control of the live X session, /tmp/ssh-XXXX/agent.N is use of
+// every forwarded key, and a distribution that parks the database socket under
+// /var/lib/mysql puts one there too. denylist shields the ones under /run and inside a
+// credential store; these are the residual it names as uncovered, and no list of paths
+// can enumerate them, so the profiler judges the file type instead.
+//
+// It follows symlinks, because the grant is bound at the resolved target and it is that
+// target's type which decides what the grant confers.
+//
+// A script that genuinely talks to one is not blocked - the grant is left out of the
+// PROPOSAL, and a reviewer who wants it writes it in by hand, the same deliberate act
+// FlooredWrite requires. Exported so a frontend can say which access was withheld.
+func Socket(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode()&os.ModeSocket != 0
+}
+
 // SandboxScratch reports whether an observed path names the sandbox's own private
 // tmpfs rather than content on the host. Both runs mount a fresh tmpfs at /tmp, so
 // the two cases separate on whether the path exists on the host at all: one that does
@@ -342,8 +373,14 @@ func Unrepresentable(path string) bool {
 // process's temp files.
 //
 // It is exported so a frontend can tell the reviewer that an observed write went to
-// scratch and will not persist. A path outside /tmp is not scratch and is not statted,
-// so the rest of the proposal is decided without touching the filesystem.
+// scratch and will not persist. The stat is the narrow part: a path outside /tmp answers
+// lexically, without asking the filesystem anything.
+//
+// It answers about the host as it stands after the run, which is the only moment it can:
+// a directory the script created and removed on its way out looks exactly like tmpfs
+// scratch here. That answer is still the right one - there is no host path left for a
+// grant to name - but it is why the frontend's message must not claim to know where the
+// write landed.
 func SandboxScratch(p string) bool {
 	if p == sandboxTmp {
 		return true

@@ -2,6 +2,7 @@ package profile
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,27 +42,15 @@ func TestSynthesizeDropsInterpreterTree(t *testing.T) {
 	}
 }
 
-func TestSynthesizeDropsScratchTmpPaths(t *testing.T) {
-	// The sandbox's /tmp is a private tmpfs, so a randomly-named scratch file
-	// there is not a grant a manifest should carry.
-	obs := Observation{
-		Reads:  []string{"/tmp/tmp8f3k/data", "/data/input.txt"},
-		Writes: []string{"/tmp/tmpq1/scratch"},
-	}
-	p := mustSynthesize(t, "/work/run.py", "python3", obs)
-	if !reflect.DeepEqual(p.Read, []string{"/data/input.txt"}) {
-		t.Fatalf("read = %v, want /tmp scratch dropped", p.Read)
-	}
-	if len(p.Write) != 0 {
-		t.Fatalf("write = %v, want /tmp scratch dropped", p.Write)
-	}
-}
-
 // bv2-pdq5: a scratch directory from `mktemp -d`, a CI workspace, an AI agent's working
 // tree - all of them live under /tmp and hold real host files the script cannot see
-// unless the manifest grants them. Only the sandbox's own tmpfs entries (which exist
-// nowhere on the host) are scratch; dropping the rest drafted a manifest whose script
-// died on FileNotFoundError with nothing in the proposal to explain it.
+// unless the manifest grants them. Only the sandbox's own tmpfs entries are scratch;
+// dropping the rest drafted a manifest whose script died on FileNotFoundError with
+// nothing in the proposal to explain it.
+//
+// Both halves are anchored in a directory this test made, so the tmpfs half is a name
+// that provably does not exist on this host rather than one that merely looks unlikely -
+// a stray /tmp/tmp8f3k on the machine would otherwise decide the assertion.
 func TestSynthesizeKeepsHostPathsUnderTmp(t *testing.T) {
 	work, err := os.MkdirTemp("/tmp", "bentoprofile")
 	if err != nil {
@@ -72,9 +61,12 @@ func TestSynthesizeKeepsHostPathsUnderTmp(t *testing.T) {
 	if err := os.WriteFile(input, []byte("data\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Never created: this is what a file the run made inside the sandbox's tmpfs looks
+	// like from the host afterwards.
+	inTmpfs := filepath.Join(work, "tmpfs-only")
 	obs := Observation{
-		Reads:  []string{input, "/tmp/tmp8f3k/data"},
-		Writes: []string{filepath.Join(work, "out.txt"), "/tmp/tmpq1/scratch"},
+		Reads:  []string{input, filepath.Join(inTmpfs, "data")},
+		Writes: []string{filepath.Join(work, "out.txt"), filepath.Join(inTmpfs, "scratch")},
 	}
 	p := mustSynthesize(t, filepath.Join(work, "t.py"), "python3", obs)
 	if !reflect.DeepEqual(p.Read, []string{input}) {
@@ -82,6 +74,38 @@ func TestSynthesizeKeepsHostPathsUnderTmp(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Write, []string{work}) {
 		t.Errorf("write = %v, want the host directory %s (and the tmpfs scratch dropped)", p.Write, work)
+	}
+}
+
+// A unix socket is a channel to whoever is listening, not storage: /tmp/.X11-unix/X0 is
+// control of the live X session and /tmp/ssh-XXXX/agent.N is use of every forwarded key.
+// Opening /tmp to the proposal put both within its reach, and neither the deny-list
+// (which shields /run and the credential stores) nor the enforcer (which refuses only a
+// grant of /tmp whole) keeps them out - so the proposal must not draft one on its own.
+// The write side is judged before the collapse, or the grant would be the directory
+// holding every display's socket.
+func TestSynthesizeDropsUnixSockets(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "bentoprofile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("this host cannot bind a unix socket under /tmp: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{
+		Reads:  []string{sock},
+		Writes: []string{sock},
+	})
+	if len(p.Read) != 0 || len(p.Write) != 0 {
+		t.Fatalf("read = %v, write = %v, want neither (a socket grant confers whatever the peer will do)", p.Read, p.Write)
+	}
+	if !Socket(sock) {
+		t.Error("Socket must report the socket so the frontend can name the withheld access")
 	}
 }
 

@@ -122,12 +122,15 @@ func newApproveCmd() *cobra.Command {
 func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy, blockedHosts []string) {
 	var notes []string
 	for _, r := range p.Network {
-		if !slices.Contains(blockedHosts, r.Host+":"+r.Port) {
+		// Asked of the rule rather than of the recorded destination's text, so a rule that
+		// covers the refusal without being spelled as it - a `.internal` suffix, a `*` - is
+		// called out too. Those are the rules where the warning matters most.
+		if !grantsAnyBlockedHost(r, blockedHosts) {
 			continue
 		}
 		// Quoted for the same reason profile quotes a host it declines to propose: the
 		// name came from the profiled target, and this is a line printed to a terminal.
-		notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached for this host and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
+		notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached a destination this rule covers and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
 	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
