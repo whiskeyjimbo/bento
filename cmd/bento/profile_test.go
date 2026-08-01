@@ -1022,6 +1022,32 @@ func TestMissingGrantedWriteDirs(t *testing.T) {
 	}
 }
 
+// The retry re-runs the target, and the trigger - an unfinished round plus a missing
+// write dir - does not establish that the missing directory is why the round ended. A
+// target that failed for its own reasons gets a second run it did not ask for, and under
+// --allow-network that second run repeats real egress with nothing out here to consent
+// to it. So the dirs are still named (the proposal carries them either way) and the pass
+// is refused.
+func TestRetryWriteDirsStopsAtForwardedEgress(t *testing.T) {
+	tree := t.TempDir()
+	missing := filepath.Join(tree, "out")
+	unfinished := roundStatus{unfinished: true}
+
+	dirs, mayRun := retryWriteDirs(unfinished, false, []string{tree}, []string{missing})
+	if !slices.Equal(dirs, []string{missing}) || !mayRun {
+		t.Errorf("without forwarded egress = (%v, %v), want (%v, true)", dirs, mayRun, []string{missing})
+	}
+
+	dirs, mayRun = retryWriteDirs(unfinished, true, []string{tree}, []string{missing})
+	if !slices.Equal(dirs, []string{missing}) || mayRun {
+		t.Errorf("under --allow-network = (%v, %v), want (%v, false)", dirs, mayRun, []string{missing})
+	}
+
+	if dirs, _ := retryWriteDirs(roundStatus{}, false, []string{tree}, []string{missing}); len(dirs) > 0 {
+		t.Errorf("a finished round has nothing to retry; got %v", dirs)
+	}
+}
+
 // A grant on the whole directory the script runs from is the broadest one profiling
 // still proposes - isBroadDir drops the rest - and the reviewer is told so. A grant on
 // a subdirectory or a sibling is not the working directory and stays quiet.

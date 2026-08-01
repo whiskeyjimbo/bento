@@ -194,29 +194,36 @@ func newProfileCmd() *cobra.Command {
 				// directory. Reporting that pass as unfinished tells a first-time user their
 				// first profile is untrustworthy when it is correct, and the advice - widen
 				// the proposal - names nothing to widen. So do here what the run does and
-				// profile once more. The interactive loop reaches the same place through its
-				// prompts, which is why this is only the single-pass path.
-				if err == nil && status.unfinished {
-					if dirs := missingGrantedWriteDirs(base.Write, proposed.Write); len(dirs) > 0 {
-						fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, so this runs the target a second time with it created.\n", strings.Join(dirs, ", "))
-						retry := *base
-						retry.Write = append(slices.Clone(base.Write), dirs...)
-						first := status
-						second, s, rerr := profileRound(cfg, &retry)
-						if rerr != nil {
-							// The first pass produced a proposal, and the manifest is always
-							// written - so a second pass that could not run costs the session its
-							// retry, not its result. Returning the error here would be the one
-							// path on which profiling writes nothing.
-							fmt.Fprintf(os.Stderr, "[bento] the second pass did not run (%v), so this keeps the first pass's proposal.\n", rerr)
+				// profile once more - except under forwarded egress, see below. The interactive
+				// loop reaches the same place through its prompts, which is why this is only
+				// the single-pass path.
+				if err == nil {
+					if dirs, mayRun := retryWriteDirs(status, allowNetwork, base.Write, proposed.Write); len(dirs) > 0 {
+						if !mayRun {
+							// The first pass already proposes the directory, so the cost of stopping
+							// here is the verdict, not the manifest.
+							fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, but a second pass would repeat the target's egress under --allow-network, so this keeps the first pass's proposal.\n", strings.Join(dirs, ", "))
 						} else {
-							// The retry supersedes the first pass's verdict, but not what it saw:
-							// an access declined in round 1 is declined for good.
-							proposed, status = second, s
-							status.withheld = mergeNotes(first.withheld, status.withheld)
-							status.flagged = mergeNotes(first.flagged, status.flagged)
-							status.dropped = status.dropped || first.dropped
-							status.blocked = union(first.blocked, status.blocked)
+							fmt.Fprintf(os.Stderr, "[bento] the run did not finish and wrote into %s, which does not exist on the host yet - `bento run` creates a granted write directory, so this runs the target a second time with it created.\n", strings.Join(dirs, ", "))
+							retry := *base
+							retry.Write = append(slices.Clone(base.Write), dirs...)
+							first := status
+							second, s, rerr := profileRound(cfg, &retry)
+							if rerr != nil {
+								// The first pass produced a proposal, and the manifest is always
+								// written - so a second pass that could not run costs the session its
+								// retry, not its result. Returning the error here would be the one
+								// path on which profiling writes nothing.
+								fmt.Fprintf(os.Stderr, "[bento] the second pass did not run (%v), so this keeps the first pass's proposal.\n", rerr)
+							} else {
+								// The retry supersedes the first pass's verdict, but not what it saw:
+								// an access declined in round 1 is declined for good.
+								proposed, status = second, s
+								status.withheld = mergeNotes(first.withheld, status.withheld)
+								status.flagged = mergeNotes(first.flagged, status.flagged)
+								status.dropped = status.dropped || first.dropped
+								status.blocked = union(first.blocked, status.blocked)
+							}
 						}
 					}
 				}
@@ -612,6 +619,20 @@ func kinded(kind string, paths []string) []kindedPath {
 // chose, and profiling must not create host directories at an untrusted target's
 // request. Like the mkdir the convergence loop's grants produce, the directory is not
 // removed afterwards - an enforced run of the resulting manifest would create it anyway.
+// retryWriteDirs names the directories a non-interactive second pass would create, and
+// says whether that pass may run. The trigger is a missing write dir plus an unfinished
+// round, which is not evidence that the one caused the other: a target that failed for
+// its own reasons and merely wrote into such a directory along the way qualifies too. So
+// under forwarded egress the second pass is refused, because it would repeat the
+// target's real network effects and the non-interactive path has no prompt to consent to
+// that the way confirmNetworkExfil does.
+func retryWriteDirs(status roundStatus, allowNetwork bool, granted, proposed []string) (dirs []string, mayRun bool) {
+	if !status.unfinished {
+		return nil, false
+	}
+	return missingGrantedWriteDirs(granted, proposed), !allowNetwork
+}
+
 func missingGrantedWriteDirs(granted, proposed []string) []string {
 	var out []string
 	for _, w := range proposed {
