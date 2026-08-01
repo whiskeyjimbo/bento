@@ -178,17 +178,21 @@ func (s SetupState) String() string {
 // the sandbox actually enforced around it.
 type Result struct {
 	ExitCode int
-	// Signaled reports that the sandbox process itself was killed by a signal rather
-	// than exiting, and Signal is that signal number; ExitCode is 128+Signal there, the
-	// code a shell reports. It is NOT a claim about how the target died: bwrap already
-	// translates a signaled target into 128+signal of its own, so an ordinary crash
-	// arrives here as a plain exit code and reads as Signaled false. What reaches this
-	// field is the sandbox being torn down around the target - under declared limits,
-	// the cgroup kill that takes the whole scope down with it.
+	// Signaled reports that the run ended on a signal rather than an exit code, and
+	// Signal is that signal number; ExitCode is 128+Signal there, the code a shell
+	// reports. A frontend needs it because 128+N alone is indistinguishable from a
+	// target that exited 137 on purpose.
 	//
-	// A frontend needs it because 128+N is indistinguishable from a target that exited
-	// 137 on purpose, and the two want opposite advice: one points at the limits, the
-	// other at the script.
+	// It says the run was killed, not who killed it, and the two tiers put different
+	// deaths through it. Behind bwrap or a limits scope the wrapper is what this
+	// observes: it renders a signaled target as 128+signal of its own, so an ordinary
+	// crash arrives as a plain exit code and reads as Signaled false, and what does
+	// reach this field is the sandbox being torn down around the target - the cgroup
+	// kill under declared limits. On the degraded tier with exec blocking there is no
+	// wrapper: the launcher execs into the target, so the target's own crash arrives
+	// here signaled. A frontend that words this as an external kill is wrong on the
+	// second tier, and one that words it as the script's own doing is wrong on the first
+	// - what holds for both is that the run did not choose the code it ended with.
 	Signaled bool
 	Signal   int
 	Report   Report

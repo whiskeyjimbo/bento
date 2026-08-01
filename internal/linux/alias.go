@@ -272,7 +272,7 @@ func reportedAliases(accepted []credentialAlias) []enforce.CredentialAlias {
 // of describing it.
 func aliasRefusal(aliases []credentialAlias, credentials []string) error {
 	var b strings.Builder
-	b.WriteString("linux: a readable path is a second name for a shielded credential, which would read past the shield:")
+	b.WriteString("a readable path is a second name for a shielded credential, which would read past the shield:")
 	for _, a := range aliases {
 		fmt.Fprintf(&b, "\n  %s aliases %s", a.Path, a.Credential)
 	}

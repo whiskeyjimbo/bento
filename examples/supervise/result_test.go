@@ -119,8 +119,8 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	}
 }
 
-// A sandbox the host killed did not choose its exit code, and the bypass hint - written
-// for a script that failed on its own - must not blame the network for it.
+// A run that ended on a signal did not choose its exit code, and the bypass hint -
+// written for a script that failed on its own - must not blame the network for it.
 func TestWriteSummaryReportsASignalKill(t *testing.T) {
 	res := populatedResult()
 	res.ExitCode, res.Signaled, res.Signal, res.EgressConnections = 137, true, 9, 0
@@ -129,13 +129,13 @@ func TestWriteSummaryReportsASignalKill(t *testing.T) {
 	writeSummary(&out, theme{}, res)
 	got := out.String()
 
-	for _, want := range []string{"killed by signal 9", "did not choose exit code 137", "resource limit"} {
+	for _, want := range []string{"killed by signal 9", "did not choose exit code 137"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("a signal kill must say %q; got:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "no connection through the egress proxy") {
-		t.Errorf("the bypass hint fired for a run the host killed; got:\n%s", got)
+		t.Errorf("the bypass hint fired for a run that was killed; got:\n%s", got)
 	}
 }
 

@@ -306,13 +306,14 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 		fmt.Fprintf(w, "embed: the sandbox did not reach the target (%s); exit code %d is bento's, not the target's\n",
 			res.Setup, res.ExitCode)
 	}
-	// Signaled: the sandbox was killed rather than exiting, so the exit code below is
-	// 128+signal and not an answer the target chose. An embedder that reported the code
-	// alone would present a limits kill as a target that failed, and every hint after
-	// this one is written for a target that ran to its own conclusion - which is why it
-	// returns here rather than adding a line.
+	// Signaled: the run ended on a signal, so the exit code below is 128+signal and not
+	// an answer the target chose. An embedder that reported the code alone would present
+	// a limits kill as a target that failed, and every hint after this one is written for
+	// a target that ran to its own conclusion - which is why it returns here rather than
+	// adding a line. It does not say what did the killing: on the degraded tier the
+	// launcher execs into the target, so this is also how the target's own crash arrives.
 	if res.Signaled {
-		fmt.Fprintf(w, "embed: the target did not exit: the sandbox was killed by signal %d (exit %d)", res.Signal, res.ExitCode)
+		fmt.Fprintf(w, "embed: the target did not exit: the run was killed by signal %d (exit %d)", res.Signal, res.ExitCode)
 		if !p.Limits.IsZero() {
 			fmt.Fprint(w, "; the policy declares resource limits, and exceeding one ends a run this way")
 		}

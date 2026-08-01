@@ -113,7 +113,9 @@ func main() {
 			MaxFileSize:   maxFileSize,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "credhunt: walking %s: %v\n", h, err)
+			// Quoted for the reason the leads below are: a walk error is an fs.PathError
+			// carrying the name that failed, which is a name off the tree being scanned.
+			fmt.Fprintf(os.Stderr, "credhunt: walking %s: %q\n", h, err)
 			os.Exit(1)
 		}
 		// Every path below is a name off the walked tree, quoted for the reason bento's
