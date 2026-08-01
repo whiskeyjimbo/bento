@@ -110,12 +110,32 @@ var cpuPercentRe = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$`)
 // Validate reports whether the policy is well-formed. It is the one gate every
 // construction path passes through, so a Go embedder building a Policy directly
 // gets the same guarantees as a manifest parsed from YAML.
+//
+// It reports the first problem only. A frontend rendering the whole list to someone
+// editing the policy - which is what a manifest is - calls Problems instead.
 func (p *Policy) Validate() error {
-	if p == nil {
-		return fmt.Errorf("policy: nil policy")
+	if probs := p.Problems(); len(probs) > 0 {
+		return probs[0]
 	}
+	return nil
+}
+
+// Problems returns every malformed field, in the order the fields are declared, so a
+// manifest with several mistakes can be fixed in one pass rather than one run per
+// mistake. Empty means the policy is well-formed.
+//
+// Two screens still stop the walk where continuing would be worse than terse: a nil
+// policy has no fields to examine, and a value carrying a deceiving character is echoed
+// back in its own refusal - listing it beside unrelated problems buries the one line the
+// reader has to look at closely. Exec and Limits report their own first problem each,
+// which is where the list stops being exhaustive.
+func (p *Policy) Problems() []error {
+	if p == nil {
+		return []error{fmt.Errorf("policy: nil policy")}
+	}
+	var probs []error
 	if p.Entrypoint == "" {
-		return fmt.Errorf("policy: entrypoint is required")
+		probs = append(probs, fmt.Errorf("policy: entrypoint is required"))
 	}
 	// The path and argument fields are echoed verbatim by the frontends - the
 	// validate summary, error messages naming a bad path - so a deceiving character in
@@ -132,7 +152,7 @@ func (p *Policy) Validate() error {
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
 		if r, ok := FirstUnsafeRune(f); ok {
-			return fmt.Errorf("policy: value %q contains %s, which is not allowed in a path or argument", f, DescribeUnsafeRune(r))
+			return []error{fmt.Errorf("policy: value %q contains %s, which is not allowed in a path or argument", f, DescribeUnsafeRune(r))}
 		}
 	}
 	// An empty path grant is not a grant of nothing. It survives the manifest-dir
@@ -151,7 +171,7 @@ func (p *Policy) Validate() error {
 			if path == "" {
 				// The YAML hint earns its place: an unquoted `- ~` is the null tag, so the
 				// manifest most likely to land here reads as a home grant and decodes to nothing.
-				return fmt.Errorf("policy: %s[%d] is empty; a grant must name a path (an empty value reads as no grant but resolves to the working directory; in YAML, quote a bare tilde as \"~\" - unquoted it is null)", l.name, i)
+				probs = append(probs, fmt.Errorf("policy: %s[%d] is empty; a grant must name a path (an empty value reads as no grant but resolves to the working directory; in YAML, quote a bare tilde as \"~\" - unquoted it is null)", l.name, i))
 			}
 		}
 	}
@@ -168,7 +188,7 @@ func (p *Policy) Validate() error {
 		path string
 	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}} {
 		if err := screenTilde(f.name, f.path); err != nil {
-			return err
+			probs = append(probs, err)
 		}
 	}
 	for _, l := range []struct {
@@ -177,7 +197,7 @@ func (p *Policy) Validate() error {
 	}{{"read", p.Read}, {"write", p.Write}} {
 		for i, path := range l.paths {
 			if err := screenTilde(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
-				return err
+				probs = append(probs, err)
 			}
 		}
 	}
@@ -193,23 +213,26 @@ func (p *Policy) Validate() error {
 	// shields stay engaged inside it. Only write would put the shields' parent in reach.
 	for i, w := range p.Write {
 		if rest, ok := strings.CutPrefix(w, "~"); ok && filepath.Clean("/"+rest) == "/" {
-			return fmt.Errorf("policy: write[%d] %q grants your home directory or a parent of it, which would make the credential stores bento shields inside it (~/.ssh, ~/.aws, ...) writable through their parent; grant the specific directory the program writes to", i, w)
+			probs = append(probs, fmt.Errorf("policy: write[%d] %q grants your home directory or a parent of it, which would make the credential stores bento shields inside it (~/.ssh, ~/.aws, ...) writable through their parent; grant the specific directory the program writes to", i, w))
 		}
 	}
 	for _, name := range p.Env {
 		if !envNameRe.MatchString(name) {
-			return fmt.Errorf("policy: invalid env name %q: must match [A-Za-z_][A-Za-z0-9_]* (env is an allowlist of variable names, not values)", name)
+			probs = append(probs, fmt.Errorf("policy: invalid env name %q: must match [A-Za-z_][A-Za-z0-9_]* (env is an allowlist of variable names, not values)", name))
 		}
 	}
 	if err := p.Exec.validate(); err != nil {
-		return err
+		probs = append(probs, err)
 	}
 	for i, r := range p.Network {
 		if err := r.Validate(); err != nil {
-			return fmt.Errorf("policy: network rule %d: %w", i, err)
+			probs = append(probs, fmt.Errorf("policy: network rule %d: %w", i, err))
 		}
 	}
-	return p.Limits.validate()
+	if err := p.Limits.validate(); err != nil {
+		probs = append(probs, err)
+	}
+	return probs
 }
 
 // NamesOtherUserHome reports whether path uses the "~operator/keys" spelling. Only a

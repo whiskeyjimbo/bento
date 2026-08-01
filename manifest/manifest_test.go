@@ -107,6 +107,34 @@ func TestLoadRejects(t *testing.T) {
 	}
 }
 
+// A manifest with several malformed fields must name all of them, so the author fixes
+// them in one pass instead of one per run.
+func TestLoadReportsEveryProblem(t *testing.T) {
+	src := "entrypoint: ./x\nenv: [\"OUT ← note\"]\nread: [\"\"]\nlimits: {pids: -1}\n"
+	_, err := Load(strings.NewReader(src))
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	for _, want := range []string{"3 problems", "read[0] is empty", "invalid env name", "pids must not be negative"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+// A value carrying a deceiving character is echoed back in its own refusal, so it stays
+// alone rather than being buried in a list of unrelated problems.
+func TestLoadReportsAnUnsafeValueAlone(t *testing.T) {
+	src := "entrypoint: \"./x\\u202Ey\"\nlimits: {pids: -1}\n"
+	_, err := Load(strings.NewReader(src))
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bidirectional") || strings.Contains(err.Error(), "problems") {
+		t.Errorf("error = %q, want the unsafe-value refusal on its own", err)
+	}
+}
+
 func TestMarshalRoundTrip(t *testing.T) {
 	src := "entrypoint: ./fetch.py\ninterpreter: python3\nread: [.]\nnetwork:\n  - {host: api.github.com, port: \"443\"}\nexec: none\nprovenance:\n  generated-by: bento-test\n  approves: abc123\n"
 	doc, err := Parse(strings.NewReader(src))

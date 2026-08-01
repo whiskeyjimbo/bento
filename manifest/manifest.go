@@ -163,7 +163,7 @@ func Parse(r io.Reader) (*Document, error) {
 		return nil, fmt.Errorf("manifest: contains more than one YAML document; a manifest must be a single policy")
 	}
 	p := m.toPolicy()
-	if err := p.Validate(); err != nil {
+	if err := joinProblems(p.Problems()); err != nil {
 		return nil, err
 	}
 	var prov Provenance
@@ -174,6 +174,24 @@ func Parse(r io.Reader) (*Document, error) {
 		return nil, err
 	}
 	return &Document{Policy: p, Provenance: prov}, nil
+}
+
+// joinProblems renders everything wrong with a parsed policy as one error, so an author
+// fixing a manifest sees the whole list instead of one field per run. A single problem
+// is returned untouched: the header would be noise around the one line that matters.
+func joinProblems(probs []error) error {
+	switch len(probs) {
+	case 0:
+		return nil
+	case 1:
+		return probs[0]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "the manifest has %d problems:", len(probs))
+	for _, p := range probs {
+		fmt.Fprintf(&b, "\n  %s", p)
+	}
+	return errors.New(b.String())
 }
 
 // screenSource rejects the YAML constructs that let a manifest's decoded meaning differ
