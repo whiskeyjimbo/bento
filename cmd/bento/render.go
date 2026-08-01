@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -190,6 +191,46 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 			out = append(out, grantTargetJSON{Path: lit, OnHost: lands})
 		}
 	}
+	return out
+}
+
+// explicitShieldGrants reports the read grants that name a mandatory credential shield
+// (~/.ssh, ~/.gnupg, the runtime dir's agent sockets) exactly, which the backend honors
+// as a deliberate, read-only exception rather than refusing. It is the pre-run answer to
+// what writeShieldedGrantWarning reports after the fact, so validate and approve can
+// raise the exposure while the reviewer is still deciding.
+//
+// It mirrors the backend's own opt-in test (explicitShieldOptIns) rather than
+// approximating it: DenyAll rules only, from the built-in home and runtime lists only,
+// matched by exact string equality against the anchors denylist.HomeAnchors reports. A
+// grant strictly INSIDE a shield is refused at run time, not opted into, so widening
+// this to containment would name it as an exposure the run will never permit. The
+// anchors are taken raw, without the symlink-resolved siblings clampShieldedGrants adds:
+// that widening is a proposal-quality filter, and adding it here would warn about a
+// grant the run does not treat as an opt-in.
+//
+// reads are the policy's resolved grants (absolute, ~ expanded, symlinks NOT followed),
+// which is the same spelling the backend compares. A host with no anchor at all yields
+// nothing: there are no shields to opt into, and such a host refuses the run anyway.
+func explicitShieldGrants(reads []string) []string {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		return nil
+	}
+	var rules []denylist.Rule
+	for _, h := range anchors {
+		// Every anchor is passed to every call, matching homeShields: a relocation env
+		// var pointing at one home must not produce a rule that swallows another.
+		rules = append(rules, denylist.Home(h, anchors...)...)
+	}
+	rules = append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...)
+	var out []string
+	for _, r := range rules {
+		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !slices.Contains(out, r.Path) {
+			out = append(out, r.Path)
+		}
+	}
+	slices.Sort(out)
 	return out
 }
 

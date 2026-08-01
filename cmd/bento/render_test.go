@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -401,5 +403,30 @@ func TestWriteBlockedHostNotes(t *testing.T) {
 	writeBlockedHostNotes(&quiet, p, nil)
 	if quiet.Len() != 0 {
 		t.Errorf("with no record the note must stay silent; got %q", quiet.String())
+	}
+}
+
+// A read grant naming a credential shield exactly is the one grant that lifts a shield
+// bento otherwise applies unconditionally, and the run-time warning for it only lands
+// after the target has printed whatever it read. validate and approve raise it from
+// this, so it has to match the backend's own opt-in test: the shield exactly, never a
+// path inside one (which the run refuses outright) and never one containing one (which
+// is an ordinary broad grant).
+func TestExplicitShieldGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+
+	got := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
+	if !slices.Contains(got, sshDir) {
+		t.Errorf("a grant naming the shield exactly must be reported; got %v", got)
+	}
+	for _, unwanted := range []string{filepath.Join(sshDir, "id_rsa"), home, "/srv/app"} {
+		if slices.Contains(got, unwanted) {
+			t.Errorf("%q is not an opt-in the run honors and must not be reported; got %v", unwanted, got)
+		}
+	}
+	if len(explicitShieldGrants([]string{home, "/srv/app"})) != 0 {
+		t.Error("a policy touching no shield must report nothing")
 	}
 }

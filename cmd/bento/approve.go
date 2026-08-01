@@ -188,6 +188,13 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 				notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
 			}
 		}
+		// The one callout here that is not merely broad: bento shields these on every
+		// run, and a grant naming one exactly is the only way to lift that shield. The
+		// run-time warning comes after the target has already printed whatever it read,
+		// so this prompt is where the exposure can still be declined.
+		for _, g := range explicitShieldGrants(resolved.Read) {
+			notes = append(notes, fmt.Sprintf("read: %q is a credential store bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script read the credentials in it.", g))
+		}
 		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
 			for _, g := range grants {
 				if isBroadDir(g) {

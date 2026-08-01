@@ -465,3 +465,31 @@ func TestApproveCallsOutAHostTheProfilingRunWasRefused(t *testing.T) {
 		t.Error("the record is provenance, not permission: it must not shift the approval fingerprint")
 	}
 }
+
+// The prompt is the last point at which lifting a credential shield can still be
+// declined: the run-time warning for it prints after the target has already put whatever
+// it read on stdout. It must fire on every path to the stamp, so it lives in the callouts
+// rather than behind the TTY branch --yes and a piped stdin both skip.
+func TestApprovalCalloutsNameAnExplicitShieldGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	manifestPath := filepath.Join(t.TempDir(), "tool.py.manifest.yaml")
+
+	p := &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~/.ssh"}}
+	var buf strings.Builder
+	writeApprovalCallouts(&buf, manifestPath, p, resolvedGrants(p, manifestPath), nil)
+	got := buf.String()
+	for _, want := range []string{filepath.Join(home, ".ssh"), "lifts the shield"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("callouts missing %q; got:\n%s", want, got)
+		}
+	}
+
+	// A grant that merely contains shields is an ordinary broad read, called out as one.
+	var broad strings.Builder
+	q := &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}
+	writeApprovalCallouts(&broad, manifestPath, q, resolvedGrants(q, manifestPath), nil)
+	if strings.Contains(broad.String(), "lifts the shield") {
+		t.Errorf("a grant containing shields does not lift one; got:\n%s", broad.String())
+	}
+}

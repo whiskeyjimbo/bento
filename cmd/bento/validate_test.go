@@ -32,13 +32,13 @@ func TestValidateShowsLimits(t *testing.T) {
 		}
 	}
 
-	j := toPolicyJSON(p, nil)
+	j := toPolicyJSON(p, nil, nil)
 	if j.Limits == nil || j.Limits.Memory != "128M" || j.Limits.CPU != "50%" || j.Limits.PIDs != 64 {
 		t.Errorf("JSON limits = %+v, want memory/cpu/pids populated", j.Limits)
 	}
 
 	// A no-limits policy must omit the limits entirely (no empty struct in JSON).
-	if toPolicyJSON(&policy.Policy{Entrypoint: "./x"}, nil).Limits != nil {
+	if toPolicyJSON(&policy.Policy{Entrypoint: "./x"}, nil, nil).Limits != nil {
 		t.Error("a no-limits policy must not emit a limits object in JSON")
 	}
 }
@@ -342,5 +342,71 @@ func TestValidateNotesRulesCoveringABlockedHost(t *testing.T) {
 	writePolicySummary(&quiet, "m.yaml", p, nil, nil)
 	if strings.Contains(quiet.String(), "egress guard refused") {
 		t.Errorf("with no blocked hosts recorded the summary must stay silent; got:\n%s", quiet.String())
+	}
+}
+
+// The summary's closing sentence asserts the credential shields hold over everything
+// above it, and it is the last line the approve prompt prints before asking. A grant
+// that lifts one has to be named beside the grant AND the footer qualified, or the
+// review gate states the opposite of what it is about to stamp.
+func TestValidateNamesAnExplicitShieldGrant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"~/.ssh"}}
+	out, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, p, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, out)
+	}
+	for _, want := range []string{"credential store bento shields on every run", "read-only exception", "EXCEPT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "shielded even if a path above would otherwise expose them") {
+		t.Errorf("the unqualified footer contradicts the grant above it; got:\n%s", out)
+	}
+
+	// A policy that lifts no shield keeps the plain footer and says nothing extra.
+	plain, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, &policy.Policy{Entrypoint: "./x", Read: []string{"~"}}, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, plain)
+	}
+	if !strings.Contains(plain, "shielded even if a path above would otherwise expose them") {
+		t.Errorf("a policy lifting no shield must keep the plain footer; got:\n%s", plain)
+	}
+	if strings.Contains(plain, "credential store bento shields on every run") {
+		t.Errorf("a grant that merely contains shields is not an opt-in; got:\n%s", plain)
+	}
+}
+
+// --json --strict is the CI shape, and it was the one reader that saw neither the
+// blocked-destination note nor the shield opt-in the human summary prints.
+func TestValidateJSONCarriesBlockedHostsAndShieldGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{
+		Entrypoint: "./x",
+		Read:       []string{"~/.ssh"},
+		Network:    []policy.NetworkRule{{Host: ".internal", Port: "80"}, {Host: "example.com", Port: "443"}},
+	}
+	prov := manifest.Provenance{BlockedHosts: []string{"metadata.internal:80", "not-a-host-port"}}
+	out, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, p, prov), "--json")
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, out)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if !slices.Equal(got.NetworkBlocked, []string{".internal:80"}) {
+		t.Errorf("network_blocked = %v, want only the rule covering the refusal", got.NetworkBlocked)
+	}
+	if !slices.Equal(got.NetworkBlockedUnreadable, []string{"not-a-host-port"}) {
+		t.Errorf("network_blocked_unreadable = %v, want the key nothing can be asked about", got.NetworkBlockedUnreadable)
+	}
+	if !slices.Equal(got.ShieldedGrants, []string{filepath.Join(home, ".ssh")}) {
+		t.Errorf("shielded_grants = %v, want the granted shield", got.ShieldedGrants)
 	}
 }

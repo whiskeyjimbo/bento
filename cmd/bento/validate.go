@@ -38,7 +38,7 @@ func newValidateCmd() *cobra.Command {
 			}
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
 			if asJSON {
-				out := toPolicyJSON(doc.Policy, resolvedGrants(doc.Policy, args[0]))
+				out := toPolicyJSON(doc.Policy, resolvedGrants(doc.Policy, args[0]), doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(checkApproval(doc))
 				if err := writeJSON(os.Stdout, out); err != nil {
 					return err
@@ -211,8 +211,21 @@ type policyJSON struct {
 	ResolvedRead  []grantTargetJSON `json:"resolved_read,omitempty"`
 	ResolvedWrite []grantTargetJSON `json:"resolved_write,omitempty"`
 	Network       []string          `json:"network"`
-	Exec          string            `json:"exec"`
-	Limits        *limitsJSON       `json:"limits,omitempty"`
+	// NetworkBlocked lists the network rules that cover a destination the profiling
+	// run's egress guard refused, and NetworkBlockedUnreadable the recorded keys that
+	// are not a host:port anything can match against a rule (a hand-edited provenance
+	// block). Both are notes rather than gates - an enforced run refuses the
+	// destination the same way whatever is approved - but --json --strict is the CI
+	// shape, and a rule naming a destination bento will not reach is least likely to be
+	// caught by hand there.
+	NetworkBlocked           []string `json:"network_blocked,omitempty"`
+	NetworkBlockedUnreadable []string `json:"network_blocked_unreadable,omitempty"`
+	// ShieldedGrants are the read grants that name a mandatory credential shield
+	// exactly, which lifts it for the run. The same exposure the human summary and
+	// approve's callouts raise; a CI gate reads it here.
+	ShieldedGrants []string    `json:"shielded_grants,omitempty"`
+	Exec           string      `json:"exec"`
+	Limits         *limitsJSON `json:"limits,omitempty"`
 	// Approval is "current", "stale", or "unapproved" - the same verdict the human
 	// summary prints, so a machine gate can read the outcome as a field rather than
 	// inferring it from the exit code.
@@ -225,7 +238,9 @@ type limitsJSON struct {
 	PIDs   int    `json:"pids,omitempty"`
 }
 
-func toPolicyJSON(p, resolved *policy.Policy) policyJSON {
+// blockedHosts is the manifest's record of the destinations the profiling run's egress
+// guard refused, the same provenance the human summary marks its network rules with.
+func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON {
 	out := policyJSON{
 		Entrypoint:  p.Entrypoint,
 		Interpreter: p.Interpreter,
@@ -239,6 +254,13 @@ func toPolicyJSON(p, resolved *policy.Policy) policyJSON {
 	for _, r := range p.Network {
 		out.Network = append(out.Network, r.Host+":"+r.Port)
 	}
+	// Rendered in the same host:port spelling as the network field above, so a consumer
+	// can match an entry back to the rule it marks without re-deriving the join.
+	covering, unreadable := rulesCoveringBlockedHost(p, blockedHosts)
+	for _, r := range covering {
+		out.NetworkBlocked = append(out.NetworkBlocked, r.Host+":"+r.Port)
+	}
+	out.NetworkBlockedUnreadable = unreadable
 	if !p.Limits.IsZero() {
 		out.Limits = &limitsJSON{Memory: p.Limits.Memory, CPU: p.Limits.CPU, PIDs: p.Limits.PIDs}
 	}
@@ -248,6 +270,7 @@ func toPolicyJSON(p, resolved *policy.Policy) policyJSON {
 	if resolved != nil {
 		out.ResolvedRead = toGrantTargetsJSON(p.Read, resolved.Read)
 		out.ResolvedWrite = toGrantTargetsJSON(p.Write, resolved.Write)
+		out.ShieldedGrants = explicitShieldGrants(resolved.Read)
 	}
 	return out
 }
@@ -293,6 +316,13 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	writeResolvedGrants(w, p.Read, resolvedRead)
+	shieldGrants := explicitShieldGrants(resolvedRead)
+	for _, g := range shieldGrants {
+		fmt.Fprintf(w, "  note: this grant names a credential store bento shields on every run, exactly\n")
+		fmt.Fprintf(w, "        and not merely under it: %q. bento honors that as a\n", g)
+		fmt.Fprintf(w, "        deliberate read-only exception rather than refusing, so the script can\n")
+		fmt.Fprintf(w, "        read the credentials in it. Remove the grant unless it needs them.\n")
+	}
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
@@ -347,6 +377,16 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "limits:       %s\n", describeLimits(p.Limits))
 	}
 
+	// The footer asserts the shields hold over everything above it, so a grant that
+	// lifts one has to be named here too: the unqualified sentence is the last thing the
+	// approve prompt prints before asking, and it says the opposite of what is about to
+	// be stamped.
+	if len(shieldGrants) > 0 {
+		fmt.Fprintf(w, "\nEverything not listed above is denied, and credentials, SSH keys, and shell\n")
+		fmt.Fprintf(w, "profiles are shielded - EXCEPT the %d credential store(s) noted above, which\n", len(shieldGrants))
+		fmt.Fprintf(w, "a read grant names exactly and so opts back in.\n")
+		return
+	}
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
 }
