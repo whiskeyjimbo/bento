@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/backend"
@@ -190,6 +191,44 @@ func TestProfileRetriesMissingWriteDirUnlessEgressForwarded(t *testing.T) {
 			// finished; the directory on the host can, since only the retry creates it.
 			if _, err := os.Lstat(missing); os.IsNotExist(err) == tc.wantComplete {
 				t.Errorf("Lstat(%q) = %v, want the directory to exist only when the retry ran", missing, err)
+			}
+		})
+	}
+}
+
+// `bento profile ./s.sh > out.txt` has to capture what `bento run` would, so the
+// target's stdout goes to this command's stdout - except under --json, where stdout
+// carries the envelope alone and merging the target's output into it would corrupt the
+// machine contract.
+func TestProfilePassesTheTargetsStdoutThroughUnlessJSON(t *testing.T) {
+	requireSandbox(t)
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantOut bool
+	}{
+		{"default", nil, true},
+		{"json", []string{"--json"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := filepath.Join(dir, "hello.sh")
+			if err := os.WriteFile(script, []byte("echo THIS_IS_STDOUT\necho THIS_IS_STDERR >&2\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			args := append(append([]string{}, tc.args...), "--out", filepath.Join(dir, "m.yaml"), script)
+			out, err := runProfileNonInteractively(t, args...)
+			if err != nil {
+				t.Fatalf("profile: %v\n%s", err, out)
+			}
+			if got := strings.Contains(out, "THIS_IS_STDOUT"); got != tc.wantOut {
+				t.Errorf("target stdout on this command's stdout = %v, want %v\n%s", got, tc.wantOut, out)
+			}
+			// The target's stderr stays on stderr in both modes; finding it here would mean
+			// the routing merged the streams rather than separating them.
+			if strings.Contains(out, "THIS_IS_STDERR") {
+				t.Errorf("the target's stderr must not reach stdout\n%s", out)
 			}
 		})
 	}
