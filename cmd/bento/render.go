@@ -473,6 +473,17 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
+// shieldsReadOnly reports whether any shield was bound read-only rather than hidden,
+// which is the only shield kind that can answer EROFS from inside a write grant.
+func shieldsReadOnly(res enforce.Result) bool {
+	for _, s := range res.Shields {
+		if s.Kind == "read-only" {
+			return true
+		}
+	}
+	return false
+}
+
 // writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
 // target prints itself and bento never sees.
 //
@@ -483,11 +494,17 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 // it is the one that reads as success.
 //
 // The read line states an ambiguity rather than a cause, and has to keep doing so. An
-// ungranted path, a shielded credential and a file that genuinely is not there are one
-// error inside the box - all three are ENOENT, because a deny-by-default root reaches
-// them by not mounting them rather than by refusing. Reading that as "your read: grants
-// are wrong" would blame the manifest for every missing file a script legitimately
-// handles, which is worse than the silence this exists to fix.
+// ungranted path, the contents of a shielded directory and a file that genuinely is not
+// there all arrive as ENOENT, because a deny-by-default root reaches them by not mounting
+// them rather than by refusing. Reading that as "your read: grants are wrong" would blame
+// the manifest for every missing file a script legitimately handles, which is worse than
+// the silence this exists to fix.
+//
+// The mapping runs errno to cause, not the reverse, which is what keeps the line true
+// where the shields do not all behave alike: a file shield binds an empty file rather
+// than hiding it, so reading one succeeds and yields nothing instead of answering ENOENT.
+// It is therefore not among the causes a reader should consider for this errno, and
+// nothing here should be reworded into claiming every shield produces it.
 //
 // Deliberately naming no paths. Spelling the grants back would need the manifest's own
 // wording rather than the resolved absolutes this side holds, and the reader has the
@@ -522,11 +539,20 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 	// this, and the exit code will not reflect it either.
 	fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
 	if mountNSConfines {
-		if len(p.Write) == 0 {
+		switch {
+		case len(p.Write) == 0:
 			// Naming a field the manifest does not carry sends the reader grepping for a
 			// line that is not there, the same trap writeExecHint's "runs under" avoids.
+			// No write grant also means no read-only shield engaged: with the whole tree
+			// bound read-only there is nothing for one to carve out of.
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
-		} else {
+		case shieldsReadOnly(res):
+			// A shield inside a write grant answers EROFS from a path the grant plainly
+			// covers, so naming only the grants would send a reader to check a manifest
+			// line that is correct and conclude the sandbox is broken. This one bento does
+			// observe, unlike the read case below, so it is named rather than guessed at.
+			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - outside the manifest's write: grants, or a shielded path inside one")
+		default:
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
 		}
 		fmt.Fprintln(w, "[bento]   \"No such file or directory\" - ungranted or shielded, and identical to truly absent")

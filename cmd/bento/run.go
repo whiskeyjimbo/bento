@@ -434,9 +434,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			writeProfileHint(stderr, p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that
-		// reported none, and answers for itself that the exit was clean - so none of
-		// those hints can have fired and there is nothing to stack onto. A target that
-		// never started denied nothing, whatever code the refusal carried.
+		// reported none, and answers for itself that the exit was clean, so no hint
+		// keyed on a failure can have fired. The warnings above it are not all keyed
+		// that way - a refused destination and a guard block are reported on their own
+		// count and do reach a clean run - so this sits under them rather than instead
+		// of them. A target that never started denied nothing, whatever code the
+		// refusal carried.
 		if res.Setup != enforce.SetupTargetUnreached {
 			writeDenialLegend(stderr, p, res)
 		}

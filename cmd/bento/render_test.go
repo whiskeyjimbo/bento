@@ -242,6 +242,36 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	}
 }
 
+// A shield binds a read-only path inside a write grant, so EROFS arrives from a path the
+// grant plainly covers. Naming only the grants there sends the reader to a manifest line
+// that is correct, which is the misattribution the legend exists to avoid - and bento
+// does observe this one, so it does not have to be guessed at.
+func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}
+
+	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, readOnly)
+	if !strings.Contains(b.String(), "shielded path inside one") {
+		t.Errorf("a read-only shield engaged, so the write line must admit it: %q", b.String())
+	}
+
+	// A hidden shield is unmounted, not read-only, so it cannot answer EROFS - widening
+	// the line for it would hedge a cause that did not apply.
+	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
+	b.Reset()
+	writeDenialLegend(&b, p, hidden)
+	if strings.Contains(b.String(), "shielded path inside one") {
+		t.Errorf("no read-only shield engaged, so the grants stand alone: %q", b.String())
+	}
+	if !strings.Contains(b.String(), "Read-only file system") {
+		t.Errorf("the write line must still appear: %q", b.String())
+	}
+}
+
 // A cgroup kill is not a script failure, and the two shapes it arrives in - the
 // wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
 // one. The relayed shape is the common one, and is hedged because a script can exit
