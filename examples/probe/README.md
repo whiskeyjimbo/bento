@@ -82,6 +82,8 @@ refused at the CONNECT with a 403; `direct-socket` and `dns` fail because they
 bypass the proxy. Then `strict` shows `exec.fork` DENIED (that is `none-strict`
 doing what plain `none` did not) and the pid and memory caps biting - the memory
 probe ends the process partway, so that run has no `PROBE-COMPLETE` by design.
+Bento closes that run by naming the signal and the caps the manifest declared,
+rather than reporting it as a script failure.
 
 Run `bento doctor` first if step 4 looks too permissive; the hardening tier
 needs host support that a container or an old kernel may not have.

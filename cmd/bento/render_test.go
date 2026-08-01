@@ -83,6 +83,64 @@ func TestEgressHintFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// A cgroup kill is not a script failure, and the two shapes it arrives in - the
+// wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
+// one. The relayed shape is the common one, and is hedged because a script can exit
+// 137 itself; an ordinary failure must not be claimed as a signal at all.
+func TestSignalNoticeNamesTheKill(t *testing.T) {
+	limited := &policy.Policy{Limits: policy.Limits{Memory: "128M", PIDs: 32}}
+	plain := &policy.Policy{}
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want []string
+		skip bool
+	}{
+		{
+			name: "the scope came down on the wrapper",
+			p:    limited,
+			res:  enforce.Result{ExitCode: 143, Signaled: true, Signal: 15},
+			want: []string{"did not exit", "signal 15 (terminated)", "exit 143", "memory 128M, pids 32"},
+		},
+		{
+			name: "the kill was relayed as an exit code",
+			p:    limited,
+			res:  enforce.Result{ExitCode: 137},
+			want: []string{"exit 137", "signal 9 (killed)", "can also exit that code on its own", "memory 128M, pids 32"},
+		},
+		{
+			name: "no limits declared: the signal is named, no cap is blamed",
+			p:    plain,
+			res:  enforce.Result{ExitCode: 139},
+			want: []string{"signal 11 (segmentation fault)"},
+		},
+		{name: "an ordinary failure", p: plain, res: enforce.Result{ExitCode: 1}, skip: true},
+		{name: "a clean run", p: limited, res: enforce.Result{ExitCode: 0}, skip: true},
+		{name: "bento's own could-not-run code", p: limited, res: enforce.Result{ExitCode: bentoFailed}, skip: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			if got := writeSignalNotice(&b, tc.p, tc.res); got == tc.skip {
+				t.Fatalf("notice emitted = %v, want %v (output: %q)", got, !tc.skip, b.String())
+			}
+			if tc.skip && b.Len() != 0 {
+				t.Fatalf("a run that did not die on a signal must print nothing; got %q", b.String())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(b.String(), want) {
+					t.Errorf("the notice must say %q; got:\n%s", want, b.String())
+				}
+			}
+			if !tc.skip && !strings.Contains(b.String(), "limits") && !tc.p.Limits.IsZero() {
+				t.Errorf("a limited run must name its caps; got:\n%s", b.String())
+			}
+		})
+	}
+}
+
 // The guard-blocked notice names each destination and says what would actually help,
 // since the sandbox itself was told only "could not reach". It stays silent for the run
 // the guard never refused, which is every ordinary run.

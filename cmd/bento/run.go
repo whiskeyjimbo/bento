@@ -153,7 +153,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// that as bentoFailed would overwrite the real exit code with 125 - a lie
 		// that bento could not run the script. Warn and still pass the code through.
 		if err := writeJSON(stdout, struct {
-			ExitCode          int      `json:"exit_code"`
+			ExitCode int `json:"exit_code"`
+			// Signal names the signal that killed the sandbox, present only when one did.
+			// exit_code is 128+signal there, which a target can also exit on its own - so
+			// a consumer deciding whether a run hit its declared limits reads this, not
+			// the code.
+			Signal            int      `json:"signal,omitempty"`
 			Stdout            string   `json:"stdout"`
 			Stderr            string   `json:"stderr"`
 			EgressConnections int      `json:"egress_connections"`
@@ -180,7 +185,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// whose posture did not hold. Without it a machine consumer reading the envelope
 			// alone would see an ordinary completed run.
 			StrictShortfall bool `json:"strict_shortfall,omitempty"`
-		}{res.ExitCode, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
+		}{res.ExitCode, res.Signal, capturedOut, capturedErr, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil}); err != nil {
 			fmt.Fprintf(stderr, "[bento] warning: could not encode the JSON result: %v\n", err)
 		}
 	} else {
@@ -192,11 +197,13 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 		// Before the bypass hint: a guard block is a connection that DID reach the proxy,
 		// so it explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
-		// Last, and only where nothing above already explained the failure. A strict
-		// shortfall gets its own line below, and a guard block is a destination no amount
-		// of profiling will widen the manifest into reaching - pointing at profile there
-		// sends the reader at the wrong problem.
-		if !writeEgressHint(stderr, p, res) && shortfall == nil && len(res.GuardBlocked) == 0 {
+		// Last, and only where nothing above already explained the failure. A signal
+		// death is not a script failure at all, a strict shortfall gets its own line
+		// below, and a guard block is a destination no amount of profiling will widen
+		// the manifest into reaching - pointing at profile in any of those sends the
+		// reader at the wrong problem.
+		if !writeSignalNotice(stderr, p, res) && !writeEgressHint(stderr, p, res) &&
+			shortfall == nil && len(res.GuardBlocked) == 0 {
 			writeProfileHint(stderr, p, res)
 		}
 	}

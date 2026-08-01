@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -329,17 +328,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy) {
 	}
 
 	if !p.Limits.IsZero() {
-		var parts []string
-		if p.Limits.Memory != "" {
-			parts = append(parts, "memory "+p.Limits.Memory)
-		}
-		if p.Limits.CPU != "" {
-			parts = append(parts, "cpu "+p.Limits.CPU)
-		}
-		if p.Limits.PIDs > 0 {
-			parts = append(parts, fmt.Sprintf("pids %d", p.Limits.PIDs))
-		}
-		fmt.Fprintf(w, "limits:       %s\n", strings.Join(parts, ", "))
+		fmt.Fprintf(w, "limits:       %s\n", describeLimits(p.Limits))
 	}
 
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")

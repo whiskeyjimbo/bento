@@ -195,23 +195,27 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
-		code := exitCodeOf(cmd.ProcessState)
+		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
-		return enforce.Result{ExitCode: code, Report: report, Setup: setup, ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Exposed: exposed}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
 }
 
-// exitCodeOf maps a finished process's status to a conventional exit code: a
-// signal-killed target reports 128+signal, matching the bwrap and supervise paths
-// (and what a shell returns). os.ProcessState.ExitCode returns -1 for a signal, which
-// would otherwise surface to the caller as 255.
-func exitCodeOf(st *os.ProcessState) int {
+// exitStatusOf maps a finished process's status to a conventional exit code, plus
+// whether a signal ended it: a signal-killed process reports 128+signal, matching what
+// bwrap does for a signaled target and what a shell returns. os.ProcessState.ExitCode
+// returns -1 for a signal, which would otherwise surface to the caller as 255.
+//
+// The signal travels alongside the code because 128+N is not recoverable from it - a
+// process can exit 137 of its own accord - and a frontend explaining the death needs
+// the two apart.
+func exitStatusOf(st *os.ProcessState) (code int, signaled bool, sig int) {
 	if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return 128 + int(ws.Signal())
+		return 128 + int(ws.Signal()), true, int(ws.Signal())
 	}
-	return st.ExitCode()
+	return st.ExitCode(), false, 0
 }
 
 // killProcessGroup SIGKILLs every process still in the launcher's group. The

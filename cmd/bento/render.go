@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -253,6 +254,70 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	fmt.Fprintln(w, "[bento] ignores proxy settings (some static binaries) cannot reach allowlisted hosts and")
 	fmt.Fprintln(w, "[bento] fails to connect. Programs that honor HTTP_PROXY (curl, requests, pip, npm) work.")
 	return true
+}
+
+// describeLimits names the declared limits the way the manifest spells them, for the
+// summary and for the kill notice that has to say which caps were in play.
+func describeLimits(l policy.Limits) string {
+	var parts []string
+	if l.Memory != "" {
+		parts = append(parts, "memory "+l.Memory)
+	}
+	if l.CPU != "" {
+		parts = append(parts, "cpu "+l.CPU)
+	}
+	if l.PIDs > 0 {
+		parts = append(parts, fmt.Sprintf("pids %d", l.PIDs))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// writeSignalNotice explains a run that ended on a signal rather than an exit code.
+// Without it the death arrives as a bare number the reader has to decode, and the
+// profile hint below reads it as a script failure and sends them to profile a script
+// that was working - the shape the strict probe example ends on, where a declared
+// memory cap kills the run by design.
+//
+// A cgroup kill reaches here two ways, both covered. Usually the target is SIGKILLed
+// inside the sandbox and each wrapper relays 128+signal outward, so it arrives as an
+// exit code; occasionally the scope comes down on the wrapper itself, which arrives
+// signaled. Only the second is proof - a script may exit 137 of its own accord - so
+// the code-only case is worded as the likelihood it is. Bento's own 124 and 125 sit
+// below the range and cannot be mistaken for one.
+//
+// It reports whether it said anything, so no second explanation stacks on top.
+func writeSignalNotice(w io.Writer, p *policy.Policy, res enforce.Result) bool {
+	sig, certain := signalDeath(res)
+	if sig == 0 {
+		return false
+	}
+	if certain {
+		fmt.Fprintf(w, "[bento] the script did not exit: it was killed by signal %d (%s), reported as exit %d.\n",
+			sig, syscall.Signal(sig), res.ExitCode)
+	} else {
+		fmt.Fprintf(w, "[bento] the script ended with exit %d, which is how a process killed by signal %d (%s)\n", res.ExitCode, sig, syscall.Signal(sig))
+		fmt.Fprintln(w, "[bento] is reported - though a script can also exit that code on its own.")
+	}
+	if !p.Limits.IsZero() {
+		fmt.Fprintf(w, "[bento] the manifest declares limits (%s), and exceeding one kills the run exactly\n", describeLimits(p.Limits))
+		fmt.Fprintln(w, "[bento] this way - so it most likely hit a cap rather than failing on its own.")
+	}
+	return true
+}
+
+// signalDeath reports the signal a run died on, and whether that is known rather than
+// inferred. Zero means the run did not end on one.
+func signalDeath(res enforce.Result) (sig int, certain bool) {
+	if res.Signaled {
+		return res.Signal, true
+	}
+	// The shell convention every wrapper in the chain already follows. The upper bound
+	// keeps an ordinary exit code in the 190s from being read as a signal number no
+	// Linux host issues.
+	if res.ExitCode > 128 && res.ExitCode <= 128+31 {
+		return res.ExitCode - 128, false
+	}
+	return 0, false
 }
 
 // writeProfileHint points at profiling when a run fails, because a denied path is silent

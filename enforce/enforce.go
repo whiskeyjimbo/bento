@@ -178,6 +178,19 @@ func (s SetupState) String() string {
 // the sandbox actually enforced around it.
 type Result struct {
 	ExitCode int
+	// Signaled reports that the sandbox process itself was killed by a signal rather
+	// than exiting, and Signal is that signal number; ExitCode is 128+Signal there, the
+	// code a shell reports. It is NOT a claim about how the target died: bwrap already
+	// translates a signaled target into 128+signal of its own, so an ordinary crash
+	// arrives here as a plain exit code and reads as Signaled false. What reaches this
+	// field is the sandbox being torn down around the target - under declared limits,
+	// the cgroup kill that takes the whole scope down with it.
+	//
+	// A frontend needs it because 128+N is indistinguishable from a target that exited
+	// 137 on purpose, and the two want opposite advice: one points at the limits, the
+	// other at the script.
+	Signaled bool
+	Signal   int
 	Report   Report
 	// Setup separates a bento setup failure from a target that exited with the same
 	// code. Bento's "could not run the target" code is 125, which a target may also
