@@ -267,6 +267,14 @@ func TestPartialRunWarningCommandNotFound(t *testing.T) {
 	if w := partialRunWarning(profile.Observation{ExitCode: 127}, "python3"); !strings.Contains(w, "exited with code 127 -") {
 		t.Errorf("non-shell 127 warning = %q, want the generic nonzero-exit wording", w)
 	}
+	// A shell that reached 127 after exec'ing something looked up an absolute path, which
+	// the observer recorded and proposed. Granting it is what fixes the next round, so the
+	// generic advice is right and the PATH story would be false - the search is not what
+	// lost the tool, and telling the reader to use an absolute path is what they just did.
+	w = partialRunWarning(profile.Observation{ExitCode: 127, Execed: true}, "/bin/sh")
+	if !strings.Contains(w, "exited with code 127 -") || strings.Contains(w, enforce.SandboxPath) {
+		t.Errorf("execed shell 127 warning = %q, want the generic wording and no PATH claim", w)
+	}
 }
 
 // On a symlinked home (Fedora Silverblue's /home -> /var/home), an observed credential

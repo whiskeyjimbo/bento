@@ -1603,11 +1603,18 @@ func droppedWarning(n int) string {
 // advice that cannot terminate: a shell that could not find a command exits 127, and
 // the run is not what is broken - the search path is. That case is named separately, so
 // it takes the interpreter to tell a shell's 127 from a number another language chose.
+//
+// Execed is what separates the two ways a shell reaches 127, and only one of them is
+// stuck. A bare name is searched with existence probes, which the observer drops by
+// design, so nothing is ever exec'd, nothing is recorded, and another round is identical
+// - that is the case worth naming. An absolute path is exec'd outright, so Execed is set
+// and the target IS recorded and proposed; the generic advice is right there, because
+// granting what the proposal now names is exactly what makes the next round work.
 func partialRunWarning(obs profile.Observation, interpreter string) string {
 	switch {
 	case obs.Signaled:
 		return fmt.Sprintf("[bento] WARNING: the profiled run was killed by signal %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.Signal)
-	case obs.ExitCode == 127 && isShell(interpreter):
+	case obs.ExitCode == 127 && isShell(interpreter) && !obs.Execed:
 		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code 127, which is how a shell reports a command it could not find. Profiling runs with PATH=%s, not the PATH your shell has, so a tool installed anywhere else is not found - and because the search only ever misses, the observer never learns the path either, so profiling again changes nothing. Call the tool by its absolute path in the script and profile again, or add its directory to read: by hand.", enforce.SandboxPath)
 	case obs.ExitCode != 0:
 		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.ExitCode)
