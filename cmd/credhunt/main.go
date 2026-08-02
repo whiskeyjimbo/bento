@@ -105,7 +105,7 @@ func main() {
 	}
 
 	for _, h := range homes {
-		fmt.Printf("scanning %s against %d shields\n", h, len(rules))
+		fmt.Printf("scanning %q against %d shields\n", h, len(rules))
 		found, pruned, err := credhunt.Hunt(credhunt.Options{
 			Home:          h,
 			Rules:         rules,
@@ -129,7 +129,7 @@ func main() {
 		for _, d := range dense {
 			fmt.Printf("  %-70q %d hits, not listed - an installed-tool tree? add it to machineStores\n", d.prefix+"/...", d.count)
 		}
-		fmt.Printf("%d lead(s) and %d dense tree(s) under %s that no shield covers (%d tree(s) pruned)\n\n", len(leads), len(dense), h, pruned)
+		fmt.Printf("%d lead(s) and %d dense tree(s) under %q that no shield covers (%d tree(s) pruned)\n\n", len(leads), len(dense), h, pruned)
 	}
 	fmt.Println("These are LEADS, not gaps: read each one and decide whether it belongs in denylist.go.")
 	fmt.Println("A name/suffix hit alone is weak; private-mode plus a content shape is close to certain.")
