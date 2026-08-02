@@ -23,6 +23,18 @@ func newDoctorCmd() *cobra.Command {
 			"platform - when one is unavailable, runs proceed and say so.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// A host with no backend has no layers to report, which is doctor's own
+			// answer rather than a foreign refusal envelope: a CI gate reading `ready`
+			// gets false because doctor said so, not because the key went missing.
+			if err := checkPlatform(); err != nil {
+				if asJSON {
+					if err := writeJSON(os.Stdout, doctorJSON{reportJSON: noReport, Reason: err.Error()}); err != nil {
+						return err
+					}
+					return &exitError{code: doctorCoreShortfall}
+				}
+				return err
+			}
 			e, err := backend.New()
 			if err != nil {
 				return err

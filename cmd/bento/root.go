@@ -176,27 +176,17 @@ func wantsJSON(cmd *cobra.Command, args []string) bool {
 	return false
 }
 
-// gatePlatform makes each command refuse before its RunE on a host bento has no backend
-// for, so a macOS build - which the tree compiles deliberately, see backend/backend_other.go -
-// says that rather than meeting whichever platform stub the command reaches first.
+// The platform refusal is raised inside a RunE rather than by a hook above it, in each of
+// the three commands that build or probe a sandbox - run, profile and doctor. All three
+// answer --json with a document of their own, and a hook fires before the RunE that knows
+// how to write one, so refusing above them would answer a machine consumer with exactly
+// the empty stdout the JSON refusal shapes exist to eliminate.
 //
-// Named per command rather than set once on the root, even though the hook is inherited:
-// cobra hangs `help`, `completion` and the hidden `__complete` off the root too, and
-// those answer perfectly well on a host that cannot run anything. Gating them would break
-// shell completion on every keystroke and refuse to print `bento help run`. `version` is
-// left out for the same reason and one more - which build this is, is the first thing a
-// bug report needs and the only answer that holds everywhere.
-//
-// `run` and `profile` are left out and check inside their RunE instead: their --json
-// contract is that stdout carries the refusal, and a hook fires before the RunE that
-// knows how to write one - so gating them here would answer a machine consumer with the
-// empty stdout that jsonRefusalAnnotation exists to eliminate.
-func gatePlatform(cmds ...*cobra.Command) []*cobra.Command {
-	for _, cmd := range cmds {
-		cmd.PersistentPreRunE = func(*cobra.Command, []string) error { return checkPlatform() }
-	}
-	return cmds
-}
+// The rest are not gated at all. `help`, `completion`, `version` and the hidden
+// `__complete` answer perfectly well on a host that cannot run anything, and `validate`
+// and `approve` build no sandbox: both are static operations over a manifest, so what
+// they can say off Linux is decided by the trust facts readable there rather than by
+// whether a backend exists. See errLocationUnknown.
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -216,7 +206,7 @@ func newRootCmd() *cobra.Command {
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
-	root.AddCommand(gatePlatform(newDoctorCmd(), newValidateCmd(), newApproveCmd())...)
+	root.AddCommand(newDoctorCmd(), newValidateCmd(), newApproveCmd())
 	root.AddCommand(newRunCmd(), newProfileCmd(), newVersionCmd())
 	checkJSONRefusalShapes(root)
 	return root

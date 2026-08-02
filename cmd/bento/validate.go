@@ -37,7 +37,10 @@ func newValidateCmd() *cobra.Command {
 			"pass a manifest `run` refuses at its first step. --strict makes a stale or missing\n" +
 			"approval, or a manifest this host cannot start, a failure (exit non-zero), for use\n" +
 			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
-			"as `approval` and `runnable` fields and honors --strict too.",
+			"as `approval` and `runnable` fields and honors --strict too.\n\n" +
+			"validate builds no sandbox, so it runs on a host bento cannot run a manifest on.\n" +
+			"Off Linux it reports that it could not check who else can write the manifest\n" +
+			"rather than passing over the question - a warning, as every trust finding is.",
 		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			doc, trust, err := loadDocument(args[0])

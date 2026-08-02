@@ -412,31 +412,35 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 		// The rewrite clamps the manifest's own mode, so it is reported, not refused.
 		"writable manifest": {
 			trust: manifestTrust{
-				file: fileFacts{path: "/w/m.yaml", mode: 0o666, uid: me},
-				dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me},
+				file:    fileFacts{path: "/w/m.yaml", mode: 0o666, uid: me},
+				dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me},
+				located: true,
 			},
 			wantCount: 1,
 		},
 		// A umask of 002 leaves this on every directory it creates.
 		"group-writable dir": {
 			trust: manifestTrust{
-				file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
-				dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+				file:    fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
+				dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+				located: true,
 			},
 			wantCount: 1,
 		},
 		"world-writable dir": {
 			trust: manifestTrust{
-				file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
-				dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o777, uid: me},
+				file:    fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
+				dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o777, uid: me},
+				located: true,
 			},
 			wantCount: 1,
 			wantFatal: 1,
 		},
 		"someone else's manifest in their directory": {
 			trust: manifestTrust{
-				file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: 1001},
-				dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: 1001},
+				file:    fileFacts{path: "/w/m.yaml", mode: 0o644, uid: 1001},
+				dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: 1001},
+				located: true,
 			},
 			wantCount: 2,
 			wantFatal: 2,
@@ -462,8 +466,9 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 	// the two fatality bits swap without failing.
 	t.Run("fatal and reported together", func(t *testing.T) {
 		mixed := manifestTrust{
-			file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: 1001},
-			dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+			file:    fileFacts{path: "/w/m.yaml", mode: 0o644, uid: 1001},
+			dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+			located: true,
 		}
 		flaws := mixed.flaws(me)
 		if len(flaws) != 2 {
@@ -478,11 +483,33 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 	})
 
 	clean := manifestTrust{
-		file: fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
-		dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me},
+		file:    fileFacts{path: "/w/m.yaml", mode: 0o644, uid: me},
+		dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me},
+		located: true,
 	}
 	if got := clean.flaws(me); got != nil {
 		t.Errorf("a private manifest in a private directory has nothing to report; got %+v", got)
+	}
+}
+
+// The zero manifestTrust is a host where the location was never read, not one where it
+// was read and found clean. Every directory in it reads as mode 0 owned by root, which
+// would be a verdict about nothing, so locationFlaws must answer the gap instead - and
+// fatally, since approve's stamp is worth exactly what the location vouches for.
+func TestLocationFlawsRefuseAnUnreadLocation(t *testing.T) {
+	const me = 1000
+	unknown := manifestTrust{file: fileFacts{path: "/w/m.yaml", mode: 0o600, uid: me}}
+	got := unknown.locationFlaws(me)
+	if len(got) != 1 || !got[0].fatal {
+		t.Fatalf("an unchecked location is one nothing vouches for; got %+v", got)
+	}
+	if !strings.Contains(got[0].reason, "cannot be checked") || !strings.Contains(got[0].reason, "/w/m.yaml") {
+		t.Errorf("the flaw must say what could not be checked and about which manifest; got %q", got[0].reason)
+	}
+	// flaws is the read commands' entry point, and it must carry the gap through rather
+	// than reporting only what fstat happened to see.
+	if len(unknown.flaws(me)) != 1 {
+		t.Errorf("flaws must report the unread location too; got %+v", unknown.flaws(me))
 	}
 }
 
@@ -492,8 +519,9 @@ func TestFlawsSeparateReportingFromRefusal(t *testing.T) {
 func TestLocationFlawsExcludeTheManifestItself(t *testing.T) {
 	const me = 1000
 	trust := manifestTrust{
-		file: fileFacts{path: "/w/m.yaml", mode: 0o666, uid: me},
-		dir:  fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+		file:    fileFacts{path: "/w/m.yaml", mode: 0o666, uid: me},
+		dir:     fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me},
+		located: true,
 	}
 	if got := trust.flaws(me); len(got) != 2 {
 		t.Fatalf("flaws = %+v, want the manifest's mode and the directory's", got)
@@ -877,10 +905,11 @@ func TestWriteManifestAtomicallyExplainsAnUnwritableDirectory(t *testing.T) {
 func TestLocationFlawsRefuseAForeignSymlink(t *testing.T) {
 	const me = 1000
 	trust := manifestTrust{
-		file:  fileFacts{path: "/home/me/m.yaml", mode: 0o600, uid: me},
-		dir:   fileFacts{path: "/home/me", mode: fs.ModeDir | 0o700, uid: me},
-		chain: []fileFacts{{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}},
-		links: []fileFacts{{path: "/tmp/link.yaml", mode: fs.ModeSymlink | 0o777, uid: 1001}},
+		file:    fileFacts{path: "/home/me/m.yaml", mode: 0o600, uid: me},
+		dir:     fileFacts{path: "/home/me", mode: fs.ModeDir | 0o700, uid: me},
+		chain:   []fileFacts{{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}},
+		links:   []fileFacts{{path: "/tmp/link.yaml", mode: fs.ModeSymlink | 0o777, uid: 1001}},
+		located: true,
 	}
 	got := trust.locationFlaws(me)
 	if len(got) != 1 || !got[0].fatal {

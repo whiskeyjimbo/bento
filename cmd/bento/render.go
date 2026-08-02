@@ -78,6 +78,9 @@ type doctorJSON struct {
 	// is false: a host missing only a conditionally-required (network egress) or
 	// hardening layer still runs every manifest that does not need that layer.
 	Ready bool `json:"ready"`
+	// Reason is why there is nothing to report, on a host bento has no backend for. Absent
+	// on a host that was probed, where the layers say it themselves.
+	Reason string `json:"reason,omitempty"`
 }
 
 func toReportJSON(r enforce.Report) reportJSON {

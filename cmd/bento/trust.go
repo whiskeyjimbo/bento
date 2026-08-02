@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -177,7 +178,18 @@ type manifestTrust struct {
 	// that only we can unlink our own entries - which is exactly what a link belonging to
 	// somebody else breaks.
 	links []fileFacts
+	// located records that the location above was actually established. False is the
+	// zero value on purpose: a host where the location cannot be read must not read as
+	// one where it was read and found clean, and locationFlaws reports the gap rather
+	// than answering nothing. See errLocationUnknown.
+	located bool
 }
+
+// errLocationUnknown is what the platform stubs return where the location cannot be
+// established at all, as opposed to a location that was read and is unsound. The two
+// answers differ in what a caller may do with them: an unsound location is a finding
+// about this manifest, an unknown one is a finding about this host.
+var errLocationUnknown = errors.New("where a manifest lives cannot be checked on this platform")
 
 // trustFlaw is one way someone other than this user could change the manifest. fatal
 // marks the ones approve refuses to stamp over: not everything reported is, since a
@@ -218,6 +230,14 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 		return manifestTrust{}, err
 	}
 	target, err := manifestLocation(f)
+	// A host that cannot read the location still knows everything fstat says about the
+	// manifest itself, and refusing here would withhold that over a fact the caller may
+	// not need: validate only warns on what it finds, and a macOS developer linting a
+	// manifest in CI is asking about its contents. What is missing is reported by
+	// locationFlaws, so it is carried rather than assumed clean.
+	if errors.Is(err, errLocationUnknown) {
+		return manifestTrust{file: file}, nil
+	}
 	if err != nil {
 		return manifestTrust{}, err
 	}
@@ -244,7 +264,7 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	if dirPath := filepath.Dir(target); dirs[0].path != dirPath {
 		return manifestTrust{}, fmt.Errorf("%s moved while it was being read: it resolved to %s but is open in %s", path, dirs[0].path, dirPath)
 	}
-	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], links: links, realPath: target}, nil
+	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], links: links, realPath: target, located: true}, nil
 }
 
 // inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
@@ -267,6 +287,7 @@ func inspectNewManifest(path string) (manifestTrust, error) {
 		chain:    dirs[1:],
 		links:    links,
 		realPath: filepath.Join(dirs[0].path, leaf),
+		located:  true,
 	}, nil
 }
 
@@ -301,6 +322,16 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 // something its rewrite corrects and announces, so warning about it here as well would
 // describe a state approve is in the middle of leaving.
 func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
+	// Nothing was read, so there is nothing to judge and a clean verdict would be the one
+	// wrong answer: every directory below reads as mode 0 owned by root, which is neither
+	// what is there nor a sentence about this manifest. Fatal because approve's stamp is
+	// worth exactly what the location vouches for, and here nothing does.
+	if !t.located {
+		return []trustFlaw{{
+			reason: fmt.Sprintf("where %s lives cannot be checked on %s, so nothing vouches for who else can replace it", t.file.path, runtime.GOOS),
+			fatal:  true,
+		}}
+	}
 	out := dirFlaws(t.dir, "the directory holding it", euid)
 	// A link belonging to someone else is theirs to repoint - but only where they can still
 	// write the directory holding it, which ownership on its own does not say: root
