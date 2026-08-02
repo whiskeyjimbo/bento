@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,5 +73,56 @@ func TestDemoLearnsTheGatedHostOnlyFromASuccessfulFetch(t *testing.T) {
 	allowed := runDemoAgent(t, 0)
 	if !strings.Contains(allowed, learned) {
 		t.Errorf("with fetches succeeding - the enforced run's case - agent.sh must reach %s;\ngot:\n%s", learned, allowed)
+	}
+}
+
+// supervise persists its interpreter guess and exports it into manifests, so a guess
+// that differs from `bento profile`'s writes a manifest whose `bento run` is not the run
+// the human approved here. The example cannot import the CLI to compare, so this table
+// is the copy of its rules that has to be kept in step - it mirrors
+// TestGuessInterpreterPrefersTheShebang in cmd/bento.
+func TestGuessInterpreterAnswersAsTheCLIDoes(t *testing.T) {
+	cases := []struct {
+		name     string // file basename (the extension matters)
+		body     string
+		want     string
+		wantArgs []string
+	}{
+		{"s.sh", "#!/bin/sh\n", "/bin/sh", nil},
+		{"s.py", "#!/usr/bin/env -S python3 -u\nprint(1)\n", "python3", []string{"-u"}},
+		{"c", "#!/usr/bin/env --split-string python3 -u\n", "python3", []string{"-u"}},
+		{"d", "#!/usr/bin/env -S FOO=bar python3\n", "python3", nil},
+		{"e", "#!/usr/bin/env python3\n", "python3", nil},
+
+		// env options that take a separate word: without consuming it, the variable name
+		// or directory reads as the interpreter.
+		{"u1", "#!/usr/bin/env -S -u PATH python3 -u\n", "python3", []string{"-u"}},
+		{"u2", "#!/usr/bin/env -S -C /tmp python3\n", "python3", nil},
+
+		// Linux does not tokenize a shebang: everything after the interpreter is one
+		// argument, which is why a multi-arg shebang has to go through `env -S`.
+		{"g", "#!/bin/sh -eu\n", "/bin/sh", []string{"-eu"}},
+		{"g2", "#!/bin/sh -e -u\n", "/bin/sh", []string{"-e -u"}},
+
+		// No usable shebang: the extension is the fallback. `.sh` maps to bash as the CLI
+		// does - the two disagreeing here is the bug this table exists to catch.
+		{"h.py", "print(1)\n", "python3", nil},
+		{"i.sh", "echo hi\n", "bash", nil},
+		{"j.rb", "puts 1\n", "ruby", nil},
+		{"k.py", "#!/usr/bin/env\n", "python3", nil},
+
+		// Nothing to go on: a compiled binary is its own interpreter.
+		{"bin", "not a script\n", "", nil},
+	}
+	for _, tc := range cases {
+		p := filepath.Join(t.TempDir(), tc.name)
+		if err := os.WriteFile(p, []byte(tc.body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, args := guessInterpreter(p)
+		if got != tc.want || !slices.Equal(args, tc.wantArgs) {
+			t.Errorf("guessInterpreter(%q for %q) = %q %q, want %q %q",
+				tc.body, tc.name, got, args, tc.want, tc.wantArgs)
+		}
 	}
 }

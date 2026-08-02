@@ -277,7 +277,7 @@ func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	interp := guessInterpreter(script)
+	interp, _ := guessInterpreter(script)
 	obs, err := trialProfile(t.Context(), newTestStore(), discoveryPolicy(script, interp),
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: discoveryEnv()})
 	if err != nil {

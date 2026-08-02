@@ -155,7 +155,15 @@ func persistDecisions(s *store, code int, out io.Writer) int {
 // whatever it recorded, so every return here - including a failure - keeps the human's
 // answers.
 func supervised(ctx context.Context, s *store, script string) int {
-	interp := guessInterpreter(script)
+	interp, dropped := guessInterpreter(script)
+	// A manifest has nowhere to put the interpreter's own flags, so they are dropped
+	// rather than silently carried - and this is the wrapper that persists the guess and
+	// exports it, so the human is told once here. `sh -eu` without -e keeps running past
+	// a failed command: the difference is in behavior, not only in what gets recorded.
+	if len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr, "supervise: the shebang passes %q to %s; a manifest cannot record interpreter arguments, so this run omits them\n",
+			strings.Join(dropped, " "), interp)
+	}
 	name := filepath.Base(script)
 
 	key, err := appKey(script)
@@ -926,18 +934,95 @@ func pretty(path string) string {
 	return path
 }
 
-// guessInterpreter picks an interpreter from the script's extension; an empty
-// result means the entrypoint is its own interpreter (a compiled binary).
-func guessInterpreter(path string) string {
+// guessInterpreter picks an interpreter for a script and reports any arguments the
+// shebang passes it that a manifest cannot carry. An empty interpreter means the
+// entrypoint is its own interpreter (a compiled binary).
+//
+// The shebang wins over the extension because it is the script's own answer: a `.sh`
+// file that asks for /bin/sh can behave differently under bash, and what supervise
+// remembers - it stores this and exports it into manifests - would be the interpreter
+// the wrapper chose over the one the author wrote. The extension is the fallback for a
+// script with no shebang, which the kernel would refuse to exec on its own.
+//
+// This deliberately answers as `bento profile` does, down to the extension map. A
+// supervisor that guesses differently from the CLI writes a manifest whose `bento run`
+// is not the run the human just approved. It is a second copy rather than a shared
+// call because the example builds only against bento's public API and the guess is not
+// part of it; keeping the two in step is the price of that boundary.
+func guessInterpreter(path string) (interpreter string, dropped []string) {
+	if interp, args := shebangInterpreter(path); interp != "" {
+		return interp, args
+	}
 	switch filepath.Ext(path) {
 	case ".py":
-		return "python3"
-	case ".sh":
-		return "sh"
-	case ".bash":
-		return "bash"
+		return "python3", nil
+	case ".sh", ".bash":
+		return "bash", nil
 	case ".js":
-		return "node"
+		return "node", nil
+	case ".rb":
+		return "ruby", nil
 	}
-	return ""
+	return "", nil
+}
+
+// shebangInterpreter reads the interpreter a script names on its first line, along with
+// the arguments the line passes it. It returns "" when the line names none, including an
+// unreadable file - the run refuses on that for its own reasons.
+//
+// The two branches split the arguments differently because the two runners do. Linux
+// does not tokenize a shebang: everything after the interpreter arrives as a single
+// argv[1], so "#!/bin/sh -e -u" passes one argument "-e -u" - which is why a shebang
+// wanting several must go through `env -S`, and why the direct branch returns the
+// remainder whole. env -S does split, so that branch returns separate words.
+func shebangInterpreter(path string) (interpreter string, args []string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", nil
+	}
+	defer f.Close()
+
+	var buf [256]byte
+	n, _ := f.Read(buf[:])
+	line, _, _ := strings.Cut(string(buf[:n]), "\n")
+	if !strings.HasPrefix(line, "#!") {
+		return "", nil
+	}
+	rest := strings.TrimLeft(strings.TrimPrefix(line, "#!"), " \t")
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	// "#!/usr/bin/env python3" runs the interpreter named after env. env may be given
+	// options first - notably `-S`/`--split-string`, the standard way a shebang passes
+	// multiple args to the interpreter - and NAME=VALUE assignments; the interpreter is
+	// the first field that is neither, not simply fields[1] (which would be `-S`).
+	if filepath.Base(fields[0]) == "env" {
+		for i := 1; i < len(fields); i++ {
+			w := fields[i]
+			// An interpreter (a path or a bare name) carries no '=', so any such word is
+			// an assignment, matching env's own handling.
+			if strings.Contains(w, "=") {
+				continue
+			}
+			if strings.HasPrefix(w, "-") {
+				// -u/--unset and -C/--chdir take their argument as a separate word, so
+				// without this the variable name or directory reads as the interpreter.
+				// The attached forms are covered above or by the prefix test. -S is
+				// deliberately not here: what follows it is the string env splits, which
+				// begins with the interpreter.
+				if w == "-u" || w == "--unset" || w == "-C" || w == "--chdir" {
+					i++
+				}
+				continue
+			}
+			return w, fields[i+1:]
+		}
+		return "", nil
+	}
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+	if rest == "" {
+		return fields[0], nil
+	}
+	return fields[0], []string{rest}
 }
