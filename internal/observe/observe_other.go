@@ -12,6 +12,7 @@ type Access struct {
 	Path   string
 	Write  bool
 	Absent bool
+	Probed bool
 }
 
 // Result is what a traced run observed.
