@@ -53,20 +53,52 @@ func runCapturingStdout(t *testing.T, cmd *cobra.Command, args ...string) (strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved := os.Stdout
-	os.Stdout = w
+	defer r.Close()
 	cmd.SetArgs(args)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	runErr := cmd.Execute()
-	os.Stdout = saved
-	w.Close()
+
+	// The redirect is undone on the way out of this scope rather than after Execute
+	// returns, because Execute does not always return: a panic inside a RunE would
+	// otherwise leave every later test in the package writing into a pipe nobody reads,
+	// losing the failure output at the moment it is worth the most. Scoped to its own
+	// function so the read below still happens with the write end closed.
+	runErr := func() error {
+		saved := os.Stdout
+		defer func() {
+			os.Stdout = saved
+			w.Close()
+		}()
+		os.Stdout = w
+		return cmd.Execute()
+	}()
+
 	out, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Close()
 	return string(out), runErr
+}
+
+// A helper that swaps a process-global has to put it back on every path out, and the one
+// path that skips a plain assignment is the one worth having: a panicking RunE would
+// leave the rest of the package writing into a dead pipe, so the run that just found a
+// crash reports nothing about it. Pinned because the damage is silent - nothing fails,
+// the output simply stops.
+func TestRunCapturingStdoutRestoresOnAPanic(t *testing.T) {
+	before := os.Stdout
+	cmd := &cobra.Command{Use: "boom", RunE: func(*cobra.Command, []string) error { panic("boom") }}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic must reach the caller; swallowing one hides the crash")
+			}
+		}()
+		_, _ = runCapturingStdout(t, cmd)
+	}()
+	if os.Stdout != before {
+		t.Errorf("os.Stdout = %v, want it back at %v", os.Stdout, before)
+	}
 }
 
 func writeManifest(t *testing.T, p *policy.Policy, prov manifest.Provenance) string {
