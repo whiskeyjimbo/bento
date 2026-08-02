@@ -178,7 +178,7 @@ func TestClampBroadWrites(t *testing.T) {
 // fail-open trial bv2-yz3.1 removed. Only the script's own directory is granted; a
 // grant of "/" would re-expose every credential the deny-list does not enumerate.
 func TestDiscoveryPolicyIsDefaultDeny(t *testing.T) {
-	p := discoveryPolicy("/home/u/tool/run.sh", "sh", []string{"--flag"})
+	p := discoveryPolicy("/home/u/tool/run.sh", "sh", nil, []string{"--flag"})
 
 	if slices.Contains(p.Read, "/") {
 		t.Fatalf("discovery policy must not grant Read:[\"/\"] (fail-open); Read=%v", p.Read)
@@ -205,7 +205,7 @@ func TestDiscoveryPolicyDoesNotGrantBroadScriptDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	p := discoveryPolicy(filepath.Join(home, "deploy.sh"), "sh", nil)
+	p := discoveryPolicy(filepath.Join(home, "deploy.sh"), "sh", nil, nil)
 
 	if len(p.Read) != 0 || len(p.Write) != 0 {
 		t.Errorf("a script directly in $HOME must not grant the home dir; Read=%v Write=%v", p.Read, p.Write)
@@ -490,10 +490,10 @@ func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
 // since SIGSYS alone does not distinguish bento's arch guard from a self-sandboxing
 // target, and misdiagnosing the second sends that user nowhere.
 func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
-	if _, err := profile.Synthesize("/w/s.py", "python3", profile.Observation{Dropped: 3, Signaled: true}); err != nil {
+	if _, err := profile.Synthesize("/w/s.py", "python3", nil, profile.Observation{Dropped: 3, Signaled: true}); err != nil {
 		t.Errorf("only a seccomp kill refuses the round; got %v", err)
 	}
-	_, err := profile.Synthesize("/w/s.py", "python3", profile.Observation{SeccompKilled: true})
+	_, err := profile.Synthesize("/w/s.py", "python3", nil, profile.Observation{SeccompKilled: true})
 	if err == nil {
 		t.Fatal("a seccomp-killed run must refuse the round")
 	}
@@ -1299,6 +1299,44 @@ func TestMergeTakesTheInterpreterTheRunUsed(t *testing.T) {
 
 	// An agreeing manifest is not a swap, so it draws no notice.
 	same, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Interpreter: "bash"})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if same.interpreterWas != "" {
+		t.Errorf("interpreterWas = %q, want empty when the run agrees with the manifest", same.interpreterWas)
+	}
+}
+
+// The arguments are part of the invocation, so `sh -eu` becoming plain `sh` is the
+// same silent rewrite of what runs that a changed interpreter is - and the merged
+// manifest keeps the run's, not the older file's.
+func TestMergeReportsAChangedInterpreterArgs(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tidy.sh")
+	path := filepath.Join(dir, "tidy.sh.manifest.yaml")
+	base := &policy.Policy{Entrypoint: script, Interpreter: "/bin/sh", InterpreterArgs: []string{"-eu"}}
+	data, err := manifest.Marshal(base, manifest.Provenance{Approves: base.Fingerprint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Interpreter: "/bin/sh"})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if len(merged.policy.InterpreterArgs) != 0 {
+		t.Errorf("merged interpreter_args = %q, want the run's (none)", merged.policy.InterpreterArgs)
+	}
+	var b strings.Builder
+	writeMergeNotice(&b, path, merged)
+	if !strings.Contains(b.String(), `"-eu"`) {
+		t.Errorf("the merge notice must name the arguments the manifest used to carry; got:\n%s", b.String())
+	}
+
+	same, err := mergeExisting(path, script, base)
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}

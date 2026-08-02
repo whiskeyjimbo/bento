@@ -695,3 +695,22 @@ func TestValidateFailsOnAGrantTheRunRefuses(t *testing.T) {
 		t.Errorf("the summary must name the refusal beside the grant; got:\n%s", out)
 	}
 }
+
+// interpreter_args changes what the interpreter does with the entrypoint, so the
+// summary a reviewer reads before approving has to show it - on its own line, so it
+// is not skimmed as part of the interpreter's path.
+func TestValidateShowsInterpreterArgs(t *testing.T) {
+	var buf strings.Builder
+	p := &policy.Policy{Entrypoint: "./x.sh", Interpreter: "/bin/sh", InterpreterArgs: []string{"-eu"}}
+	writePolicySummary(&buf, "m.yaml", p, nil, nil)
+	out := buf.String()
+	if !strings.Contains(out, "before the entrypoint") || !strings.Contains(out, strconv.Quote("-eu")) {
+		t.Errorf("the summary did not show the interpreter's own arguments:\n%s", out)
+	}
+	// A policy with none says nothing extra: the line exists to flag a real setting.
+	var plain strings.Builder
+	writePolicySummary(&plain, "m.yaml", &policy.Policy{Entrypoint: "./x.sh", Interpreter: "/bin/sh"}, nil, nil)
+	if strings.Contains(plain.String(), "before the entrypoint") {
+		t.Errorf("an empty interpreter_args must print nothing:\n%s", plain.String())
+	}
+}

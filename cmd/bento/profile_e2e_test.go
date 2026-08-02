@@ -101,7 +101,7 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 		ctx: context.Background(), script: script, interpreter: "sh",
 		env: map[string]string{"HOME": home}, targetStdin: nil,
 	}
-	base := discoveryPolicy(script, "sh", nil)
+	base := discoveryPolicy(script, "sh", nil, nil)
 
 	// Round 1: default-deny. The config read fails, so the downstream path is never
 	// attempted and must not appear in the proposal.

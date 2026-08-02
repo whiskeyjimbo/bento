@@ -115,7 +115,7 @@ func listPerms(s *store, out io.Writer) {
 		a := s.Apps[key]
 		interp := ""
 		if a.Interpreter != "" {
-			interp = " (" + strconv.Quote(a.Interpreter) + ")"
+			interp = " (" + invocation(a.Interpreter, a.InterpreterArgs) + ")"
 		}
 		fmt.Fprintf(out, "  app %s  %s%s\n", shortKey(key), quotePath(a.Entrypoint), interp)
 		// mark tags a line "(global)" when a global DENY is the reason - the footgun -
@@ -376,11 +376,12 @@ func exportPerms(s *store, args []string, out io.Writer) int {
 	}
 
 	pol := &policy.Policy{
-		Entrypoint:  a.Entrypoint,
-		Interpreter: a.Interpreter,
-		Read:        readAllows,
-		Write:       writeAllows,
-		Exec:        policy.ExecNone,
+		Entrypoint:      a.Entrypoint,
+		Interpreter:     a.Interpreter,
+		InterpreterArgs: a.InterpreterArgs,
+		Read:            readAllows,
+		Write:           writeAllows,
+		Exec:            policy.ExecNone,
 	}
 	if eff, ok := s.decideExec(key); ok && eff == allow {
 		pol.Exec = policy.ExecAll
@@ -499,6 +500,7 @@ func importPerms(s *store, args []string, in io.Reader, out io.Writer) int {
 	a := s.app(key)
 	a.Entrypoint = pol.Entrypoint
 	a.Interpreter = pol.Interpreter
+	a.InterpreterArgs = pol.InterpreterArgs
 	for _, p := range pol.Read {
 		seedPath(s, key, "read", p, out)
 	}

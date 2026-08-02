@@ -17,7 +17,7 @@ import (
 // own test.
 func mustSynthesize(t *testing.T, entrypoint, interpreter string, obs Observation) *policy.Policy {
 	t.Helper()
-	p, err := Synthesize(entrypoint, interpreter, obs)
+	p, err := Synthesize(entrypoint, interpreter, nil, obs)
 	if err != nil {
 		t.Fatalf("Synthesize: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestSynthesizeRefusesASeccompKilledObservation(t *testing.T) {
 		Execed:        true,
 		SeccompKilled: true,
 	}
-	p, err := Synthesize("/work/run.py", "python3", obs)
+	p, err := Synthesize("/work/run.py", "python3", nil, obs)
 	if !errors.Is(err, ErrSeccompKilled) {
 		t.Fatalf("err = %v, want ErrSeccompKilled", err)
 	}
@@ -670,7 +670,7 @@ func TestSynthesizeRefusesASeccompKilledObservation(t *testing.T) {
 	// frontend warns about and a human fixes by profiling again. Refusing those too
 	// would stop `bento profile` on any script that exits nonzero.
 	for _, partial := range []Observation{{ExitCode: 1}, {Signaled: true, Signal: 9}, {Dropped: 3}} {
-		if _, err := Synthesize("/work/run.py", "python3", partial); err != nil {
+		if _, err := Synthesize("/work/run.py", "python3", nil, partial); err != nil {
 			t.Errorf("Synthesize(%+v) = %v, want a proposal - an incomplete run is a warning, not a refusal", partial, err)
 		}
 	}

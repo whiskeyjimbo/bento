@@ -63,7 +63,7 @@ func TestGateBlockEverywhere(t *testing.T) {
 func TestApproveHasNoGlobalKey(t *testing.T) {
 	s := newTestStore()
 	proposal := &policy.Policy{Network: []policy.NetworkRule{{Host: "cdn.example", Port: "443"}}}
-	final := approve(t.Context(), newPrompter(strings.NewReader("g\n"), &strings.Builder{}), s, "k", "/s", "sh", proposal)
+	final := approve(t.Context(), newPrompter(strings.NewReader("g\n"), &strings.Builder{}), s, "k", "/s", "sh", nil, proposal)
 
 	if len(s.Global.Network) != 0 {
 		t.Errorf("the trial prompt must not set a global rule: %+v", s.Global.Network)
@@ -110,7 +110,7 @@ func TestApproveWarnsGlobalDenyUnderApprovedAllow(t *testing.T) {
 	// The trial proposes the parent; the operator approves it with "y".
 	var out strings.Builder
 	proposal := &policy.Policy{Read: []string{"/home/u"}}
-	approve(t.Context(), newPrompter(strings.NewReader("y\n"), &out), s, "k", "/s", "sh", proposal)
+	approve(t.Context(), newPrompter(strings.NewReader("y\n"), &out), s, "k", "/s", "sh", nil, proposal)
 
 	if !strings.Contains(out.String(), "cannot enforce the sub-deny") ||
 		!strings.Contains(out.String(), "/home/u/secret") {

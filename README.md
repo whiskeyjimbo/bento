@@ -228,7 +228,8 @@ Manifests define the sandbox policy in YAML:
 ```yaml
 entrypoint: ./fetch.py          # Script or binary to execute
 interpreter: python3            # Optional interpreter (omit for compiled binaries)
-args: [--verbose]
+interpreter_args: [-u]          # Options for the interpreter itself, before the entrypoint
+args: [--verbose]               # Arguments for the script
 
 env: [LANG, AWS_DEFAULT_REGION]  # Allowlist of environment variable names to pass through
 

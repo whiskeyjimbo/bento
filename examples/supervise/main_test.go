@@ -36,7 +36,7 @@ func TestApproveKeepsAnswers(t *testing.T) {
 	answers := "y\nn\ny\ny\ny\nn\n"
 	p := newPrompter(strings.NewReader(answers), &strings.Builder{})
 
-	got := approve(t.Context(), p, newTestStore(), "k", "/script.sh", "sh", proposal)
+	got := approve(t.Context(), p, newTestStore(), "k", "/script.sh", "sh", nil, proposal)
 
 	if len(got.Read) != 1 || got.Read[0] != "/data.csv" {
 		t.Errorf("Read = %v, want just /data.csv (secret.txt denied)", got.Read)
@@ -62,7 +62,7 @@ func TestApproveSkipsTheChainDownToTheScript(t *testing.T) {
 	// directory is a real grant and stays, so three prompts are left.
 	p := newPrompter(strings.NewReader("y\ny\ny\n"), &strings.Builder{})
 
-	got := approve(t.Context(), p, newTestStore(), "k", "/home/u/src/app/run.sh", "sh", proposal)
+	got := approve(t.Context(), p, newTestStore(), "k", "/home/u/src/app/run.sh", "sh", nil, proposal)
 
 	want := []string{"/home/u/src/app", "/home/u/src/app/data.csv", "/home/u/other"}
 	if len(got.Read) != len(want) {
@@ -87,7 +87,7 @@ func TestApproveKeepsAnAncestorTheStoreDecided(t *testing.T) {
 	// of the walk, and /home/u/src applies from the store without asking.
 	p := newPrompter(strings.NewReader("y\n"), &strings.Builder{})
 
-	got := approve(t.Context(), p, s, "k", "/home/u/src/app/run.sh", "sh", proposal)
+	got := approve(t.Context(), p, s, "k", "/home/u/src/app/run.sh", "sh", nil, proposal)
 
 	want := []string{"/home/u/src", "/home/u/src/app"}
 	if len(got.Read) != len(want) {
@@ -184,7 +184,7 @@ func TestAssertStoreShielded(t *testing.T) {
 func TestDiscoveryPolicyBindsOnlyScriptDir(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 
-	p := discoveryPolicy("/home/u/proj/agent.sh", "sh")
+	p := discoveryPolicy("/home/u/proj/agent.sh", "sh", nil)
 	if len(p.Read) != 1 || p.Read[0] != "/home/u/proj" {
 		t.Errorf("Read = %v, want just the script dir /home/u/proj", p.Read)
 	}
@@ -204,7 +204,7 @@ func TestDiscoveryPolicyBindsOnlyScriptDir(t *testing.T) {
 		"filesystem": "/agent.sh",
 	} {
 		t.Run(name, func(t *testing.T) {
-			p := discoveryPolicy(script, "sh")
+			p := discoveryPolicy(script, "sh", nil)
 			if len(p.Read) != 0 || len(p.Write) != 0 {
 				t.Errorf("broad dir %q: Read=%v Write=%v, want no host grant", script, p.Read, p.Write)
 			}
@@ -226,7 +226,7 @@ func TestDiscoveryPolicyGrantCoversStoreWhenAdjacent(t *testing.T) {
 		"dev XDG_CONFIG_HOME":  {"/home/u/proj/agent.sh", "/home/u/proj/bento-supervise"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			p := discoveryPolicy(tc.script, "sh")
+			p := discoveryPolicy(tc.script, "sh", nil)
 			if err := assertStoreShielded(p, tc.storeDir); err == nil {
 				t.Errorf("discoveryPolicy(%q) grant %v must be shown to cover store %q, proving the trial deny path is required",
 					tc.script, append(p.Read, p.Write...), tc.storeDir)
@@ -278,12 +278,12 @@ func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	interp, _, _ := profile.GuessInterpreter(script)
-	obs, err := trialProfile(t.Context(), newTestStore(), discoveryPolicy(script, interp),
+	obs, err := trialProfile(t.Context(), newTestStore(), discoveryPolicy(script, interp, nil),
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: discoveryEnv()})
 	if err != nil {
 		t.Fatalf("trial run: %v", err)
 	}
-	proposal, err := profile.Synthesize(script, interp, obs)
+	proposal, err := profile.Synthesize(script, interp, nil, obs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
 	// depending on how many incidental reads this host's curl contributes.
 	var dialogue strings.Builder
 	approve(t.Context(), newPrompter(strings.NewReader(strings.Repeat("n\n", 64)), &dialogue),
-		newTestStore(), "k", script, interp, proposal)
+		newTestStore(), "k", script, interp, nil, proposal)
 
 	vault := filepath.Join(filepath.Dir(filepath.Dir(script)), "vault")
 	for _, name := range []string{"data.csv", "secret.txt"} {
@@ -352,7 +352,7 @@ func TestTrialProfileShieldsAdjacentStore(t *testing.T) {
 	if err := os.WriteFile(script, []byte("cat "+storeFile+" 2>&1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	discovery := discoveryPolicy(script, "sh")
+	discovery := discoveryPolicy(script, "sh", nil)
 
 	// Baseline: Profile with no deny path shows discoveryPolicy's script-dir grant does
 	// reach the adjacent store, so the shield trialProfile adds is genuinely load-bearing.

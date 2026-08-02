@@ -198,6 +198,14 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 	if g := tmpGrants(resolved); len(g) > 0 {
 		notes = append(notes, fmt.Sprintf("%d grant(s) under /tmp (%s) - a path there reaches a profiled proposal by existing on this host, so a script that opens guessed names under /tmp can put them in front of you. Keep only the ones it needs.", len(g), strings.Join(g, ", ")))
 	}
+	// Raised for any interpreter_args at all rather than for a list of dangerous
+	// spellings: "-c" and "-m" make the interpreter read a program from this list and
+	// ignore the entrypoint entirely, but every interpreter spells that differently and
+	// a blocklist would say the ones it does not name are safe. The field reads as
+	// innocuous next to the paths and hosts around it, and it decides what runs.
+	if len(p.InterpreterArgs) > 0 {
+		notes = append(notes, fmt.Sprintf("interpreter_args: %s - these go to %q before the entrypoint, so they change how it is read and some of them (-c, -m) make the interpreter run a program from this list instead of the entrypoint. Read them as code, not as configuration.", quotedList(p.InterpreterArgs), p.Interpreter))
+	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}

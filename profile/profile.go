@@ -138,7 +138,7 @@ const ldSoPrefix = "/etc/ld.so"
 // whoever assembles it; every other shortfall (a nonzero exit, a signal, dropped
 // accesses) leaves an observation that is merely incomplete, which a frontend warns
 // about and a human can act on by profiling again.
-func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy, error) {
+func Synthesize(entrypoint, interpreter string, interpreterArgs []string, obs Observation) (*policy.Policy, error) {
 	if obs.SeccompKilled {
 		return nil, ErrSeccompKilled
 	}
@@ -266,11 +266,12 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	}
 
 	p := &policy.Policy{
-		Entrypoint:  entrypoint,
-		Interpreter: interpreter,
-		Read:        cleanPaths(obs.Reads, canon, readSkip),
-		Write:       cleanPaths(obs.Writes, writeDir, writeSkip),
-		Exec:        policy.ExecNone,
+		Entrypoint:      entrypoint,
+		Interpreter:     interpreter,
+		InterpreterArgs: interpreterArgs,
+		Read:            cleanPaths(obs.Reads, canon, readSkip),
+		Write:           cleanPaths(obs.Writes, writeDir, writeSkip),
+		Exec:            policy.ExecNone,
 	}
 	if obs.Execed {
 		p.Exec = policy.ExecAll

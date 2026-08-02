@@ -34,12 +34,15 @@ const (
 // appPerms are the decisions remembered for one app. exec is bento's tri-state
 // (none / none-strict / all), stored verbatim.
 type appPerms struct {
-	Entrypoint  string              `json:"entrypoint"`
-	Interpreter string              `json:"interpreter,omitempty"`
-	Read        map[string]decision `json:"read,omitempty"`
-	Write       map[string]decision `json:"write,omitempty"`
-	Exec        string              `json:"exec,omitempty"`
-	Network     map[string]decision `json:"network,omitempty"`
+	Entrypoint  string `json:"entrypoint"`
+	Interpreter string `json:"interpreter,omitempty"`
+	// InterpreterArgs are the interpreter's own options; the script's arguments are
+	// not remembered here at all.
+	InterpreterArgs []string            `json:"interpreter_args,omitempty"`
+	Read            map[string]decision `json:"read,omitempty"`
+	Write           map[string]decision `json:"write,omitempty"`
+	Exec            string              `json:"exec,omitempty"`
+	Network         map[string]decision `json:"network,omitempty"`
 }
 
 // globalPerms are decisions that apply to every app, standing above the per-app
@@ -404,6 +407,10 @@ func (disk *store) mergeChanges(mem, base *store) {
 		}
 		if ma.Interpreter != "" {
 			da.Interpreter = ma.Interpreter
+			// Taken with it rather than tested on its own: they are one invocation, and a
+			// concurrent write that kept the other run's options beside this run's
+			// interpreter would name a command neither run made.
+			da.InterpreterArgs = ma.InterpreterArgs
 		}
 	}
 }

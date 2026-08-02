@@ -106,13 +106,16 @@ func TestFingerprintCoversEveryPolicyField(t *testing.T) {
 		return Policy{
 			Entrypoint:  "./x",
 			Interpreter: "python3",
-			Args:        []string{"--flag"},
-			Env:         []string{"PATH"},
-			Read:        []string{"/data"},
-			Write:       []string{"/out"},
-			Network:     []NetworkRule{{Host: "a.com", Port: "443"}},
-			Exec:        ExecAll,
-			Limits:      Limits{Memory: "1M", CPU: "50%", PIDs: 128},
+			// Set so the field is covered below, and set here only: the golden hash
+			// above must keep proving that a policy without it hashes as it always did.
+			InterpreterArgs: []string{"-u"},
+			Args:            []string{"--flag"},
+			Env:             []string{"PATH"},
+			Read:            []string{"/data"},
+			Write:           []string{"/out"},
+			Network:         []NetworkRule{{Host: "a.com", Port: "443"}},
+			Exec:            ExecAll,
+			Limits:          Limits{Memory: "1M", CPU: "50%", PIDs: 128},
 		}
 	}
 	unchanged := base()
@@ -216,5 +219,25 @@ func TestFingerprintNilPolicy(t *testing.T) {
 	}
 	if (&Policy{}).Fingerprint() == "" {
 		t.Error("the zero policy must fingerprint distinctly from nil")
+	}
+}
+
+// The order of the interpreter's options is meaningful - `-c` decides what the words
+// after it are - so a reordering is a different policy and must need re-approval.
+func TestFingerprintIsSensitiveToInterpreterArgOrder(t *testing.T) {
+	a := &Policy{Entrypoint: "./x", Interpreter: "python3", InterpreterArgs: []string{"-u", "-B"}}
+	b := &Policy{Entrypoint: "./x", Interpreter: "python3", InterpreterArgs: []string{"-B", "-u"}}
+	if a.Fingerprint() == b.Fingerprint() {
+		t.Error("reordering interpreter_args must change the fingerprint")
+	}
+}
+
+// The two lists are separate fields and must not be confusable in the canonical form:
+// `python3 -u script` and `python3 script -u` are different runs.
+func TestFingerprintSeparatesInterpreterArgsFromArgs(t *testing.T) {
+	a := &Policy{Entrypoint: "./x", Interpreter: "python3", InterpreterArgs: []string{"-u"}}
+	b := &Policy{Entrypoint: "./x", Interpreter: "python3", Args: []string{"-u"}}
+	if a.Fingerprint() == b.Fingerprint() {
+		t.Error("an interpreter option and a script argument of the same text must not fingerprint alike")
 	}
 }

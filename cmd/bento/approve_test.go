@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -564,5 +565,24 @@ func TestStaleRefusalsSayWhyThereIsNoDiff(t *testing.T) {
 	_ = reportApproval(&buf, stale, false)
 	if !strings.Contains(buf.String(), "hash of the permissions, not a copy of them") {
 		t.Errorf("validate's STALE report must say the same; got:\n%s", buf.String())
+	}
+}
+
+// The one policy field that can change what program runs without naming a path or a
+// host. It reads as configuration next to the grants around it, so approving it has to
+// be a decision like every other callout.
+func TestApprovalCalloutsNameInterpreterArgs(t *testing.T) {
+	var buf strings.Builder
+	p := &policy.Policy{Entrypoint: "./tool.py", Interpreter: "python3", InterpreterArgs: []string{"-c", "print(1)"}}
+	writeApprovalCallouts(&buf, "m.yaml", p, p, nil)
+	out := buf.String()
+	if !strings.Contains(out, "interpreter_args") || !strings.Contains(out, strconv.Quote("print(1)")) {
+		t.Errorf("approve did not call out the interpreter's own arguments:\n%s", out)
+	}
+	var plain strings.Builder
+	q := &policy.Policy{Entrypoint: "./tool.py", Interpreter: "python3"}
+	writeApprovalCallouts(&plain, "m.yaml", q, q, nil)
+	if strings.Contains(plain.String(), "interpreter_args") {
+		t.Errorf("a policy without interpreter_args must produce no callout:\n%s", plain.String())
 	}
 }

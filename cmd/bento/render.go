@@ -188,8 +188,9 @@ type mergeJSON struct {
 	// file carried a current approval that this write dropped.
 	ExecWidened    bool `json:"exec_widened"`
 	ApprovalVoided bool `json:"approval_voided"`
-	// InterpreterWas is the interpreter the existing manifest named when this run used a
-	// different one, and empty when they agree. The merged manifest keeps the run's.
+	// InterpreterWas is the invocation - the interpreter and its own arguments, rendered
+	// for display - the existing manifest named when this run used a different one, and
+	// empty when they agree. The merged manifest keeps the run's.
 	InterpreterWas string `json:"interpreter_was,omitempty"`
 }
 
@@ -1327,4 +1328,27 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 		fmt.Fprintln(w, "[bento]   credential under a granted tree was exposed rather than acknowledged.")
 	}
 	fmt.Fprintln(w, "[bento] run `bento doctor` for the full picture, or --strict to refuse rather than degrade.")
+}
+
+// quotedList renders arguments for a report a human reads before approving. Quoted
+// element by element so the boundaries between them are visible - "-c" and "print(1)"
+// are one flag and its program, not a phrase - and so a byte that would otherwise
+// reprogram the terminal is shown rather than acted on.
+func quotedList(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = strconv.Quote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// invocation renders an interpreter and its own arguments as the one command they are,
+// for a report that has to say which of two invocations a manifest names. Quoted for
+// the reason quotedList is, and so `"sh" "-eu"` cannot be misread as a path with a
+// space in it.
+func invocation(interpreter string, args []string) string {
+	if len(args) == 0 {
+		return strconv.Quote(interpreter)
+	}
+	return strconv.Quote(interpreter) + " " + quotedList(args)
 }

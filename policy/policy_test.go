@@ -322,3 +322,31 @@ func TestParseBytes(t *testing.T) {
 		}
 	}
 }
+
+// interpreter_args is the one policy field that can change what program runs without
+// naming a path or a host, so it has to pass the same character screen every other
+// value does - a value carrying an escape sequence would otherwise print as something
+// else at the approval prompt, which is where this field is decided.
+func TestInterpreterArgsAreScreenedForUnsafeRunes(t *testing.T) {
+	p := &Policy{Entrypoint: "./x", Interpreter: "sh", InterpreterArgs: []string{"-c\x1b]0;bash\x07"}}
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("an interpreter arg carrying a terminal escape must be refused")
+	}
+	if !strings.Contains(err.Error(), "not allowed in a path or argument") {
+		t.Errorf("refusal did not name the character screen: %v", err)
+	}
+}
+
+// Without an interpreter there is nothing to pass these to: the entrypoint is a
+// compiled binary that runs itself, and the enforcer would drop them silently.
+func TestInterpreterArgsWithoutAnInterpreterAreRefused(t *testing.T) {
+	p := &Policy{Entrypoint: "./x", InterpreterArgs: []string{"-u"}}
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("interpreter_args without an interpreter must be refused")
+	}
+	if !strings.Contains(err.Error(), "args") {
+		t.Errorf("refusal must point at where the script's own arguments go: %v", err)
+	}
+}

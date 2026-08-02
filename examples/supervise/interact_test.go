@@ -197,7 +197,7 @@ func TestApproveStopsPromptingOnceCancelled(t *testing.T) {
 	proposal := &policy.Policy{Read: []string{"/data", "/secret"}, Exec: policy.ExecAll,
 		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}}}
 
-	final := approve(ctx, p, s, "k", "/s", "sh", proposal)
+	final := approve(ctx, p, s, "k", "/s", "sh", nil, proposal)
 
 	if len(final.Read) != 0 || final.Exec == policy.ExecAll || len(final.Network) != 0 {
 		t.Errorf("a cancelled run granted something nobody answered: %+v", final)

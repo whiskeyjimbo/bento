@@ -1634,10 +1634,18 @@ func observeHomeTmpfs(proc enforce.Process, sb sandbox) string {
 	return filepath.Clean(home)
 }
 
+// command builds the argv both tiers launch: the interpreter and its own options
+// (when there is one), then the entrypoint and the script's args. Shared rather than
+// assembled per tier - a degraded run that ordered these differently would run a
+// different program than the one bwrap runs from the same approved manifest.
+//
+// InterpreterArgs precede the entrypoint because that is where the interpreter reads
+// its options; after it they would be the script's argv.
 func command(p *policy.Policy, sb sandbox) []string {
 	var cmd []string
 	if sb.interpreter != "" {
 		cmd = append(cmd, sb.interpreter)
+		cmd = append(cmd, p.InterpreterArgs...)
 	}
 	cmd = append(cmd, sb.entrypoint)
 	return append(cmd, p.Args...)

@@ -156,7 +156,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		Scratch:     scratch,
 		StripEnv:    stripEnv,
 		AppliedFD:   appliedReportFD,
-		Target:      degradedTarget(sb.interpreter, sb.entrypoint, p.Args),
+		Target:      command(p, sb),
 	}
 
 	// A scope execs its command in place, so the launcher stays the leader of the group
@@ -276,17 +276,6 @@ func concat(lists ...[]string) []string {
 		out = append(out, l...)
 	}
 	return out
-}
-
-// degradedTarget builds the command to run: the interpreter (when set) followed by
-// the entrypoint and its args, matching how the bwrap tier launches a script.
-func degradedTarget(interp, entrypoint string, args []string) []string {
-	var t []string
-	if interp != "" {
-		t = append(t, interp)
-	}
-	t = append(t, entrypoint)
-	return append(t, args...)
 }
 
 // envSlice renders the resolved environment map as KEY=VALUE pairs. The target sees

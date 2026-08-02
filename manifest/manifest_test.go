@@ -594,3 +594,31 @@ func TestResolveRefusesNilPolicy(t *testing.T) {
 		t.Fatal("Resolve(nil, ...) returned no error")
 	}
 }
+
+// interpreter_args survives the YAML round trip as a distinct list from args. Folding
+// the two would move an interpreter option behind the entrypoint, where it becomes the
+// script's argv and the run changes.
+func TestInterpreterArgsRoundTrip(t *testing.T) {
+	src := "entrypoint: ./run.sh\ninterpreter: /bin/sh\ninterpreter_args: [-eu]\nargs: [--verbose]\n"
+	doc, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := doc.Policy.InterpreterArgs; !reflect.DeepEqual(got, []string{"-eu"}) {
+		t.Fatalf("interpreter_args = %q", got)
+	}
+	if got := doc.Policy.Args; !reflect.DeepEqual(got, []string{"--verbose"}) {
+		t.Fatalf("args = %q", got)
+	}
+	out, err := Marshal(doc.Policy, doc.Provenance)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	doc2, err := Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-Parse: %v\n%s", err, out)
+	}
+	if doc.Policy.Fingerprint() != doc2.Policy.Fingerprint() {
+		t.Errorf("fingerprint changed across marshal round trip:\n%s", out)
+	}
+}

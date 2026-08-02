@@ -155,14 +155,13 @@ func persistDecisions(s *store, code int, out io.Writer) int {
 // whatever it recorded, so every return here - including a failure - keeps the human's
 // answers.
 func supervised(ctx context.Context, s *store, script string) int {
-	interp, dropped, _ := profile.GuessInterpreter(script)
-	// A manifest has nowhere to put the interpreter's own flags, so they are dropped
-	// rather than silently carried - and this is the wrapper that persists the guess and
-	// exports it, so the human is told once here. `sh -eu` without -e keeps running past
-	// a failed command: the difference is in behavior, not only in what gets recorded.
-	if len(dropped) > 0 {
-		fmt.Fprintf(os.Stderr, "supervise: the shebang passes %q to %s; a manifest cannot record interpreter arguments, so this run omits them\n",
-			strings.Join(dropped, " "), interp)
+	interp, interpArgs, _ := profile.GuessInterpreter(script)
+	// Named once here because this is the wrapper that persists the guess and exports
+	// it, and because these change what the interpreter does rather than only what gets
+	// recorded: `sh -eu` without -e keeps running past a failed command.
+	if len(interpArgs) > 0 {
+		fmt.Fprintf(os.Stderr, "supervise: the shebang passes %q to %s; the trial, the enforced run and any exported manifest all carry it\n",
+			strings.Join(interpArgs, " "), interp)
 	}
 	name := filepath.Base(script)
 
@@ -209,7 +208,7 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// approved policy's env allowlist so the enforced run rebuilds them.
 	trialEnv := discoveryEnv()
 	fmt.Fprintf(os.Stderr, "\n%s %s\n", t.bold("trial run · "+name), t.dim("(default-deny - nothing leaves the host)"))
-	obs, err := trialProfile(ctx, s, discoveryPolicy(script, interp),
+	obs, err := trialProfile(ctx, s, discoveryPolicy(script, interp, interpArgs),
 		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: trialEnv})
 	if err != nil {
 		// A cancelled trial fails with whatever the killed child left behind, which is a
@@ -229,7 +228,7 @@ func supervised(ctx context.Context, s *store, script string) int {
 		}
 		return 1
 	}
-	proposal, err := profile.Synthesize(script, interp, obs)
+	proposal, err := profile.Synthesize(script, interp, interpArgs, obs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		return 1
@@ -237,10 +236,11 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// Allowlist the discovery anchors so the enforced run resolves the same
 	// $HOME-relative paths the trial recorded and the human approved.
 	proposal.Env = sortedEnvNames(trialEnv)
-	approved := approve(ctx, p, s, key, script, interp, proposal)
+	approved := approve(ctx, p, s, key, script, interp, interpArgs, proposal)
 	// Record identity for a faithful future manifest export.
 	s.app(key).Entrypoint = script
 	s.app(key).Interpreter = interp
+	s.app(key).InterpreterArgs = interpArgs
 
 	// An interrupt during the approval prompts leaves the rest of the proposal
 	// unanswered, so the assembled policy is narrower than anything the human agreed
@@ -472,7 +472,7 @@ func assertStoreShielded(final *policy.Policy, storeDir string) error {
 // created store's path slightly differently; the message is additive, so a miss only
 // falls back to the raw backend error, never a wrong abort.
 func scriptDirCoversStore(script, interp, storeDir string) bool {
-	return assertStoreShielded(discoveryPolicy(script, interp), storeDir) != nil
+	return assertStoreShielded(discoveryPolicy(script, interp, nil), storeDir) != nil
 }
 
 // trialProfile runs the observed trial pass under default-deny, always shielding the
@@ -495,12 +495,13 @@ func trialProfile(ctx context.Context, s *store, discovery *policy.Policy, proc 
 // the caller shields the permission store separately (via a trial deny path): a
 // script that lives in or beside the store would otherwise get it through this
 // script-dir grant.
-func discoveryPolicy(script, interp string) *policy.Policy {
+func discoveryPolicy(script, interp string, interpArgs []string) *policy.Policy {
 	p := &policy.Policy{
-		Entrypoint:  script,
-		Interpreter: interp,
-		Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
-		Exec:        policy.ExecAll,
+		Entrypoint:      script,
+		Interpreter:     interp,
+		InterpreterArgs: interpArgs,
+		Network:         []policy.NetworkRule{{Host: "*", Port: "*"}},
+		Exec:            policy.ExecAll,
 	}
 	// Bind the script's own directory unless it is broad (the home directory or a
 	// top-level dir): mounting a broad directory during discovery would re-expose the
@@ -562,12 +563,12 @@ func sortedEnvNames(m map[string]string) []string {
 // applies silently, an unknown one prompts and (for y/n) is remembered. A grant
 // that would expose the store is refused outright. Synthesize has already dropped
 // the noise (the interpreter's runtime, /proc, /dev, the script itself).
-func approve(ctx context.Context, p *prompter, s *store, key, script, interp string, proposal *policy.Policy) *policy.Policy {
+func approve(ctx context.Context, p *prompter, s *store, key, script, interp string, interpArgs []string, proposal *policy.Policy) *policy.Policy {
 	// Carry the discovery env allowlist through unprompted: HOME and the XDG anchors
 	// are low-risk name bindings, and the enforced run needs them to rebuild the same
 	// $HOME-relative paths the trial recorded. They name variables, not grants; a path
 	// under one is still bound only if its own read/write grant is approved below.
-	final := &policy.Policy{Entrypoint: script, Interpreter: interp, Exec: policy.ExecNone, Env: proposal.Env}
+	final := &policy.Policy{Entrypoint: script, Interpreter: interp, InterpreterArgs: interpArgs, Exec: policy.ExecNone, Env: proposal.Env}
 
 	fmt.Fprintln(p.out, p.t.dim("  approve what the trial touched  ·  y allow (this script) · n deny · o once"))
 
@@ -932,4 +933,16 @@ func pretty(path string) string {
 		}
 	}
 	return path
+}
+
+// invocation renders an interpreter and its own arguments as the one command they are.
+// Quoted for the reason quotePath is - the arguments come from the script's shebang,
+// which is the untrusted target's text - and so `"sh" "-eu"` cannot be misread as a
+// path with a space in it.
+func invocation(interp string, args []string) string {
+	quoted := make([]string, 0, len(args)+1)
+	for _, a := range append([]string{interp}, args...) {
+		quoted = append(quoted, strconv.Quote(a))
+	}
+	return strings.Join(quoted, " ")
 }

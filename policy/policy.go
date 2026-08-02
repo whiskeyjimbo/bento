@@ -31,6 +31,15 @@ type Policy struct {
 	// Interpreter runs the entrypoint (e.g. "python3"). Empty means the
 	// entrypoint is its own interpreter: a compiled ELF/Mach-O binary.
 	Interpreter string
+	// InterpreterArgs are options passed to the interpreter itself, before the
+	// entrypoint - what a shebang's `#!/bin/sh -eu` asks for. They are not the
+	// script's argv; that is Args.
+	//
+	// This field changes what runs, not merely what is recorded: `-c` or `-m` makes
+	// the interpreter read a program from the argument list instead of the
+	// entrypoint. It is fingerprinted and rendered wherever the policy is reviewed
+	// for that reason.
+	InterpreterArgs []string
 	// Args are fixed arguments passed to the entrypoint.
 	Args []string
 	// Env is an allowlist of host environment-variable NAMES passed through to
@@ -146,6 +155,7 @@ func (p *Policy) Problems() []error {
 	// single gate every construction path passes through, closes it for the CLI and Go
 	// embedders alike; the host field is already guarded separately.
 	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
+	fields = append(fields, p.InterpreterArgs...)
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
 		if r, ok := FirstUnsafeRune(f); ok {
@@ -155,6 +165,12 @@ func (p *Policy) Problems() []error {
 	var probs []error
 	if p.Entrypoint == "" {
 		probs = append(probs, fmt.Errorf("policy: entrypoint is required"))
+	}
+	// Without an interpreter the entrypoint is a compiled binary that runs itself, so
+	// there is nothing for these to be passed to. The enforcer would drop them and run
+	// the binary bare - a manifest that reads as declaring options nobody applies.
+	if p.Interpreter == "" && len(p.InterpreterArgs) > 0 {
+		probs = append(probs, fmt.Errorf("policy: interpreter_args is set but interpreter is not; these are the interpreter's own options, and the script's own arguments go in args"))
 	}
 	// An empty path grant is not a grant of nothing. It survives the manifest-dir
 	// anchoring untouched, renders as "read: []" in the validate summary - so an operator

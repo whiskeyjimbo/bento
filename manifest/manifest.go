@@ -32,16 +32,18 @@ const maxManifestBytes = 1 << 20
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the
 // domain carries no serialization concerns.
 type manifest struct {
-	Entrypoint  string        `yaml:"entrypoint,omitempty"`
-	Interpreter string        `yaml:"interpreter,omitempty"`
-	Args        []string      `yaml:"args,omitempty"`
-	Env         []string      `yaml:"env,omitempty"`
-	Read        []string      `yaml:"read,omitempty"`
-	Write       []string      `yaml:"write,omitempty"`
-	Network     []networkRule `yaml:"network,omitempty"`
-	Exec        string        `yaml:"exec,omitempty"`
-	Limits      *limits       `yaml:"limits,omitempty"`
-	Provenance  *Provenance   `yaml:"provenance,omitempty"`
+	Entrypoint  string `yaml:"entrypoint,omitempty"`
+	Interpreter string `yaml:"interpreter,omitempty"`
+	// InterpreterArgs are the interpreter's own options; Args are the script's.
+	InterpreterArgs []string      `yaml:"interpreter_args,omitempty"`
+	Args            []string      `yaml:"args,omitempty"`
+	Env             []string      `yaml:"env,omitempty"`
+	Read            []string      `yaml:"read,omitempty"`
+	Write           []string      `yaml:"write,omitempty"`
+	Network         []networkRule `yaml:"network,omitempty"`
+	Exec            string        `yaml:"exec,omitempty"`
+	Limits          *limits       `yaml:"limits,omitempty"`
+	Provenance      *Provenance   `yaml:"provenance,omitempty"`
 }
 
 // Provenance is the tool-written block that records how a manifest was produced
@@ -420,13 +422,14 @@ func screenProvenance(prov Provenance) error {
 
 func fromPolicy(p *policy.Policy) manifest {
 	m := manifest{
-		Entrypoint:  p.Entrypoint,
-		Interpreter: p.Interpreter,
-		Args:        p.Args,
-		Env:         p.Env,
-		Read:        p.Read,
-		Write:       p.Write,
-		Exec:        string(p.Exec),
+		Entrypoint:      p.Entrypoint,
+		Interpreter:     p.Interpreter,
+		InterpreterArgs: p.InterpreterArgs,
+		Args:            p.Args,
+		Env:             p.Env,
+		Read:            p.Read,
+		Write:           p.Write,
+		Exec:            string(p.Exec),
 	}
 	for _, r := range p.Network {
 		m.Network = append(m.Network, networkRule{Host: r.Host, Port: r.Port})
@@ -439,13 +442,14 @@ func fromPolicy(p *policy.Policy) manifest {
 
 func (m *manifest) toPolicy() *policy.Policy {
 	p := &policy.Policy{
-		Entrypoint:  m.Entrypoint,
-		Interpreter: m.Interpreter,
-		Args:        m.Args,
-		Env:         m.Env,
-		Read:        m.Read,
-		Write:       m.Write,
-		Exec:        policy.ExecMode(m.Exec),
+		Entrypoint:      m.Entrypoint,
+		Interpreter:     m.Interpreter,
+		InterpreterArgs: m.InterpreterArgs,
+		Args:            m.Args,
+		Env:             m.Env,
+		Read:            m.Read,
+		Write:           m.Write,
+		Exec:            policy.ExecMode(m.Exec),
 	}
 	// An absent exec: means the default, deny-subprocesses posture. Resolving it
 	// here keeps every consumer from having to treat "" as a special case.

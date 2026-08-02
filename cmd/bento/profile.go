@@ -26,11 +26,14 @@ import (
 
 func newProfileCmd() *cobra.Command {
 	var (
-		interpreter   string
-		out           string
-		allowNetwork  bool
-		acceptAliases []string
-		asJSON        bool
+		interpreter string
+		// interpreterArgs are never a flag: they come from the shebang of a script whose
+		// interpreter bento guessed. See the guess below.
+		interpreterArgs []string
+		out             string
+		allowNetwork    bool
+		acceptAliases   []string
+		asJSON          bool
 	)
 	cmd := &cobra.Command{
 		Use:   "profile <script> [-- args...]",
@@ -117,24 +120,25 @@ func newProfileCmd() *cobra.Command {
 				}
 				return refuse(err)
 			}
+			// Only when the interpreter was guessed: these arguments belong to the
+			// interpreter the shebang named, and pinning a different one with
+			// --interpreter leaves no reason to think its options are the same.
 			if interpreter == "" {
-				guess, dropped, source := profile.GuessInterpreter(script)
+				guess, guessArgs, source := profile.GuessInterpreter(script)
 				// Said out loud because the guess lands in the manifest the user is about
 				// to approve, and a script run under an interpreter it did not name is
 				// the kind of difference that only shows up as behavior.
 				if guess != "" {
 					fmt.Fprintf(os.Stderr, "[bento] interpreter %q, from %s; --interpreter overrides it\n", guess, source)
 				}
-				// A manifest has nowhere to put the interpreter's own flags - Args are the
-				// script's argv - so they are dropped rather than silently carried. That is
-				// worth a line: `sh -eu` without -e keeps running past a failed command, so
-				// the profiled and enforced runs can differ from a kernel exec of the same
-				// script in what they do, not just in what they record.
-				if len(dropped) > 0 {
-					fmt.Fprintf(os.Stderr, "[bento] the shebang passes %q to %s; bento cannot record interpreter\n", strings.Join(dropped, " "), guess)
-					fmt.Fprintf(os.Stderr, "[bento] arguments, so this run and the manifest omit them\n")
+				// Named as well, because these change what the interpreter does rather
+				// than only what the manifest records: `sh -eu` without -e keeps running
+				// past a failed command. They land in the manifest, so the enforced run
+				// and this one agree - and so the reviewer sees them before approving.
+				if len(guessArgs) > 0 {
+					fmt.Fprintf(os.Stderr, "[bento] the shebang passes %q to %s; the manifest records it as interpreter_args\n", strings.Join(guessArgs, " "), guess)
 				}
-				interpreter = guess
+				interpreter, interpreterArgs = guess, guessArgs
 			}
 			if out == "" {
 				out = args[0] + ".manifest.yaml"
@@ -152,7 +156,7 @@ func newProfileCmd() *cobra.Command {
 			env := discoveryEnv()
 
 			cfg := profileConfig{
-				ctx: cmd.Context(), script: script, interpreter: interpreter,
+				ctx: cmd.Context(), script: script, interpreter: interpreter, interpreterArgs: interpreterArgs,
 				args: args[1:], env: env, allowNetwork: allowNetwork,
 				acceptAliases: acceptAliases,
 				// The target's stdout goes where `bento run` puts it, so profiling a
@@ -164,7 +168,7 @@ func newProfileCmd() *cobra.Command {
 			if asJSON {
 				cfg.targetStdout = os.Stderr
 			}
-			base := discoveryPolicy(script, interpreter, args[1:])
+			base := discoveryPolicy(script, interpreter, interpreterArgs, args[1:])
 
 			var proposed *policy.Policy
 			var seed *policy.Policy
@@ -571,15 +575,16 @@ func incompleteReason(status roundStatus, stop convergeStop) string {
 // profileConfig carries the inputs a profiling round needs that do not change between
 // rounds, so the convergence loop can re-run rounds without re-threading them.
 type profileConfig struct {
-	ctx           context.Context
-	script        string
-	interpreter   string
-	args          []string
-	env           map[string]string
-	allowNetwork  bool
-	acceptAliases []string  // host trees whose credential aliases the user has acknowledged; profiling scans for them exactly as an enforced run does
-	targetStdin   io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
-	targetStdout  io.Writer // where the target's own stdout goes: this command's stdout, or stderr under --json where the envelope owns stdout alone
+	ctx             context.Context
+	script          string
+	interpreter     string
+	interpreterArgs []string
+	args            []string
+	env             map[string]string
+	allowNetwork    bool
+	acceptAliases   []string  // host trees whose credential aliases the user has acknowledged; profiling scans for them exactly as an enforced run does
+	targetStdin     io.Reader // the profiled target's stdin: os.Stdin for a single pass, nil in the interactive loop where the human answers prompts instead
+	targetStdout    io.Writer // where the target's own stdout goes: this command's stdout, or stderr under --json where the envelope owns stdout alone
 }
 
 // profileRound runs one profiling pass under discovery and returns the clamped
@@ -601,7 +606,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// contradicts it: a SIGSYS kill also sets Signaled and Dropped, and telling the user
 	// twice to profile again, then that profiling again is pointless, is worse than the
 	// refusal alone.
-	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, obs)
+	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, cfg.interpreterArgs, obs)
 	if err != nil {
 		return nil, roundStatus{}, err
 	}
@@ -1511,13 +1516,14 @@ func sortedBoolKeys(m map[string]bool) []string {
 // does not already provide via its private /tmp); every other access is recorded as
 // intent, not honored. Exec and network are left open so the run exercises its real
 // code paths; egress is recorded, and forwarded only under --allow-network.
-func discoveryPolicy(script, interpreter string, args []string) *policy.Policy {
+func discoveryPolicy(script, interpreter string, interpreterArgs, args []string) *policy.Policy {
 	p := &policy.Policy{
-		Entrypoint:  script,
-		Interpreter: interpreter,
-		Args:        args,
-		Network:     []policy.NetworkRule{{Host: "*", Port: "*"}},
-		Exec:        policy.ExecAll,
+		Entrypoint:      script,
+		Interpreter:     interpreter,
+		InterpreterArgs: interpreterArgs,
+		Args:            args,
+		Network:         []policy.NetworkRule{{Host: "*", Port: "*"}},
+		Exec:            policy.ExecAll,
 	}
 	// Grant the script's own directory unless it is broad (the home directory or a
 	// top-level dir): binding a broad directory during discovery would re-expose the
@@ -1930,9 +1936,10 @@ type mergeOutcome struct {
 	keptRead, keptWrite, keptEnv, keptNetwork []string
 	// execWidened is whether the union escalated exec from a blocked mode to `all`.
 	execWidened bool
-	// interpreterWas is the existing manifest's interpreter when this run used a
-	// different one, and "" when they agree. The run's interpreter is what the merged
-	// manifest keeps, so a reviewer has to be told which one the file used to name.
+	// interpreterWas is the existing manifest's interpreter and its arguments, rendered
+	// for display, when this run used a different invocation - and "" when they agree.
+	// The run's is what the merged manifest keeps, so a reviewer has to be told which
+	// one the file used to name.
 	interpreterWas string
 	// approvalVoided is whether the file being widened carried a current approval, which
 	// the re-profile drops. validate reports it on the next command; saying it here is
@@ -1982,10 +1989,13 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 		keptNetwork: only(networkKeys(existing.Policy.Network), networkKeys(proposed.Network)),
 		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
 		interpreterWas: func() string {
-			if existing.Policy.Interpreter == proposed.Interpreter {
+			// The arguments are part of the invocation the manifest named, so a change to
+			// them alone - `sh -eu` becoming plain `sh` - is the same silent rewrite of
+			// what runs that a changed interpreter is, and gets the same line.
+			if existing.Policy.Interpreter == proposed.Interpreter && slices.Equal(existing.Policy.InterpreterArgs, proposed.InterpreterArgs) {
 				return ""
 			}
-			return existing.Policy.Interpreter
+			return invocation(existing.Policy.Interpreter, existing.Policy.InterpreterArgs)
 		}(),
 		// Reported whenever the file was approved: profile writes its own provenance
 		// block, so the stamp is dropped by the write regardless of whether the grants
@@ -2069,7 +2079,7 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 		fmt.Fprintf(w, "[bento] exec was widened to `all` by this run: the manifest no longer blocks subprocesses.\n")
 	}
 	if m.interpreterWas != "" {
-		fmt.Fprintf(w, "[bento] the manifest named interpreter %q, but this run profiled under %q, so the\n", m.interpreterWas, m.policy.Interpreter)
+		fmt.Fprintf(w, "[bento] the manifest named interpreter %s, but this run profiled under %s, so the\n", m.interpreterWas, invocation(m.policy.Interpreter, m.policy.InterpreterArgs))
 		fmt.Fprintf(w, "[bento] merged manifest names the one that produced these grants. Pass --interpreter to pin it.\n")
 	}
 	if m.approvalVoided {
@@ -2084,17 +2094,20 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 // The interpreter comes from the run instead, because the grants being merged in are
 // the ones that run produced: keeping an older manifest's interpreter would write a
 // manifest describing a run under one interpreter with the paths another one opened,
-// and the enforced run would then differ from the run the user just watched.
+// and the enforced run would then differ from the run the user just watched. Its
+// arguments travel with it whole rather than being unioned - they are one invocation,
+// and mixing two shebangs' options would produce a run neither of them describes.
 func mergePolicies(base, add *policy.Policy) *policy.Policy {
 	out := &policy.Policy{
-		Entrypoint:  base.Entrypoint,
-		Interpreter: add.Interpreter,
-		Args:        base.Args,
-		Env:         union(base.Env, add.Env),
-		Read:        union(base.Read, add.Read),
-		Write:       union(base.Write, add.Write),
-		Exec:        base.Exec,
-		Limits:      base.Limits,
+		Entrypoint:      base.Entrypoint,
+		Interpreter:     add.Interpreter,
+		InterpreterArgs: add.InterpreterArgs,
+		Args:            base.Args,
+		Env:             union(base.Env, add.Env),
+		Read:            union(base.Read, add.Read),
+		Write:           union(base.Write, add.Write),
+		Exec:            base.Exec,
+		Limits:          base.Limits,
 	}
 	if add.Exec == policy.ExecAll {
 		out.Exec = policy.ExecAll

@@ -18,6 +18,10 @@ import (
 // are sorted so reordering them is not a change; args are kept in order because
 // their order is meaningful to the program.
 //
+// The argument lists emit one line per element, so a policy with none emits none.
+// That is what let interpreter_args be added without restamping every manifest that
+// existed: a policy that does not set it hashes exactly as it did before the field.
+//
 // Exec is hashed in canonical form: the zero value hashes as "none", because the
 // enforcer treats the two identically. Two policies that permit the same thing but
 // spell it differently would otherwise need separate approvals.
@@ -41,6 +45,9 @@ func (p *Policy) Fingerprint() string {
 
 	line("entrypoint\x00%s", p.Entrypoint)
 	line("interpreter\x00%s", p.Interpreter)
+	for _, a := range p.InterpreterArgs {
+		line("interpreter_arg\x00%s", a)
+	}
 	for _, a := range p.Args {
 		line("arg\x00%s", a)
 	}

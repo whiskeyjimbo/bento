@@ -1855,3 +1855,28 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 		}
 	})
 }
+
+// The interpreter's own options go before the entrypoint, which is the only place the
+// interpreter reads them: after it they would be the script's argv, and `python3 -u`
+// would become `python3 script -u`.
+func TestCommandPutsInterpreterArgsBeforeTheEntrypoint(t *testing.T) {
+	sb := testSandbox()
+	sb.interpreter = "/bin/sh"
+	p := &policy.Policy{Entrypoint: "/work/run.py", InterpreterArgs: []string{"-eu"}, Args: []string{"--flag"}}
+	args := compileOrFail(t, p, sb)
+
+	// The last separator, as its neighbour above does: bwrap's own "--" comes first
+	// and the launcher's is the one the target's argv follows.
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+		}
+	}
+	if sep < 0 {
+		t.Fatal("argv must contain the -- separator")
+	}
+	if got := strings.Join(args[sep+1:], " "); got != "/bin/sh -eu /work/run.py --flag" {
+		t.Errorf("command = %q", got)
+	}
+}

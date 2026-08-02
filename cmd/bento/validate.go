@@ -373,12 +373,14 @@ func approvalName(s approvalState) string {
 }
 
 type policyJSON struct {
-	Entrypoint  string   `json:"entrypoint"`
-	Interpreter string   `json:"interpreter,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Env         []string `json:"env,omitempty"`
-	Read        []string `json:"read,omitempty"`
-	Write       []string `json:"write,omitempty"`
+	Entrypoint  string `json:"entrypoint"`
+	Interpreter string `json:"interpreter,omitempty"`
+	// InterpreterArgs are the interpreter's own options; Args are the script's.
+	InterpreterArgs []string `json:"interpreter_args,omitempty"`
+	Args            []string `json:"args,omitempty"`
+	Env             []string `json:"env,omitempty"`
+	Read            []string `json:"read,omitempty"`
+	Write           []string `json:"write,omitempty"`
 	// ResolvedRead/ResolvedWrite name what each grant reaches on this host, for the
 	// entries where that differs from the spelling - a ~ or relative prefix, or a
 	// symlink. read/write stay literal because that is what the fingerprint attests and
@@ -455,14 +457,15 @@ func networkKeys(rules []policy.NetworkRule) []string {
 
 func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON {
 	out := policyJSON{
-		Entrypoint:  p.Entrypoint,
-		Interpreter: p.Interpreter,
-		Args:        p.Args,
-		Env:         p.Env,
-		Read:        p.Read,
-		Write:       p.Write,
-		Exec:        string(p.Exec),
-		Network:     networkKeys(p.Network),
+		Entrypoint:      p.Entrypoint,
+		Interpreter:     p.Interpreter,
+		InterpreterArgs: p.InterpreterArgs,
+		Args:            p.Args,
+		Env:             p.Env,
+		Read:            p.Read,
+		Write:           p.Write,
+		Exec:            string(p.Exec),
+		Network:         networkKeys(p.Network),
 	}
 	// Rendered in the same spelling as the network field above, so a consumer can match
 	// an entry back to the rule it marks without re-deriving the join.
@@ -525,6 +528,12 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	fmt.Fprintf(w, "entrypoint:   %s\n", p.Entrypoint)
 	if p.Interpreter != "" {
 		fmt.Fprintf(w, "interpreter:  %s\n", p.Interpreter)
+		// On its own line and quoted element by element: these go to the interpreter
+		// before the entrypoint, so a spelling like "-c" decides what it reads at all,
+		// and a reviewer skimming for the program name must not read them as part of it.
+		if len(p.InterpreterArgs) > 0 {
+			fmt.Fprintf(w, "  args passed to the interpreter, before the entrypoint: %s\n", quotedList(p.InterpreterArgs))
+		}
 	} else {
 		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is a compiled binary)\n")
 	}
