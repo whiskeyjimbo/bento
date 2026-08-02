@@ -975,6 +975,11 @@ func guessInterpreter(path string) (interpreter string, dropped []string) {
 // argv[1], so "#!/bin/sh -e -u" passes one argument "-e -u" - which is why a shebang
 // wanting several must go through `env -S`, and why the direct branch returns the
 // remainder whole. env -S does split, so that branch returns separate words.
+//
+// The env branch splits even where no -S is present, which is a case no runner really
+// serves: a kernel exec of "#!/usr/bin/env python3 -u" hands env the single argument
+// "python3 -u" and env finds no program by that name. bento execs the interpreter
+// itself, so a guess at what the author meant is more use than refusing to read it.
 func shebangInterpreter(path string) (interpreter string, args []string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1000,18 +1005,30 @@ func shebangInterpreter(path string) (interpreter string, args []string) {
 	if filepath.Base(fields[0]) == "env" {
 		for i := 1; i < len(fields); i++ {
 			w := fields[i]
+			// -S/--split-string may carry its payload attached as well as in the next
+			// word. Unwrapping it rather than skipping the word puts the payload's first
+			// token - where the interpreter or a leading assignment sits - through the
+			// same tests as any other field, so `-Spython3` reads as python3 instead of
+			// falling through to the extension guess.
+			if p, ok := strings.CutPrefix(w, "--split-string="); ok {
+				w = p
+			} else if p, ok := strings.CutPrefix(w, "-S"); ok && p != "" {
+				w = p
+			}
 			// An interpreter (a path or a bare name) carries no '=', so any such word is
-			// an assignment, matching env's own handling.
-			if strings.Contains(w, "=") {
+			// an assignment, matching env's own handling. An empty payload (`-S` with
+			// nothing after the `=`) names nothing and must not read as an interpreter.
+			if w == "" || strings.Contains(w, "=") {
 				continue
 			}
 			if strings.HasPrefix(w, "-") {
-				// -u/--unset and -C/--chdir take their argument as a separate word, so
-				// without this the variable name or directory reads as the interpreter.
-				// The attached forms are covered above or by the prefix test. -S is
-				// deliberately not here: what follows it is the string env splits, which
-				// begins with the interpreter.
-				if w == "-u" || w == "--unset" || w == "-C" || w == "--chdir" {
+				// These take their argument as a separate word, so without consuming it
+				// the variable name, directory, or argv[0] reads as the interpreter. The
+				// attached forms are covered above or by the prefix test. A bare -S is not
+				// here: what follows it is the string env splits, which begins with the
+				// interpreter.
+				switch w {
+				case "-u", "--unset", "-C", "--chdir", "-a", "--argv0":
 					i++
 				}
 				continue

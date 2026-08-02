@@ -4,8 +4,10 @@ package main
 
 import "fmt"
 
-// checkPlatform refuses the commands that build or probe a sandbox off Linux, in the same
-// words backend.New uses, before the command reaches anything else.
+// checkPlatform refuses the commands that build or probe a sandbox off Linux, before the
+// command reaches anything else. It says what backend.New says (modulo that one's package
+// prefix), deliberately and by hand: nothing enforces the two staying in step, since
+// neither file compiles on the host the tests run on.
 //
 // The tree deliberately builds for darwin (see backend/backend_other.go), so a macOS
 // developer gets a binary - and without this would meet whichever platform stub happened

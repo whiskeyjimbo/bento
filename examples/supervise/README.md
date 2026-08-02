@@ -116,7 +116,7 @@ enforced run · agent.sh  (a live gate prompts for any undeclared host)
 the sandbox shielded 5 credential/host-service path(s) from the script
 
 the live gate admitted egress beyond the manifest:
-  "example.org" port 443   (a real wrapper would offer to add this to the manifest)
+  "example.org" port 443 (a real wrapper would offer to add this to the manifest)
 
 egress to these destinations was refused: no network rule covers them, and none was admitted
   "ads.tracker.example" port 443 (the target saw only a 403 from the proxy)

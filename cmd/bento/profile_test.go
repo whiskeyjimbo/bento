@@ -1290,6 +1290,14 @@ func TestGuessInterpreterPrefersTheShebang(t *testing.T) {
 		{"u2", "#!/usr/bin/env -S --unset PATH python3\n", "python3", nil, "the script's shebang"},
 		{"u3", "#!/usr/bin/env -S -C /tmp python3\n", "python3", nil, "the script's shebang"},
 		{"u4", "#!/usr/bin/env -S --unset=PATH python3\n", "python3", nil, "the script's shebang"}, // attached form needs no consume
+		{"u5", "#!/usr/bin/env -S -a agent python3\n", "python3", nil, "the script's shebang"},     // --argv0 takes a word too
+
+		// -S can carry its payload attached. Skipping the whole word would drop the
+		// interpreter and fall through to the extension, silently profiling under bash.
+		{"S1.sh", "#!/usr/bin/env -Spython3 -u\n", "python3", []string{"-u"}, "the script's shebang"},
+		{"S2.sh", "#!/usr/bin/env --split-string=python3 -u\n", "python3", []string{"-u"}, "the script's shebang"},
+		{"S3", "#!/usr/bin/env -SFOO=bar python3\n", "python3", nil, "the script's shebang"}, // payload is an assignment
+		{"S4.py", "#!/usr/bin/env --split-string=\n", "python3", nil, "the .py extension"},   // empty payload names nothing
 
 		// Linux does not tokenize a shebang: everything after the interpreter is one
 		// argument, which is why a multi-arg shebang has to go through `env -S`.

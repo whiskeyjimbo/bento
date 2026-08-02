@@ -98,6 +98,14 @@ func TestGuessInterpreterAnswersAsTheCLIDoes(t *testing.T) {
 		// or directory reads as the interpreter.
 		{"u1", "#!/usr/bin/env -S -u PATH python3 -u\n", "python3", []string{"-u"}},
 		{"u2", "#!/usr/bin/env -S -C /tmp python3\n", "python3", nil},
+		{"u3", "#!/usr/bin/env -S -a agent python3\n", "python3", nil},
+
+		// -S can carry its payload attached. Skipping the whole word would drop the
+		// interpreter and fall through to the extension, silently running under bash.
+		{"S1.sh", "#!/usr/bin/env -Spython3 -u\n", "python3", []string{"-u"}},
+		{"S2.sh", "#!/usr/bin/env --split-string=python3 -u\n", "python3", []string{"-u"}},
+		{"S3", "#!/usr/bin/env -SFOO=bar python3\n", "python3", nil},
+		{"S4.py", "#!/usr/bin/env --split-string=\n", "python3", nil},
 
 		// Linux does not tokenize a shebang: everything after the interpreter is one
 		// argument, which is why a multi-arg shebang has to go through `env -S`.
