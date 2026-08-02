@@ -895,3 +895,42 @@ func assertProblem(t *testing.T, got []string, want string) {
 		t.Errorf("problems = %v, want one containing %q", got, want)
 	}
 }
+
+// The backend runs its shield checks on grants it has already made symlink-free, so the
+// gate has to compare where a grant lands rather than how it is spelled. Both directions
+// are the same defect with the sides swapped: a link out of a shield refused here would
+// have the gate rejecting what run accepts, and a link into one honored here would put
+// the refusal back at run's first step.
+func TestShieldedGrantProblemsFollowTheGrantsSymlinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "backups")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	escaping := filepath.Join(sshDir, "backup")
+	if err := os.Symlink(outside, escaping); err != nil {
+		t.Fatal(err)
+	}
+	entering := filepath.Join(t.TempDir(), "keys")
+	if err := os.Symlink(sshDir, entering); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := shieldedWriteProblems([]string{escaping})
+	if err != nil {
+		t.Fatalf("shieldedWriteProblems: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("a grant whose link leaves the shield is honored by the run; got %v", got)
+	}
+	got, err = shieldedWriteProblems([]string{entering})
+	if err != nil {
+		t.Fatalf("shieldedWriteProblems: %v", err)
+	}
+	assertProblem(t, got, "is inside the always-shielded path")
+}

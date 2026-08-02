@@ -556,13 +556,13 @@ func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
 func TestStaleRefusalsSayWhyThereIsNoDiff(t *testing.T) {
 	stale := doc("old")
 	err := requireApproval(stale, false)
-	if err == nil || !strings.Contains(err.Error(), "hash of the permissions rather than a copy") {
+	if err == nil || !strings.Contains(err.Error(), noStampDiff) {
 		t.Errorf("run's stale refusal must say the stamp cannot produce a diff; got %v", err)
 	}
 
 	var buf strings.Builder
 	_ = reportApproval(&buf, stale, false)
-	if !strings.Contains(buf.String(), "hash of the permissions, not a copy") {
+	if !strings.Contains(buf.String(), "hash of the permissions, not a copy of them") {
 		t.Errorf("validate's STALE report must say the same; got:\n%s", buf.String())
 	}
 }

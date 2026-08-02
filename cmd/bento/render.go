@@ -362,11 +362,16 @@ func builtinShieldRules() ([]denylist.Rule, error) {
 //   - checkWriteNotAboveShield - a write containing a DenyAll shield.
 //
 // The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes.
-// Two narrowings against the backend, both in the safe direction: the shield paths are
-// compared unresolved, where the backend resolves each rule through sb.resolve, so a grant
-// naming a symlinked shield's real target is refused at run time and not here; and the
-// rule set omits extraDeny (see builtinShieldRules). Neither can produce a refusal a run
-// would not make, which is the property the gate needs.
+// Both sides are then symlink-resolved before they are compared, as the backend compares
+// them: it works on grants resolveGrants has already made symlink-free, against rules it
+// puts through sb.resolve. Resolving only one side breaks parity in whichever direction
+// was left literal - a shield that is itself a link (~/.bashrc into the nix store) is
+// missed if the rules stay literal, and `write: ~/.ssh/backup` pointing at /srv is refused
+// here while the run honors it if the grants do. The refusal still quotes both as the
+// manifest and the deny-list spell them, which is what each reader is looking at.
+//
+// One narrowing remains against the backend, in the direction that only misses a refusal:
+// the rule set omits extraDeny (see builtinShieldRules).
 func shieldedReadProblems(reads []string) ([]string, error) {
 	rules, err := builtinShieldRules()
 	if err != nil {
@@ -378,8 +383,15 @@ func shieldedReadProblems(reads []string) ([]string, error) {
 	}
 	var problems []string
 	for _, g := range reads {
+		// The opt-in is tested on the spelling, not on where it lands: the backend honors a
+		// read that names the deny-list path literally, and treats a read of the same store
+		// reached through a link as the side-step it refuses.
+		if slices.Contains(optIns, g) {
+			continue
+		}
+		lands := pathresolve.Existing(g)
 		for _, r := range rules {
-			if r.Deny == denylist.DenyAll && policy.CoversResolved(r.Path, g) && !slices.Contains(optIns, r.Path) {
+			if r.Deny == denylist.DenyAll && policy.CoversResolved(pathresolve.Existing(r.Path), lands) {
 				problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
 				break
 			}
@@ -411,20 +423,31 @@ func shieldedWriteProblems(writes []string) ([]string, error) {
 // writeShieldProblem reports the first of the three refusals a write grant trips, or ok
 // false where it trips none.
 func writeShieldProblem(rules []denylist.Rule, g string) (string, bool) {
+	lands := pathresolve.Existing(g)
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.Path, g) {
+		if r.Deny == denylist.DenyAll && policy.CoversResolved(pathresolve.Existing(r.Path), lands) {
 			return grantrefusal.InsideShield(g, r.Path).Error(), true
 		}
 	}
 	for _, r := range rules {
-		// A rule at "/" is skipped as the backend skips it: it would swallow every write
-		// grant and blame an unrelated dotfile for it.
-		if r.Deny == denylist.DenyWrite && r.Path != "/" && policy.CoversResolved(r.Path, g) {
+		// A rule resolving to "/" is skipped as the backend skips it: it would swallow every
+		// write grant and blame an unrelated dotfile for it.
+		rp := pathresolve.Existing(r.Path)
+		if r.Deny == denylist.DenyWrite && rp != "/" && policy.CoversResolved(rp, lands) {
 			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
 		}
 	}
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && policy.CoversResolved(g, r.Path) {
+		if r.Deny != denylist.DenyAll {
+			continue
+		}
+		// The shield's own name in the granted directory is the tamperable entry, so the
+		// parent resolves and the name stays literal - the backend's own comparison, and for
+		// its reason: the link the grant would expose is the one it can replace. Asked of the
+		// unresolved spelling too, since where it is the shield that moves out of the grant
+		// (a symlinked home) the containment is visible in no other namespace.
+		loc := filepath.Join(pathresolve.Existing(filepath.Dir(r.Path)), filepath.Base(r.Path))
+		if policy.CoversResolved(lands, loc) || policy.CoversResolved(g, r.Path) {
 			return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
 		}
 	}

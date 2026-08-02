@@ -183,12 +183,19 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
-		fmt.Fprintf(w, "              the stamp is a hash of the permissions, not a copy of them, so bento\n")
-		fmt.Fprintf(w, "              cannot show which field changed - re-review the whole manifest above\n")
-		fmt.Fprintf(w, "              and run `bento approve` to re-stamp it\n")
+		fmt.Fprintf(w, "              %s, so bento cannot\n", noStampDiff)
+		fmt.Fprintf(w, "              show which field changed - re-review the whole manifest above and\n")
+		fmt.Fprintf(w, "              run `bento approve` to re-stamp it\n")
 	}
 	return strictApprovalError(doc, strict)
 }
+
+// noStampDiff is why a stale approval cannot be shown as a diff. Every refusal that sends
+// a reader back to re-review says it - run's, validate's report, validate --strict - and
+// it is one string for the reason the grant refusals are: a reader who meets the answer in
+// CI and again at the terminal must not have to work out whether they are the same claim.
+// Without it the reasonable reading is that bento knows the delta and is withholding it.
+const noStampDiff = "the stamp is a hash of the permissions, not a copy of them, so there is no diff to show"
 
 // strictApprovalError is the strict verdict on its own, shared by the human and
 // --json paths so the gate cannot hold in one output mode and lapse in the other.
@@ -200,7 +207,7 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 	case approvalUnstamped:
 		return fmt.Errorf("manifest is not approved")
 	case approvalStale:
-		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved (the stamp is a hash of them, not a copy, so there is no diff to show)")
+		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved (%s)", noStampDiff)
 	default:
 		return nil
 	}
@@ -613,6 +620,9 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 //
 // The sentence is run's own (grantrefusal), unwrapped: it names paths, and wrapping it to
 // the note width would break a path across lines just where the reader wants to copy it.
+// It appears twice on a human screen - here, and below as the reason `runnable: NO` gives
+// - which is the price of the two jobs it does: the reader scanning the grants needs it at
+// the grant, and the reader who skipped to the verdict needs the verdict to say why.
 func writeShieldRefusals(w io.Writer, problems []string) {
 	for _, p := range problems {
 		fmt.Fprintf(w, "  REFUSED: %s\n", p)
