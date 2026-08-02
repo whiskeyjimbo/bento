@@ -98,6 +98,17 @@ type LayerStatus struct {
 	Consequences string
 }
 
+// Disclosure is everything the layer has to say about itself, for a frontend that
+// describes it in full rather than pointing at one that does. Every such frontend uses
+// this rather than joining the halves itself: a second place that knows how a status
+// is assembled is a place a later field is dropped from.
+func (l LayerStatus) Disclosure() string {
+	if l.Consequences == "" {
+		return l.Reason
+	}
+	return l.Reason + " " + l.Consequences
+}
+
 // Report is the per-layer enforcement status for a host (from Probe) or a run
 // (from Run). It is the backend-independent basis for loud degradation:
 // frontends render it, and strict mode refuses on it.

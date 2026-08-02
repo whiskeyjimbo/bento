@@ -888,3 +888,23 @@ func TestSilentStageIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A refusal's Error() is the whole account a library consumer gets: unlike the CLI, an
+// embedder printing the error has nowhere else to be sent for the rest, so a status
+// that carries its consequences separately must still surface them here. The split
+// exists to keep a remedy visible in the CLI, not to shrink what an embedder is told.
+func TestRefusalErrorCarriesTheWholeDisclosure(t *testing.T) {
+	const consequences = "no PID namespace, and no network namespace"
+	short := LayerStatus{
+		Layer: LayerFilesystem, State: Degraded,
+		Reason: "bwrap cannot make a user namespace here", Consequences: consequences,
+	}
+	for name, err := range map[string]error{
+		"refusal":   &Refusal{Reason: "a core guarantee cannot be fully enforced on this host", Short: []LayerStatus{short}},
+		"shortfall": &Shortfall{Short: []LayerStatus{short}},
+	} {
+		if !strings.Contains(err.Error(), consequences) {
+			t.Errorf("%s dropped the layer's consequences: %v", name, err)
+		}
+	}
+}

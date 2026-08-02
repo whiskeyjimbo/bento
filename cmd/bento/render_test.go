@@ -66,7 +66,7 @@ func TestWriteReportTableSurfacesShortfallDetail(t *testing.T) {
 // disclosure has been dropped rather than relocated.
 func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 	const (
-		reason       = "bwrap cannot make a user namespace here; install an AppArmor profile permitting it"
+		reason       = "bwrap cannot make a user namespace here; install an AppArmor profile permitting it."
 		consequences = "It confines filesystem read/write/exec, nothing more: no PID namespace, no network namespace"
 	)
 	short := enforce.LayerStatus{
@@ -91,14 +91,28 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 		t.Errorf("the refusal does not say where the rest of the disclosure is:\n%s", refusal.String())
 	}
 
-	var report bytes.Buffer
+	// Every surface that describes the layer in full rather than pointing elsewhere: the
+	// doctor table the refusal sent the reader to, the --allow-degraded path where the
+	// operator is accepting these consequences, and the machine-readable report a harness
+	// archives instead of the human output.
 	var r enforce.Report
 	r.AddStatus(short)
-	writeReportTable(&report, r)
-	for _, want := range []string{reason, consequences} {
-		if !strings.Contains(strings.Join(strings.Fields(report.String()), " "), want) {
-			t.Errorf("doctor must print %q; got:\n%s", want, report.String())
+	var table, proceeded bytes.Buffer
+	writeReportTable(&table, r)
+	writeDegradations(&proceeded, r)
+	for name, out := range map[string]string{"doctor": table.String(), "--allow-degraded": proceeded.String()} {
+		// Normalized past both wrapping and the per-line "[bento] " prefix, neither of
+		// which is the failure this asserts.
+		flat := strings.Join(strings.Fields(strings.ReplaceAll(out, "[bento]", "")), " ")
+		for _, want := range []string{reason, consequences} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("%s must print %q; got:\n%s", name, want, out)
+			}
 		}
+	}
+	got := toReportJSON(r).Layers[0]
+	if got.Detail != reason || got.Consequences != consequences {
+		t.Errorf("--json dropped a half of the disclosure: %+v", got)
 	}
 }
 

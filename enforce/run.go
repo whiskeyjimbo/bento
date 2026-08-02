@@ -287,7 +287,7 @@ func (e *Shortfall) Error() string {
 	var b strings.Builder
 	b.WriteString("the run completed but strict mode's guarantees did not hold for it")
 	for _, l := range e.Short {
-		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Reason)
+		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Disclosure())
 	}
 	return b.String()
 }
@@ -296,7 +296,7 @@ func (e *Refusal) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "refusing to run: %s", e.Reason)
 	for _, l := range e.Short {
-		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Reason)
+		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Disclosure())
 	}
 	return b.String()
 }

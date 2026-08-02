@@ -294,17 +294,6 @@ func supervised(ctx context.Context, s *store, script string) int {
 	return res.ExitCode
 }
 
-// disclosure is a degraded layer's account of itself whole. LayerStatus splits the
-// host-specific diagnosis from the standing consequences of the state so a refusal can
-// lead with the remedy; this run is proceeding under the degradation instead, so the
-// consequences are exactly what the operator needs beside it.
-func disclosure(l enforce.LayerStatus) string {
-	if l.Consequences == "" {
-		return l.Reason
-	}
-	return l.Reason + " " + l.Consequences
-}
-
 // writeSummary reports what the enforced run actually did beyond what the human
 // approved at the prompt. Every honesty field of enforce.Result reaches it, and
 // TestWriteSummarySurfacesEveryField holds it to that: a supervised run is the one
@@ -312,7 +301,7 @@ func disclosure(l enforce.LayerStatus) string {
 // the absence of a warning as confirmation their answer was what happened.
 func writeSummary(w io.Writer, t theme, res enforce.Result) {
 	for _, d := range res.Report.Degradations() {
-		fmt.Fprintf(w, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, disclosure(d))
+		fmt.Fprintf(w, "%s %s (%s): %s\n", t.warn("degraded:"), d.Layer, d.State, d.Disclosure())
 	}
 	// Shields is the positive evidence the boundary engaged. A count, not a guarantee:
 	// the degraded tier shields nothing and says so through the Report instead.

@@ -392,19 +392,10 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 		// The consequences are what a reader ran doctor to get: the refusal path prints
 		// the diagnosis alone and sends them here for the rest, so this is the one place
 		// the two halves have to appear together.
-		for _, line := range wrapText(joinDetail(l), textWidth-2) {
+		for _, line := range wrapText(l.Disclosure(), textWidth-2) {
 			fmt.Fprintf(w, "  %s\n", line)
 		}
 	}
-}
-
-// joinDetail is a layer's disclosure whole, for the frontends that describe a layer in
-// full rather than pointing at one that does.
-func joinDetail(l enforce.LayerStatus) string {
-	if l.Consequences == "" {
-		return l.Reason
-	}
-	return l.Reason + " " + l.Consequences
 }
 
 // wrapText breaks s into lines of at most width columns on word boundaries. A word
@@ -1074,7 +1065,7 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 		// Whole, unlike the refusal: this path is a run that is proceeding under
 		// --allow-degraded, so the consequences are what the user is about to accept
 		// rather than a paragraph between them and a remedy.
-		head := fmt.Sprintf("%s (%s tier): %s - %s", l.Layer, l.Layer.Tier(), l.State, joinDetail(l))
+		head := fmt.Sprintf("%s (%s tier): %s - %s", l.Layer, l.Layer.Tier(), l.State, l.Disclosure())
 		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
 			fmt.Fprintf(w, "[bento]   %s\n", line)
 		}

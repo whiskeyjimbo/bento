@@ -52,7 +52,7 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.resolveUnixRestricted, tc.degradedFencesOK)
-			state, reason := l.State, wholeDetail(l)
+			state, reason := l.State, l.Disclosure()
 			if state != tc.want {
 				t.Errorf("state = %v, want %v", state, tc.want)
 			}
@@ -61,12 +61,6 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 			}
 		})
 	}
-}
-
-// wholeDetail is every fact a layer discloses, for the assertions that care that a
-// fact is present somewhere rather than which half of the status carries it.
-func wholeDetail(l enforce.LayerStatus) string {
-	return l.Reason + " " + l.Consequences
 }
 
 // The degraded tier's disclosure is split so a run refusal can lead with the remedy:
@@ -151,7 +145,7 @@ func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
 		{"no landlock", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK))
+			reason := filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK).Disclosure()
 			if strings.Contains(reason, ".;") {
 				t.Errorf("reason runs a period into a semicolon: %q", reason)
 			}
@@ -309,7 +303,7 @@ func swap(t *testing.T, fn *func() bool, v bool) {
 // the failure that matters is the report contradicting itself.
 func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	const nsReason = "userns blocked here"
-	restricted := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true))
+	restricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true).Disclosure()
 	if strings.Contains(restricted, "including an abstract-namespace one no grant is needed to reach") {
 		t.Errorf("with resolve_unix restricted the reason still claims any unix socket is reachable: %q", restricted)
 	}
@@ -321,7 +315,7 @@ func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	if !strings.Contains(restricted, "/dev/log") {
 		t.Errorf("the silent syslog denial must be named: %q", restricted)
 	}
-	unrestricted := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true))
+	unrestricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true).Disclosure()
 	if !strings.Contains(unrestricted, "any host daemon socket its path names") {
 		t.Errorf("below ABI 9 the pathname-socket residual must be disclosed: %q", unrestricted)
 	}

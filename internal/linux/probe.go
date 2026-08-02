@@ -420,8 +420,8 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // unshare(CLONE_NEWUSER) and its AppArmor profile restricts the namespace, and either
 // alone produces the same bwrap message. The host remedies the diagnoses lead with are
 // a sysctl a CI engineer usually cannot set; these are the ones they can.
-// It closes with a period for the same reason the sysctl diagnoses do, so joinReason
-// continues from it cleanly.
+// It closes the sentence with a period, like the sysctl diagnoses it extends, so
+// joinReason's trailing-period trim still leaves a clean continuation.
 const containerUsernsRemedy = " If bento is running inside a container, the host sysctl may be out of " +
 	"reach and the container runtime's own policy is blocking the namespace too; with docker, " +
 	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it."
