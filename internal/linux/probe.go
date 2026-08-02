@@ -206,7 +206,8 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 		// not being installed. Asserting "user namespaces are blocked" there sends a
 		// reader to enable a namespace the host already permits.
 		l := status(enforce.Degraded, joinReason(nsReason,
-			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially "+
+			"confinement falls back to restricting which paths the program can reach and blocking its "+
+				"network access (Landlock path rules plus a seccomp egress block). This is materially "+
 				"weaker than the full sandbox."))
 		l.Consequences = "It confines filesystem read/write/exec, nothing more: no mount namespace (the deny-list " +
 			"cannot carve a credential out of an allowed tree, and any granted /proc is the host's), no PID " +
