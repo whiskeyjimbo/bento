@@ -185,9 +185,9 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
-		fmt.Fprintf(w, "              %s, so bento cannot\n", noStampDiff)
-		fmt.Fprintf(w, "              show which field changed - re-review the whole manifest above and\n")
-		fmt.Fprintf(w, "              run `bento approve` to re-stamp it\n")
+		fmt.Fprintf(w, "              %s,\n", noStampDiff)
+		fmt.Fprintf(w, "              so re-review the whole manifest above and run `bento approve`\n")
+		fmt.Fprintf(w, "              to re-stamp it\n")
 	}
 	return strictApprovalError(doc, strict)
 }
@@ -197,7 +197,7 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 // it is one string for the reason the grant refusals are: a reader who meets the answer in
 // CI and again at the terminal must not have to work out whether they are the same claim.
 // Without it the reasonable reading is that bento knows the delta and is withholding it.
-const noStampDiff = "the stamp is a hash of the permissions, not a copy of them, so there is no diff to show"
+const noStampDiff = "the stamp is a hash of the permissions, not a copy of them, meaning there is no diff to show which field changed"
 
 // strictApprovalError is the strict verdict on its own, shared by the human and
 // --json paths so the gate cannot hold in one output mode and lapse in the other.
