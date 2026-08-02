@@ -469,17 +469,17 @@ func TestClampWriteShieldMatchesSymlinkedShieldTarget(t *testing.T) {
 }
 
 // A clean exit says nothing about whether the observer could name everything it saw, so
-// the two warnings are independent and a run that is both signaled and lossy reports both.
+// the two warnings are independent: a run that is both signaled and lossy reports both,
+// each on its own schedule - dropped per round, partial once the last round is known.
 func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
-	if got := profileWarnings(profile.Observation{}); len(got) != 0 {
-		t.Errorf("a clean, complete observation warns about nothing; got %v", got)
+	if got := partialRunWarning(profile.Observation{Dropped: 2}); got != "" {
+		t.Errorf("a lossy but clean run did not fail to finish; got %q", got)
 	}
-	got := profileWarnings(profile.Observation{Dropped: 2})
-	if len(got) != 1 || !strings.Contains(got[0], "could not name 2 file access") {
-		t.Errorf("a lossy but clean run must still warn; got %v", got)
+	if got := droppedWarning(2); !strings.Contains(got, "could not name 2 file access") {
+		t.Errorf("dropped warning = %q, want it to name the count", got)
 	}
-	if got := profileWarnings(profile.Observation{Signaled: true, Signal: 9, Dropped: 1}); len(got) != 2 {
-		t.Errorf("a signaled AND lossy run must report both reasons; got %v", got)
+	if got := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, Dropped: 1}); got == "" {
+		t.Error("a signaled run must warn that it may not have finished")
 	}
 }
 
@@ -502,8 +502,8 @@ func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
 			t.Errorf("refusal = %q, want it to name %q as a possible cause", err, want)
 		}
 	}
-	if got := profileWarnings(profile.Observation{SeccompKilled: true}); len(got) != 0 {
-		t.Errorf("a seccomp kill must refuse, not warn; got %v", got)
+	if got := partialRunWarning(profile.Observation{SeccompKilled: true}); got != "" {
+		t.Errorf("a seccomp kill must refuse, not warn; got %q", got)
 	}
 }
 
@@ -1031,7 +1031,7 @@ func TestMissingGrantedWriteDirs(t *testing.T) {
 func TestRetryWriteDirsStopsAtForwardedEgress(t *testing.T) {
 	tree := t.TempDir()
 	missing := filepath.Join(tree, "out")
-	unfinished := roundStatus{unfinished: true}
+	unfinished := roundStatus{unfinished: "did not finish"}
 
 	dirs, mayRun := retryWriteDirs(unfinished, false, []string{tree}, []string{missing})
 	if !slices.Equal(dirs, []string{missing}) || !mayRun {

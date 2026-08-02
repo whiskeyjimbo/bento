@@ -265,6 +265,14 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return refuse(err)
 			}
+			// After the rounds, not inside one: an interactive session's early rounds exit
+			// nonzero by design - the target fails on what it has not been granted yet - and
+			// the loop's next prompt is what fixes it, so "fix the run and profile again"
+			// printed there is advice against the loop the user is already in. Only the last
+			// round's verdict describes the proposal being written.
+			if status.unfinished != "" {
+				fmt.Fprintln(os.Stderr, status.unfinished)
+			}
 
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
@@ -560,7 +568,7 @@ func mapSlice(in []string, f func(string) string) []string {
 // one line that ties them to the exit code.
 func incompleteReason(status roundStatus, stop convergeStop) string {
 	switch {
-	case status.unfinished:
+	case status.unfinished != "":
 		return "the profiled run did not finish"
 	case status.dropped:
 		return "the observer could not name every access the target made"
@@ -612,10 +620,11 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 		return nil, roundStatus{}, err
 	}
 	// A run that was signaled or exited nonzero may have stopped before exercising all
-	// its code paths, so the observations - and the manifest synthesized from them - can
-	// be silently over-tight. Warn before proposing it.
-	for _, w := range profileWarnings(obs) {
-		fmt.Fprintln(os.Stderr, w)
+	// its code paths, but that is the premise of the convergence loop's early rounds, so
+	// the caller warns once the session's last round is known. A dropped access is warned
+	// about here: no later round puts it back.
+	if obs.Dropped > 0 {
+		fmt.Fprintln(os.Stderr, droppedWarning(obs.Dropped))
 	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
 	// the same names profiling recorded and granted.
@@ -630,7 +639,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	)
 	clamped, flagged := printProposalWarnings(os.Stderr, proposed)
 	return proposed, roundStatus{
-		unfinished: partialRunWarning(obs) != "",
+		unfinished: partialRunWarning(obs),
 		dropped:    obs.Dropped > 0,
 		blocked:    blockedHostKeys(obs.Blocked),
 		withheld:   append(withheld, clamped...),
@@ -658,7 +667,7 @@ func kinded(kind string, paths []string) []kindedPath {
 // target's real network effects and the non-interactive path has no prompt to consent to
 // that the way confirmNetworkExfil does.
 func retryWriteDirs(status roundStatus, allowNetwork bool, granted, proposed []string) (dirs []string, mayRun bool) {
-	if !status.unfinished {
+	if status.unfinished == "" {
 		return nil, false
 	}
 	return missingGrantedWriteDirs(granted, proposed), !allowNetwork
@@ -814,8 +823,14 @@ func blockedHostKeys(blocked []profile.HostPort) []string {
 // reason - a host the guard refused in one round is a fact about the drafting, and a
 // later round that never reached for it again does not undo it.
 type roundStatus struct {
-	unfinished, dropped bool
-	blocked             []string
+	// unfinished holds the warning for a round that was signaled or exited nonzero,
+	// "" for a clean one. The text rides along rather than being re-derived because
+	// the warning is printed once, by the caller, after the session's last round -
+	// printing it per round told a user in round 1 to fix a run the next prompt was
+	// about to fix.
+	unfinished string
+	dropped    bool
+	blocked    []string
 	// withheld and flagged are the round's proposal decisions, for --json. They
 	// accumulate like blocked and for the same reason: a path round 1 declined to
 	// propose is a fact about the drafting, and a later round that never reached for it
@@ -1571,19 +1586,12 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// profileWarnings returns every reason this observation may be short of what the run
-// really needs, in the order a reader should see them: whether the run finished, then
-// whether the observer could name everything it saw. They are independent - a clean
-// exit says nothing about dropped accesses - so both are reported, not just the first.
-func profileWarnings(obs profile.Observation) []string {
-	var out []string
-	if w := partialRunWarning(obs); w != "" {
-		out = append(out, w)
-	}
-	if obs.Dropped > 0 {
-		out = append(out, fmt.Sprintf("[bento] WARNING: the observer could not name %d file access(es) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the paths by hand.", obs.Dropped))
-	}
-	return out
+// droppedWarning names the accesses the observer saw but could not name, which are
+// simply absent from the proposal. Independent of whether the run finished - a clean
+// exit says nothing about dropped accesses - so it is reported per round, where
+// partialRunWarning is held to the session's last one.
+func droppedWarning(n int) string {
+	return fmt.Sprintf("[bento] WARNING: the observer could not name %d file access(es) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the paths by hand.", n)
 }
 
 // partialRunWarning returns a warning when the profiled run may not have finished -

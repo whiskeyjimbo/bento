@@ -43,6 +43,9 @@ go build -o bento ./cmd/bento # plain build
 Every install path answers `bento version`. `make build` stamps the commit and build
 time it derived from the source; a plain build or `go install` reports the module
 version Go recorded - a release tag for `@latest`, a pseudo-version for a checkout.
+Reading that module version landed after v0.1.1, so a binary installed from the
+current release still answers `bento dev`; a CI job recording the version for
+provenance wants a build from a commit past it until the next release is cut.
 
 A build for a target other than Linux succeeds by design and produces a working
 binary - the tree carries a stub backend for it, so `bento validate` and `bento approve`

@@ -485,7 +485,7 @@ func TestIncompleteReason(t *testing.T) {
 		status roundStatus
 		stop   convergeStop
 	}{
-		{roundStatus{unfinished: true}, convergeDone},
+		{roundStatus{unfinished: "did not finish"}, convergeDone},
 		{roundStatus{dropped: true}, convergeDone},
 		{roundStatus{}, convergeQuit},
 		{roundStatus{}, convergeMaxRounds},
