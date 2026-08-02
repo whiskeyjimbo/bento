@@ -312,6 +312,7 @@ func (t manifestTrust) flaws(euid uint32) []trustFlaw {
 		out = append(out, trustFlaw{
 			reason: fmt.Sprintf("%s is owned by uid %d", t.file.path, t.file.uid),
 			fatal:  true,
+			hint:   ownershipHint(t.file, euid),
 		})
 	}
 	return append(out, t.locationFlaws(euid)...)
@@ -422,9 +423,26 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 		out = append(out, trustFlaw{
 			reason: fmt.Sprintf("%s, %s, is owned by uid %d, who can replace the manifest", d.path, role, d.uid),
 			fatal:  true,
+			hint:   ownershipHint(d, euid),
 		})
 	}
 	return out
+}
+
+// ownershipHint is the remedy for a path somebody else owns. The two ownership flaws are
+// the only ones that reached a reader with no remedy named, and they are the pair a
+// container meets on every command: sources checked out as one uid, the job run as
+// another, and nothing in the warning saying what to do about it.
+//
+// The chown is named only to root, because only root can hand a path to a different user.
+// Telling an ordinary user to chown a file that is not theirs names a command that fails,
+// which is worse than naming none - so they are told the thing they can do without the
+// owner's help, in the same shape as the shared-project directory's hint.
+func ownershipHint(f fileFacts, euid uint32) string {
+	if euid == 0 {
+		return fmt.Sprintf("chown %d %s hands it to the user running bento, which is the fix where a container checks out as one uid and runs as another", euid, f.path)
+	}
+	return fmt.Sprintf("keep the manifest somewhere you own, and point bento at it there, rather than relying on uid %d to leave it alone", f.uid)
 }
 
 // chmodNarrowing is the argument to chmod that takes the reported write away, and only

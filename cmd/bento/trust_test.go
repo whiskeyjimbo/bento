@@ -113,6 +113,39 @@ func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 	}
 }
 
+// The pair a container meets on every command: a checkout owned by one uid, the job run
+// as another. Both flaws are true - that uid really can rewrite the manifest - so the
+// remedy is what was missing, and it differs by who is asking, since only root can hand a
+// path to somebody else.
+func TestOwnershipFlawsNameARemedy(t *testing.T) {
+	trust := manifestTrust{
+		file:    fileFacts{path: "/app/m.yaml", mode: 0o644, uid: 1000},
+		dir:     fileFacts{path: "/app", mode: fs.ModeDir | 0o755, uid: 1000},
+		located: true,
+	}
+
+	root := trust.flaws(0)
+	if len(root) != 2 {
+		t.Fatalf("flaws = %+v, want the manifest's owner and the directory's", root)
+	}
+	for _, f := range root {
+		if !strings.Contains(f.hint, "chown 0 ") {
+			t.Errorf("root can take the path back, and the warning must say so; got %q", f.hint)
+		}
+	}
+
+	// An ordinary user cannot chown a path that is not theirs, so naming the command
+	// would name one that fails.
+	for _, f := range trust.flaws(1001) {
+		if strings.Contains(f.hint, "chown") {
+			t.Errorf("only root can hand a path over; got %q", f.hint)
+		}
+		if !strings.Contains(f.hint, "somewhere you own") {
+			t.Errorf("the warning must still leave something to do; got %q", f.hint)
+		}
+	}
+}
+
 // setACL writes a POSIX access ACL, so the parse is exercised against what the kernel
 // actually stores rather than a blob this test made up. entries are {tag, perm, id}
 // triples in the order the kernel requires: USER_OBJ, USER*, GROUP_OBJ, GROUP*, MASK,
