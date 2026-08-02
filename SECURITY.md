@@ -6,9 +6,9 @@ claims. This document says how to report one and how versioning treats it.
 
 ## Supported versions
 
-Bento is pre-1.0 and unreleased; there are no tags yet, and the build stamps
-itself `0.1.0-dev`. Until a 1.0 exists, only the `main` branch is supported.
-Fixes land there and nothing is backported.
+Bento is pre-1.0. Until a 1.0 exists, only the latest release and the `main`
+branch are supported: fixes land on `main` and ship in the next tag, and nothing
+is backported to an earlier one.
 
 ## Reporting a vulnerability
 

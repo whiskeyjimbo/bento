@@ -5,11 +5,15 @@ answer one question without reading the diff: did the boundary move, and in
 which direction? See [SECURITY.md](SECURITY.md) for how versioning treats a
 boundary change.
 
-Later releases will list changes since the previous tag. This first entry
-describes the boundary as it ships, not the 380-odd commits that built it -
-none of them were ever in a release.
+Each entry lists the changes since the previous tag. The 0.1.0 entry is the
+exception: it describes the boundary as it first shipped, not the 380-odd
+commits that built it - none of them were ever in a release.
 
-## Unreleased
+## 0.2.0 (2026-08-02)
+
+A minor bump because `bento run --json` changed shape - see the breaking section
+at the end. Pre-1.0 that is what a breaking change earns; see
+[SECURITY.md](SECURITY.md).
 
 ### Boundary Hardening
 
@@ -30,6 +34,82 @@ none of them were ever in a release.
   run. The boundary moved tighter - a routine "yes" to one of those prompts
   granted a recursive read several levels above anything the script named
   (`~/src` and up).
+- **Grant and shield paths are cleaned before they are compared**: a `.` or `..`
+  segment on either side of a containment test - a grant, a denylist query, a
+  record awaiting judgement - was compared literally, so a path that resolved
+  inside a shield could read as outside it. Both sides are cleaned now.
+- **An unexpanded `~` is refused at enforcement**: a `~` that reached the
+  enforcer without being expanded was treated as a literal directory name.
+  It is refused instead, and a nil policy is answered rather than assumed
+  expanded.
+- **A grant that lifts a shield is raised before the stamp**: `validate` and
+  `approve` now resolve grants against the shields the way `run` does, refuse
+  the ones `run` refuses, and call out an exact-shield opt-in - including on the
+  already-approved shortcut, which previously returned early. A manifest stamped
+  by an earlier bento no longer reads as approved for permissions the run
+  refuses.
+- **A run whose in-sandbox setup never attested is refused**: `enforce` refuses
+  rather than reporting an outcome for a stage that never said it got there, the
+  backend refuses a `New()` that never dispatched, and an undispatched re-exec
+  stage panics rather than continuing as the parent.
+- **`approve` refuses a non-terminal stdin**: a stamp nobody read is now
+  something a caller asks for with `--yes`, not something the absence of a
+  terminal decides. The example supervisor's `run` refuses the same way.
+- **The shared-write warning proves group membership without NSS**: the check
+  for "somebody else can write this" read routes that `LD_PRELOAD` could put
+  back under the caller's control, and warned on a private group holding only
+  its owner. It now resolves members through the same pure-Go path the shields
+  anchor on, and a member passwd cannot resolve is not taken as proof.
+- **`profile` proposes less**: unix socket grants are withheld entirely, the
+  entrypoint's ancestor chain is no longer proposed as a read grant, and a host
+  that cannot sandbox is refused before anything is observed rather than after.
+- **A shebang's interpreter arguments reach the exec policy**: an interpreter
+  line carrying arguments (`#!/usr/bin/env -S python -u`) had them dropped, so
+  the policy attested an exec the run did not make.
+- **The example supervisor's trial is read-only**: the trial run no longer
+  writes, and no longer trims `/tmp` workspaces it did not create.
+
+### `approve` is a review step, not a stamp
+
+`approve` printed four numbered steps whose last command printed one line, which
+made typing it the path of least resistance over reading the policy. It now
+prints the permissions it is about to stamp, calls out the entries that deserve a
+second look, and asks before writing - `--yes` for scripts and CI.
+
+- It resolves the entrypoint the way `run` does, so the reviewer sees what will
+  actually execute.
+- It says when nobody reviewed and when the stamped policy has drifted, with the
+  drift notice after the callouts rather than buried above them; an unattested
+  run is worded as unknown rather than as unrun, and a stale stamp says why it
+  has no diff to show.
+- Egress a profiling run reached and the guard refused is recorded on the
+  manifest as `blocked-hosts` and called out here. The record is provenance, not
+  permission: it does not shift the approval fingerprint and it does not widen
+  anything.
+
+### Profiling (`bento profile`)
+
+- **`--json`**: the draft, the notes and the refusals come out as one document,
+  with probed-versus-resolved carried through the envelope so a consumer can tell
+  a path the target opened from one bento resolved for it.
+- **Manifests are written in the relocatable form**: a path under the manifest's
+  own directory is emitted `./`-relative and one under your home `~/`-prefixed,
+  so the result can be committed and used by someone else. A path under neither
+  stays absolute and names this machine.
+- **`/tmp` grants are disclosed as the target's request**: a proposed grant under
+  `/tmp` reaches the draft because the name exists on this host, which is the
+  only way a real workspace there can be told from the sandbox's own scratch - so
+  a target opening guessed names can steer what lands in the proposal. It is now
+  named as such rather than presented as an observation.
+- **The interpreter comes from the script's shebang**, not its extension, with
+  the interpreter the run actually used merged back into the draft and its
+  argument cost stated. A whole-workdir grant is called out, a granted write
+  directory is created the way `run` creates it, and a merge into an existing
+  manifest says what it changed.
+- **The run is honest about its own shape**: the target's stdout passes through
+  rather than being swallowed, every converge round runs under the base
+  invocation, and a run that ended before the rounds converged says so instead of
+  presenting the last draft as settled.
 
 ### What a Run Tells You
 
@@ -57,6 +137,65 @@ The boundary did not move for any of these; what a user can see about it did.
   *directory* under that name, so the script's own write to it fails with "is a
   directory". `validate` and `run` both say so before the run rather than leaving
   the reader to infer it from the failure.
+- **A death by SIGSYS names the filter that caused it**: the filters bento
+  installs kill only on a foreign-architecture syscall, and a withheld permission
+  is refused with EPERM instead - so the run says the signal is most likely that
+  guard rather than a grant the reader can add.
+- **Exit 126 under a blocked exec is explained**, with the hint worded for a
+  manifest that omitted the `exec` line and gated on the block actually landing.
+  A non-zero exit points at `bento profile`.
+- **`HOME` inside the sandbox is stated up front**: it is not passed through, so
+  `~` expands somewhere else and a script resolving `~` itself misses grants
+  matched against host paths. The note repeats when a run trips it.
+- **A rule covering an egress the guard refused is noted** by `validate` and
+  `run` - the destination resolved to loopback, private space or cloud metadata,
+  and this run refuses it the same way rather than the rule widening it.
+- **A killed run says it was killed**, without guessing who did it, naming the
+  signal, and blaming limits only for a cgroup kill.
+- **A usage mistake answers in the `--json` envelope**: a bad flag, an unknown
+  subcommand and a size-spelling error come back as a refusal with usage and a
+  hint rather than as bare cobra output, with every spelling of `--json` read
+  during the scan and unknown refusal shapes rejected at every depth.
+- **A manifest reports every bad field in one pass** instead of one per parse.
+- **`run --json` carries a missing read grant, denied egress and a flag
+  conflict**, and discloses the alias scan a degraded tier skips.
+- **`doctor` names the platform** and flags one whose enforcement is unverified,
+  leads a degraded line with the real cause in plain language rather than a
+  semicolon-joined fragment or raw bwrap output, moves oversized detail below the
+  table, and keeps its exit code consistent across `--json`.
+- **The sandbox probe is more useful when it fails**: it says how to install
+  bwrap, spells out the `docker run --security-opt` flags a userns refusal in a
+  container needs, reads a refused base mount honestly, and says why the shield
+  probes skipped.
+- **`bento version` answers on every install path**: a `go install` or plain
+  `go build` binary reports the module version Go recorded - a release tag for
+  `@latest`, a pseudo-version for a checkout - instead of `dev`. `make build`
+  still stamps the commit and build time it derives from the source.
+- **Paths printed back are quoted** by the credential hunt, error text drops its
+  package prefix, and passing a script where a manifest belongs names the
+  manifest bento expected.
+
+### Platform and Embedding
+
+- **`validate` and `approve` answer off Linux**; every other command refuses
+  before doing any work, names the architecture, and keeps the refusal inside the
+  `--json` envelope. The Linux-only tree is behind build tags and the no-backend
+  stub is tagged for the platforms that need it, so a non-Linux build produces a
+  working binary rather than failing to compile.
+- **`enforce` reports how far in-sandbox setup got** and exposes the caller's
+  deny paths on the enforced run, so an embedder can tell a target that failed
+  from a sandbox that never reached it - which `examples/supervise` now reports.
+- **`internal/observe` distinguishes a probed path from a resolved one** and
+  treats only ENOENT as "nothing was there", carrying `Probed` on the non-Linux
+  `Access` too.
+- **`policy` exports the path-coverage predicate** that grant and shield
+  comparison use, so an embedder tests containment the way the enforcer does.
+
+### Performance
+
+Shield rules are resolved once per invocation rather than per grant, the
+credential hunt indexes the deny rules before walking a home directory, and
+`policy.CoversResolved` no longer allocates.
 
 ### Breaking: `bento run --json` is now a stream
 
