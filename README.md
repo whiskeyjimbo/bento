@@ -40,6 +40,10 @@ make build                    # reproducible static binary (trimmed paths, sourc
 go build -o bento ./cmd/bento # plain build
 ```
 
+Every install path answers `bento version`. `make build` stamps the commit and build
+time it derived from the source; a plain build or `go install` reports the module
+version Go recorded - a release tag for `@latest`, a pseudo-version for a checkout.
+
 A build for a target other than Linux succeeds by design and produces a working
 binary - the tree carries a stub backend for it, so `bento validate` and `bento approve`
 answer there and a manifest can be reviewed and stamped on a Mac. Anything that has to
