@@ -10,8 +10,7 @@ Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted co
 
 Bento surfaces any gap between what a manifest requests and what the host kernel can enforce, refusing to run under degraded security when `--strict` is enabled.
 
-> **Status:** Fully implemented and verified on **Linux (amd64)** using bubblewrap, seccomp, Landlock, and systemd cgroups. Support for **Linux (arm64)** and **macOS** is planned; `bento doctor` names the platform
-it is reporting on and says when that platform is one of the unverified ones. See [`docs/architecture.md`](docs/architecture.md) for architecture details and [`docs/threat-model.md`](docs/threat-model.md) for security boundaries.
+> **Status:** Fully implemented and verified on **Linux (amd64)** using bubblewrap, seccomp, Landlock, and systemd cgroups. Support for **Linux (arm64)** and **macOS** is planned; `bento doctor` names the platform it is reporting on and says when that platform is one of the unverified ones. See [`docs/architecture.md`](docs/architecture.md) for architecture details and [`docs/threat-model.md`](docs/threat-model.md) for security boundaries.
 
 ---
 

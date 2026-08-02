@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// stubBuildInfo makes readBuildInfo answer with a given main-module version, so the
-// fallback can be watched on a binary Go stamped and one it did not. The test binary
-// carries a single build info of its own and nothing can vary it.
+// stubBuildInfo makes readBuildInfo answer with a given main-module version, or with
+// nothing at all when ok is false.
 func stubBuildInfo(t *testing.T, mainVersion string, ok bool) {
 	t.Helper()
 	saved := readBuildInfo

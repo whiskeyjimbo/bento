@@ -62,6 +62,10 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 	// list and not a zero report, which marshals as fully_enforced on a host nobody probed.
 	t.Run("doctor", func(t *testing.T) {
 		refuseThisPlatform(t)
+		// Both seams answer for the same host: an envelope whose reason names zos while
+		// its platform field names the build's own would be a document no real host
+		// produces, and the assertion below would pass on it.
+		onPlatform(t, "zos/s390x")
 		out, err := runCapturingStdout(t, newDoctorCmd(), "--json")
 		if err == nil || !strings.Contains(err.Error(), "no sandbox backend") {
 			t.Fatalf("err = %v, want the platform refusal on stderr and a non-zero exit", err)
@@ -84,8 +88,8 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 		}
 		// The platform is the one thing this document can still state as fact, and the
 		// host with no backend is where it matters most.
-		if got.Platform == "" {
-			t.Error("the envelope must name the platform it found no backend for")
+		if got.Platform != "zos/s390x" {
+			t.Errorf("the envelope must name the platform it found no backend for; got %q", got.Platform)
 		}
 
 		// The envelope buys the machine consumer a parseable stdout and nothing else: a
