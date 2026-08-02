@@ -496,7 +496,8 @@ func requireApproval(doc *manifest.Document, allow bool) error {
 		return nil
 	case approvalStale:
 		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; " +
-			"re-review and run `bento approve`, or pass --allow-unapproved")
+			"the stamp is a hash of the permissions rather than a copy of them, so there is no diff to show - " +
+			"re-review the whole manifest and run `bento approve`, or pass --allow-unapproved")
 	default:
 		return fmt.Errorf("refusing to run: the manifest is not approved; " +
 			"review it and run `bento approve`, or pass --allow-unapproved")

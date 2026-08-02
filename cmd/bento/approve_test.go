@@ -539,3 +539,20 @@ func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
 		t.Error("a refused approval must leave the manifest as it was found")
 	}
 }
+
+// The stale refusal sends the reader back to re-review, and the next question is always
+// "what changed?". The fingerprint is a one-way hash over the policy fields, so there is
+// no diff to show - and a message that does not say so reads as bento withholding one.
+func TestStaleRefusalsSayWhyThereIsNoDiff(t *testing.T) {
+	stale := doc("old")
+	err := requireApproval(stale, false)
+	if err == nil || !strings.Contains(err.Error(), "hash of the permissions rather than a copy") {
+		t.Errorf("run's stale refusal must say the stamp cannot produce a diff; got %v", err)
+	}
+
+	var buf strings.Builder
+	_ = reportApproval(&buf, stale, false)
+	if !strings.Contains(buf.String(), "hash of the permissions, not a copy") {
+		t.Errorf("validate's STALE report must say the same; got:\n%s", buf.String())
+	}
+}
