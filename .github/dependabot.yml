@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # The workflows pin actions to commit SHAs, which nothing bumps on its own.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
