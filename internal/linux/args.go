@@ -1087,7 +1087,7 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// whole directory and cannot be partly lifted - so opting one file in means
 			// reading the shield directory itself.
 			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
-				return fmt.Errorf("grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", g, r.Path, r.Path)
+				return grantrefusal.InsideShield(g, r.Path)
 			}
 		}
 	}
@@ -1139,7 +1139,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 				continue
 			}
 			if policy.CoversResolved(rp, g) {
-				return fmt.Errorf("write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", g, r.Path, r.Path)
+				return grantrefusal.WriteUnderReadOnlyShield(g, r.Path)
 			}
 		}
 	}
@@ -1282,7 +1282,7 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 			// either namespace costs nothing: a shield with no symlink above it resolves to
 			// itself, so the two tests coincide everywhere else.
 			if policy.CoversResolved(w, loc) || policy.CoversResolved(w, r.Path) {
-				return fmt.Errorf("write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", w, r.Path)
+				return grantrefusal.WriteAboveShield(w, r.Path)
 			}
 		}
 	}
