@@ -17,6 +17,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -132,7 +133,7 @@ func notAManifest(f *os.File, path string, parseErr error) error {
 // mangled manifest. A shebang is the cheap signal; the extensions bento already maps to an
 // interpreter are the other, since a manifest never carries one.
 func looksLikeScript(f *os.File, path string) bool {
-	if interp, _, _ := guessInterpreter(path); interp != "" {
+	if interp, _, _ := profile.GuessInterpreter(path); interp != "" {
 		return true
 	}
 	// A shebang naming nothing runnable (`#!/usr/bin/env` alone) leaves no interpreter to
