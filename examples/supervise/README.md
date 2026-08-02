@@ -21,7 +21,8 @@ differ because the kernel enforces network and filesystem differently:
   kernel (Landlock / the mount set); the box never learns what was attempted, so
   there is no per-access callback to prompt on mid-read. Instead, a **trial pass**
   runs the script under a default-deny sandbox that mounts only the script's own
-  directory, records every file it tries to read or write (nothing leaves the host),
+  directory, read-only, records every file it tries to read or write (nothing leaves
+  the host),
   and you approve paths *before* the enforced run. The enforced run then denies
   anything you did not approve.
 
@@ -90,8 +91,10 @@ of those would grant a whole tree the script never named.
 The exact set of incidental reads depends on your `curl` build - `~/.curlrc` here,
 perhaps `/etc/gnutls/config` too. Decline them: the request still works without them,
 and that is the point of reviewing what the trial run actually touched. The wrapper
-does drop the sandbox's own scratch (`/tmp`, `/dev`, `/proc`) before asking, since
-granting those is meaningless.
+does drop the sandbox's own scratch (`/dev`, `/proc`, and the files the run created in
+its private `/tmp` tmpfs) before asking, since granting those is meaningless. Host
+content that happens to live under `/tmp` - a `mktemp -d` workspace, a CI checkout -
+is not scratch and is asked about like anything else.
 
 ### Act 2 - enforced run, the gate on every undeclared host
 

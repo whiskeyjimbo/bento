@@ -487,7 +487,11 @@ func trialProfile(ctx context.Context, s *store, discovery *policy.Policy, proc 
 }
 
 // discoveryPolicy is the default-deny policy the trial run uses. Only the script's
-// own directory is mounted; every other path the script touches is absent, so the
+// own directory is mounted, and read-only: the trial is what the banner calls a pass
+// where nothing leaves the host, so an untrusted script must not be able to leave a
+// file beside itself before the human has approved anything. A blocked write is
+// recorded like every other blocked access, so the write decision is still offered.
+// Every other path the script touches is absent, so the
 // attempt is RECORDED without the content ever being exposed, and the human grants
 // it explicitly before the enforced run. Egress is recorded but (because Profile is
 // called with allowNetwork=false) not forwarded, and subprocesses are allowed so the
@@ -510,7 +514,6 @@ func discoveryPolicy(script, interp string, interpArgs []string) *policy.Policy 
 	// with its sibling reads recorded as intent, not honored.
 	if dir := filepath.Dir(script); !isBroadDir(dir) {
 		p.Read = []string{dir}
-		p.Write = []string{dir}
 	}
 	return p
 }
@@ -856,17 +859,25 @@ func (p *prompter) ask(ctx context.Context, prompt string) choice {
 }
 
 // trimScratch drops paths the sandbox already provides for free, so a human is
-// never asked to grant them: /tmp, /dev, /proc, /sys, /run are mounted as scratch
-// in every sandbox, and /nix is bound read-only when a Nix interpreter needs it.
-// Granting them is meaningless, and approving the /tmp or /dev that profiling's
-// dir-granular writes leave in the proposal actively breaks the run. Everything
-// else is kept: it is deliberately narrow, because dropping a path here means the
-// enforced run will DENY it, so it must never hide something the script needs.
+// never asked to grant them: /dev, /proc, /sys, /run are mounted in every sandbox,
+// and /nix is bound read-only when a Nix interpreter needs it. Granting them is
+// meaningless, and approving the /dev that profiling's dir-granular writes leave in
+// the proposal actively breaks the run. Everything else is kept: it is deliberately
+// narrow, because dropping a path here means the enforced run will DENY it, so it
+// must never hide something the script needs.
+//
+// /tmp is not on that list, because only part of it is scratch. The sandbox mounts a
+// fresh tmpfs there, but a target run out of a `mktemp -d` workspace, a CI checkout,
+// or an agent's working tree names host content under /tmp that only a grant can
+// reach. A blanket prefix match dropped every one of those, so such a target was
+// offered no filesystem decisions at all and had every access denied by the enforced
+// run, with nothing said. profile.SandboxScratch draws the line where it belongs, on
+// whether the path exists on the host.
 func trimScratch(paths []string) []string {
-	provided := []string{"/tmp", "/dev", "/proc", "/sys", "/run", "/nix"}
+	provided := []string{"/dev", "/proc", "/sys", "/run", "/nix"}
 	var out []string
 	for _, p := range paths {
-		skip := false
+		skip := profile.SandboxScratch(p)
 		for _, s := range provided {
 			if p == s || strings.HasPrefix(p, s+"/") {
 				skip = true

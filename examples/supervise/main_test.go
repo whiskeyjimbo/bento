@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -179,8 +180,9 @@ func TestAssertStoreShielded(t *testing.T) {
 
 // The trial runs under default-deny: discoveryPolicy binds only the script's own
 // directory (unless that directory is broad), so a script anywhere else in the home
-// tree probes credential paths that are simply absent. It grants exactly its dir and
-// nothing more.
+// tree probes credential paths that are simply absent. It grants exactly its dir,
+// read-only, and nothing more - the trial banner promises nothing leaves the host,
+// so the script cannot drop a file beside itself before anything is approved.
 func TestDiscoveryPolicyBindsOnlyScriptDir(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 
@@ -188,8 +190,8 @@ func TestDiscoveryPolicyBindsOnlyScriptDir(t *testing.T) {
 	if len(p.Read) != 1 || p.Read[0] != "/home/u/proj" {
 		t.Errorf("Read = %v, want just the script dir /home/u/proj", p.Read)
 	}
-	if len(p.Write) != 1 || p.Write[0] != "/home/u/proj" {
-		t.Errorf("Write = %v, want just the script dir /home/u/proj", p.Write)
+	if len(p.Write) != 0 {
+		t.Errorf("Write = %v, want nothing writable during the trial", p.Write)
 	}
 	if p.Exec != policy.ExecAll {
 		t.Errorf("Exec = %q, want all so the script exercises subprocesses", p.Exec)
@@ -299,6 +301,43 @@ func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
 		if want := pretty(filepath.Join(vault, name)); !strings.Contains(dialogue.String(), want) {
 			t.Errorf("the trial never offered %q for approval; the dialogue was:\n%s", want, dialogue.String())
 		}
+	}
+
+	// The trial binds nothing writable, so agent.sh's out.log write is blocked there.
+	// It is still an access the observer records, which is what lets the write decision
+	// be offered at all - and the file must not exist on the host, since the banner says
+	// nothing leaves the host and the human approved none of this.
+	if want := "write"; !strings.Contains(dialogue.String(), want) ||
+		!strings.Contains(dialogue.String(), pretty(filepath.Dir(script))) {
+		t.Errorf("the trial never offered the write of the script's own directory; the dialogue was:\n%s", dialogue.String())
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(script), "out.log")); err == nil {
+		t.Error("the trial left out.log on the host with nothing approved")
+	}
+}
+
+// trimScratch must not treat a workspace under /tmp as the sandbox's own tmpfs. A
+// blanket /tmp prefix match meant a target run out of a `mktemp -d` tree, a CI
+// checkout, or an agent working directory was offered NO filesystem decisions at all,
+// and the enforced run then denied every access - silently, since a trimmed path
+// prints nothing. Host content and tmpfs scratch separate on whether the path exists.
+func TestTrimScratchKeepsHostContentUnderTmp(t *testing.T) {
+	work := t.TempDir() // under /tmp, and real
+	if err := os.WriteFile(filepath.Join(work, "vault.csv"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{
+		work,
+		filepath.Join(work, "vault.csv"),
+		"/tmp",
+		filepath.Join(work, "gone"), // never created: scratch the enforced run gets free
+		"/proc/self/mounts",
+		"/dev/null",
+		"/home/u/proj",
+	}
+	want := []string{work, filepath.Join(work, "vault.csv"), "/home/u/proj"}
+	if got := trimScratch(paths); !slices.Equal(got, want) {
+		t.Errorf("trimScratch = %v, want %v", got, want)
 	}
 }
 
