@@ -44,20 +44,27 @@ numerically smaller action wins: `SECCOMP_RET_ERRNO` is `0x00050000` and
 notifier always outranks it, and the notification is never delivered. The two cannot
 coexist on the same syscall; a design must pick one.
 
-**2. The kernel says the notifier is not a security mechanism.** The same header, on
-`SECCOMP_USER_NOTIF_FLAG_CONTINUE`: "It should be absolutely clear that this means that
-the seccomp notifier _cannot_ be used to implement a security policy", because the target
-can rewrite pointer arguments while it waits for the supervisor's answer. `execve`'s
-pathname is exactly such a pointer. Since fact 1 rules out keeping `ActionErrno` beneath
-it, adopting the notifier means replacing a control that fails closed by construction with
-one whose own documentation disclaims the job.
+**2. The half of the gate that says yes is the half the kernel disclaims.** The deny path
+is sound on its own: a spoofed EPERM response never re-executes the syscall, so there is no
+window to rewrite anything. Allowing an `execve` is the problem. It cannot be emulated from
+outside the process, so the only way to permit one is
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE`, which re-runs the syscall against arguments the target
+had the whole supervisor wait to rewrite. That is what the header's warning on that flag is
+about: "It should be absolutely clear that this means that the seccomp notifier _cannot_ be
+used to implement a security policy", because the arguments are "passed as pointers", and
+`execve`'s pathname is exactly such a pointer. Prompting a human to approve a path, then
+running whatever path is there afterwards, is the whole point of the feature and the one
+thing the mechanism cannot do soundly. Since fact 1 rules out keeping `ActionErrno`
+beneath it, there is nothing left to catch the substituted path either.
 
 **3. The fail-open risk that prompted the deferral is not real.** When the supervisor dies,
-the kernel fails the target's syscall with ENOSYS rather than hanging or permitting it
-(`seccomp_unotify(2)`, and the same for a notification already outstanding when the
-listener is released). Supervisor death is fail-closed for free; no watchdog is needed.
-This answers the question that was blocking the design, and it is the one answer that came
-back favourable. It does not rescue the proposal, because facts 1 and 2 do not depend on it.
+the kernel fails the target's syscall with ENOSYS rather than hanging or permitting it.
+`seccomp_unotify(2)` documents this for a syscall made after the listener is gone;
+`seccomp_notify_release` in `kernel/seccomp.c` does the same for a notification already
+outstanding when it is released, setting `-ENOSYS` on each pending request before completing
+it. Supervisor death is fail-closed for free, and no watchdog is needed. This answers the
+question that was blocking the design, and it is the one answer that came back favourable.
+It does not rescue the proposal, because facts 1 and 2 do not depend on it.
 
 ### On whether ExecGate joins NetworkGate in enforce.Options
 

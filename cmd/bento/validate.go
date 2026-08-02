@@ -39,7 +39,7 @@ func newValidateCmd() *cobra.Command {
 			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
 			"as `approval` and `runnable` fields and honors --strict too.\n\n" +
 			"validate builds no sandbox, so it runs on a host bento cannot run a manifest on.\n" +
-			"Off Linux it reports that it could not check who else can write the manifest\n" +
+			"Off Linux it cannot check who else can write an approved manifest, and says so\n" +
 			"rather than passing over the question - a warning, as every trust finding is.",
 		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {

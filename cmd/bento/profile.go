@@ -87,8 +87,8 @@ func newProfileCmd() *cobra.Command {
 			// here at all - the frontend answers that one, off the annotation below.
 			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
 
-			// Answered here rather than through the platform gate the other commands
-			// carry: a refusal raised before RunE would bypass the envelope above.
+			// Answered here rather than by a hook above the RunE: a refusal raised before
+			// it would bypass the envelope above.
 			if err := checkPlatform(); err != nil {
 				return refuse(err)
 			}
@@ -257,7 +257,11 @@ func newProfileCmd() *cobra.Command {
 			// A manifest that does not exist yet still has a location to judge, and the first
 			// run is the case nothing else looks at - seedGrants returns on a missing file,
 			// and only an interactive session calls it at all.
-			if trust.realPath == "" {
+			// located rather than an empty realPath, which a host that cannot read a
+			// location at all leaves behind too: this stands in for "there was no manifest",
+			// and on such a host the walk below refuses rather than describing an existing
+			// manifest as one about to be created.
+			if !trust.located {
 				if trust, err = inspectNewManifest(out); err != nil {
 					return refuse(err)
 				}

@@ -54,10 +54,10 @@ func newRunCmd() *cobra.Command {
 			// gate could not tell a refusal from a crash.
 			refuse := func(err error) error { return refuseStreamJSON(os.Stdout, asJSON, err) }
 
-			// Answered inside RunE rather than through the platform gate the other
-			// commands carry, for the same reason the mutually-exclusive flags below are:
-			// a refusal raised before RunE leaves --json an empty stdout, which is the one
-			// thing a machine consumer cannot tell from a crash.
+			// Answered inside RunE rather than by a hook above it, for the same reason
+			// the mutually-exclusive flags below are: a refusal raised before RunE leaves
+			// --json an empty stdout, which is the one thing a machine consumer cannot
+			// tell from a crash.
 			if err := checkPlatform(); err != nil {
 				return refuse(err)
 			}

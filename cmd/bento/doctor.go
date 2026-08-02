@@ -27,11 +27,13 @@ func newDoctorCmd() *cobra.Command {
 			// answer rather than a foreign refusal envelope: a CI gate reading `ready`
 			// gets false because doctor said so, not because the key went missing.
 			if err := checkPlatform(); err != nil {
+				// The envelope is written first so a machine consumer still gets a
+				// parseable answer on stdout, and the refusal then goes to stderr and
+				// the same exit as the human mode's, exactly as validate's does.
 				if asJSON {
 					if err := writeJSON(os.Stdout, doctorJSON{reportJSON: noReport, Reason: err.Error()}); err != nil {
 						return err
 					}
-					return &exitError{code: doctorCoreShortfall}
 				}
 				return err
 			}
