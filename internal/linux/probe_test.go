@@ -51,7 +51,8 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, reason := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.resolveUnixRestricted, tc.degradedFencesOK)
+			l := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.resolveUnixRestricted, tc.degradedFencesOK)
+			state, reason := l.State, wholeDetail(l)
 			if state != tc.want {
 				t.Errorf("state = %v, want %v", state, tc.want)
 			}
@@ -62,6 +63,43 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 	}
 }
 
+// wholeDetail is every fact a layer discloses, for the assertions that care that a
+// fact is present somewhere rather than which half of the status carries it.
+func wholeDetail(l enforce.LayerStatus) string {
+	return l.Reason + " " + l.Consequences
+}
+
+// The degraded tier's disclosure is split so a run refusal can lead with the remedy:
+// the tier consequences are identical on every degraded host and used to bury the one
+// host-specific line the reader can act on. The split is only sound if nothing is lost
+// - every fact the one string carried has to still be in one half or the other.
+func TestFilesystemLayerSplitsConsequencesFromTheRemedy(t *testing.T) {
+	const nsReason = "userns blocked here. Set it to 1 to allow them."
+	l := filesystemLayer(namespacesBlocked, nsReason, true, false, false, false, true)
+	if l.State != enforce.Degraded {
+		t.Fatalf("state = %v, want Degraded", l.State)
+	}
+	for _, buried := range []string{"no PID namespace", "netlink interface enumeration", "cannot restrict truncate"} {
+		if strings.Contains(l.Reason, buried) {
+			t.Errorf("reason still inlines the tier consequences (%q): %q", buried, l.Reason)
+		}
+		if !strings.Contains(l.Consequences, buried) {
+			t.Errorf("consequences dropped %q: %q", buried, l.Consequences)
+		}
+	}
+	// Every other state describes itself in one string; a stray consequences field there
+	// is a fact no refusal prints and only doctor's note block would ever show.
+	for _, other := range []enforce.LayerStatus{
+		filesystemLayer(namespacesUsable, "", true, true, true, true, true),
+		filesystemLayer(namespacesBlocked, nsReason, false, true, true, true, true),
+		filesystemLayer(namespacesUnknown, nsReason, true, true, true, true, true),
+	} {
+		if other.Consequences != "" {
+			t.Errorf("%v carries consequences no refusal points at: %q", other.State, other.Consequences)
+		}
+	}
+}
+
 // The degraded tier is reached whenever bwrap cannot give a namespace, and a missing
 // bwrap is one of those ways. Its detail has to lead with what the probe actually
 // found: a hardcoded "user namespaces are blocked" sends a reader off to enable a
@@ -69,7 +107,8 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 // characters downstream where nobody acts on it.
 func TestFilesystemLayerDegradedLeadsWithProbeReason(t *testing.T) {
 	const nsReason = "bubblewrap (bwrap) is not installed, so it cannot isolate anything"
-	state, reason := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true)
+	l := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true)
+	state, reason := l.State, l.Reason
 	if state != enforce.Degraded {
 		t.Fatalf("state = %v, want Degraded", state)
 	}
@@ -112,7 +151,7 @@ func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
 		{"no landlock", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, reason := filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK)
+			reason := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK))
 			if strings.Contains(reason, ".;") {
 				t.Errorf("reason runs a period into a semicolon: %q", reason)
 			}
@@ -270,7 +309,7 @@ func swap(t *testing.T, fn *func() bool, v bool) {
 // the failure that matters is the report contradicting itself.
 func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	const nsReason = "userns blocked here"
-	_, restricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true)
+	restricted := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true))
 	if strings.Contains(restricted, "including an abstract-namespace one no grant is needed to reach") {
 		t.Errorf("with resolve_unix restricted the reason still claims any unix socket is reachable: %q", restricted)
 	}
@@ -282,7 +321,7 @@ func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	if !strings.Contains(restricted, "/dev/log") {
 		t.Errorf("the silent syslog denial must be named: %q", restricted)
 	}
-	_, unrestricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true)
+	unrestricted := wholeDetail(filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true))
 	if !strings.Contains(unrestricted, "any host daemon socket its path names") {
 		t.Errorf("below ABI 9 the pathname-socket residual must be disclosed: %q", unrestricted)
 	}
@@ -305,7 +344,8 @@ func layerStatus(t *testing.T, layer enforce.Layer) enforce.LayerStatus {
 func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 	const nsReason = "AppArmor restricts unprivileged user namespaces"
 	for _, landlock := range []bool{true, false} {
-		state, reason := filesystemLayer(namespacesBlocked, nsReason, landlock, true, true, true, true)
+		l := filesystemLayer(namespacesBlocked, nsReason, landlock, true, true, true, true)
+		state, reason := l.State, l.Reason
 		if !strings.Contains(reason, nsReason) {
 			t.Errorf("landlock=%v: %v reason %q dropped the namespace reason", landlock, state, reason)
 		}

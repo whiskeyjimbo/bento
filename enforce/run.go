@@ -122,7 +122,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	}
 	for _, l := range res.Report.Layers {
 		if want[l.Layer] && l.State > required.StateOf(l.Layer) {
-			required.Set(l.Layer, l.State, l.Reason)
+			required.SetStatus(l)
 		}
 	}
 	res.Report = required

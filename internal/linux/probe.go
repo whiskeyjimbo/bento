@@ -52,8 +52,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	fsState, fsDetail := filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), degradedFencesOK)
-	r.Add(enforce.LayerFilesystem, fsState, fsDetail)
+	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), degradedFencesOK))
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
 	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
@@ -78,7 +77,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	for _, ls := range execLayers(seccompSupported(), seccompStrictExecSupported()) {
-		r.Add(ls.Layer, ls.State, ls.Reason)
+		r.AddStatus(ls)
 	}
 
 	scopeOK, scopeReason := canCreateScope()
@@ -97,7 +96,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		cpuState, cpuReason = cpuDelegationState(delegatedControllers())
 	}
 	for _, ls := range limitsLayers(scopeOK, scopeReason, cpuState, cpuReason) {
-		r.Add(ls.Layer, ls.State, ls.Reason)
+		r.AddStatus(ls)
 	}
 
 	return r
@@ -174,46 +173,55 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 // The network layer is deliberately NOT three-stated the same way: without a user
 // namespace there is no netns to fence egress, so it stays Unavailable, which is
 // what makes a network manifest refuse even under --allow-degraded.
-func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, degradedFencesOK bool) (enforce.State, string) {
+//
+// The degraded tier is the one layer whose disclosure splits: what is broken on this
+// host and how to fix it is the Reason, and the enumeration of what the fallback tier
+// does not confine - the same paragraph on every degraded host - is Consequences. A
+// refusal prints the first and sends the reader to a fuller report for the second;
+// doctor prints both. Nothing is dropped, only moved out from on top of the remedy.
+func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, degradedFencesOK bool) enforce.LayerStatus {
+	status := func(state enforce.State, reason string) enforce.LayerStatus {
+		return enforce.LayerStatus{Layer: enforce.LayerFilesystem, State: state, Reason: reason}
+	}
 	switch {
 	case ns == namespacesUsable && landlockAvail:
-		return enforce.Enforced, "Landlock backstop active"
+		return status(enforce.Enforced, "Landlock backstop active")
 	case ns == namespacesUsable:
-		return enforce.Enforced, "no Landlock backstop on this kernel; bwrap alone confines"
+		return status(enforce.Enforced, "no Landlock backstop on this kernel; bwrap alone confines")
 	case ns == namespacesUnknown:
-		return enforce.Unavailable, nsReason
+		return status(enforce.Unavailable, nsReason)
 	case landlockAvail && !degradedFencesOK:
 		// Landlock confines the filesystem, but the reduced-confinement tier also
 		// substitutes a seccomp egress block and cross-process block for the netns and
 		// PID namespace it lacks - and those need an amd64 kernel with seccomp BPF.
 		// Without them the tier cannot run at all, so report it unavailable rather than
 		// offer a --allow-degraded that would only refuse at launch.
-		return enforce.Unavailable, joinReason(nsReason,
+		return status(enforce.Unavailable, joinReason(nsReason,
 			"and the reduced-confinement fallback needs a seccomp egress and cross-process "+
 				"block (an amd64 kernel with seccomp BPF) to stand in for the missing namespaces, "+
-				"unavailable here")
+				"unavailable here"))
 	case landlockAvail:
 		// Leads with nsReason rather than a hardcoded userns clause: this branch is
 		// reached whenever bwrap cannot give a namespace, which includes bwrap simply
 		// not being installed. Asserting "user namespaces are blocked" there sends a
 		// reader to enable a namespace the host already permits.
-		return enforce.Degraded, joinReason(nsReason,
+		l := status(enforce.Degraded, joinReason(nsReason,
 			"confinement falls back to Landlock path rules plus a seccomp egress block. This is materially "+
-				"weaker than the full sandbox: no mount namespace (the deny-list cannot carve a credential out of "+
-				"an allowed tree, and any granted /proc is the host's), no PID namespace (the target shares the "+
-				"host process table, so it can see and signal same-user processes - though seccomp blocks the "+
-				"cross-process memory read/write and ptrace injection that would let it take one over - and a "+
-				"background process it leaves is swept only best-effort by killing the run's process group, which "+
-				"a setsid() escapes and which also stops a target that reads an interactive terminal), and no "+
-				"network namespace "+
-				"(seccomp blocks IP egress but not netlink interface enumeration, nor "+
-				unixSocketClause(resolveUnixRestricted)+"). It confines filesystem "+
-				"read/write/exec, nothing more"+
-				truncateResidual(truncateRestricted)+ioctlDevResidual(ioctlDevRestricted)+
-				resolveUnixResidual(resolveUnixRestricted))
+				"weaker than the full sandbox."))
+		l.Consequences = "It confines filesystem read/write/exec, nothing more: no mount namespace (the deny-list " +
+			"cannot carve a credential out of an allowed tree, and any granted /proc is the host's), no PID " +
+			"namespace (the target shares the host process table, so it can see and signal same-user processes - " +
+			"though seccomp blocks the cross-process memory read/write and ptrace injection that would let it take " +
+			"one over - and a background process it leaves is swept only best-effort by killing the run's process " +
+			"group, which a setsid() escapes and which also stops a target that reads an interactive terminal), " +
+			"and no network namespace (seccomp blocks IP egress but not netlink interface enumeration, nor " +
+			unixSocketClause(resolveUnixRestricted) + ")" +
+			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
+			resolveUnixResidual(resolveUnixRestricted)
+		return l
 	default:
-		return enforce.Unavailable, joinReason(nsReason,
-			"and this kernel has no Landlock, so no filesystem confinement is available at all")
+		return status(enforce.Unavailable, joinReason(nsReason,
+			"and this kernel has no Landlock, so no filesystem confinement is available at all"))
 	}
 }
 

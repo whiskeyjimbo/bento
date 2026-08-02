@@ -59,6 +59,49 @@ func TestWriteReportTableSurfacesShortfallDetail(t *testing.T) {
 	}
 }
 
+// A layer's consequences are the half of its disclosure a refusal deliberately does
+// not print, so the two surfaces have to be held to opposite ends of that trade: the
+// refusal leads with the remedy and says where the rest is, and doctor - the report
+// the refusal sent the reader to - prints the rest in full. If either end slips, a
+// disclosure has been dropped rather than relocated.
+func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
+	const (
+		reason       = "bwrap cannot make a user namespace here; install an AppArmor profile permitting it"
+		consequences = "It confines filesystem read/write/exec, nothing more: no PID namespace, no network namespace"
+	)
+	short := enforce.LayerStatus{
+		Layer: enforce.LayerFilesystem, State: enforce.Degraded,
+		Reason: reason, Consequences: consequences,
+	}
+
+	var refusal bytes.Buffer
+	writeRefusal(&refusal, "refusing to run", &enforce.Refusal{
+		Reason: "a core guarantee cannot be fully enforced on this host",
+		Short:  []enforce.LayerStatus{short},
+	})
+	// Whitespace-normalized: both surfaces wrap, so a line break inside the sentence is
+	// not the failure this asserts.
+	if !strings.Contains(strings.Join(strings.Fields(refusal.String()), " "), reason) {
+		t.Errorf("the refusal dropped the diagnosis:\n%s", refusal.String())
+	}
+	if strings.Contains(refusal.String(), "no PID namespace") {
+		t.Errorf("the refusal still buries its remedy under the tier consequences:\n%s", refusal.String())
+	}
+	if !strings.Contains(refusal.String(), "bento doctor") {
+		t.Errorf("the refusal does not say where the rest of the disclosure is:\n%s", refusal.String())
+	}
+
+	var report bytes.Buffer
+	var r enforce.Report
+	r.AddStatus(short)
+	writeReportTable(&report, r)
+	for _, want := range []string{reason, consequences} {
+		if !strings.Contains(strings.Join(strings.Fields(report.String()), " "), want) {
+			t.Errorf("doctor must print %q; got:\n%s", want, report.String())
+		}
+	}
+}
+
 // A detail too long for a cell has to leave the cell, or the alignment the table
 // exists for is gone and the other rows go off screen with it. Relocating is not
 // dropping: the text still has to appear in full, wrapped, below the table.

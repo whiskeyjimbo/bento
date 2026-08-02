@@ -207,7 +207,7 @@ func run(manifestPath string) int {
 		// reach before the failure rather than only the error.
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		for _, d := range res.Report.Degradations() {
-			fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
+			fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, disclosure(d))
 		}
 		return 125
 	}
@@ -227,6 +227,17 @@ func run(manifestPath string) int {
 	return res.ExitCode
 }
 
+// disclosure is a degraded layer's account of itself whole. LayerStatus splits the
+// host-specific diagnosis from the standing consequences of the state so a refusal can
+// lead with the remedy; this run is proceeding under the degradation instead, so the
+// consequences are exactly what the operator needs beside it.
+func disclosure(l enforce.LayerStatus) string {
+	if l.Consequences == "" {
+		return l.Reason
+	}
+	return l.Reason + " " + l.Consequences
+}
+
 // writeResult prints every honesty field of a Result. A frontend's job is not to
 // summarize the run: it is to say what the run could not guarantee and what it exposed
 // anyway, and any field left unread is a silence an operator reads as "nothing to
@@ -241,7 +252,7 @@ func run(manifestPath string) int {
 func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) {
 	// Degradations: what the host could only partially enforce.
 	for _, d := range res.Report.Degradations() {
-		fmt.Fprintf(w, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Reason)
+		fmt.Fprintf(w, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, disclosure(d))
 	}
 	// Shields is the positive evidence: the credential and host-service paths the
 	// sandbox actually hid or froze for this policy. An empty list is not proof nothing

@@ -37,6 +37,11 @@ type layerJSON struct {
 	Tier   string `json:"tier"`
 	State  string `json:"state"`
 	Detail string `json:"detail,omitempty"`
+	// Consequences is the layer's standing disclosure for this state, carried beside
+	// Detail rather than folded into it: a harness that gates on the diagnosis wants
+	// the host-specific half alone, and one that archives the posture needs the other
+	// half present rather than only in `bento doctor`'s human output.
+	Consequences string `json:"consequences,omitempty"`
 }
 
 type reportJSON struct {
@@ -79,10 +84,11 @@ func toReportJSON(r enforce.Report) reportJSON {
 	out := reportJSON{Layers: make([]layerJSON, 0, len(r.Layers)), FullyEnforced: !r.HasDegradation()}
 	for _, l := range r.Layers {
 		out.Layers = append(out.Layers, layerJSON{
-			Layer:  string(l.Layer),
-			Tier:   l.Layer.Tier().String(),
-			State:  l.State.String(),
-			Detail: l.Reason,
+			Layer:        string(l.Layer),
+			Tier:         l.Layer.Tier().String(),
+			State:        l.State.String(),
+			Detail:       l.Reason,
+			Consequences: l.Consequences,
 		})
 	}
 	return out
@@ -374,7 +380,7 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 	var notes []enforce.LayerStatus
 	for _, l := range r.Layers {
 		detail := l.Reason
-		if len(detail) > detailInline {
+		if len(detail) > detailInline || l.Consequences != "" {
 			detail = "see note below"
 			notes = append(notes, l)
 		}
@@ -383,10 +389,22 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 	tw.Flush()
 	for _, l := range notes {
 		fmt.Fprintf(w, "\n%s (%s):\n", l.Layer, l.State)
-		for _, line := range wrapText(l.Reason, textWidth-2) {
+		// The consequences are what a reader ran doctor to get: the refusal path prints
+		// the diagnosis alone and sends them here for the rest, so this is the one place
+		// the two halves have to appear together.
+		for _, line := range wrapText(joinDetail(l), textWidth-2) {
 			fmt.Fprintf(w, "  %s\n", line)
 		}
 	}
+}
+
+// joinDetail is a layer's disclosure whole, for the frontends that describe a layer in
+// full rather than pointing at one that does.
+func joinDetail(l enforce.LayerStatus) string {
+	if l.Consequences == "" {
+		return l.Reason
+	}
+	return l.Reason + " " + l.Consequences
 }
 
 // wrapText breaks s into lines of at most width columns on word boundaries. A word
@@ -694,8 +712,14 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 		}
 		fmt.Fprintf(w, "%*s%s\n", len(prefix), "", line)
 	}
+	consequences := false
 	for _, l := range r.Short {
+		// The diagnosis alone: a refusal is read for the one line that says what to change
+		// on this host, and the tier's standing consequences - the same paragraph wherever
+		// it is hit - used to sit on top of it. doctor is where they belong, so this points
+		// there instead.
 		head := fmt.Sprintf("%s (%s): %s", l.Layer, l.State, l.Reason)
+		consequences = consequences || l.Consequences != ""
 		for i, line := range wrapText(head, textWidth-4) {
 			if i == 0 {
 				fmt.Fprintf(w, "  %s\n", line)
@@ -703,6 +727,9 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 			}
 			fmt.Fprintf(w, "    %s\n", line)
 		}
+	}
+	if consequences {
+		fmt.Fprintln(w, "  run `bento doctor` for everything the fallback tier does not confine.")
 	}
 }
 
@@ -1044,7 +1071,10 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 		// Wrapped, not one line: the degraded filesystem tier's reason is a
 		// thousand-character paragraph, and a disclosure the reader scrolls past
 		// sideways discloses nothing.
-		head := fmt.Sprintf("%s (%s tier): %s - %s", l.Layer, l.Layer.Tier(), l.State, l.Reason)
+		// Whole, unlike the refusal: this path is a run that is proceeding under
+		// --allow-degraded, so the consequences are what the user is about to accept
+		// rather than a paragraph between them and a remedy.
+		head := fmt.Sprintf("%s (%s tier): %s - %s", l.Layer, l.Layer.Tier(), l.State, joinDetail(l))
 		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
 			fmt.Fprintf(w, "[bento]   %s\n", line)
 		}

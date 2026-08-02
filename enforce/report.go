@@ -88,6 +88,14 @@ type LayerStatus struct {
 	Layer  Layer
 	State  State
 	Reason string
+	// Consequences is what this state costs the run: the standing disclosure for the
+	// state, identical on every host that lands in it, as opposed to Reason's account
+	// of what is broken here and how to fix it. It is separate so a refusal can lead
+	// with the actionable half and point at a fuller report for this one, rather than
+	// burying the remedy under a paragraph the reader did not ask for. Every frontend
+	// that describes a layer in full must still print it: no fact is dropped, only
+	// relocated.
+	Consequences string
 }
 
 // Report is the per-layer enforcement status for a host (from Probe) or a run
@@ -100,7 +108,15 @@ type Report struct {
 // Add records a layer's status. Reason should explain why, whenever state is not
 // Enforced.
 func (r *Report) Add(layer Layer, state State, reason string) {
-	r.Layers = append(r.Layers, LayerStatus{Layer: layer, State: state, Reason: reason})
+	r.AddStatus(LayerStatus{Layer: layer, State: state, Reason: reason})
+}
+
+// AddStatus records a status a caller already holds whole. Copying a status forward
+// field by field is how a disclosure gets silently dropped - a new field on
+// LayerStatus is invisible to a call site that names three of them - so every path
+// that forwards a status another layer produced uses this.
+func (r *Report) AddStatus(l LayerStatus) {
+	r.Layers = append(r.Layers, l)
 }
 
 // Set replaces a layer's status, or adds it if absent. A backend uses it to
@@ -112,19 +128,25 @@ func (r *Report) Add(layer Layer, state State, reason string) {
 // admission scans still see, and a report can then refuse on one entry while rendering
 // the other as enforced.
 func (r *Report) Set(layer Layer, state State, reason string) {
+	r.SetStatus(LayerStatus{Layer: layer, State: state, Reason: reason})
+}
+
+// SetStatus replaces a layer's status with one the caller holds whole, for the same
+// reason AddStatus exists.
+func (r *Report) SetStatus(s LayerStatus) {
 	out, replaced := r.Layers[:0], false
 	for _, l := range r.Layers {
 		switch {
-		case l.Layer != layer:
+		case l.Layer != s.Layer:
 			out = append(out, l)
 		case !replaced:
-			out = append(out, LayerStatus{Layer: layer, State: state, Reason: reason})
+			out = append(out, s)
 			replaced = true
 		}
 	}
 	r.Layers = out
 	if !replaced {
-		r.Add(layer, state, reason)
+		r.AddStatus(s)
 	}
 }
 
