@@ -498,6 +498,27 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 	}
 }
 
+// The systempaths remedy is the whole value of the procfs diagnosis to a CI engineer,
+// and it is read at the head of a block that runs past twenty lines once the degraded
+// tier's consequences follow it. Appended last it was reached by nobody, so the flag
+// has to stay ahead of the diagnosis it remedies rather than merely be present.
+func TestProcMountRemedyLeadsTheReason(t *testing.T) {
+	_, reason := classifyUnshare(&usernsError{
+		output: "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
+		err:    errors.New("exit status 1"),
+	})
+	remedy := strings.Index(reason, "--security-opt systempaths=unconfined")
+	if remedy < 0 {
+		t.Fatalf("reason %q drops the remedy entirely", reason)
+	}
+	if diagnosis := strings.Index(reason, "cannot mount the pseudo-filesystems"); remedy > diagnosis {
+		t.Errorf("remedy at %d trails the diagnosis at %d, so it reads as a footnote: %q", remedy, diagnosis, reason)
+	}
+	if !strings.Contains(reason[:remedy], "docker") {
+		t.Errorf("nothing before the flag says which runtime it belongs to: %q", reason)
+	}
+}
+
 // The probe is only as honest as the flags it shares with the run, and this drift has
 // already happened once: --new-session sits in baseFlags rather than a shared list, so
 // the canary never exercised it (see newsession_test.go). Mounting proc was the second

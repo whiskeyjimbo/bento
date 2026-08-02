@@ -445,13 +445,17 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	// user namespace", which is false on this host. Only proc carries a remedy, because
 	// masking paths under /proc is the one cause established for this class.
 	if strings.Contains(out, "Can't mount ") {
-		reason := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
+		diagnosis := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
 			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
 		if strings.Contains(out, "Can't mount proc") {
-			reason += ". The usual cause is a container runtime masking paths under /proc, " +
-				"which docker does by default; there --security-opt systempaths=unconfined lifts it."
+			// The remedy leads. This reason is the head of a block that runs past twenty
+			// lines once the tier's consequences follow it, and a flag reached in its fifth
+			// sentence is one a CI engineer scanning the block does not reach at all.
+			return namespacesBlocked, "bubblewrap cannot mount /proc here, and the usual cause is a " +
+				"container runtime masking paths under it, which docker does by default; there " +
+				"--security-opt systempaths=unconfined lifts it. In full: " + diagnosis
 		}
-		return namespacesBlocked, reason
+		return namespacesBlocked, diagnosis
 	}
 	const base = "cannot create an unprivileged user namespace, so bubblewrap cannot isolate anything"
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
