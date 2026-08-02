@@ -119,8 +119,10 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 // A refusal over a limit this host cannot apply is the one shortfall whose reader has
 // nothing to go fix: the manifest asked for a cap and the host has no way to apply one,
 // and on a container image without systemd neither end is theirs to change. So this
-// refusal alone carries its two ways out, and only where both really apply - the flag
-// where the flag would admit the run, the manifest edit where the shortfall is a limit.
+// refusal alone carries its ways out, and only where each really applies - the manifest
+// edit wherever the shortfall is a limit, the flag only where it would admit the run.
+// Under --strict it would not, since run refuses that flag alongside it, so strict is
+// offered the edit without it rather than left with a diagnosis and no way past.
 func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 	limits := enforce.LayerStatus{
 		Layer: enforce.LayerLimits, State: enforce.Unavailable,
@@ -131,21 +133,22 @@ func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 		Reason: "bwrap cannot make a user namespace here",
 	}
 	for name, tc := range map[string]struct {
-		refusal *enforce.Refusal
-		want    bool
+		refusal  *enforce.Refusal
+		wantFlag bool
+		wantEdit bool
 	}{
-		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true},
-		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false},
-		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false},
+		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true, true},
+		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false, true},
+		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false, false},
 	} {
 		var b bytes.Buffer
 		writeLimitsRemedy(&b, tc.refusal)
 		flat := strings.Join(strings.Fields(b.String()), " ")
-		if got := strings.Contains(flat, "--allow-degraded"); got != tc.want {
-			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		if got := strings.Contains(flat, "--allow-degraded"); got != tc.wantFlag {
+			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.wantFlag, b.String())
 		}
-		if got := strings.Contains(flat, "`limits:`"); got != tc.want {
-			t.Errorf("%s: offered the manifest edit = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		if got := strings.Contains(flat, "`limits:`"); got != tc.wantEdit {
+			t.Errorf("%s: offered the manifest edit = %v, want %v; got:\n%s", name, got, tc.wantEdit, b.String())
 		}
 	}
 }

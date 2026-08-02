@@ -924,14 +924,23 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 //
 // It lives beside run's call to writeRefusal rather than inside it because both remedies
 // are run's own vocabulary - profile refuses through the same printer and offers neither
-// (see preflightHost). Waivable is what says the flag would actually admit THIS run; the
-// layer check is what says the second remedy applies, since removing `limits:` fixes
-// nothing on a refusal about the filesystem tier.
+// (see preflightHost). The layer check is what says the manifest edit applies at all,
+// since removing `limits:` fixes nothing on a refusal about the filesystem tier.
+//
+// Waivable is what says --allow-degraded would actually admit THIS run, and under --strict
+// it never would: run rejects the two flags together, so naming the flag there would hand
+// the reader a way past that hard-errors when they take it. Strict gets the manifest edit
+// and the host change instead - the two things that are still true when the flag is not.
 func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
 	limits := slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool {
 		return l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU
 	})
-	if !r.Waivable || !limits {
+	if !limits {
+		return
+	}
+	if !r.Waivable {
+		fmt.Fprintln(w, "  to proceed anyway, drop `limits:` from the manifest so it no longer asks for a cap")
+		fmt.Fprintln(w, "  this host cannot apply, or give the host a systemd user manager to apply one with.")
 		return
 	}
 	fmt.Fprintln(w, "  to proceed anyway, pass --allow-degraded and the script runs unbounded, or drop")

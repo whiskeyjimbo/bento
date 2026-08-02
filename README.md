@@ -101,8 +101,13 @@ Bento, and a poor one when it is a shared multi-tenant sandbox. Running Bento
 directly on the CI host - GitHub-hosted runners permit unprivileged user
 namespaces - needs none of it.
 
-Resource limits stay unavailable in a container without a systemd user manager;
-that is a hardening layer, so runs proceed unless `--strict` is passed.
+Resource limits stay unavailable in a container without a systemd user manager.
+That is a hardening layer, so a manifest that asks for no `limits:` runs there
+unaffected, `--strict` included. A manifest that *does* ask for one is refused
+without `--strict` too: an unenforceable cap is the one hardening gap that
+protects the host rather than the target, so running unbounded is not a
+degradation bento takes on its own. Drop `limits:` for those hosts, or pass
+`--allow-degraded` to run uncapped knowingly.
 
 ### In CI
 
