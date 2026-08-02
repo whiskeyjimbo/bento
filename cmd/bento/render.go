@@ -853,9 +853,9 @@ func fileishWriteGrants(write []string) []string {
 func writeFileishWriteNotes(w io.Writer, fileish []string) {
 	for _, g := range fileish {
 		fmt.Fprintf(w, "[bento] note: the write grant %q is spelled like a file, but write grants name\n", g)
-		fmt.Fprintln(w, "[bento] directories - this run creates a directory under that name, and a file the")
-		fmt.Fprintln(w, "[bento] script writes there is inside it. Grant the parent directory instead, unless")
-		fmt.Fprintln(w, "[bento] a directory is what was meant.")
+		fmt.Fprintln(w, "[bento] directories - this run creates a directory under that name, so the script's")
+		fmt.Fprintln(w, "[bento] own write to that path fails with \"is a directory\". Grant the parent")
+		fmt.Fprintln(w, "[bento] directory instead, unless a directory is what was meant.")
 	}
 }
 

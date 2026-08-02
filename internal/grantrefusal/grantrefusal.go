@@ -4,9 +4,12 @@
 // a write grant that is a file is caught by the argv compiler on one path and by the
 // directory preparation on another, a loop by the grant check on one and by the same
 // preparation on another - and `bento validate` predicts all of them before anything
-// runs. That is five call sites for two sentences. Shared here so a reader who meets one
+// runs. That is six call sites for two sentences. Shared here so a reader who meets one
 // of them in a CI gate and again at run time reads the same sentence, and so a reworded
 // refusal cannot answer half of them.
+//
+// The sentence, not the path it quotes. The run names the grant as it resolved it and the
+// gate as the manifest spells it, which is what each reader is looking at.
 //
 // The wording only. Each caller keeps its own stat: they work on paths resolved to
 // different degrees and answer differently - the run refuses, the gate reports - and a

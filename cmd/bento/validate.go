@@ -267,7 +267,14 @@ func checkRunnable(resolved *policy.Policy) runnability {
 // that tree as a different user.
 func loopedGrantProblems(read, write []string) []string {
 	var problems []string
+	seen := map[string]bool{}
+	// One host fact, said once: the same path may be granted for reading and for writing,
+	// and the backend refuses on the first of them it reaches.
 	for _, g := range slices.Concat(read, write) {
+		if seen[g] {
+			continue
+		}
+		seen[g] = true
 		if _, err := os.Stat(filepath.Clean(g)); errors.Is(err, syscall.ELOOP) {
 			problems = append(problems, grantrefusal.Looped(g).Error())
 		}
@@ -309,9 +316,9 @@ func writeRunnability(w io.Writer, r runnability) {
 	for _, g := range r.fileishWrites {
 		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
 		fmt.Fprintf(w, "        directories: %q.\n", g)
-		fmt.Fprintf(w, "        run will create a directory under that name and the script's own writes\n")
-		fmt.Fprintf(w, "        inside it will land elsewhere. Grant the parent directory instead, unless\n")
-		fmt.Fprintf(w, "        a directory is what was meant.\n")
+		fmt.Fprintf(w, "        run creates a directory under that name, so the script's own write to\n")
+		fmt.Fprintf(w, "        that path fails with \"is a directory\". Grant the parent directory\n")
+		fmt.Fprintf(w, "        instead, unless a directory is what was meant.\n")
 	}
 	for _, g := range r.missingReads {
 		fmt.Fprintf(w, "  note: this read grant names nothing on this host, so it grants nothing and\n")
