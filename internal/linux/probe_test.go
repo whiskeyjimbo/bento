@@ -500,8 +500,9 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 
 // The systempaths remedy is the whole value of the procfs diagnosis to a CI engineer,
 // and it is read at the head of a block that runs past twenty lines once the degraded
-// tier's consequences follow it. Appended last it was reached by nobody, so the flag
-// has to stay ahead of the diagnosis it remedies rather than merely be present.
+// tier's consequences follow it. Present is not enough at that length: a flag below
+// that much prose is one nobody scanning the block reaches, so it has to stay ahead of
+// the diagnosis it remedies, through both of the joins that build the block.
 func TestProcMountRemedyLeadsTheReason(t *testing.T) {
 	_, reason := classifyUnshare(&usernsError{
 		output: "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
@@ -511,7 +512,7 @@ func TestProcMountRemedyLeadsTheReason(t *testing.T) {
 	if remedy < 0 {
 		t.Fatalf("reason %q drops the remedy entirely", reason)
 	}
-	diagnosis := strings.Index(reason, "cannot mount the pseudo-filesystems")
+	diagnosis := strings.Index(reason, "the mount the sandbox's root filesystem needs was refused")
 	if diagnosis < 0 {
 		t.Fatalf("reason %q drops the diagnosis the remedy is meant to lead", reason)
 	}
@@ -520,6 +521,17 @@ func TestProcMountRemedyLeadsTheReason(t *testing.T) {
 	}
 	if !strings.Contains(reason[:remedy], "docker") {
 		t.Errorf("nothing before the flag says which runtime it belongs to: %q", reason)
+	}
+	// Two joins sit between this reason and the block the reader actually sees:
+	// joinReason appends the tier's clause after it, and Disclosure appends the
+	// consequences after that. The flag leads only if both keep the reason in front.
+	block := filesystemLayer(namespacesBlocked, reason, true, true, true, true, true).Disclosure()
+	flag, tier := strings.Index(block, "--security-opt systempaths=unconfined"), strings.Index(block, "confinement falls back")
+	if flag < 0 || tier < 0 {
+		t.Fatalf("the degraded block dropped the flag or the tier clause: %q", block)
+	}
+	if flag > tier {
+		t.Errorf("flag at %d trails the tier clause at %d, so it does not lead the block: %q", flag, tier, block)
 	}
 }
 

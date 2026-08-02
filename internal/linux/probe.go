@@ -448,12 +448,17 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 		diagnosis := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
 			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
 		if strings.Contains(out, "Can't mount proc") {
-			// The remedy leads. This reason is the head of a block that runs past twenty
-			// lines once the tier's consequences follow it, and a flag reached in its fifth
-			// sentence is one a CI engineer scanning the block does not reach at all.
+			// This reason is the head of a block that runs past twenty lines once the
+			// degraded tier's consequences follow it, and a flag held to its fifth sentence
+			// is one a CI engineer scanning that block does not reach at all, so the remedy
+			// goes ahead of the diagnosis it remedies. The bwrap line is parenthesised and
+			// the sentence closed with a period, like the diagnoses above, so joinReason's
+			// trim still leaves a clean continuation rather than running raw tool output
+			// into the tier's clause.
 			return namespacesBlocked, "bubblewrap cannot mount /proc here, and the usual cause is a " +
 				"container runtime masking paths under it, which docker does by default; there " +
-				"--security-opt systempaths=unconfined lifts it. In full: " + diagnosis
+				"--security-opt systempaths=unconfined lifts it. The namespace itself was granted - " +
+				"only the mount the sandbox's root filesystem needs was refused (" + strings.TrimSpace(out) + ")."
 		}
 		return namespacesBlocked, diagnosis
 	}
