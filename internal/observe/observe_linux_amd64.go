@@ -41,6 +41,13 @@ type Access struct {
 	// reporting layer tell a probe apart from a resolved file. It is keyed on the path
 	// alone, so a probe that misses and a create that succeeds do not disagree.
 	Absent bool
+	// Probed reports that every syscall naming this path only asked whether it was
+	// there - stat, access, readlink, chdir - and none of them opened it. Both need the
+	// same grant, so this says nothing about what the run requires; it lets a consumer
+	// tell an access the program reached for from one the kernel's own path resolution
+	// provoked on its behalf. Keyed on the path alone for the reason Absent is: a
+	// directory that is stat'ed once and opened once is not probe-only.
+	Probed bool
 }
 
 // Result is what a traced run observed.
@@ -230,8 +237,13 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// opposite answers would report a file that demonstrably exists as absent.
 	resolved := map[string]bool{}
 	missed := map[string]bool{}
+	// Which of the two decoders named each path, keyed on the path alone like resolved
+	// and missed above and for the same reason: one path reached both ways must not
+	// carry two answers. Probe-only is the weaker claim, so opened wins when both hold.
+	opened := map[string]bool{}
+	probed := map[string]bool{}
 	var res Result
-	record := func(path string, write bool) {
+	add := func(path string, write bool) {
 		if path == "" {
 			return
 		}
@@ -241,6 +253,21 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		}
 		seen[key] = true
 		res.Accesses = append(res.Accesses, Access{Path: path, Write: write})
+	}
+	record := func(path string, write bool) {
+		if path != "" {
+			opened[path] = true
+		}
+		add(path, write)
+	}
+	// recordProbe is record for the existence decoder alone - the syscalls that ask
+	// whether a path is there without opening it. The access itself is recorded exactly
+	// as record's is; only the attribution differs.
+	recordProbe := func(path string, write bool) {
+		if path != "" {
+			probed[path] = true
+		}
+		add(path, write)
 	}
 	openResult := func(path string, found bool) {
 		if found {
@@ -317,6 +344,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			})
 			for i, a := range res.Accesses {
 				res.Accesses[i].Absent = missed[a.Path] && !resolved[a.Path]
+				res.Accesses[i].Probed = probed[a.Path] && !opened[a.Path]
 			}
 			return res, nil
 		case ws.Exited() || ws.Signaled():
@@ -331,7 +359,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// counter's own.
 			if op, native := nativeSyscall(wpid, lastOp, held, &res.Dropped); native {
 				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, op, record, openResult, count, release, held, &res)
+				inspect(wpid, op, record, recordProbe, openResult, count, release, held, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -776,7 +804,7 @@ func existenceHeld(held map[string]heldPath) int {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
+func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -840,7 +868,7 @@ func inspect(pid int, op byte, record func(string, bool), openResult func(string
 	// to. The exit stop is still needed for one thing, the existence syscalls' success
 	// filter, and that replays what was captured here rather than reading again.
 	if !atSyscallEntry(&regs) {
-		recordHeldExistence(pid, &regs, record, openResult, drop, held)
+		recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
 		return
 	}
 	switch regs.Orig_rax {
@@ -910,7 +938,7 @@ func inspect(pid int, op byte, record func(string, bool), openResult func(string
 		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), record, drop)
 	default:
 		inspectMutating(pid, &regs, record, dropSlot)
-		inspectExistence(pid, &regs, record, drop, held)
+		inspectExistence(pid, &regs, recordProbe, drop, held)
 	}
 }
 

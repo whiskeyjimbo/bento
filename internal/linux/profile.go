@@ -238,7 +238,8 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 
 // parseObservations reads the launcher's observation report: "R <path>" and
 // "W <path>" lines for opens, an "ABSENT <path>" line for each of those the run never
-// found a file at, an "EXEC" line if the target spawned a subprocess, an "EXIT <code>"
+// found a file at, a "PROBED <path>" line for each that nothing ever opened, an "EXEC"
+// line if the target spawned a subprocess, an "EXIT <code>"
 // or "SIGNAL <n>" line carrying the run's exit status, and a "DROPPED <n>" line
 // counting accesses the observer could not name.
 func parseObservations(path string) (profile.Observation, error) {
@@ -292,6 +293,10 @@ func parseObservations(path string) (profile.Observation, error) {
 		case strings.HasPrefix(line, "ABSENT "):
 			if p, err := strconv.Unquote(line[7:]); err == nil {
 				obs.Absent = append(obs.Absent, p)
+			}
+		case strings.HasPrefix(line, "PROBED "):
+			if p, err := strconv.Unquote(line[7:]); err == nil {
+				obs.Probed = append(obs.Probed, p)
 			}
 		// The status lines have no honest partial reading, which is why they refuse
 		// rather than count a drop like an unquotable path does. A malformed EXIT

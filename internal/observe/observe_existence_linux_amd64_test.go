@@ -58,6 +58,51 @@ except FileNotFoundError:
 	}
 }
 
+// Both decoders can name the same path, and a consumer that wants to tell an access the
+// program reached for from one the kernel resolved on its behalf needs to know which. A
+// directory that is only stat'ed is probe-only; the same directory listed - a readdir
+// opens it first - is not, and neither is one that is stat'ed and then opened.
+func TestTraceMarksPathsNothingEverOpened(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	dir := t.TempDir()
+	statted := filepath.Join(dir, "statted")
+	listed := filepath.Join(dir, "listed")
+	for _, d := range []string{statted, listed} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script := fmt.Sprintf(`
+import os
+os.stat(%q)
+os.stat(%q)
+os.listdir(%q)
+`, statted, listed, listed)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	a, ok := find(res, statted)
+	if !ok {
+		t.Fatalf("no access recorded for %q; accesses: %v", statted, res.Accesses)
+	}
+	if !a.Probed {
+		t.Errorf("a directory nothing opened is not marked probe-only: %+v", a)
+	}
+	a, ok = find(res, listed)
+	if !ok {
+		t.Fatalf("no access recorded for %q; accesses: %v", listed, res.Accesses)
+	}
+	if a.Probed {
+		t.Errorf("a directory the target listed is marked probe-only: %+v", a)
+	}
+}
+
 // chdir is decoded at the entry stop, unlike the other existence syscalls, because it
 // moves the directory resolveAt reads back out of /proc. A relative chdir must therefore
 // be anchored at the directory the process was in BEFORE the call, not after it - the

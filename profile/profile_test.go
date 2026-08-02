@@ -182,21 +182,16 @@ func TestSynthesizeDropsInvalidUTF8Paths(t *testing.T) {
 	}
 }
 
-// bv2-2wy: a script that reads a credential store and also writes a file directly
-// in $HOME must not have the read hidden. Synthesize must keep the read (rather than
-// dropping it under the $HOME-level write dir), so the profiler's shield clamp can
-// surface it before the broad write is itself dropped.
 // An interpreter handed an absolute script path stats its way down the whole chain, so
 // the observer sees a successful probe of every directory above the script. Proposing
 // those grants the enforced run nothing - bwrap builds the mount points to reach the
 // script's directory and the probes succeed against that skeleton either way - and it
 // costs the reviewer one prompt per level of nesting.
 func TestSynthesizeDropsTheEntrypointsAncestorChain(t *testing.T) {
+	chain := []string{"/home/u", "/home/u/proj", "/home/u/proj/deep", "/home/u/proj/deep/nested"}
 	obs := Observation{
-		Reads: []string{
-			"/home/u", "/home/u/proj", "/home/u/proj/deep", "/home/u/proj/deep/nested",
-			"/home/u/proj/deep/nested/run.py", "/home/u/proj/data.csv",
-		},
+		Reads:  append(slices.Clone(chain), "/home/u/proj/deep/nested/run.py", "/home/u/proj/data.csv"),
+		Probed: chain,
 	}
 	p := mustSynthesize(t, "/home/u/proj/deep/nested/run.py", "python3", obs)
 	// The script's own directory is not an ancestor of itself, and a file the script
@@ -206,6 +201,26 @@ func TestSynthesizeDropsTheEntrypointsAncestorChain(t *testing.T) {
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
 		t.Fatalf("read = %v, want %v", got, want)
+	}
+}
+
+// A script that lists one of its own ancestors opens that directory, so the observer
+// does not report it probe-only and the grant survives. Dropping it would be silent and
+// unrecoverable: the enforced run would see the mount-point skeleton - the next
+// component down and nothing else - where the profiled run saw the real contents, and
+// re-profiling would reach the same conclusion every round.
+func TestSynthesizeKeepsAnEnumeratedEntrypointAncestor(t *testing.T) {
+	obs := Observation{
+		Reads: []string{"/home/u", "/home/u/proj", "/home/u/proj/deep", "/home/u/proj/deep/nested"},
+		// Everything above the listed directory is still only resolved through.
+		Probed: []string{"/home/u"},
+	}
+	p := mustSynthesize(t, "/home/u/proj/deep/nested/run.py", "python3", obs)
+	if !slices.Contains(p.Read, "/home/u/proj") {
+		t.Fatalf("read = %v, want the listed ancestor /home/u/proj kept", p.Read)
+	}
+	if slices.Contains(p.Read, "/home/u") {
+		t.Fatalf("read = %v, want the probe-only ancestor /home/u still dropped", p.Read)
 	}
 }
 
@@ -221,6 +236,10 @@ func TestSynthesizeKeepsAWriteToAnEntrypointAncestor(t *testing.T) {
 	}
 }
 
+// A script that reads a credential store and also writes a file directly in $HOME must
+// not have the read hidden. Synthesize must keep the read (rather than dropping it under
+// the $HOME-level write dir), so the profiler's shield clamp can surface it before the
+// broad write is itself dropped.
 func TestSynthesizeKeepsReadCoveredByBroadWrite(t *testing.T) {
 	obs := Observation{
 		Reads:  []string{"/home/u/.ssh/id_rsa"},

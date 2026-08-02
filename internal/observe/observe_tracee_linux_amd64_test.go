@@ -627,7 +627,7 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var res Result
 			count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, count, release, tc.held, &res)
+			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, tc.held, &res)
 			if res.Dropped != tc.want {
 				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
 			}
@@ -652,7 +652,7 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 
 	var res Result
 	count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, count, release, held, &res)
+	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, held, &res)
 	res.Dropped += releaseHeldOf(held, dead)
 
 	if res.Dropped != 2 {

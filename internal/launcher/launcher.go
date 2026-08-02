@@ -324,6 +324,7 @@ func runObserve(cfg Config, env []string) (int, error) {
 	var b strings.Builder
 	if traceErr == nil {
 		absent := map[string]bool{}
+		probed := map[string]bool{}
 		for _, a := range res.Accesses {
 			verb := "R"
 			if a.Write {
@@ -337,6 +338,14 @@ func runObserve(cfg Config, env []string) (int, error) {
 			if a.Absent && !absent[a.Path] {
 				absent[a.Path] = true
 				fmt.Fprintf(&b, "ABSENT %q\n", a.Path)
+			}
+			// Annotated the same way and for the same shape of reason: the access stands
+			// on its own R/W line, and this says only that nothing ever opened the path,
+			// so the host can tell what the program reached for from what the kernel
+			// resolved on its behalf.
+			if a.Probed && !probed[a.Path] {
+				probed[a.Path] = true
+				fmt.Fprintf(&b, "PROBED %q\n", a.Path)
 			}
 		}
 		if res.Execed {

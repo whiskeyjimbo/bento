@@ -43,6 +43,13 @@ type Observation struct {
 	// that never resolved cannot have been read, which is what lets a warning about a
 	// deceptive filename say whether there was a file behind it.
 	Absent []string
+	// Probed is the subset of the accessed paths that nothing ever opened: every syscall
+	// naming one only asked whether it was there. They stay in Reads for the same reason
+	// Absent's do - a stat that succeeds during profiling and returns ENOENT under
+	// enforcement sends the program down a different branch, so the grant is real - but a
+	// path the program never opened is one it may never have named itself, which is what
+	// lets the entrypoint's resolution chain be told from a directory it listed.
+	Probed []string
 	Hosts  []HostPort
 	// Blocked is the subset of Hosts whose egress the proxy's upstream guard refused,
 	// because the name resolved to an address the sandbox must not reach (loopback,
@@ -175,20 +182,35 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	// directories down produces four grants nobody asked for, each one broader than the
 	// last, and the interactive session asks about every one of them.
 	//
-	// They are safe to drop because they grant the run nothing. The enforced run binds
-	// the script's own directory, and bwrap builds the mount points above it to reach
-	// there, so the same probes succeed against that skeleton whether or not a grant
-	// names the ancestor - verified by running a deep-path manifest with them removed.
-	// The script's own directory is NOT an ancestor by this test and stays granted, as
-	// does anything the script really opened; only the strict ancestors above it go.
+	// The chain grants the enforced run nothing. It binds the script's own directory,
+	// and bwrap builds the mount points above it to reach there, so the same probes -
+	// including a `cd ..`, which the observer records the same way - succeed against
+	// that skeleton whether or not a grant names the ancestor.
 	//
-	// Reads only. skip is shared with the write path, where the same test would drop a
-	// script's write to a directory it merely sits below (~/proj/out.log from
-	// ~/proj/deep/nested/run.sh) - a real access, recurring every round, that a
-	// proposal must not lose.
+	// Both conditions are load-bearing. Probe-only is what separates the resolution
+	// chain from a directory the script really listed: a readdir opens its directory
+	// first, so an enumerated ancestor is not probe-only and keeps its grant, which the
+	// skeleton would otherwise answer with only the next component down. And probe-only
+	// alone is not enough to drop anything - a stat that succeeds while profiling and
+	// returns ENOENT under enforcement sends the program down a different branch, so
+	// outside this one chain a probe needs its grant like any other access.
+	//
+	// The script's own directory is not an ancestor by this test and stays granted;
+	// only the strict ancestors above it go. Reads only, because skip is shared with
+	// the write path, where the same test would drop a script's write to a directory it
+	// merely sits below (~/proj/out.log from ~/proj/deep/nested/run.sh) - a real access,
+	// recurring every round, that a proposal must not lose.
 	entrypointDir := filepath.Dir(entrypoint)
+	// Keyed on the canonical spelling, because readSkip is asked about a path canon has
+	// already been through and the observer's own name for it need not match.
+	probed := map[string]bool{}
+	for _, p := range obs.Probed {
+		if c := canon(p); c != "" {
+			probed[c] = true
+		}
+	}
 	readSkip := func(p string) bool {
-		return skip(p) || (p != entrypointDir && isUnder(entrypointDir, p))
+		return skip(p) || (probed[p] && p != entrypointDir && isUnder(entrypointDir, p))
 	}
 
 	// Write grants are directory-granular (bwrap can only make a directory
