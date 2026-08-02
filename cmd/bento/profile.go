@@ -118,7 +118,14 @@ func newProfileCmd() *cobra.Command {
 				return refuse(err)
 			}
 			if interpreter == "" {
-				interpreter = guessInterpreter(script)
+				guess, source := guessInterpreter(script)
+				// Said out loud because the guess lands in the manifest the user is about
+				// to approve, and a script run under an interpreter it did not name is
+				// the kind of difference that only shows up as behavior.
+				if guess != "" {
+					fmt.Fprintf(os.Stderr, "[bento] interpreter %q, from %s; --interpreter overrides it\n", guess, source)
+				}
+				interpreter = guess
 			}
 			if out == "" {
 				out = args[0] + ".manifest.yaml"
@@ -325,7 +332,7 @@ func newProfileCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the extension if omitted)")
+	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the shebang, else the extension, if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the result as a JSON envelope on stdout: what was written, whether it can be vouched for, and every proposal decision. Everything else - the target's own output, the prose, any grant prompts - stays on stderr, so the envelope is the only thing on stdout. A refusal - including a mistake in this command line - is an envelope too, so stdout is never empty")
@@ -1841,21 +1848,74 @@ func isBroadDir(path string) bool {
 	return slices.Contains(anchors, path)
 }
 
-// guessInterpreter picks an interpreter from the script's extension. An empty
-// result means the script is its own interpreter (a compiled binary).
-func guessInterpreter(path string) string {
-	switch filepath.Ext(path) {
+// guessInterpreter picks an interpreter for a script and says where the guess came
+// from, for the line profile prints about it. An empty result means the script is its
+// own interpreter (a compiled binary).
+//
+// The shebang wins over the extension because it is the script's own answer: a `.sh`
+// file that asks for /bin/sh can behave differently under bash, and the manifest the
+// user approves would record the interpreter bento chose over the one the author
+// wrote. The extension is the fallback for a script with no shebang, which the kernel
+// would refuse to exec on its own.
+func guessInterpreter(path string) (interpreter, source string) {
+	if interp := shebang(path); interp != "" {
+		return interp, "the script's shebang"
+	}
+	ext := filepath.Ext(path)
+	switch ext {
 	case ".py":
-		return "python3"
+		interpreter = "python3"
 	case ".sh", ".bash":
-		return "bash"
+		interpreter = "bash"
 	case ".js":
-		return "node"
+		interpreter = "node"
 	case ".rb":
-		return "ruby"
+		interpreter = "ruby"
 	default:
+		return "", ""
+	}
+	return interpreter, "the " + ext + " extension"
+}
+
+// shebang reads the interpreter a script names on its first line, or "" when it names
+// none - including an unreadable file, which the entrypoint stat above has already
+// reported on.
+func shebang(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
 		return ""
 	}
+	defer f.Close()
+
+	var buf [256]byte
+	n, _ := f.Read(buf[:])
+	line, _, _ := strings.Cut(string(buf[:n]), "\n")
+	if !strings.HasPrefix(line, "#!") {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	if len(fields) == 0 {
+		return ""
+	}
+	// "#!/usr/bin/env python3" runs the interpreter named after env. env may be
+	// given options first - notably `-S`/`--split-string`, the standard way a
+	// shebang passes multiple args to the interpreter (`env -S python3 -u`) - and
+	// NAME=VALUE assignments; the interpreter is the first field that is neither, not
+	// simply fields[1] (which would be `-S`).
+	if filepath.Base(fields[0]) == "env" {
+		for _, f := range fields[1:] {
+			// Skip env's leading options and NAME=VALUE assignments; an interpreter
+			// (a path or a bare name) contains neither, so any '='-bearing word is an
+			// assignment, matching env's own handling.
+			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
+				continue
+			}
+			return f
+		}
+		return ""
+	}
+	// Anything after the interpreter is its argument, not part of its name.
+	return fields[0]
 }
 
 // seedGrants returns the grants an existing manifest at path contributes to the

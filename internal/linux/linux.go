@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -718,58 +717,4 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 		close(done)
 	}()
 	return func() error { cancel(); <-done; return serveErr }, nil
-}
-
-// ResolveInterpreter guesses the interpreter for a script from its extension or
-// shebang, so a policy need not spell out what a `.py` file runs with. An empty
-// result means the file is its own interpreter (a compiled binary).
-func ResolveInterpreter(path string) string {
-	switch filepath.Ext(path) {
-	case ".py":
-		return "python3"
-	case ".sh", ".bash":
-		return "bash"
-	case ".js":
-		return "node"
-	case ".rb":
-		return "ruby"
-	}
-	return shebang(path)
-}
-
-func shebang(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	var buf [256]byte
-	n, _ := f.Read(buf[:])
-	line, _, _ := strings.Cut(string(buf[:n]), "\n")
-	if !strings.HasPrefix(line, "#!") {
-		return ""
-	}
-	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
-	if len(fields) == 0 {
-		return ""
-	}
-	// "#!/usr/bin/env python3" runs the interpreter named after env. env may be
-	// given options first - notably `-S`/`--split-string`, the standard way a
-	// shebang passes multiple args to the interpreter (`env -S python3 -u`) - and
-	// NAME=VALUE assignments; the interpreter is the first field that is neither, not
-	// simply fields[1] (which would be `-S`).
-	if filepath.Base(fields[0]) == "env" {
-		for _, f := range fields[1:] {
-			// Skip env's leading options and NAME=VALUE assignments; an interpreter
-			// (a path or a bare name) contains neither, so any '='-bearing word is an
-			// assignment, matching env's own handling.
-			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
-				continue
-			}
-			return f
-		}
-		return ""
-	}
-	return fields[0]
 }
