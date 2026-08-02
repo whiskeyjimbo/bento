@@ -186,8 +186,7 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              %s,\n", noStampDiff)
-		fmt.Fprintf(w, "              so re-review the whole manifest above and run `bento approve`\n")
-		fmt.Fprintf(w, "              to re-stamp it\n")
+		fmt.Fprintf(w, "              so re-review the whole manifest above and run `bento approve` to re-stamp it\n")
 	}
 	return strictApprovalError(doc, strict)
 }

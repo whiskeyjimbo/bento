@@ -116,9 +116,10 @@ what a policy grants, so a broad `read: /` or `read: ~` can't reach them.
 The precedence is fixed and does not depend on how the grant is written: no read
 grant that merely *covers* a shielded path lifts it. What does lift one is a grant
 naming the shielded store exactly - `read: ~/.ssh`, not `read: ~` - which is the
-deliberate handover of section 3, and it warns. Naming a single file inside the
-store does not work either: the shield is the whole directory, so `read:
-~/.ssh/id_rsa` is covered by the shield rather than opting out of it. Only the
+deliberate handover of section 3, and it warns. It has to be the store itself: a
+shield covers a whole directory and cannot be partly lifted, so `read:
+~/.ssh/id_rsa` is refused outright rather than honored under the shield - opting
+one file in means naming the directory and taking the rest with it. Only the
 hidden-outright shields are opt-in-able at all; the read-only ones have nothing to
 grant but the write they exist to refuse, and a write grant under one is refused
 outright.
