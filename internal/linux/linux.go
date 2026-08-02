@@ -25,6 +25,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -406,7 +407,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		case err == nil && fi.IsDir():
 			// Already a directory: nothing to prepare.
 		case err == nil:
-			return fmt.Errorf("write grant %q is a file; grant its parent directory instead", w)
+			return grantrefusal.WriteIsFile(w)
 		case os.IsNotExist(err):
 			// 0700: only the invoking user's own target writes here (bwrap unshares
 			// the user namespace without remapping the uid), so nothing needs group
@@ -419,7 +420,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		case errors.Is(err, syscall.ELOOP):
 			// Reached before compile's own check, so refuse it in the same words a
 			// looping read grant gets rather than leaking a bare stat error.
-			return loopedGrantError(w)
+			return grantrefusal.Looped(w)
 		default:
 			return fmt.Errorf("checking write grant %q: %w", w, err)
 		}

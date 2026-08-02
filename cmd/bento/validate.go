@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -9,9 +10,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -247,26 +250,43 @@ func checkRunnable(resolved *policy.Policy) runnability {
 			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
+	r.problems = append(r.problems, loopedGrantProblems(resolved.Read, resolved.Write)...)
 	r.problems = append(r.problems, fileWriteGrantProblems(resolved.Write)...)
 	r.fileishWrites = fileishWriteGrants(resolved.Write)
 	r.missingReads = missingReadGrants(resolved.Read)
 	return r
 }
 
+// loopedGrantProblems reports the grants whose symlinks loop, read and write alike, since
+// the backend refuses either kind on the same fact and in the same sentence.
+//
+// ELOOP is the one stat error that decides anything here. It is the answer the backend
+// itself acts on (internal/linux checkGrantNotLooped matches ELOOP and nothing else), so
+// parity holds on every other error too: a grant bento cannot stat because a directory
+// above it is unreadable says nothing about what run will find, since the sandbox sees
+// that tree as a different user.
+func loopedGrantProblems(read, write []string) []string {
+	var problems []string
+	for _, g := range slices.Concat(read, write) {
+		if _, err := os.Stat(filepath.Clean(g)); errors.Is(err, syscall.ELOOP) {
+			problems = append(problems, grantrefusal.Looped(g).Error())
+		}
+	}
+	return problems
+}
+
 // fileWriteGrantProblems reports the write grants that already exist as something other
 // than a directory, in the words the backend refuses them with - the case validate exists
 // to catch before run's first step.
+//
+// Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
+// otherwise be neither a problem nor a note - while run resolves the trailing slash away
+// and refuses it as the file it is.
 func fileWriteGrantProblems(write []string) []string {
 	var problems []string
 	for _, g := range write {
-		// Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
-		// otherwise be neither a problem nor a note - while run resolves the trailing
-		// slash away and refuses it as the file it is.
-		//
-		// Only an answered stat decides anything: a grant bento cannot stat for another
-		// reason says nothing about what run will find, exactly as a read grant does not.
 		if fi, err := os.Stat(filepath.Clean(g)); err == nil && !fi.IsDir() {
-			problems = append(problems, fmt.Sprintf("write grant %q is a file; grant its parent directory instead", g))
+			problems = append(problems, grantrefusal.WriteIsFile(g).Error())
 		}
 	}
 	return problems

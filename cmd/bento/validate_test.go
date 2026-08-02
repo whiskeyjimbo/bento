@@ -607,3 +607,43 @@ func TestValidateRefusesAWriteGrantNamingAFileWithATrailingSlash(t *testing.T) {
 		t.Errorf("summary must refuse the trailing-slash file grant; got:\n%s", out)
 	}
 }
+
+// A grant whose symlinks loop is refused by the backend for either kind - bwrap tolerates
+// a missing bind source, not a looping one - so validate has to predict it for either kind
+// too, in the same sentence. Read grants get it as well as writes: a looped read reported
+// as a mere note while a looped write failed --strict would be validate disagreeing with
+// itself about one host fact.
+func TestValidateStrictFailsOnALoopingGrantOfEitherKind(t *testing.T) {
+	for _, kind := range []string{"read", "write"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			loop := filepath.Join(dir, "loop")
+			if err := os.Symlink(loop, loop); err != nil {
+				t.Fatal(err)
+			}
+			p := &policy.Policy{Entrypoint: "./x"}
+			if kind == "read" {
+				p.Read = []string{loop}
+			} else {
+				p.Write = []string{loop}
+			}
+			path := writeManifest(t, p, manifest.Provenance{})
+			if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+				t.Fatalf("approve: %v", err)
+			}
+
+			out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+			if err == nil {
+				t.Fatalf("--strict must fail on a looping %s grant; got:\n%s", kind, out)
+			}
+			if !strings.Contains(out, "loops through itself on the host") || !strings.Contains(out, strconv.Quote(loop)) {
+				t.Errorf("summary must refuse the looping grant by name; got:\n%s", out)
+			}
+			// A loop is not an absence: reporting it as a grant that names nothing would
+			// send the reader looking for a directory that is right where they left it.
+			if strings.Contains(out, "names nothing on this host") {
+				t.Errorf("a looping grant is a refusal, not a missing-grant note; got:\n%s", out)
+			}
+		})
+	}
+}

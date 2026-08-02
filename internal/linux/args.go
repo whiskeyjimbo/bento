@@ -14,6 +14,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -230,7 +231,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		// save-to-temp-then-rename that editors and libraries use. So a grant that
 		// names an existing file is refused, pointing at the directory instead.
 		if sb.exists(path) && !sb.isDir(path) {
-			return nil, nil, fmt.Errorf("write grant %q is a file; grant its parent directory instead", path)
+			return nil, nil, grantrefusal.WriteIsFile(path)
 		}
 		args = append(args, "--bind-try", path, path)
 	}
@@ -1362,16 +1363,10 @@ func checkGrantNotLooped(p *policy.Policy) error {
 			return fmt.Errorf("linux: %q: %w", g, err)
 		}
 		if _, err := os.Stat(abs); errors.Is(err, syscall.ELOOP) {
-			return loopedGrantError(g)
+			return grantrefusal.Looped(g)
 		}
 	}
 	return nil
-}
-
-// loopedGrantError is shared so a looping read grant and a looping write grant -
-// found at different points in the run - are refused in the same words.
-func loopedGrantError(g string) error {
-	return fmt.Errorf("grant %q loops through itself on the host, so it names nothing that can be bound; fix the link or remove the grant", g)
 }
 
 // isProcessPath reports whether path is a per-process procfs directory or
