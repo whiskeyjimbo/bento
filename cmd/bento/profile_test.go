@@ -263,6 +263,11 @@ func TestPartialRunWarningCommandNotFound(t *testing.T) {
 	if w := partialRunWarning(profile.Observation{ExitCode: 127}, "bash"); !strings.Contains(w, enforce.SandboxPath) {
 		t.Errorf("bare-name shell 127 warning = %q, want it to name the sandbox PATH", w)
 	}
+	// A compiled entrypoint has no interpreter at all, and filepath.Base("") is ".", which
+	// must not read as a shell.
+	if w := partialRunWarning(profile.Observation{ExitCode: 127}, ""); !strings.Contains(w, "exited with code 127 -") {
+		t.Errorf("no-interpreter 127 warning = %q, want the generic nonzero-exit wording", w)
+	}
 	// 127 means nothing in particular in another language, so the generic warning stands.
 	if w := partialRunWarning(profile.Observation{ExitCode: 127}, "python3"); !strings.Contains(w, "exited with code 127 -") {
 		t.Errorf("non-shell 127 warning = %q, want the generic nonzero-exit wording", w)

@@ -1131,7 +1131,7 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 		// read side can be told apart this way; a write is judged at its parent
 		// directory, which no observation names the existence of.
 		if absent[p] {
-			fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8). Nothing was found at that path, so the run only probed for it and nothing needs to be done - the enforced run will find nothing there either.\n", p)
+			fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8). Nothing was found at that path, so the run only probed for it, and a path that was only probed needs no grant.\n", p)
 			continue
 		}
 		fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
@@ -1615,7 +1615,7 @@ func partialRunWarning(obs profile.Observation, interpreter string) string {
 	case obs.Signaled:
 		return fmt.Sprintf("[bento] WARNING: the profiled run was killed by signal %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.Signal)
 	case obs.ExitCode == 127 && isShell(interpreter) && !obs.Execed:
-		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code 127, which is how a shell reports a command it could not find. Profiling runs with PATH=%s, not the PATH your shell has, so a tool installed anywhere else is not found - and because the search only ever misses, the observer never learns the path either, so profiling again changes nothing. Call the tool by its absolute path in the script and profile again, or add its directory to read: by hand.", enforce.SandboxPath)
+		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code 127, which is how a shell reports a command it could not find. PATH is %s here, not the PATH your shell has, so a bare command name is only ever looked for in those two directories - the tool's real directory is never named, so the observer has nothing to record and profiling again changes nothing. Call the tool by its absolute path in the script and profile again: that names it, and the grant it needs is proposed. Granting its directory alone will not do it, because the enforced run searches the same two directories unless the manifest also passes PATH through env:.", enforce.SandboxPath)
 	case obs.ExitCode != 0:
 		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.ExitCode)
 	default:
@@ -1623,12 +1623,15 @@ func partialRunWarning(obs profile.Observation, interpreter string) string {
 	}
 }
 
-// isShell reports whether the interpreter is a POSIX shell, which is the only family
-// that gives 127 the fixed meaning partialRunWarning reads into it. Matched on the base
-// name so a shell reached by any path or by $PATH lookup counts the same.
+// isShell reports whether the interpreter is a shell, the only family that gives 127
+// the fixed "command not found" meaning partialRunWarning reads into it. fish is here
+// despite not being POSIX because it uses 127 the same way. Matched on the base name so
+// a shell reached by any path or by $PATH lookup counts the same; busybox is listed
+// because `#!/bin/busybox sh` names it as the interpreter. A miss costs only the generic
+// wording, so the list errs toward the shells that actually appear in a shebang.
 func isShell(interpreter string) bool {
 	switch filepath.Base(interpreter) {
-	case "sh", "bash", "dash", "ksh", "zsh", "ash":
+	case "sh", "bash", "dash", "ksh", "mksh", "zsh", "ash", "busybox", "fish":
 		return true
 	}
 	return false
