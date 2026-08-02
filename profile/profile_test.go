@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -185,6 +186,41 @@ func TestSynthesizeDropsInvalidUTF8Paths(t *testing.T) {
 // in $HOME must not have the read hidden. Synthesize must keep the read (rather than
 // dropping it under the $HOME-level write dir), so the profiler's shield clamp can
 // surface it before the broad write is itself dropped.
+// An interpreter handed an absolute script path stats its way down the whole chain, so
+// the observer sees a successful probe of every directory above the script. Proposing
+// those grants the enforced run nothing - bwrap builds the mount points to reach the
+// script's directory and the probes succeed against that skeleton either way - and it
+// costs the reviewer one prompt per level of nesting.
+func TestSynthesizeDropsTheEntrypointsAncestorChain(t *testing.T) {
+	obs := Observation{
+		Reads: []string{
+			"/home/u", "/home/u/proj", "/home/u/proj/deep", "/home/u/proj/deep/nested",
+			"/home/u/proj/deep/nested/run.py", "/home/u/proj/data.csv",
+		},
+	}
+	p := mustSynthesize(t, "/home/u/proj/deep/nested/run.py", "python3", obs)
+	// The script's own directory is not an ancestor of itself, and a file the script
+	// really opened is not one either - only the levels strictly above it go.
+	want := []string{"/home/u/proj/data.csv", "/home/u/proj/deep/nested"}
+	got := slices.Clone(p.Read)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("read = %v, want %v", got, want)
+	}
+}
+
+// The ancestor test is on the read side alone: a script sitting several directories
+// down and writing beside its project root writes to one of its own ancestors, and that
+// is a real access the proposal must keep - it recurs every round, so losing it writes
+// a manifest whose enforced run fails on the same write forever.
+func TestSynthesizeKeepsAWriteToAnEntrypointAncestor(t *testing.T) {
+	obs := Observation{Writes: []string{"/home/u/proj/out.log"}}
+	p := mustSynthesize(t, "/home/u/proj/deep/nested/run.py", "python3", obs)
+	if !reflect.DeepEqual(p.Write, []string{"/home/u/proj"}) {
+		t.Fatalf("write = %v, want the ancestor directory /home/u/proj kept", p.Write)
+	}
+}
+
 func TestSynthesizeKeepsReadCoveredByBroadWrite(t *testing.T) {
 	obs := Observation{
 		Reads:  []string{"/home/u/.ssh/id_rsa"},

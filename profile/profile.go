@@ -168,6 +168,29 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 			resolvesIntoProc(p) || inRuntime(p)
 	}
 
+	// An interpreter handed a script by absolute path resolves it a component at a
+	// time - bash stats /home/u, /home/u/proj, /home/u/proj/deep and so on down - and
+	// each of those probes succeeds, so the observer records the whole chain as read.
+	// Proposing it is noise that grows with how deep the script sits: a script four
+	// directories down produces four grants nobody asked for, each one broader than the
+	// last, and the interactive session asks about every one of them.
+	//
+	// They are safe to drop because they grant the run nothing. The enforced run binds
+	// the script's own directory, and bwrap builds the mount points above it to reach
+	// there, so the same probes succeed against that skeleton whether or not a grant
+	// names the ancestor - verified by running a deep-path manifest with them removed.
+	// The script's own directory is NOT an ancestor by this test and stays granted, as
+	// does anything the script really opened; only the strict ancestors above it go.
+	//
+	// Reads only. skip is shared with the write path, where the same test would drop a
+	// script's write to a directory it merely sits below (~/proj/out.log from
+	// ~/proj/deep/nested/run.sh) - a real access, recurring every round, that a
+	// proposal must not lose.
+	entrypointDir := filepath.Dir(entrypoint)
+	readSkip := func(p string) bool {
+		return skip(p) || (p != entrypointDir && isUnder(entrypointDir, p))
+	}
+
 	// Write grants are directory-granular (bwrap can only make a directory
 	// writable in a rename-safe way), so an observed write to a file becomes a
 	// grant of its directory.
@@ -223,7 +246,7 @@ func Synthesize(entrypoint, interpreter string, obs Observation) (*policy.Policy
 	p := &policy.Policy{
 		Entrypoint:  entrypoint,
 		Interpreter: interpreter,
-		Read:        cleanPaths(obs.Reads, canon, skip),
+		Read:        cleanPaths(obs.Reads, canon, readSkip),
 		Write:       cleanPaths(obs.Writes, writeDir, writeSkip),
 		Exec:        policy.ExecNone,
 	}
