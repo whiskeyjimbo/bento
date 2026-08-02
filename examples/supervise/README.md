@@ -70,6 +70,8 @@ summary stay on stderr, so `2>log` keeps the report and leaves the dialogue on s
 ```
 trial run · agent.sh  (default-deny - nothing leaves the host)
   approve what the trial touched  ·  y allow (this script) · n deny · o once
+    read  "~/.curlrc"               [y]es [n]o [o]nce › n   <- incidental, decline it
+    read  "~/.../demo"              [y]es [n]o [o]nce › y   <- the script's own directory
     read  "~/.../vault/data.csv"    [y]es [n]o [o]nce › y
     read  "~/.../vault/secret.txt"  [y]es [n]o [o]nce › n   <- keep the secret out
     write "~/.../demo"              [y]es [n]o [o]nce › y
@@ -78,39 +80,62 @@ trial run · agent.sh  (default-deny - nothing leaves the host)
     reach "example.com":443         [y]es [n]o [o]nce › y
 ```
 
-Your answers become the manifest the enforced run is held to. You may also see a
-couple of incidental reads the trial caught - `curl` opening its own TLS config,
-say (`/etc/gnutls/config`, `~/.curlrc`); the exact set depends on your `curl`
-build. Decline them: the request still works without them, and that is the point
-of reviewing what the trial run actually touched. The wrapper does drop the
-sandbox's own scratch (`/tmp`, `/dev`, `/proc`) before asking, since granting
-those is meaningless.
+Your answers become the manifest the enforced run is held to. The script's own
+directory is asked about like anything else - the trial mounts it so the script can
+be read and run, but reading and writing files inside it is still a grant you give.
+The reads above it (the walk down to `demo`) are not asked about, since a yes to one
+of those would grant a whole tree the script never named.
 
-### Act 2 - enforced run, live gate for the rest
+The exact set of incidental reads depends on your `curl` build - `~/.curlrc` here,
+perhaps `/etc/gnutls/config` too. Decline them: the request still works without them,
+and that is the point of reviewing what the trial run actually touched. The wrapper
+does drop the sandbox's own scratch (`/tmp`, `/dev`, `/proc`) before asking, since
+granting those is meaningless.
+
+### Act 2 - enforced run, the gate on every undeclared host
 
 ```
 enforced run · agent.sh  (a live gate prompts for any undeclared host)
-[agent] read  vault/data.csv       -> ok
-[agent] read  vault/secret.txt     -> DENIED (kernel)     <- refused inside the kernel
-[agent] write out.log              -> ok
-[agent] reach example.com          -> HTTP 200            <- declared, no prompt
+[agent] read  vault/data.csv
+  -> ok
+[agent] read  vault/secret.txt
+  -> DENIED (kernel)                                      <- refused inside the kernel
+[agent] write out.log
+  -> ok
+[agent] reach example.com
+  -> HTTP 200                                             <- declared, no prompt
 [agent] reach ads.tracker.example
+  ✗ agent.sh reaching "ads.tracker.example" port 443 - denied by the permission store
+  -> blocked
 
-  net agent.sh is reaching "ads.tracker.example" port 443 now
-      allow? [y]es [n]o [o]nce [B]lock-everywhere › n
-                                   -> blocked              <- live gate, denied in real time
+the sandbox shielded 5 credential/host-service path(s) from the script
+egress to these destinations was refused: no network rule covers them, and none was admitted
+  "ads.tracker.example" port 443 (the target saw only a 403 from the proxy)
 ```
 
 `secret.txt` is denied by the kernel because you never granted it - no prompt, it
-just fails. `ads.tracker.example` was not declared, so the live gate prompts you at
-the moment the script reaches it (unless the store already remembers it, in which
-case it applies silently and a remembered *deny* is printed). Answer `y` and it is
-admitted, and the run reports it:
+just fails. `ads.tracker.example` goes through the live gate, but it does not prompt:
+you already answered `n` for it in Act 1, and the gate applies a remembered decision
+without asking, printing the line above so a silent block is never a mystery.
+
+The gate prompts only for a host the trial never surfaced - the connection is stopped
+in its own goroutine while it waits for you:
+
+```
+  net agent.sh is reaching "images.cdn.example" port 443 now
+      allow? [y]es [n]o [o]nce [B]lock-everywhere › y
+```
+
+and an admitted host is reported at the end of the run:
 
 ```
 the live gate admitted egress beyond the manifest:
-  "ads.tracker.example" port 443   (a real wrapper would offer to add this to the manifest)
+  "images.cdn.example" port 443   (a real wrapper would offer to add this to the manifest)
 ```
+
+This demo cannot reach that state on its own: the trial sees both of `agent.sh`'s
+hosts, so both are already decided by the time the enforced run starts. To watch the
+prompt, point the demo at a host it only learns about at runtime.
 
 ## Remembering decisions
 

@@ -13,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // TestMain routes a re-exec sub-invocation before the testing package parses
@@ -256,6 +257,48 @@ func TestScriptDirCoversStore(t *testing.T) {
 	// there should surface its own error, not the store-overlap message.
 	if scriptDirCoversStore("/home/u/proj/agent.sh", "sh", "/home/u/.config/bento-supervise") {
 		t.Error("scriptDirCoversStore fired for a script that does not overlap the store")
+	}
+}
+
+// The README's Act 1 promises the trial offers the two vault files for approval, and
+// once that stopped being true the walkthrough was unreproducible: agent.sh reads them
+// through `$(cat ...)`, and an observation that lost the accesses behind a subprocess
+// left them out of the proposal, so the enforced run denied a read the human had
+// approved everything they were asked about. Repeat runs did not converge either, since
+// the second trial recorded the same short set.
+//
+// Driving approve() rather than the observation is deliberate: what the README shows is
+// the prompt, and the trimming between the two (trimAncestors, trimScratch) can drop a
+// path the trial did record.
+func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
+	requireSandbox(t)
+
+	script, err := filepath.Abs("demo/agent.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	interp := guessInterpreter(script)
+	obs, err := trialProfile(t.Context(), newTestStore(), discoveryPolicy(script, interp),
+		enforce.Process{Stdout: io.Discard, Stderr: io.Discard, Env: discoveryEnv()})
+	if err != nil {
+		t.Fatalf("trial run: %v", err)
+	}
+	proposal, err := profile.Synthesize(script, interp, obs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Every answer is no, so the dialogue is driven to the end without the test
+	// depending on how many incidental reads this host's curl contributes.
+	var dialogue strings.Builder
+	approve(t.Context(), newPrompter(strings.NewReader(strings.Repeat("n\n", 64)), &dialogue),
+		newTestStore(), "k", script, interp, proposal)
+
+	vault := filepath.Join(filepath.Dir(filepath.Dir(script)), "vault")
+	for _, name := range []string{"data.csv", "secret.txt"} {
+		if want := pretty(filepath.Join(vault, name)); !strings.Contains(dialogue.String(), want) {
+			t.Errorf("the trial never offered %q for approval; the dialogue was:\n%s", want, dialogue.String())
+		}
 	}
 }
 
