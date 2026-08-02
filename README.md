@@ -4,6 +4,11 @@
 
 # Bento
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/whiskeyjimbo/bento/badge)](https://scorecard.dev/viewer/?uri=github.com/whiskeyjimbo/bento)
+[![CI](https://github.com/whiskeyjimbo/bento/actions/workflows/ci.yml/badge.svg)](https://github.com/whiskeyjimbo/bento/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/whiskeyjimbo/bento.svg)](https://pkg.go.dev/github.com/whiskeyjimbo/bento)
+[![License](https://img.shields.io/github/license/whiskeyjimbo/bento)](LICENSE)
+
 **Run untrusted scripts under strict, manifest-declared permissions.**
 
 Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted code (build scripts, CLI utilities, AI agent actions) with deny-by-default security. It shields host credentials even if a manifest includes broad read grants, isolates filesystem access, blocks unauthorized network egress, and prevents subprocess execution.
