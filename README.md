@@ -112,8 +112,10 @@ jobs:
 
 `validate --strict` is the gate: it fails the job if the manifest is unapproved
 or was edited since approval, which is what stops permission creep landing in a
-pipeline nobody re-reviewed. `run` needs no flags once the stamp is in the repo -
-if it did, the gate would not mean anything.
+pipeline nobody re-reviewed. `run` needs no approval flags once the stamp is in
+the repo - if it did, the gate would not mean anything. The `--env` above supplies
+a secret's value, which is a separate thing from granting it: `CI_TOKEN` still has
+to be in the manifest's `env:` list, and that list is inside the fingerprint.
 
 ---
 

@@ -13,15 +13,18 @@ none of them were ever in a release.
 
 ### Boundary Hardening
 
-- **Off-Linux is a refusal, not a crash**: every command except `version` refuses
-  on a non-Linux host before it does any work. Bento's guarantees are kernel
+- **Off-Linux is a refusal, not a crash**: every command that would enforce
+  something refuses on a non-Linux host before it does any work. `version`,
+  `help` and shell completion still answer, since they enforce nothing and a
+  build identifier is the first thing a bug report needs. Bento's guarantees are kernel
   features that only exist on Linux, so a build that ran anywhere else enforced
   nothing while looking like it did. The refusal stays inside the `--json`
   envelope, so a machine consumer reads it as a refusal rather than a crash.
-- **`validate` refuses the grants the run refuses**: a write grant naming an
+- **`validate` predicts the grants the run refuses**: a write grant naming an
   existing file, and a read or write grant whose symlinks loop, aborted the run
-  at sandbox setup while `bento validate` passed them. Validate now predicts both
-  in the same words, so a CI gate and the run agree on what is grantable.
+  at sandbox setup while `bento validate` said nothing. Validate now reports both
+  in the same words the run refuses them in, and `validate --strict` fails on
+  them, so a CI gate and the run agree on what is grantable.
 - **`supervise` no longer prompts for the walk down to the script**: the example
   supervisor asked about each directory on the path to the script it was told to
   run. The boundary moved tighter - a routine "yes" to one of those prompts
