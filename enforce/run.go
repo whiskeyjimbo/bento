@@ -240,7 +240,12 @@ func (o Options) admit(r Report) error {
 		// resources. So a requested-but-unenforceable limit refuses by default,
 		// rather than running unbounded. --allow-degraded overrides.
 		if short := unenforcedRequestedLimits(r); len(short) > 0 {
-			return &Refusal{Report: r, Reason: "the manifest requests resource limits this host cannot enforce; running unbounded could exhaust host resources", Short: short}
+			return &Refusal{
+				Report:   r,
+				Reason:   "the manifest requests resource limits this host cannot enforce; running unbounded could exhaust host resources",
+				Short:    short,
+				Waivable: true,
+			}
 		}
 	}
 	return nil
@@ -270,6 +275,12 @@ type Refusal struct {
 	Reason string
 	// Short is the set of layers that fell short.
 	Short []LayerStatus
+	// Waivable says that reduced enforcement would have admitted this exact run, so a
+	// frontend can name the escape hatch it offers. It is set only where that is
+	// unconditionally true: the requested-limits refusal, which AllowDegraded skips
+	// outright. A core shortfall is not marked, because AllowDegraded still refuses the
+	// half of it that enforces nothing at all.
+	Waivable bool
 }
 
 // Shortfall is returned when a run that strict mode admitted did not hold its

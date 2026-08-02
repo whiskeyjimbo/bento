@@ -550,11 +550,19 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 	}
 
 	f := &fakeEnforcer{probe: newProbe()}
-	if _, err := Run(context.Background(), f, limited(), Process{}, Options{}); err == nil {
+	_, err := Run(context.Background(), f, limited(), Process{}, Options{})
+	if err == nil {
 		t.Error("default mode should refuse a requested limit it cannot enforce")
 	}
 	if f.ran {
 		t.Error("ran an untrusted target unbounded despite a requested memory limit")
+	}
+	// The refusal names a host shortfall the caller cannot go fix - systemd-run is not
+	// theirs to install - so the way past it has to travel with the refusal. It is only
+	// honest here because the branch below proves the flag really does admit this run.
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || !refusal.Waivable {
+		t.Errorf("the limits refusal must be marked waivable; got %#v", err)
 	}
 
 	f = &fakeEnforcer{probe: newProbe()}
@@ -563,6 +571,17 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 	}
 	if !f.ran {
 		t.Error("--allow-degraded should have run the target")
+	}
+
+	// Strict refuses the same shortfall, but pointing its reader at --allow-degraded
+	// would contradict the CLI's own rule that the two flags are opposites.
+	f = &fakeEnforcer{probe: newProbe()}
+	_, err = Run(context.Background(), f, limited(), Process{}, Options{Strict: true})
+	if !errors.As(err, &refusal) {
+		t.Fatalf("strict should refuse the same shortfall; got %v", err)
+	}
+	if refusal.Waivable {
+		t.Error("a strict refusal must not offer the flag strict is defined against")
 	}
 }
 

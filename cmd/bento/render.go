@@ -727,6 +727,29 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 	}
 }
 
+// writeLimitsRemedy names the two ways past a refusal over resource limits this host
+// cannot enforce. Every other refusal states a shortfall the reader can go fix - install
+// bubblewrap, permit a user namespace - but a missing systemd-run on a container image is
+// not something the caller of `bento run` can install, so the diagnosis alone leaves them
+// stuck: the manifest asked for a cap, the host has no way to apply one, and neither end
+// of that is theirs to change from here.
+//
+// It lives beside run's call to writeRefusal rather than inside it because both remedies
+// are run's own vocabulary - profile refuses through the same printer and offers neither
+// (see preflightHost). Waivable is what says the flag would actually admit THIS run; the
+// layer check is what says the second remedy applies, since removing `limits:` fixes
+// nothing on a refusal about the filesystem tier.
+func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
+	limits := slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool {
+		return l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU
+	})
+	if !r.Waivable || !limits {
+		return
+	}
+	fmt.Fprintln(w, "  to proceed anyway, pass --allow-degraded and the script runs unbounded, or drop")
+	fmt.Fprintln(w, "  `limits:` from the manifest so it no longer asks for a cap this host cannot apply.")
+}
+
 // writeTargetUnreached says what an exit code alone cannot: the sandbox came up and the
 // target never ran, so the code is bento's rather than the script's. It stands in for the
 // profile and HOME hints on that path - both explain a failure the script reported, and a

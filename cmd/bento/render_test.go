@@ -116,6 +116,40 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 	}
 }
 
+// A refusal over a limit this host cannot apply is the one shortfall whose reader has
+// nothing to go fix: the manifest asked for a cap and the host has no way to apply one,
+// and on a container image without systemd neither end is theirs to change. So this
+// refusal alone carries its two ways out, and only where both really apply - the flag
+// where the flag would admit the run, the manifest edit where the shortfall is a limit.
+func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
+	limits := enforce.LayerStatus{
+		Layer: enforce.LayerLimits, State: enforce.Unavailable,
+		Reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged",
+	}
+	filesystem := enforce.LayerStatus{
+		Layer: enforce.LayerFilesystem, State: enforce.Degraded,
+		Reason: "bwrap cannot make a user namespace here",
+	}
+	for name, tc := range map[string]struct {
+		refusal *enforce.Refusal
+		want    bool
+	}{
+		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true},
+		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false},
+		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false},
+	} {
+		var b bytes.Buffer
+		writeLimitsRemedy(&b, tc.refusal)
+		flat := strings.Join(strings.Fields(b.String()), " ")
+		if got := strings.Contains(flat, "--allow-degraded"); got != tc.want {
+			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		}
+		if got := strings.Contains(flat, "`limits:`"); got != tc.want {
+			t.Errorf("%s: offered the manifest edit = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		}
+	}
+}
+
 // A detail too long for a cell has to leave the cell, or the alignment the table
 // exists for is gone and the other rows go off screen with it. Relocating is not
 // dropping: the text still has to appear in full, wrapped, below the table.
