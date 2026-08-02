@@ -307,9 +307,11 @@ func TestTheTrialAsksAboutTheDemoVaultReads(t *testing.T) {
 	// It is still an access the observer records, which is what lets the write decision
 	// be offered at all - and the file must not exist on the host, since the banner says
 	// nothing leaves the host and the human approved none of this.
-	if want := "write"; !strings.Contains(dialogue.String(), want) ||
-		!strings.Contains(dialogue.String(), pretty(filepath.Dir(script))) {
-		t.Errorf("the trial never offered the write of the script's own directory; the dialogue was:\n%s", dialogue.String())
+	// One prompt line carrying both the kind and the path, not each somewhere in the
+	// dialogue: the script's own directory is already offered as a read, so a looser
+	// check passes with no write prompt shown at all - which is the whole claim.
+	if want := "write " + quotePath(filepath.Dir(script)); !strings.Contains(dialogue.String(), want) {
+		t.Errorf("the trial never offered %q for approval; the dialogue was:\n%s", want, dialogue.String())
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(script), "out.log")); err == nil {
 		t.Error("the trial left out.log on the host with nothing approved")

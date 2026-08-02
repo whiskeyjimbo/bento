@@ -83,8 +83,14 @@ trial run · agent.sh  (default-deny - nothing leaves the host)
 ```
 
 Your answers become the manifest the enforced run is held to. The script's own
-directory is asked about like anything else - the trial mounts it so the script can
-be read and run, but reading and writing files inside it is still a grant you give.
+directory is asked about like anything else - the trial mounts it read-only so the
+script can be read and run, but reading and writing files inside it is still a grant
+you give. One consequence of a trial in which every write fails: a script that stops
+at its first failed write (`set -e`, or its own error handling) never reaches the code
+after it, so the trial has nothing to ask about there and the enforced run denies it.
+This wrapper runs one trial pass, not a convergence loop - `bento profile` re-runs the
+target with each grant mounted until nothing new is attempted, which is what a script
+that branches on what it was given wants.
 The reads above it (the walk down to `demo`) are not asked about, since a yes to one
 of those would grant a whole tree the script never named.
 

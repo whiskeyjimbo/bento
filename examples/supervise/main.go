@@ -491,9 +491,9 @@ func trialProfile(ctx context.Context, s *store, discovery *policy.Policy, proc 
 // where nothing leaves the host, so an untrusted script must not be able to leave a
 // file beside itself before the human has approved anything. A blocked write is
 // recorded like every other blocked access, so the write decision is still offered.
-// Every other path the script touches is absent, so the
-// attempt is RECORDED without the content ever being exposed, and the human grants
-// it explicitly before the enforced run. Egress is recorded but (because Profile is
+// Every other path the script touches is absent, so the attempt is RECORDED without
+// the content ever being exposed, and the human grants it explicitly before the
+// enforced run. Egress is recorded but (because Profile is
 // called with allowNetwork=false) not forwarded, and subprocesses are allowed so the
 // script exercises its real behavior. This binds only the script's directory, so
 // the caller shields the permission store separately (via a trial deny path): a
