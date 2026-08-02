@@ -1306,3 +1306,46 @@ func TestGuessInterpreterPrefersTheShebang(t *testing.T) {
 		}
 	}
 }
+
+// A re-profile runs under the interpreter guessed (or given) now, not the one an older
+// manifest names, so the grants it merges in are that interpreter's. Keeping the base's
+// interpreter would write a manifest whose enforced run differs from the run the user
+// just watched, and the swap has to be reported or it is a silent rewrite of what the
+// manifest runs.
+func TestMergeTakesTheInterpreterTheRunUsed(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tidy.sh")
+	path := filepath.Join(dir, "tidy.sh.manifest.yaml")
+	base := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{filepath.Join(dir, "prior")}}
+	data, err := manifest.Marshal(base, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Interpreter: "/bin/sh"})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if merged.policy.Interpreter != "/bin/sh" {
+		t.Errorf("merged interpreter = %q, want /bin/sh (the one this run profiled under)", merged.policy.Interpreter)
+	}
+	var b strings.Builder
+	writeMergeNotice(&b, path, merged)
+	for _, want := range []string{`"bash"`, `"/bin/sh"`} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("the merge notice must name %s; got:\n%s", want, b.String())
+		}
+	}
+
+	// An agreeing manifest is not a swap, so it draws no notice.
+	same, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Interpreter: "bash"})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if same.interpreterWas != "" {
+		t.Errorf("interpreterWas = %q, want empty when the run agrees with the manifest", same.interpreterWas)
+	}
+}

@@ -369,6 +369,7 @@ func profileResultJSON(path string, proposed, written *policy.Policy, doc manife
 			KeptEnv:        merge.keptEnv,
 			KeptNetwork:    merge.keptNetwork,
 			ExecWidened:    merge.execWidened,
+			InterpreterWas: merge.interpreterWas,
 			ApprovalVoided: merge.approvalVoided,
 		}
 	}
@@ -1990,6 +1991,10 @@ type mergeOutcome struct {
 	keptRead, keptWrite, keptEnv, keptNetwork []string
 	// execWidened is whether the union escalated exec from a blocked mode to `all`.
 	execWidened bool
+	// interpreterWas is the existing manifest's interpreter when this run used a
+	// different one, and "" when they agree. The run's interpreter is what the merged
+	// manifest keeps, so a reviewer has to be told which one the file used to name.
+	interpreterWas string
 	// approvalVoided is whether the file being widened carried a current approval, which
 	// the re-profile drops. validate reports it on the next command; saying it here is
 	// what keeps "profile again to converge" from quietly costing an approval.
@@ -2037,6 +2042,12 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 		keptEnv:     only(existing.Policy.Env, proposed.Env),
 		keptNetwork: only(networkKeys(existing.Policy.Network), networkKeys(proposed.Network)),
 		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
+		interpreterWas: func() string {
+			if existing.Policy.Interpreter == proposed.Interpreter {
+				return ""
+			}
+			return existing.Policy.Interpreter
+		}(),
 		// Reported whenever the file was approved: profile writes its own provenance
 		// block, so the stamp is dropped by the write regardless of whether the grants
 		// moved.
@@ -2118,6 +2129,10 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 	if m.execWidened {
 		fmt.Fprintf(w, "[bento] exec was widened to `all` by this run: the manifest no longer blocks subprocesses.\n")
 	}
+	if m.interpreterWas != "" {
+		fmt.Fprintf(w, "[bento] the manifest named interpreter %q, but this run profiled under %q, so the\n", m.interpreterWas, m.policy.Interpreter)
+		fmt.Fprintf(w, "[bento] merged manifest names the one that produced these grants. Pass --interpreter to pin it.\n")
+	}
 	if m.approvalVoided {
 		fmt.Fprintf(w, "[bento] its approval is gone - a re-profile rewrites the provenance block, so review\n")
 		fmt.Fprintf(w, "[bento] the widened policy and `bento approve` it again.\n")
@@ -2125,11 +2140,16 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 }
 
 // mergePolicies unions the permission fields of two policies, keeping the base's
-// entrypoint/interpreter/args. Used so re-profiling widens a manifest.
+// entrypoint and args. Used so re-profiling widens a manifest.
+//
+// The interpreter comes from the run instead, because the grants being merged in are
+// the ones that run produced: keeping an older manifest's interpreter would write a
+// manifest describing a run under one interpreter with the paths another one opened,
+// and the enforced run would then differ from the run the user just watched.
 func mergePolicies(base, add *policy.Policy) *policy.Policy {
 	out := &policy.Policy{
 		Entrypoint:  base.Entrypoint,
-		Interpreter: base.Interpreter,
+		Interpreter: add.Interpreter,
 		Args:        base.Args,
 		Env:         union(base.Env, add.Env),
 		Read:        union(base.Read, add.Read),
