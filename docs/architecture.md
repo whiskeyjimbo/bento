@@ -6,10 +6,10 @@ Bento runs a program on Linux under manifest-declared permissions, denying anyth
 
 ## 1. System Overview
 
-Three commitments shape the layout that follows, and most of the structure below is downstream of one of them:
+Three commitments shape the layout that follows:
 1. **Machine-owned manifests.** Permissions are proposed via profiling, reviewed by humans, and stamped with cryptographic approval fingerprints. This is what `manifest`, `policy`, and `profile` exist to serve.
-2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why enforcement reaches the kernel only through `enforce` and `internal/linux`.
-3. **No silent degradation.** Host kernel capabilities are reported in explicit tiers rather than fallen back through, which is why tier reporting sits in `enforce` alongside the enforcer interface rather than inside the backend.
+2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why the kernel is touched only inside `internal/linux`, reached through the `enforce.Enforcer` interface.
+3. **No silent degradation.** Host kernel capabilities are reported in explicit tiers rather than fallen back through, which is why tier reporting sits in `enforce` alongside the enforcer interface rather than inside the platform backend (`internal/linux`).
 
 ---
 
@@ -27,8 +27,8 @@ graph TD
     Backend --> Profile["profile (Observed Run Synthesis)"]
     
     Enforce --> LinuxBackend["internal/linux (Bubblewrap, Seccomp, Landlock)"]
-    LinuxBackend --> Launcher["internal/linux/internal/launcher (In-Sandbox Stage)"]
-    LinuxBackend --> Observer["internal/linux/internal/observe (Ptrace Open Profiler)"]
+    LinuxBackend --> Launcher["internal/launcher (In-Sandbox Stage)"]
+    LinuxBackend --> Observer["internal/observe (Ptrace Open Profiler)"]
     LinuxBackend --> Proxy["internal/proxy (Host HTTP CONNECT Proxy)"]
     LinuxBackend --> Denylist["internal/denylist (Mandatory Credential Shields)"]
 ```
