@@ -511,7 +511,11 @@ func TestProcMountRemedyLeadsTheReason(t *testing.T) {
 	if remedy < 0 {
 		t.Fatalf("reason %q drops the remedy entirely", reason)
 	}
-	if diagnosis := strings.Index(reason, "cannot mount the pseudo-filesystems"); remedy > diagnosis {
+	diagnosis := strings.Index(reason, "cannot mount the pseudo-filesystems")
+	if diagnosis < 0 {
+		t.Fatalf("reason %q drops the diagnosis the remedy is meant to lead", reason)
+	}
+	if remedy > diagnosis {
 		t.Errorf("remedy at %d trails the diagnosis at %d, so it reads as a footnote: %q", remedy, diagnosis, reason)
 	}
 	if !strings.Contains(reason[:remedy], "docker") {
