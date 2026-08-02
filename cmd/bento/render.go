@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 
@@ -310,7 +311,7 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
 func explicitShieldGrants(reads []string) ([]string, error) {
-	rules, err := builtinShieldRules()
+	rules, err := resolvedShieldRules()
 	if err != nil {
 		return nil, err
 	}
@@ -343,6 +344,57 @@ func builtinShieldRules() ([]denylist.Rule, error) {
 	return append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...), nil
 }
 
+// shieldRule is a built-in rule with the two spellings the grant checks compare it by
+// already worked out: where the shield itself lands, and where its own name sits in the
+// directory holding it (the entry a write above it could replace - see writeShieldProblem).
+type shieldRule struct {
+	denylist.Rule
+	lands string
+	loc   string
+}
+
+// resolvedShieldRules is builtinShieldRules with every path resolved, memoized for the
+// process. The deny-list runs to several hundred rules per home, each resolution is real
+// syscalls, and validate asks for the set five times over one manifest - resolving inside
+// the comparison loops made the command seven times slower than it was before it made the
+// comparison at all (4ms to 30ms on a two-grant manifest; 4ms again with this).
+//
+// Keyed on the anchors rather than computed once, because the environment they come from is
+// fixed only within a run: the tests relocate HOME per case in one process, and a cache
+// that outlived that would answer the second case with the first case's home.
+var resolvedShields struct {
+	sync.Mutex
+	key   string
+	rules []shieldRule
+}
+
+func resolvedShieldRules() ([]shieldRule, error) {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		return nil, err
+	}
+	key := strings.Join(append(slices.Clone(anchors), denylist.RuntimeDir()), "\x00")
+	resolvedShields.Lock()
+	defer resolvedShields.Unlock()
+	if resolvedShields.key == key {
+		return resolvedShields.rules, nil
+	}
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return nil, err
+	}
+	resolved := make([]shieldRule, 0, len(rules))
+	for _, r := range rules {
+		resolved = append(resolved, shieldRule{
+			Rule:  r,
+			lands: pathresolve.Existing(r.Path),
+			loc:   filepath.Join(pathresolve.Existing(filepath.Dir(r.Path)), filepath.Base(r.Path)),
+		})
+	}
+	resolvedShields.key, resolvedShields.rules = key, resolved
+	return resolved, nil
+}
+
 // shieldedReadProblems and shieldedWriteProblems report the grants the run's shield checks
 // refuse, in the words they refuse them with. They are the counterpart to
 // explicitShieldGrants: that one names the read grants a run honors as a warned opt-in,
@@ -364,7 +416,8 @@ func builtinShieldRules() ([]denylist.Rule, error) {
 // The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes.
 // Both sides are then symlink-resolved before they are compared, as the backend compares
 // them: it works on grants resolveGrants has already made symlink-free, against rules it
-// puts through sb.resolve. Resolving only one side breaks parity in whichever direction
+// puts through sb.resolve - which on a real host is this same pathresolve.Existing (see
+// hostResolve). Resolving only one side breaks parity in whichever direction
 // was left literal - a shield that is itself a link (~/.bashrc into the nix store) is
 // missed if the rules stay literal, and `write: ~/.ssh/backup` pointing at /srv is refused
 // here while the run honors it if the grants do. The refusal still quotes both as the
@@ -373,7 +426,7 @@ func builtinShieldRules() ([]denylist.Rule, error) {
 // One narrowing remains against the backend, in the direction that only misses a refusal:
 // the rule set omits extraDeny (see builtinShieldRules).
 func shieldedReadProblems(reads []string) ([]string, error) {
-	rules, err := builtinShieldRules()
+	rules, err := resolvedShieldRules()
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +444,7 @@ func shieldedReadProblems(reads []string) ([]string, error) {
 		}
 		lands := pathresolve.Existing(g)
 		for _, r := range rules {
-			if r.Deny == denylist.DenyAll && policy.CoversResolved(pathresolve.Existing(r.Path), lands) {
+			if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
 				problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
 				break
 			}
@@ -401,7 +454,7 @@ func shieldedReadProblems(reads []string) ([]string, error) {
 }
 
 func shieldedWriteProblems(writes []string) ([]string, error) {
-	rules, err := builtinShieldRules()
+	rules, err := resolvedShieldRules()
 	if err != nil {
 		return nil, err
 	}
@@ -422,18 +475,17 @@ func shieldedWriteProblems(writes []string) ([]string, error) {
 
 // writeShieldProblem reports the first of the three refusals a write grant trips, or ok
 // false where it trips none.
-func writeShieldProblem(rules []denylist.Rule, g string) (string, bool) {
+func writeShieldProblem(rules []shieldRule, g string) (string, bool) {
 	lands := pathresolve.Existing(g)
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && policy.CoversResolved(pathresolve.Existing(r.Path), lands) {
+		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
 			return grantrefusal.InsideShield(g, r.Path).Error(), true
 		}
 	}
 	for _, r := range rules {
 		// A rule resolving to "/" is skipped as the backend skips it: it would swallow every
 		// write grant and blame an unrelated dotfile for it.
-		rp := pathresolve.Existing(r.Path)
-		if r.Deny == denylist.DenyWrite && rp != "/" && policy.CoversResolved(rp, lands) {
+		if r.Deny == denylist.DenyWrite && r.lands != "/" && policy.CoversResolved(r.lands, lands) {
 			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
 		}
 	}
@@ -446,8 +498,7 @@ func writeShieldProblem(rules []denylist.Rule, g string) (string, bool) {
 		// its reason: the link the grant would expose is the one it can replace. Asked of the
 		// unresolved spelling too, since where it is the shield that moves out of the grant
 		// (a symlinked home) the containment is visible in no other namespace.
-		loc := filepath.Join(pathresolve.Existing(filepath.Dir(r.Path)), filepath.Base(r.Path))
-		if policy.CoversResolved(lands, loc) || policy.CoversResolved(g, r.Path) {
+		if policy.CoversResolved(lands, r.loc) || policy.CoversResolved(g, r.Path) {
 			return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
 		}
 	}

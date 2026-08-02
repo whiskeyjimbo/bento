@@ -4,8 +4,8 @@
 // a write grant that is a file is caught by the argv compiler on one path and by the
 // directory preparation on another, a loop by the grant check on one and by the same
 // preparation on another - and `bento validate` predicts all of them before anything
-// runs - and `bento approve` refuses to stamp what it predicts. That is a dozen call
-// sites for a handful of sentences. Shared here so a reader who meets one
+// runs - and `bento approve` refuses to stamp what it predicts. That is thirteen call
+// sites for five sentences. Shared here so a reader who meets one
 // of them in a CI gate and again at run time reads the same sentence, and so a reworded
 // refusal cannot answer half of them.
 //
