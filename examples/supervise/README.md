@@ -49,8 +49,9 @@ go build -o supervise .
 ./supervise run demo/agent.sh
 ```
 
-`demo/agent.sh` reads two files from `../vault`, writes a log, and reaches two
-hosts. Nothing is declared up front, so you decide everything.
+`demo/agent.sh` reads two files from `../vault`, writes a log, and reaches two hosts
+outright plus a third it only learns about once a fetch succeeds. Nothing is declared
+up front, so you decide everything.
 
 ### Act 1 - trial run, approve what it wants
 
@@ -104,11 +105,17 @@ enforced run · agent.sh  (a live gate prompts for any undeclared host)
   -> ok
 [agent] reach example.com
   -> HTTP 200                                             <- declared, no prompt
+[agent] reach images.cdn.example (learned from the response)
+  net agent.sh is reaching "images.cdn.example" port 443 now
+      allow? [y]es [n]o [o]nce [B]lock-everywhere › y     <- the live gate, stopped mid-connection
+  -> HTTP 200
 [agent] reach ads.tracker.example
   ✗ agent.sh reaching "ads.tracker.example" port 443 - denied by the permission store
   -> blocked
 
 the sandbox shielded 5 credential/host-service path(s) from the script
+the live gate admitted egress beyond the manifest:
+  "images.cdn.example" port 443   (a real wrapper would offer to add this to the manifest)
 egress to these destinations was refused: no network rule covers them, and none was admitted
   "ads.tracker.example" port 443 (the target saw only a 403 from the proxy)
 ```
@@ -118,24 +125,13 @@ just fails. `ads.tracker.example` goes through the live gate, but it does not pr
 you already answered `n` for it in Act 1, and the gate applies a remembered decision
 without asking, printing the line above so a silent block is never a mystery.
 
-The gate prompts only for a host the trial never surfaced - the connection is stopped
-in its own goroutine while it waits for you:
-
-```
-  net agent.sh is reaching "images.cdn.example" port 443 now
-      allow? [y]es [n]o [o]nce [B]lock-everywhere › y
-```
-
-and an admitted host is reported at the end of the run:
-
-```
-the live gate admitted egress beyond the manifest:
-  "images.cdn.example" port 443   (a real wrapper would offer to add this to the manifest)
-```
-
-This demo cannot reach that state on its own: the trial sees both of `agent.sh`'s
-hosts, so both are already decided by the time the enforced run starts. To watch the
-prompt, point the demo at a host it only learns about at runtime.
+`images.cdn.example` is the one host the trial never surfaced, and it is where the
+gate actually prompts - the connection is stopped in its own goroutine while it waits
+for you. It stays undecided through Act 1 for a structural reason, not a scripted one:
+`agent.sh` only reaches for it after `example.com` returns, and the trial runs
+default-deny, so in the trial that fetch fails and the follow-up never happens. The
+host is therefore absent from the trial's recorded set, which is exactly how a real
+agent discovers a destination its operator never declared.
 
 ## Remembering decisions
 
