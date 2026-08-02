@@ -31,7 +31,7 @@ adds on top:
 
 ### Requirements
 - **OS:** Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled.
-- **Build Toolchain:** Go 1.26 or later.
+- **Build Toolchain:** Go 1.26.5 or later.
 - **Optional:** `systemd` user manager with delegated `memory`, `pids`, and `cpu` controllers for resource limits.
 
 ### Build from Source
@@ -436,15 +436,16 @@ When building a supervised wrapper (such as an editor agent or interactive CLI t
 Run tests and checks locally:
 
 ```sh
-make test      # unit and integration tests (sandbox tests skip if bwrap/userns are missing;
-               # the denylist parity tests also want firejail and its apparmor profiles)
+make test       # unit and integration tests (sandbox tests skip if bwrap/userns are missing;
+                # the denylist parity tests also want firejail and its apparmor profiles)
 make vet
-make lint      # golangci-lint, pinned
-make audit     # denylist parity against upstream firejail reference definitions
-make race      # the proxy's concurrency tests under the race detector (needs a C toolchain)
-make examples  # each examples/*/verify.sh; the root go test does not reach them
+make lint       # golangci-lint, pinned
+make audit      # denylist parity against upstream firejail reference definitions
+make race       # the proxy's concurrency tests under the race detector (needs a C toolchain)
+make crossbuild # the tree still compiles for darwin and linux/arm64
+make examples   # each examples/*/verify.sh; the root go test does not reach them
 
-make check     # every gate above - the bar before merging
+make check      # every gate above - the bar before merging
 ```
 
 `-race` on `internal/proxy` is a gate, not extra credit: the proxy's
