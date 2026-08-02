@@ -78,6 +78,9 @@ func newApproveCmd() *cobra.Command {
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, approval)
+			if err := requireHonorableGrants(resolved); err != nil {
+				return err
+			}
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}
@@ -122,6 +125,33 @@ func writeReapprovalNotice(w io.Writer, approval approvalState) {
 	fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
 	fmt.Fprintf(w, "The stamp is a hash of the policy, not a copy of it, so bento cannot mark the\n")
 	fmt.Fprintf(w, "lines that are new - read the whole policy above as if it were unapproved.\n")
+}
+
+// requireHonorableGrants refuses to stamp a policy holding a grant no run will honor. The
+// callouts above are for the grants that are a judgement call; this is not one - the run
+// refuses these before the script's first instruction, so a stamp over them records a
+// review of permissions that do not exist, and the stamp is what the CI gate then trusts.
+//
+// It refuses rather than asks: --yes is the CI shape, and a question there is answered by
+// the flag rather than by anyone.
+//
+// A host that could not resolve the grants, or could not anchor the shields, stamps as
+// before. The verdict approve exists to give is a property of the manifest and must not
+// start depending on where it is checked - writeApprovalCallouts already says in words
+// that nothing was checked there.
+func requireHonorableGrants(resolved *policy.Policy) error {
+	if resolved == nil {
+		return nil
+	}
+	// A host that could not anchor the shields yields no problems rather than an error,
+	// which is the degradation described above.
+	reads, _ := shieldedReadProblems(resolved.Read)
+	writes, _ := shieldedWriteProblems(resolved.Write)
+	problems := append(reads, writes...)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("not approved: the policy grants a path bento shields on every run, which run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(problems, "\n  "))
 }
 
 // writeApprovalCallouts names the entries in a policy that deserve a second look before

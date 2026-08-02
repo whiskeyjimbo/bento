@@ -675,3 +675,23 @@ func TestValidateStrictFailsOnALoopingGrantOfEitherKind(t *testing.T) {
 		})
 	}
 }
+
+// The CI gate's promise: it does not pass a manifest run refuses at its first step. A
+// write grant naming a credential store used to exit 0 here and 125 at run, on a host
+// where the two commands agreed about everything else - and the summary printed the
+// shields-hold footer directly beneath the grant that would be refused, which reads as
+// confirmation the grant is safe.
+func TestValidateFailsOnAGrantTheRunRefuses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p := &policy.Policy{Entrypoint: "./job.sh", Interpreter: "sh", Write: []string{"~/.ssh"}}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+
+	out, err := runCapturingStdout(t, newValidateCmd(), path, "--strict")
+	if err == nil {
+		t.Errorf("--strict must fail on a grant run refuses; got:\n%s", out)
+	}
+	if !strings.Contains(out, "REFUSED: grant") || !strings.Contains(out, "always-shielded") {
+		t.Errorf("the summary must name the refusal beside the grant; got:\n%s", out)
+	}
+}

@@ -183,7 +183,9 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
-		fmt.Fprintf(w, "              re-review and run `bento approve` to re-stamp it\n")
+		fmt.Fprintf(w, "              the stamp is a hash of the permissions, not a copy of them, so bento\n")
+		fmt.Fprintf(w, "              cannot show which field changed - re-review the whole manifest above\n")
+		fmt.Fprintf(w, "              and run `bento approve` to re-stamp it\n")
 	}
 	return strictApprovalError(doc, strict)
 }
@@ -198,7 +200,7 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 	case approvalUnstamped:
 		return fmt.Errorf("manifest is not approved")
 	case approvalStale:
-		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved")
+		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved (the stamp is a hash of them, not a copy, so there is no diff to show)")
 	default:
 		return nil
 	}
@@ -253,6 +255,12 @@ func checkRunnable(resolved *policy.Policy) runnability {
 			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
+	// A host that cannot work out where the shields anchor yields no problems rather than
+	// an error: the summary's footer already reports that gap in words, and a run there is
+	// refused for the same reason, so failing --strict on it would only rename it.
+	shieldedReads, _ := shieldedReadProblems(resolved.Read)
+	shieldedWrites, _ := shieldedWriteProblems(resolved.Write)
+	r.problems = append(r.problems, append(shieldedReads, shieldedWrites...)...)
 	r.problems = append(r.problems, loopedGrantProblems(resolved.Read, resolved.Write)...)
 	r.problems = append(r.problems, fileWriteGrantProblems(resolved.Write)...)
 	r.fileishWrites = fileishWriteGrants(resolved.Write)
@@ -520,8 +528,15 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "        deliberate read-only exception rather than refusing, so the script can\n")
 		fmt.Fprintf(w, "        read the credentials in it. Remove the grant unless it needs them.\n")
 	}
+	// The error is dropped on both: it is the same failure to anchor the shields that
+	// shieldErr carries, and the footer below reports it once in words rather than twice
+	// as an empty list.
+	readRefusals, _ := shieldedReadProblems(resolvedRead)
+	writeShieldRefusals(w, readRefusals)
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
+	writeRefusals, _ := shieldedWriteProblems(resolvedWrite)
+	writeShieldRefusals(w, writeRefusals)
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 
@@ -588,6 +603,20 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
+}
+
+// writeShieldRefusals prints the grants a run refuses over the shields, beside the list
+// they were spelled in. Beside, and not only in the runnability block below, because the
+// footer under that list asserts the shields hold over everything above it - which reads
+// as confirmation that the grant right above it is safe, when it is the one grant here
+// that will not be honored at all.
+//
+// The sentence is run's own (grantrefusal), unwrapped: it names paths, and wrapping it to
+// the note width would break a path across lines just where the reader wants to copy it.
+func writeShieldRefusals(w io.Writer, problems []string) {
+	for _, p := range problems {
+		fmt.Fprintf(w, "  REFUSED: %s\n", p)
+	}
 }
 
 // writeSandboxHome states what HOME will be inside the box when the manifest does not

@@ -511,3 +511,31 @@ func TestApproveRefusesANonTerminalStdinWithoutWritingAnything(t *testing.T) {
 		t.Errorf("a refused approval must leave the manifest untouched; got:\n%s", after)
 	}
 }
+
+// A stamp over a grant the run refuses records a review of a permission that does not
+// exist, and the stamp is what the CI gate then trusts. --yes does not soften it: in CI
+// the flag answers every question, so the only place this can be caught is a refusal.
+func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x", Write: []string{"~/.ssh"}}, manifest.Provenance{})
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	if err == nil {
+		t.Fatalf("approve must refuse a grant run refuses; got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "always-shielded") {
+		t.Errorf("the refusal must carry run's own sentence; got %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("a refused approval must leave the manifest as it was found")
+	}
+}

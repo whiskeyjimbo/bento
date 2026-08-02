@@ -16,6 +16,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -309,6 +310,26 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
 func explicitShieldGrants(reads []string) ([]string, error) {
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range rules {
+		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !slices.Contains(out, r.Path) {
+			out = append(out, r.Path)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// builtinShieldRules is the always-on deny-list the backend builds for every run, as far
+// as the CLI can build it: the same home and runtime lists from the same anchors
+// (alwaysShields, homeShields). It stops one rule short of the backend's set - the
+// caller-supplied extraDeny an embedder passes in, which no manifest can be checked
+// against from here - so what it answers is a subset of what a run refuses, never more.
+func builtinShieldRules() ([]denylist.Rule, error) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
 		return nil, err
@@ -319,15 +340,95 @@ func explicitShieldGrants(reads []string) ([]string, error) {
 		// var pointing at one home must not produce a rule that swallows another.
 		rules = append(rules, denylist.Home(h, anchors...)...)
 	}
-	rules = append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...)
-	var out []string
-	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !slices.Contains(out, r.Path) {
-			out = append(out, r.Path)
+	return append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...), nil
+}
+
+// shieldedReadProblems and shieldedWriteProblems report the grants the run's shield checks
+// refuse, in the words they refuse them with. They are the counterpart to
+// explicitShieldGrants: that one names the read grants a run honors as a warned opt-in,
+// these name the grants a run will not honor at all - which validate and approve otherwise
+// pass over in silence, leaving the refusal to land at run's first step on a manifest the
+// CI gate green-lit.
+//
+// Between them they mirror the three backend checks, in the order checkGrants runs them,
+// so a grant that trips more than one (a write naming a shield exactly is both inside it
+// and above it) is reported in the sentence the run would have printed:
+//
+//   - checkNotShielded - a grant at or inside a DenyAll shield. A read naming one exactly
+//     is the deliberate opt-in explicitShieldGrants reports instead; a write of the same
+//     path is not, which is the asymmetry this exists to say out loud.
+//   - checkWriteNotUnderReadOnlyShield - a write at or inside a DenyWrite shield, which
+//     has no opt-in at all.
+//   - checkWriteNotAboveShield - a write containing a DenyAll shield.
+//
+// The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes.
+// Two narrowings against the backend, both in the safe direction: the shield paths are
+// compared unresolved, where the backend resolves each rule through sb.resolve, so a grant
+// naming a symlinked shield's real target is refused at run time and not here; and the
+// rule set omits extraDeny (see builtinShieldRules). Neither can produce a refusal a run
+// would not make, which is the property the gate needs.
+func shieldedReadProblems(reads []string) ([]string, error) {
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return nil, err
+	}
+	optIns, err := explicitShieldGrants(reads)
+	if err != nil {
+		return nil, err
+	}
+	var problems []string
+	for _, g := range reads {
+		for _, r := range rules {
+			if r.Deny == denylist.DenyAll && policy.CoversResolved(r.Path, g) && !slices.Contains(optIns, r.Path) {
+				problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
+				break
+			}
 		}
 	}
-	slices.Sort(out)
-	return out, nil
+	return problems, nil
+}
+
+func shieldedWriteProblems(writes []string) ([]string, error) {
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return nil, err
+	}
+	var problems []string
+	for _, g := range writes {
+		// Skipped for the reason the backend skips it: a write of "/" is refused by
+		// checkWriteNotRoot first, in a sentence that names the whole filesystem rather
+		// than whichever dotfile happens to sort first.
+		if g == "/" {
+			continue
+		}
+		if p, ok := writeShieldProblem(rules, g); ok {
+			problems = append(problems, p)
+		}
+	}
+	return problems, nil
+}
+
+// writeShieldProblem reports the first of the three refusals a write grant trips, or ok
+// false where it trips none.
+func writeShieldProblem(rules []denylist.Rule, g string) (string, bool) {
+	for _, r := range rules {
+		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.Path, g) {
+			return grantrefusal.InsideShield(g, r.Path).Error(), true
+		}
+	}
+	for _, r := range rules {
+		// A rule at "/" is skipped as the backend skips it: it would swallow every write
+		// grant and blame an unrelated dotfile for it.
+		if r.Deny == denylist.DenyWrite && r.Path != "/" && policy.CoversResolved(r.Path, g) {
+			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
+		}
+	}
+	for _, r := range rules {
+		if r.Deny == denylist.DenyAll && policy.CoversResolved(g, r.Path) {
+			return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
+		}
+	}
+	return "", false
 }
 
 // writeShieldSummary prints one concise line confirming the boundary engaged: how many
