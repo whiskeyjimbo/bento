@@ -127,3 +127,4 @@ Detailed technical rationale for core design choices are documented in [`docs/ad
 - [`0003-host-side-connect-proxy-egress.md`](adr/0003-host-side-connect-proxy-egress.md): Unix domain socket HTTP CONNECT proxy for network egress.
 - [`0004-directory-granular-write-grants.md`](adr/0004-directory-granular-write-grants.md): Directory-level write bind mounts for save-via-rename compatibility.
 - [`0005-ptrace-open-register-observation.md`](adr/0005-ptrace-open-register-observation.md): Register-level syscall tracing for zero-content profiling.
+- [`0006-no-exec-gate-on-seccomp-user-notif.md`](adr/0006-no-exec-gate-on-seccomp-user-notif.md): Why the exec block stays a blind filter rather than an interactive gate.
