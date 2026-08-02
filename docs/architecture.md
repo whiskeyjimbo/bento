@@ -1,17 +1,15 @@
 # Bento - Architecture Overview
 
-Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted programs (build scripts, CLI tools, AI agent actions) under strict, manifest-declared permissions.
-
-This document outlines the architecture, package boundaries, execution flows, and enforcement seams of Bento. For threat model details, see [`docs/threat-model.md`](threat-model.md). For historical design decisions, see [`docs/adr/`](adr/).
+Bento runs a program on Linux under manifest-declared permissions, denying anything the manifest does not grant. This document describes how it is put together: package boundaries, execution flows, and enforcement seams. For what it defends against, see [`docs/threat-model.md`](threat-model.md); for why particular structures were chosen, see [`docs/adr/`](adr/). For what Bento is for, see the [README](../README.md).
 
 ---
 
 ## 1. System Overview
 
-Bento is designed around three core principles:
-1. **Machine-Owned Manifests:** Permissions are proposed via profiling, reviewed by humans, and stamped with cryptographic approval fingerprints.
-2. **Platform-Decoupled Seams:** Core policy logic, manifest processing, and domain models are decoupled from platform backends (`internal/linux`).
-3. **No Silent Degradation:** Host kernel isolation capabilities are reported in explicit tiers. Missing hardening layers surface loudly rather than quietly falling back to a weaker sandbox.
+Three commitments shape the layout that follows, and most of the structure below is downstream of one of them:
+1. **Machine-owned manifests.** Permissions are proposed via profiling, reviewed by humans, and stamped with cryptographic approval fingerprints. This is what `manifest`, `policy`, and `profile` exist to serve.
+2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why enforcement reaches the kernel only through `enforce` and `internal/linux`.
+3. **No silent degradation.** Host kernel capabilities are reported in explicit tiers rather than fallen back through, which is why tier reporting sits in `enforce` alongside the enforcer interface rather than inside the backend.
 
 ---
 
