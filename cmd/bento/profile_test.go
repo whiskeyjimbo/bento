@@ -235,16 +235,37 @@ func TestDiscoveryEnv(t *testing.T) {
 }
 
 func TestPartialRunWarning(t *testing.T) {
-	if w := partialRunWarning(profile.Observation{ExitCode: 0}); w != "" {
+	if w := partialRunWarning(profile.Observation{ExitCode: 0}, ""); w != "" {
 		t.Errorf("clean run should not warn, got %q", w)
 	}
-	if w := partialRunWarning(profile.Observation{ExitCode: 7}); !strings.Contains(w, "exited with code 7") {
+	if w := partialRunWarning(profile.Observation{ExitCode: 7}, ""); !strings.Contains(w, "exited with code 7") {
 		t.Errorf("nonzero exit warning = %q, want it to name code 7", w)
 	}
 	// Signaled takes priority over the (implied nonzero) exit code.
-	w := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, ExitCode: 137})
+	w := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, ExitCode: 137}, "")
 	if !strings.Contains(w, "signal 9") || strings.Contains(w, "exited with code") {
 		t.Errorf("signaled warning = %q, want it to name signal 9 and not the exit code", w)
+	}
+}
+
+// 127 from a shell is "command not found", which the generic "fix the run and profile
+// again" answers with a loop that cannot terminate - the search path is what is wrong,
+// and the observer drops search misses, so another round sees exactly the same thing.
+func TestPartialRunWarningCommandNotFound(t *testing.T) {
+	w := partialRunWarning(profile.Observation{ExitCode: 127}, "/bin/sh")
+	if !strings.Contains(w, enforce.SandboxPath) {
+		t.Errorf("shell 127 warning = %q, want it to name the sandbox PATH", w)
+	}
+	if strings.Contains(w, "profile again to widen it") {
+		t.Errorf("shell 127 warning = %q, want it to replace the generic advice, not repeat it", w)
+	}
+	// A shell reached by bare name is the same shell.
+	if w := partialRunWarning(profile.Observation{ExitCode: 127}, "bash"); !strings.Contains(w, enforce.SandboxPath) {
+		t.Errorf("bare-name shell 127 warning = %q, want it to name the sandbox PATH", w)
+	}
+	// 127 means nothing in particular in another language, so the generic warning stands.
+	if w := partialRunWarning(profile.Observation{ExitCode: 127}, "python3"); !strings.Contains(w, "exited with code 127 -") {
+		t.Errorf("non-shell 127 warning = %q, want the generic nonzero-exit wording", w)
 	}
 }
 
@@ -472,13 +493,13 @@ func TestClampWriteShieldMatchesSymlinkedShieldTarget(t *testing.T) {
 // the two warnings are independent: a run that is both signaled and lossy reports both,
 // each on its own schedule - dropped per round, partial once the last round is known.
 func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
-	if got := partialRunWarning(profile.Observation{Dropped: 2}); got != "" {
+	if got := partialRunWarning(profile.Observation{Dropped: 2}, ""); got != "" {
 		t.Errorf("a lossy but clean run did not fail to finish; got %q", got)
 	}
 	if got := droppedWarning(2); !strings.Contains(got, "could not name 2 file access") {
 		t.Errorf("dropped warning = %q, want it to name the count", got)
 	}
-	if got := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, Dropped: 1}); got == "" {
+	if got := partialRunWarning(profile.Observation{Signaled: true, Signal: 9, Dropped: 1}, ""); got == "" {
 		t.Error("a signaled run must warn that it may not have finished")
 	}
 }
@@ -502,7 +523,7 @@ func TestSeccompKilledRefusesRatherThanWarns(t *testing.T) {
 			t.Errorf("refusal = %q, want it to name %q as a possible cause", err, want)
 		}
 	}
-	if got := partialRunWarning(profile.Observation{SeccompKilled: true}); got != "" {
+	if got := partialRunWarning(profile.Observation{SeccompKilled: true}, ""); got != "" {
 		t.Errorf("a seccomp kill must refuse, not warn; got %q", got)
 	}
 }
