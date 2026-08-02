@@ -360,6 +360,31 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 	}
 }
 
+// The host remedy a userns refusal leads with is a sysctl, which a CI engineer running
+// bento in a container cannot set - and inside docker the runtime's own seccomp and
+// AppArmor profiles block the namespace anyway. Which of the three userns branches this
+// host takes depends on its sysctls, so every one of them has to carry the container
+// remedy for the diagnosis to be actionable wherever it lands.
+func TestClassifyUnshareNamesTheContainerRemedy(t *testing.T) {
+	for _, out := range []string{
+		"bwrap: No permissions to create new user namespace",
+		"bwrap: Permission denied",
+	} {
+		state, reason := classifyUnshare(&usernsError{output: out, err: errors.New("exit status 1")})
+		if state != namespacesBlocked {
+			t.Fatalf("state = %v, want namespacesBlocked", state)
+		}
+		for _, want := range []string{"--security-opt seccomp=unconfined", "--security-opt apparmor=unconfined"} {
+			if !strings.Contains(reason, want) {
+				t.Errorf("reason %q does not name %q", reason, want)
+			}
+		}
+		if strings.Contains(reason, ".;") || strings.Contains(reason, "..") {
+			t.Errorf("reason runs its clauses together: %q", reason)
+		}
+	}
+}
+
 // Every failure of the namespace probe used to read as "userns blocked", which is a
 // finding about the host. Only bwrap refusing the namespace is that finding; a probe
 // that was killed by its own deadline, or that failed for a reason bwrap did not name,

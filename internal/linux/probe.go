@@ -404,6 +404,20 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // is on bwrap's message, so a "Permission denied" naming neither still reads as
 // blocked; that is the pre-existing reading, and it errs toward the tier that confines
 // less rather than toward claiming a guarantee.
+// containerUsernsRemedy is the container half of every userns-blocked diagnosis, and
+// is carried by all of them rather than gated on detecting a container: podman, k8s and
+// nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
+// clause is the one a detection miss would silently deny it. It names both flags
+// because the refusal cannot tell them apart - docker's default seccomp profile blocks
+// unshare(CLONE_NEWUSER) and its AppArmor profile restricts the namespace, and either
+// alone produces the same bwrap message. The host remedies the diagnoses lead with are
+// a sysctl a CI engineer usually cannot set; these are the ones they can.
+// It closes with a period for the same reason the sysctl diagnoses do, so joinReason
+// continues from it cleanly.
+const containerUsernsRemedy = " If bento is running inside a container, the host sysctl may be out of " +
+	"reach and the container runtime's own policy is blocking the namespace too; with docker, " +
+	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it."
+
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError
@@ -443,13 +457,13 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	if restricted("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1") {
 		return namespacesBlocked, base + ": AppArmor restricts unprivileged user namespaces on this host " +
 			"(kernel.apparmor_restrict_unprivileged_userns=1). Install an AppArmor profile permitting bwrap, " +
-			"or set it to 0 to allow them system-wide."
+			"or set it to 0 to allow them system-wide." + containerUsernsRemedy
 	}
 	if restricted("/proc/sys/kernel/unprivileged_userns_clone", "0") {
 		return namespacesBlocked, base + ": unprivileged user namespaces are disabled " +
-			"(kernel.unprivileged_userns_clone=0). Set it to 1 to allow them."
+			"(kernel.unprivileged_userns_clone=0). Set it to 1 to allow them." + containerUsernsRemedy
 	}
-	return namespacesBlocked, base + ": " + strings.TrimSpace(out)
+	return namespacesBlocked, base + ": " + strings.TrimRight(strings.TrimSpace(out), ".") + "." + containerUsernsRemedy
 }
 
 // restricted reports whether a sysctl file holds the given value.
