@@ -113,6 +113,16 @@ base mounts. There's no route from "not listed" to "readable."
 The denylist (`internal/denylist`) is a set of paths that stay shielded no matter
 what a policy grants, so a broad `read: /` or `read: ~` can't reach them.
 
+The precedence is fixed and does not depend on how the grant is written: no read
+grant that merely *covers* a shielded path lifts it. What does lift one is a grant
+naming the shielded store exactly - `read: ~/.ssh`, not `read: ~` - which is the
+deliberate handover of section 3, and it warns. Naming a single file inside the
+store does not work either: the shield is the whole directory, so `read:
+~/.ssh/id_rsa` is covered by the shield rather than opting out of it. Only the
+hidden-outright shields are opt-in-able at all; the read-only ones have nothing to
+grant but the write they exist to refuse, and a write grant under one is refused
+outright.
+
 Credential stores are shielded as whole directories, not named files. Shielding
 `~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there, and does
 nothing about a file the program creates itself - so the whole directory goes.
