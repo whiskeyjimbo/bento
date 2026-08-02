@@ -2,10 +2,7 @@
 
 package main
 
-import (
-	"fmt"
-	"runtime"
-)
+import "fmt"
 
 // checkPlatform refuses the commands that build or probe a sandbox off Linux, in the same
 // words backend.New uses, before the command reaches anything else.
@@ -16,6 +13,11 @@ import (
 // asked about. The answer they need is that this platform has no sandbox at all, said
 // once and up front. It is not called by validate or approve, which build no sandbox and
 // answer from what they can read here instead.
+//
+// The refusal names GOOS/GOARCH, not GOOS alone: what bento stands behind is a
+// platform pair (see verifiedPlatform), and doctor --json already answers this host
+// with that pair in its platform field. Naming only the OS here would leave the human
+// on a broken host told less than the script beside them.
 func checkPlatform() error {
-	return fmt.Errorf("no sandbox backend for %s yet (macOS support is planned; Linux requires bubblewrap)", runtime.GOOS)
+	return fmt.Errorf("no sandbox backend for %s yet (macOS support is planned; Linux requires bubblewrap)", platformName())
 }

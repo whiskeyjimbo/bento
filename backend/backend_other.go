@@ -25,7 +25,7 @@ import (
 // enforce anything is worse than no sandbox, because the caller believes their
 // untrusted code is confined.
 func New() (enforce.Enforcer, error) {
-	return nil, fmt.Errorf("bento: no sandbox backend for %s yet (macOS support is planned; Linux requires bubblewrap)", runtime.GOOS)
+	return nil, fmt.Errorf("bento: no sandbox backend for %s/%s yet (macOS support is planned; Linux requires bubblewrap)", runtime.GOOS, runtime.GOARCH)
 }
 
 // Profile is unavailable off Linux.

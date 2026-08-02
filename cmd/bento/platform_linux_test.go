@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -11,10 +11,14 @@ import (
 // the three commands that raise that refusal inside their own RunE can be watched doing
 // it. Nothing else can: on Linux the check passes, so the calls are otherwise
 // unobservable and deleting one breaks nothing.
+//
+// It builds its reason from platformName for the same reason the real one does, so a test
+// that swaps the platform seam cannot end up with a refusal naming one host and a platform
+// field naming another.
 func refuseThisPlatform(t *testing.T) {
 	t.Helper()
 	saved := checkPlatform
-	checkPlatform = func() error { return errors.New("no sandbox backend for zos yet") }
+	checkPlatform = func() error { return fmt.Errorf("no sandbox backend for %s yet", platformName()) }
 	t.Cleanup(func() { checkPlatform = saved })
 }
 
@@ -100,6 +104,12 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 		_, plain := runCapturingStdout(t, newDoctorCmd())
 		if plain == nil || plain.Error() != err.Error() {
 			t.Errorf("without --json doctor answered %v, want the same refusal as %v", plain, err)
+		}
+		// The refusal is the whole of the human's answer - there is no platform line to
+		// carry the rest - so it has to name the pair the envelope's platform field does.
+		// GOOS alone would tell them less than the script beside them was told.
+		if !strings.Contains(plain.Error(), got.Platform) {
+			t.Errorf("the refusal %q must name %q, the platform --json reported", plain, got.Platform)
 		}
 	})
 }
