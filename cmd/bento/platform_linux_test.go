@@ -9,8 +9,8 @@ import (
 
 // refuseThisPlatform makes checkPlatform answer as it does on a host with no backend, so
 // the three commands that raise that refusal inside their own RunE can be watched doing
-// it. Nothing else can: on Linux the check passes, which is what left the calls
-// unobservable when they moved out of a hook the test could see attached.
+// it. Nothing else can: on Linux the check passes, so the calls are otherwise
+// unobservable and deleting one breaks nothing.
 func refuseThisPlatform(t *testing.T) {
 	t.Helper()
 	saved := checkPlatform
@@ -80,6 +80,16 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 		}
 		if got.Reason == "" {
 			t.Error("the reason there is nothing to report is the only thing this document says")
+		}
+
+		// The envelope buys the machine consumer a parseable stdout and nothing else: a
+		// human and a script probing the same broken host must be told the same thing and
+		// exit the same way, or a CI gate reading the status learns something --json
+		// invented. Asserting the message is what makes the two comparable, since the
+		// refusal carries no exit code of its own.
+		_, plain := runCapturingStdout(t, newDoctorCmd())
+		if plain == nil || plain.Error() != err.Error() {
+			t.Errorf("without --json doctor answered %v, want the same refusal as %v", plain, err)
 		}
 	})
 }

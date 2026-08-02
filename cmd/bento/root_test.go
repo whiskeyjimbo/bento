@@ -227,11 +227,12 @@ func TestNonMistakesAreNotTreatedAsUsageErrors(t *testing.T) {
 	}
 }
 
-// The platform refusal is raised inside a RunE and never by a hook above one. It cannot
-// be exercised on Linux, where checkPlatform passes, so what is pinned is that no hook
-// exists to raise it: run, profile and doctor each answer --json with a document of their
-// own, and a hook fires before the RunE that writes one, so a gate attached here would
-// leave --json the empty stdout on a host with no backend. On the root it would be worse,
+// The platform refusal is raised inside a RunE and never by a hook above one. What is
+// pinned here is the second half of that: no hook exists to raise it, whatever the three
+// commands do inside their own RunE (which platform_linux_test.go covers). run, profile
+// and doctor each answer --json with a document of their own, and a hook fires before the
+// RunE that writes one, so a gate attached here would leave --json the empty stdout on a
+// host with no backend. On the root it would be worse,
 // inheriting onto cobra's `help`, `completion` and hidden `__complete`, which answer fine
 // on a host bento cannot run on.
 func TestNoCommandRefusesOnPlatformBeforeItsRunE(t *testing.T) {
