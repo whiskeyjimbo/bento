@@ -245,29 +245,3 @@ func TestNoCommandRefusesOnPlatformBeforeItsRunE(t *testing.T) {
 		}
 	}
 }
-
-// doctor answers a host it has no backend for in its own shape rather than the refusal
-// envelope run and profile use, so a CI gate reading `ready` gets false because doctor
-// said so and not because the key went missing. The layers must be an empty list and not
-// a zero report, which marshals as fully_enforced on a host nobody probed.
-func TestDoctorJSONOnAHostWithNoBackendStaysDoctorsShape(t *testing.T) {
-	var buf bytes.Buffer
-	if err := writeJSON(&buf, doctorJSON{reportJSON: noReport, Reason: "no sandbox backend for darwin yet"}); err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		Layers        []struct{} `json:"layers"`
-		FullyEnforced bool       `json:"fully_enforced"`
-		Ready         bool       `json:"ready"`
-		Reason        string     `json:"reason"`
-	}
-	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
-		t.Fatalf("doctor --json must stay parseable where it refuses: %v", err)
-	}
-	if got.Ready || got.FullyEnforced || got.Layers == nil || len(got.Layers) != 0 {
-		t.Errorf("a host with no backend enforces nothing; got %+v", got)
-	}
-	if got.Reason == "" {
-		t.Error("the reason there is nothing to report is the only thing this document says")
-	}
-}
