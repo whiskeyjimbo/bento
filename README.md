@@ -40,6 +40,14 @@ make build                    # reproducible static binary (trimmed paths, sourc
 go build -o bento ./cmd/bento # plain build
 ```
 
+A build for a target other than Linux succeeds by design and produces a working
+binary - the tree carries a stub backend for it, so `bento validate` and `bento approve`
+answer there and a manifest can be reviewed and stamped on a Mac. Anything that has to
+build or probe a sandbox - `run`, `profile`, `doctor` - refuses at startup with a single
+message naming the platform. There is no build-time error to catch this instead: Go has
+no compile-time warning, and a `//go:build linux` guard on the command would take the two
+commands that do work off Linux with it.
+
 ### Running Inside a Container
 
 A stock container cannot run Bento: it builds its sandbox out of the same kernel
