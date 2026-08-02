@@ -1,5 +1,7 @@
 # Build & Version variables
-VERSION ?= 0.1.0-dev
+# Derived, not written down: a literal here goes stale the moment a tag is cut, and
+# a build that misreports its version is worse than one that admits it has none.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 
 # The build stamp is derived from the source, never the wall clock: reading the clock
@@ -124,7 +126,7 @@ vuln: ## Scan both modules for known vulnerabilities (needs network)
 	@printf "$(GREEN)$(BOLD)✓ No known vulnerabilities!$(RESET)\n"
 
 repro: ## Verify the binary builds byte-identically from a different source path
-	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" ./scripts/repro-build.sh
+	@GO_BUILD_FLAGS="$(GO_BUILD_FLAGS)" VERSION="$(VERSION)" ./scripts/repro-build.sh
 
 # The examples are separate modules (their go.mod replaces bento with ../..), so the
 # root `go test ./...` does not reach them and their tests can sit red indefinitely -

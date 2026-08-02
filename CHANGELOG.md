@@ -159,10 +159,18 @@ The boundary did not move for any of these; what a user can see about it did.
 - **A manifest reports every bad field in one pass** instead of one per parse.
 - **`run --json` carries a missing read grant, denied egress and a flag
   conflict**, and discloses the alias scan a degraded tier skips.
-- **`doctor` names the platform** and flags one whose enforcement is unverified,
-  leads a degraded line with the real cause in plain language rather than a
-  semicolon-joined fragment or raw bwrap output, moves oversized detail below the
-  table, and keeps its exit code consistent across `--json`.
+- **A limits refusal names the way past it**: it said the limits could not be
+  enforced without saying whether to waive the tier or drop the `limits:` block.
+  `enforce.Refusal` gained a `Waivable` field carrying which one applies.
+- **The shared-write warning is quiet where no stamp is at stake**: `run`,
+  `validate` and `profile` warned that somebody else could edit an unapproved
+  manifest, which is true and beside the point - nothing was attested to drift
+  from. `approve` still refuses.
+- **`doctor` reports its own limits more plainly**: it names the platform and
+  flags one whose enforcement is unverified. A degraded line now leads with the
+  real cause in plain language rather than a semicolon-joined fragment or raw
+  bwrap output, oversized detail moves below the table, and the exit code is the
+  same with `--json` as without.
 - **The sandbox probe is more useful when it fails**: it says how to install
   bwrap, spells out the `docker run --security-opt` flags a userns refusal in a
   container needs, reads a refused base mount honestly, and says why the shield
@@ -170,7 +178,8 @@ The boundary did not move for any of these; what a user can see about it did.
 - **`bento version` answers on every install path**: a `go install` or plain
   `go build` binary reports the module version Go recorded - a release tag for
   `@latest`, a pseudo-version for a checkout - instead of `dev`. `make build`
-  still stamps the commit and build time it derives from the source.
+  stamps the commit and build time it derives from the source, and now derives
+  the version too rather than carrying a literal that goes stale at every tag.
 - **Paths printed back are quoted** by the credential hunt, error text drops its
   package prefix, and passing a script where a manifest belongs names the
   manifest bento expected.

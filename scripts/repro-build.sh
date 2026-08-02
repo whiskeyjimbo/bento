@@ -37,7 +37,7 @@ fi
 # would let the two drift and leave this gate certifying a build nobody ships.
 build_flags=${GO_BUILD_FLAGS:--trimpath -buildvcs=false}
 
-version=${VERSION:-0.1.0-dev}
+version=${VERSION:-$(git -C "$repo" describe --tags --always --dirty 2>/dev/null || echo "dev")}
 commit=$(git -C "$repo" rev-parse --short HEAD)
 epoch=$(git -C "$repo" log -1 --format=%ct)
 date=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
