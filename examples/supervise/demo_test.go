@@ -62,7 +62,7 @@ func runDemoAgent(t *testing.T, curlExit int) string {
 // that fetch out of the branch and the README's Act 2 goes back to documenting a prompt
 // the demo cannot produce.
 func TestDemoLearnsTheGatedHostOnlyFromASuccessfulFetch(t *testing.T) {
-	const learned = "images.cdn.example"
+	const learned = "example.org"
 
 	denied := runDemoAgent(t, 1)
 	if strings.Contains(denied, learned) {

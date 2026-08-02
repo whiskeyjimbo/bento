@@ -105,8 +105,8 @@ enforced run · agent.sh  (a live gate prompts for any undeclared host)
   -> ok
 [agent] reach example.com
   -> HTTP 200                                             <- declared, no prompt
-[agent] reach images.cdn.example (learned from the response)
-  net agent.sh is reaching "images.cdn.example" port 443 now
+[agent] reach example.org (learned from the response)
+  net agent.sh is reaching "example.org" port 443 now
       allow? [y]es [n]o [o]nce [B]lock-everywhere › y     <- the live gate, stopped mid-connection
   -> HTTP 200
 [agent] reach ads.tracker.example
@@ -114,8 +114,10 @@ enforced run · agent.sh  (a live gate prompts for any undeclared host)
   -> blocked
 
 the sandbox shielded 5 credential/host-service path(s) from the script
+
 the live gate admitted egress beyond the manifest:
-  "images.cdn.example" port 443   (a real wrapper would offer to add this to the manifest)
+  "example.org" port 443   (a real wrapper would offer to add this to the manifest)
+
 egress to these destinations was refused: no network rule covers them, and none was admitted
   "ads.tracker.example" port 443 (the target saw only a 403 from the proxy)
 ```
@@ -125,7 +127,7 @@ just fails. `ads.tracker.example` goes through the live gate, but it does not pr
 you already answered `n` for it in Act 1, and the gate applies a remembered decision
 without asking, printing the line above so a silent block is never a mystery.
 
-`images.cdn.example` is the one host the trial never surfaced, and it is where the
+`example.org` is the one host the trial never surfaced, and it is where the
 gate actually prompts - the connection is stopped in its own goroutine while it waits
 for you. It stays undecided through Act 1 for a structural reason, not a scripted one:
 `agent.sh` only reaches for it after `example.com` returns, and the trial runs

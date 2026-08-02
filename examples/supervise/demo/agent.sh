@@ -35,10 +35,11 @@ if echo ran >out.log 2>>out.log; then report ok; else report "DENIED (kernel)"; 
 echo "[agent] reach example.com"
 if code=$(fetch https://example.com/); then
 	report "HTTP $code"
-	# Only on success, so the trial never sees this host. Stand-in for the asset URL
-	# an agent would have parsed out of the response it just got.
-	echo "[agent] reach images.cdn.example (learned from the response)"
-	if code=$(fetch https://images.cdn.example/logo.png); then
+	# Only on success, so the trial never sees this host. Stand-in for a link an agent
+	# would have parsed out of the response it just got. A resolvable host, so the act
+	# it drives ends in a real HTTP 200 rather than a DNS failure dressed as a block.
+	echo "[agent] reach example.org (learned from the response)"
+	if code=$(fetch https://example.org/); then
 		report "HTTP $code"
 	else
 		report blocked
