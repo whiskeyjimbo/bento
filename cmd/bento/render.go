@@ -188,10 +188,11 @@ type mergeJSON struct {
 	// file carried a current approval that this write dropped.
 	ExecWidened    bool `json:"exec_widened"`
 	ApprovalVoided bool `json:"approval_voided"`
-	// InterpreterWas is the invocation - the interpreter and its own arguments, rendered
-	// for display - the existing manifest named when this run used a different one, and
-	// empty when they agree. The merged manifest keeps the run's.
-	InterpreterWas string `json:"interpreter_was,omitempty"`
+	// InterpreterWas and InterpreterArgsWas are the invocation the existing manifest
+	// named when this run used a different one, and empty when they agree. The merged
+	// manifest keeps the run's.
+	InterpreterWas     string   `json:"interpreter_was,omitempty"`
+	InterpreterArgsWas []string `json:"interpreter_args_was,omitempty"`
 }
 
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is

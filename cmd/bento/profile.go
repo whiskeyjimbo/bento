@@ -377,13 +377,14 @@ func profileResultJSON(path string, proposed, written *policy.Policy, doc manife
 	}
 	if merge.widened {
 		env.Merged = &mergeJSON{
-			KeptRead:       merge.keptRead,
-			KeptWrite:      merge.keptWrite,
-			KeptEnv:        merge.keptEnv,
-			KeptNetwork:    merge.keptNetwork,
-			ExecWidened:    merge.execWidened,
-			InterpreterWas: merge.interpreterWas,
-			ApprovalVoided: merge.approvalVoided,
+			KeptRead:           merge.keptRead,
+			KeptWrite:          merge.keptWrite,
+			KeptEnv:            merge.keptEnv,
+			KeptNetwork:        merge.keptNetwork,
+			ExecWidened:        merge.execWidened,
+			InterpreterWas:     merge.interpreterWas,
+			InterpreterArgsWas: merge.interpreterArgsWas,
+			ApprovalVoided:     merge.approvalVoided,
 		}
 	}
 	return env
@@ -1936,11 +1937,17 @@ type mergeOutcome struct {
 	keptRead, keptWrite, keptEnv, keptNetwork []string
 	// execWidened is whether the union escalated exec from a blocked mode to `all`.
 	execWidened bool
-	// interpreterWas is the existing manifest's interpreter and its arguments, rendered
-	// for display, when this run used a different invocation - and "" when they agree.
-	// The run's is what the merged manifest keeps, so a reviewer has to be told which
-	// one the file used to name.
-	interpreterWas string
+	// interpreterWas and interpreterArgsWas are the invocation the existing manifest
+	// named, kept raw so the --json envelope carries the values rather than a rendering
+	// of them; writeMergeNotice does the quoting. interpreterChanged is the flag, not
+	// their emptiness: an existing manifest with no interpreter at all is a real drift
+	// from a run that used one.
+	//
+	// The run's invocation is what the merged manifest keeps, so a reviewer has to be
+	// told which one the file used to name.
+	interpreterChanged bool
+	interpreterWas     string
+	interpreterArgsWas []string
 	// approvalVoided is whether the file being widened carried a current approval, which
 	// the re-profile drops. validate reports it on the next command; saying it here is
 	// what keeps "profile again to converge" from quietly costing an approval.
@@ -1988,15 +1995,13 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 		keptEnv:     only(existing.Policy.Env, proposed.Env),
 		keptNetwork: only(networkKeys(existing.Policy.Network), networkKeys(proposed.Network)),
 		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
-		interpreterWas: func() string {
-			// The arguments are part of the invocation the manifest named, so a change to
-			// them alone - `sh -eu` becoming plain `sh` - is the same silent rewrite of
-			// what runs that a changed interpreter is, and gets the same line.
-			if existing.Policy.Interpreter == proposed.Interpreter && slices.Equal(existing.Policy.InterpreterArgs, proposed.InterpreterArgs) {
-				return ""
-			}
-			return invocation(existing.Policy.Interpreter, existing.Policy.InterpreterArgs)
-		}(),
+		// The arguments are part of the invocation the manifest named, so a change to
+		// them alone - `sh -eu` becoming plain `sh` - is the same silent rewrite of what
+		// runs that a changed interpreter is, and gets the same line.
+		interpreterChanged: existing.Policy.Interpreter != proposed.Interpreter ||
+			!slices.Equal(existing.Policy.InterpreterArgs, proposed.InterpreterArgs),
+		interpreterWas:     existing.Policy.Interpreter,
+		interpreterArgsWas: existing.Policy.InterpreterArgs,
 		// Reported whenever the file was approved: profile writes its own provenance
 		// block, so the stamp is dropped by the write regardless of whether the grants
 		// moved.
@@ -2078,8 +2083,8 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 	if m.execWidened {
 		fmt.Fprintf(w, "[bento] exec was widened to `all` by this run: the manifest no longer blocks subprocesses.\n")
 	}
-	if m.interpreterWas != "" {
-		fmt.Fprintf(w, "[bento] the manifest named interpreter %s, but this run profiled under %s, so the\n", m.interpreterWas, invocation(m.policy.Interpreter, m.policy.InterpreterArgs))
+	if m.interpreterChanged {
+		fmt.Fprintf(w, "[bento] the manifest named interpreter %s, but this run profiled under %s, so the\n", invocation(m.interpreterWas, m.interpreterArgsWas), invocation(m.policy.Interpreter, m.policy.InterpreterArgs))
 		fmt.Fprintf(w, "[bento] merged manifest names the one that produced these grants. Pass --interpreter to pin it.\n")
 	}
 	if m.approvalVoided {

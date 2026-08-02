@@ -1302,8 +1302,8 @@ func TestMergeTakesTheInterpreterTheRunUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}
-	if same.interpreterWas != "" {
-		t.Errorf("interpreterWas = %q, want empty when the run agrees with the manifest", same.interpreterWas)
+	if same.interpreterChanged {
+		t.Error("no drift must be reported when the run agrees with the manifest")
 	}
 }
 
@@ -1340,7 +1340,13 @@ func TestMergeReportsAChangedInterpreterArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}
-	if same.interpreterWas != "" {
-		t.Errorf("interpreterWas = %q, want empty when the run agrees with the manifest", same.interpreterWas)
+	if same.interpreterChanged {
+		t.Error("no drift must be reported when the run agrees with the manifest")
+	}
+	// Carried raw, not rendered: the --json envelope publishes these values, and
+	// quoting them here would ship a consumer `"\"/bin/sh\""`.
+	if merged.interpreterWas != "/bin/sh" || !slices.Equal(merged.interpreterArgsWas, []string{"-eu"}) {
+		t.Errorf("the drift fields must carry the manifest's own values unquoted; got %q %q",
+			merged.interpreterWas, merged.interpreterArgsWas)
 	}
 }
