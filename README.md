@@ -6,7 +6,7 @@
 
 **Run untrusted scripts under strict, manifest-declared permissions.**
 
-Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted code (build scripts, CLI utilities, AI agent actions) with deny-by-default security. It isolates filesystem access, blocks unauthorized network egress, prevents subprocess execution, and shields host credentials even if a manifest includes broad read grants.
+Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted code (build scripts, CLI utilities, AI agent actions) with deny-by-default security. It shields host credentials even if a manifest includes broad read grants, isolates filesystem access, blocks unauthorized network egress, and prevents subprocess execution.
 
 Bento surfaces any gap between what a manifest requests and what the host kernel can enforce, refusing to run under degraded security when `--strict` is enabled.
 
@@ -87,11 +87,40 @@ namespaces - needs none of it.
 Resource limits stay unavailable in a container without a systemd user manager;
 that is a hardening layer, so runs proceed unless `--strict` is passed.
 
+### In CI
+
+The artifact CI consumes is the approved manifest, committed next to the script.
+Profiling and approval happen once, on a developer's terminal; the pipeline only
+checks the stamp is still good and runs under it. On a GitHub-hosted runner that
+is the whole job - unprivileged user namespaces are permitted there, so none of
+the container flags above apply:
+
+```yaml
+jobs:
+  sandboxed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: go install github.com/whiskeyjimbo/bento/cmd/bento@latest
+      - run: bento doctor
+      - run: bento validate --strict ./fetch.py.manifest.yaml
+      - run: bento run --env CI_TOKEN="$CI_TOKEN" ./fetch.py.manifest.yaml
+        env:
+          CI_TOKEN: ${{ secrets.CI_TOKEN }}
+```
+
+`validate --strict` is the gate: it fails the job if the manifest is unapproved
+or was edited since approval, which is what stops permission creep landing in a
+pipeline nobody re-reviewed. `run` needs no flags once the stamp is in the repo -
+if it did, the gate would not mean anything.
+
 ---
 
 ## Quick Start Workflow
 
-Bento follows a 4-step workflow: **Profile → Validate → Approve → Run**.
+Bento follows a 4-step workflow: **Profile → Validate → Approve → Run**, with
+`bento doctor` before all of it.
 
 Run it against [`examples/probe`](examples/probe), a script that reports what the
 sandbox actually lets it read, write, reach, and execute - so each step has
@@ -101,13 +130,17 @@ visible output rather than a silent success.
 go build -o examples/probe/bento ./cmd/bento
 cd examples/probe
 
+./bento doctor                               # 0. what this host can actually enforce
 ./bento profile  ./probe.py                  # 1. observe what it touches, draft a manifest
 ./bento validate ./probe.py.manifest.yaml    # 2. check it, and read what it grants
 ./bento approve  ./probe.py.manifest.yaml    # 3. stamp a fingerprint over the permissions
 ./bento run      ./probe.py.manifest.yaml    # 4. execute under them
-
-./bento doctor                               # what this host can actually enforce
 ```
+
+Run step 0 first on a host you have not run Bento on before. A core layer this
+kernel cannot enforce is a refusal at step 4, and `doctor` is where you find
+that out before drafting a manifest - a stock Ubuntu 24.04 install has no
+`bubblewrap`, which is one `apt-get` away but only if you know to look.
 
 Each step has a detail worth knowing before you rely on it:
 
@@ -212,6 +245,24 @@ all, so nothing is dialed and the list stays empty; it is populated only under
 The `blocked-hosts` list records how the manifest was drafted, not what it grants, so it
 stays out of the `approves` fingerprint. `bento approve` calls out any `network:` rule
 that matches one, so you are not asked to stamp egress bento itself would refuse.
+
+### Environment variables
+
+`env:` is an allowlist of names, not of values. A name on it passes through with
+whatever value bento's own environment holds; everything else in that environment
+stays out of the sandbox. For a value the calling environment does not carry - a CI
+secret, most often - pass it to `bento run` on the command line:
+
+```sh
+bento run --env CI_TOKEN="$CI_TOKEN" ./fetch.py.manifest.yaml
+```
+
+`--env` supplies a value; it does not grant one. A name it names that is not in the
+manifest's `env:` list is refused, so a secret reaching the sandbox is a reviewed and
+stamped decision either way. An allowlisted name with no value anywhere says so at run
+time rather than handing the script an empty string.
+
+`--json`, `--interpreter` and `--out` are documented in `bento <command> --help`.
 
 ### Paths and `~`
 

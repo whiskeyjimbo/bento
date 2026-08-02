@@ -8,3 +8,7 @@ bin/
 /bento
 dist/
 
+# `go build .` in an example module names the binary after the module.
+/examples/embed/bentoembed
+/examples/supervise/bentosupervise
+

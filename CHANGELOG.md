@@ -11,6 +11,50 @@ none of them were ever in a release.
 
 ## Unreleased
 
+### Boundary Hardening
+
+- **Off-Linux is a refusal, not a crash**: every command except `version` refuses
+  on a non-Linux host before it does any work. Bento's guarantees are kernel
+  features that only exist on Linux, so a build that ran anywhere else enforced
+  nothing while looking like it did. The refusal stays inside the `--json`
+  envelope, so a machine consumer reads it as a refusal rather than a crash.
+- **`validate` refuses the grants the run refuses**: a write grant naming an
+  existing file, and a read or write grant whose symlinks loop, aborted the run
+  at sandbox setup while `bento validate` passed them. Validate now predicts both
+  in the same words, so a CI gate and the run agree on what is grantable.
+- **`supervise` no longer prompts for the walk down to the script**: the example
+  supervisor asked about each directory on the path to the script it was told to
+  run. The boundary moved tighter - a routine "yes" to one of those prompts
+  granted a recursive read several levels above anything the script named
+  (`~/src` and up).
+
+### What a Run Tells You
+
+The boundary did not move for any of these; what a user can see about it did.
+
+- **Denials name the manifest field that caused them**: `bento run` prints a
+  legend mapping a denial's errno to the grant that would have permitted it -
+  "Read-only file system" to `write:`, "Operation not permitted" to `exec:`.
+  This is new output on runs that previously said nothing, including runs that
+  exit 0.
+- **A degraded refusal leads with its remedy**: a refusal on a host that cannot
+  fully enforce a core layer opened with what is broken and the command that
+  fixes it, then buried it under a tier-consequence enumeration identical on
+  every degraded host. The run refusal now carries the diagnosis and points at
+  `bento doctor` for the rest; `doctor` still prints every fact it printed
+  before. `enforce.LayerStatus` gained a `Consequences` field and a
+  `Disclosure()` method for embedders that describe a layer in full, plus
+  `Report.AddStatus`/`SetStatus` for forwarding a status whole. No disclosure was
+  dropped, only relocated.
+- **A userns refusal in a container names the flags that lift it**: the probe's
+  reason now spells out the `docker run --security-opt` flags rather than leaving
+  the reader to find them in the README.
+- **A file-shaped write grant says what it will actually do**: a `write:` entry
+  that does not exist yet and is spelled like a file (`./out/log.txt`) becomes a
+  *directory* under that name, so the script's own write to it fails with "is a
+  directory". `validate` and `run` both say so before the run rather than leaving
+  the reader to infer it from the failure.
+
 ### Breaking: `bento run --json` is now a stream
 
 The boundary did not move. What changed is the machine contract: `run --json`
