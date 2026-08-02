@@ -241,3 +241,15 @@ func TestFingerprintSeparatesInterpreterArgsFromArgs(t *testing.T) {
 		t.Error("an interpreter option and a script argument of the same text must not fingerprint alike")
 	}
 }
+
+// The compatibility claim stated exactly: a policy that sets no interpreter args
+// hashes as it did before the field existed, whether the field is nil or an empty
+// slice. Emitting one line per element rather than one line for the list is what buys
+// that, and it is what kept every approve stamp in existence valid.
+func TestFingerprintIgnoresAbsentInterpreterArgs(t *testing.T) {
+	nilArgs := &Policy{Entrypoint: "./x", Interpreter: "python3"}
+	empty := &Policy{Entrypoint: "./x", Interpreter: "python3", InterpreterArgs: []string{}}
+	if nilArgs.Fingerprint() != empty.Fingerprint() {
+		t.Error("an empty interpreter_args must hash the same as an absent one")
+	}
+}

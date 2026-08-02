@@ -1251,16 +1251,16 @@ loop:
 			stop = convergeMaxRounds
 			break
 		}
-		discovery := &policy.Policy{
-			Entrypoint:  base.Entrypoint,
-			Interpreter: base.Interpreter,
-			Args:        base.Args,
-			Network:     base.Network,
-			Exec:        base.Exec,
-			Read:        append(append([]string{}, base.Read...), sortedBoolKeys(acceptedR)...),
-			Write:       append(append([]string{}, base.Write...), sortedBoolKeys(acceptedW)...),
-		}
-		proposal, err := round(discovery)
+		// Copied from base rather than rebuilt field by field: every round has to run the
+		// invocation the proposal will record, and a literal listing the fields it knows
+		// about silently drops the next one added to a Policy - which is how a round ran
+		// `sh script` while the manifest it produced said `sh -eu script`. Only the grants
+		// differ round to round, and they are fresh slices so the accepted paths of one
+		// round do not write into base.
+		discovery := *base
+		discovery.Read = append(append([]string{}, base.Read...), sortedBoolKeys(acceptedR)...)
+		discovery.Write = append(append([]string{}, base.Write...), sortedBoolKeys(acceptedW)...)
+		proposal, err := round(&discovery)
 		if err != nil {
 			return nil, convergeQuit, err
 		}

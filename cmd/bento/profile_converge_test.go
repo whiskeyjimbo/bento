@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -491,6 +492,38 @@ func TestIncompleteReason(t *testing.T) {
 	} {
 		if incompleteReason(tc.status, tc.stop) == "" {
 			t.Errorf("status=%+v stop=%v must be reported as incomplete", tc.status, tc.stop)
+		}
+	}
+}
+
+// Every round has to run the invocation the proposal will record. A round that ran the
+// script bare while the manifest said `sh -eu script` would propose grants from a run
+// nobody watched - and for -e, from a script that ran further than the enforced one
+// will. Asserted against the whole base rather than one field: the discovery policy is
+// base plus this round's accepted grants, and nothing else.
+func TestConvergeRunsEveryRoundUnderTheBasesInvocation(t *testing.T) {
+	base := baseDiscovery()
+	base.Interpreter = "/bin/sh"
+	base.InterpreterArgs = []string{"-eu"}
+	base.Args = []string{"--flag"}
+
+	var ran []policy.Policy
+	capturing := func(d *policy.Policy) (*policy.Policy, error) {
+		ran = append(ran, *d)
+		return branchingRound(d)
+	}
+	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
+	if _, _, err := converge(base, nil, capturing, prompt, noRisky, io.Discard); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if len(ran) == 0 {
+		t.Fatal("converge ran no rounds")
+	}
+	for i, d := range ran {
+		want := *base
+		want.Read, want.Write = d.Read, d.Write
+		if !reflect.DeepEqual(d, want) {
+			t.Errorf("round %d ran a different policy than the base modulo grants:\n got %+v\nwant %+v", i+1, d, want)
 		}
 	}
 }
