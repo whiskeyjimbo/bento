@@ -1317,7 +1317,10 @@ func TestMergeTakesTheInterpreterTheRunUsed(t *testing.T) {
 	script := filepath.Join(dir, "tidy.sh")
 	path := filepath.Join(dir, "tidy.sh.manifest.yaml")
 	base := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{filepath.Join(dir, "prior")}}
-	data, err := manifest.Marshal(base, manifest.Provenance{})
+	// Approved, because that is the case with consequences: the interpreter is part of
+	// the fingerprint, so swapping it is exactly what the stamp was meant to catch, and
+	// the reviewer has to be told both that the approval is gone and what moved.
+	data, err := manifest.Marshal(base, manifest.Provenance{Approves: base.Fingerprint()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1334,9 +1337,9 @@ func TestMergeTakesTheInterpreterTheRunUsed(t *testing.T) {
 	}
 	var b strings.Builder
 	writeMergeNotice(&b, path, merged)
-	for _, want := range []string{`"bash"`, `"/bin/sh"`} {
+	for _, want := range []string{`"bash"`, `"/bin/sh"`, "its approval is gone"} {
 		if !strings.Contains(b.String(), want) {
-			t.Errorf("the merge notice must name %s; got:\n%s", want, b.String())
+			t.Errorf("the merge notice must report %s; got:\n%s", want, b.String())
 		}
 	}
 
