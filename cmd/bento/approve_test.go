@@ -538,6 +538,16 @@ func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Error("a refused approval must leave the manifest as it was found")
 	}
+
+	// A manifest carrying such a grant AND a matching stamp - what an earlier bento left
+	// behind, and what the report of this bug started from - must not take the
+	// already-approved shortcut and report as approved for a permission run refuses.
+	stamped := &policy.Policy{Entrypoint: "./x", Write: []string{"~/.ssh"}}
+	current := writeManifest(t, stamped, manifest.Provenance{Approves: stamped.Fingerprint()})
+	out, err = runCapturingStdout(t, newApproveCmd(), current, "--yes")
+	if err == nil {
+		t.Errorf("an existing stamp must not excuse a grant run refuses; got:\n%s", out)
+	}
 }
 
 // The stale refusal sends the reader back to re-review, and the next question is always

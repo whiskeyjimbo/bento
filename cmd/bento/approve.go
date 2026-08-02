@@ -62,6 +62,14 @@ func newApproveCmd() *cobra.Command {
 			// so a manifest still needing the clamp goes through it rather than being
 			// reported as already approved for a mode approve never vouched for.
 			approval := checkApproval(doc)
+			resolved := resolvedGrants(doc.Policy, path)
+			// Before the already-approved shortcut, not after: a manifest stamped by an
+			// earlier bento - or by this one on a host whose shields anchor elsewhere -
+			// otherwise reports as approved for permissions run refuses outright, which is
+			// the disagreement between the gate and the enforcement this check exists to end.
+			if err := requireHonorableGrants(resolved); err != nil {
+				return err
+			}
 			if approval == approvalCurrent && trust.file.sharedWrite() == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
@@ -72,15 +80,11 @@ func newApproveCmd() *cobra.Command {
 			// printed one line made typing it the path of least resistance. The summary
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
-			resolved := resolvedGrants(doc.Policy, path)
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil)
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, approval)
-			if err := requireHonorableGrants(resolved); err != nil {
-				return err
-			}
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}
