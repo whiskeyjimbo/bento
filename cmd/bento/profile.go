@@ -118,12 +118,21 @@ func newProfileCmd() *cobra.Command {
 				return refuse(err)
 			}
 			if interpreter == "" {
-				guess, source := guessInterpreter(script)
+				guess, dropped, source := guessInterpreter(script)
 				// Said out loud because the guess lands in the manifest the user is about
 				// to approve, and a script run under an interpreter it did not name is
 				// the kind of difference that only shows up as behavior.
 				if guess != "" {
 					fmt.Fprintf(os.Stderr, "[bento] interpreter %q, from %s; --interpreter overrides it\n", guess, source)
+				}
+				// A manifest has nowhere to put the interpreter's own flags - Args are the
+				// script's argv - so they are dropped rather than silently carried. That is
+				// worth a line: `sh -eu` without -e keeps running past a failed command, so
+				// the profiled and enforced runs can differ from a kernel exec of the same
+				// script in what they do, not just in what they record.
+				if len(dropped) > 0 {
+					fmt.Fprintf(os.Stderr, "[bento] the shebang passes %q to %s; bento cannot record interpreter\n", strings.Join(dropped, " "), guess)
+					fmt.Fprintf(os.Stderr, "[bento] arguments, so this run and the manifest omit them\n")
 				}
 				interpreter = guess
 			}
@@ -1849,18 +1858,19 @@ func isBroadDir(path string) bool {
 	return slices.Contains(anchors, path)
 }
 
-// guessInterpreter picks an interpreter for a script and says where the guess came
-// from, for the line profile prints about it. An empty result means the script is its
-// own interpreter (a compiled binary).
+// guessInterpreter picks an interpreter for a script, reports any arguments the shebang
+// passes it that a manifest cannot carry, and says where the guess came from - both for
+// the lines profile prints about it. An empty interpreter means the script is its own
+// interpreter (a compiled binary).
 //
 // The shebang wins over the extension because it is the script's own answer: a `.sh`
 // file that asks for /bin/sh can behave differently under bash, and the manifest the
 // user approves would record the interpreter bento chose over the one the author
 // wrote. The extension is the fallback for a script with no shebang, which the kernel
 // would refuse to exec on its own.
-func guessInterpreter(path string) (interpreter, source string) {
-	if interp := shebang(path); interp != "" {
-		return interp, "the script's shebang"
+func guessInterpreter(path string) (interpreter string, dropped []string, source string) {
+	if interp, args := shebang(path); interp != "" {
+		return interp, args, "the script's shebang"
 	}
 	ext := filepath.Ext(path)
 	switch ext {
@@ -1873,18 +1883,24 @@ func guessInterpreter(path string) (interpreter, source string) {
 	case ".rb":
 		interpreter = "ruby"
 	default:
-		return "", ""
+		return "", nil, ""
 	}
-	return interpreter, "the " + ext + " extension"
+	return interpreter, nil, "the " + ext + " extension"
 }
 
-// shebang reads the interpreter a script names on its first line, or "" when it names
-// none - including an unreadable file, which the entrypoint stat above has already
-// reported on.
-func shebang(path string) string {
+// shebang reads the interpreter a script names on its first line, along with the
+// arguments the line passes it. It returns "" when the line names no interpreter -
+// including an unreadable file, which the entrypoint stat above has already reported on.
+//
+// The two branches split the arguments differently because the two runners do. Linux
+// does not tokenize a shebang: everything after the interpreter arrives as a single
+// argv[1], so "#!/bin/sh -e -u" passes one argument "-e -u" - which is why a shebang
+// wanting several must go through `env -S`, and why the direct branch returns the
+// remainder whole. env -S does split, so that branch returns separate words.
+func shebang(path string) (interpreter string, args []string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	defer f.Close()
 
@@ -1892,11 +1908,12 @@ func shebang(path string) string {
 	n, _ := f.Read(buf[:])
 	line, _, _ := strings.Cut(string(buf[:n]), "\n")
 	if !strings.HasPrefix(line, "#!") {
-		return ""
+		return "", nil
 	}
-	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	rest := strings.TrimLeft(strings.TrimPrefix(line, "#!"), " \t")
+	fields := strings.Fields(rest)
 	if len(fields) == 0 {
-		return ""
+		return "", nil
 	}
 	// "#!/usr/bin/env python3" runs the interpreter named after env. env may be
 	// given options first - notably `-S`/`--split-string`, the standard way a
@@ -1904,19 +1921,34 @@ func shebang(path string) string {
 	// NAME=VALUE assignments; the interpreter is the first field that is neither, not
 	// simply fields[1] (which would be `-S`).
 	if filepath.Base(fields[0]) == "env" {
-		for _, f := range fields[1:] {
+		for i := 1; i < len(fields); i++ {
+			w := fields[i]
 			// Skip env's leading options and NAME=VALUE assignments; an interpreter
 			// (a path or a bare name) contains neither, so any '='-bearing word is an
 			// assignment, matching env's own handling.
-			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
+			if strings.Contains(w, "=") {
 				continue
 			}
-			return f
+			if strings.HasPrefix(w, "-") {
+				// -u/--unset and -C/--chdir take their argument as a separate word, so
+				// without this the variable name or directory reads as the interpreter.
+				// The attached forms (-uNAME, --unset=NAME) are already covered above or
+				// by the prefix test. -S is deliberately not here: what follows it is the
+				// string env splits, which begins with the interpreter.
+				if w == "-u" || w == "--unset" || w == "-C" || w == "--chdir" {
+					i++
+				}
+				continue
+			}
+			return w, fields[i+1:]
 		}
-		return ""
+		return "", nil
 	}
-	// Anything after the interpreter is its argument, not part of its name.
-	return fields[0]
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+	if rest == "" {
+		return fields[0], nil
+	}
+	return fields[0], []string{rest}
 }
 
 // seedGrants returns the grants an existing manifest at path contributes to the

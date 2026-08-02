@@ -132,7 +132,7 @@ func notAManifest(f *os.File, path string, parseErr error) error {
 // mangled manifest. A shebang is the cheap signal; the extensions bento already maps to an
 // interpreter are the other, since a manifest never carries one.
 func looksLikeScript(f *os.File, path string) bool {
-	if interp, _ := guessInterpreter(path); interp != "" {
+	if interp, _, _ := guessInterpreter(path); interp != "" {
 		return true
 	}
 	// A shebang naming nothing runnable (`#!/usr/bin/env` alone) leaves no interpreter to
