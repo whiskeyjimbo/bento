@@ -915,32 +915,39 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 	}
 }
 
-// writeLimitsRemedy names the two ways past a refusal over resource limits this host
-// cannot enforce. Every other refusal states a shortfall the reader can go fix - install
+// writeLimitsRemedy names the ways past a refusal over resource limits this host cannot
+// enforce. Every other refusal states a shortfall the reader can go fix - install
 // bubblewrap, permit a user namespace - but a missing systemd-run on a container image is
 // not something the caller of `bento run` can install, so the diagnosis alone leaves them
 // stuck: the manifest asked for a cap, the host has no way to apply one, and neither end
 // of that is theirs to change from here.
 //
-// It lives beside run's call to writeRefusal rather than inside it because both remedies
-// are run's own vocabulary - profile refuses through the same printer and offers neither
-// (see preflightHost). The layer check is what says the manifest edit applies at all,
-// since removing `limits:` fixes nothing on a refusal about the filesystem tier.
+// It lives beside run's call to writeRefusal rather than inside it because the remedies
+// are run's own vocabulary - profile refuses through the same printer and offers none
+// (see preflightHost).
 //
 // Waivable is what says --allow-degraded would actually admit THIS run, and under --strict
 // it never would: run rejects the two flags together, so naming the flag there would hand
-// the reader a way past that hard-errors when they take it. Strict gets the manifest edit
-// and the host change instead - the two things that are still true when the flag is not.
+// the reader a way past that hard-errors when they take it. Strict is offered the manifest
+// edit alone, and only when the limits are the WHOLE shortfall - strict refuses over every
+// layer that fell short, so telling a reader whose filesystem tier is also degraded to drop
+// `limits:` would send them back to the same refusal, which is the failure the flag is
+// withheld to avoid. Neither branch names a host-side fix: the layer's own Reason prints
+// directly above and is the only line that knows which of the three causes this is, and an
+// uninstalled systemd-run and an undelegated controller do not have the same answer.
 func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
-	limits := slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool {
+	isLimits := func(l enforce.LayerStatus) bool {
 		return l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU
-	})
-	if !limits {
+	}
+	if !slices.ContainsFunc(r.Short, isLimits) {
 		return
 	}
 	if !r.Waivable {
+		if slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool { return !isLimits(l) }) {
+			return
+		}
 		fmt.Fprintln(w, "  to proceed anyway, drop `limits:` from the manifest so it no longer asks for a cap")
-		fmt.Fprintln(w, "  this host cannot apply, or give the host a systemd user manager to apply one with.")
+		fmt.Fprintln(w, "  this host cannot apply.")
 		return
 	}
 	fmt.Fprintln(w, "  to proceed anyway, pass --allow-degraded and the script runs unbounded, or drop")

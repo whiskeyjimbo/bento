@@ -107,7 +107,9 @@ unaffected, `--strict` included. A manifest that *does* ask for one is refused
 without `--strict` too: an unenforceable cap is the one hardening gap that
 protects the host rather than the target, so running unbounded is not a
 degradation bento takes on its own. Drop `limits:` for those hosts, or pass
-`--allow-degraded` to run uncapped knowingly.
+`--allow-degraded` to run uncapped knowingly - the two flags are opposites and
+bento refuses them together, so a pipeline gating on `--strict` wants the
+manifest edit.
 
 ### In CI
 

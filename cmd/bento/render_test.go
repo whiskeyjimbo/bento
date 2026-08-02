@@ -140,6 +140,10 @@ func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true, true},
 		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false, true},
 		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false, false},
+		"strict filesystem":   {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}}, false, false},
+		// Strict refuses over every layer that fell short, so a reader told to drop
+		// `limits:` here would be refused again by the filesystem tier they still have.
+		"strict limits and filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{limits, filesystem}}, false, false},
 	} {
 		var b bytes.Buffer
 		writeLimitsRemedy(&b, tc.refusal)
