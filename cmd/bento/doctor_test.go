@@ -1,10 +1,75 @@
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 )
+
+// onPlatform makes platformName answer for a host the tests cannot be run on, so the
+// unverified branch - the reason doctor names the platform at all - can be watched. On a
+// test host the value is the build's own and never varies.
+func onPlatform(t *testing.T, name string) {
+	t.Helper()
+	saved := platformName
+	platformName = func() string { return name }
+	t.Cleanup(func() { platformName = saved })
+}
+
+// An arm64 Linux build probes a real kernel and fills the table in exactly as a verified
+// host's does, so the only thing separating "this is what bento enforces" from "this is
+// what this kernel answered" is doctor naming the platform and saying which one it has.
+func TestDoctorNamesAnUnverifiedPlatform(t *testing.T) {
+	onPlatform(t, "linux/arm64")
+	var out bytes.Buffer
+	writePlatform(&out)
+	got := out.String()
+	if !strings.Contains(got, "Platform: linux/arm64") {
+		t.Errorf("doctor must name the platform it reports on; got %q", got)
+	}
+	if !strings.Contains(got, "planned, not verified") {
+		t.Errorf("an unverified platform must say so, as README says of arm64; got %q", got)
+	}
+}
+
+// The verified platform gets the name and nothing else: a caveat on every amd64 run is
+// noise that would train a reader to skip the line where it matters.
+func TestDoctorNamesTheVerifiedPlatformWithoutACaveat(t *testing.T) {
+	onPlatform(t, verifiedPlatform)
+	var out bytes.Buffer
+	writePlatform(&out)
+	got := out.String()
+	if !strings.Contains(got, "Platform: "+verifiedPlatform) {
+		t.Errorf("doctor must name the platform on every host; got %q", got)
+	}
+	if strings.Contains(got, "not verified") {
+		t.Errorf("the verified platform must carry no caveat; got %q", got)
+	}
+}
+
+// platform_verified is not readiness. An unverified host can probe every layer as
+// enforced - that is precisely the case a reader needs told apart - so the field must not
+// be folded into Ready or the exit code, which stay a statement about this kernel.
+func TestDoctorJSONCarriesPlatformIndependentOfReady(t *testing.T) {
+	var clean enforce.Report
+	clean.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+
+	onPlatform(t, "linux/arm64")
+	dj := toDoctorJSON(clean)
+	if dj.Platform != "linux/arm64" || dj.PlatformVerified {
+		t.Errorf("platform must be named and marked unverified; got %q verified=%v", dj.Platform, dj.PlatformVerified)
+	}
+	if !dj.Ready {
+		t.Error("an unverified platform whose layers all hold is still ready - the caveat is not a shortfall")
+	}
+
+	onPlatform(t, verifiedPlatform)
+	if dj := toDoctorJSON(clean); !dj.PlatformVerified {
+		t.Errorf("%s must be reported verified; got %+v", verifiedPlatform, dj)
+	}
+}
 
 // doctor gates its exit code only on core guarantees every manifest needs. Network
 // egress control is core but conditionally required (only a manifest that declares

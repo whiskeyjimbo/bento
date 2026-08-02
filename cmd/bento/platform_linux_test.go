@@ -71,6 +71,7 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 			FullyEnforced bool       `json:"fully_enforced"`
 			Ready         bool       `json:"ready"`
 			Reason        string     `json:"reason"`
+			Platform      string     `json:"platform"`
 		}
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("doctor --json must stay parseable where it refuses: %v (stdout %q)", err, out)
@@ -80,6 +81,11 @@ func TestSandboxCommandsRefuseAHostWithNoBackend(t *testing.T) {
 		}
 		if got.Reason == "" {
 			t.Error("the reason there is nothing to report is the only thing this document says")
+		}
+		// The platform is the one thing this document can still state as fact, and the
+		// host with no backend is where it matters most.
+		if got.Platform == "" {
+			t.Error("the envelope must name the platform it found no backend for")
 		}
 
 		// The envelope buys the machine consumer a parseable stdout and nothing else: a

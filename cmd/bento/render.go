@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -80,6 +81,13 @@ type doctorJSON struct {
 	// is false: a host missing only a conditionally-required (network egress) or
 	// hardening layer still runs every manifest that does not need that layer.
 	Ready bool `json:"ready"`
+	// Platform is the GOOS/GOARCH this report describes, and PlatformVerified whether it
+	// is the platform bento is verified on. They sit here rather than on reportJSON,
+	// which run's refusal envelope also carries, because this is the question doctor
+	// exists to answer. PlatformVerified is independent of Ready: an unverified platform
+	// can probe every layer as enforced, which is the case that needs saying.
+	Platform         string `json:"platform"`
+	PlatformVerified bool   `json:"platform_verified"`
 	// Reason is why there is nothing to report, on a host bento has no backend for. Absent
 	// on a host that was probed, where the layers say it themselves.
 	Reason string `json:"reason,omitempty"`
@@ -1202,6 +1210,41 @@ func writeAcceptedAliasWarning(w io.Writer, res enforce.Result) {
 	for _, a := range res.AcceptedAliases {
 		fmt.Fprintf(w, "[bento]   %q aliases %q\n", a.Path, a.Credential)
 	}
+}
+
+// verifiedPlatform is the one host bento is verified on. Every other platform either has
+// no backend at all or, on another Linux architecture, builds and probes without anything
+// having confirmed the layers mean there what they mean here.
+const verifiedPlatform = "linux/amd64"
+
+// platformName is the GOOS/GOARCH a report describes. A variable for the reason
+// checkPlatform is one: the build's own platform is the only value it can ever take on a
+// test host, so the unverified branch below - the whole point of reporting it - is
+// otherwise unobservable, and swapping this lets a test watch doctor say it.
+var platformName = func() string {
+	return runtime.GOOS + "/" + runtime.GOARCH
+}
+
+// platformVerified reports whether this build's platform is the one bento is verified on.
+func platformVerified() bool {
+	return platformName() == verifiedPlatform
+}
+
+// writePlatform names the platform doctor is reporting on, and says when that platform is
+// not the verified one.
+//
+// A non-amd64 Linux build succeeds and probes a real kernel, so the table below fills in
+// and reads exactly like a supported host's - the reader has no way to tell that what it
+// says is unverified. Naming the platform is the only place that gap can be closed:
+// unlike a host with no backend, there is nothing here to refuse, only something the
+// project has not stood behind yet.
+func writePlatform(w io.Writer) {
+	fmt.Fprintf(w, "Platform: %s\n", platformName())
+	if !platformVerified() {
+		fmt.Fprintf(w, "  Support for %s is planned, not verified. The layers below report what this\n", platformName())
+		fmt.Fprintf(w, "  host answered; that they mean here what they mean on %s is untested.\n", verifiedPlatform)
+	}
+	fmt.Fprintln(w)
 }
 
 // writeShieldAnchors names the home directories the credential shields will anchor on

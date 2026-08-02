@@ -31,7 +31,13 @@ func newDoctorCmd() *cobra.Command {
 				// parseable answer on stdout, and the refusal then goes to stderr and
 				// the same exit as the human mode's, exactly as validate's does.
 				if asJSON {
-					if err := writeJSON(os.Stdout, doctorJSON{reportJSON: noReport, Reason: err.Error()}); err != nil {
+					envelope := doctorJSON{
+						reportJSON:       noReport,
+						Platform:         platformName(),
+						PlatformVerified: platformVerified(),
+						Reason:           err.Error(),
+					}
+					if err := writeJSON(os.Stdout, envelope); err != nil {
 						return err
 					}
 				}
@@ -60,6 +66,7 @@ func newDoctorCmd() *cobra.Command {
 				return nil
 			}
 
+			writePlatform(os.Stdout)
 			writeReportTable(os.Stdout, report)
 			fmt.Println()
 			writeShieldAnchors(os.Stdout)
@@ -108,5 +115,10 @@ func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 // gatedShortfall as the exit code, so the field a JSON consumer reads and the process
 // status a shell caller reads can never disagree.
 func toDoctorJSON(r enforce.Report) doctorJSON {
-	return doctorJSON{reportJSON: toReportJSON(r), Ready: len(gatedShortfall(r)) == 0}
+	return doctorJSON{
+		reportJSON:       toReportJSON(r),
+		Ready:            len(gatedShortfall(r)) == 0,
+		Platform:         platformName(),
+		PlatformVerified: platformVerified(),
+	}
 }
