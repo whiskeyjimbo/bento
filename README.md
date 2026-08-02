@@ -435,9 +435,6 @@ When building a supervised wrapper (such as an editor agent or interactive CLI t
 
 Run tests and checks locally:
 
-This checkout is not part of the parent `go.work`, so every `go` command needs
-`GOWORK=off`. The Makefile sets it for you - prefer the targets over raw commands.
-
 ```sh
 make test      # unit and integration tests (sandbox tests skip if bwrap/userns are missing;
                # the denylist parity tests also want firejail and its apparmor profiles)
