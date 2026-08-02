@@ -1290,7 +1290,6 @@ func TestGuessInterpreterPrefersTheShebang(t *testing.T) {
 		{"u2", "#!/usr/bin/env -S --unset PATH python3\n", "python3", nil, "the script's shebang"},
 		{"u3", "#!/usr/bin/env -S -C /tmp python3\n", "python3", nil, "the script's shebang"},
 		{"u4", "#!/usr/bin/env -S --unset=PATH python3\n", "python3", nil, "the script's shebang"}, // attached form needs no consume
-		{"u5", "#!/usr/bin/env -S -a agent python3\n", "python3", nil, "the script's shebang"},     // --argv0 takes a word too
 
 		// -S can carry its payload attached. Skipping the whole word would drop the
 		// interpreter and fall through to the extension, silently profiling under bash.

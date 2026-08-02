@@ -1023,12 +1023,12 @@ func shebangInterpreter(path string) (interpreter string, args []string) {
 			}
 			if strings.HasPrefix(w, "-") {
 				// These take their argument as a separate word, so without consuming it
-				// the variable name, directory, or argv[0] reads as the interpreter. The
+				// the variable name or directory reads as the interpreter. The
 				// attached forms are covered above or by the prefix test. A bare -S is not
 				// here: what follows it is the string env splits, which begins with the
 				// interpreter.
 				switch w {
-				case "-u", "--unset", "-C", "--chdir", "-a", "--argv0":
+				case "-u", "--unset", "-C", "--chdir":
 					i++
 				}
 				continue

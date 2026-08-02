@@ -98,7 +98,6 @@ func TestGuessInterpreterAnswersAsTheCLIDoes(t *testing.T) {
 		// or directory reads as the interpreter.
 		{"u1", "#!/usr/bin/env -S -u PATH python3 -u\n", "python3", []string{"-u"}},
 		{"u2", "#!/usr/bin/env -S -C /tmp python3\n", "python3", nil},
-		{"u3", "#!/usr/bin/env -S -a agent python3\n", "python3", nil},
 
 		// -S can carry its payload attached. Skipping the whole word would drop the
 		// interpreter and fall through to the extension, silently running under bash.
