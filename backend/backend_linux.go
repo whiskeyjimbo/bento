@@ -7,6 +7,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -44,32 +45,40 @@ func New() (enforce.Enforcer, error) {
 // enforce.Run).
 var dispatched atomic.Bool
 
-// errNotDispatched is a returned error and not the panic requireDispatched raises: this
+// errNotDispatched is a returned error and not the exit requireDispatched takes: this
 // is the embedder's own process asking for an enforcer, where a returned error is the
 // contract, and unlike a live stage there is no fork-bomb risk to cut short.
 var errNotDispatched = fmt.Errorf("bento: backend.DispatchReexec() was not called; " +
 	"call it as the first statement in main() (and in TestMain for tests that run enforced), " +
 	"or the sandbox stages this backend re-execs have nowhere to land")
 
-// requireDispatched panics when this process is a re-exec stage that was never
+// errUndispatchedStage is what a live stage that skipped the call is told, on the
+// stderr the embedder handed the target.
+var errUndispatchedStage = errors.New("this process was launched as a sandbox stage but DispatchReexec was not called first; " +
+	"call backend.DispatchReexec() as the first statement in main() (and in TestMain for tests that run enforced)")
+
+// requireDispatched ends this process when it is a re-exec stage that was never
 // dispatched. DispatchReexec never returns for a stage sentinel - it runs the stage
 // and exits - so a process still carrying one in os.Args[1] by the time it asks for
 // an enforcer has provably skipped the call, and no ordinary invocation looks like
 // that (the sentinels are a reserved argv namespace).
 //
-// It is a panic rather than a returned error because the condition is an embedder
-// contract violation, not a runtime failure a caller could handle. It is also the
-// only symptom that carries: the staged child otherwise runs the program normally,
-// and in a test binary that means re-running the suite, which re-enters the sandbox
-// and stages again - a fork bomb whose presenting symptom is a silent hang.
+// It exits rather than returning an error because the condition is an embedder
+// contract violation, not a runtime failure a caller could handle, and because
+// cutting the process short is the only symptom that carries: the staged child
+// otherwise runs the program normally, and in a test binary that means re-running the
+// suite, which re-enters the sandbox and stages again - a fork bomb whose presenting
+// symptom is a silent hang. It exits rather than panicking for the same reason a
+// stage that fails setup does: an embedder's own recover() would resume the program
+// here and start that fork bomb, and the exit code is 125 either way, where a panic's
+// 2 is what a target that crashed on its own looks like.
 func requireDispatched() {
 	if len(os.Args) < 2 {
 		return
 	}
 	switch os.Args[1] {
 	case launcher.SentinelLaunch, launcher.SentinelLaunchDegraded, launcher.SentinelBridge:
-		panic("bento: this process was launched as a sandbox stage but DispatchReexec was not called first; " +
-			"call backend.DispatchReexec() as the first statement in main() (and in TestMain for tests that run enforced)")
+		reexecFail(errUndispatchedStage)
 	}
 }
 
@@ -110,7 +119,7 @@ func requireDispatched() {
 // TestMain, before the testing package parses flags.
 //
 // Skipping the call is caught rather than tolerated: New and Profile refuse when it was
-// never made, and panic when they find a stage sentinel still in os.Args[1], where the
+// never made, and exit 125 when they find a stage sentinel still in os.Args[1], where the
 // caller is a live stage that must not go on to run the program (see requireDispatched).
 func DispatchReexec() {
 	// Recorded before the argv screen: an ordinary invocation takes the early return

@@ -96,36 +96,68 @@ func TestDispatchReexecFailsSetupWith125(t *testing.T) {
 	}
 }
 
-// An embedder that never calls DispatchReexec gets a panic naming the cause, not a
-// silent hang. The staged child otherwise runs the embedding program normally while
-// still carrying the sentinel, and for a test binary that means re-running the suite,
-// which stages again - so the diagnosis has to come from the entry points the resumed
-// program reaches, which are New and Profile.
-func TestUndispatchedStagePanics(t *testing.T) {
+// An embedder that never calls DispatchReexec gets the cause named on stderr and exit
+// 125, not a silent hang. The staged child otherwise runs the embedding program
+// normally while still carrying the sentinel, and for a test binary that means
+// re-running the suite, which stages again - so the diagnosis has to come from the
+// entry points the resumed program reaches, which are New and Profile.
+//
+// Run as a subprocess because the guard exits: an exit is what stops an embedder's own
+// recover() from resuming the program here and starting that fork bomb, so there is
+// nothing in-process left to observe.
+func TestUndispatchedStageExitsWith125(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, sentinel := range map[string]string{
 		"launch":   launcher.SentinelLaunch,
 		"degraded": launcher.SentinelLaunchDegraded,
 		"bridge":   launcher.SentinelBridge,
 	} {
 		t.Run(name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("an undispatched stage reached New without panicking")
-				}
-				if msg, _ := r.(string); !strings.Contains(msg, "DispatchReexec") {
-					t.Errorf("panic = %v, want the message to name DispatchReexec", r)
-				}
-			}()
-			swapArgs(t, []string{"embedder", sentinel})
-			_, _ = New()
+			cmd := exec.Command(self, "-test.run=TestUndispatchedStageHelper")
+			cmd.Env = append(os.Environ(), undispatchedStageEnv+"="+sentinel)
+			var stdout, stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Fatalf("want an exit error, got %v (stderr %q)", err, stderr.String())
+			}
+			if code := exit.ExitCode(); code != 125 {
+				t.Errorf("exit code = %d, want 125 (stderr %q)", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "DispatchReexec") {
+				t.Errorf("stderr = %q, want the missed call named", stderr.String())
+			}
+			if strings.Contains(stdout.String(), "PASS") {
+				t.Errorf("an undispatched stage fell through to the embedding program's startup: %q", stdout.String())
+			}
 		})
 	}
 }
 
+// undispatchedStageEnv carries the sentinel the helper below should wear. A test flag
+// cannot do it: the guard reads os.Args[1], and an argument in that position stops the
+// testing package's own flag parsing.
+const undispatchedStageEnv = "BENTO_TEST_UNDISPATCHED_STAGE"
+
+// TestUndispatchedStageHelper is the embedder TestUndispatchedStageExitsWith125 runs.
+// It never returns when it does its job, so it only runs in that child process.
+func TestUndispatchedStageHelper(t *testing.T) {
+	sentinel := os.Getenv(undispatchedStageEnv)
+	if sentinel == "" {
+		t.Skip("runs only as the child of TestUndispatchedStageExitsWith125")
+	}
+	swapArgs(t, []string{"embedder", sentinel})
+	_, _ = New()
+	t.Fatal("an undispatched stage reached New and went on running")
+}
+
 // An ordinary invocation must not trip the guard, whatever its arguments - only the
 // reserved sentinel namespace does.
-func TestOrdinaryArgsDoNotPanic(t *testing.T) {
+func TestOrdinaryArgsDoNotTripTheGuard(t *testing.T) {
 	for name, argv := range map[string][]string{
 		"no arguments":     {"embedder"},
 		"a normal flag":    {"embedder", "--verbose"},

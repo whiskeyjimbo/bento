@@ -388,7 +388,7 @@ func TestMain(m *testing.M) {
 }
 ```
 
-A call that never happened is caught before any run starts: `backend.New` and `backend.Profile` return an error naming the missed call. They panic instead when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb.
+A call that never happened is caught before any run starts: `backend.New` and `backend.Profile` return an error naming the missed call. They name the same call on stderr and exit 125 instead when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb - a returned error there could be logged and ignored, and an exit is the one outcome a `recover()` in the embedder's own `main()` cannot resume past.
 
 A call made too late - after flag parsing, where the stage dies on its own argv before reaching it - still reaches neither guard, so the parent-side guarantee stands behind both: the stage writes what it applied before it dispatches the target, so a run whose stage stayed silent provably never ran the target, and `enforce.Run` returns an `*enforce.Refusal` saying so. The `log.Fatalf` on `err` in the example below catches every one of these; it will never report a clean exit 0 for a target that never started.
 
