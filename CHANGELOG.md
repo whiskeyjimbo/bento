@@ -9,6 +9,19 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
+## Unreleased
+
+### Verifying a Release
+
+- **The signature file is now `checksums.txt.sigstore.json`**, not
+  `checksums.txt.bundle`. Same keyless cosign signature over the same file; the
+  name now matches the Sigstore bundle convention that consumers and release
+  scanners look for. A script that fetches the old name will 404 - update it.
+- **Releases now carry SLSA build provenance** as `bento.intoto.jsonl`, covering
+  every published archive. The signature says a tagged run of this repo produced
+  the artifacts; the provenance says how it built them, and `slsa-verifier` can
+  check an archive against it directly. See [SECURITY.md](SECURITY.md).
+
 ## 0.2.1 (2026-08-03)
 
 A patch bump: nothing about the boundary moved. These are all fixes to what

@@ -92,7 +92,6 @@ through the checksum file:
 # 1. The checksum file really came from a tagged release run of this repository.
 cosign verify-blob checksums.txt \
   --bundle checksums.txt.sigstore.json \
-  --new-bundle-format \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp \
     '^https://github\.com/whiskeyjimbo/bento/\.github/workflows/release\.yml@refs/tags/v'
@@ -113,7 +112,7 @@ records how the artifacts were built rather than only who signed them. Check it
 with [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
 
 ```sh
-slsa-verifier verify-artifact bento_0.2.0_linux_amd64.tar.gz \
+slsa-verifier verify-artifact bento_<version>_linux_amd64.tar.gz \
   --provenance-path bento.intoto.jsonl \
   --source-uri github.com/whiskeyjimbo/bento
 ```
