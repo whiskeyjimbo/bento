@@ -22,6 +22,24 @@ commits that built it - none of them were ever in a release.
   the artifacts; the provenance says how it built them, and `slsa-verifier` can
   check an archive against it directly. See [SECURITY.md](SECURITY.md).
 
+### What a Run Tells You
+
+- **An undispatched stage now exits 125 with one line, not a panic**: an embedder
+  that skips `backend.DispatchReexec()` gets a re-exec stage that would go on to
+  run its own program - a fork bomb the guard has always cut short. It did so by
+  panicking, which buried the one sentence the reader needed under a goroutine
+  dump, exited 2 (what a target that crashed on its own looks like), and could be
+  resumed past by a `recover()` in the embedder's `main()`. It now says the same
+  thing on stderr and exits 125, like every other stage that cannot do its job.
+  The boundary did not move. A process that never was a stage still gets a
+  returned error, as before.
+- **`bento version` now names the platform and what it can enforce there**: a
+  `GOOS=darwin` cross-build compiles clean and then refuses `run`, `profile` and
+  `doctor` at startup, and doctor - the command that would have explained why -
+  is one of the three. `version` answers on every build, so it says it instead:
+  the GOOS/GOARCH pair always, plus a line for a build with no backend (validate
+  and approve still work) or for a Linux architecture bento has not verified.
+
 ## 0.2.1 (2026-08-03)
 
 A patch bump: nothing about the boundary moved. These are all fixes to what
