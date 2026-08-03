@@ -1,8 +1,12 @@
 # embed - hosting bento in-process
 
 A minimal program that runs a script under bento's sandbox by calling bento's public
-Go API directly, instead of shelling out to the `bento` binary and parsing its output.
-It is the reference for an embedder such as a supervising CLI wrapper.
+Go API directly, rather than shelling out to the `bento` binary and parsing its output.
+It is the reference for a Go embedder such as a supervising CLI wrapper.
+
+A harness written in Python, Node or Rust cannot call that API at all. Its path is the
+`bento` binary itself, and it is a genuinely smaller surface - see "Driving bento from
+another language" below for what it gives up.
 
 It runs with the zero-value `enforce.Options`, which refuses only on a **core**-tier
 shortfall: a hardening gap (exec-blocking unavailable, say, so the target can spawn
@@ -151,6 +155,95 @@ target **ran** and then a guarantee `Strict` required lapsed, so the `Result` is
 complete and must not be discarded like a failure - but its exit code is no longer the
 answer. It is unreachable under this example's options and handled anyway, because
 setting `Strict: true` is exactly what a copyist does first.
+
+## Driving bento from another language
+
+Everything above is Go-only. A harness in Python, Node or Rust runs the `bento` binary
+as a subprocess and reads `bento run --json`, which puts the same run on stdout as
+line-delimited JSON: the target's own output as it arrives, then exactly one object
+naming the outcome. Run these from this directory, with `bento` on your `PATH`.
+
+```sh
+bento run --json --allow-unapproved demo/reach.yaml
+```
+
+```
+{"event":"stdout","data":"cmVhY2hpbmcgZXhhbXBsZS5jb20gLi4uIA=="}
+{"event":"stdout","data":"SFRUUCAwMDA="}
+{"event":"stdout","data":"YmxvY2tlZAo="}
+{"event":"verdict","exit_code":0,"egress_connections":0,"report":{"layers":[{"layer":"filesystem","tier":"core","state":"enforced","detail":"Landlock backstop active"}],"fully_enforced":true}}
+```
+
+That is case 1 above - no gate, so the undeclared egress is denied and the target prints
+`blocked`. A run bento declines never reaches the target and ends the stream with a
+`refusal` object instead, so stdout is never empty:
+
+```sh
+bento run --json demo/reach.yaml
+```
+
+```
+{"event":"refusal","reason":"refusing to run: the manifest is not approved; review it and run `bento approve`, or pass --allow-unapproved","report":{"layers":[],"fully_enforced":false}}
+```
+
+Read the stream by switching on `event`:
+
+- `stdout` / `stderr` - one chunk of the target's output. `data` is **base64**: the
+  target is untrusted and may print bytes that are not UTF-8, so it is transported as
+  bytes and must be decoded (`base64.b64decode`, `Buffer.from(d,'base64')`). A chunk is
+  whatever the pipe delivered, **not** a line - concatenate per stream before splitting.
+- `verdict` - the run completed. `exit_code` is the target's own.
+- `refusal` - bento declined; the target never started.
+- `failed` - the run began and could not be finished. Distinct from `refusal` because a
+  caller may retry a refusal (a different host, an approval) and must not retry this.
+
+Exactly one of the last three arrives, always last. `reason` on the two error events is
+prose for a human, not a stable code - branch on `event`, never on the text.
+
+Three rules a subprocess consumer gets wrong:
+
+- **A stream with no terminal object is a failure**, even if it parsed cleanly. If bento
+  cannot finish writing stdout it says so on stderr and exits 125 rather than leaving a
+  truncated run that reads as a complete one. A consumer that only checks "did the JSON
+  parse" would accept the truncation.
+- **125 is bento's own failure code**, not the target's. The target's code is passed
+  through untouched, so a process exit status alone cannot tell the two apart - that is
+  what `event` is for.
+- **`strict_shortfall`** (`--strict` only) means the target ran and then a guarantee
+  lapsed. Ignore it and a run whose posture did not hold reads as an ordinary clean run.
+
+The verdict object is the honesty surface above, rendered as JSON. Same obligation: read
+all of it, or ship a frontend silent about the rest.
+
+| `Result` field          | In the verdict object                          |
+| ----------------------- | ---------------------------------------------- |
+| `Report.Degradations()` | `report.layers[].state` / `.detail`, and `report.fully_enforced` |
+| `Shields`               | `shields`                                      |
+| `ShieldedGrants`        | `shielded_grants`, plus `shielded_grant_targets` where the bound path differs from the spelling that granted it |
+| `AcceptedAliases`       | `accepted_aliases`                             |
+| `Exposed`               | `exposed`                                      |
+| `EgressConnections`     | `egress_connections`, with `egress_denied` and `guard_blocked` naming what was refused |
+| `GateAdmitted`          | *nothing* - see below                          |
+
+`missing_read_grants` has no `Result` field: it is the pre-run verdict on read grants
+that name nothing on this host, which the human path prints on stderr.
+
+### What does not survive the process boundary
+
+**The network gate.** `enforce.NetworkGate` is a Go callback consulted mid-connection
+and allowed to block while it asks a human. There is nowhere to put that on a command
+line, so a subprocess caller has no gate: undeclared egress is simply denied, and there
+is no `gate_admitted` to report. Everything this README says about supervision,
+"allow once / allow for session", and the honesty loop is in-process only. A harness
+that needs a host admitted must put it in the manifest and `bento approve`.
+
+**Stdin.** `--json` gives the target none, because the target's own bytes on stdout
+would corrupt the JSON contract and a shared stdin invites the same confusion. A target
+that reads from stdin will see EOF.
+
+Also note that `bento profile --json` is a *different* shape - one indented document
+with `refused: true` - not this per-line event stream. They cannot be parsed by the
+same code.
 
 ## What is *not* here: filesystem prompts
 
