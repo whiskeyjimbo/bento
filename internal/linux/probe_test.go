@@ -207,6 +207,25 @@ func TestExecLayers(t *testing.T) {
 	}
 }
 
+// The exec block is soft by construction on every host that has it: execveat is left
+// open because the launcher execs the target through it. doctor is the one place that
+// tells the whole truth about a host, so an Enforced exec-block row that says nothing
+// leaves a reader who never runs validate believing exec is closed.
+func TestEnforcedExecBlockDisclosesTheExecveatSeam(t *testing.T) {
+	got := execLayers(true, true)
+	if got[0].State != enforce.Enforced {
+		t.Fatalf("exec = %v, want Enforced", got[0].State)
+	}
+	if !strings.Contains(got[0].Consequences, "execveat") {
+		t.Errorf("enforced exec-block hides the seam: %q", got[0].Consequences)
+	}
+	// Reason stays empty on an Enforced layer, so the disclosure must not lead with the
+	// space a bare join would leave.
+	if d := got[0].Disclosure(); d != got[0].Consequences {
+		t.Errorf("disclosure = %q, want the consequences alone", d)
+	}
+}
+
 // Probe must read the real capability checks, not assume the capabilities it was
 // developed on. The decision functions above prove the decisions; this proves the
 // wiring, which no host that HAS every capability can otherwise exercise: a Probe
