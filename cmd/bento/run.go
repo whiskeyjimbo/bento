@@ -134,7 +134,7 @@ func newRunCmd() *cobra.Command {
 				AllowDegraded:      allowDegraded,
 				AcceptAliasesUnder: acceptAliases,
 			})
-			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, res, missingReads, stream, err)
+			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, env, res, missingReads, stream, err)
 		},
 	}
 
@@ -339,8 +339,11 @@ func reportStreamed(stderr io.Writer, stream *eventStream, code int) error {
 // target's output already went out on, set only in --json mode (nil otherwise, where it
 // went straight to the real streams); the verdict is the last object on it. missingReads is the pre-run verdict on the read grants,
 // not re-taken here: a grant the script created during the run was still missing when it
-// started, which is what the note on the way in said and what validate answers.
-func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
+// started, which is what the note on the way in said and what validate answers. env is
+// what the sandbox was actually given, not what the manifest allowed: a name the host
+// never set never reaches the box, so the notes that turn on a variable's absence have to
+// read the resolved map rather than p.Env.
+func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
@@ -441,7 +444,8 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
-			writeSandboxHomeMiss(stderr, p, res)
+			writeSandboxHomeMiss(stderr, p, env, res)
+			writeSandboxPathMiss(stderr, p, env, res)
 			writeProfileHint(stderr, p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that

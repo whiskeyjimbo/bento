@@ -639,7 +639,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	)
 	clamped, flagged := printProposalWarnings(os.Stderr, proposed)
 	return proposed, roundStatus{
-		unfinished: partialRunWarning(obs),
+		unfinished: partialRunWarning(obs, proposed.Interpreter),
 		dropped:    obs.Dropped > 0,
 		blocked:    blockedHostKeys(obs.Blocked),
 		withheld:   append(withheld, clamped...),
@@ -1131,7 +1131,7 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 		// read side can be told apart this way; a write is judged at its parent
 		// directory, which no observation names the existence of.
 		if absent[p] {
-			fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8). Nothing was found at that path, so the run only probed for it; if the script genuinely needs a file there, rename it.\n", p)
+			fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8). Nothing was found at that path, so the run only probed for it, and a path that was only probed needs no grant.\n", p)
 			continue
 		}
 		fmt.Fprintf(out, "[bento] not proposing access to %q - the name carries a character a manifest path cannot hold (a control, bidi, invisible, or line-separating one, or a byte that is not valid UTF-8), which is how a path is made to read as something other than what it grants. The access was recorded; if the script genuinely needs that file, rename it.\n", p)
@@ -1558,7 +1558,13 @@ func discoveryPolicy(script, interpreter string, interpreterArgs, args []string)
 // names in the proposed manifest so the enforced run resolves the same paths. Omitted
 // deliberately: PWD (the run is chdir'd to the script's directory, so a host PWD would
 // mislead) and XDG_RUNTIME_DIR (denylist.Runtime shields wherever it points, so a path
-// discovered under it is one no grant can honor).
+// discovered under it is one no grant can honor). PATH is omitted for a different
+// reason: passing it and recording it are not separable, since env: holds names, so
+// recording PATH makes the enforced run resolve bare commands against whatever the
+// invoking shell has. The manifest would stop naming the same programs on every
+// machine, which is most of what it is for - a worse trade than the discovery it buys,
+// and one that would only find tools in mounted system dirs anyway, since profiling
+// mounts nothing under $HOME.
 var discoveryEnvNames = []string{
 	"HOME", "USER", "LOGNAME",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
@@ -1598,15 +1604,43 @@ func droppedWarning(n int) string {
 // killed by a signal (crash, OOM, timeout) or exited nonzero - so its observations,
 // and the manifest synthesized from them, can be silently over-tight. It returns ""
 // for a clean run. Signaled takes priority since it implies a nonzero exit.
-func partialRunWarning(obs profile.Observation) string {
+//
+// The generic advice is "fix the run and profile again", which for one common exit is
+// advice that cannot terminate: a shell that could not find a command exits 127, and
+// the run is not what is broken - the search path is. That case is named separately, so
+// it takes the interpreter to tell a shell's 127 from a number another language chose.
+//
+// Execed is what separates the two ways a shell reaches 127, and only one of them is
+// stuck. A bare name is searched with existence probes, which the observer drops by
+// design, so nothing is ever exec'd, nothing is recorded, and another round is identical
+// - that is the case worth naming. An absolute path is exec'd outright, so Execed is set
+// and the target IS recorded and proposed; the generic advice is right there, because
+// granting what the proposal now names is exactly what makes the next round work.
+func partialRunWarning(obs profile.Observation, interpreter string) string {
 	switch {
 	case obs.Signaled:
 		return fmt.Sprintf("[bento] WARNING: the profiled run was killed by signal %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.Signal)
+	case obs.ExitCode == 127 && isShell(interpreter) && !obs.Execed:
+		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code 127, which is how a shell reports a command it could not find. PATH is %s here, not the one your shell has, so a bare command name is looked for in those two directories and nowhere else - the tool's real path is never named, so the observer has nothing to record and profiling again sees the same thing. Call it by absolute path in the script and profile again: the run then names the path, so it is recorded and proposed. Granting its directory instead will not help, because the enforced run searches those same two directories unless the manifest passes PATH through env: too.", enforce.SandboxPath)
 	case obs.ExitCode != 0:
 		return fmt.Sprintf("[bento] WARNING: the profiled run exited with code %d - it may not have finished, so the proposed manifest may be missing accesses. Fix the run and profile again to widen it.", obs.ExitCode)
 	default:
 		return ""
 	}
+}
+
+// isShell reports whether the interpreter is a shell, the only family that gives 127
+// the fixed "command not found" meaning partialRunWarning reads into it. fish is here
+// despite not being POSIX because it uses 127 the same way. Matched on the base name so
+// a shell reached by any path or by $PATH lookup counts the same; busybox is listed
+// because `#!/bin/busybox sh` names it as the interpreter. A miss costs only the generic
+// wording, so the list errs toward the shells that actually appear in a shebang.
+func isShell(interpreter string) bool {
+	switch filepath.Base(interpreter) {
+	case "sh", "bash", "dash", "ksh", "mksh", "zsh", "ash", "busybox", "fish":
+		return true
+	}
+	return false
 }
 
 // clampShieldedGrants drops read and write grants that fall at or inside a mandatory

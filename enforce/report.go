@@ -90,9 +90,12 @@ type LayerStatus struct {
 	Reason string
 	// Consequences is what this state costs the run: the standing disclosure for the
 	// state, identical on every host that lands in it, as opposed to Reason's account
-	// of what is broken here and how to fix it. It is separate so a refusal can lead
-	// with the actionable half and point at a fuller report for this one, rather than
-	// burying the remedy under a paragraph the reader did not ask for. Every frontend
+	// of what is broken here and how to fix it. An Enforced layer carries one when the
+	// guarantee has a limit by construction rather than by host - a seam that holds
+	// wherever the layer holds - so "enforced" is never read as "complete". It is
+	// separate so a refusal can lead with the actionable half and point at a fuller
+	// report for this one, rather than burying the remedy under a paragraph the reader
+	// did not ask for. Every frontend
 	// that describes a layer in full must still print it: no fact is dropped, only
 	// relocated.
 	Consequences string
@@ -105,6 +108,11 @@ type LayerStatus struct {
 func (l LayerStatus) Disclosure() string {
 	if l.Consequences == "" {
 		return l.Reason
+	}
+	// An Enforced layer has no Reason, so joining unconditionally would lead the
+	// disclosure with a space.
+	if l.Reason == "" {
+		return l.Consequences
 	}
 	return l.Reason + " " + l.Consequences
 }

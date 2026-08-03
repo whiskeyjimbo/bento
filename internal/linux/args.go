@@ -1609,7 +1609,7 @@ func envArgs(proc enforce.Process) []string {
 		args = append(args, "--setenv", k, proc.Env[k])
 	}
 	if _, ok := proc.Env["PATH"]; !ok {
-		args = append(args, "--setenv", "PATH", "/usr/bin:/bin")
+		args = append(args, "--setenv", "PATH", enforce.SandboxPath)
 	}
 	if _, ok := proc.Env["HOME"]; !ok {
 		args = append(args, "--setenv", "HOME", enforce.SandboxHome)

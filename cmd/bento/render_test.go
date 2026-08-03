@@ -119,8 +119,10 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 // A refusal over a limit this host cannot apply is the one shortfall whose reader has
 // nothing to go fix: the manifest asked for a cap and the host has no way to apply one,
 // and on a container image without systemd neither end is theirs to change. So this
-// refusal alone carries its two ways out, and only where both really apply - the flag
-// where the flag would admit the run, the manifest edit where the shortfall is a limit.
+// refusal alone carries its ways out, and only where each really applies - the manifest
+// edit wherever the shortfall is a limit, the flag only where it would admit the run.
+// Under --strict it would not, since run refuses that flag alongside it, so strict is
+// offered the edit without it rather than left with a diagnosis and no way past.
 func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 	limits := enforce.LayerStatus{
 		Layer: enforce.LayerLimits, State: enforce.Unavailable,
@@ -131,21 +133,26 @@ func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 		Reason: "bwrap cannot make a user namespace here",
 	}
 	for name, tc := range map[string]struct {
-		refusal *enforce.Refusal
-		want    bool
+		refusal  *enforce.Refusal
+		wantFlag bool
+		wantEdit bool
 	}{
-		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true},
-		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false},
-		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false},
+		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true, true},
+		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false, true},
+		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false, false},
+		"strict filesystem":   {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}}, false, false},
+		// Strict refuses over every layer that fell short, so a reader told to drop
+		// `limits:` here would be refused again by the filesystem tier they still have.
+		"strict limits and filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{limits, filesystem}}, false, false},
 	} {
 		var b bytes.Buffer
 		writeLimitsRemedy(&b, tc.refusal)
 		flat := strings.Join(strings.Fields(b.String()), " ")
-		if got := strings.Contains(flat, "--allow-degraded"); got != tc.want {
-			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		if got := strings.Contains(flat, "--allow-degraded"); got != tc.wantFlag {
+			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.wantFlag, b.String())
 		}
-		if got := strings.Contains(flat, "`limits:`"); got != tc.want {
-			t.Errorf("%s: offered the manifest edit = %v, want %v; got:\n%s", name, got, tc.want, b.String())
+		if got := strings.Contains(flat, "`limits:`"); got != tc.wantEdit {
+			t.Errorf("%s: offered the manifest edit = %v, want %v; got:\n%s", name, got, tc.wantEdit, b.String())
 		}
 	}
 }
@@ -809,22 +816,76 @@ func TestSandboxHomeMissFiresOnlyWhenRelevant(t *testing.T) {
 	cases := []struct {
 		name string
 		p    *policy.Policy
+		env  map[string]string
 		res  enforce.Result
 		want bool
 	}{
-		{"failed run, grant under home, HOME not passed", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 1}, true},
-		{"the write grants are checked too", &policy.Policy{Write: []string{granted}}, enforce.Result{ExitCode: 1}, true},
-		{"HOME is passed through, so ~ lands where the author meant", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, enforce.Result{ExitCode: 1}, false},
-		{"the run succeeded", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 0}, false},
-		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, enforce.Result{ExitCode: 1}, false},
-		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, enforce.Result{ExitCode: 1}, false},
-		{"a dotted name inside home has not escaped it", &policy.Policy{Read: []string{filepath.Join(home, "..cache")}}, enforce.Result{ExitCode: 1}, true},
+		{"failed run, grant under home, HOME not passed", &policy.Policy{Read: []string{granted}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"the write grants are checked too", &policy.Policy{Write: []string{granted}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"HOME is passed through, so ~ lands where the author meant", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, map[string]string{"HOME": home}, enforce.Result{ExitCode: 1}, false},
+		{"allowlisted but unset on this host, so the box got its own HOME anyway", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"the run succeeded", &policy.Policy{Read: []string{granted}}, nil, enforce.Result{ExitCode: 0}, false},
+		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, nil, enforce.Result{ExitCode: 1}, false},
+		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, nil, enforce.Result{ExitCode: 1}, false},
+		{"a dotted name inside home has not escaped it", &policy.Policy{Read: []string{filepath.Join(home, "..cache")}}, nil, enforce.Result{ExitCode: 1}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeSandboxHomeMiss(&b, tc.p, tc.res)
+			writeSandboxHomeMiss(&b, tc.p, tc.env, tc.res)
 			got := strings.Contains(b.String(), "HOME is not passed through")
+			if got != tc.want {
+				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			}
+		})
+	}
+}
+
+// 127 is the other half of the environment the sandbox rewrites: the shell names the
+// command it could not find and never the PATH it searched, so bento supplies it. The
+// gate has to reach the common shape where the manifest sets no interpreter at all and
+// the shebang names it, and stay quiet where 127 means something else - another
+// language's chosen exit code, or a manifest that does pass PATH through.
+func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, shebang string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(shebang+"\nexit 127\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	shellScript := script("run.sh", "#!/bin/sh")
+	envShellScript := script("env-run", "#!/usr/bin/env bash")
+	pyScript := script("run.py", "#!/usr/bin/python3")
+	binary := filepath.Join(dir, "app")
+	if err := os.WriteFile(binary, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		env  map[string]string
+		res  enforce.Result
+		want bool
+	}{
+		{"exit 127 under a declared shell", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 127}, true},
+		{"the shebang names the shell when the manifest does not", &policy.Policy{Entrypoint: shellScript}, nil, enforce.Result{ExitCode: 127}, true},
+		{"a shell reached through env is still a shell", &policy.Policy{Entrypoint: envShellScript}, nil, enforce.Result{ExitCode: 127}, true},
+		{"a declared interpreter wins over the shebang", &policy.Policy{Interpreter: "python3", Entrypoint: shellScript}, nil, enforce.Result{ExitCode: 127}, false},
+		{"PATH is passed through, so the box searched what the caller has", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, map[string]string{"PATH": "/opt/tools/bin"}, enforce.Result{ExitCode: 127}, false},
+		{"allowlisted but unset on this host, so the box got its own PATH anyway", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, nil, enforce.Result{ExitCode: 127}, true},
+		{"127 from a language that chose it for something else", &policy.Policy{Entrypoint: pyScript}, nil, enforce.Result{ExitCode: 127}, false},
+		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: binary}, nil, enforce.Result{ExitCode: 127}, false},
+		{"a different failure", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 1}, false},
+		{"the run succeeded", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 0}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			writeSandboxPathMiss(&b, tc.p, tc.env, tc.res)
+			got := strings.Contains(b.String(), enforce.SandboxPath)
 			if got != tc.want {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
 			}

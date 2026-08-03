@@ -19,6 +19,8 @@ Bento is a lightweight, fail-closed sandbox for Linux that executes untrusted co
 
 Bento surfaces any gap between what a manifest requests and what the host kernel can enforce, refusing to run under degraded security when `--strict` is enabled.
 
+The boundary is the host's own kernel: bubblewrap namespaces, seccomp, Landlock, and cgroups are all host-kernel features, so a local privilege escalation in the kernel ends the sandbox. [`docs/threat-model.md`](docs/threat-model.md) is precise about what that does and does not cover.
+
 > **Status:** Fully implemented and verified on **Linux (amd64)** using bubblewrap, seccomp, Landlock, and systemd cgroups. Support for **Linux (arm64)** and **macOS** is planned; `bento doctor` names the platform it is reporting on and says when that platform is one of the unverified ones. See [`docs/architecture.md`](docs/architecture.md) for architecture details and [`docs/threat-model.md`](docs/threat-model.md) for security boundaries.
 
 ---
@@ -33,6 +35,26 @@ adds on top:
 - **Egress decided per host, and decidable live.** Traffic is denied by default in an unshared network namespace; allowed hosts route through a host-side HTTP CONNECT proxy with hostname validation and IP pin checks. An embedder can supply a `NetworkGate` and approve or refuse a connection at connect time, so a wrapper can ask a human.
 - **Discovery that never opens the paths it records.** `bento profile` watches a program under `ptrace`, reading the paths out of syscall registers rather than opening them, and the program runs sandboxed while it does. So drafting a manifest for code you do not trust is not its own exposure.
 - **No quiet degradation.** `bento doctor` reports what this kernel actually enforces, layer by layer. A core guarantee that can only be partially enforced stops the run rather than silently becoming a weaker sandbox, and `--strict` extends that to the hardening tier.
+
+---
+
+## When not to use Bento
+
+Bento shares the host kernel, so it is the wrong tool where a single kernel
+escape would be catastrophic: many tenants on one host, or code submitted by
+strangers at scale. That job wants a boundary that does not rest on the host
+kernel's own process isolation - a KVM MicroVM per sandbox (Firecracker, and the
+hosted code-execution services built on that model such as E2B and CubeSandbox),
+or a userspace kernel that services the guest's syscalls itself (gVisor). Neither
+takes the host kernel out of the picture, but both shrink what the guest can
+reach in it.
+
+What that category does not set out to give you is the part Bento is actually
+for: a policy a human read and stamped. Their permissions are an argument the
+calling code passed at create time, so there is no artifact for a human to review
+and nothing to re-check before the next run. Bento's are a `manifest.yaml` that
+`bento approve` fingerprints and `bento validate --strict` checks, with host
+credentials shielded even under a grant that covers them.
 
 ---
 
@@ -53,13 +75,16 @@ Every install path answers `bento version`. `make build` stamps the commit and b
 time it derived from the source; a plain build or `go install` reports the module
 version Go recorded - a release tag for `@latest`, a pseudo-version for a checkout.
 
-A build for a target other than Linux succeeds by design and produces a working
-binary - the tree carries a stub backend for it, so `bento validate` and `bento approve`
-answer there and a manifest can be reviewed and stamped on a Mac. Anything that has to
-build or probe a sandbox - `run`, `profile`, `doctor` - refuses at startup with a single
-message naming the platform. There is no build-time error to catch this instead: Go has
-no compile-time warning, and a `//go:build linux` guard on the command would take the two
-commands that do work off Linux with it.
+A macOS (darwin) build succeeds by design and produces a working binary - the tree
+carries a stub backend for it, so `bento validate` and `bento approve` answer there and a
+manifest can be reviewed and stamped on a Mac. Anything that has to build or probe a
+sandbox - `run`, `profile`, `doctor` - refuses at startup with a single message naming
+the platform. There is no build-time error to catch that on a Mac: Go has no
+compile-time warning, and a `//go:build linux` guard on the command would take the two
+commands that do work off Linux with it. Linux and macOS are the only targets that
+compile at all - the stub is tagged `darwin` rather than `!linux` because Windows has no
+`syscall.SIGSYS` or `syscall.Stat_t` and the BSDs no `unix.ENODATA`, so a build there
+fails at compile time rather than reaching the runtime refusal.
 
 ### Running Inside a Container
 
@@ -105,8 +130,15 @@ Bento, and a poor one when it is a shared multi-tenant sandbox. Running Bento
 directly on the CI host - GitHub-hosted runners permit unprivileged user
 namespaces - needs none of it.
 
-Resource limits stay unavailable in a container without a systemd user manager;
-that is a hardening layer, so runs proceed unless `--strict` is passed.
+Resource limits stay unavailable in a container without a systemd user manager.
+That is a hardening layer, so a manifest that asks for no `limits:` runs there
+unaffected, `--strict` included. A manifest that *does* ask for one is refused
+without `--strict` too: an unenforceable cap is the one hardening gap that
+protects the host rather than the target, so running unbounded is not a
+degradation bento takes on its own. Drop `limits:` for those hosts, or pass
+`--allow-degraded` to run uncapped knowingly - the two flags are opposites and
+bento refuses them together, so a pipeline gating on `--strict` wants the
+manifest edit.
 
 ### In CI
 

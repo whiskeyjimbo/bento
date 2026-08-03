@@ -109,7 +109,16 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 	var out []enforce.LayerStatus
 	if seccompOK {
-		out = append(out, enforce.LayerStatus{Layer: enforce.LayerExec, State: enforce.Enforced})
+		// Enforced with a standing seam: the filter denies execve, never execveat, which
+		// the launcher itself needs to reach the target. validate says the same thing over
+		// a manifest that blocks exec; a reader who only ever runs doctor would otherwise
+		// come away believing the block is total.
+		out = append(out, enforce.LayerStatus{
+			Layer: enforce.LayerExec, State: enforce.Enforced,
+			Consequences: "execve covers effectively every real subprocess (fork+exec, os/exec, system). " +
+				"execveat stays open by construction - the launcher needs it - so a program written to " +
+				"spawn through execveat is not stopped.",
+		})
 	} else {
 		out = append(out, enforce.LayerStatus{
 			Layer: enforce.LayerExec, State: enforce.Unavailable,

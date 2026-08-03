@@ -19,6 +19,15 @@ type Lookup func(name string) (string, bool)
 // wrote is debugging the wrong thing.
 const SandboxHome = "/tmp"
 
+// SandboxPath is the PATH a target sees when the policy does not pass one through. It
+// is fixed rather than inherited so a manifest resolves the same commands on every
+// machine, which is the whole point of one - but it also means a tool the caller's
+// shell finds outside these two directories is simply not there, and a bare-name
+// invocation of it fails the way a missing file does. Exported for the same reason
+// SandboxHome is: a frontend has to be able to say so before a run, because the shell's
+// own "not found" names the command and never the search path that lost it.
+const SandboxPath = "/usr/bin:/bin"
+
 // ResolveEnv turns the policy's allowlist of variable NAMES into the concrete
 // values the target will see.
 //

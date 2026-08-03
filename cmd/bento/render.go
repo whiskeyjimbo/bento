@@ -21,6 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // The JSON shapes below are the machine-readable contract for agents and CI.
@@ -915,23 +916,39 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 	}
 }
 
-// writeLimitsRemedy names the two ways past a refusal over resource limits this host
-// cannot enforce. Every other refusal states a shortfall the reader can go fix - install
+// writeLimitsRemedy names the ways past a refusal over resource limits this host cannot
+// enforce. Every other refusal states a shortfall the reader can go fix - install
 // bubblewrap, permit a user namespace - but a missing systemd-run on a container image is
 // not something the caller of `bento run` can install, so the diagnosis alone leaves them
 // stuck: the manifest asked for a cap, the host has no way to apply one, and neither end
 // of that is theirs to change from here.
 //
-// It lives beside run's call to writeRefusal rather than inside it because both remedies
-// are run's own vocabulary - profile refuses through the same printer and offers neither
-// (see preflightHost). Waivable is what says the flag would actually admit THIS run; the
-// layer check is what says the second remedy applies, since removing `limits:` fixes
-// nothing on a refusal about the filesystem tier.
+// It lives beside run's call to writeRefusal rather than inside it because the remedies
+// are run's own vocabulary - profile refuses through the same printer and offers none
+// (see preflightHost).
+//
+// Waivable is what says --allow-degraded would actually admit THIS run, and under --strict
+// it never would: run rejects the two flags together, so naming the flag there would hand
+// the reader a way past that hard-errors when they take it. Strict is offered the manifest
+// edit alone, and only when the limits are the WHOLE shortfall - strict refuses over every
+// layer that fell short, so telling a reader whose filesystem tier is also degraded to drop
+// `limits:` would send them back to the same refusal, which is the failure the flag is
+// withheld to avoid. Neither branch names a host-side fix: the layer's own Reason prints
+// directly above and is the only line that knows which of the three causes this is, and an
+// uninstalled systemd-run and an undelegated controller do not have the same answer.
 func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
-	limits := slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool {
+	isLimits := func(l enforce.LayerStatus) bool {
 		return l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU
-	})
-	if !r.Waivable || !limits {
+	}
+	if !slices.ContainsFunc(r.Short, isLimits) {
+		return
+	}
+	if !r.Waivable {
+		if slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool { return !isLimits(l) }) {
+			return
+		}
+		fmt.Fprintln(w, "  to proceed anyway, drop `limits:` from the manifest so it no longer asks for a cap")
+		fmt.Fprintln(w, "  this host cannot apply.")
 		return
 	}
 	fmt.Fprintln(w, "  to proceed anyway, pass --allow-degraded and the script runs unbounded, or drop")
@@ -974,8 +991,12 @@ func writeSandboxHomeNote(w io.Writer, prefix string) {
 //
 // A heuristic like the profile hint, and silent on a clean exit: a manifest can grant a
 // path under $HOME and open it absolutely, in which case nothing was missed.
-func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
-	if res.ExitCode == 0 || slices.Contains(p.Env, "HOME") {
+//
+// env is the resolved environment the sandbox was given, not p.Env: an allowlisted name
+// the host never set is left out of it, and envArgs keys on the same map, so it is what
+// decides whether HOME was really passed through.
+func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+	if _, passed := env["HOME"]; res.ExitCode == 0 || passed {
 		return
 	}
 	// os.UserHomeDir returns $HOME verbatim, so a relative or unset value names no tree
@@ -989,6 +1010,40 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 		return
 	}
 	writeSandboxHomeNote(w, "[bento] ")
+}
+
+// writeSandboxPathMiss explains a shell's exit 127 the way writeSandboxHomeMiss explains a
+// `~` that missed its grant: the manifest does not pass PATH through, so envArgs sets the
+// sandbox's own PATH and a bare command name is searched there and nowhere else. The shell
+// reports only the name it could not find, never the search path that lost it, so bento
+// says what that path was.
+//
+// A heuristic, and gated on a shell because 127 is a number any other language is free to
+// choose for itself. Unlike profiling there is no Execed signal here to tell a bare name
+// that was never found from an absolute path the box does not carry, so the remedies are
+// ordered to serve both: the grant is what either case needs, and PATH is named as the
+// extra step only the bare-name case takes.
+//
+// env carries the same meaning it does for writeSandboxHomeMiss above.
+func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+	if _, passed := env["PATH"]; res.ExitCode != 127 || passed {
+		return
+	}
+	interp := p.Interpreter
+	if interp == "" {
+		// A shebang script names its interpreter in the file, not in the manifest, and it
+		// is the common shape here: `interpreter:` is what a manifest sets to override one.
+		interp, _, _ = profile.GuessInterpreter(p.Entrypoint)
+	}
+	if !isShell(interp) {
+		return
+	}
+	fmt.Fprintln(w, "[bento] the script exited 127, the code a shell returns when it could not find a")
+	fmt.Fprintf(w, "[bento] command. PATH is not passed through, so inside the sandbox it is %s\n", enforce.SandboxPath)
+	fmt.Fprintln(w, "[bento] and a bare command name is looked for in those directories and nowhere else.")
+	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it. If the script")
+	fmt.Fprintln(w, "[bento] calls it by bare name, either allowlist PATH in env: so the shell searches")
+	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
 }
 
 // underHome reports whether an already-resolved grant lies in the host home tree.
