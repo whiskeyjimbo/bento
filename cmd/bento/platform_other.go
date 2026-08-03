@@ -14,7 +14,8 @@ import "fmt"
 // to be in the way of the command they ran, each a true sentence about a detail nobody
 // asked about. The answer they need is that this platform has no sandbox at all, said
 // once and up front. It is not called by validate or approve, which build no sandbox and
-// answer from what they can read here instead.
+// answer from what they can read here instead; version calls it to say which of the two
+// groups this build falls in, rather than to refuse.
 //
 // The refusal names GOOS/GOARCH, not GOOS alone: what bento stands behind is a
 // platform pair (see verifiedPlatform), and doctor --json already answers this host

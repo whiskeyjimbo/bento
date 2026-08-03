@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // refuseThisPlatform makes checkPlatform answer as it does on a host with no backend, so
@@ -23,14 +25,15 @@ func refuseThisPlatform(t *testing.T) {
 }
 
 // version names the platform and what it can enforce there. A cross-build for a platform
-// with no backend is the case this exists for: it compiles clean, refuses run, profile and
-// doctor, and before this had nothing to tell its operator so - doctor, which would, is
-// one of the commands that refuses.
+// with no backend is the case this exists for: it compiles clean and then refuses run,
+// profile and doctor. Doctor is the command that would have explained why, and it is one
+// of the three - only its --json envelope still names the platform, which a human reading
+// a refusal never sees.
 func TestVersionNamesWhatThisBuildCanEnforce(t *testing.T) {
 	t.Run("a host with no backend", func(t *testing.T) {
 		refuseThisPlatform(t)
 		onPlatform(t, "darwin/amd64")
-		out := versionOutput(t)
+		out := versionBanner()
 		if !strings.Contains(out, "Platform: darwin/amd64") {
 			t.Errorf("version = %q, want the platform named", out)
 		}
@@ -43,7 +46,7 @@ func TestVersionNamesWhatThisBuildCanEnforce(t *testing.T) {
 	// nothing in the output would otherwise say it is unverified.
 	t.Run("an unverified linux architecture", func(t *testing.T) {
 		onPlatform(t, "linux/arm64")
-		out := versionOutput(t)
+		out := versionBanner()
 		if !strings.Contains(out, "planned, not verified") || !strings.Contains(out, verifiedPlatform) {
 			t.Errorf("version = %q, want linux/arm64 called unverified against %s", out, verifiedPlatform)
 		}
@@ -53,17 +56,41 @@ func TestVersionNamesWhatThisBuildCanEnforce(t *testing.T) {
 	// teach an operator to read past the ones that matter.
 	t.Run("the verified platform", func(t *testing.T) {
 		onPlatform(t, verifiedPlatform)
-		out := versionOutput(t)
+		out := versionBanner()
 		if want := "Platform: " + verifiedPlatform + "\n"; !strings.HasSuffix(out, want) {
 			t.Errorf("version = %q, want it to end at %q", out, want)
 		}
 	})
+
+	// The subcommand and the root flag are the same question, and the operator who has a
+	// binary that refuses everything will reach for either. The flag answers through
+	// cobra's own version template rather than the subcommand's Run, so nothing but this
+	// keeps the two from drifting apart.
+	t.Run("--version answers the same as the subcommand", func(t *testing.T) {
+		refuseThisPlatform(t)
+		onPlatform(t, "darwin/amd64")
+		want := versionBanner()
+		if got := executeCapturingOut(t, newRootCmd(), "--version"); got != want {
+			t.Errorf("--version = %q, want %q", got, want)
+		}
+		if got := executeCapturingOut(t, newVersionCmd()); got != want {
+			t.Errorf("version = %q, want %q", got, want)
+		}
+	})
 }
 
-func versionOutput(t *testing.T) string {
+// executeCapturingOut runs cmd against cobra's own output writer, which is where both
+// version answers land - unlike runCapturingStdout, which captures os.Stdout for the
+// commands that write there directly.
+func executeCapturingOut(t *testing.T, cmd *cobra.Command, args ...string) string {
 	t.Helper()
 	var buf strings.Builder
-	writeVersion(&buf)
+	cmd.SetArgs(args)
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("%s: %v", cmd.Name(), err)
+	}
 	return buf.String()
 }
 

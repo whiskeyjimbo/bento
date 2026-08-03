@@ -198,11 +198,13 @@ func newRootCmd() *cobra.Command {
 			"What a given host can actually enforce varies. bento reports every gap rather\n" +
 			"than quietly substituting a weaker sandbox - run `bento doctor` to see what\n" +
 			"this host enforces.",
-		Version:       versionInfo(),
+		Version:       strings.TrimSuffix(versionBanner(), "\n"),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.SetVersionTemplate("bento {{.Version}}\n")
+	// The banner travels as the template's data and not as the template itself, so a
+	// version string carrying template syntax is text rather than something cobra parses.
+	root.SetVersionTemplate("{{.Version}}\n")
 	// Cobra raises a flag error on the subcommand that owns the flag, and the hook is
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })

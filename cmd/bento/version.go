@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"runtime/debug"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -49,27 +49,32 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print bento version and build information",
 		Run: func(cmd *cobra.Command, args []string) {
-			writeVersion(cmd.OutOrStdout())
+			fmt.Fprint(cmd.OutOrStdout(), versionBanner())
 		},
 	}
 }
 
-// writeVersion prints the build and what it can enforce.
+// versionBanner is the build and what it can enforce. Both the subcommand and the root's
+// --version answer with it, since an operator asking either question is asking the same
+// one.
 //
 // The platform is here and not only in doctor because a build for a platform with no
-// backend cannot run doctor at all: cross-compiling for darwin succeeds silently, and
-// until the operator tries a run there is nothing telling them the binary they just
-// produced validates and approves but never confines. version is the one command every
-// build answers, so it is where that has to be said.
-func writeVersion(w io.Writer) {
-	fmt.Fprintf(w, "bento %s\n", versionInfo())
-	fmt.Fprintf(w, "Platform: %s\n", platformName())
+// backend cannot get an answer out of doctor: cross-compiling for darwin succeeds
+// silently, and doctor refuses there like the other two (only its --json envelope still
+// says the platform). So until the operator tries a run there is nothing telling them the
+// binary they just produced validates and approves but never confines. version is the one
+// command every build answers, so it is where that has to be said.
+func versionBanner() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "bento %s\n", versionInfo())
+	fmt.Fprintf(&b, "Platform: %s\n", platformName())
 	switch {
 	case checkPlatform() != nil:
-		fmt.Fprintf(w, "  No sandbox backend here: validate and approve work, run and profile and doctor refuse.\n")
-		fmt.Fprintf(w, "  Enforcement is Linux-only; macOS support is planned.\n")
+		b.WriteString("  No sandbox backend here: validate and approve work; run, profile and doctor refuse.\n")
+		b.WriteString("  Enforcement is Linux-only; macOS support is planned.\n")
 	case !platformVerified():
-		fmt.Fprintf(w, "  Support for %s is planned, not verified. The sandbox builds and probes a real\n", platformName())
-		fmt.Fprintf(w, "  kernel here; that the layers mean what they mean on %s is untested.\n", verifiedPlatform)
+		fmt.Fprintf(&b, "  Support for %s is planned, not verified. The sandbox builds and probes a real\n", platformName())
+		fmt.Fprintf(&b, "  kernel here; that the layers mean what they mean on %s is untested.\n", verifiedPlatform)
 	}
+	return b.String()
 }

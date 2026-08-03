@@ -36,7 +36,8 @@ commits that built it - none of them were ever in a release.
 - **`bento version` now names the platform and what it can enforce there**: a
   `GOOS=darwin` cross-build compiles clean and then refuses `run`, `profile` and
   `doctor` at startup, and doctor - the command that would have explained why -
-  is one of the three. `version` answers on every build, so it says it instead:
+  is one of the three, leaving only its `--json` envelope naming the platform to
+  a machine. `version` answers on every build, so it says it instead:
   the GOOS/GOARCH pair always, plus a line for a build with no backend (validate
   and approve still work) or for a Linux architecture bento has not verified.
 
