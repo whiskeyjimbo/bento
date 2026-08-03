@@ -9,6 +9,7 @@
   <a href="https://github.com/whiskeyjimbo/bento/releases"><img src="https://img.shields.io/github/v/release/whiskeyjimbo/bento" alt="Release" /></a>
   <a href="https://pkg.go.dev/github.com/whiskeyjimbo/bento"><img src="https://pkg.go.dev/badge/github.com/whiskeyjimbo/bento.svg" alt="Go Reference" /></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/whiskeyjimbo/bento"><img src="https://api.scorecard.dev/projects/github.com/whiskeyjimbo/bento/badge" alt="OpenSSF Scorecard" /></a>
+  <a href="https://www.bestpractices.dev/projects/13937"><img src="https://www.bestpractices.dev/projects/13937/badge"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/whiskeyjimbo/bento" alt="License" /></a>
 </p>
 
