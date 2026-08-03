@@ -49,13 +49,16 @@ Every install path answers `bento version`. `make build` stamps the commit and b
 time it derived from the source; a plain build or `go install` reports the module
 version Go recorded - a release tag for `@latest`, a pseudo-version for a checkout.
 
-A build for a target other than Linux succeeds by design and produces a working
-binary - the tree carries a stub backend for it, so `bento validate` and `bento approve`
-answer there and a manifest can be reviewed and stamped on a Mac. Anything that has to
-build or probe a sandbox - `run`, `profile`, `doctor` - refuses at startup with a single
-message naming the platform. There is no build-time error to catch this instead: Go has
-no compile-time warning, and a `//go:build linux` guard on the command would take the two
-commands that do work off Linux with it.
+A macOS (darwin) build succeeds by design and produces a working binary - the tree
+carries a stub backend for it, so `bento validate` and `bento approve` answer there and a
+manifest can be reviewed and stamped on a Mac. Anything that has to build or probe a
+sandbox - `run`, `profile`, `doctor` - refuses at startup with a single message naming
+the platform. There is no build-time error to catch that on a Mac: Go has no
+compile-time warning, and a `//go:build linux` guard on the command would take the two
+commands that do work off Linux with it. Linux and macOS are the only targets that
+compile at all - the stub is tagged `darwin` rather than `!linux` because Windows has no
+`syscall.SIGSYS` or `syscall.Stat_t` and the BSDs no `unix.ENODATA`, so a build there
+fails at compile time rather than reaching the runtime refusal.
 
 ### Running Inside a Container
 
