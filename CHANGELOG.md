@@ -9,7 +9,11 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
-## Unreleased
+## 0.2.1 (2026-08-03)
+
+A patch bump: the boundary did not move. Every entry is about what bento tells
+you - a report that overclaimed, and four failures that stated a shortfall
+without naming the way past it.
 
 ### Boundary Reporting
 
@@ -20,6 +24,51 @@ commits that built it - none of them were ever in a release.
   it holds, as a note under doctor's table and a `consequences` field on the
   enforced row of `doctor --json` and `run --json`. The boundary did not move -
   what moved is how much of it the report admits to.
+
+### What a Run Tells You
+
+- **A shell's exit 127 names the sandbox PATH**: a manifest that does not pass
+  `PATH` through gets the sandbox's own, so a bare command name is searched in
+  two directories and nowhere else. The shell reports the name it could not
+  find, never the search path that lost it. `run` now says what that path was
+  and names the grant, the `env:` allowlist, and the absolute-path rewrite that
+  each get past it. Gated on a shell interpreter, since 127 is a number any
+  other language is free to choose.
+- **The 127 and missing-`HOME` notes key on what actually reached the box**:
+  both read the manifest's `env:` allowlist, which names variables the host may
+  never have set. They now read the resolved environment the sandbox was given,
+  so an allowlisted name that was never passed no longer suppresses the note.
+- **The limits remedy is withheld when it would not help**: a refusal over
+  resource limits this host cannot enforce offered `--allow-degraded` even under
+  `--strict`, where `run` rejects the two flags together - a way past that
+  hard-errors when you take it. Strict is now offered the manifest edit alone,
+  and only when the limits are the whole shortfall, since dropping `limits:`
+  fixes nothing about a degraded filesystem tier.
+- **Ownership warnings name a remedy**: a manifest or its directory owned by
+  another uid - the pair a container meets when sources are checked out as one
+  user and the job runs as another - reported the flaw and nothing to do about
+  it. Root is told the `chown`; anyone else is told to keep the manifest
+  somewhere they own, rather than a command that would fail.
+
+### Profiling (`bento profile`)
+
+- **A shell's 127 gets its own warning**: the generic "fix the run and profile
+  again" cannot terminate when a bare command name was never found - the search
+  is existence probes the observer drops by design, so the next round is
+  identical. That case is named separately, with the sandbox PATH and the
+  absolute-path fix. It is withheld when something was exec'd, because then the
+  target is recorded and the generic advice is right.
+- **`PATH` stays out of discovery**, and the reasoning is recorded: passing it
+  and recording it are not separable, so it would make the enforced run resolve
+  bare commands against the invoking shell's path and stop naming the same
+  programs on every machine.
+
+### Documentation
+
+- `examples/embed` documents driving bento from another language over the
+  subprocess contract.
+- The README names the shared-kernel boundary, and lists crossbuild among the
+  gates.
 
 ## 0.2.0 (2026-08-02)
 
