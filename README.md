@@ -4,10 +4,14 @@
 
 # Bento
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/whiskeyjimbo/bento/badge)](https://scorecard.dev/viewer/?uri=github.com/whiskeyjimbo/bento)
-[![CI](https://github.com/whiskeyjimbo/bento/actions/workflows/ci.yml/badge.svg)](https://github.com/whiskeyjimbo/bento/actions)
-[![Go Reference](https://pkg.go.dev/badge/github.com/whiskeyjimbo/bento.svg)](https://pkg.go.dev/github.com/whiskeyjimbo/bento)
-[![License](https://img.shields.io/github/license/whiskeyjimbo/bento)](LICENSE)
+<p align="center">
+  <a href="https://github.com/whiskeyjimbo/bento/actions/workflows/ci.yml"><img src="https://github.com/whiskeyjimbo/bento/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/whiskeyjimbo/bento/releases"><img src="https://img.shields.io/github/v/release/whiskeyjimbo/bento" alt="Release" /></a>
+  <a href="https://pkg.go.dev/github.com/whiskeyjimbo/bento"><img src="https://pkg.go.dev/badge/github.com/whiskeyjimbo/bento.svg" alt="Go Reference" /></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/whiskeyjimbo/bento"><img src="https://api.scorecard.dev/projects/github.com/whiskeyjimbo/bento/badge" alt="OpenSSF Scorecard" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/whiskeyjimbo/bento" alt="License" /></a>
+</p>
+
 
 **Run untrusted scripts under strict, manifest-declared permissions.**
 
