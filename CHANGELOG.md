@@ -11,9 +11,9 @@ commits that built it - none of them were ever in a release.
 
 ## 0.2.1 (2026-08-03)
 
-A patch bump: the boundary did not move. Every entry is about what bento tells
-you - a report that overclaimed, and four failures that stated a shortfall
-without naming the way past it.
+A patch bump: nothing about the boundary moved. These are all fixes to what
+bento tells you - one report that claimed more than it enforced, and several
+failures that said what was wrong without saying what to do about it.
 
 ### Boundary Reporting
 
@@ -27,48 +27,50 @@ without naming the way past it.
 
 ### What a Run Tells You
 
-- **A shell's exit 127 names the sandbox PATH**: a manifest that does not pass
-  `PATH` through gets the sandbox's own, so a bare command name is searched in
-  two directories and nowhere else. The shell reports the name it could not
-  find, never the search path that lost it. `run` now says what that path was
-  and names the grant, the `env:` allowlist, and the absolute-path rewrite that
-  each get past it. Gated on a shell interpreter, since 127 is a number any
-  other language is free to choose.
-- **The 127 and missing-`HOME` notes key on what actually reached the box**:
-  both read the manifest's `env:` allowlist, which names variables the host may
-  never have set. They now read the resolved environment the sandbox was given,
-  so an allowlisted name that was never passed no longer suppresses the note.
-- **The limits remedy is withheld when it would not help**: a refusal over
-  resource limits this host cannot enforce offered `--allow-degraded` even under
-  `--strict`, where `run` rejects the two flags together - a way past that
-  hard-errors when you take it. Strict is now offered the manifest edit alone,
-  and only when the limits are the whole shortfall, since dropping `limits:`
-  fixes nothing about a degraded filesystem tier.
-- **Ownership warnings name a remedy**: a manifest or its directory owned by
-  another uid - the pair a container meets when sources are checked out as one
-  user and the job runs as another - reported the flaw and nothing to do about
-  it. Root is told the `chown`; anyone else is told to keep the manifest
-  somewhere they own, rather than a command that would fail.
+- **Exit 127 from a shell now explains itself**: unless the manifest passes
+  `PATH` through, the sandbox uses its own, and a bare command name is only
+  looked for in those two directories. The shell just says it could not find the
+  command, so you never learn where it looked. `run` now prints that path along
+  with the three ways out: grant the tool's directory, allowlist `PATH` in
+  `env:`, or call the tool by absolute path. Only shells get this, since other
+  languages are free to use 127 for whatever they like.
+- **The 127 and missing-`HOME` notes now check what the sandbox actually got**:
+  they used to check the manifest's `env:` list, which can name a variable the
+  host never set. If `HOME` was allowlisted but unset, the note stayed quiet
+  when it should have fired. Both now look at the environment the sandbox was
+  handed.
+- **`run` stops suggesting `--allow-degraded` when it would fail**: on a host
+  that cannot enforce resource limits, the refusal offered that flag even under
+  `--strict`, which rejects the two together. Under strict you now get the one
+  fix that works - drop `limits:` from the manifest - and only when limits are
+  the whole problem, since dropping them does nothing for a degraded filesystem
+  tier.
+- **Ownership warnings say what to do**: when the manifest or its directory
+  belongs to another uid, which is normal in a container that checks out sources
+  as one user and runs the job as another, bento reported the problem and left
+  it there. Root now gets the `chown`; everyone else is told to move the
+  manifest somewhere they own, rather than a command that would just fail.
 
 ### Profiling (`bento profile`)
 
-- **A shell's 127 gets its own warning**: the generic "fix the run and profile
-  again" cannot terminate when a bare command name was never found - the search
-  is existence probes the observer drops by design, so the next round is
-  identical. That case is named separately, with the sandbox PATH and the
-  absolute-path fix. It is withheld when something was exec'd, because then the
-  target is recorded and the generic advice is right.
-- **`PATH` stays out of discovery**, and the reasoning is recorded: passing it
-  and recording it are not separable, so it would make the enforced run resolve
-  bare commands against the invoking shell's path and stop naming the same
-  programs on every machine.
+- **A shell that cannot find a command gets its own warning**: the usual advice
+  is "fix the run and profile again", but that goes nowhere here. Looking up a
+  bare name is all existence probes, which the observer drops by design, so
+  nothing gets recorded and the next round comes out the same. That case now
+  gets its own message with the sandbox PATH and the absolute-path fix. If
+  something was exec'd, the target does get recorded, so the usual advice stands
+  and this message stays out of the way.
+- **`PATH` still stays out of discovery**, with the reasoning now written down:
+  bento cannot pass it without also recording it, and a manifest carrying `PATH`
+  resolves bare commands against whoever's shell ran the profile, so it stops
+  naming the same programs on every machine.
 
 ### Documentation
 
-- `examples/embed` documents driving bento from another language over the
+- `examples/embed` covers driving bento from another language over the
   subprocess contract.
-- The README names the shared-kernel boundary, and lists crossbuild among the
-  gates.
+- The README spells out the shared-kernel boundary, and lists crossbuild among
+  the gates.
 
 ## 0.2.0 (2026-08-02)
 
