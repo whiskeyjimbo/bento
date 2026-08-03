@@ -991,8 +991,12 @@ func writeSandboxHomeNote(w io.Writer, prefix string) {
 //
 // A heuristic like the profile hint, and silent on a clean exit: a manifest can grant a
 // path under $HOME and open it absolutely, in which case nothing was missed.
-func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
-	if res.ExitCode == 0 || slices.Contains(p.Env, "HOME") {
+//
+// env is the resolved environment the sandbox was given, not p.Env: an allowlisted name
+// the host never set is left out of it, and envArgs keys on the same map, so it is what
+// decides whether HOME was really passed through.
+func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+	if _, passed := env["HOME"]; res.ExitCode == 0 || passed {
 		return
 	}
 	// os.UserHomeDir returns $HOME verbatim, so a relative or unset value names no tree
@@ -1019,8 +1023,10 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 // that was never found from an absolute path the box does not carry, so the remedies are
 // ordered to serve both: the grant is what either case needs, and PATH is named as the
 // extra step only the bare-name case takes.
-func writeSandboxPathMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
-	if res.ExitCode != 127 || slices.Contains(p.Env, "PATH") {
+//
+// env carries the same meaning it does for writeSandboxHomeMiss above.
+func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+	if _, passed := env["PATH"]; res.ExitCode != 127 || passed {
 		return
 	}
 	interp := p.Interpreter

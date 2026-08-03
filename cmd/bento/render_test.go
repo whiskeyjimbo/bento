@@ -816,21 +816,23 @@ func TestSandboxHomeMissFiresOnlyWhenRelevant(t *testing.T) {
 	cases := []struct {
 		name string
 		p    *policy.Policy
+		env  map[string]string
 		res  enforce.Result
 		want bool
 	}{
-		{"failed run, grant under home, HOME not passed", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 1}, true},
-		{"the write grants are checked too", &policy.Policy{Write: []string{granted}}, enforce.Result{ExitCode: 1}, true},
-		{"HOME is passed through, so ~ lands where the author meant", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, enforce.Result{ExitCode: 1}, false},
-		{"the run succeeded", &policy.Policy{Read: []string{granted}}, enforce.Result{ExitCode: 0}, false},
-		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, enforce.Result{ExitCode: 1}, false},
-		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, enforce.Result{ExitCode: 1}, false},
-		{"a dotted name inside home has not escaped it", &policy.Policy{Read: []string{filepath.Join(home, "..cache")}}, enforce.Result{ExitCode: 1}, true},
+		{"failed run, grant under home, HOME not passed", &policy.Policy{Read: []string{granted}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"the write grants are checked too", &policy.Policy{Write: []string{granted}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"HOME is passed through, so ~ lands where the author meant", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, map[string]string{"HOME": home}, enforce.Result{ExitCode: 1}, false},
+		{"allowlisted but unset on this host, so the box got its own HOME anyway", &policy.Policy{Read: []string{granted}, Env: []string{"HOME"}}, nil, enforce.Result{ExitCode: 1}, true},
+		{"the run succeeded", &policy.Policy{Read: []string{granted}}, nil, enforce.Result{ExitCode: 0}, false},
+		{"no grant is under the home tree", &policy.Policy{Read: []string{"/srv/app"}}, nil, enforce.Result{ExitCode: 1}, false},
+		{"a sibling of home is not under it", &policy.Policy{Read: []string{home + "-backup"}}, nil, enforce.Result{ExitCode: 1}, false},
+		{"a dotted name inside home has not escaped it", &policy.Policy{Read: []string{filepath.Join(home, "..cache")}}, nil, enforce.Result{ExitCode: 1}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeSandboxHomeMiss(&b, tc.p, tc.res)
+			writeSandboxHomeMiss(&b, tc.p, tc.env, tc.res)
 			got := strings.Contains(b.String(), "HOME is not passed through")
 			if got != tc.want {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
@@ -864,23 +866,25 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 	cases := []struct {
 		name string
 		p    *policy.Policy
+		env  map[string]string
 		res  enforce.Result
 		want bool
 	}{
-		{"exit 127 under a declared shell", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 127}, true},
-		{"the shebang names the shell when the manifest does not", &policy.Policy{Entrypoint: shellScript}, enforce.Result{ExitCode: 127}, true},
-		{"a shell reached through env is still a shell", &policy.Policy{Entrypoint: envShellScript}, enforce.Result{ExitCode: 127}, true},
-		{"a declared interpreter wins over the shebang", &policy.Policy{Interpreter: "python3", Entrypoint: shellScript}, enforce.Result{ExitCode: 127}, false},
-		{"PATH is passed through, so the box searched what the caller has", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, enforce.Result{ExitCode: 127}, false},
-		{"127 from a language that chose it for something else", &policy.Policy{Entrypoint: pyScript}, enforce.Result{ExitCode: 127}, false},
-		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: binary}, enforce.Result{ExitCode: 127}, false},
-		{"a different failure", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 1}, false},
-		{"the run succeeded", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 0}, false},
+		{"exit 127 under a declared shell", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 127}, true},
+		{"the shebang names the shell when the manifest does not", &policy.Policy{Entrypoint: shellScript}, nil, enforce.Result{ExitCode: 127}, true},
+		{"a shell reached through env is still a shell", &policy.Policy{Entrypoint: envShellScript}, nil, enforce.Result{ExitCode: 127}, true},
+		{"a declared interpreter wins over the shebang", &policy.Policy{Interpreter: "python3", Entrypoint: shellScript}, nil, enforce.Result{ExitCode: 127}, false},
+		{"PATH is passed through, so the box searched what the caller has", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, map[string]string{"PATH": "/opt/tools/bin"}, enforce.Result{ExitCode: 127}, false},
+		{"allowlisted but unset on this host, so the box got its own PATH anyway", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, nil, enforce.Result{ExitCode: 127}, true},
+		{"127 from a language that chose it for something else", &policy.Policy{Entrypoint: pyScript}, nil, enforce.Result{ExitCode: 127}, false},
+		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: binary}, nil, enforce.Result{ExitCode: 127}, false},
+		{"a different failure", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 1}, false},
+		{"the run succeeded", &policy.Policy{Interpreter: "bash"}, nil, enforce.Result{ExitCode: 0}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeSandboxPathMiss(&b, tc.p, tc.res)
+			writeSandboxPathMiss(&b, tc.p, tc.env, tc.res)
 			got := strings.Contains(b.String(), enforce.SandboxPath)
 			if got != tc.want {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
