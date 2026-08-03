@@ -22,6 +22,51 @@ func refuseThisPlatform(t *testing.T) {
 	t.Cleanup(func() { checkPlatform = saved })
 }
 
+// version names the platform and what it can enforce there. A cross-build for a platform
+// with no backend is the case this exists for: it compiles clean, refuses run, profile and
+// doctor, and before this had nothing to tell its operator so - doctor, which would, is
+// one of the commands that refuses.
+func TestVersionNamesWhatThisBuildCanEnforce(t *testing.T) {
+	t.Run("a host with no backend", func(t *testing.T) {
+		refuseThisPlatform(t)
+		onPlatform(t, "darwin/amd64")
+		out := versionOutput(t)
+		if !strings.Contains(out, "Platform: darwin/amd64") {
+			t.Errorf("version = %q, want the platform named", out)
+		}
+		if !strings.Contains(out, "No sandbox backend here") || !strings.Contains(out, "validate and approve work") {
+			t.Errorf("version = %q, want it to say what a build with no backend still does", out)
+		}
+	})
+
+	// A Linux build on another architecture is the opposite failure: everything works, so
+	// nothing in the output would otherwise say it is unverified.
+	t.Run("an unverified linux architecture", func(t *testing.T) {
+		onPlatform(t, "linux/arm64")
+		out := versionOutput(t)
+		if !strings.Contains(out, "planned, not verified") || !strings.Contains(out, verifiedPlatform) {
+			t.Errorf("version = %q, want linux/arm64 called unverified against %s", out, verifiedPlatform)
+		}
+	})
+
+	// The verified host earns the platform line and nothing after it; a caveat here would
+	// teach an operator to read past the ones that matter.
+	t.Run("the verified platform", func(t *testing.T) {
+		onPlatform(t, verifiedPlatform)
+		out := versionOutput(t)
+		if want := "Platform: " + verifiedPlatform + "\n"; !strings.HasSuffix(out, want) {
+			t.Errorf("version = %q, want it to end at %q", out, want)
+		}
+	})
+}
+
+func versionOutput(t *testing.T) string {
+	t.Helper()
+	var buf strings.Builder
+	writeVersion(&buf)
+	return buf.String()
+}
+
 // Every command that builds or probes a sandbox refuses on a host with no backend, and
 // answers --json with the document its own consumers were told to expect rather than the
 // empty stdout a machine gate cannot tell from a crash. The three shapes differ on
