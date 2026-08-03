@@ -1016,8 +1016,9 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 //
 // A heuristic, and gated on a shell because 127 is a number any other language is free to
 // choose for itself. Unlike profiling there is no Execed signal here to tell a bare name
-// that was never found from an absolute path the box does not carry, so the note names both
-// remedies rather than claiming which case this was.
+// that was never found from an absolute path the box does not carry, so the remedies are
+// ordered to serve both: the grant is what either case needs, and PATH is named as the
+// extra step only the bare-name case takes.
 func writeSandboxPathMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 	if res.ExitCode != 127 || slices.Contains(p.Env, "PATH") {
 		return
@@ -1034,8 +1035,9 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] the script exited 127, the code a shell returns when it could not find a")
 	fmt.Fprintf(w, "[bento] command. PATH is not passed through, so inside the sandbox it is %s\n", enforce.SandboxPath)
 	fmt.Fprintln(w, "[bento] and a bare command name is looked for in those directories and nowhere else.")
-	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it, and allowlist")
-	fmt.Fprintln(w, "[bento] PATH in env: so the shell searches there - or call it by absolute path.")
+	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it. If the script")
+	fmt.Fprintln(w, "[bento] calls it by bare name, either allowlist PATH in env: so the shell searches")
+	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
 }
 
 // underHome reports whether an already-resolved grant lies in the host home tree.

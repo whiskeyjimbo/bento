@@ -854,7 +854,12 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 		return path
 	}
 	shellScript := script("run.sh", "#!/bin/sh")
+	envShellScript := script("env-run", "#!/usr/bin/env bash")
 	pyScript := script("run.py", "#!/usr/bin/python3")
+	binary := filepath.Join(dir, "app")
+	if err := os.WriteFile(binary, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
@@ -864,9 +869,11 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 	}{
 		{"exit 127 under a declared shell", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 127}, true},
 		{"the shebang names the shell when the manifest does not", &policy.Policy{Entrypoint: shellScript}, enforce.Result{ExitCode: 127}, true},
+		{"a shell reached through env is still a shell", &policy.Policy{Entrypoint: envShellScript}, enforce.Result{ExitCode: 127}, true},
+		{"a declared interpreter wins over the shebang", &policy.Policy{Interpreter: "python3", Entrypoint: shellScript}, enforce.Result{ExitCode: 127}, false},
 		{"PATH is passed through, so the box searched what the caller has", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, enforce.Result{ExitCode: 127}, false},
 		{"127 from a language that chose it for something else", &policy.Policy{Entrypoint: pyScript}, enforce.Result{ExitCode: 127}, false},
-		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: filepath.Join(dir, "app")}, enforce.Result{ExitCode: 127}, false},
+		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: binary}, enforce.Result{ExitCode: 127}, false},
 		{"a different failure", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 1}, false},
 		{"the run succeeded", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 0}, false},
 	}
