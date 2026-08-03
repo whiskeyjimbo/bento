@@ -14,9 +14,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           # Cached explicitly below instead: setup-go keys its cache on go.sum,
@@ -27,7 +27,7 @@ jobs:
 
       # Keyed on the pinned tool versions in the Makefile as well as go.sum, so
       # bumping either pin busts the cache rather than serving a stale toolchain.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/go-build
