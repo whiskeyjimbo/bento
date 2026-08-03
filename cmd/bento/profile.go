@@ -1558,7 +1558,13 @@ func discoveryPolicy(script, interpreter string, interpreterArgs, args []string)
 // names in the proposed manifest so the enforced run resolves the same paths. Omitted
 // deliberately: PWD (the run is chdir'd to the script's directory, so a host PWD would
 // mislead) and XDG_RUNTIME_DIR (denylist.Runtime shields wherever it points, so a path
-// discovered under it is one no grant can honor).
+// discovered under it is one no grant can honor). PATH is omitted for a different
+// reason: passing it and recording it are not separable, since env: holds names, so
+// recording PATH makes the enforced run resolve bare commands against whatever the
+// invoking shell has. The manifest would stop naming the same programs on every
+// machine, which is most of what it is for - a worse trade than the discovery it buys,
+// and one that would only find tools in mounted system dirs anyway, since profiling
+// mounts nothing under $HOME.
 var discoveryEnvNames = []string{
 	"HOME", "USER", "LOGNAME",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
