@@ -9,6 +9,18 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
+## Unreleased
+
+### Boundary Reporting
+
+- **`doctor` no longer reports the exec block as total**: the exec-block layer
+  denies `execve` and never `execveat`, which the launcher itself needs to reach
+  the target. `bento validate` said so over a manifest that blocks exec; doctor
+  claimed `enforced` and stopped there. The layer now carries that seam even when
+  it holds, as a note under doctor's table and a `consequences` field on the
+  enforced row of `doctor --json` and `run --json`. The boundary did not move -
+  what moved is how much of it the report admits to.
+
 ## 0.2.0 (2026-08-02)
 
 A minor bump because `bento run --json` changed shape - see the breaking section
@@ -189,8 +201,8 @@ The boundary did not move for any of these; what a user can see about it did.
 - **`validate` and `approve` answer off Linux**; every other command refuses
   before doing any work, names the architecture, and keeps the refusal inside the
   `--json` envelope. The Linux-only tree is behind build tags and the no-backend
-  stub is tagged for the platforms that need it, so a non-Linux build produces a
-  working binary rather than failing to compile.
+  stub is tagged `darwin`, so a macOS build produces a working binary rather than
+  failing to compile. Linux and macOS are the only targets that compile at all.
 - **`enforce` reports how far in-sandbox setup got** and exposes the caller's
   deny paths on the enforced run, so an embedder can tell a target that failed
   from a sandbox that never reached it - which `examples/supervise` now reports.

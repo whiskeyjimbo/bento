@@ -93,9 +93,9 @@ type LayerStatus struct {
 	// of what is broken here and how to fix it. An Enforced layer carries one when the
 	// guarantee has a limit by construction rather than by host - a seam that holds
 	// wherever the layer holds - so "enforced" is never read as "complete". It is
-	// separate so a refusal can lead
-	// with the actionable half and point at a fuller report for this one, rather than
-	// burying the remedy under a paragraph the reader did not ask for. Every frontend
+	// separate so a refusal can lead with the actionable half and point at a fuller
+	// report for this one, rather than burying the remedy under a paragraph the reader
+	// did not ask for. Every frontend
 	// that describes a layer in full must still print it: no fact is dropped, only
 	// relocated.
 	Consequences string
