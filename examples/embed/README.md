@@ -194,8 +194,9 @@ Read the stream by switching on `event`:
   whatever the pipe delivered, **not** a line - concatenate per stream before splitting.
 - `verdict` - the run completed. `exit_code` is the target's own.
 - `refusal` - bento declined; the target never started.
-- `failed` - the run began and could not be finished. Distinct from `refusal` because a
-  caller may retry a refusal (a different host, an approval) and must not retry this.
+- `failed` - the run could not be finished. Distinct from `refusal` because a caller may
+  retry a refusal (a different host, an approval) and must not retry this. It does not
+  say whether the target got to run: bento cannot tell on that path, and does not guess.
 
 Exactly one of the last three arrives, always last. `reason` on the two error events is
 prose for a human, not a stable code - branch on `event`, never on the text.
@@ -206,11 +207,14 @@ Three rules a subprocess consumer gets wrong:
   cannot finish writing stdout it says so on stderr and exits 125 rather than leaving a
   truncated run that reads as a complete one. A consumer that only checks "did the JSON
   parse" would accept the truncation.
-- **125 is bento's own failure code**, not the target's. The target's code is passed
-  through untouched, so a process exit status alone cannot tell the two apart - that is
-  what `event` is for.
+- **125 is bento's own failure code**, not the target's, and `--strict` adds 124 for a
+  run whose posture lapsed. Every other code is the target's, passed through untouched,
+  so a process exit status alone cannot tell a bento verdict from a script that happened
+  to exit 125 - that is what `event` is for.
 - **`strict_shortfall`** (`--strict` only) means the target ran and then a guarantee
-  lapsed. Ignore it and a run whose posture did not hold reads as an ordinary clean run.
+  lapsed. `exit_code` in the verdict is still the target's own there; it is the process
+  status that becomes 124. Ignore the field and a run whose posture did not hold reads
+  as an ordinary clean run.
 
 The verdict object is the honesty surface above, rendered as JSON. Same obligation: read
 all of it, or ship a frontend silent about the rest.
@@ -218,15 +222,20 @@ all of it, or ship a frontend silent about the rest.
 | `Result` field          | In the verdict object                          |
 | ----------------------- | ---------------------------------------------- |
 | `Report.Degradations()` | `report.layers[].state` / `.detail`, and `report.fully_enforced` |
+| `ExitCode`, `Signal`    | `exit_code`, and `signal` only where a signal is known |
 | `Shields`               | `shields`                                      |
-| `ShieldedGrants`        | `shielded_grants`, plus `shielded_grant_targets` where the bound path differs from the spelling that granted it |
+| `ShieldedGrants`        | `shielded_grants`                              |
+| `ShieldedGrantTargets`  | `shielded_grant_targets`, where the path bound differs from the spelling that granted it |
 | `AcceptedAliases`       | `accepted_aliases`                             |
 | `Exposed`               | `exposed`                                      |
-| `EgressConnections`     | `egress_connections`, with `egress_denied` and `guard_blocked` naming what was refused |
+| `EgressConnections`     | `egress_connections`                           |
+| `Denied`, `GuardBlocked` | `egress_denied` and `guard_blocked`, naming what the count does not |
 | `GateAdmitted`          | *nothing* - see below                          |
+| `Setup`                 | *nothing* - which stage died is not reported here |
 
-`missing_read_grants` has no `Result` field: it is the pre-run verdict on read grants
-that name nothing on this host, which the human path prints on stderr.
+One field goes the other way: `missing_read_grants` has no `Result` counterpart. It is
+the pre-run verdict on read grants that name nothing on this host, which the human path
+prints on stderr.
 
 ### What does not survive the process boundary
 
@@ -237,13 +246,13 @@ is no `gate_admitted` to report. Everything this README says about supervision,
 "allow once / allow for session", and the honesty loop is in-process only. A harness
 that needs a host admitted must put it in the manifest and `bento approve`.
 
-**Stdin.** `--json` gives the target none, because the target's own bytes on stdout
-would corrupt the JSON contract and a shared stdin invites the same confusion. A target
-that reads from stdin will see EOF.
+**Stdin.** `--json` gives the target none: the stream mode exists to keep the target's
+own bytes off bento's stdout, and it does not carry a channel back the other way. A
+target that reads from stdin will see EOF.
 
-Also note that `bento profile --json` is a *different* shape - one indented document
-with `refused: true` - not this per-line event stream. They cannot be parsed by the
-same code.
+Also note that `bento profile --json` answers with a single indented document rather
+than this per-line event stream, and so does a refusal from it. The two shapes cannot be
+parsed by the same code.
 
 ## What is *not* here: filesystem prompts
 
