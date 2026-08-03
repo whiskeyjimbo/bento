@@ -21,6 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // The JSON shapes below are the machine-readable contract for agents and CI.
@@ -1005,6 +1006,36 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
 		return
 	}
 	writeSandboxHomeNote(w, "[bento] ")
+}
+
+// writeSandboxPathMiss explains a shell's exit 127 the way writeSandboxHomeMiss explains a
+// `~` that missed its grant: the manifest does not pass PATH through, so envArgs sets the
+// sandbox's own PATH and a bare command name is searched there and nowhere else. The shell
+// reports only the name it could not find, never the search path that lost it, so bento
+// says what that path was.
+//
+// A heuristic, and gated on a shell because 127 is a number any other language is free to
+// choose for itself. Unlike profiling there is no Execed signal here to tell a bare name
+// that was never found from an absolute path the box does not carry, so the note names both
+// remedies rather than claiming which case this was.
+func writeSandboxPathMiss(w io.Writer, p *policy.Policy, res enforce.Result) {
+	if res.ExitCode != 127 || slices.Contains(p.Env, "PATH") {
+		return
+	}
+	interp := p.Interpreter
+	if interp == "" {
+		// A shebang script names its interpreter in the file, not in the manifest, and it
+		// is the common shape here: `interpreter:` is what a manifest sets to override one.
+		interp, _, _ = profile.GuessInterpreter(p.Entrypoint)
+	}
+	if !isShell(interp) {
+		return
+	}
+	fmt.Fprintln(w, "[bento] the script exited 127, the code a shell returns when it could not find a")
+	fmt.Fprintf(w, "[bento] command. PATH is not passed through, so inside the sandbox it is %s\n", enforce.SandboxPath)
+	fmt.Fprintln(w, "[bento] and a bare command name is looked for in those directories and nowhere else.")
+	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it, and allowlist")
+	fmt.Fprintln(w, "[bento] PATH in env: so the shell searches there - or call it by absolute path.")
 }
 
 // underHome reports whether an already-resolved grant lies in the host home tree.

@@ -839,6 +839,49 @@ func TestSandboxHomeMissFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// 127 is the other half of the environment the sandbox rewrites: the shell names the
+// command it could not find and never the PATH it searched, so bento supplies it. The
+// gate has to reach the common shape where the manifest sets no interpreter at all and
+// the shebang names it, and stay quiet where 127 means something else - another
+// language's chosen exit code, or a manifest that does pass PATH through.
+func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, shebang string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(shebang+"\nexit 127\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	shellScript := script("run.sh", "#!/bin/sh")
+	pyScript := script("run.py", "#!/usr/bin/python3")
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want bool
+	}{
+		{"exit 127 under a declared shell", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 127}, true},
+		{"the shebang names the shell when the manifest does not", &policy.Policy{Entrypoint: shellScript}, enforce.Result{ExitCode: 127}, true},
+		{"PATH is passed through, so the box searched what the caller has", &policy.Policy{Interpreter: "bash", Env: []string{"PATH"}}, enforce.Result{ExitCode: 127}, false},
+		{"127 from a language that chose it for something else", &policy.Policy{Entrypoint: pyScript}, enforce.Result{ExitCode: 127}, false},
+		{"a compiled binary has no interpreter to read 127 for", &policy.Policy{Entrypoint: filepath.Join(dir, "app")}, enforce.Result{ExitCode: 127}, false},
+		{"a different failure", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 1}, false},
+		{"the run succeeded", &policy.Policy{Interpreter: "bash"}, enforce.Result{ExitCode: 0}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			writeSandboxPathMiss(&b, tc.p, tc.res)
+			got := strings.Contains(b.String(), enforce.SandboxPath)
+			if got != tc.want {
+				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			}
+		})
+	}
+}
+
 // The gate's whole claim is that it does not pass a manifest run refuses at its first
 // step, so the three shield refusals have to be predicted here in the sentences run
 // raises them with - and only where run raises them. The pairs that look alike are what

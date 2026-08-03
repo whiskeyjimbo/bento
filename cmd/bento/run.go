@@ -442,6 +442,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, res
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
 			writeSandboxHomeMiss(stderr, p, res)
+			writeSandboxPathMiss(stderr, p, res)
 			writeProfileHint(stderr, p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that
