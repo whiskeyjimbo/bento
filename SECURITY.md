@@ -91,7 +91,8 @@ through the checksum file:
 ```sh
 # 1. The checksum file really came from a tagged release run of this repository.
 cosign verify-blob checksums.txt \
-  --bundle checksums.txt.bundle \
+  --bundle checksums.txt.sigstore.json \
+  --new-bundle-format \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp \
     '^https://github\.com/whiskeyjimbo/bento/\.github/workflows/release\.yml@refs/tags/v'
@@ -106,6 +107,16 @@ want to accept exactly one release:
 
 A failure at step 1 means the artifact was not produced by this repository's
 release workflow, whatever the filename says. Report it privately as above.
+
+The release also carries SLSA build provenance as `bento.intoto.jsonl`, which
+records how the artifacts were built rather than only who signed them. Check it
+with [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
+
+```sh
+slsa-verifier verify-artifact bento_0.2.0_linux_amd64.tar.gz \
+  --provenance-path bento.intoto.jsonl \
+  --source-uri github.com/whiskeyjimbo/bento
+```
 
 Builds are reproducible, so you can check the artifacts against the source
 rather than trusting the release run. The binary is stamped from the commit's

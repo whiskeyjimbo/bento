@@ -82,12 +82,15 @@ sboms:
 # Keyless: the signature carries the workflow identity that produced it, so a
 # consumer can verify the archives came from this repo's tagged release run
 # rather than from someone with a leaked key. Signing the checksum file covers
-# every archive through it.
+# every archive through it. The .sigstore.json suffix is the convention consumers
+# and release scanners match on; --new-bundle-format is pinned explicitly so the
+# name keeps describing the bytes if cosign's default ever moves back.
 signs:
   - cmd: cosign
-    signature: "${artifact}.bundle"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
+      - --new-bundle-format=true
       - "--bundle=${signature}"
       - "${artifact}"
       - --yes

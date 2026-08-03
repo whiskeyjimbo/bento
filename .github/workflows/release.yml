@@ -21,6 +21,8 @@ jobs:
     # GoReleaser derives the version and changelog range from.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
     permissions:
       contents: write
       # Keyless cosign signs against the workflow's OIDC identity, so there is no
@@ -49,3 +51,28 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # checksums.txt is already in sha256sum format, which is exactly the subject
+      # list the generator wants: every published artifact becomes a subject of the
+      # attestation, so slsa-verifier can check an archive directly.
+      - id: hashes
+        run: echo "hashes=$(base64 -w0 dist/checksums.txt)" >> "$GITHUB_OUTPUT"
+
+  # SLSA build provenance, attached to the release as bento.intoto.jsonl.
+  provenance:
+    needs: release
+    permissions:
+      # The generator reads this run's metadata to describe how the artifacts were built.
+      actions: read
+      id-token: write
+      contents: write
+    # Referenced by tag, not by commit, unlike the actions above: the builder checks
+    # its own ref against the trusted builder identity baked into the attestation,
+    # and a commit ref fails that check.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.hashes }}
+      upload-assets: true
+      # Named rather than derived, so the verification command in SECURITY.md stays
+      # correct as the archive set changes.
+      provenance-name: bento.intoto.jsonl
