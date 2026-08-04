@@ -37,6 +37,9 @@ GOVULNCHECK_VERSION ?= v1.6.0
 # unchanged tree red on its own schedule.
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
+COVERDIR     := .cover
+COVERPROFILE := coverage.out
+
 # Colors & Styling
 BOLD    := \033[1m
 CYAN    := \033[36m
@@ -44,7 +47,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test race vet crossbuild lint audit examples vuln repro check install clean help
+.PHONY: all build test cover race vet crossbuild lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -75,6 +78,29 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 	@printf "$(CYAN)$(BOLD)==> Running tests...$(RESET)\n"
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test ./...
 	@printf "$(GREEN)$(BOLD)✓ All tests passed!$(RESET)\n"
+
+# The seccomp filters are process-wide and permanent, so their tests assert from a
+# re-exec'd child - a separate process, whose counters land nowhere unless it is told
+# where to put them. BENTO_TEST_COVERDIR is that channel (a project-specific name, not
+# GOCOVERDIR, so nothing else in the tree writes into the merge), and the children's
+# profile is concatenated onto the parent's afterwards. The dir is rebuilt each run
+# because stale counters would be merged as if they were this run's.
+#
+# This target is red today, and not because of anything above: internal/launcher's
+# sandboxed child cannot create its coverage directory under Landlock, so it dies at
+# startup and fails the test rather than merely losing its counters. Measure a single
+# package until that is fixed.
+cover: ## Measure statement coverage, merging the re-exec'd children's counters (red: see comment)
+	@printf "$(CYAN)$(BOLD)==> Measuring coverage...$(RESET)\n"
+	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
+	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
+		go test -covermode=atomic -coverprofile=$(COVERPROFILE) ./...
+	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
+	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
+		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }
+	@tail -n +2 $(COVERDIR)/children.txt >> $(COVERPROFILE)
+	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
+	@printf "$(GREEN)$(BOLD)✓ Coverage written to $(COVERPROFILE)$(RESET)\n"
 
 # The proxy's concurrency tests hold many connections at the gate and the egress guard
 # at once to prove a verdict never crosses connections. Whether a broken one is caught

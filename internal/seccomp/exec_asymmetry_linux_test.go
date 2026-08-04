@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"unsafe"
@@ -22,8 +21,7 @@ import (
 // execve (a real regression) fails loudly. The filter is process-wide and permanent,
 // so it runs in a re-exec'd child rather than poisoning the test process.
 func TestExecBlockIsSoftAllowsExecveat(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestExecBlockIsSoftAllowsExecveatHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_EXEC_ASYMMETRY=1")
+	cmd := helperCommand(t, "TestExecBlockIsSoftAllowsExecveatHelper", "BENTO_TEST_EXEC_ASYMMETRY=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("exec-asymmetry helper exited with error: %v\n%s", err, out)

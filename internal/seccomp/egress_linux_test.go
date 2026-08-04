@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"unsafe"
@@ -21,8 +20,7 @@ func TestBlockEgress(t *testing.T) {
 	if !EgressSupported() {
 		t.Skip("egress filter not implemented for this architecture")
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=TestBlockEgressHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_BLOCK_EGRESS=1")
+	cmd := helperCommand(t, "TestBlockEgressHelper", "BENTO_TEST_BLOCK_EGRESS=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("egress helper exited with error: %v\n%s", err, out)
@@ -74,5 +72,4 @@ func TestBlockEgressHelper(t *testing.T) {
 		os.Exit(6)
 	}
 	fmt.Println("EGRESS_OK")
-	os.Exit(0)
 }

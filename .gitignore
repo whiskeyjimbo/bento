@@ -7,6 +7,8 @@ bin/
 .beads/*
 /bento
 dist/
+.cover/
+coverage.out
 
 # `go build .` in an example module names the binary after the module.
 /examples/embed/bentoembed
