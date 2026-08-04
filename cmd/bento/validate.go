@@ -389,13 +389,18 @@ func strictRunnableError(r runnability, strict bool) error {
 // absolutizes every grant by construction - the same trap resolvedGrants documents - so
 // a resolved policy is pinned by definition and this would fire on every manifest.
 //
-// The interpreter is left out. profile writes what the script's shebang names, so an
-// absolute interpreter is the ordinary case, and `/usr/bin/python3` means the same thing
-// in every checkout: it ties the manifest to a host, which is a different question.
+// The interpreter is checked only for the ~ spelling. An absolute one is the ordinary
+// case - profile writes what the script's shebang names - and `/usr/bin/python3` means
+// the same thing in every checkout: it ties the manifest to a host, which is a different
+// question. `~/venv/bin/python` does not: resolveInterpreter sends it through expandHome,
+// so it anchors to whoever runs it, which is the pin this flag exists to catch.
 func pinnedPaths(p *policy.Policy) []string {
 	var pinned []string
 	if manifest.NonAnchoring(p.Entrypoint) {
 		pinned = append(pinned, fmt.Sprintf("entrypoint %q", p.Entrypoint))
+	}
+	if strings.HasPrefix(p.Interpreter, "~") {
+		pinned = append(pinned, fmt.Sprintf("interpreter %q", p.Interpreter))
 	}
 	for _, g := range p.Read {
 		if manifest.NonAnchoring(g) {

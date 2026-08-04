@@ -746,6 +746,15 @@ func TestValidateRelocatable(t *testing.T) {
 		// profile writes what the shebang names, so an absolute interpreter is the
 		// ordinary case and means the same thing in every checkout.
 		"absolute interpreter": {policy: &policy.Policy{Entrypoint: "./x", Interpreter: "/usr/bin/python3"}},
+		// A ~ interpreter is not the same case: it resolves through expandHome, so it
+		// names a different program per user the way a ~ grant names a different file.
+		"tilde interpreter": {
+			policy:     &policy.Policy{Entrypoint: "./x", Interpreter: "~/venv/bin/python"},
+			wantPinned: []string{`interpreter "~/venv/bin/python"`},
+		},
+		// An interpreter spelled relative anchors to the manifest like any other path,
+		// so the field is not exempt as a whole.
+		"relative interpreter": {policy: &policy.Policy{Entrypoint: "./x", Interpreter: "venv/bin/python"}},
 	}
 
 	for name, tc := range cases {

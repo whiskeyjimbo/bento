@@ -37,8 +37,10 @@ commits that built it - none of them were ever in a release.
   flag reports the entrypoint and the read and write grants that do not anchor to
   the manifest's own directory, and exits non-zero; `--json` carries the same
   verdict as `relocatable` and `pinned_paths`. It is opt-in because a manifest
-  meant for one machine is not wrong, and the interpreter is not checked because
-  `profile` writes what the shebang names. The boundary did not move: this
+  meant for one machine is not wrong. An absolute interpreter is not reported -
+  `profile` writes what the shebang names, and `/usr/bin/python3` means the same
+  thing in every checkout - but a `~` one is, since it resolves per user. The
+  boundary did not move: this
   reports on a manifest, and grants nothing.
 
 ### Verifying a Release
