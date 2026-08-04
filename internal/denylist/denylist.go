@@ -452,9 +452,15 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// bento's own approval journal: each entry is this host's record of the permissions a
 		// human approved, and re-approval names the changed lines by diffing against it. A
 		// sandboxed run that could write one would author its own baseline, so the next
-		// reviewer is told an added grant is old news. Denied write rather than hidden - it
-		// holds a copy of a policy its owner already reads, no secret - and shielded at the
-		// bento directory so a later state file is covered without a second entry.
+		// reviewer is told an added grant is old news. Shielded at the bento directory so a
+		// later state file is covered without a second entry.
+		//
+		// Write-denied rather than hidden, which is the weaker of the two and a deliberate
+		// choice: it holds no key material, so hiding it would buy only that a sandboxed run
+		// cannot enumerate the paths and grants of other manifests approved on this host.
+		// That is real reconnaissance and an argument for DenyAll, but this list is where the
+		// reasoning about plant targets lives, and the forgery above is the threat that makes
+		// a reviewer read a false diff.
 		".local/state/bento",
 		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
 		".vscode",                   // extensions/ load on startup
