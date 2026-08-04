@@ -112,7 +112,7 @@ func TestWriteResultQuotesPathsFromTheHost(t *testing.T) {
 // here, or record why it needs no warning.
 //
 // What it does NOT cover, so it is not read as more than it is: a field added to a
-// nested type (ShieldApplied, CredentialAlias, Report) is invisible to it, as is an
+// nested type (ShieldApplied, ShieldedGrant, CredentialAlias, Report) is invisible to it, as is an
 // exported field promoted from an UNEXPORTED embedded struct. Naming a field in warned
 // without printing it also passes here - TestWriteResultSurfacesEveryHonestyField is
 // what catches that, since a field named but unprinted fails its output assertions.

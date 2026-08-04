@@ -313,7 +313,7 @@ func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
 //
 // This is validate's answer, resolved when the summary is written - there is no run to
 // take it from, and the comment on writeResolvedGrants owns that gap. The run's own
-// envelope uses toShieldedTargetsJSON instead, which carries what was actually bound.
+// envelope uses toShieldedGrantsJSON instead, which carries what was actually bound.
 func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	if len(resolved) != len(literal) {
 		return nil
