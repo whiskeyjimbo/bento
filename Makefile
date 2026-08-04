@@ -137,21 +137,32 @@ race: ## Run the proxy concurrency tests under the race detector
 # -count=1 for the same reason the dir is rebuilt: a cached package result replays the
 # parent's profile but never re-runs the children, so the merge would quietly drop every
 # counter they contribute and report the drop as a coverage regression.
+#
+# The profile is assembled under $(COVERDIR) and only moved to $(COVERPROFILE) once the
+# merge has succeeded and been read back. go test writes its profile before any of the
+# checks below run, so writing it straight to the blessed name would leave a parent-only
+# profile behind whenever a check fails - loud at the time, but indistinguishable from a
+# good one to whoever reads the file next. The read-back is `> func.txt` rather than a
+# pipe to tail on purpose: /bin/sh reports a pipeline's last exit status, so piping would
+# mask a failure in the one step that parses the merged profile.
 cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in check)
 	@printf "$(CYAN)$(BOLD)==> Measuring coverage across the tree...$(RESET)\n"
-	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
+	@rm -rf $(COVERDIR) $(COVERPROFILE) && mkdir -p $(COVERDIR)
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
-		go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+		go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVERDIR)/parent.out ./...
 	@ls $(COVERDIR)/covcounters.* >/dev/null 2>&1 || { \
 		printf "$(YELLOW)no child counters in $(COVERDIR); refusing to report a number that silently omits them.\n"; \
 		printf "The re-exec'd tests emit only when helperCommand threads -test.gocoverdir from BENTO_TEST_COVERDIR,\n"; \
 		printf "and only when the helper returns rather than calling os.Exit.$(RESET)\n"; \
 		exit 1; }
 	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
-	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
+	@[ "$$(head -1 $(COVERDIR)/parent.out)" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
 		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }
-	@tail -n +2 $(COVERDIR)/children.txt >> $(COVERPROFILE)
-	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
+	@cp $(COVERDIR)/parent.out $(COVERDIR)/merged.out
+	@tail -n +2 $(COVERDIR)/children.txt >> $(COVERDIR)/merged.out
+	@GOWORK=off go tool cover -func=$(COVERDIR)/merged.out > $(COVERDIR)/func.txt
+	@mv $(COVERDIR)/merged.out $(COVERPROFILE)
+	@tail -1 $(COVERDIR)/func.txt
 	@printf "$(GREEN)$(BOLD)✓ Profile written to $(COVERPROFILE); per-function view: go tool cover -func=$(COVERPROFILE)$(RESET)\n"
 
 vet: ## Run go vet checks
