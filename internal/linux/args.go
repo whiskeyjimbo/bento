@@ -1083,9 +1083,10 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// a READ named (see explicitShieldOptIns); a write grant, or a read of a
 			// symlink's resolved target, is NOT an opt-in and stays refused, so the shield
 			// cannot be written through or side-stepped by spelling out where it points. A
-			// grant strictly inside a shield is likewise refused - the shield covers the
-			// whole directory and cannot be partly lifted - so opting one file in means
-			// reading the shield directory itself.
+			// grant strictly inside a shield is likewise refused - a shield entry cannot be
+			// partly lifted - so opting one file in means naming the shielding directory
+			// and taking its siblings with it. Only a directory entry has an inside; where
+			// the entry is a file (~/.netrc) the exact match is the only way in either way.
 			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
 				return grantrefusal.InsideShield(g, r.Path)
 			}
