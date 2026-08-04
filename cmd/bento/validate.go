@@ -208,17 +208,23 @@ func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
 	case approvalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              %s,\n", noStampDiff)
-		fmt.Fprintf(w, "              so re-review the whole manifest above and run `bento approve` to re-stamp it\n")
+		fmt.Fprintf(w, "              so re-review the whole manifest above and re-stamp it there\n")
 	}
 	return strictApprovalError(doc, strict)
 }
 
-// noStampDiff is why a stale approval cannot be shown as a diff. Every refusal that sends
-// a reader back to re-review says it - run's, validate's report, validate --strict - and
-// it is one string for the reason the grant refusals are: a reader who meets the answer in
-// CI and again at the terminal must not have to work out whether they are the same claim.
-// Without it the reasonable reading is that bento knows the delta and is withholding it.
-const noStampDiff = "the stamp is a hash of the permissions, not a copy of them, meaning there is no diff to show which field changed"
+// noStampDiff is why the manifest alone cannot show what changed, and where the delta can
+// still be had. Every refusal that sends a reader back to re-review says it - run's,
+// validate's report, validate --strict - and it is one string for the reason the grant
+// refusals are: a reader who meets the answer in CI and again at the terminal must not have
+// to work out whether they are the same claim.
+//
+// It used to end at "there is no diff to show", which the approval journal made false: this
+// host's own approve records the shape it stamped, so a re-approval can name the changed
+// lines. It is approve that has that record in hand and prints it, and hedged rather than
+// promised here because a manifest stamped elsewhere has no entry to compare against - see
+// writeJournalDiff for the three answers.
+const noStampDiff = "the stamp is a hash of the permissions, not a copy of them, so the manifest itself does not say which field changed - `bento approve` names them where this host recorded the last approval"
 
 // strictApprovalError is the strict verdict on its own, shared by the human and
 // --json paths so the gate cannot hold in one output mode and lapse in the other.
