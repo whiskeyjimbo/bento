@@ -289,7 +289,9 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 	}
 	// openTTY only once the gates above have passed: it opens /dev/tty, which a --yes run
 	// has no reason to hold.
-	return readApprovalAnswer(openTTY(), w)
+	tty, closeTTY := openTTY()
+	defer closeTTY()
+	return readApprovalAnswer(tty, w)
 }
 
 // readApprovalAnswer prompts and reads the verdict, taking the reader as confirmNetworkExfil
