@@ -152,8 +152,14 @@ profile:
   binary and runs it under bwrap. That coverage is invisible even to
   `-coverpkg`, and recovering it would need the probe built with `-cover` and
   merged through `covdata` - into the same write-after-the-layers-close wall.
-- A child that exits non-zero emits nothing at all, so the failure paths those
-  subprocesses exist to exercise are the least visible of the lot.
+- What skips the emit is `os.Exit`, not a non-zero status: the counters are written
+  by `testing`'s teardown, which `os.Exit` never returns to. A child failing through
+  `t.Fatal` exits 1 and still emits. It happens that every failure path in these
+  helpers is an `os.Exit`, so their failure paths - the ones the subprocesses exist
+  to exercise - are the least visible of the lot. Keep the distinction in mind when
+  reasoning about what landed: meta-data is written at child startup and counters
+  only at teardown, so a directory holding `covmeta.*` with no `covcounters.*` means
+  the children started and died, not that they never ran.
 
 So `internal/landlock`, `internal/launcher` and `backend.DispatchReexec` read low
 because their coverage is uncounted, not because it is missing. Do not chase those
