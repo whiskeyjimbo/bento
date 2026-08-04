@@ -96,6 +96,17 @@ type RunOptions struct {
 // promptly once ctx is done (the run is ending), or it stalls run teardown. host
 // and port are attacker-controlled (a sandboxed target chose them); sanitize
 // before displaying. A nil gate denies everything undeclared.
+//
+// It carries no run identity, deliberately: a gate belongs to exactly one Run, so a
+// fleet running many jobs at once attributes a refusal by closing over the job when it
+// builds the gate. Threading identity through the signature would let one gate serve
+// several runs, which is the shape that cannot attribute anything.
+//
+// Consulting it is not the only way to learn what was refused, and a gate that returns
+// false only to log the attempt is not needed for that: every destination the allowlist
+// turned away is reported in Result.Denied whether or not a gate was present. The gate
+// is what a caller reaches for to see a refusal WHILE the run is alive, which Result,
+// arriving at exit, cannot give it.
 type NetworkGate func(ctx context.Context, host, port string) bool
 
 // Process is the runtime binding a policy does not carry: where the target's
