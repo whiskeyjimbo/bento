@@ -142,9 +142,10 @@ cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in ch
 	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
 		go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
-	@ls $(COVERDIR)/covmeta.* >/dev/null 2>&1 || { \
+	@ls $(COVERDIR)/covcounters.* >/dev/null 2>&1 || { \
 		printf "$(YELLOW)no child counters in $(COVERDIR); refusing to report a number that silently omits them.\n"; \
-		printf "The re-exec'd tests emit only when helperCommand threads -test.gocoverdir from BENTO_TEST_COVERDIR.$(RESET)\n"; \
+		printf "The re-exec'd tests emit only when helperCommand threads -test.gocoverdir from BENTO_TEST_COVERDIR,\n"; \
+		printf "and only when the helper returns rather than calling os.Exit.$(RESET)\n"; \
 		exit 1; }
 	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
 	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
