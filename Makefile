@@ -86,15 +86,14 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # profile is concatenated onto the parent's afterwards. The dir is rebuilt each run
 # because stale counters would be merged as if they were this run's.
 #
-# This target is red today, and not because of anything above: internal/launcher's
-# sandboxed child cannot create its coverage directory under Landlock, so it dies at
-# startup and fails the test rather than merely losing its counters. Measure a single
-# package until that is fixed.
-cover: ## Measure statement coverage, merging the re-exec'd children's counters (red: see comment)
+# -count=1 for the same reason the dir is rebuilt: a cached package result replays the
+# parent's profile but never re-runs the children, so the merge would quietly drop every
+# counter they contribute and report the drop as a coverage regression.
+cover: ## Measure statement coverage, merging the re-exec'd children's counters
 	@printf "$(CYAN)$(BOLD)==> Measuring coverage...$(RESET)\n"
 	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
-		go test -covermode=atomic -coverprofile=$(COVERPROFILE) ./...
+		go test -count=1 -covermode=atomic -coverprofile=$(COVERPROFILE) ./...
 	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
 	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
 		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }

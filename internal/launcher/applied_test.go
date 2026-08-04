@@ -244,4 +244,9 @@ func runReportChild(mode string) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stdout, "RUN_OK %d\n", code)
+	// Exit before testing's teardown: the layers Run applied are still in force, so a
+	// -cover build's data emit fails on the temp dir and turns a clean stage into a
+	// nonzero exit. The child's own counters are unrecoverable either way - Landlock is
+	// the blocker, and the only way past it would be to widen the grant under test.
+	os.Exit(0)
 }
