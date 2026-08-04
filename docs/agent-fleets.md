@@ -55,7 +55,8 @@ without a human reading it. A manifest that broadens its grants toward `$HOME`
 gains nothing; the shield holds until someone types the store's own name.
 
 The run reports it back, too. `ShieldedGrants` names the shields the policy
-lifted, so a supervisor can log which jobs were handed a credential.
+lifted and what each one held, so a supervisor can log which jobs were handed a
+credential and which were handed a history store.
 
 ### Unattended: a per-job API key
 

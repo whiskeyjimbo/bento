@@ -75,6 +75,38 @@ const (
 	HoldsServices
 )
 
+// Code is the machine-readable spelling, for the surfaces that carry the bucket past a
+// package boundary: the enforce seam (enforce.ShieldedGrant.Holds, which cannot name a
+// type from internal/) and the JSON a gate switches on. Stable - the nouns above are
+// prose and get reworded, these do not.
+func (h Holds) Code() string {
+	switch h {
+	case HoldsCredentials:
+		return "credentials"
+	case HoldsPrivateData:
+		return "private-data"
+	case HoldsHistory:
+		return "history"
+	case HoldsPersistence:
+		return "persistence"
+	case HoldsServices:
+		return "services"
+	}
+	return "unknown"
+}
+
+// HoldsByCode reads a Code back, for a frontend turning what a backend reported into the
+// prose of Noun and Exposure. An unrecognized code reads as HoldsUnknown, whose wording
+// is true of every shielded path.
+func HoldsByCode(code string) Holds {
+	for _, h := range []Holds{HoldsCredentials, HoldsPrivateData, HoldsHistory, HoldsPersistence, HoldsServices} {
+		if h.Code() == code {
+			return h
+		}
+	}
+	return HoldsUnknown
+}
+
 // Noun names the store, for a sentence about one path.
 func (h Holds) Noun() string {
 	switch h {

@@ -319,6 +319,20 @@ func TestClampShieldedGrantsCarriesWhatTheShieldHolds(t *testing.T) {
 	}
 }
 
+// The withheld note is what a harness reads instead of the prose beside it, so the
+// bucket has to reach the note too - a gate that re-proposes what a run declined needs to
+// tell a withheld history store from a withheld private key.
+func TestProposalWarningsCarryWhatTheShieldHolds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{Read: []string{filepath.Join(home, ".local", "state", "nvim")}}
+	withheld, _ := printProposalWarnings(io.Discard, p)
+	if len(withheld) != 1 || withheld[0].Reason != "read-shielded" || withheld[0].Holds != "history" {
+		t.Errorf("withheld = %+v, want one read-shielded note holding history", withheld)
+	}
+}
+
 // The enforcer shields the passwd home whatever $HOME says, so the clamp has to know
 // about it too: keyed on $HOME alone, a profiling run with a relocated home proposes a
 // credential grant the enforced run then refuses.
@@ -1133,7 +1147,7 @@ func TestProfileResultJSON(t *testing.T) {
 		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}},
 	}
 	status := roundStatus{
-		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "read-shielded", Holds: "credentials"}},
 		flagged:  []accessNoteJSON{{Kind: "read", Path: "/work", Reason: "whole-workdir"}},
 	}
 	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, approvalVoided: true}
@@ -1211,7 +1225,7 @@ func TestProfileResultJSONRespellsFlaggedGrants(t *testing.T) {
 			{Kind: "read", Path: "/work", Reason: "whole-workdir"},
 			{Kind: "write", Path: "/tmp/guessed", Reason: "target-steerable-tmp"},
 		},
-		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "read-shielded", Holds: "credentials"}},
 	}
 
 	env := profileResultJSON("m.yaml", proposed, written, manifest.Provenance{}, status, mergeOutcome{}, "")

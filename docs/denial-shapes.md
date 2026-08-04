@@ -61,9 +61,9 @@ away from it, and a run that hit every shield can exit 0.
   that produced a suspicious result, the embedder can name the shielded paths
   rather than leaving the user to guess why their agent vendored a config.
 - `ShieldedGrants` - shields a grant deliberately lifted (see
-  [agent-fleets.md](agent-fleets.md)), by the home-expanded absolute path.
-  `ShieldedGrantTargets` supplements it for the case where the granted name is a
-  symlink and the exposure landed somewhere else.
+  [agent-fleets.md](agent-fleets.md)), each by the home-expanded absolute path,
+  what it `Holds` (`"credentials"`, `"history"`, ...), and an `OnHost` for the
+  case where the granted name is a symlink and the exposure landed elsewhere.
 - `Exposed []ShieldApplied` - under the degraded tier, shields that would have
   been applied and were not.
 - `Report` - which enforcement layers were live, and at what tier.

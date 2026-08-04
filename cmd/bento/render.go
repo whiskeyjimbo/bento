@@ -136,9 +136,14 @@ type accessNoteJSON struct {
 	Host string `json:"host,omitempty"`
 	Port string `json:"port,omitempty"`
 	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
-	// shielded-credential, write-shielded, too-broad (withheld); foreign-home-shield,
+	// read-shielded, write-shielded, too-broad (withheld); foreign-home-shield,
 	// target-steerable-tmp, whole-workdir (proposed and flagged).
 	Reason string `json:"reason"`
+	// Holds is what the shield was hiding (denylist.Holds.Code), on a read-shielded note
+	// and no other - it is the one decision whose consequence differs by bucket, and a
+	// reviewer weighing a withheld read of a history store is weighing something other
+	// than a withheld read of a private key.
+	Holds string `json:"holds,omitempty"`
 	// Absent says nothing was found at Path, so the run only probed for it - the
 	// difference between a file the script read under a name a manifest cannot hold and
 	// an interpreter's search miss, which is the routine case. A pointer because unknown
@@ -281,11 +286,22 @@ func grantTarget(literal, resolved string) (string, bool) {
 	return resolved, resolved != literal
 }
 
-// toShieldedTargetsJSON renders the pairs the backend resolved as it bound them.
-func toShieldedTargetsJSON(targets []enforce.CredentialAlias) []grantTargetJSON {
-	var out []grantTargetJSON
-	for _, t := range targets {
-		out = append(out, grantTargetJSON{Path: t.Path, OnHost: t.Credential})
+// shieldedGrantJSON is one always-shielded path a manifest grants, which lifts the shield.
+// OnHost is present only where the grant reached somewhere other than its own name, and
+// Holds is what the lifted shield was hiding (denylist.Holds.Code) - "credential store" is
+// the sentence a gate's operator reads while judging the exposure, and the shields also
+// cover history stores, session layout, and the host's service sockets.
+type shieldedGrantJSON struct {
+	Path   string `json:"path"`
+	OnHost string `json:"on_host,omitempty"`
+	Holds  string `json:"holds"`
+}
+
+// toShieldedGrantsJSON renders what the backend resolved as it bound the opt-ins.
+func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
+	var out []shieldedGrantJSON
+	for _, g := range grants {
+		out = append(out, shieldedGrantJSON{Path: g.Path, OnHost: g.OnHost, Holds: g.Holds})
 	}
 	return out
 }
@@ -356,6 +372,17 @@ func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
 type shieldGrant struct {
 	Path  string
 	Holds denylist.Holds
+}
+
+// toShieldGrantsJSON renders the grants validate resolved for itself, which is why no
+// on_host is set: there is no run to have bound one, and resolved_read is validate's
+// answer to what a grant reaches.
+func toShieldGrantsJSON(gs []shieldGrant) []shieldedGrantJSON {
+	var out []shieldedGrantJSON
+	for _, g := range gs {
+		out = append(out, shieldedGrantJSON{Path: g.Path, Holds: g.Holds.Code()})
+	}
+	return out
 }
 
 func shieldGrantPaths(gs []shieldGrant) []string {
@@ -1272,10 +1299,11 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 // is a deliberate opt-in bento does not refuse, so the notice is the only thing that
 // keeps the exposure from being silent.
 //
-// The block names no bucket: what each shield holds (see denylist.Holds) does not cross
-// the backend boundary, and this warning is the one that arrives after the script has
-// already read whatever it read. The pre-run callouts - validate's per-grant note and
-// approve's prompt, which is where the exposure can still be declined - do name it.
+// Each grant names what its shield was hiding, as the pre-run callouts do - validate's
+// per-grant note and approve's prompt, where the exposure can still be declined. This one
+// arrives after the script has already read whatever it read, so it is what an operator
+// reconstructing an incident reads, and "credential store" for a history store sends them
+// looking for a key that was never there.
 func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	if len(res.ShieldedGrants) == 0 {
 		return
@@ -1294,14 +1322,10 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	// the target is enumerated from the filesystem - so a directory (or a $HOME) whose name
 	// holds a newline would otherwise print as a second line and forge a summary line of
 	// its own, in the block that exists to make an exposure impossible to miss.
-	lands := make(map[string]string, len(res.ShieldedGrantTargets))
-	for _, t := range res.ShieldedGrantTargets {
-		lands[t.Path] = t.Credential
-	}
 	for _, g := range res.ShieldedGrants {
-		fmt.Fprintf(w, "[bento]   %q\n", g)
-		if target, ok := lands[g]; ok {
-			fmt.Fprintf(w, "[bento]     on this host: %q\n", target)
+		fmt.Fprintf(w, "[bento]   %q - %s\n", g.Path, denylist.HoldsByCode(g.Holds).Noun())
+		if g.OnHost != "" {
+			fmt.Fprintf(w, "[bento]     on this host: %q\n", g.OnHost)
 		}
 	}
 }

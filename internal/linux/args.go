@@ -246,7 +246,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	// would otherwise leave the running code writable. Each covers one explicitly
 	// named, executable file and adds no write anywhere, so what they can expose past
 	// a DenyAll shield is exactly the program the user pointed bento at.
-	_, optIns := explicitShieldOptIns(sb, p.Read)
+	optIns := optInTargets(explicitShieldOptIns(sb, p.Read))
 	deny, appliedShields := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
 	args = append(args, deny...)
 
@@ -1031,7 +1031,7 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	if err := checkWriteNotRoot(writes); err != nil {
 		return err
 	}
-	_, optInShields := explicitShieldOptIns(sb, p.Read)
+	optInShields := optInTargets(explicitShieldOptIns(sb, p.Read))
 	// Only reads carry the opt-in: a write grant under a shield the policy also reads
 	// must stay refused, so it is checked against no opt-ins at all.
 	if err := checkNotShielded(sb, reads, optInShields); err != nil {
@@ -1168,42 +1168,62 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 //     supervising embedder shielding its own control store from an untrusted target) is a
 //     different trust domain the profiled policy must not be able to lift.
 //
-// literalReads are the policy's own absolute, un-symlink-resolved read paths. It returns
-// each matched shield's literal path (for the operator-facing warning) and its resolved
-// path (which checkNotShielded and denyArgs key off, since grants and shields are
-// compared resolved). Sorted together, so literal[i] and resolved[i] are the same shield:
-// sorting the two independently reorders them differently the moment a symlink puts a
-// store somewhere that sorts elsewhere, and a caller pairing them by index would then
-// report one grant as reaching another's target.
-func explicitShieldOptIns(sb sandbox, literalReads []string) (literal, resolved []string) {
+// literalReads are the policy's own absolute, un-symlink-resolved read paths. Sorted by
+// literal path, which is the order the reported opt-ins keep.
+func explicitShieldOptIns(sb sandbox, literalReads []string) []shieldOptIn {
 	builtin := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
-	var pairs []enforce.CredentialAlias
+	var out []shieldOptIn
 	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {
 			continue
 		}
 		if slices.Contains(literalReads, r.Path) {
-			pairs = append(pairs, enforce.CredentialAlias{Path: r.Path, Credential: sb.resolve(r.Path)})
+			out = append(out, shieldOptIn{path: r.Path, onHost: sb.resolve(r.Path), holds: r.Holds})
 		}
 	}
-	slices.SortFunc(pairs, func(a, b enforce.CredentialAlias) int { return cmp.Compare(a.Path, b.Path) })
-	for _, p := range pairs {
-		literal = append(literal, p.Path)
-		resolved = append(resolved, p.Credential)
-	}
-	return literal, resolved
+	slices.SortFunc(out, func(a, b shieldOptIn) int { return cmp.Compare(a.path, b.path) })
+	return out
 }
 
-// shieldGrantTargets pairs each opted-in grant with the store it binds, for the entries
-// where the two differ. It is built from the compile-time resolution the binds
-// themselves use, so the report names what was exposed rather than what the path points
-// at once the target has exited.
-func shieldGrantTargets(literal, resolved []string) []enforce.CredentialAlias {
-	var out []enforce.CredentialAlias
-	for i, lit := range literal {
-		if resolved[i] != lit {
-			out = append(out, enforce.CredentialAlias{Path: lit, Credential: resolved[i]})
+// shieldOptIn is one such shield: the grant's literal spelling, the store it binds (which
+// checkNotShielded and denyArgs key off, since grants and shields are compared resolved),
+// and what the lifted shield was hiding. The three travel together because a caller
+// pairing separate slices by index reports one grant as reaching another's target the
+// moment a symlink puts a store somewhere that sorts elsewhere.
+type shieldOptIn struct {
+	path   string
+	onHost string
+	holds  denylist.Holds
+}
+
+func optInPaths(optIns []shieldOptIn) []string {
+	out := make([]string, 0, len(optIns))
+	for _, o := range optIns {
+		out = append(out, o.path)
+	}
+	return out
+}
+
+func optInTargets(optIns []shieldOptIn) []string {
+	out := make([]string, 0, len(optIns))
+	for _, o := range optIns {
+		out = append(out, o.onHost)
+	}
+	return out
+}
+
+// reportedOptIns renders the opt-ins for the Result. OnHost is filled only where the
+// grant reached somewhere other than its own name; the resolution is the compile-time one
+// the binds themselves use, so the report names what was exposed rather than what the
+// path points at once the target has exited.
+func reportedOptIns(optIns []shieldOptIn) []enforce.ShieldedGrant {
+	var out []enforce.ShieldedGrant
+	for _, o := range optIns {
+		g := enforce.ShieldedGrant{Path: o.path, Holds: o.holds.Code()}
+		if o.onHost != o.path {
+			g.OnHost = o.onHost
 		}
+		out = append(out, g)
 	}
 	return out
 }

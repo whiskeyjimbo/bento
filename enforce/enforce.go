@@ -165,6 +165,34 @@ type CredentialAlias struct {
 	Credential string
 }
 
+// ShieldedGrant is one always-shielded path a policy explicitly granted, so the backend
+// honored the grant over its own shield. See Result.ShieldedGrants.
+type ShieldedGrant struct {
+	// Path is the grant as the policy spelled it, which is the name the deny-list gave
+	// the shield it matched.
+	Path string
+	// OnHost is the store the grant actually bound, set only where that differs from
+	// Path. The deny-list builds the names that count as an opt-in from the run's home
+	// anchors, and $HOME is caller-chosen, so a grant can name a symlink while the
+	// exposure lands elsewhere; a frontend that reported only the spelling would name a
+	// scratch path where a private key was handed over.
+	//
+	// The backend resolves this as it binds, not afterwards. Re-resolving at report time
+	// would name whatever the path points at once the target has exited, which for a run
+	// that moved a symlink underneath itself is not what was exposed.
+	OnHost string
+	// Holds is what the shield was hiding: "credentials", "private-data", "history",
+	// "persistence", "services", or "unknown" for a path the backend cannot classify.
+	// A string rather than an enum for the reason ShieldApplied.Kind is one - the seam
+	// is what an out-of-tree embedder sees, and the classification lives in a package
+	// they cannot import.
+	//
+	// It is here because "credential store" is the sentence a reviewer reads while
+	// deciding whether an exposure was acceptable, and the shields also cover history
+	// stores, session layout, and the host's service sockets.
+	Holds string
+}
+
 // SetupState is how far the in-sandbox stage got before the target ran: whether the
 // exit code in a Result is the TARGET's answer or bento's.
 //
@@ -308,23 +336,10 @@ type Result struct {
 	// ShieldedGrants lists the always-shielded paths (~/.ssh, ~/.gnupg, the runtime dir,
 	// ...) the policy explicitly granted, so the backend honored the grant over its
 	// built-in shield. These are a deliberate caveat-emptor opt-in: exposing a store the
-	// sandbox would otherwise hide to the program. Sorted, empty for the common run that
-	// opts into none. A frontend surfaces each as a loud warning so the exposure is
-	// never silent - the backend does not refuse it, the operator chose it.
-	ShieldedGrants []string
-	// ShieldedGrantTargets pairs an opted-in grant with the store it actually bound, for
-	// the entries where the two differ - Path is the spelling from ShieldedGrants,
-	// Credential the path it reached. The deny-list builds the names that count as an
-	// opt-in from the run's home anchors, and $HOME is caller-chosen, so a grant can name
-	// a symlink while the exposure lands elsewhere; a frontend that reported only the
-	// spelling would name a scratch path where a private key was handed over.
-	//
-	// The backend resolves these as it binds them, not afterwards. Re-resolving at report
-	// time would name whatever the path points at once the target has exited, which for a
-	// run that moved a symlink underneath itself is not what was exposed. Sorted by Path,
-	// empty for the ordinary run that opted into nothing and for opt-ins that name their
-	// own target.
-	ShieldedGrantTargets []CredentialAlias
+	// sandbox would otherwise hide to the program. Sorted by Path, empty for the common
+	// run that opts into none. A frontend surfaces each as a loud warning so the exposure
+	// is never silent - the backend does not refuse it, the operator chose it.
+	ShieldedGrants []ShieldedGrant
 	// Shields lists the always-on shields the run actually engaged: the credential
 	// and host-service paths the sandbox hid or made read-only for this policy, plus
 	// any path the caller shielded through Options.DenyPaths. It is

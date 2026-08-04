@@ -134,7 +134,7 @@ embedder who copies this file inherits the warning rather than the silence:
 | `Report.Degradations()` | a layer the host could only partly enforce                           |
 | `Shields`            | *(positive evidence)* that the boundary engaged, and for how many paths |
 | `GateAdmitted`       | egress a human waved through beyond the manifest                       |
-| `ShieldedGrants`     | a credential store the manifest granted, so the target could read it   |
+| `ShieldedGrants`     | a store the manifest granted past its shield, and what it held         |
 | `AcceptedAliases`    | a credential read under a second name, past its shield                 |
 | `Exposed`            | what a full run would shield but this tier could not                   |
 | `EgressConnections`  | a proxy bypass: a network run that reached nothing through the proxy    |
@@ -224,8 +224,7 @@ all of it, or ship a frontend silent about the rest.
 | `Report.Degradations()` | `report.layers[].state` / `.detail`, and `report.fully_enforced` |
 | `ExitCode`, `Signal`    | `exit_code`, and `signal` only where a signal is known |
 | `Shields`               | `shields`                                      |
-| `ShieldedGrants`        | `shielded_grants`                              |
-| `ShieldedGrantTargets`  | `shielded_grant_targets`, where the path bound differs from the spelling that granted it |
+| `ShieldedGrants`        | `shielded_grants`, each with `holds` and, where the path bound differs from the spelling that granted it, `on_host` |
 | `AcceptedAliases`       | `accepted_aliases`                             |
 | `Exposed`               | `exposed`                                      |
 | `EgressConnections`     | `egress_connections`                           |

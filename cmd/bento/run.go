@@ -380,15 +380,16 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			Signal int `json:"signal,omitempty"`
 			// The target's own output is not here: it went out as stdout and stderr events
 			// while the run happened, so nothing about a run is held in memory until it ends.
-			EgressConnections int      `json:"egress_connections"`
-			ShieldedGrants    []string `json:"shielded_grants,omitempty"`
-			// ShieldedGrantTargets names what an opted-in grant bound, for the entries where
-			// that differs from the spelling. shielded_grants carries the spelling that opted
-			// in, and the deny-list builds those spellings from $HOME - so under a
-			// caller-chosen environment the name a consumer sees can be a link while the
-			// exposure lands elsewhere. Resolved by the backend as it bound them, so a target
-			// that moved a symlink mid-run cannot rewrite what this reports.
-			ShieldedGrantTargets []grantTargetJSON `json:"shielded_grant_targets,omitempty"`
+			EgressConnections int `json:"egress_connections"`
+			// ShieldedGrants names each always-shielded path the manifest granted, which
+			// lifted the shield for this run. path is the spelling that opted in, and the
+			// deny-list builds those spellings from $HOME - so under a caller-chosen
+			// environment the name a consumer sees can be a link while the exposure lands
+			// elsewhere, which is what on_host says. Resolved by the backend as it bound
+			// them, so a target that moved a symlink mid-run cannot rewrite what this
+			// reports. holds is what was behind the shield, so a gate can tell a lifted
+			// credential store from a lifted history store without a path table of its own.
+			ShieldedGrants []shieldedGrantJSON `json:"shielded_grants,omitempty"`
 			// GuardBlocked names the destinations the allowlist permitted but the egress guard
 			// refused to dial. The sandbox was told only that it could not connect, so this is
 			// the operator's only signal that a permitted name resolved somewhere it must not
@@ -415,7 +416,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
