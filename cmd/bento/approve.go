@@ -247,10 +247,10 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 		// so this prompt is where the exposure can still be declined.
 		shieldGrants, err := explicitShieldGrants(resolved.Read)
 		if err != nil {
-			notes = append(notes, fmt.Sprintf("bento could not work out where the credential shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
+			notes = append(notes, fmt.Sprintf("bento could not work out where the shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
 		}
 		for _, g := range shieldGrants {
-			notes = append(notes, fmt.Sprintf("read: %q is a credential store bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script read the credentials in it.", g))
+			notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
 		}
 		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
 			for _, g := range grants {

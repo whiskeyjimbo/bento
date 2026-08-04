@@ -1154,14 +1154,14 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 	return notes
 }
 
-// printProposalWarnings clamps p in place (dropping shielded credential paths and
+// printProposalWarnings clamps p in place (dropping always-shielded paths and
 // over-broad grants from the auto-proposal) and prints why each was withheld, so a
 // path the tool wants but bento will not auto-grant is never silently missing.
 func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged []accessNoteJSON) {
 	shielded, writeShielded, broadReads, broadWrites := clampProposal(p)
 	for _, d := range shielded {
-		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d, Reason: "shielded-credential"})
-		fmt.Fprintf(out, "[bento] not proposing access to %q - it is a shielded credential path, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d)
+		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d.Path, Reason: "shielded-credential"})
+		fmt.Fprintf(out, "[bento] not proposing access to %q - it is a %s bento shields on every run, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d.Path, d.Holds.Noun())
 	}
 	for _, d := range writeShielded {
 		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "write-shielded"})
@@ -1643,7 +1643,7 @@ func isShell(interpreter string) bool {
 }
 
 // clampShieldedGrants drops read and write grants that fall at or inside a mandatory
-// DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). These are credential stores, so
+// DenyAll home shield (~/.ssh, ~/.aws, ~/.gnupg, ...). Bento hides these on every run, so
 // the profiler never proposes them automatically - the observer records the attempt (the
 // consent surface) even though default-deny never mounted the path, and the user opts in
 // by hand if the program genuinely needs it. A grant that names the shield exactly is
@@ -1652,7 +1652,7 @@ func isShell(interpreter string) bool {
 // quality filter, not a security check. A grant that merely CONTAINS a shield (read: ~
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
 // shield goes.
-func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped, writeShielded []string) {
+func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string, dropped []shieldGrant, writeShielded []string) {
 	// The same anchors the enforcer shields on, so the proposal is clamped against the
 	// shields the run will actually apply - a filter keyed on $HOME alone would skip a
 	// store the run then hides, and draft a manifest that dies at the shield refusal.
@@ -1676,12 +1676,12 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 		}
 	}
 	seenShield := map[string]bool{}
-	var shields []string
+	var shields []shieldGrant
 	addShields := func(rules []denylist.Rule) {
 		for _, r := range rules {
 			if r.Deny == denylist.DenyAll && !seenShield[r.Path] {
 				seenShield[r.Path] = true
-				shields = append(shields, r.Path)
+				shields = append(shields, shieldGrant{Path: r.Path, Holds: r.Holds})
 			}
 		}
 	}
@@ -1695,18 +1695,20 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites, dropped
 	// grant naming one is refused at run time - so proposing it drafts a manifest that
 	// cannot be approved into a working run.
 	addShields(denylist.Runtime(denylist.RuntimeDir(), homes...))
-	inShield := func(g string) bool {
+	// The shield's own classification travels with the drop: the warning names what the
+	// path holds, and a grant inside a shield is described by the shield it fell into.
+	inShield := func(g string) (denylist.Holds, bool) {
 		for _, s := range shields {
-			if g == s || policy.CoversResolved(s, g) {
-				return true
+			if g == s.Path || policy.CoversResolved(s.Path, g) {
+				return s.Holds, true
 			}
 		}
-		return false
+		return denylist.HoldsUnknown, false
 	}
 	filter := func(grants []string) (kept []string) {
 		for _, g := range grants {
-			if inShield(g) {
-				dropped = append(dropped, g)
+			if holds, ok := inShield(g); ok {
+				dropped = append(dropped, shieldGrant{Path: g, Holds: holds})
 			} else {
 				kept = append(kept, g)
 			}
@@ -1860,7 +1862,7 @@ func homeRoot(path string) (string, bool) {
 // credential the deny-list misses; the specific sub-paths the script read are proposed
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
 // the shielded, over-broad read, and over-broad write paths to warn about.
-func clampProposal(p *policy.Policy) (shielded, writeShielded, broadReads, broadWrites []string) {
+func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, broadReads, broadWrites []string) {
 	p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(p.Read, p.Write)
 	p.Write, broadWrites = clampBroadWrites(p.Write)
 	p.Read, broadReads = clampBroadReads(p.Read)

@@ -305,10 +305,10 @@ type Result struct {
 	// harmless - an audit that showed only the shields would claim a guarantee this run
 	// did not have. Sorted and deduped; empty for the ordinary run.
 	AcceptedAliases []CredentialAlias
-	// ShieldedGrants lists the always-shielded credential paths (~/.ssh, ~/.gnupg, the
-	// runtime dir, ...) the policy explicitly granted, so the backend honored the grant
-	// over its built-in shield. These are a deliberate caveat-emptor opt-in: exposing a
-	// credential store to the sandboxed program. Sorted, empty for the common run that
+	// ShieldedGrants lists the always-shielded paths (~/.ssh, ~/.gnupg, the runtime dir,
+	// ...) the policy explicitly granted, so the backend honored the grant over its
+	// built-in shield. These are a deliberate caveat-emptor opt-in: exposing a store the
+	// sandbox would otherwise hide to the program. Sorted, empty for the common run that
 	// opts into none. A frontend surfaces each as a loud warning so the exposure is
 	// never silent - the backend does not refuse it, the operator chose it.
 	ShieldedGrants []string

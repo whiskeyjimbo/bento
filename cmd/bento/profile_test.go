@@ -296,7 +296,8 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 
 	resolvedSSH := filepath.Join(real, ".ssh", "id_rsa") // observed via the resolved home
 	linkSSH := filepath.Join(link, ".ssh", "id_rsa")     // observed via $HOME as configured
-	_, _, dropped, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	_, _, shielded, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	dropped := shieldGrantPaths(shielded)
 	for _, p := range []string{resolvedSSH, linkSSH} {
 		if !slices.Contains(dropped, p) {
 			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
@@ -315,7 +316,8 @@ func TestClampShieldedGrantsClampsThePasswdHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	ssh := filepath.Join(u.HomeDir, ".ssh", "id_rsa")
-	if _, _, dropped, _ := clampShieldedGrants([]string{ssh}, nil); !slices.Contains(dropped, ssh) {
+	_, _, shielded, _ := clampShieldedGrants([]string{ssh}, nil)
+	if dropped := shieldGrantPaths(shielded); !slices.Contains(dropped, ssh) {
 		t.Errorf("%q is inside the passwd home's ~/.ssh shield and must be dropped; dropped=%v", ssh, dropped)
 	}
 }
@@ -406,7 +408,8 @@ func TestClampShieldedGrants(t *testing.T) {
 	reads := []string{ssh, sshDir, netrc, home, ordinary, underHome}
 	writes := []string{home + "/.gnupg/x", ordinary}
 
-	keptR, keptW, dropped, _ := clampShieldedGrants(reads, writes)
+	keptR, keptW, shielded, _ := clampShieldedGrants(reads, writes)
+	dropped := shieldGrantPaths(shielded)
 
 	// A grant AT or INSIDE a shield is dropped, whether the shield is a directory
 	// (~/.ssh) or a file (~/.netrc); the run refuses all of them.

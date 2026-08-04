@@ -589,7 +589,8 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 		// command exists to give is a property of the manifest. It leaves the field absent
 		// beside a resolved_read that is also absent, which is the pair a consumer reads
 		// as "this host could not answer" - the human summary says it in words.
-		out.ShieldedGrants, _ = explicitShieldGrants(resolved.Read)
+		grants, _ := explicitShieldGrants(resolved.Read)
+		out.ShieldedGrants = shieldGrantPaths(grants)
 	}
 	return out
 }
@@ -643,10 +644,10 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	writeResolvedGrants(w, p.Read, resolvedRead)
 	shieldGrants, shieldErr := explicitShieldGrants(resolvedRead)
 	for _, g := range shieldGrants {
-		fmt.Fprintf(w, "  note: this grant names a credential store bento shields on every run, exactly\n")
-		fmt.Fprintf(w, "        and not merely under it: %q. bento honors that as a\n", g)
+		fmt.Fprintf(w, "  note: this grant names a %s bento shields on every run, exactly\n", g.Holds.Noun())
+		fmt.Fprintf(w, "        and not merely under it: %q. bento honors that as a\n", g.Path)
 		fmt.Fprintf(w, "        deliberate read-only exception rather than refusing, so the script can\n")
-		fmt.Fprintf(w, "        read the credentials in it. Remove the grant unless it needs them.\n")
+		fmt.Fprintf(w, "        %s. Remove the grant unless the script needs it.\n", g.Holds.Exposure())
 	}
 	// The error is dropped on both: it is the same failure to anchor the shields that
 	// shieldErr carries, and the footer below reports it once in words rather than twice
@@ -711,13 +712,13 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	// shield says the opposite of what is about to be stamped.
 	if shieldErr != nil {
 		fmt.Fprintf(w, "\nEverything not listed above is denied, but bento could not work out where the\n")
-		fmt.Fprintf(w, "credential shields anchor on this host (%v), so nothing above was\n", shieldErr)
+		fmt.Fprintf(w, "shields anchor on this host (%v), so nothing above was\n", shieldErr)
 		fmt.Fprintf(w, "checked against them - and a run here is refused for the same reason.\n")
 		return
 	}
 	if len(shieldGrants) > 0 {
 		fmt.Fprintf(w, "\nEverything not listed above is denied, and credentials, SSH keys, and shell\n")
-		fmt.Fprintf(w, "profiles are shielded - EXCEPT the %d credential store(s) noted above, which\n", len(shieldGrants))
+		fmt.Fprintf(w, "profiles are shielded - EXCEPT the %d shielded path(s) noted above, which\n", len(shieldGrants))
 		fmt.Fprintf(w, "a read grant names exactly and so opts back in.\n")
 		return
 	}

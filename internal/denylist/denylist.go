@@ -44,6 +44,72 @@ type Rule struct {
 	// directory rather than each known filename is what closes the "plant a new
 	// credential file" hole.
 	Dir bool
+	// Holds is what the path contains, for the callouts that tell a reviewer what
+	// lifting the shield exposes. Set on DenyAll rules only: a write shield cannot be
+	// lifted by a grant, so no callout has to describe one.
+	Holds Holds
+}
+
+// Holds names what a shielded path contains. The deny rules are all enforced the same
+// way, so this exists purely for the sentence a reviewer reads while deciding whether to
+// approve a grant that lifts the shield - which is the sentence that has to say what is
+// behind it. Keyed on the rule and not on the reader so that every callout says the same
+// thing about the same path.
+type Holds int
+
+const (
+	// HoldsUnknown is the zero value, so a rule built without a classification reads as
+	// vague rather than as a credential store it may not be. Callouts fall back to
+	// naming it an always-shielded path, which is never wrong.
+	HoldsUnknown Holds = iota
+	// HoldsCredentials is key material: private keys, tokens, keyrings, vaults.
+	HoldsCredentials
+	// HoldsPrivateData is a store of the user's own content - saved logins, session
+	// cookies, mail, wallets - too large to enumerate.
+	HoldsPrivateData
+	// HoldsHistory is a record of what was typed, pasted, or edited.
+	HoldsHistory
+	// HoldsPersistence is a path the host runs code from at the next login or session.
+	HoldsPersistence
+	// HoldsServices is a directory of the host's service control sockets.
+	HoldsServices
+)
+
+// Noun names the store, for a sentence about one path.
+func (h Holds) Noun() string {
+	switch h {
+	case HoldsCredentials:
+		return "credential store"
+	case HoldsPrivateData:
+		return "private data store"
+	case HoldsHistory:
+		return "history store"
+	case HoldsPersistence:
+		return "host-startup path"
+	case HoldsServices:
+		return "service socket directory"
+	}
+	return "always-shielded path"
+}
+
+// Exposure completes a sentence about lifting the shield: "... which lets the script
+// <Exposure>". It is carried beside the noun because the callouts name a consequence as
+// well as a store, and a consequence written for credentials ("read the credentials in
+// it") misdescribes the other buckets exactly as the noun does.
+func (h Holds) Exposure() string {
+	switch h {
+	case HoldsCredentials:
+		return "read the credentials in it"
+	case HoldsPrivateData:
+		return "read the saved logins, sessions, and messages in it"
+	case HoldsHistory:
+		return "read what was typed, pasted, and edited on this host"
+	case HoldsPersistence:
+		return "read the session layout the host runs code from at the next login"
+	case HoldsServices:
+		return "reach the host services listening in it - the container daemon, the session bus, the agent sockets"
+	}
+	return "read what bento shields there"
 }
 
 // HomeAnchors returns the home directories the shields anchor on: $HOME and the passwd
@@ -159,7 +225,15 @@ func Shieldable(p string, homes []string) bool {
 func Home(home string, alsoHomes ...string) []Rule {
 	join := func(p string) string { return filepath.Join(home, p) }
 
-	dirs := slices.Concat(credentialAnchorDirs, bulkStoreDirs, persistenceDirs)
+	dirGroups := []struct {
+		holds Holds
+		dirs  []string
+	}{
+		{HoldsCredentials, credentialAnchorDirs},
+		{HoldsPrivateData, bulkStoreDirs},
+		{HoldsHistory, historyDirs},
+		{HoldsPersistence, persistenceDirs},
+	}
 	files := []string{
 		".git-credentials",
 		".config/git/credentials", // XDG location for the same
@@ -557,23 +631,26 @@ func Home(home string, alsoHomes ...string) []Rule {
 
 	locations := func(entry string) []string { return homeLocations(home, entry) }
 
-	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))
-	emit := func(entry string, deny Deny, dir bool) {
+	rules := make([]Rule, 0, len(files)+len(writeOnly)+len(writeOnlyDirs))
+	emit := func(entry string, r Rule) {
 		for _, p := range locations(entry) {
-			rules = append(rules, Rule{Path: p, Deny: deny, Dir: dir})
+			r.Path = p
+			rules = append(rules, r)
 		}
 	}
-	for _, d := range dirs {
-		emit(d, DenyAll, true)
+	for _, g := range dirGroups {
+		for _, d := range g.dirs {
+			emit(d, Rule{Deny: DenyAll, Dir: true, Holds: g.holds})
+		}
 	}
 	for _, f := range files {
-		emit(f, DenyAll, false)
+		emit(f, Rule{Deny: DenyAll, Holds: HoldsCredentials})
 	}
 	for _, f := range writeOnly {
-		emit(f, DenyWrite, false)
+		emit(f, Rule{Deny: DenyWrite})
 	}
 	for _, d := range writeOnlyDirs {
-		emit(d, DenyWrite, true)
+		emit(d, Rule{Deny: DenyWrite, Dir: true})
 	}
 
 	anchors := append([]string{home}, alsoHomes...)
@@ -598,7 +675,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(base); c != join(de.def) && shieldable(c) {
-			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true})
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials})
 		}
 	}
 
@@ -644,7 +721,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			if underStore(p, fe.store) || !shieldable(p) {
 				continue
 			}
-			rules = append(rules, Rule{Path: p, Deny: DenyAll})
+			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials})
 		}
 	}
 
@@ -658,16 +735,19 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// R_ENVIRON_USER moves ~/.Renviron (plaintext API keys/DB passwords) - both credential
 	// configs, hidden for the same reason as the histories. A value equal to the named
 	// default is already covered and dropped; relative values cannot be bound.
-	fileDenyAllEnvs := []struct{ env, def string }{
-		{"HISTFILE", ""},
-		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
-		{"R_ENVIRON_USER", ".Renviron"},
-		{"LESSHISTFILE", ".lesshst"},
-		{"MYSQL_HISTFILE", ".mysql_history"},
-		{"PSQL_HISTORY", ".psql_history"},
-		{"SQLITE_HISTORY", ".sqlite_history"},
-		{"REDISCLI_HISTFILE", ".rediscli_history"},
-		{"NODE_REPL_HISTORY", ".node_repl_history"},
+	fileDenyAllEnvs := []struct {
+		env, def string
+		holds    Holds
+	}{
+		{"HISTFILE", "", HoldsHistory},
+		{"NPM_CONFIG_USERCONFIG", ".npmrc", HoldsCredentials},
+		{"R_ENVIRON_USER", ".Renviron", HoldsCredentials},
+		{"LESSHISTFILE", ".lesshst", HoldsHistory},
+		{"MYSQL_HISTFILE", ".mysql_history", HoldsHistory},
+		{"PSQL_HISTORY", ".psql_history", HoldsHistory},
+		{"SQLITE_HISTORY", ".sqlite_history", HoldsHistory},
+		{"REDISCLI_HISTFILE", ".rediscli_history", HoldsHistory},
+		{"NODE_REPL_HISTORY", ".node_repl_history", HoldsHistory},
 	}
 	for _, fe := range fileDenyAllEnvs {
 		v := os.Getenv(fe.env)
@@ -678,7 +758,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || !shieldable(c) {
 			continue
 		}
-		rules = append(rules, Rule{Path: c, Deny: DenyAll})
+		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds})
 	}
 
 	// A startup file relocated by an env var is a persistence-planting target the
@@ -784,7 +864,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
 		if c := filepath.Clean(base); c != join(".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
-				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll})
+				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials})
 			}
 			for _, f := range []string{"config.toml", "config", "env"} {
 				addWriteShield(filepath.Join(c, f))
@@ -823,10 +903,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 // ~/.git-credential-cache); elsewhere under a granted home directory they are not.
 func Runtime(runtimeDir string, homes ...string) []Rule {
 	rules := []Rule{
-		{Path: "/run", Deny: DenyAll, Dir: true},
+		{Path: "/run", Deny: DenyAll, Dir: true, Holds: HoldsServices},
 		// A symlink to /run on most hosts (resolved before it is shielded, so it
 		// costs nothing there), a real directory on those that predate the merge.
-		{Path: "/var/run", Deny: DenyAll, Dir: true},
+		{Path: "/var/run", Deny: DenyAll, Dir: true, Holds: HoldsServices},
 	}
 	// A host that points XDG_RUNTIME_DIR somewhere other than /run (a container, a
 	// session manager that parks it under /tmp) keeps the same contents there: the
@@ -836,7 +916,7 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	if runtimeDir == "" || policy.CoversResolved("/run", runtimeDir) || policy.CoversResolved("/var/run", runtimeDir) || !Shieldable(runtimeDir, homes) {
 		return rules
 	}
-	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true})
+	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true, Holds: HoldsServices})
 }
 
 // Covers finds the rule shielding path, returning it and true. An exact match wins;
@@ -1234,9 +1314,14 @@ var bulkStoreDirs = []string{
 	".config/Bitcoin",
 	".ethereum",
 	".dashcore",
+}
 
-	// History and clipboard stores: can hold pasted or typed secrets. Under bento's
-	// default-deny a program that legitimately needs its own history opts in per-path.
+// historyDirs record what was typed, pasted, or edited. They can hold a secret that
+// passed through them, which is why they are hidden rather than merely write-denied, but
+// they hold no credential a tool would look for by name - so a grant lifting one exposes
+// a record of the user's session, not a key. Under bento's default-deny a program that
+// legitimately needs its own history opts in per-path.
+var historyDirs = []string{
 	".adobe",      // Flash local storage (LSO)
 	".macromedia", // Flash local storage (legacy)
 	".ne",         // ne editor state, incl. history

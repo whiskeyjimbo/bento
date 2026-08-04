@@ -311,7 +311,7 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	return out
 }
 
-// explicitShieldGrants reports the read grants that name a mandatory credential shield
+// explicitShieldGrants reports the read grants that name a mandatory shield
 // (~/.ssh, ~/.gnupg, the runtime dir's agent sockets) exactly, which the backend honors
 // as a deliberate, read-only exception rather than refusing. It is the pre-run answer to
 // what writeShieldedGrantWarning reports after the fact, so validate and approve can
@@ -331,19 +331,39 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // has no shield rules to compare against, which is returned as an error rather than as
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
-func explicitShieldGrants(reads []string) ([]string, error) {
+func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
 	rules, err := resolvedShieldRules()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []shieldGrant
+	seen := map[string]bool{}
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !slices.Contains(out, r.Path) {
-			out = append(out, r.Path)
+		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !seen[r.Path] {
+			seen[r.Path] = true
+			out = append(out, shieldGrant{Path: r.Path, Holds: r.Holds})
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, func(a, b shieldGrant) int { return strings.Compare(a.Path, b.Path) })
 	return out, nil
+}
+
+// shieldGrant is one such grant: the path, and what the shield it lifts was hiding. The
+// callouts carry the second because "credential store" is the sentence a reviewer reads
+// while deciding to approve, and the shields also cover history stores, session layout,
+// and the host's service sockets - naming those a credential store drains the phrase for
+// the grants where it is the truth.
+type shieldGrant struct {
+	Path  string
+	Holds denylist.Holds
+}
+
+func shieldGrantPaths(gs []shieldGrant) []string {
+	out := make([]string, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, g.Path)
+	}
+	return out
 }
 
 // builtinShieldRules is the always-on deny-list the backend builds for every run, as far
@@ -451,10 +471,11 @@ func shieldedReadProblems(reads []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	optIns, err := explicitShieldGrants(reads)
+	grants, err := explicitShieldGrants(reads)
 	if err != nil {
 		return nil, err
 	}
+	optIns := shieldGrantPaths(grants)
 	var problems []string
 	for _, g := range reads {
 		// The opt-in is tested on the spelling, not on where it lands: the backend honors a
@@ -1247,15 +1268,20 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 }
 
 // writeShieldedGrantWarning tells the user that the policy granted a path bento would
-// otherwise shield as a credential store, so the backend honored the grant and exposed
-// it to the script. This is a deliberate opt-in bento does not refuse, so the notice is
-// the only thing that keeps the exposure from being silent.
+// otherwise shield, so the backend honored the grant and exposed it to the script. This
+// is a deliberate opt-in bento does not refuse, so the notice is the only thing that
+// keeps the exposure from being silent.
+//
+// The block names no bucket: what each shield holds (see denylist.Holds) does not cross
+// the backend boundary, and this warning is the one that arrives after the script has
+// already read whatever it read. The pre-run callouts - validate's per-grant note and
+// approve's prompt, which is where the exposure can still be declined - do name it.
 func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	if len(res.ShieldedGrants) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields as")
-	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
+	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields on")
+	fmt.Fprintln(w, "[bento] every run, so the script could read them - review that this is intended:")
 	// A grant matches a shield by the name the deny-list gives it, and those names are
 	// built from $HOME - so where $HOME reaches the real home through a symlink, the grant
 	// names one path and the script reads another. Naming the store the exposure landed on
