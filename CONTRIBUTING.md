@@ -132,8 +132,10 @@ profile:
   For `internal/seccomp` there is no longer a blocker, and its counters are
   recovered. The exec-block filter does not touch `write` or `openat`, so nothing
   stopped the child writing; all that was in the way was the helpers calling
-  `os.Exit` to report their verdict, which skipped the teardown that emits. They
-  return a verdict instead, `helperCommand` threads `-test.gocoverdir` when
+  `os.Exit` on the way out, which skipped the teardown that emits. Only the
+  success path was changed - a helper that passes now falls through and lets
+  teardown run, while a failing one still exits non-zero and still emits nothing,
+  per the last bullet below. `helperCommand` threads `-test.gocoverdir` when
   `BENTO_TEST_COVERDIR` is set, and `make cover` merges the result. Leave that
   wiring in place: without the merge step the children's counters are dropped
   silently, which reads as a coverage regression rather than as a broken merge.
