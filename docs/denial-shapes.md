@@ -25,8 +25,10 @@ the shields are the only thing standing between the program and the file.
 `EACCES` is not on the list. Deny-by-default means an ungranted path is not in
 the sandbox's mount namespace at all, so the kernel has nothing to refuse access
 *to*; and a shield replaces a path rather than restricting it. Under the
-degraded (Landlock-only) tier, where the shields are rules rather than mounts,
-`EACCES` does appear - so an embedder cannot key behavior off the errno either.
+degraded (Landlock-only) tier there is no mount namespace, so the shields are
+not applied at all - they surface in `Exposed` instead - and an ungranted path
+answers `EACCES` rather than `ENOENT`. An embedder cannot key behavior off the
+errno either.
 
 ## Why the empty ones are worse than the missing ones
 
@@ -58,16 +60,18 @@ away from it, and a run that hit every shield can exit 0.
   and a `Kind` of `"hidden"` or `"read-only"`. This is the recovery: after a run
   that produced a suspicious result, the embedder can name the shielded paths
   rather than leaving the user to guess why their agent vendored a config.
-- `ShieldedGrants` / `ShieldedGrantTargets` - shields a grant deliberately lifted
-  (see [agent-fleets.md](agent-fleets.md)), and the store each one actually
-  opened once resolved.
+- `ShieldedGrants` - shields a grant deliberately lifted (see
+  [agent-fleets.md](agent-fleets.md)), by the home-expanded absolute path.
+  `ShieldedGrantTargets` supplements it for the case where the granted name is a
+  symlink and the exposure landed somewhere else.
 - `Exposed []ShieldApplied` - under the degraded tier, shields that would have
   been applied and were not.
 - `Report` - which enforcement layers were live, and at what tier.
 
-The CLI does this already: `bento run` prints a shield count and the denial
-legend on stderr after every run, and `--json` emits the full `shields` array.
-An embedder that swallows those has taken away the only surface that connects a
+The CLI does this already: `bento run` prints a shield count on stderr after a
+run that engaged any shield, and the denial legend after a clean exit under full
+enforcement. Under `--json` it emits the full `shields` array instead. An
+embedder that swallows those has taken away the only surface that connects a
 wrong answer to its cause.
 
 **Say it in the prompt, for an agent target.** An agent cannot infer this
