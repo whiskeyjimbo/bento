@@ -672,8 +672,8 @@ func TestRunHonorsExplicitShieldGrant(t *testing.T) {
 	if !strings.Contains(out.String(), "PRIVATE-KEY-BODY") {
 		t.Fatalf("an explicit ~/.ssh grant should read the real key through the skipped shield; got %q", out.String())
 	}
-	if !slices.Contains(res.ShieldedGrants, sshDir) {
-		t.Errorf("Run must report the ~/.ssh opt-in in ShieldedGrants so a frontend can warn; got %v", res.ShieldedGrants)
+	if !slices.ContainsFunc(res.ShieldedGrants, func(g enforce.ShieldedGrant) bool { return g.Path == sshDir && g.Holds == "credentials" }) {
+		t.Errorf("Run must report the ~/.ssh opt-in in ShieldedGrants, named as a credential store so a frontend can warn; got %v", res.ShieldedGrants)
 	}
 }
 
@@ -761,9 +761,9 @@ func TestRunReportsWhatAnOptedInGrantBound(t *testing.T) {
 	if now, _ := filepath.EvalSymlinks(granted); now != decoy {
 		t.Fatalf("the link was not repointed before the run finished (now %q); the test proves nothing", now)
 	}
-	want := []enforce.CredentialAlias{{Path: granted, Credential: store}}
-	if !slices.Equal(res.ShieldedGrantTargets, want) {
-		t.Errorf("ShieldedGrantTargets = %v, want %v - the store bound at mount time, not what the link points at now", res.ShieldedGrantTargets, want)
+	want := []enforce.ShieldedGrant{{Path: granted, OnHost: store, Holds: "credentials"}}
+	if !slices.Equal(res.ShieldedGrants, want) {
+		t.Errorf("ShieldedGrants = %v, want %v - the store bound at mount time, not what the link points at now", res.ShieldedGrants, want)
 	}
 }
 

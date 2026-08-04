@@ -47,7 +47,7 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	// A broad home read reaches both stores; neither is opted in, so both are exposed
 	// and named with the "hidden" kind the full tier would have applied.
 	reads := []string{"/home/u"}
-	_, optIns := explicitShieldOptIns(sb, reads)
+	optIns := optInTargets(explicitShieldOptIns(sb, reads))
 	got := exposedShields(sb, reads, nil, optIns)
 	if !has(got, "/home/u/.ssh", "hidden") || !has(got, "/home/u/.aws", "hidden") {
 		t.Fatalf("broad home read: exposed = %v, want ~/.ssh and ~/.aws hidden", got)
@@ -57,7 +57,7 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	// exposure and it is reported through ShieldedGrants, not here. The grant reaches no
 	// other shield, so the audit is empty.
 	reads = []string{"/home/u/.ssh"}
-	_, optIns = explicitShieldOptIns(sb, reads)
+	optIns = optInTargets(explicitShieldOptIns(sb, reads))
 	if got := exposedShields(sb, reads, nil, optIns); len(got) != 0 {
 		t.Fatalf("opt-in ~/.ssh: exposed = %v, want empty (opt-in surfaced via ShieldedGrants)", got)
 	}
@@ -65,7 +65,7 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	// A read that reaches no shield exposes nothing, so the audit stays empty rather than
 	// warning about credentials the run never made reachable.
 	reads = []string{"/home/u/proj"}
-	_, optIns = explicitShieldOptIns(sb, reads)
+	optIns = optInTargets(explicitShieldOptIns(sb, reads))
 	if got := exposedShields(sb, reads, nil, optIns); len(got) != 0 {
 		t.Fatalf("unrelated read: exposed = %v, want empty", got)
 	}
@@ -76,7 +76,7 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	// that flattened every exposed record to "hidden" is caught.
 	proj := testSandbox("/home/u/proj/.git/config", "/home/u/proj/.git/hooks/pre-commit")
 	writes := []string{"/home/u/proj"}
-	_, wOptIns := explicitShieldOptIns(proj, nil)
+	wOptIns := optInTargets(explicitShieldOptIns(proj, nil))
 	if got := exposedShields(proj, writes, writes, wOptIns); !has(got, "/home/u/proj/.git/hooks", "read-only") {
 		t.Fatalf("write grant on a checkout: exposed = %v, want .git/hooks read-only", got)
 	}

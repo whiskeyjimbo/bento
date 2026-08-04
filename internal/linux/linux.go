@@ -97,7 +97,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	optedIn, optIns, accepted := preflight.optedIn, preflight.optIns, preflight.aliases
+	optIns, accepted := preflight.optIns, preflight.aliases
 
 	// bwrap creates a shield mount point on the host when the shielded path does not
 	// exist yet and a write grant makes its parent writable (e.g. a project's unborn
@@ -205,7 +205,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -217,7 +217,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -302,17 +302,17 @@ func isExitError(err error) bool {
 // back in, and the aliases the caller acknowledged.
 type preflighted struct {
 	reads, writes []string
-	// optedIn are the LITERAL deny-list paths the policy opted back into the sandbox,
-	// for the frontend to warn about by the name the deny-list uses; optIns are the
-	// same paths resolved, which is what the shield bookkeeping compares against.
-	optedIn, optIns []string
-	aliases         []credentialAlias
+	// optIns are the shields the policy opted back into the sandbox: the literal
+	// deny-list names for the frontend's warning, and the resolved ones the shield
+	// bookkeeping compares against.
+	optIns  []shieldOptIn
+	aliases []credentialAlias
 }
 
 // createdShields names the shield mount points bwrap will create on the host for this
 // run, so the caller can remove them afterwards.
 func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
-	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, pf.optIns)
+	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, optInTargets(pf.optIns))
 }
 
 // preflightGrants decides everything that can refuse a run and then prepares the host
@@ -345,7 +345,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	// Surface any always-shielded credential store the policy explicitly opted back into
 	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
 	// path. The shields still protect every path not opted into.
-	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
+	optIns := explicitShieldOptIns(sb, p.Read)
 
 	// A shield hides a credential's path, not the content behind it. Refuse before the
 	// target starts if anything this run can read holds a second name for a shielded
@@ -355,7 +355,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	// is bound too and may sit under the home. An explicit opt-in is honored - those
 	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
 	// the aliases in it, so this refuses only what nobody asked for.
-	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
+	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optInPaths(optIns))
 	if err != nil {
 		return preflighted{}, err
 	}
@@ -370,7 +370,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return preflighted{}, err
 	}
-	return preflighted{reads: reads, writes: writes, optedIn: optedIn, optIns: optIns, aliases: accepted}, nil
+	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted}, nil
 }
 
 // prepareWriteDirs makes each granted write directory exist on the host before it

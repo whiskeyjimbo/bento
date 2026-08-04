@@ -456,8 +456,8 @@ func TestValidateJSONCarriesBlockedHostsAndShieldGrants(t *testing.T) {
 	if !slices.Equal(got.NetworkBlockedUnreadable, []string{"not-a-host-port"}) {
 		t.Errorf("network_blocked_unreadable = %v, want the key nothing can be asked about", got.NetworkBlockedUnreadable)
 	}
-	if !slices.Equal(got.ShieldedGrants, []string{filepath.Join(home, ".ssh")}) {
-		t.Errorf("shielded_grants = %v, want the granted shield", got.ShieldedGrants)
+	if !slices.Equal(got.ShieldedGrants, []shieldedGrantJSON{{Path: filepath.Join(home, ".ssh"), Holds: "credentials"}}) {
+		t.Errorf("shielded_grants = %v, want the granted shield named as a credential store", got.ShieldedGrants)
 	}
 }
 

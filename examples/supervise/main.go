@@ -347,21 +347,17 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
 		}
 	}
-	// A grant over a built-in credential shield is caveat-emptor: approve() can hand one
-	// out because the human said yes to a path, and bento honors it rather than refusing.
-	// ShieldedGrantTargets names the store it landed on where that differs from the
-	// spelling - the grantable names are built from $HOME, so a grant can name a symlink
-	// while the exposure lands on the real key. Both quoted: neither is manifest text.
+	// A grant over a built-in shield is caveat-emptor: approve() can hand one out because
+	// the human said yes to a path, and bento honors it rather than refusing. OnHost names
+	// the store it landed on where that differs from the spelling - the grantable names
+	// are built from $HOME, so a grant can name a symlink while the exposure lands on the
+	// real key. Both quoted: neither is manifest text.
 	if len(res.ShieldedGrants) > 0 {
-		lands := make(map[string]string, len(res.ShieldedGrantTargets))
-		for _, g := range res.ShieldedGrantTargets {
-			lands[g.Path] = g.Credential
-		}
 		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields on every run:"))
 		for _, g := range res.ShieldedGrants {
-			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
-			if target, ok := lands[g]; ok {
-				fmt.Fprintf(w, "    %s %s\n", t.dim("on this host:"), t.bold(strconv.Quote(target)))
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(g.Path)), t.dim("holds "+g.Holds))
+			if g.OnHost != "" {
+				fmt.Fprintf(w, "    %s %s\n", t.dim("on this host:"), t.bold(strconv.Quote(g.OnHost)))
 			}
 		}
 	}

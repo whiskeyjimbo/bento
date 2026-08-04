@@ -32,12 +32,10 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
 		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
-		ShieldedGrants:    []string{"/home/u/.ssh"},
-		// Keyed to the ShieldedGrants entry above, which is what pairs the two in the
-		// output; the store it lands on is enumerated from the host filesystem.
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: "/home/u/.ssh", Credential: "/home/u/real\x1b[2K/.ssh"}},
-		Shields:              []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
-		Exposed:              []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
+		// OnHost is the store the grant landed on, enumerated from the host filesystem.
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
+		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
+		Exposed:        []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
 	}
 	return res, &policy.Policy{Network: []policy.NetworkRule{{Host: "ok.example", Port: "443"}}}
 }
@@ -60,7 +58,7 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		"was refused: no network rule covers it",               // Denied
 		"1 credential/host-service path(s) shielded",           // Shields
 		`"/home/u/.ssh"`,                                       // ShieldedGrants
-		`on this host that path is "/home/u/real\x1b[2K/.ssh"`, // ShieldedGrantTargets, quoted
+		`on this host that path is "/home/u/real\x1b[2K/.ssh"`, // ShieldedGrants OnHost, quoted
 		"second name for the shielded credential",              // AcceptedAliases
 		"read-only",                              // Exposed
 		"no connection through the egress proxy", // EgressConnections read as a bypass
@@ -126,7 +124,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 	}
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "AcceptedAliases": true,
-		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
+		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true,
 	}
 

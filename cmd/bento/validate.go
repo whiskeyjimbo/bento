@@ -487,13 +487,15 @@ type policyJSON struct {
 	// caught by hand there.
 	NetworkBlocked           []string `json:"network_blocked,omitempty"`
 	NetworkBlockedUnreadable []string `json:"network_blocked_unreadable,omitempty"`
-	// ShieldedGrants are the read grants that name a mandatory credential shield
-	// exactly, which lifts it for the run. The same exposure the human summary and
-	// approve's callouts raise; a CI gate reads it here. Absent, like ResolvedRead,
-	// on a host that could not answer - see toPolicyJSON.
-	ShieldedGrants []string    `json:"shielded_grants,omitempty"`
-	Exec           string      `json:"exec"`
-	Limits         *limitsJSON `json:"limits,omitempty"`
+	// ShieldedGrants are the read grants that name a mandatory shield exactly, which
+	// lifts it for the run, each with what the shield holds. The same exposure the human
+	// summary and approve's callouts raise; a CI gate reads it here, and a gate that
+	// refuses only lifted credential stores needs the bucket to tell them apart. Absent,
+	// like ResolvedRead, on a host that could not answer - see toPolicyJSON. on_host is
+	// not filled here: resolved_read already names what every grant reaches.
+	ShieldedGrants []shieldedGrantJSON `json:"shielded_grants,omitempty"`
+	Exec           string              `json:"exec"`
+	Limits         *limitsJSON         `json:"limits,omitempty"`
 	// Approval is "current", "stale", or "unapproved" - the same verdict the human
 	// summary prints, so a machine gate can read the outcome as a field rather than
 	// inferring it from the exit code.
@@ -590,7 +592,7 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 		// beside a resolved_read that is also absent, which is the pair a consumer reads
 		// as "this host could not answer" - the human summary says it in words.
 		grants, _ := explicitShieldGrants(resolved.Read)
-		out.ShieldedGrants = shieldGrantPaths(grants)
+		out.ShieldedGrants = toShieldGrantsJSON(grants)
 	}
 	return out
 }

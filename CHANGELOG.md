@@ -97,6 +97,25 @@ commits that built it - none of them were ever in a release.
 
 ### What a Run Tells You
 
+- **Breaking: `shielded_grants` now says what each lifted shield held, and
+  absorbed `shielded_grant_targets`.** A grant naming a shield exactly lifts it,
+  and every surface reporting that called what came out a credential store - but
+  the shields also cover history stores, session layout, and the host's service
+  sockets, so an operator reading the post-run warning went looking for a key
+  behind a shell history. Each entry is now an object: `path` as the manifest
+  spelled it, `holds` (`credentials`, `private-data`, `history`, `persistence`,
+  `services`), and `on_host` where the grant bound somewhere other than its own
+  name - which is what `shielded_grant_targets` used to carry, so that field is
+  gone rather than duplicated. `bento validate --json` reports the same shape
+  minus `on_host`, which `resolved_read` already answers. In Go,
+  `enforce.Result.ShieldedGrants` is `[]enforce.ShieldedGrant` and
+  `ShieldedGrantTargets` is gone; `CredentialAlias` stays as it was, for
+  `AcceptedAliases`, where the word is still accurate. The boundary did not move:
+  the same grants lift the same shields, and the run warns about them as loudly.
+- **`bento profile --json` withholds a shielded read as `read-shielded`, not
+  `shielded-credential`**, matching its `write-shielded` sibling, with the bucket
+  beside it in a new `holds` field. A consumer switching on `reason` keeps one
+  code to match and can now tell a withheld history store from a withheld key.
 - **The post-run denial legend now names the two shapes that raise no error.** It
   mapped `EROFS`/`ENOENT`/`EPERM` back to the manifest fields that produced them,
   which reads as the complete list of what a denial looks like - but a hidden

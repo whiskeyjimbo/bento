@@ -58,7 +58,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
-	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
+	optIns := explicitShieldOptIns(sb, p.Read)
 	// Write grants are prepared exactly as the bwrap tier prepares them, through the
 	// same function: a missing directory is created so Landlock has a path to grant
 	// (its rules skip a path that does not exist), and a grant naming an existing FILE
@@ -96,7 +96,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		sysReads = append(sysReads, extra)
 	}
 
-	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optIns)
+	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optInTargets(optIns))
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
@@ -199,7 +199,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Exposed: exposed}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

@@ -613,7 +613,10 @@ func TestWriteMissingReadNotes(t *testing.T) {
 // the policy opted into none (the common run).
 func TestWriteShieldedGrantWarning(t *testing.T) {
 	var b bytes.Buffer
-	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []string{"/home/u/.ssh", "/run"}})
+	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []enforce.ShieldedGrant{
+		{Path: "/home/u/.ssh", Holds: "credentials"},
+		{Path: "/run", Holds: "services"},
+	}})
 	out := b.String()
 	if !strings.Contains(out, "WARNING") {
 		t.Errorf("the notice must be loud; got %q", out)
@@ -621,6 +624,13 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 	for _, p := range []string{"/home/u/.ssh", "/run"} {
 		if !strings.Contains(out, p) {
 			t.Errorf("the notice must name each opted-in path; %q missing from %q", p, out)
+		}
+	}
+	// Each path is named by what its shield held: an operator reading this after the fact
+	// must not go looking for a key behind a service socket directory, or the reverse.
+	for _, noun := range []string{"credential store", "service socket directory"} {
+		if !strings.Contains(out, noun) {
+			t.Errorf("the notice must say what each shield held; %q missing from %q", noun, out)
 		}
 	}
 
@@ -641,8 +651,10 @@ func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
 
 	var b bytes.Buffer
 	writeShieldedGrantWarning(&b, enforce.Result{
-		ShieldedGrants:       []string{granted, "/run"},
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
+		ShieldedGrants: []enforce.ShieldedGrant{
+			{Path: granted, OnHost: store, Holds: "credentials"},
+			{Path: "/run", Holds: "services"},
+		},
 	})
 	out := b.String()
 
@@ -667,8 +679,7 @@ func TestWriteShieldedGrantWarningQuotesBothNames(t *testing.T) {
 
 	var b bytes.Buffer
 	writeShieldedGrantWarning(&b, enforce.Result{
-		ShieldedGrants:       []string{granted},
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: forged}},
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: granted, OnHost: forged, Holds: "credentials"}},
 	})
 	out := b.String()
 
