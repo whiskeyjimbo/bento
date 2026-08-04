@@ -116,18 +116,22 @@ what a policy grants, so a broad `read: /` or `read: ~` can't reach them.
 The precedence is fixed and does not depend on how the grant is written: no read
 grant that merely *covers* a shielded path lifts it. What does lift one is a grant
 naming the shielded store exactly - `read: ~/.ssh`, not `read: ~` - which is the
-deliberate handover of section 3, and it warns. It has to be the store itself: a
-shield covers a whole directory and cannot be partly lifted, so `read:
-~/.ssh/id_rsa` is refused outright rather than honored under the shield - opting
-one file in means naming the directory and taking the rest with it. Only the
+deliberate handover of section 3, and it warns. It has to be the shield entry
+itself, spelled exactly as the deny-list carries it: a grant that lands *inside*
+an entry is refused outright rather than honored under the shield, so `read:
+~/.ssh/id_rsa` is refused and opting one key in means naming `~/.ssh` and taking
+the rest with it. Where the entry is a single file - `~/.netrc` - naming that
+file is the exact match, and there is nothing inside it to ask for. Only the
 hidden-outright shields are opt-in-able at all; the read-only ones have nothing to
 grant but the write they exist to refuse, and a write grant under one is refused
 outright.
 
-Credential stores are shielded as whole directories, not named files. Shielding
-`~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there, and does
-nothing about a file the program creates itself - so the whole directory goes.
-When a tool relocates its store with an env var (GNUPGHOME, KUBECONFIG, the AWS_*
+A credential store that is a directory is shielded whole, not file by file.
+Shielding `~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there,
+and does nothing about a key the program generates itself - so the whole
+directory goes. A store that is genuinely one file (`~/.netrc`,
+`~/.claude/.credentials.json`) is shielded by name, because there is no directory
+to take: its parent holds unrelated content the tool needs. When a tool relocates its store with an env var (GNUPGHOME, KUBECONFIG, the AWS_*
 file vars), the shield follows to the new location.
 
 Config a tool legitimately reads - `.gitconfig`, shell rc - is shielded
