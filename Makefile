@@ -26,7 +26,20 @@ GO_BUILD_ENV   := GOWORK=off CGO_ENABLED=0
 # (see homeAnchors); routing that lookup through libc NSS would put it back under
 # caller control, since LD_PRELOAD can make getpwuid_r fail and drop the anchor.
 GO_BUILD_FLAGS := -trimpath -buildvcs=false -tags osusergo
-LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
+# LDFLAGS is left free for the caller. The stamp is appended to whatever they pass
+# rather than living in LDFLAGS itself, because `make build LDFLAGS=-s` would
+# otherwise erase the version, commit and date and produce a binary that cannot say
+# what it is. No -s -w here on purpose: the developer build keeps its symbol table
+# and DWARF so a crash in a sandbox layer is debuggable; only the release build in
+# .goreleaser.yaml strips, where the size of a downloaded archive is the concern and
+# the source is reproducible from the tag anyway.
+LDFLAGS ?=
+GO_LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE) $(LDFLAGS)"
+
+# Standard GNU install locations. DESTDIR is the staging prefix a packager sets;
+# PREFIX is where the binary will actually live at run time.
+PREFIX  ?= /usr/local
+BINDIR  ?= $(PREFIX)/bin
 
 # Pinned so the audit is reproducible: floating @latest would let the scanner drift
 # under a build that is otherwise fixed. The vulnerability DB is fetched at run time
@@ -54,12 +67,15 @@ all: build
 ## @category Build & Distribution
 build: ## Compile the bento binary (reproducible: trimmed paths, static, source-derived stamp)
 	@printf "$(CYAN)$(BOLD)==> Building bento ($(VERSION) - $(COMMIT))...$(RESET)\n"
-	@$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) $(LDFLAGS) -o bento ./cmd/bento
+	@$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) $(GO_LDFLAGS) -o bento ./cmd/bento
 	@printf "$(GREEN)$(BOLD)✓ Binary built successfully: ./bento$(RESET)\n"
 
-install: ## Install bento to GOPATH/bin
-	@printf "$(CYAN)$(BOLD)==> Installing bento to GOPATH/bin...$(RESET)\n"
-	@$(GO_BUILD_ENV) go install $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/bento
+# Installs the same binary `make build` produced rather than a second `go install`
+# build, so what is verified locally is what lands in BINDIR.
+install: build ## Install bento to DESTDIR/PREFIX (default /usr/local/bin)
+	@printf "$(CYAN)$(BOLD)==> Installing bento to $(DESTDIR)$(BINDIR)...$(RESET)\n"
+	@install -d $(DESTDIR)$(BINDIR)
+	@install -m 0755 bento $(DESTDIR)$(BINDIR)/bento
 	@printf "$(GREEN)$(BOLD)✓ Installed bento successfully!$(RESET)\n"
 
 clean: ## Remove built binaries
@@ -114,6 +130,24 @@ race: ## Run the proxy concurrency tests under the race detector
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
 
+# Per-package `go test -cover` credits a function only to its own package's tests, so a
+# package exercised entirely from its callers reads 0% and looks untested when it is not
+# (internal/grantrefusal is the extreme case: no test file, every function driven from
+# the thirteen call sites its package doc names). -coverpkg=./... measures the tree
+# instead. The consequence is that the denominator changes - every listed package counts
+# against every test binary - so these percentages are NOT comparable to the per-package
+# ones, and the per-function view is what a reader should act on.
+#
+# BENTO_REQUIRE_TEST_DEPS mirrors `make test`: without it a host missing bwrap, userns or
+# the firejail and AppArmor profiles skips the behavioural tests and reports a lower
+# number, which reads as a regression rather than as a host that could not run them.
+COVERPROFILE ?= coverage.out
+cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in check)
+	@printf "$(CYAN)$(BOLD)==> Measuring coverage across the tree...$(RESET)\n"
+	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test -count=1 -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
+	@printf "$(GREEN)$(BOLD)✓ Profile written to $(COVERPROFILE); per-function view: go tool cover -func=$(COVERPROFILE)$(RESET)\n"
+
 vet: ## Run go vet checks
 	@printf "$(CYAN)$(BOLD)==> Running go vet...$(RESET)\n"
 	@GOWORK=off go vet ./...
@@ -162,7 +196,11 @@ examples: ## Build, vet and test every example module against the public API
 	@for f in examples/*/verify.sh; do "$$f" || exit 1; done
 	@printf "$(GREEN)$(BOLD)✓ Examples verified!$(RESET)\n"
 
-check: vet crossbuild lint test race audit examples ## Run all quality gates (vet, crossbuild, lint, test, race, audit, examples)
+# vuln is in here rather than on a nightly schedule because a known-vulnerable
+# dependency should stop the merge that introduces it, not be reported the next
+# morning. It is the one gate that needs network: the tool is pinned but the
+# vulnerability database is fetched at run time and is expected to move.
+check: vet crossbuild lint test race audit examples vuln ## Run all quality gates (vet, crossbuild, lint, test, race, audit, examples, vuln)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
