@@ -458,9 +458,12 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// Write-denied rather than hidden, which is the weaker of the two and a deliberate
 		// choice: it holds no key material, so hiding it would buy only that a sandboxed run
 		// cannot enumerate the paths and grants of other manifests approved on this host.
-		// That is real reconnaissance and an argument for DenyAll, but this list is where the
-		// reasoning about plant targets lives, and the forgery above is the threat that makes
-		// a reviewer read a false diff.
+		// That is real reconnaissance and an argument for DenyAll, but the callouts keyed on
+		// DenyAll all describe what they name as a credential store the reader is lifting a
+		// shield over - approve's prompt, validate's note and footer, and the post-run
+		// exposure warning. Hiding the journal would make every one of them say something
+		// false at the moment a reviewer is deciding whether to stamp, which costs more than
+		// the disclosure buys. Widening that vocabulary is the precondition for revisiting it.
 		".local/state/bento",
 		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
 		".vscode",                   // extensions/ load on startup
