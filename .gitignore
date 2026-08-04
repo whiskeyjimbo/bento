@@ -6,6 +6,7 @@
 bin/
 .beads/*
 /bento
+/coverage.out
 dist/
 
 # `go build .` in an example module names the binary after the module.

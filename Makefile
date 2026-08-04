@@ -57,7 +57,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test race vet crossbuild lint audit examples vuln repro check install clean help
+.PHONY: all build test cover race vet crossbuild lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -104,6 +104,24 @@ race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
+
+# Per-package `go test -cover` credits a function only to its own package's tests, so a
+# package exercised entirely from its callers reads 0% and looks untested when it is not
+# (internal/grantrefusal is the extreme case: no test file, every function driven from
+# the thirteen call sites its package doc names). -coverpkg=./... measures the tree
+# instead. The consequence is that the denominator changes - every listed package counts
+# against every test binary - so these percentages are NOT comparable to the per-package
+# ones, and the per-function view is what a reader should act on.
+#
+# BENTO_REQUIRE_TEST_DEPS mirrors `make test`: without it a host missing bwrap, userns or
+# the firejail and AppArmor profiles skips the behavioural tests and reports a lower
+# number, which reads as a regression rather than as a host that could not run them.
+COVERPROFILE ?= coverage.out
+cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in check)
+	@printf "$(CYAN)$(BOLD)==> Measuring coverage across the tree...$(RESET)\n"
+	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test -count=1 -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
+	@printf "$(GREEN)$(BOLD)✓ Profile written to $(COVERPROFILE); per-function view: go tool cover -func=$(COVERPROFILE)$(RESET)\n"
 
 vet: ## Run go vet checks
 	@printf "$(CYAN)$(BOLD)==> Running go vet...$(RESET)\n"

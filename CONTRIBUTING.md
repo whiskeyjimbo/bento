@@ -54,6 +54,7 @@ make audit       # denylist parity against the firejail reference definitions
 make crossbuild  # the tree still compiles for darwin and linux/arm64
 make examples    # each examples/*/verify.sh, which the root go test does not reach
 make vuln        # govulncheck over both modules; needs network
+make cover       # whole-tree coverage with -coverpkg; see "Coverage" below
 ```
 
 Two of these are easy to underestimate:
@@ -84,6 +85,54 @@ Tests assert behaviour, not implementation. Where a test needs to stand in for
 the outside world, prefer a small real implementation - an in-memory store, a
 canned transport - over a mock; it survives refactoring in a way an expectation
 script does not.
+
+### Coverage
+
+```bash
+make cover   # -coverpkg=./... over the whole tree; ~40s, not part of make check
+```
+
+The baseline is **84.7% of statements** (2026-08-03). Read it with
+`go tool cover -func=coverage.out`, and read the per-function column rather than
+the per-package one.
+
+Two things about that number are easy to misread.
+
+**It is not comparable to `go test ./... -cover`.** Per-package coverage credits
+a function only to its own package's tests, so a package driven entirely from
+its callers reads as untested when it is not - `internal/grantrefusal` has no
+test file at all and every one of its functions is exercised. `-coverpkg=./...`
+measures the tree instead, which also changes the denominator: every package is
+counted against every test binary, so the per-package percentages `make cover`
+prints are each one test binary's share of the whole tree, not that package's
+own coverage. They are meaningless in isolation. Only the total and the
+per-function view mean anything.
+
+**Some real coverage is not counted at all.** The sandbox layers are tested
+through sacrificial subprocesses, and a subprocess's counters do not reach the
+profile:
+
+- `internal/launcher` and `internal/seccomp` re-exec the test binary behind a
+  sentinel environment variable. The child is instrumented, so its counters
+  *could* be merged - the toolchain wants `-test.gocoverdir=$DIR` on the child's
+  argv and `go tool covdata textfmt` afterwards - but a child that applies the
+  layers cannot then write them: Landlock confines it to the run's writable
+  grants, and the coverage directory is not one. Granting it would mean the test
+  no longer runs the configuration it claims to test, so the launcher's report
+  child deliberately calls `os.Exit(0)` before `testing`'s teardown and discards
+  its own counters. Removing that call makes the suite fail outright, which is
+  what commit 5e86406 fixed; the low numbers are the price.
+- `internal/landlock` builds `internal/landlock/internal/probe` as a separate
+  binary and runs it under bwrap. That coverage is invisible even to
+  `-coverpkg`, and recovering it would need the probe built with `-cover` and
+  merged through `covdata` - into the same write-after-the-layers-close wall.
+- A child that exits non-zero emits nothing at all, so the failure paths those
+  subprocesses exist to exercise are the least visible of the lot.
+
+So `internal/landlock`, `internal/seccomp`, `internal/launcher` and
+`backend.DispatchReexec` read low because their coverage is uncounted, not
+because it is missing. Do not chase those numbers with tests; check what the
+subprocess tests already assert first.
 
 ## Architecture & conventions
 
