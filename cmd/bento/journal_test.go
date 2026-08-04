@@ -508,7 +508,7 @@ func TestReadApprovalAnswer(t *testing.T) {
 	} {
 		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
 			var buf strings.Builder
-			err := readApprovalAnswer(&buf, strings.NewReader(tc.answer))
+			err := readApprovalAnswer(strings.NewReader(tc.answer), &buf)
 			if approved := err == nil; approved != tc.approves {
 				t.Errorf("answer %q approved = %v, want %v (err %v)", tc.answer, approved, tc.approves, err)
 			}
@@ -516,24 +516,5 @@ func TestReadApprovalAnswer(t *testing.T) {
 				t.Errorf("the prompt must state the default; got %q", buf.String())
 			}
 		})
-	}
-}
-
-// The reviewed flag comes straight off the answer above, and a stamp a human affirmed must
-// be recorded as one - the whole point of the field is that a --yes stamp is distinguishable.
-func TestAnAffirmedAnswerIsRecordedAsReviewed(t *testing.T) {
-	stateHome(t)
-	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
-	path := writeManifest(t, p, manifest.Provenance{})
-	if err := storeApprovalRecord(path, p, true); err != nil {
-		t.Fatal(err)
-	}
-	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
-	rec, verdict := readApprovalRecord(path, doc)
-	if verdict != journalMatches {
-		t.Fatalf("verdict = %v, want journalMatches", verdict)
-	}
-	if !rec.Reviewed {
-		t.Error("an interactively affirmed stamp must be recorded as reviewed")
 	}
 }

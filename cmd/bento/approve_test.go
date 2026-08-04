@@ -380,8 +380,22 @@ func TestConfirmApprovalNeedsAnAnswerOrTheFlag(t *testing.T) {
 	})
 
 	t.Run("stdin is not a terminal", func(t *testing.T) {
+		// stdin is swapped for a pipe rather than trusting whatever the test binary
+		// inherited: run from a terminal, this subtest otherwise takes the interactive
+		// branch and asserts a refusal that never comes - or blocks on the developer's own
+		// terminal waiting for an answer. A pipe is not a terminal anywhere.
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close()
+		saved := os.Stdin
+		os.Stdin = r
+		defer func() { os.Stdin = saved }()
+
 		var buf strings.Builder
-		err := confirmApproval(&buf, false)
+		err = confirmApproval(&buf, false)
 		if err == nil {
 			t.Fatal("a stdin nobody can answer on must refuse rather than stamp")
 		}
