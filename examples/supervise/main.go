@@ -357,7 +357,7 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 		for _, g := range res.ShieldedGrantTargets {
 			lands[g.Path] = g.Credential
 		}
-		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields as credential stores:"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields on every run:"))
 		for _, g := range res.ShieldedGrants {
 			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
 			if target, ok := lands[g]; ok {

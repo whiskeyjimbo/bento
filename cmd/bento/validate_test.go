@@ -401,6 +401,16 @@ func TestValidateNamesAnExplicitShieldGrant(t *testing.T) {
 			t.Errorf("summary missing %q; got:\n%s", want, out)
 		}
 	}
+	// A shield over a history store is described as one. The note is what a reviewer
+	// reads while deciding to approve, and stretching "credential store" over the paths
+	// that hold no key material is what drains it for the grants where it is the truth.
+	hist, err := runCapturingStdout(t, newValidateCmd(), writeManifest(t, &policy.Policy{Entrypoint: "./x", Read: []string{"~/.local/state/nvim"}}, manifest.Provenance{}))
+	if err != nil {
+		t.Fatalf("validate: %v\n%s", err, hist)
+	}
+	if !strings.Contains(hist, "history store bento shields on every run") || strings.Contains(hist, "credential store bento shields") {
+		t.Errorf("a history store must be named as one, not as a credential store; got:\n%s", hist)
+	}
 	if strings.Contains(out, "shielded even if a path above would otherwise expose them") {
 		t.Errorf("the unqualified footer contradicts the grant above it; got:\n%s", out)
 	}
@@ -413,7 +423,9 @@ func TestValidateNamesAnExplicitShieldGrant(t *testing.T) {
 	if !strings.Contains(plain, "shielded even if a path above would otherwise expose them") {
 		t.Errorf("a policy lifting no shield must keep the plain footer; got:\n%s", plain)
 	}
-	if strings.Contains(plain, "credential store bento shields on every run") {
+	// Keyed on the part every bucket's note shares, not on the credential spelling: a
+	// note about a history store or a host-startup path is the same wrong answer here.
+	if strings.Contains(plain, "bento shields on every run") {
 		t.Errorf("a grant that merely contains shields is not an opt-in; got:\n%s", plain)
 	}
 }

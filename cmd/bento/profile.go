@@ -1160,6 +1160,8 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged []accessNoteJSON) {
 	shielded, writeShielded, broadReads, broadWrites := clampProposal(p)
 	for _, d := range shielded {
+		// The reason stays "shielded-credential" for every bucket: it is a wire value a
+		// consumer switches on, and what the shield holds is the prose's job.
 		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d.Path, Reason: "shielded-credential"})
 		fmt.Fprintf(out, "[bento] not proposing access to %q - it is a %s bento shields on every run, not granted automatically. The script's attempt was recorded; if it genuinely needs it, add a read:/write: grant for that path by hand - the run then exposes it and warns you each time.\n", d.Path, d.Holds.Noun())
 	}

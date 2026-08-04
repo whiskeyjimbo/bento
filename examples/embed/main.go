@@ -289,7 +289,7 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 		lands[t.Path] = t.Credential
 	}
 	for _, path := range res.ShieldedGrants {
-		fmt.Fprintf(w, "embed: WARNING: exposed shielded credential path to the target: %q\n", path)
+		fmt.Fprintf(w, "embed: WARNING: exposed an always-shielded path to the target: %q\n", path)
 		if target, ok := lands[path]; ok {
 			fmt.Fprintf(w, "embed: WARNING:   on this host that path is %q\n", target)
 		}
