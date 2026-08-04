@@ -108,9 +108,14 @@ func journalPath(realPath string) (string, error) {
 
 // readApprovalRecord returns the journal's entry for a manifest and how far it can be
 // trusted. Every failure to read one is journalAbsent rather than an error: the journal is
-// a convenience over a stamp that is authoritative without it, so an unreadable or
-// corrupt entry must degrade to "bento cannot show you the diff" and never to a refusal to
-// approve. The caller's absent wording is true in each of those cases.
+// a convenience over a stamp that is authoritative without it, so an unreadable or corrupt
+// entry must degrade to "bento cannot show you the diff" and never to a refusal to approve.
+// Absent is worded as bento holding no record, which is what all of those cases have in
+// common - a missing entry, a corrupt one, and a state home pointed somewhere else alike.
+//
+// The entry is read before it is judged, and deliberately: a missing file must reach the
+// reader as "no record" rather than as an untrustworthy journal, and only its existence
+// distinguishes the two.
 func readApprovalRecord(realPath string, doc *manifest.Document) (approvalRecord, journalVerdict) {
 	path, err := journalPath(realPath)
 	if err != nil {
