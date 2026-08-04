@@ -865,6 +865,10 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		"/home/u/.local/bin",     // on $PATH via the distro default profile
 		"/home/u/bin",            // same
 		"/home/u/.gradle/init.d", // every .gradle here runs before each build
+		// bento's own approval journal. A forged entry makes the re-approval diff lie about
+		// which grant is new, and the entry is trusted precisely because only this host's
+		// approve writes it - so a sandboxed run must not be able to author one.
+		"/home/u/.local/state/bento",
 	} {
 		r, ok := byPath[p]
 		if !ok {
@@ -1148,6 +1152,28 @@ func TestRuntimeFollowsRelocatedRuntimeDir(t *testing.T) {
 	for _, dir := range []string{"/", "/home", "/home/u", ""} {
 		if got := len(Runtime(dir, "/home/u")); got != 2 {
 			t.Errorf("Runtime(%q) emitted %d rules, want only the 2 base rules - it cannot shield the grant surface itself", dir, got)
+		}
+	}
+}
+
+// The journal must stay shielded under a relocated state home too: XDG_STATE_HOME is in
+// profile's discovery set, so a sandboxed script can see where the journal was pointed, and
+// the default location is guessable without any passthrough. homeLocations expands the
+// home-relative entry to both, which is the whole reason the entry is spelled that way.
+func TestApprovalJournalIsShieldedUnderARelocatedStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/home/u/state")
+	byPath := make(map[string]Rule)
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{"/home/u/.local/state/bento", "/home/u/state/bento"} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded, so a sandboxed run could forge an approval record there", p)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s must be a DenyWrite dir shield, got %+v", p, r)
 		}
 	}
 }
