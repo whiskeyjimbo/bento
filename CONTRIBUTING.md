@@ -35,10 +35,13 @@ This checkout is not part of the parent `go.work`, so every `go` command needs
 
 ```bash
 make build   # reproducible static binary
-make check   # the full gate: vet, crossbuild, lint, test, race, audit, examples
+make check   # the full gate: vet, crossbuild, lint, test, race, audit, examples, vuln
 ```
 
-`make check` is the bar before merging. Get it green before opening a PR.
+`make check` is the bar before merging. Get it green before opening a PR. It needs
+network access: `make vuln` fetches the vulnerability database at run time, so a
+dependency with a known advisory stops the merge that introduces it rather than
+being reported the next morning.
 
 Useful targets:
 
@@ -50,6 +53,7 @@ make race        # the proxy's concurrency tests under the race detector
 make audit       # denylist parity against the firejail reference definitions
 make crossbuild  # the tree still compiles for darwin and linux/arm64
 make examples    # each examples/*/verify.sh, which the root go test does not reach
+make vuln        # govulncheck over both modules; needs network
 ```
 
 Two of these are easy to underestimate:
