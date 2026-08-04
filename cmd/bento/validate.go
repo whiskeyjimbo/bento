@@ -22,8 +22,9 @@ import (
 
 func newValidateCmd() *cobra.Command {
 	var (
-		asJSON bool
-		strict bool
+		asJSON      bool
+		strict      bool
+		relocatable bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,6 +40,12 @@ func newValidateCmd() *cobra.Command {
 			"approval, or a manifest this host cannot start, a failure (exit non-zero), for use\n" +
 			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
 			"as `approval` and `runnable` fields and honors --strict too.\n\n" +
+			"--relocatable additionally refuses a manifest whose paths do not anchor to its own\n" +
+			"directory. The approval stamp attests the manifest as written, so a manifest whose\n" +
+			"grants are all relative keeps one approval across every checkout it is copied into,\n" +
+			"and a single absolute or ~ path ends that. It is opt-in because plenty of manifests\n" +
+			"are meant for one machine; asking for it is the failure, so it does not need\n" +
+			"--strict. --json reports it as `relocatable` and `pinned_paths`.\n\n" +
 			"validate builds no sandbox, so it runs on a host bento cannot run a manifest on.\n" +
 			"Off Linux it cannot check who else can write an approved manifest, and says so\n" +
 			"rather than passing over the question - a warning, as every trust finding is.",
@@ -51,10 +58,14 @@ func newValidateCmd() *cobra.Command {
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := checkRunnable(resolved)
+			pinned := pinnedPaths(doc.Policy)
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(checkApproval(doc))
 				out.setRunnable(run)
+				if relocatable {
+					out.setRelocatable(pinned)
+				}
 				if err := writeJSON(os.Stdout, out); err != nil {
 					return err
 				}
@@ -64,19 +75,29 @@ func newValidateCmd() *cobra.Command {
 				if err := strictApprovalError(doc, strict); err != nil {
 					return err
 				}
-				return strictRunnableError(run, strict)
+				if err := strictRunnableError(run, strict); err != nil {
+					return err
+				}
+				return relocatableError(relocatable, pinned)
 			}
 			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			writeRunnability(os.Stdout, run)
+			if relocatable {
+				writeRelocatable(os.Stdout, pinned)
+			}
 			if err := reportApproval(os.Stdout, doc, strict); err != nil {
 				return err
 			}
-			return strictRunnableError(run, strict)
+			if err := strictRunnableError(run, strict); err != nil {
+				return err
+			}
+			return relocatableError(relocatable, pinned)
 		},
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the parsed policy as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail if the manifest's approval is stale or missing")
+	cmd.Flags().BoolVar(&relocatable, "relocatable", false, "fail if any path pins the manifest to one location instead of anchoring to its own directory")
 	return cmd
 }
 
@@ -359,6 +380,63 @@ func strictRunnableError(r runnability, strict bool) error {
 	return fmt.Errorf("manifest cannot run on this host: %s", strings.Join(r.problems, "; "))
 }
 
+// pinnedPaths names the paths that tie a manifest to one location, in the order the
+// summary lists them. A fleet approving one manifest per agent class and reusing it in
+// every worktree rests on the whole manifest anchoring to its own directory; that is a
+// convention with nothing checking it, and one absolute path ends it silently.
+//
+// It reads the manifest's own spelling and never the resolved policy. Resolve
+// absolutizes every grant by construction - the same trap resolvedGrants documents - so
+// a resolved policy is pinned by definition and this would fire on every manifest.
+//
+// The interpreter is left out. profile writes what the script's shebang names, so an
+// absolute interpreter is the ordinary case, and `/usr/bin/python3` means the same thing
+// in every checkout: it ties the manifest to a host, which is a different question.
+func pinnedPaths(p *policy.Policy) []string {
+	var pinned []string
+	if manifest.NonAnchoring(p.Entrypoint) {
+		pinned = append(pinned, fmt.Sprintf("entrypoint %q", p.Entrypoint))
+	}
+	for _, g := range p.Read {
+		if manifest.NonAnchoring(g) {
+			pinned = append(pinned, fmt.Sprintf("read grant %q", g))
+		}
+	}
+	for _, g := range p.Write {
+		if manifest.NonAnchoring(g) {
+			pinned = append(pinned, fmt.Sprintf("write grant %q", g))
+		}
+	}
+	return pinned
+}
+
+// writeRelocatable prints the verdict in the same shape as the runnability block above
+// it. It is printed only when it was asked for: a manifest written for one machine is
+// not wrong, so an unasked-for line here would read as a defect in every such manifest.
+func writeRelocatable(w io.Writer, pinned []string) {
+	if len(pinned) == 0 {
+		fmt.Fprintf(w, "\nrelocatable:  yes (every path anchors to the manifest's own directory)\n")
+		return
+	}
+	fmt.Fprintf(w, "\nrelocatable:  NO - these paths pin the manifest to one location\n")
+	for _, p := range pinned {
+		fmt.Fprintf(w, "              %s\n", p)
+	}
+	fmt.Fprintf(w, "              The stamp attests the manifest as written, so one approval covers\n")
+	fmt.Fprintf(w, "              every checkout only while its paths stay relative to it.\n")
+}
+
+// relocatableError is the verdict on its own, shared by the human and --json paths for
+// the same reason strictApprovalError is. It is not gated on --strict: --relocatable is
+// already the opt-in, and a flag that reported the finding but passed the gate would
+// leave nothing asking for it.
+func relocatableError(relocatable bool, pinned []string) error {
+	if !relocatable || len(pinned) == 0 {
+		return nil
+	}
+	return fmt.Errorf("manifest is not relocatable: %s", strings.Join(pinned, "; "))
+}
+
 // approvalName is the machine-readable spelling of an approval state, so --json
 // can express the same verdict the human summary prints.
 func approvalName(s approvalState) string {
@@ -422,6 +500,19 @@ type policyJSON struct {
 	// file. A note beside missing_read_grants and read the same way: runnable stays true
 	// and --strict does not fail on it.
 	FileishWriteGrants []string `json:"fileish_write_grants,omitempty"`
+	// Relocatable says whether every path anchors to the manifest's own directory, with
+	// PinnedPaths naming the ones that do not. A pointer because absent is the third
+	// answer, as it is for Runnable: the question is only asked under --relocatable.
+	Relocatable *bool    `json:"relocatable,omitempty"`
+	PinnedPaths []string `json:"pinned_paths,omitempty"`
+}
+
+// setRelocatable folds the verdict into the envelope, so a machine gate reads the same
+// answer the human summary prints rather than inferring it from the exit code.
+func (o *policyJSON) setRelocatable(pinned []string) {
+	ok := len(pinned) == 0
+	o.Relocatable = &ok
+	o.PinnedPaths = pinned
 }
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent

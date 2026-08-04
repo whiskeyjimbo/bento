@@ -714,3 +714,114 @@ func TestValidateShowsInterpreterArgs(t *testing.T) {
 		t.Errorf("an empty interpreter_args must print nothing:\n%s", plain.String())
 	}
 }
+
+// A fleet approves one manifest per agent class and reuses it in every worktree, which
+// holds only while every path anchors to the manifest's own directory. --relocatable is
+// what checks it, and the check must read the manifest as written: the resolved policy
+// is absolute by construction, so a check fed that one passes nothing.
+func TestValidateRelocatable(t *testing.T) {
+	cases := map[string]struct {
+		policy     *policy.Policy
+		wantPinned []string
+	}{
+		"all relative": {policy: &policy.Policy{Entrypoint: "./x", Read: []string{"./data"}, Write: []string{"out"}}},
+		"absolute read grant": {
+			policy:     &policy.Policy{Entrypoint: "./x", Read: []string{"./data", "/srv/corpus"}},
+			wantPinned: []string{`read grant "/srv/corpus"`},
+		},
+		"absolute write grant": {
+			policy:     &policy.Policy{Entrypoint: "./x", Write: []string{"/var/tmp/out"}},
+			wantPinned: []string{`write grant "/var/tmp/out"`},
+		},
+		"absolute entrypoint": {
+			policy:     &policy.Policy{Entrypoint: "/opt/agent/x"},
+			wantPinned: []string{`entrypoint "/opt/agent/x"`},
+		},
+		// A ~ grant anchors to whoever runs it, so it pins harder than an absolute path
+		// while looking relative - the case a bare filepath.IsAbs check would pass.
+		"tilde read grant": {
+			policy:     &policy.Policy{Entrypoint: "./x", Read: []string{"~/.cache/models"}},
+			wantPinned: []string{`read grant "~/.cache/models"`},
+		},
+		// profile writes what the shebang names, so an absolute interpreter is the
+		// ordinary case and means the same thing in every checkout.
+		"absolute interpreter": {policy: &policy.Policy{Entrypoint: "./x", Interpreter: "/usr/bin/python3"}},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeManifest(t, tc.policy, manifest.Provenance{})
+			out, err := runCapturingStdout(t, newValidateCmd(), "--relocatable", path)
+			if len(tc.wantPinned) == 0 {
+				if err != nil {
+					t.Fatalf("--relocatable must pass a manifest that anchors: %v\n%s", err, out)
+				}
+				if !strings.Contains(out, "relocatable:  yes") {
+					t.Errorf("the summary must report the verdict; got:\n%s", out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("--relocatable must fail on a pinned path; got:\n%s", out)
+			}
+			for _, want := range tc.wantPinned {
+				if !strings.Contains(out, want) || !strings.Contains(err.Error(), want) {
+					t.Errorf("both the summary and the error must name %s; got:\n%s\nerr: %v", want, out, err)
+				}
+			}
+		})
+	}
+}
+
+// The verdict is opt-in: a manifest written for one machine is not wrong, so without the
+// flag an absolute grant must neither print a line nor fail - including under --strict,
+// whose gate is about approval and runnability.
+func TestValidateRelocatableIsOptIn(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/corpus"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
+	if err != nil {
+		t.Fatalf("--strict alone must not fail on a pinned path: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "relocatable:") {
+		t.Errorf("the verdict must not be printed unless it was asked for; got:\n%s", out)
+	}
+}
+
+// A machine gate reads --json, and the two modes must not disagree: the envelope has to
+// carry the verdict AND the command has to exit non-zero, with the fields absent
+// entirely when the question was never asked.
+func TestValidateRelocatableJSON(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/corpus"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", "--relocatable", path)
+	if err == nil {
+		t.Errorf("--json --relocatable must fail too; got:\n%s", out)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+	if got.Relocatable == nil || *got.Relocatable {
+		t.Errorf("relocatable must be reported false; got %v", got.Relocatable)
+	}
+	if !slices.Contains(got.PinnedPaths, `read grant "/srv/corpus"`) {
+		t.Errorf("pinned_paths must name the grant; got %v", got.PinnedPaths)
+	}
+
+	plain, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, plain)
+	}
+	var unasked policyJSON
+	if err := json.Unmarshal([]byte(plain), &unasked); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, plain)
+	}
+	if unasked.Relocatable != nil || unasked.PinnedPaths != nil {
+		t.Errorf("the fields must be absent when the question was not asked; got %v %v", unasked.Relocatable, unasked.PinnedPaths)
+	}
+}

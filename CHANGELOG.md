@@ -26,6 +26,21 @@ commits that built it - none of them were ever in a release.
   rather than run without a handle, and that refusal stands under
   `--allow-degraded`.
 
+### Reviewing a Manifest
+
+- **`validate --relocatable` refuses a manifest whose paths pin it to one
+  location.** The approval stamp attests the manifest as written and `run`
+  checks it before resolving paths, so a manifest whose grants are all relative
+  keeps one approval across every checkout it is copied into - which is what lets
+  a fleet approve one manifest per agent class and reuse it in every worktree.
+  Nothing checked it, and a single absolute or `~` path ended it silently. The
+  flag reports the entrypoint and the read and write grants that do not anchor to
+  the manifest's own directory, and exits non-zero; `--json` carries the same
+  verdict as `relocatable` and `pinned_paths`. It is opt-in because a manifest
+  meant for one machine is not wrong, and the interpreter is not checked because
+  `profile` writes what the shebang names. The boundary did not move: this
+  reports on a manifest, and grants nothing.
+
 ### Verifying a Release
 
 - **The signature file is now `checksums.txt.sigstore.json`**, not
