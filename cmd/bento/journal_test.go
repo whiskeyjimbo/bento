@@ -198,7 +198,13 @@ func TestAnUnwritableJournalStillStamps(t *testing.T) {
 func TestASharedJournalDirIsNotWritten(t *testing.T) {
 	base := stateHome(t)
 	dir := filepath.Join(base, "bento", "approvals")
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	// Chmod after MkdirAll, which applies the umask: under the common 022 the mode above
+	// lands as 0755, and the test would pass without ever creating the shared directory it
+	// is about.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
 
@@ -364,7 +370,12 @@ func TestAReviewedStampIsNotReportedAsUnread(t *testing.T) {
 func TestAPlantedRecordInASharedJournalIsNotDiffedAgainst(t *testing.T) {
 	base := stateHome(t)
 	dir := filepath.Join(base, "bento", "approvals")
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	// Chmod after MkdirAll: see TestASharedJournalDirIsNotWritten. Without it this test
+	// passes under umask 022 while the forged baseline reaches the reader.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
 
