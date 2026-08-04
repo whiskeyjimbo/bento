@@ -107,11 +107,12 @@ func journalPath(realPath string) (string, error) {
 }
 
 // readApprovalRecord returns the journal's entry for a manifest and how far it can be
-// trusted. Every failure to read one is journalAbsent rather than an error: the journal is
-// a convenience over a stamp that is authoritative without it, so an unreadable or corrupt
-// entry must degrade to "bento cannot show you the diff" and never to a refusal to approve.
-// Absent is worded as bento holding no record, which is what all of those cases have in
-// common - a missing entry, a corrupt one, and a state home pointed somewhere else alike.
+// trusted. No failure is returned as an error: the journal is a convenience over a stamp
+// that is authoritative without it, so an unreadable, corrupt or untrustworthy entry must
+// degrade to "bento cannot show you the diff" and never to a refusal to approve. A missing
+// or unusable entry is absent, worded as bento holding no record - which is what a missing
+// entry, a corrupt one and a state home pointed somewhere else have in common. A record
+// bento cannot vouch for is untrusted, which says something different and is kept separate.
 //
 // The entry is read before it is judged, and deliberately: a missing file must reach the
 // reader as "no record" rather than as an untrustworthy journal, and only its existence
@@ -228,7 +229,8 @@ func writeJournalEntry(path string, data []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// requirePrivateJournal refuses to write into a journal directory somebody else can write.
+// requirePrivateJournal refuses a journal directory, or an entry in one, that somebody else
+// could have written.
 // The entry is trusted on the grounds that only this host's own approve could have written
 // it, so a second writer does not merely weaken that - it inverts it, and a forged entry
 // is read as authoritative about what a human approved.
@@ -278,7 +280,7 @@ func requirePrivateJournal(path string) error {
 // changed, read the whole thing" - for the case where the journal makes the delta
 // knowable, and keeps exactly that wording for the cases where it does not.
 //
-// The three verdicts are not decoration. An absent entry means this stamp was written
+// None of the three refusals is decoration. No record usually means this stamp was written
 // somewhere else, which is the thing a manifest-stored record could never tell anyone.
 func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p *policy.Policy) {
 	switch verdict {
@@ -291,9 +293,10 @@ func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p
 		return
 	case journalUntrusted:
 		fmt.Fprintf(w, "\nbento has a record of an approval for this manifest but will not compare against it:\n")
-		fmt.Fprintf(w, "the journal under $XDG_STATE_HOME/bento/approvals/ is writable by somebody other than\n")
-		fmt.Fprintf(w, "you, so a record there is not evidence of what you approved. Read the whole policy\n")
-		fmt.Fprintf(w, "above as if it were unapproved, and tighten that directory to get the diff back.\n")
+		fmt.Fprintf(w, "the journal under $XDG_STATE_HOME/bento/approvals/ is not yours alone - somebody else\n")
+		fmt.Fprintf(w, "can write it, or it belongs to another user - so a record there is no evidence of what\n")
+		fmt.Fprintf(w, "you approved. Read the whole policy above as if it were unapproved; this run reports\n")
+		fmt.Fprintf(w, "the path and what is wrong with it on stderr when it records this approval.\n")
 		return
 	case journalForeign:
 		fmt.Fprintf(w, "\nbento's record for this manifest describes a different approval than the stamp it now\n")
