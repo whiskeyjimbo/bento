@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"unsafe"
@@ -20,8 +19,7 @@ import (
 // ioctl still works. The filter is process-wide and permanent, so it runs in a
 // re-exec'd child rather than poisoning the test process.
 func TestBlockTerminalInjection(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestBlockTerminalInjectionHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_BLOCK_TIOCSTI=1")
+	cmd := helperCommand(t, "TestBlockTerminalInjectionHelper", "BENTO_TEST_BLOCK_TIOCSTI=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("terminal-injection helper exited with error: %v\n%s", err, out)
@@ -64,5 +62,4 @@ func TestBlockTerminalInjectionHelper(t *testing.T) {
 		os.Exit(6)
 	}
 	fmt.Println("TIOCSTI_OK")
-	os.Exit(0)
 }

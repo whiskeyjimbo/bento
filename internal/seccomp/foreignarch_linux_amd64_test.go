@@ -27,10 +27,13 @@ import (
 // on every such host instead of skipping. A seccomp kill is not interceptable that
 // way - SECCOMP_RET_KILL_PROCESS is not deliverable - so SIGSYS still arrives as a
 // signal.
+//
+// The guard case is the one re-exec child in this package whose coverage is
+// structurally unrecoverable: SECCOMP_RET_KILL_PROCESS is not deliverable, so the
+// child dies without running testing's teardown and never writes its counters.
 func runForeignArchHelper(t *testing.T, which string) (syscall.Signal, string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=TestForeignArchHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_FOREIGN_ARCH="+which)
+	cmd := helperCommand(t, "TestForeignArchHelper", "BENTO_TEST_FOREIGN_ARCH="+which)
 	out, err := cmd.CombinedOutput()
 	if strings.Contains(string(out), "signal SIGSEGV") {
 		t.Skip("kernel has no ia32 compat entry point (CONFIG_IA32_EMULATION off or ia32_emulation=0), so no foreign-arch syscall can be issued")

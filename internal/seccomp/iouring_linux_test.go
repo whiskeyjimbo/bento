@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"unsafe"
@@ -17,8 +16,7 @@ import (
 // so a target cannot create a ring whose file operations would escape the ptrace
 // observer. The filter is process-wide and permanent, so it runs in a re-exec'd child.
 func TestBlockIoUring(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestBlockIoUringHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_BLOCK_IOURING=1")
+	cmd := helperCommand(t, "TestBlockIoUringHelper", "BENTO_TEST_BLOCK_IOURING=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("io_uring helper exited with error: %v\n%s", err, out)
@@ -48,5 +46,4 @@ func TestBlockIoUringHelper(t *testing.T) {
 		os.Exit(4)
 	}
 	fmt.Println("IOURING_OK")
-	os.Exit(0)
 }
