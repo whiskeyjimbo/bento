@@ -42,6 +42,27 @@ commits that built it - none of them were ever in a release.
   thing in every checkout - but a `~` one is, since it resolves per user. The
   boundary did not move: this
   reports on a manifest, and grants nothing.
+- **`approve` now names the permissions that changed since the last approval.**
+  The stamp is a sha256 over the policy, so a drifted manifest could say only
+  that something changed - every refusal that sent a reader back to re-review
+  admitted there was no diff to show, and finding the added grant meant comparing
+  git revisions by hand. `approve` now records the shape it stamped under
+  `$XDG_STATE_HOME/bento/approvals/`, and a re-approval prints the added and
+  removed lines against it in the manifest's own spelling, along with when the
+  last stamp went on and whether anybody answered the prompt for it. The record
+  is deliberately not in the manifest: anything stored there is unauthenticated,
+  and a forged prior shape yields a diff that names one innocuous addition and
+  invites a skim of a policy nobody approved. So where the journal cannot answer,
+  `approve` says which reason applies instead of guessing - no record at all means
+  the stamp was written on some other host, and a record that disagrees with the
+  stamp means the manifest was re-approved elsewhere or replaced. Both send the
+  reader over the whole policy, as before. The boundary moved once, inward:
+  `~/.local/state/bento` is now write-denied to every run, wherever
+  `XDG_STATE_HOME` points, since a sandboxed script that could write a record
+  could make the next reviewer's diff lie. It stays readable - it holds a copy of
+  a policy its owner already reads. A manifest granting write to the journal is
+  refused before the script starts, as with any shielded path. `run` refuses
+  exactly when it did before; only its wording changed.
 
 ### Verifying a Release
 
