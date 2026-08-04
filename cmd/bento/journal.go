@@ -54,9 +54,16 @@ type approvalRecord struct {
 type journalVerdict int
 
 const (
-	// journalAbsent: no entry. This stamp was not written on this host - the case
-	// approve's docstring warns about in general terms, now actually detectable.
+	// journalAbsent: no usable entry. Most often this stamp was written on another host,
+	// which is the case approve's docstring warns about in general terms - but a wiped
+	// state directory, a corrupt entry or an $XDG_STATE_HOME pointed somewhere else since
+	// reach it too, so the wording says what bento knows (it holds no record) rather than
+	// accusing a legitimate stamp of being foreign.
 	journalAbsent journalVerdict = iota
+	// journalUntrusted: a record is there but the journal is not private, so it is not
+	// evidence of anything - somebody else could have written it. Distinct from absent
+	// because the fix is different: this one names a directory to repair.
+	journalUntrusted
 	// journalForeign: an entry exists but records a different approval than the manifest
 	// claims. Re-stamped elsewhere, or swapped underneath. Say so, do not diff.
 	journalForeign
@@ -68,9 +75,14 @@ const (
 // journalDir is where this host keeps its approval records. The state home is the seam:
 // nothing here takes a filesystem interface, because $XDG_STATE_HOME already selects the
 // directory and t.Setenv already controls that.
+// A relative base is ignored rather than honored, which the spec asks for and which
+// internal/denylist already assumes: homeLocations drops a relative XDG base on the grounds
+// that a conforming tool falls back to the default, and it is that default it then shields.
+// Honoring one here would put the journal at a cwd-relative path no shield covers, so bento
+// would be the tool whose behavior its own deny-list got wrong.
 func journalDir() (string, error) {
 	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
+	if !filepath.IsAbs(base) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
@@ -108,8 +120,26 @@ func readApprovalRecord(realPath string, doc *manifest.Document) (approvalRecord
 	if err != nil {
 		return approvalRecord{}, journalAbsent
 	}
+	// Checked on the way in as well as on the way out, and on the entry as well as the
+	// directory holding it. The record is worth reading only because this host's own approve
+	// is the only thing that could have written it, and refusing to write into a shared
+	// journal does not establish that - a state home somebody else can write is a place to
+	// plant a baseline equal to the current policy minus one innocuous line, which is the
+	// misleading diff this whole design exists to avoid. The stamp is no defense: it is
+	// sitting in the manifest for the forger to copy.
+	for _, p := range []string{filepath.Dir(path), path} {
+		if err := requirePrivateJournal(p); err != nil {
+			return approvalRecord{}, journalUntrusted
+		}
+	}
 	var rec approvalRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
+		return approvalRecord{}, journalAbsent
+	}
+	// An entry missing either half is not a record of anything: `{}` parses, and would
+	// otherwise be reported as a disagreeing record, claiming a host approval that never
+	// happened.
+	if rec.Fingerprint == "" || rec.Policy == "" {
 		return approvalRecord{}, journalAbsent
 	}
 	// The manifest's own stamp decides whether the entry is about this approval. An entry
@@ -198,41 +228,42 @@ func writeJournalEntry(path string, data []byte) error {
 // it, so a second writer does not merely weaken that - it inverts it, and a forged entry
 // is read as authoritative about what a human approved.
 //
-// It judges the directory with fileFacts' own predicates rather than through dirFlaws,
-// which words every finding in terms of who can replace a manifest - true findings phrased
-// about the wrong subject.
+// It is asked of the directory and of the entry in it, on the way out and again on the way
+// in: refusing to write into a shared journal establishes nothing about a record already
+// sitting there.
+//
+// The mode bits are read raw rather than through fileFacts.sharedWrite, which exempts a
+// sticky directory. That exemption is about who can replace an existing file, and the threat
+// here is a record planted before bento wrote one - sticky does not stop anybody creating
+// their own entry. For the same reason there is no privateGroup lookup: bento creates this
+// directory 0700, so a group-write bit on it was set deliberately by somebody.
 //
 // The leaf only, deliberately, where the manifest's own check walks the whole chain: a
 // writable ancestor lets someone rename this directory away, but the worst that buys them
 // is a journal bento reads as absent, which is already a verdict that declines to diff.
 // The stamp is authoritative without any of this, and the cost of being wrong here is a
-// warning rather than a refusal - so the check that matters is the one on the directory the
-// entries are actually in.
-func requirePrivateJournal(dir string) error {
-	fi, err := os.Stat(dir)
+// lost diff rather than a wrong verdict.
+func requirePrivateJournal(path string) error {
+	fi, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	facts, err := factsOf(dir, fi)
+	facts, err := factsOf(path, fi)
 	if err != nil {
 		return err
 	}
-	// No privateGroup lookup, unlike the manifest's directory chain: bento creates this
-	// directory 0700, so a group-write bit on it was set deliberately by somebody, and
-	// reading it as reaching only a private group would excuse the one case worth refusing.
-	acl, err := aclNamedWrite(dir)
+	if shared := facts.mode.Perm() & 0o022; shared != 0 {
+		return fmt.Errorf("%s is group/world-writable (%#o), and an approval record someone else can write is a forgeable diff", path, facts.mode.Perm())
+	}
+	acl, err := aclNamedWrite(path)
 	if err != nil {
 		return err
 	}
-	facts.aclWrite = acl
-	if shared := facts.sharedWrite(); shared != 0 {
-		return fmt.Errorf("%s is group/world-writable (%#o), and an approval record someone else can write is a forgeable diff", dir, facts.mode.Perm())
-	}
-	if facts.aclSharedWrite() {
-		return fmt.Errorf("%s grants write to another user or group through an ACL, and an approval record someone else can write is a forgeable diff", dir)
+	if acl {
+		return fmt.Errorf("%s grants write to another user or group through an ACL, and an approval record someone else can write is a forgeable diff", path)
 	}
 	if facts.foreignOwner(uint32(os.Geteuid())) {
-		return fmt.Errorf("%s is owned by another user, so bento cannot treat what is in it as its own record of what you approved", dir)
+		return fmt.Errorf("%s is owned by another user, so bento cannot treat what is in it as its own record of what you approved", path)
 	}
 	return nil
 }
@@ -247,15 +278,23 @@ func requirePrivateJournal(dir string) error {
 func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p *policy.Policy) {
 	switch verdict {
 	case journalAbsent:
-		fmt.Fprintf(w, "\nThis manifest carries an approval stamp that this host did not write, so bento has\n")
-		fmt.Fprintf(w, "no record of what was approved and cannot show what changed. A stamp that came with\n")
-		fmt.Fprintf(w, "the manifest is its author's review, not yours - read the whole policy above.\n")
+		fmt.Fprintf(w, "\nbento holds no record of this stamp, so it cannot show what changed. Most often that\n")
+		fmt.Fprintf(w, "means the stamp was written on another host, and a stamp that came with the manifest\n")
+		fmt.Fprintf(w, "is its author's review rather than yours. It also happens when the record was cleared\n")
+		fmt.Fprintf(w, "or was written under a different $XDG_STATE_HOME. Either way, read the whole policy\n")
+		fmt.Fprintf(w, "above as if it were unapproved.\n")
+		return
+	case journalUntrusted:
+		fmt.Fprintf(w, "\nbento has a record of an approval for this manifest but will not compare against it:\n")
+		fmt.Fprintf(w, "the journal under $XDG_STATE_HOME/bento/approvals/ is writable by somebody other than\n")
+		fmt.Fprintf(w, "you, so a record there is not evidence of what you approved. Read the whole policy\n")
+		fmt.Fprintf(w, "above as if it were unapproved, and tighten that directory to get the diff back.\n")
 		return
 	case journalForeign:
-		fmt.Fprintf(w, "\nThis manifest was approved on this host, but bento's record of that approval does not\n")
-		fmt.Fprintf(w, "describe the stamp the manifest now carries - it was re-approved elsewhere, or the file\n")
-		fmt.Fprintf(w, "was replaced. The record cannot be trusted as a baseline, so there is no diff to show:\n")
-		fmt.Fprintf(w, "read the whole policy above as if it were unapproved.\n")
+		fmt.Fprintf(w, "\nbento's record for this manifest describes a different approval than the stamp it now\n")
+		fmt.Fprintf(w, "carries - it was re-approved somewhere else, or the file was replaced. The record is\n")
+		fmt.Fprintf(w, "not a baseline for this stamp, so there is no diff to show: read the whole policy\n")
+		fmt.Fprintf(w, "above as if it were unapproved.\n")
 		return
 	}
 
@@ -277,10 +316,13 @@ func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p
 	}
 	fmt.Fprintf(w, ".\n")
 	if len(changes) == 0 {
-		// Reachable: Fingerprint covers fields Marshal renders identically in some cases,
-		// and saying "nothing" is honest where guessing would not be.
-		fmt.Fprintf(w, "The permissions differ from what was approved, but not in any line bento renders -\n")
-		fmt.Fprintf(w, "read the whole policy above.\n")
+		// Every field Fingerprint covers is one Marshal renders, so a stale stamp and an
+		// identical rendering cannot both hold today. Saying so is still better than the
+		// alternative if that ever stops being true: the header below would announce a list
+		// of changes and then print none, which reads as "nothing changed" on a manifest
+		// whose stamp says otherwise.
+		fmt.Fprintf(w, "The permissions differ from what was approved, but not in any line bento renders,\n")
+		fmt.Fprintf(w, "which should not happen - read the whole policy above and treat it as unapproved.\n")
 		return
 	}
 	fmt.Fprintf(w, "These permissions changed since then:\n")

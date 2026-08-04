@@ -99,10 +99,11 @@ func TestReapprovalNamesRemovedGrants(t *testing.T) {
 	}
 }
 
-// A stamp this host never wrote is the verdict a manifest-stored record could never
-// produce, and it is worth more than a diff: it tells the reader the approval in front of
-// them is somebody else's review.
-func TestReapprovalSaysWhenTheStampIsNotOurs(t *testing.T) {
+// Having no record is a verdict a manifest-stored record could never produce, and it is
+// worth more than a diff: usually it means the approval in front of the reader is somebody
+// else's review. It is stated as what bento knows rather than as an accusation, because a
+// cleared state dir reaches it too and a message that cries foul over one gets ignored.
+func TestReapprovalSaysWhenThereIsNoRecordOfTheStamp(t *testing.T) {
 	stateHome(t)
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: "a-stamp-from-elsewhere"}}
@@ -110,8 +111,11 @@ func TestReapprovalSaysWhenTheStampIsNotOurs(t *testing.T) {
 	var buf strings.Builder
 	writeReapprovalNotice(&buf, "/nowhere/m.yaml", doc, approvalStale)
 	out := buf.String()
-	if !strings.Contains(out, "did not write") {
-		t.Errorf("an absent record must say the stamp is not this host's; got:\n%s", out)
+	if !strings.Contains(out, "holds no record") {
+		t.Errorf("an absent record must say bento holds no record; got:\n%s", out)
+	}
+	if !strings.Contains(out, "another host") {
+		t.Errorf("it must name the likeliest reason; got:\n%s", out)
 	}
 	if strings.Contains(out, "+ ") || strings.Contains(out, "changed since then") {
 		t.Errorf("an absent record must not produce a diff; got:\n%s", out)
@@ -136,7 +140,7 @@ func TestReapprovalRefusesToDiffAgainstADisagreeingRecord(t *testing.T) {
 	var buf strings.Builder
 	writeReapprovalNotice(&buf, path, doc, approvalStale)
 	out := buf.String()
-	if !strings.Contains(out, "does not") {
+	if !strings.Contains(out, "a different approval") {
 		t.Errorf("a disagreeing record must be reported as such; got:\n%s", out)
 	}
 	if strings.Contains(out, "changed since then") {
@@ -324,5 +328,147 @@ func TestDiffLines(t *testing.T) {
 				t.Errorf("diff =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// The mirror of the --yes case: a stamp a human answered for must not be reported as one
+// nobody read. Only ever exercised with --yes before, so the field could have been wired
+// backwards - or ignored - with every other test still passing.
+func TestAReviewedStampIsNotReportedAsUnread(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if err := storeApprovalRecord(path, p, true); err != nil {
+		t.Fatal(err)
+	}
+
+	drifted := &manifest.Document{
+		Policy:     &policy.Policy{Entrypoint: "./x", Read: []string{"/data", "/more"}},
+		Provenance: manifest.Provenance{Approves: p.Fingerprint()},
+	}
+	var buf strings.Builder
+	writeReapprovalNotice(&buf, path, drifted, approvalStale)
+	out := buf.String()
+	if strings.Contains(out, "nobody read it") {
+		t.Errorf("a stamp a human approved must not be reported as unread; got:\n%s", out)
+	}
+	if !strings.Contains(out, "+ - /more") {
+		t.Errorf("the diff must still name the added grant; got:\n%s", out)
+	}
+}
+
+// The forgeable-diff attack the whole design exists to avoid, arriving through the read
+// path rather than the write path: refusing to write into a shared journal says nothing
+// about a record somebody already planted there. The stamp is no defense - it is in the
+// manifest for the forger to copy.
+func TestAPlantedRecordInASharedJournalIsNotDiffedAgainst(t *testing.T) {
+	base := stateHome(t)
+	dir := filepath.Join(base, "bento", "approvals")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	approved := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, approved, manifest.Provenance{})
+	// The forgery: a baseline claiming the current policy's own stamp, so a diff against it
+	// would name only the one line the forger left out.
+	planted := approvalRecord{
+		Fingerprint:  approved.Fingerprint(),
+		Policy:       "entrypoint: ./x\nread:\n- /data\n- /etc/shadow\n",
+		ManifestPath: path,
+		StampedAt:    "2026-01-01T00:00:00Z",
+		Reviewed:     true,
+	}
+	data, err := json.Marshal(planted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := journalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := &manifest.Document{Policy: approved, Provenance: manifest.Provenance{Approves: approved.Fingerprint()}}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalUntrusted {
+		t.Errorf("a record in a world-writable journal must not be trusted; verdict = %v", verdict)
+	}
+	var buf strings.Builder
+	writeReapprovalNotice(&buf, path, doc, approvalStale)
+	if strings.Contains(buf.String(), "/etc/shadow") {
+		t.Errorf("a planted baseline must never reach the reader as a diff; got:\n%s", buf.String())
+	}
+}
+
+// A sticky world-writable journal dir must be refused too. fileFacts.sharedWrite exempts
+// sticky, because for a manifest the question is who can replace an existing file - but a
+// planted record needs only to be created, which sticky permits.
+func TestAStickyWorldWritableJournalIsNotTrusted(t *testing.T) {
+	base := stateHome(t)
+	dir := filepath.Join(base, "bento", "approvals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o1777); err != nil {
+		t.Fatal(err)
+	}
+	if err := requirePrivateJournal(dir); err == nil {
+		t.Error("a sticky world-writable journal dir must be refused; sticky does not stop a record being planted")
+	}
+}
+
+// An entry only the owner can write, in a directory only the owner can write, is the case
+// the diff is built on - it must not be caught by the checks above.
+func TestAPrivateJournalIsTrusted(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if err := storeApprovalRecord(path, p, true); err != nil {
+		t.Fatal(err)
+	}
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalMatches {
+		t.Errorf("a private journal must be trusted; verdict = %v", verdict)
+	}
+}
+
+// `{}` parses, and reporting it as a disagreeing record would claim a host approval that
+// never happened.
+func TestAnEmptyRecordReadsAsAbsent(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	entry, err := journalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(entry), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: "whatever"}}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalAbsent {
+		t.Errorf("an empty record must read as absent, not as a disagreeing one; verdict = %v", verdict)
+	}
+}
+
+// A relative XDG_STATE_HOME is ignored rather than honored: internal/denylist shields the
+// default location on exactly that assumption, so honoring one would put the journal
+// somewhere no shield covers.
+func TestARelativeStateHomeFallsBackToTheDefault(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "relative/state")
+	dir, err := journalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(dir) {
+		t.Errorf("journal dir %q is relative, so no shield covers it", dir)
+	}
+	if strings.Contains(dir, "relative/state") {
+		t.Errorf("a relative XDG_STATE_HOME must be ignored; got %q", dir)
 	}
 }
