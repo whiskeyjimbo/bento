@@ -1384,3 +1384,42 @@ func TestMergeReportsAChangedInterpreterArgs(t *testing.T) {
 			merged.interpreterWas, merged.interpreterArgsWas)
 	}
 }
+
+// The --allow-network consent gate. It forwards the target's egress while the content
+// the user granted is mounted with real data, so an answer that is not an explicit yes
+// must abort - a near-miss must not be read as consent to that.
+func TestConfirmNetworkExfil(t *testing.T) {
+	for _, tc := range []struct {
+		answer   string
+		proceeds bool
+	}{
+		{"y\n", true},
+		{"Y\n", true},
+		{"yes\n", true},
+		{"YES\n", true},
+		{"  y  \n", true},
+		{"n\n", false},
+		{"no\n", false},
+		{"\n", false},    // the default the prompt advertises with [y/N]
+		{"", false},      // a closed stream, no newline
+		{"yep\n", false}, // close enough to yes to be worth pinning
+		{"ye\n", false},
+		{"1\n", false},
+	} {
+		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
+			var buf strings.Builder
+			err := confirmNetworkExfil(strings.NewReader(tc.answer), &buf)
+			if proceeded := err == nil; proceeded != tc.proceeds {
+				t.Errorf("answer %q proceeded = %v, want %v (err %v)", tc.answer, proceeded, tc.proceeds, err)
+			}
+			if !strings.Contains(buf.String(), "[y/N]") {
+				t.Errorf("the prompt must state the default; got %q", buf.String())
+			}
+			// The warning is the reason the gate exists: an answer given without it is
+			// not informed consent.
+			if !strings.Contains(buf.String(), "exfiltrate") {
+				t.Errorf("the prompt must state what is at risk; got %q", buf.String())
+			}
+		})
+	}
+}
