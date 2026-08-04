@@ -127,7 +127,7 @@ func TestDegradedConfinesFilesystemAndEgress(t *testing.T) {
 		Stdout: &out, Stderr: &out,
 		Env: map[string]string{"GRANTED": grantedFile, "UNGRANTED": ungrantedFile},
 	}
-	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc)
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc, "")
 	if err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}
@@ -160,7 +160,7 @@ func TestDegradedRunsInterpreterOnGrantedRead(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Exec: policy.ExecNone}
 	var out strings.Builder
 	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"DATA": data}}
-	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc)
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc, "")
 	if err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}
@@ -186,7 +186,7 @@ func TestDegradedExecAllSupervisesChild(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Exec: policy.ExecAll}
 	var out strings.Builder
-	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, "")
 	if err != nil {
 		t.Fatalf("exec:all degraded run failed (cross-process block may over-restrict pidfd): %v\noutput:\n%s", err, out.String())
 	}
@@ -222,7 +222,7 @@ func TestRunDegradedExecBlockGatesOnRealSeccomp(t *testing.T) {
 		var out strings.Builder
 		p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Exec: policy.ExecNone}
 		if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(),
-			p, enforce.Process{Stdout: &out, Stderr: &out}); err != nil {
+			p, enforce.Process{Stdout: &out, Stderr: &out}, ""); err != nil {
 			t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 		}
 		return out.String()
@@ -266,7 +266,7 @@ func TestDegradedSweepsLeakedProcessGroup(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Write: []string{dir}, Exec: policy.ExecAll}
 	var out strings.Builder
 	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SLEEP": sleepBin, "PIDFILE": pidFile}}
-	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc); err != nil {
+	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc, ""); err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}
 
@@ -308,7 +308,7 @@ func TestDegradedRefusesWriteAboveShield(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: entry, Write: []string{home}, Exec: policy.ExecNone}
-	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{})
+	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{}, "")
 	if err == nil || !strings.Contains(err.Error(), "always-shielded") {
 		t.Fatalf("degraded tier must refuse a write grant above the ~/.ssh shield; got err=%v", err)
 	}
@@ -326,7 +326,7 @@ func TestDegradedRefusesManagedMountGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: entry, Read: []string{"/proc"}, Exec: policy.ExecNone}
-	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{})
+	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{}, "")
 	if err == nil || !strings.Contains(err.Error(), "pseudo-filesystem") {
 		t.Fatalf("degraded tier must refuse a whole-/proc grant; got err=%v", err)
 	}
@@ -486,7 +486,7 @@ func TestDegradedRefusesFileWriteGrantLikeTheFullTier(t *testing.T) {
 	p := &policy.Policy{Entrypoint: buildDegradedProbe(t), Write: []string{existing}, Exec: policy.ExecNone}
 
 	var out strings.Builder
-	_, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out})
+	_, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, "")
 	if err == nil {
 		t.Fatal("the degraded tier accepted a write grant naming an existing file; the full tier refuses it")
 	}
@@ -497,7 +497,7 @@ func TestDegradedRefusesFileWriteGrantLikeTheFullTier(t *testing.T) {
 	// The not-yet-existing case: created as a directory, the same as under bwrap.
 	absent := filepath.Join(dir, "unborn.json")
 	p.Write = []string{absent}
-	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}); err != nil {
+	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, ""); err != nil {
 		t.Fatalf("a write grant for a not-yet-existing path should still be prepared: %v", err)
 	}
 	if fi, err := os.Stat(absent); err == nil && !fi.IsDir() {
@@ -544,7 +544,7 @@ func TestDegradedRunsInterpreterOutsideSystemPaths(t *testing.T) {
 	p := &policy.Policy{Entrypoint: script, Interpreter: interp, Read: []string{dir}, Exec: policy.ExecAll}
 	var out strings.Builder
 	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out})
+		enforce.Process{Stdout: &out, Stderr: &out}, "")
 	if err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}

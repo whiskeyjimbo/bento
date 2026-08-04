@@ -160,7 +160,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if err := preflightLimits(p.Limits, nil); err != nil {
 			return profile.Observation{}, fmt.Errorf("linux: %w", err)
 		}
-		exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+		// Unnamed: profiling is an operator watching one run to learn what it touches,
+		// not a job a supervisor reaps, and there is no run id on this path to name it with.
+		exe, cargs = wrapWithLimits(bwrap, args, p.Limits, "")
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return profile.Observation{}, err

@@ -30,7 +30,7 @@ import (
 // CA bundle (systemReadPaths), the granted reads, and the entrypoint/interpreter as
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
-func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process) (enforce.Result, error) {
+func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string) (enforce.Result, error) {
 	report := e.Probe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
@@ -163,7 +163,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// set below and the process-group sweep still reaches anything it leaks.
 	exe, cargs := sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)
 	if scoped {
-		exe, cargs = wrapWithLimits(exe, cargs, p.Limits)
+		exe, cargs = wrapWithLimits(exe, cargs, p.Limits, runID)
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return enforce.Result{}, err

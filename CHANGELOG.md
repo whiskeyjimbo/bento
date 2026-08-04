@@ -11,6 +11,21 @@ commits that built it - none of them were ever in a release.
 
 ## Unreleased
 
+### Running Under a Supervisor
+
+- **`run --run-id <id>` makes a run reapable as a tree.** Under `exec: all` the
+  target has children, so a supervisor that recorded bento's own pid could report
+  a job dead while a test runner it spawned still held the checkout. The id names
+  the run's transient systemd scope `bento-run-<id>.scope`, which
+  `systemctl --user kill` ends and `systemctl --user show -p ControlGroup`
+  resolves to a cgroup path. The supervisor chooses the id before the run starts,
+  so there is no window in which the target is running and the handle is not yet
+  known. The boundary did not move: this changes what a caller can find and stop,
+  not what the target may do. A run id needs a scope to name, so a manifest that
+  sets no resource limits - or a host that cannot create a scope - is refused
+  rather than run without a handle, and that refusal stands under
+  `--allow-degraded`.
+
 ### Verifying a Release
 
 - **The signature file is now `checksums.txt.sigstore.json`**, not

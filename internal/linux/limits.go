@@ -153,7 +153,11 @@ func runScopeProbe(l policy.Limits, env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	exe, args := wrapWithLimits(trueBinary(), nil, l)
+	// Deliberately unnamed even when the run it preflights has an id: this scope and
+	// that one would hold the same unit name, and the probe running first would either
+	// take the name the run then fails to claim or - once --collect has reaped it - hand
+	// the supervisor a window in which the name exists but belongs to /bin/true.
+	exe, args := wrapWithLimits(trueBinary(), nil, l, "")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -301,17 +305,31 @@ func withScopeBusVars(env []string, policyEnv map[string]string) (out []string, 
 	return out, added
 }
 
+// scopeUnitName is the transient scope's unit name for a run the caller identified.
+// The derivation is one-way and part of the enforce.RunOptions.RunID contract: a
+// supervisor computes it before the run starts and reaps through it without reading
+// anything back. enforce.Run has already screened the id to letters, digits and
+// underscore, none of which systemd escapes or reads as a separator, so what it names
+// here is what the supervisor spelled.
+func scopeUnitName(runID string) string { return "bento-run-" + runID + ".scope" }
+
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's
 // limits. With no limits set it returns the command unchanged, so the scope is
-// only paid for when a manifest asks for it.
-func wrapWithLimits(exe string, args []string, l policy.Limits) (string, []string) {
+// only paid for when a manifest asks for it. runID, when set, names the scope so a
+// supervisor can kill the tree; empty leaves systemd to generate a name.
+func wrapWithLimits(exe string, args []string, l policy.Limits, runID string) (string, []string) {
 	if l.IsZero() {
 		return exe, args
 	}
 	// --collect garbage-collects the transient scope even when the target exits
 	// non-zero (e.g. an OOM kill); without it, failed scope units linger in the
-	// user manager forever.
+	// user manager forever. Under a named unit it stops being hygiene and becomes
+	// load-bearing: a failed unit that lingered would hold the name, and the next run
+	// the supervisor gave the same id to would fail to start rather than run unnamed.
 	scope := []string{"--user", "--scope", "--quiet", "--collect"}
+	if runID != "" {
+		scope = append(scope, "--unit", scopeUnitName(runID))
+	}
 	if l.Memory != "" {
 		// MemorySwapMax=0 stops a memory-limited target from escaping the cap into
 		// swap.

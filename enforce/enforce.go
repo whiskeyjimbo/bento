@@ -87,6 +87,32 @@ type RunOptions struct {
 	// tier refuses. The guarantee is absent rather than waived, and what the tier does
 	// expose is reported through the Report.
 	AcceptAliasesUnder []string
+
+	// RunID names this run so a supervisor outside it can reap the sandboxed tree. A
+	// backend that confines through a transient systemd scope MUST name that scope
+	// "bento-run-<RunID>.scope" in the user manager; empty means the backend names it
+	// however it likes and the caller gets no handle.
+	//
+	// The caller supplies the id rather than reading one back deliberately. Under exec:
+	// all the target has children, so a supervisor that recorded bento's own pid can
+	// report a job dead while a test runner it spawned still holds the checkout - the
+	// tree, not the pid, is the thing to kill. Every design that hands the handle BACK
+	// has a window between the target starting and the supervisor learning the name,
+	// which is precisely when a run that hangs immediately needs killing. An id chosen
+	// before the run is exec'd has no such window: the derivation above is one-way and
+	// documented, so the supervisor knows the unit name in advance and can
+	// `systemctl --user kill` it (or read its cgroup path back with
+	// `systemctl --user show -p ControlGroup`) at any point, including before the scope
+	// exists.
+	//
+	// It is not a policy field and never enters the fingerprint: it identifies one
+	// invocation, not what that invocation is permitted to do, and a manifest carrying it
+	// would name every run started from that manifest the same thing.
+	//
+	// enforce.Run refuses a run whose id could not get a scope, so a backend reaching
+	// here with a non-empty id has already been told a scope will be created. Whether
+	// the id is well-formed is settled there too.
+	RunID string
 }
 
 // NetworkGate decides an egress host the manifest's allowlist does not permit.

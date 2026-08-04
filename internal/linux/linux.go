@@ -75,7 +75,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
-		return e.runDegraded(ctx, p, proc)
+		return e.runDegraded(ctx, p, proc, opts.RunID)
 	}
 
 	report := e.Probe(ctx)
@@ -159,7 +159,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			if err := preflightLimits(p.Limits, nil); err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
-			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+			exe, cargs = wrapWithLimits(bwrap, args, p.Limits, opts.RunID)
 			// An undelegated cpu controller is reported by the probe as LayerLimitsCPU
 			// Unavailable and refused at admission; a run that reaches here with a cpu
 			// limit was either delegated or explicitly permitted under --allow-degraded,

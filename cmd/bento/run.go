@@ -25,6 +25,7 @@ func newRunCmd() *cobra.Command {
 		envFlags        []string
 		acceptAliases   []string
 		asJSON          bool
+		runID           string
 	)
 
 	cmd := &cobra.Command{
@@ -133,6 +134,7 @@ func newRunCmd() *cobra.Command {
 				Strict:             strict,
 				AllowDegraded:      allowDegraded,
 				AcceptAliasesUnder: acceptAliases,
+				RunID:              runID,
 			})
 			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, env, res, missingReads, stream, err)
 		},
@@ -143,6 +145,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
+	cmd.Flags().StringVar(&runID, "run-id", "", "name this run so a supervisor can reap the whole process tree it leaves behind, not just bento's own pid. The run gets a transient systemd user scope named bento-run-<id>.scope, which `systemctl --user kill` ends and `systemctl --user show -p ControlGroup` resolves to a cgroup path. The id is letters, digits and underscore, up to 64. It needs a scope to name, so a manifest that sets no resource limits, or a host that cannot create one, is refused rather than run without a handle")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON on stdout, one object per line: the script's own output as it arrives, tagged with which stream produced it and base64-encoded, then one final object with the outcome. The script is given no stdin. Switch on the event field - stdout, stderr, then verdict, refusal or failed. A refusal, including a mistake in this command line, is an object too, so stdout is never empty")
 	return cmd
 }

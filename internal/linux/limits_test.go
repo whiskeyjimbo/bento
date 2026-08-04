@@ -16,7 +16,7 @@ import (
 )
 
 func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
-	exe, args := wrapWithLimits("bwrap", []string{"--die-with-parent"}, policy.Limits{})
+	exe, args := wrapWithLimits("bwrap", []string{"--die-with-parent"}, policy.Limits{}, "")
 	if exe != "bwrap" || len(args) != 1 || args[0] != "--die-with-parent" {
 		t.Errorf("no limits should pass the command through unchanged; got %s %v", exe, args)
 	}
@@ -25,7 +25,7 @@ func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
 func TestWrapWithLimitsBuildsScope(t *testing.T) {
 	exe, args := wrapWithLimits("bwrap", []string{"--proc", "/proc"}, policy.Limits{
 		Memory: "128M", CPU: "100%", PIDs: 32,
-	})
+	}, "")
 	if exe != "systemd-run" {
 		t.Fatalf("exe = %q, want systemd-run", exe)
 	}
@@ -48,7 +48,7 @@ func TestWrapWithLimitsBuildsScope(t *testing.T) {
 }
 
 func TestWrapWithLimitsOnlySetsWhatIsAsked(t *testing.T) {
-	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8})
+	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "MemoryMax") || strings.Contains(joined, "CPUQuota") {
 		t.Errorf("only TasksMax was requested; got %q", joined)
@@ -336,5 +336,22 @@ func TestCacheProbeMemoizesOnlyAnsweredMeasurements(t *testing.T) {
 	// The capability, once proven, is stable: every later caller is free.
 	if v, ok := probe(); !ok || v != 2 || calls != 3 {
 		t.Errorf("fourth call: v=%d ok=%v calls=%d, want the cached answer with no re-measure", v, ok, calls)
+	}
+}
+
+func TestWrapWithLimitsNamesTheScopeForARunID(t *testing.T) {
+	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "job_17")
+	joined := strings.Join(args, " ")
+	// The supervisor computes this name before the run starts and reaps through it, so
+	// the spelling is the contract, not an implementation detail.
+	if !strings.Contains(joined, "--unit bento-run-job_17.scope") {
+		t.Errorf("scope not named for the run id; got %q", joined)
+	}
+}
+
+func TestWrapWithLimitsLeavesTheScopeUnnamedWithoutARunID(t *testing.T) {
+	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "")
+	if joined := strings.Join(args, " "); strings.Contains(joined, "--unit") {
+		t.Errorf("no run id should leave systemd to generate the name; got %q", joined)
 	}
 }

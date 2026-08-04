@@ -3,6 +3,7 @@ package enforce
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -61,6 +62,18 @@ type Options struct {
 	// trees, which would otherwise refuse the run. See RunOptions.AcceptAliasesUnder
 	// for why it is a tree and why it is not a policy field.
 	AcceptAliasesUnder []string
+
+	// RunID names this run so a supervisor outside it can reap the whole process tree
+	// rather than the one pid it happened to record. See RunOptions.RunID for the unit
+	// name it derives and why the caller supplies the id instead of reading one back.
+	//
+	// Setting it refuses a run that would not get a scope - a policy with no limits, or
+	// a host that cannot create one - because the alternative is the failure this exists
+	// to prevent: a supervisor holding a handle to nothing while the target runs. That
+	// refusal stands under --allow-degraded too, which otherwise waives an unenforceable
+	// limit: waiving the limit is a choice about the target's resource ceiling, and it
+	// must not silently take the supervisor's ability to kill it along with it.
+	RunID string
 }
 
 // Run orchestrates a sandboxed execution: it validates the policy, probes what
@@ -82,9 +95,15 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// One required set for both the admission below and the report overlay further
 	// down: judging admission on one set and reporting on another is how a layer gets
 	// admitted on and then erased from the report.
+	if err := validateRunID(opts.RunID); err != nil {
+		return Result{}, err
+	}
 	wanted := requiredLayers(p, opts)
 	required := e.Probe(ctx).forLayers(wanted)
 	if err := opts.admit(required); err != nil {
+		return Result{}, err
+	}
+	if err := admitRunID(p, opts, required); err != nil {
 		return Result{}, err
 	}
 	// A Degraded filesystem layer that reached here was admitted under
@@ -100,6 +119,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		Degraded:           degraded,
 		DenyPaths:          opts.DenyPaths,
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
+		RunID:              opts.RunID,
 	})
 
 	// Report exactly what was judged. Start from the pre-run probe (already filtered
@@ -246,6 +266,54 @@ func (o Options) admit(r Report) error {
 				Short:    short,
 				Waivable: true,
 			}
+		}
+	}
+	return nil
+}
+
+// runIDRe is the spelling a RunID may take. It is deliberately narrow: the id is
+// interpolated into a systemd unit name, where a separator or a template character
+// ("/", "@", "-", ".") does not merely look odd but selects a different unit, and where
+// anything systemd escapes comes back as a name the supervisor that chose the id would
+// not recognize. Refusing the character is the only answer that keeps the derivation
+// one-way, which is the whole basis on which a caller reaps without reading anything
+// back. The 64-byte bound leaves room for the prefix and suffix inside the unit-name
+// limit systemd enforces.
+var runIDRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// validateRunID screens a caller-supplied run id before it can reach a unit name.
+func validateRunID(id string) error {
+	if id == "" || runIDRe.MatchString(id) {
+		return nil
+	}
+	return fmt.Errorf("enforce: run id %q must be 1-64 characters of letters, digits, or underscore", id)
+}
+
+// admitRunID refuses a run that asked to be reapable but would not get a scope to be
+// reaped through. Both conditions are silent failures otherwise: a policy with no limits
+// is never wrapped at all, and a host that cannot create a scope runs the target
+// unwrapped after --allow-degraded waives the limit. In each case the supervisor holds a
+// unit name that never comes into existence, and learns so only when its kill does
+// nothing to a target that is still running.
+//
+// It runs after admit rather than inside it because it is not a judgment about what the
+// host can enforce - the layer states it reads have already been judged there - but
+// about whether one thing the caller asked for can be delivered at all.
+func admitRunID(p *policy.Policy, opts Options, required Report) error {
+	if opts.RunID == "" {
+		return nil
+	}
+	if p.Limits.IsZero() {
+		return &Refusal{
+			Report: required,
+			Reason: "a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id",
+		}
+	}
+	if required.StateOf(LayerLimits) != Enforced {
+		return &Refusal{
+			Report: required,
+			Reason: "a run id asks for a reapable scope, and this host cannot create one",
+			Short:  unenforcedRequestedLimits(required),
 		}
 	}
 	return nil
