@@ -692,6 +692,15 @@ func shieldsReadOnly(res enforce.Result) bool {
 	return false
 }
 
+func shieldsHidden(res enforce.Result) bool {
+	for _, s := range res.Shields {
+		if s.Kind == "hidden" {
+			return true
+		}
+	}
+	return false
+}
+
 // writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
 // target prints itself and bento never sees.
 //
@@ -711,8 +720,12 @@ func shieldsReadOnly(res enforce.Result) bool {
 // The mapping runs errno to cause, not the reverse, which is what keeps the line true
 // where the shields do not all behave alike: a file shield binds an empty file rather
 // than hiding it, so reading one succeeds and yields nothing instead of answering ENOENT.
-// It is therefore not among the causes a reader should consider for this errno, and
-// nothing here should be reworded into claiming every shield produces it.
+// It is therefore not among the causes a reader should consider for this errno, and no
+// errno line here should be reworded into claiming every shield produces it. That is why
+// the hidden-shield shapes get a closing sentence of their own instead: a shielded
+// directory stats as an empty tmpfs and a shielded file reads zero bytes, so neither
+// raises an errno the reader could look up, and folding them into the mapping above would
+// be the one rewording this paragraph rules out.
 //
 // Deliberately naming no paths. Spelling the grants back would need the manifest's own
 // wording rather than the resolved absolutes this side holds, and the reader has the
@@ -773,6 +786,13 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 			mode = policy.ExecNoneStrict
 		}
 		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
+	}
+	// The shields counted by writeShieldSummary raise no error at all, so a reader who
+	// took the lines above as the whole list would conclude a silent run reached
+	// everything. Gated on a hidden shield actually engaging, so it never names a shape
+	// this run could not have produced.
+	if mountNSConfines && shieldsHidden(res) {
+		fmt.Fprintln(w, "[bento] a shielded credential path reports no error either: the directory stats as empty, the file reads as zero bytes")
 	}
 }
 

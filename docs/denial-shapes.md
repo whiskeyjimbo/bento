@@ -70,7 +70,9 @@ away from it, and a run that hit every shield can exit 0.
 
 The CLI does this already: `bento run` prints a shield count on stderr after a
 run that engaged any shield, and the denial legend after a clean exit under full
-enforcement. Under `--json` it emits the full `shields` array instead. An
+enforcement - which maps the errnos above to the manifest fields that produced
+them, and names the empty-directory and zero-byte shapes separately, since those
+raise no errno to map. Under `--json` it emits the full `shields` array instead. An
 embedder that swallows those has taken away the only surface that connects a
 wrong answer to its cause.
 

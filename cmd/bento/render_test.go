@@ -370,6 +370,43 @@ func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
 	}
 }
 
+// The errno lines are the whole legend only if every denial has an errno, and a hidden
+// shield has none: the directory stats as an empty tmpfs, the file reads zero bytes. A
+// reader who took the mapping as exhaustive would read that silence as access.
+func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll, Read: []string{"/home/u"}}
+	const shapes = "reports no error either"
+
+	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, hidden)
+	out := b.String()
+	if !strings.Contains(out, shapes) {
+		t.Errorf("a hidden shield engaged, so its silence must be named: %q", out)
+	}
+	if !strings.Contains(out, "stats as empty") || !strings.Contains(out, "zero bytes") {
+		t.Errorf("both shapes have to survive a reword - a shielded dir and a shielded file differ: %q", out)
+	}
+
+	// Naming a shape this run could not have produced is the misattribution the rest of
+	// the legend is gated to avoid, so a run whose grants reached no hidden shield says
+	// nothing about empty directories.
+	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
+	b.Reset()
+	writeDenialLegend(&b, p, readOnly)
+	if strings.Contains(b.String(), shapes) {
+		t.Errorf("no hidden shield engaged, so the shapes did not apply: %q", b.String())
+	}
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{Report: r})
+	if strings.Contains(b.String(), shapes) {
+		t.Errorf("a run that shielded nothing must not name a shield: %q", b.String())
+	}
+}
+
 // A cgroup kill is not a script failure, and the two shapes it arrives in - the
 // wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
 // one. The relayed shape is the common one, and is hedged because a script can exit

@@ -56,6 +56,13 @@ commits that built it - none of them were ever in a release.
 
 ### What a Run Tells You
 
+- **The post-run denial legend now names the two shapes that raise no error.** It
+  mapped `EROFS`/`ENOENT`/`EPERM` back to the manifest fields that produced them,
+  which reads as the complete list of what a denial looks like - but a hidden
+  shield has no errno to map: a shielded directory stats as an empty tmpfs and a
+  shielded file reads as zero bytes. A run that engaged one now says so, on its
+  own line rather than folded into the errno mapping. Output only; nothing about
+  what is shielded changed.
 - **A refusal raised before anything was probed no longer reports a clean
   posture.** `run --json` renders a refusal's report, and a refusal that happens
   before any layer is evaluated carries an empty one - which "no layer degraded"
