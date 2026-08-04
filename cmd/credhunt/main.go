@@ -58,6 +58,11 @@ type denseTree struct {
 // reported by prefix and count, so the operator sees exactly what was folded up and can
 // prune it deliberately or go look. Grouping is on the first three path components, which
 // is where an installed-tool tree separates from the home's own config files.
+//
+// A file sitting directly at the home root is its own group, so it is always listed
+// however many of its siblings there are. The dotfiles and editor leavings there are the
+// class this tool is most for, and folding them under one line would hide exactly what it
+// went looking for.
 func summarize(home string, found []credhunt.Finding) ([]credhunt.Finding, []denseTree) {
 	prefixOf := func(p string) string {
 		parts := strings.Split(strings.TrimPrefix(p, home+string(filepath.Separator)), string(filepath.Separator))
@@ -70,12 +75,7 @@ func summarize(home string, found []credhunt.Finding) ([]credhunt.Finding, []den
 	}
 	count := map[string]int{}
 	for _, f := range found {
-		// The home root itself is never folded: the dotfiles and editor leavings directly
-		// under it are the class this tool is most for, and summarizing them as one line
-		// would hide exactly what it went looking for.
-		if p := prefixOf(f.Path); p != home {
-			count[p]++
-		}
+		count[prefixOf(f.Path)]++
 	}
 	var leads []credhunt.Finding
 	var dense []denseTree

@@ -57,9 +57,10 @@ func TestSummarizeAccountsForEveryFinding(t *testing.T) {
 	}
 }
 
-// A file directly at the home root is never folded, however many there are. The dotfiles
-// and editor leavings sitting there are the class this tool is most for, and summarizing
-// them as one prefix line would hide exactly what it went looking for.
+// A file directly at the home root is its own group, so it is always listed however many
+// siblings it has. This pins the grouping, which is what delivers that: a prefixOf that
+// took the dirname of a root file would put them all under one prefix and fold away the
+// dotfiles and editor leavings this tool is most for.
 func TestSummarizeNeverFoldsTheHomeRoot(t *testing.T) {
 	const home = "/home/u"
 	var found []credhunt.Finding
@@ -129,4 +130,27 @@ func TestRunFailsOnAHomeItCannotWalk(t *testing.T) {
 
 func at(path string) credhunt.Finding {
 	return credhunt.Finding{Path: path, Mode: fs.FileMode(0o600), Signals: []string{credhunt.SignalPrivateMode}}
+}
+
+// Every path in the report is a name off the walked tree, and a filename carries whatever
+// bytes whoever wrote it chose. This output is what a human reads in a terminal to decide
+// whether a lead is a credential, so a name holding an escape sequence must arrive quoted
+// rather than able to rewrite the lines around itself.
+func TestRunEscapesHostileFilenames(t *testing.T) {
+	home := t.TempDir()
+	hostile := "\x1b[2K\rinnocent.txt"
+	if err := os.WriteFile(filepath.Join(home, hostile), []byte("token = abcdef0123456789abcdef0123456789abcdef01\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if code := run(&out, &out, []string{home}); code != 0 {
+		t.Fatalf("run = %d, want 0", code)
+	}
+	if strings.ContainsRune(out.String(), 0x1b) {
+		t.Errorf("a raw escape byte reached the report; the name can rewrite the terminal lines around it:\n%q", out.String())
+	}
+	if !strings.Contains(out.String(), `\x1b`) {
+		t.Errorf("the hostile name is missing from the report entirely:\n%s", out.String())
+	}
 }
