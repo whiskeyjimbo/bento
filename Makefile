@@ -51,7 +51,7 @@ GOVULNCHECK_VERSION ?= v1.6.0
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
 COVERDIR     := .cover
-COVERPROFILE := coverage.out
+COVERPROFILE ?= coverage.out
 
 # Colors & Styling
 BOLD    := \033[1m
@@ -95,28 +95,6 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test ./...
 	@printf "$(GREEN)$(BOLD)✓ All tests passed!$(RESET)\n"
 
-# The seccomp filters are process-wide and permanent, so their tests assert from a
-# re-exec'd child - a separate process, whose counters land nowhere unless it is told
-# where to put them. BENTO_TEST_COVERDIR is that channel (a project-specific name, not
-# GOCOVERDIR, so nothing else in the tree writes into the merge), and the children's
-# profile is concatenated onto the parent's afterwards. The dir is rebuilt each run
-# because stale counters would be merged as if they were this run's.
-#
-# -count=1 for the same reason the dir is rebuilt: a cached package result replays the
-# parent's profile but never re-runs the children, so the merge would quietly drop every
-# counter they contribute and report the drop as a coverage regression.
-cover: ## Measure statement coverage, merging the re-exec'd children's counters
-	@printf "$(CYAN)$(BOLD)==> Measuring coverage...$(RESET)\n"
-	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
-	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
-		go test -count=1 -covermode=atomic -coverprofile=$(COVERPROFILE) ./...
-	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
-	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
-		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }
-	@tail -n +2 $(COVERDIR)/children.txt >> $(COVERPROFILE)
-	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
-	@printf "$(GREEN)$(BOLD)✓ Coverage written to $(COVERPROFILE)$(RESET)\n"
-
 # The proxy's concurrency tests hold many connections at the gate and the egress guard
 # at once to prove a verdict never crosses connections. Whether a broken one is caught
 # without the race detector depends on the window: parking a verdict on the Proxy struct
@@ -141,10 +119,29 @@ race: ## Run the proxy concurrency tests under the race detector
 # BENTO_REQUIRE_TEST_DEPS mirrors `make test`: without it a host missing bwrap, userns or
 # the firejail and AppArmor profiles skips the behavioural tests and reports a lower
 # number, which reads as a regression rather than as a host that could not run them.
-COVERPROFILE ?= coverage.out
+#
+# The seccomp filters are process-wide and permanent, so their tests assert from a
+# re-exec'd child - a separate process, whose counters land nowhere unless it is told
+# where to put them. BENTO_TEST_COVERDIR is that channel (a project-specific name, not
+# GOCOVERDIR, so nothing else in the tree writes into the merge), and the children's
+# profile is concatenated onto the parent's afterwards. Appending rather than merging is
+# right even though blocks then repeat: -coverpkg already emits every package once per
+# test binary, so the profile is full of repeated blocks by construction and go tool
+# cover sums them. The dir is rebuilt each run because stale counters would be merged as
+# if they were this run's.
+#
+# -count=1 for the same reason the dir is rebuilt: a cached package result replays the
+# parent's profile but never re-runs the children, so the merge would quietly drop every
+# counter they contribute and report the drop as a coverage regression.
 cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in check)
 	@printf "$(CYAN)$(BOLD)==> Measuring coverage across the tree...$(RESET)\n"
-	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 go test -count=1 -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
+	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
+		go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
+	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
+		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }
+	@tail -n +2 $(COVERDIR)/children.txt >> $(COVERPROFILE)
 	@GOWORK=off go tool cover -func=$(COVERPROFILE) | tail -1
 	@printf "$(GREEN)$(BOLD)✓ Profile written to $(COVERPROFILE); per-function view: go tool cover -func=$(COVERPROFILE)$(RESET)\n"
 

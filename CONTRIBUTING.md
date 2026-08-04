@@ -92,7 +92,8 @@ script does not.
 make cover   # -coverpkg=./... over the whole tree; ~40s, not part of make check
 ```
 
-The baseline is **84.7% of statements** (2026-08-03). Read it with
+The baseline is **86.0% of statements** (2026-08-04), which includes the re-exec'd
+seccomp children's counters merged in. Read it with
 `go tool cover -func=coverage.out`, and read the per-function column rather than
 the per-package one.
 
@@ -113,12 +114,12 @@ through sacrificial subprocesses, and a subprocess's counters do not reach the
 profile:
 
 - `internal/launcher` and `internal/seccomp` re-exec the test binary behind a
-  sentinel environment variable. The child is instrumented, so its counters
-  *could* be merged: the toolchain wants `-test.gocoverdir=$DIR` on the child's
+  sentinel environment variable. The child is instrumented, so its counters can in
+  principle be merged: the toolchain wants `-test.gocoverdir=$DIR` on the child's
   argv and `go tool covdata textfmt` afterwards. (`GOCOVERDIR` in the
   environment is not enough - that is honoured by `go build -cover` binaries,
-  not by test binaries.) The two packages are blocked for different reasons, so
-  do not read one as evidence about the other.
+  not by test binaries.) The two packages differ, so do not read one as evidence
+  about the other: seccomp's counters are recovered this way, launcher's cannot be.
 
   For `internal/launcher` the blocker is Landlock. A child that applied the
   layers is confined to the run's writable grants, and the coverage directory is
@@ -128,12 +129,23 @@ profile:
   own counters. Removing that call makes the suite fail outright, which is what
   commit 5e86406 fixed; the low numbers are the price.
 
-  For `internal/seccomp` the blocker is only that the helpers `os.Exit` to report
-  their verdict, which skips the teardown that emits. The exec-block filter does
-  not touch `write` or `openat`, so nothing stops the child writing. That
-  coverage is genuinely recoverable - it needs the helpers restructured to return
-  rather than exit, plus `covdata` merging in `make cover`. `backend.DispatchReexec`
-  is the same shape and has not been measured either way.
+  For `internal/seccomp` there is no longer a blocker, and its counters are
+  recovered. The exec-block filter does not touch `write` or `openat`, so nothing
+  stopped the child writing; all that was in the way was the helpers calling
+  `os.Exit` to report their verdict, which skipped the teardown that emits. They
+  return a verdict instead, `helperCommand` threads `-test.gocoverdir` when
+  `BENTO_TEST_COVERDIR` is set, and `make cover` merges the result. Leave that
+  wiring in place: without the merge step the children's counters are dropped
+  silently, which reads as a coverage regression rather than as a broken merge.
+
+  `backend.DispatchReexec` is **not** the same shape, despite looking like it, and
+  measuring it costs nothing to re-learn: it sits at 42.3% and the rest is not
+  recoverable. The seccomp helpers' `os.Exit` was incidental verdict-reporting, but
+  `reexecFail`'s exit 125 *is* the contract - a stage must never fall through to
+  the embedding program's startup, which is what `TestDispatchReexecFailsSetupWith125`
+  pins. Nor can `-test.gocoverdir` be threaded: `TestMain` calls `DispatchReexec`
+  before `m.Run`, so a stage child exits before the `testing` package parses flags
+  at all. Its launch and degraded stages additionally hit the Landlock wall above.
 - `internal/landlock` builds `internal/landlock/internal/probe` as a separate
   binary and runs it under bwrap. That coverage is invisible even to
   `-coverpkg`, and recovering it would need the probe built with `-cover` and
@@ -141,10 +153,11 @@ profile:
 - A child that exits non-zero emits nothing at all, so the failure paths those
   subprocesses exist to exercise are the least visible of the lot.
 
-So `internal/landlock`, `internal/seccomp`, `internal/launcher` and
-`backend.DispatchReexec` read low because their coverage is uncounted, not
-because it is missing. Do not chase those numbers with tests; check what the
-subprocess tests already assert first.
+So `internal/landlock`, `internal/launcher` and `backend.DispatchReexec` read low
+because their coverage is uncounted, not because it is missing. Do not chase those
+numbers with tests; check what the subprocess tests already assert first.
+`internal/seccomp` no longer belongs on that list - its children are merged, so its
+number is real and can be read like any other.
 
 ## Architecture & conventions
 
