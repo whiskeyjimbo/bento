@@ -11,6 +11,23 @@ commits that built it - none of them were ever in a release.
 
 ## Unreleased
 
+### Building and Installing
+
+- **`make install` now installs to `/usr/local/bin`, not `GOPATH/bin`.** It
+  honours `PREFIX`, `BINDIR` and `DESTDIR`, so a packager can stage into a
+  package root, and it installs the binary `make build` produced rather than
+  building a second time. The default destination usually needs root; pass
+  `PREFIX=$HOME/.local` for the old rootless behaviour.
+- **`LDFLAGS` is now a pass-through rather than the stamp itself.** Anything
+  passed is appended to the version stamp, so `make build LDFLAGS=...` can no
+  longer silently produce a binary that misreports its own version.
+  `CGO_ENABLED` remains fixed at 0 on purpose - the credential shields anchor on
+  the uid's passwd entry, and libc NSS would put that lookup back under caller
+  control.
+- **`make check` now runs `make vuln` and needs network.** A dependency with a
+  known advisory stops the merge that introduces it rather than being reported
+  on a later scan. The boundary did not move.
+
 ### Verifying a Release
 
 - **The signature file is now `checksums.txt.sigstore.json`**, not
