@@ -50,7 +50,11 @@ GOVULNCHECK_VERSION ?= v1.6.0
 # unchanged tree red on its own schedule.
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
-COVERDIR     := .cover
+# `override` because cover rebuilds this directory with rm -rf, and a command-line
+# assignment beats a plain := - so `make cover COVERDIR=~/notes` would delete it. It is
+# scratch space for one target, not a knob. COVERPROFILE is the knob, and is only ever
+# truncated by go test.
+override COVERDIR := .cover
 COVERPROFILE ?= coverage.out
 
 # Colors & Styling
@@ -138,6 +142,10 @@ cover: ## Measure coverage across the whole tree with -coverpkg (slow; not in ch
 	@rm -rf $(COVERDIR) && mkdir -p $(COVERDIR)
 	@GOWORK=off BENTO_REQUIRE_TEST_DEPS=1 BENTO_TEST_COVERDIR=$(abspath $(COVERDIR)) \
 		go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVERPROFILE) ./...
+	@ls $(COVERDIR)/covmeta.* >/dev/null 2>&1 || { \
+		printf "$(YELLOW)no child counters in $(COVERDIR); refusing to report a number that silently omits them.\n"; \
+		printf "The re-exec'd tests emit only when helperCommand threads -test.gocoverdir from BENTO_TEST_COVERDIR.$(RESET)\n"; \
+		exit 1; }
 	@GOWORK=off go tool covdata textfmt -i=$(COVERDIR) -o=$(COVERDIR)/children.txt
 	@[ "$$(head -1 $(COVERPROFILE))" = "$$(head -1 $(COVERDIR)/children.txt)" ] \
 		|| { printf "$(YELLOW)coverage modes differ; refusing to merge$(RESET)\n"; exit 1; }
