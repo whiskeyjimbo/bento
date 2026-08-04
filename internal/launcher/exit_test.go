@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The target's env is where the egress fence becomes visible to the program inside: a
@@ -27,7 +28,10 @@ func TestProxyEnvSetsBothCasingsAndExemptsLoopback(t *testing.T) {
 		got[k] = v
 	}
 
-	want := "http://" + proxyAddr
+	// Spelled out rather than built from proxyAddr: the bridge listens on that address
+	// inside the sandbox, so a test that derived the expectation from the same constant
+	// would follow a change of it and never fail.
+	const want = "http://127.0.0.1:3128"
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		if got[k] != want {
 			t.Errorf("%s = %q, want %q", k, got[k], want)
@@ -104,21 +108,36 @@ func TestReapUntilReturnsTheTargetNotTheFirstChild(t *testing.T) {
 	}
 }
 
-// reapChild starts a sibling that exits immediately and a target that outlives it, then
-// reports what reapUntil made of them.
+// reapChild starts a sibling, waits for it to be a zombie, and only then lets the
+// target exit - so the ordering the property needs holds without a timing assumption.
+// A sleep long enough to be safe on an idle machine is still a coin flip on a loaded
+// one, and it would fail as "a child survived reapUntil" rather than as a timeout.
 func reapChild() {
 	fail := func(format string, a ...any) {
 		fmt.Fprintf(os.Stdout, format+"\n", a...)
 		os.Exit(1)
 	}
-	sibling := exec.Command("/bin/sh", "-c", "exit 0")
+	sibling := exec.Command("/bin/true")
 	if err := sibling.Start(); err != nil {
 		fail("starting the sibling: %v", err)
 	}
-	target := exec.Command("/bin/sh", "-c", "sleep 0.3; kill -TERM $$")
+	// The target blocks on a read until its stdin is closed, so nothing but this process
+	// decides when it exits.
+	target := exec.Command("/bin/sh", "-c", "read _; kill -TERM $$")
+	release, err := target.StdinPipe()
+	if err != nil {
+		fail("target stdin: %v", err)
+	}
 	if err := target.Start(); err != nil {
 		fail("starting the target: %v", err)
 	}
+
+	// Zombie is the state to wait for, not "exited": nothing has reaped the sibling yet,
+	// so its staying a zombie is itself proof reapUntil has not run.
+	if err := awaitZombie(sibling.Process.Pid); err != nil {
+		fail("%v", err)
+	}
+	release.Close()
 
 	code, err := reapUntil(target.Process.Pid)
 	if err != nil {
@@ -132,4 +151,26 @@ func reapChild() {
 	}
 	fmt.Fprintf(os.Stdout, "REAP_OK %d\n", code)
 	os.Exit(0)
+}
+
+// awaitZombie blocks until pid has exited and not yet been reaped.
+func awaitZombie(pid int) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return fmt.Errorf("reading the sibling's state: %w", err)
+		}
+		// The state field follows the comm, which is parenthesised and may itself contain
+		// spaces or a close paren - so it is found from the END of the comm, not by
+		// splitting the whole line.
+		rest := string(stat[strings.LastIndex(string(stat), ")")+1:])
+		if fields := strings.Fields(rest); len(fields) > 0 && fields[0] == "Z" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the sibling never became a zombie: %s", stat)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
