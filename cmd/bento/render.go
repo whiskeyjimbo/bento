@@ -787,12 +787,12 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 		}
 		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
 	}
-	// The shields counted by writeShieldSummary raise no error at all, so a reader who
-	// took the lines above as the whole list would conclude a silent run reached
-	// everything. Gated on a hidden shield actually engaging, so it never names a shape
-	// this run could not have produced.
+	// A hidden shield raises no error at all - unlike the read-only one the write line
+	// above already accounts for - so a reader who took the errno lines as the whole list
+	// would read that silence as access. Gated on one actually engaging, so it never names
+	// a shape this run could not have produced.
 	if mountNSConfines && shieldsHidden(res) {
-		fmt.Fprintln(w, "[bento] a shielded credential path reports no error either: the directory stats as empty, the file reads as zero bytes")
+		fmt.Fprintln(w, "[bento] a hidden shield reports no error either: the directory stats as empty, the file reads as zero bytes")
 	}
 }
 

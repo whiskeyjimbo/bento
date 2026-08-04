@@ -146,9 +146,11 @@ func Shieldable(p string, homes []string) bool {
 
 // Home returns the mandatory rules for a user's home directory.
 //
-// Credential stores are shielded as whole directories on purpose. Naming
+// A credential store that is a directory is shielded whole on purpose. Naming
 // individual files (~/.ssh/id_rsa) leaves siblings exposed (~/.ssh/my_deploy_key)
-// and cannot stop a script from creating a new file in the directory.
+// and cannot stop a script from creating a new file in the directory. The file
+// entries below are the stores that are genuinely one file, whose parent holds
+// unrelated content the tool needs - there is no directory to take.
 //
 // alsoHomes are the run's other home anchors, when it has more than one (a caller
 // whose $HOME disagrees with the passwd entry). Home is called once per anchor, so
