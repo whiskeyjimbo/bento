@@ -289,15 +289,15 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 	}
 	// openTTY only once the gates above have passed: it opens /dev/tty, which a --yes run
 	// has no reason to hold.
-	return readApprovalAnswer(w, openTTY())
+	return readApprovalAnswer(openTTY(), w)
 }
 
 // readApprovalAnswer prompts and reads the verdict, taking the reader as confirmNetworkExfil
-// does rather than opening the terminal itself - which is what lets the answer handling be
-// exercised without one. Anything but an explicit yes declines: the question is whether a
-// human affirmed these permissions, so a typo, an empty line and a closed stream must all
-// mean no.
-func readApprovalAnswer(w io.Writer, in io.Reader) error {
+// does - in the same argument order - rather than opening the terminal itself, which is what
+// lets the answer handling be exercised without one. Anything but an explicit yes declines:
+// the question is whether a human affirmed these permissions, so a typo, an empty line and a
+// closed stream must all mean no.
+func readApprovalAnswer(in io.Reader, w io.Writer) error {
 	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(line)) {
