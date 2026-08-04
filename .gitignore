@@ -6,6 +6,7 @@
 bin/
 .beads/*
 /bento
+/coverage.out
 dist/
 .cover/
 coverage.out

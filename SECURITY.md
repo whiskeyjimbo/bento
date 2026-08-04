@@ -24,6 +24,49 @@ and the smallest program that demonstrates the escape.
 This is a personal project with no staffed rotation, so there is no response-time
 guarantee. What is promised: a boundary report is triaged before feature work.
 
+## How a report is handled
+
+The steps below are the process, not a schedule - see the paragraph above for why
+no timeline is attached to them.
+
+1. **Acknowledge.** The report is answered in the private advisory thread, even
+   if the answer is only that it has been read and not yet understood.
+2. **Triage.** The report is reproduced and placed against the scope list below.
+   If it turns out to be out of scope, that is explained in the thread and the
+   reporter is invited to reopen it as a public issue.
+3. **Fix on a private branch.** Work happens in the GitHub Security Advisory's
+   private fork, with a regression test that fails before the fix - the same bar
+   any other bug fix meets.
+4. **Release.** The fix ships in a tagged release, versioned by the rules in
+   "Versioning and the boundary" below, with the boundary movement named in the
+   release notes.
+5. **Publish.** The advisory is published once the fix is released, which also
+   files the CVE. Disclosure is coordinated: the reporter is asked before the
+   advisory goes public, and a reporter who needs longer gets it.
+
+Discussion stays in the private thread until the advisory is published. If a
+report is already public when it arrives, the fix is prioritised over the
+embargo - there is nothing left to coordinate.
+
+## Credit for reporters
+
+Reporters are credited by name in the published advisory and in the release
+notes for the version carrying the fix, and are listed as advisory collaborators
+so the GitHub credit is attached to their account. Say so in the report if you
+would rather be credited under a handle, credited without a link, or not credited
+at all - anonymity is honoured without asking why. Credit is not conditional on
+the report turning out to be in scope; a careful report that lands out of scope
+still gets named if the reporter wants it.
+
+## Staying up to date
+
+Fixes are only useful once you are running them. New versions are announced on
+the [releases page](https://github.com/whiskeyjimbo/bento/releases); watch the
+repository for releases to be notified. Because Bento is pre-1.0 and nothing is
+backported, upgrading to the latest release is the only supported way to take a
+security fix - there is no patch line on an older tag. Verify the upgrade the
+same way you verified the original install, below.
+
 ## What counts as a vulnerability
 
 In scope - any of these is a security bug, even without a working exploit:

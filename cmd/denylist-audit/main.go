@@ -99,11 +99,18 @@ const (
 var errRefuse = errors.New("the response is not the upstream profile")
 
 func main() {
-	sources, status := collect(fetch, os.Stderr)
+	os.Exit(run(fetch, os.Stdout, os.Stderr))
+}
+
+// run is main with its two ends as parameters, so the status the CI wrapper switches on
+// is asserted without the network. A refusal from collect is the answer on its own - the
+// audit never ran, so there is no diff to report.
+func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
+	sources, status := collect(fetch, stderr)
 	if status != 0 {
-		os.Exit(status)
+		return status
 	}
-	os.Exit(report(os.Stdout, sources, home, runUser))
+	return report(stdout, sources, home, runUser)
 }
 
 // collect fetches every upstream profile and checks each is the file it claims to be,
