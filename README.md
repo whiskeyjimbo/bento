@@ -70,7 +70,27 @@ credentials shielded even under a grant that covers them.
 ```sh
 make build                    # reproducible static binary (trimmed paths, source-derived stamp)
 go build -o bento ./cmd/bento # plain build
+make install                  # install to /usr/local/bin (needs write access there)
 ```
+
+`make install` honours the usual packaging variables: `PREFIX` (default
+`/usr/local`), `BINDIR` (default `$PREFIX/bin`), and `DESTDIR` for staging into a
+package root. `GOFLAGS` is passed through by the Go toolchain, and `LDFLAGS` is
+appended to the version stamp rather than replacing it, so an override cannot
+produce a binary that misreports itself:
+
+```sh
+make install DESTDIR=./pkg PREFIX=/usr    # stages ./pkg/usr/bin/bento
+```
+
+`CGO_ENABLED` is deliberately not overridable. The build forces a static,
+`osusergo` binary because the credential shields anchor on the uid's passwd entry,
+and routing that lookup through libc NSS would put it back under caller control -
+see the comment in the Makefile.
+
+`make build` keeps the symbol table and DWARF so a failure inside a sandbox layer
+can be debugged. Only the release build strips (`-s -w` in `.goreleaser.yaml`),
+where archive size is the concern and the binary is reproducible from the tag.
 
 Every install path answers `bento version`. `make build` stamps the commit and build
 time it derived from the source; a plain build or `go install` reports the module
