@@ -449,6 +449,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".config/tmux",              // XDG location for tmux.conf
 		".config/direnv",            // direnvrc, sourced on cd for direnv users
 		".local/share/direnv/allow", // authorization records: an entry pre-approves a workspace .envrc
+		// bento's own approval journal: each entry is this host's record of the permissions a
+		// human approved, and re-approval names the changed lines by diffing against it. A
+		// sandboxed run that could write one would author its own baseline, so the next
+		// reviewer is told an added grant is old news. Denied write rather than hidden - it
+		// holds a copy of a policy its owner already reads, no secret - and shielded at the
+		// bento directory so a later state file is covered without a second entry.
+		".local/state/bento",
 		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
 		".vscode",                   // extensions/ load on startup
 		".config/mpv",               // scripts/*.lua autoloaded on launch
