@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -302,6 +303,19 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 		if !slices.Contains(dropped, p) {
 			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
 		}
+	}
+}
+
+// A grant withheld from the proposal is warned about by what it holds, so the drop
+// carries the shield's own classification rather than calling everything a credential.
+func TestClampShieldedGrantsCarriesWhatTheShieldHolds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	hist := filepath.Join(home, ".local", "state", "nvim", "shada")
+	_, _, shielded, _ := clampShieldedGrants([]string{hist}, nil)
+	if len(shielded) != 1 || shielded[0].Holds != denylist.HoldsHistory {
+		t.Errorf("%q is a history store and must be withheld as one; got %+v", hist, shielded)
 	}
 }
 

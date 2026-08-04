@@ -101,7 +101,12 @@ func (h Holds) Exposure() string {
 	case HoldsCredentials:
 		return "read the credentials in it"
 	case HoldsPrivateData:
-		return "read the saved logins, sessions, and messages in it"
+		// Hedged rather than enumerated: the bucket runs from browser cookie jars to
+		// mail to wallets to a decrypted home, so a clause naming three of those
+		// misdescribes the rest the way "credentials" misdescribed this bucket - but
+		// several of them do hold a password or a key, and the sentence must not read
+		// as softer than the credential one for the stores where it is the same thing.
+		return "read the private data in it, which for many of these stores includes saved passwords and keys"
 	case HoldsHistory:
 		return "read what was typed, pasted, and edited on this host"
 	case HoldsPersistence:
@@ -1190,6 +1195,12 @@ var walletKeyPaths = []string{
 // them (mail sync deduplicates identical messages), which would trip the alias scan on a
 // message rather than a credential. A saved mail password or browser login inside one of
 // these is therefore not an alias anchor; the tree is still hidden from the sandbox.
+//
+// The split is by what the alias scan can enumerate, not by severity, so the bucket is
+// mixed on that axis: chain data and mail sit beside stores whose whole point is a saved
+// password (~/.config/gajim, ~/.config/Mumble's client certificate). The callouts name
+// the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
+// promising the reader nothing here is a credential.
 var bulkStoreDirs = []string{
 	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
 	// that carry reset links and 2FA codes.
