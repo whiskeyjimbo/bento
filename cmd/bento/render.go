@@ -95,6 +95,13 @@ type doctorJSON struct {
 }
 
 func toReportJSON(r enforce.Report) reportJSON {
+	// A report with no layers evaluated no layer, and !HasDegradation() would call that
+	// fully enforced - the clean posture noReport exists to keep off a run that never had
+	// one. It reaches here through a refusal raised before anything was probed, e.g. a
+	// malformed run id, whose Report is the zero value.
+	if len(r.Layers) == 0 {
+		return noReport
+	}
 	out := reportJSON{Layers: make([]layerJSON, 0, len(r.Layers)), FullyEnforced: !r.HasDegradation()}
 	for _, l := range r.Layers {
 		out.Layers = append(out.Layers, layerJSON{

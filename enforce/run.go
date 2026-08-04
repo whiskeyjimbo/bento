@@ -67,12 +67,25 @@ type Options struct {
 	// rather than the one pid it happened to record. See RunOptions.RunID for the unit
 	// name it derives and why the caller supplies the id instead of reading one back.
 	//
-	// Setting it refuses a run that would not get a scope - a policy with no limits, or
-	// a host that cannot create one - because the alternative is the failure this exists
-	// to prevent: a supervisor holding a handle to nothing while the target runs. That
-	// refusal stands under --allow-degraded too, which otherwise waives an unenforceable
-	// limit: waiving the limit is a choice about the target's resource ceiling, and it
-	// must not silently take the supervisor's ability to kill it along with it.
+	// Setting it refuses a run that would not reliably get a scope - a policy with no
+	// limits, or a host whose limits layer is not fully Enforced - because the
+	// alternative is the failure this exists to prevent: a supervisor holding a handle to
+	// nothing while the target runs. Degraded refuses alongside Unavailable, and not
+	// because a Degraded host cannot create a scope: it means something about the scope
+	// fell short, the backend can only ever refine that judgment downward once the run
+	// starts, and a handle that might not be there is exactly what a supervisor cannot
+	// act on. That refusal stands under --allow-degraded too, which otherwise waives an
+	// unenforceable limit: waiving the limit is a choice about the target's resource
+	// ceiling, and it must not silently take the supervisor's ability to kill it along
+	// with it.
+	//
+	// Reusing an id while a run still holds it is refused by systemd, not here: the unit
+	// name is taken, systemd-run says so on stderr, and the run fails before the target
+	// starts. It surfaces as bento's unattested-stage refusal, whose prose describes the
+	// usual cause rather than this one, so a supervisor recycling ids reads systemd's line
+	// above it. Checking the name here first would be a guess with a race behind it - the
+	// name can be claimed between the check and the start - so the authoritative refusal
+	// is left where it actually holds.
 	RunID string
 }
 
@@ -282,11 +295,17 @@ func (o Options) admit(r Report) error {
 var runIDRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
 // validateRunID screens a caller-supplied run id before it can reach a unit name.
+//
+// A Refusal and not a plain error, even though it is settled before anything is probed
+// and so carries an empty Report: it is a mistake in what the caller asked for, which is
+// the category a supervisor must not retry, and a frontend that sorts the two apart -
+// run --json emits "refusal" for one and "failed" for the other - would otherwise file a
+// misspelled id under the runs that failed for reasons out of the caller's hands.
 func validateRunID(id string) error {
 	if id == "" || runIDRe.MatchString(id) {
 		return nil
 	}
-	return fmt.Errorf("enforce: run id %q must be 1-64 characters of letters, digits, or underscore", id)
+	return &Refusal{Reason: fmt.Sprintf("run id %q must be 1-64 characters of letters, digits, or underscore", id)}
 }
 
 // admitRunID refuses a run that asked to be reapable but would not get a scope to be
@@ -312,7 +331,7 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 	if required.StateOf(LayerLimits) != Enforced {
 		return &Refusal{
 			Report: required,
-			Reason: "a run id asks for a reapable scope, and this host cannot create one",
+			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through",
 			Short:  unenforcedRequestedLimits(required),
 		}
 	}

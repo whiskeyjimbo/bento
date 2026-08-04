@@ -306,13 +306,9 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 		return runErr
 	}
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
-	// carries the zero Report, which toReportJSON would answer fully_enforced:true for -
-	// a clean posture on a run that never had one. See noReport.
-	report := noReport
-	if len(res.Report.Layers) > 0 {
-		report = toReportJSON(res.Report)
-	}
-	stream.emit(streamRefusalJSON{"failed", runErr.Error(), report})
+	// carries the zero Report; toReportJSON answers that with noReport rather than the
+	// clean posture !HasDegradation() would read as.
+	stream.emit(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report)})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 

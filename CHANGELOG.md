@@ -39,6 +39,13 @@ commits that built it - none of them were ever in a release.
 
 ### What a Run Tells You
 
+- **A refusal raised before anything was probed no longer reports a clean
+  posture.** `run --json` renders a refusal's report, and a refusal that happens
+  before any layer is evaluated carries an empty one - which "no layer degraded"
+  answered as `fully_enforced: true`, a clean posture on a run that never had one.
+  An empty report now reports `fully_enforced: false`, matching what the same case
+  already reported on the `failed` event. A consumer gating on that field over an
+  invalid manifest was reading the wrong answer.
 - **An undispatched stage now exits 125 with one line, not a panic**: an embedder
   that skips `backend.DispatchReexec()` gets a re-exec stage that would go on to
   run its own program - a fork bomb the guard has always cut short. It did so by

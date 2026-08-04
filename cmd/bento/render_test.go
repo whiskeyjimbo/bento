@@ -995,3 +995,16 @@ func TestShieldedGrantProblemsFollowTheGrantsSymlinks(t *testing.T) {
 	}
 	assertProblem(t, got, "is inside the always-shielded path")
 }
+
+func TestToReportJSONEmptyReportIsNotACleanPosture(t *testing.T) {
+	// A refusal raised before anything was probed - a malformed run id, an invalid
+	// policy - carries the zero Report. Reporting it as fully enforced would claim a
+	// posture the run never had.
+	got := toReportJSON(enforce.Report{})
+	if got.FullyEnforced {
+		t.Error("a report with no layers evaluated reads as fully enforced")
+	}
+	if got.Layers == nil {
+		t.Error("layers must serialize as [] rather than null")
+	}
+}
