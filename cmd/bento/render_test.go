@@ -821,10 +821,11 @@ func TestExplicitShieldGrants(t *testing.T) {
 	t.Setenv("HOME", home)
 	sshDir := filepath.Join(home, ".ssh")
 
-	got, err := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
+	grants, err := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
 	if err != nil {
 		t.Fatalf("explicitShieldGrants: %v", err)
 	}
+	got := shieldGrantPaths(grants)
 	if !slices.Contains(got, sshDir) {
 		t.Errorf("a grant naming the shield exactly must be reported; got %v", got)
 	}

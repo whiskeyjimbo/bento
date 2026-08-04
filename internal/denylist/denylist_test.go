@@ -1177,3 +1177,46 @@ func TestApprovalJournalIsShieldedUnderARelocatedStateHome(t *testing.T) {
 		}
 	}
 }
+
+// Every DenyAll rule has to say what it hides: the callouts that ask a reviewer to
+// approve lifting a shield print Holds, and an unclassified rule would fall back to the
+// vague wording for a store that has a name. A new entry added to a list nobody wired
+// into dirGroups fails here rather than in a user-facing sentence.
+func TestDenyAllRulesAreClassified(t *testing.T) {
+	// The relocations are exercised too: each emits its own rule, and those are the sites
+	// where a Holds is easiest to leave off.
+	t.Setenv("GNUPGHOME", "/srv/keys")
+	t.Setenv("KUBECONFIG", "/srv/kube.yaml")
+	t.Setenv("HISTFILE", "/srv/history")
+	t.Setenv("CARGO_HOME", "/srv/cargo")
+	rules := slices.Concat(Home("/home/u"), Runtime("/tmp/rt", "/home/u"))
+	for _, r := range rules {
+		if r.Deny == DenyAll && r.Holds == HoldsUnknown {
+			t.Errorf("%q is hidden but unclassified; add it to a list dirGroups names", r.Path)
+		}
+	}
+}
+
+// The buckets exist so a callout can name what it exposes. A history store described as
+// a credential store is the drain this classification exists to stop, so the examples
+// that motivated it are pinned.
+func TestHomeShieldClassification(t *testing.T) {
+	byPath := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = r
+	}
+	for path, want := range map[string]Holds{
+		"/home/u/.ssh":              HoldsCredentials,
+		"/home/u/.netrc":            HoldsCredentials,
+		"/home/u/.mozilla":          HoldsPrivateData,
+		"/home/u/.local/state/nvim": HoldsHistory,
+		"/home/u/.config/autostart": HoldsPersistence,
+	} {
+		if got := byPath[path]; got.Holds != want {
+			t.Errorf("%s: Holds = %v (%q), want %v", path, got.Holds, got.Holds.Noun(), want)
+		}
+	}
+	if got := Runtime("/tmp/rt", "/home/u")[0]; got.Holds != HoldsServices {
+		t.Errorf("%s: Holds = %v, want HoldsServices", got.Path, got.Holds)
+	}
+}
