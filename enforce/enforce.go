@@ -103,10 +103,14 @@ type RunOptions struct {
 // several runs, which is the shape that cannot attribute anything.
 //
 // Consulting it is not the only way to learn what was refused, and a gate that returns
-// false only to log the attempt is not needed for that: every destination the allowlist
-// turned away is reported in Result.Denied whether or not a gate was present. The gate
-// is what a caller reaches for to see a refusal WHILE the run is alive, which Result,
-// arriving at exit, cannot give it.
+// false only to log the attempt is not needed for that: on a run that brings the egress
+// stack up at all, Result.Denied reports every destination the allowlist turned away,
+// gate or no gate. The gate is what a caller reaches for to see a refusal WHILE the run
+// is alive, which Result, arriving at exit, cannot give it.
+//
+// "At all" is the load-bearing part: a policy that declares no network rules and gets no
+// gate runs with no proxy, so the target's connect is stopped by the egress block itself
+// and Denied stays empty. An empty Denied is never evidence the target tried nothing.
 type NetworkGate func(ctx context.Context, host, port string) bool
 
 // Process is the runtime binding a policy does not carry: where the target's
