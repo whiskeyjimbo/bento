@@ -53,10 +53,13 @@ commits that built it - none of them were ever in a release.
   is deliberately not in the manifest: anything stored there is unauthenticated,
   and a forged prior shape yields a diff that names one innocuous addition and
   invites a skim of a policy nobody approved. So where the journal cannot answer,
-  `approve` says which reason applies instead of guessing - no record at all means
-  the stamp was written on some other host, and a record that disagrees with the
-  stamp means the manifest was re-approved elsewhere or replaced. Both send the
-  reader over the whole policy, as before. The boundary moved once, inward:
+  `approve` says which reason applies instead of guessing: no record at all
+  (usually a stamp written on another host, but a cleared state directory reaches
+  it too), a record describing a different approval than the stamp the manifest
+  carries, or a journal somebody other than you can write - which is not evidence
+  of anything, so it is declined rather than diffed, on read as well as on write.
+  All three send the reader over the whole policy, as before. The boundary moved
+  once, inward:
   `~/.local/state/bento` is now write-denied to every run, wherever
   `XDG_STATE_HOME` points, since a sandboxed script that could write a record
   could make the next reviewer's diff lie. It stays readable - it holds a copy of
