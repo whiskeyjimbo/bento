@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -481,5 +482,58 @@ func TestARelativeStateHomeFallsBackToTheDefault(t *testing.T) {
 	}
 	if strings.Contains(dir, "relative/state") {
 		t.Errorf("a relative XDG_STATE_HOME must be ignored; got %q", dir)
+	}
+}
+
+// The interactive verdict, which --yes never reaches. Anything but an explicit yes must
+// decline: the stamp is the record that a human affirmed these permissions, so a typo or a
+// closed stream has to mean no rather than fall through to approval.
+func TestReadApprovalAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		answer   string
+		approves bool
+	}{
+		{"y\n", true},
+		{"Y\n", true},
+		{"yes\n", true},
+		{"YES\n", true},
+		{"  y  \n", true},
+		{"n\n", false},
+		{"no\n", false},
+		{"\n", false},    // the default the prompt advertises with [y/N]
+		{"", false},      // a closed stream, no newline
+		{"yep\n", false}, // close enough to yes to be worth pinning
+		{"ye\n", false},
+		{"1\n", false},
+	} {
+		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
+			var buf strings.Builder
+			err := readApprovalAnswer(&buf, strings.NewReader(tc.answer))
+			if approved := err == nil; approved != tc.approves {
+				t.Errorf("answer %q approved = %v, want %v (err %v)", tc.answer, approved, tc.approves, err)
+			}
+			if !strings.Contains(buf.String(), "[y/N]") {
+				t.Errorf("the prompt must state the default; got %q", buf.String())
+			}
+		})
+	}
+}
+
+// The reviewed flag comes straight off the answer above, and a stamp a human affirmed must
+// be recorded as one - the whole point of the field is that a --yes stamp is distinguishable.
+func TestAnAffirmedAnswerIsRecordedAsReviewed(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	if err := storeApprovalRecord(path, p, true); err != nil {
+		t.Fatal(err)
+	}
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
+	rec, verdict := readApprovalRecord(path, doc)
+	if verdict != journalMatches {
+		t.Fatalf("verdict = %v, want journalMatches", verdict)
+	}
+	if !rec.Reviewed {
+		t.Error("an interactively affirmed stamp must be recorded as reviewed")
 	}
 }
