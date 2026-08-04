@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,5 +308,119 @@ func TestReportFailsOnStaleScopeKeyword(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "top secret") {
 		t.Errorf("the stale keyword must be named so it can be re-pointed; got %q", b.String())
+	}
+}
+
+// fetch's job is to sort what came back into "try again later" and "this is not the
+// profile", because the wrapper passes over the first and fails on the second. The
+// discriminating bit is errRefuse, not the message, so that is what is asserted.
+func TestFetchClassifiesTheResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		wantRefuse bool
+	}{
+		{"renamed upstream", http.StatusNotFound, true},
+		{"forbidden", http.StatusForbidden, true},
+		{"server having a bad day", http.StatusServiceUnavailable, false},
+		{"rate limited", http.StatusTooManyRequests, false},
+		{"request timeout", http.StatusRequestTimeout, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			_, err := fetch(srv.URL)
+			if err == nil {
+				t.Fatalf("status %d returned no error", tc.status)
+			}
+			if got := errors.Is(err, errRefuse); got != tc.wantRefuse {
+				t.Errorf("status %d: refused = %v, want %v; the wrapper passes over a non-refusal and fails on a refusal", tc.status, got, tc.wantRefuse)
+			}
+		})
+	}
+}
+
+// A transport error is the flakiness the pass-over status exists for, so it must not
+// come back as a refusal - a refusal fails the gate.
+func TestFetchTreatsATransportErrorAsTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	_, err := fetch(url)
+	if err == nil {
+		t.Fatal("a dial to a closed server returned no error")
+	}
+	if errors.Is(err, errRefuse) {
+		t.Errorf("a dial failure was refused (%v); it is an infrastructure condition, not a judgement about a response", err)
+	}
+}
+
+// The size ceiling is read one byte past the cap so a body that hit it is detected
+// rather than silently truncated - a truncated profile drops its tail sections from the
+// comparison and could hide the gaps there. Both sides of the boundary, because an
+// off-by-one here either refuses every real fetch or lets a truncated one through.
+func TestFetchRefusesOnlyPastTheSizeCeiling(t *testing.T) {
+	const maxBytes = 1 << 20
+	for _, tc := range []struct {
+		name       string
+		size       int
+		wantRefuse bool
+	}{
+		{"at the ceiling", maxBytes, false},
+		{"one byte past", maxBytes + 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if _, err := w.Write(bytes.Repeat([]byte("x"), tc.size)); err != nil {
+					t.Errorf("serving the fixture body: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			body, err := fetch(srv.URL)
+			if tc.wantRefuse {
+				if !errors.Is(err, errRefuse) {
+					t.Errorf("a %d-byte body was accepted (err %v); auditing a truncated copy hides the gaps in its tail", tc.size, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a %d-byte body must be accepted whole: %v", tc.size, err)
+			}
+			if len(body) != tc.size {
+				t.Errorf("body = %d bytes, want %d; a silently truncated profile drops its tail from the diff", len(body), tc.size)
+			}
+		})
+	}
+}
+
+// main's status is the CI wrapper's whole input, so run must hand each of collect's
+// refusals up unchanged - collapsing the two would put a permanently wrong URL on the
+// arm that prints "offline?" and passes. And a healthy fetch must reach the audit's own
+// verdict rather than any refusal status, or the gate would report on a diff it skipped.
+func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
+	var b bytes.Buffer
+	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b); code != exitFetchFailed {
+		t.Errorf("run = %d over an unreachable upstream, want %d so the wrapper skips rather than reddens", code, exitFetchFailed)
+	}
+	b.Reset()
+	if code := run(func(string) (string, error) { return "<html>404</html>", nil }, &b, &b); code != exitContentRefused {
+		t.Errorf("run = %d when a body is not the profile, want %d so the wrapper fails", code, exitContentRefused)
+	}
+	b.Reset()
+	healthy := func(url string) (string, error) {
+		for _, src := range upstreamSources {
+			if src.url == url {
+				return fullBody(src.sentinel, src.minCandidates), nil
+			}
+		}
+		return "", fmt.Errorf("no fixture for %s", url)
+	}
+	if code := run(healthy, &b, &b); code == exitFetchFailed || code == exitContentRefused {
+		t.Errorf("run = %d with every source intact; a refusal status here would report a fetch problem over an audit that ran", code)
 	}
 }
