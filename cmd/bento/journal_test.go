@@ -502,6 +502,7 @@ func TestReadApprovalAnswer(t *testing.T) {
 		{"no\n", false},
 		{"\n", false},    // the default the prompt advertises with [y/N]
 		{"", false},      // a closed stream, no newline
+		{"y", true},      // a stream ending mid-line is still a complete answer
 		{"yep\n", false}, // close enough to yes to be worth pinning
 		{"ye\n", false},
 		{"1\n", false},
