@@ -251,7 +251,7 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 	res := enforce.Result{
 		ShieldedGrants: []enforce.ShieldedGrant{
 			{Path: granted, OnHost: store, Holds: "credentials"},
-			{Path: "/etc/hosts", Holds: "credentials"},
+			{Path: "/run", Holds: "services"},
 		},
 	}
 	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
@@ -266,13 +266,13 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if len(env.ShieldedGrants) != 2 || env.ShieldedGrants[0].Path != granted || env.ShieldedGrants[1].Path != "/etc/hosts" {
+	if len(env.ShieldedGrants) != 2 || env.ShieldedGrants[0].Path != granted || env.ShieldedGrants[1].Path != "/run" {
 		t.Fatalf("shielded_grants = %+v, want the grants as the policy spelled them", env.ShieldedGrants)
 	}
 	if env.ShieldedGrants[0].OnHost != store || env.ShieldedGrants[0].Holds != "credentials" {
 		t.Errorf("shielded_grants[0] = %+v, want %q on %q as a credential store", env.ShieldedGrants[0], granted, store)
 	}
-	// Only the aliased entry carries on_host: /etc/hosts names its own target, and a
+	// Only the aliased entry carries on_host: /run names its own target, and a
 	// field claiming otherwise would be noise a consumer has to filter.
 	if env.ShieldedGrants[1].OnHost != "" {
 		t.Errorf("shielded_grants[1] = %+v, want no on_host for a grant that names its own target", env.ShieldedGrants[1])
