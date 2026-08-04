@@ -114,14 +114,26 @@ profile:
 
 - `internal/launcher` and `internal/seccomp` re-exec the test binary behind a
   sentinel environment variable. The child is instrumented, so its counters
-  *could* be merged - the toolchain wants `-test.gocoverdir=$DIR` on the child's
-  argv and `go tool covdata textfmt` afterwards - but a child that applies the
-  layers cannot then write them: Landlock confines it to the run's writable
-  grants, and the coverage directory is not one. Granting it would mean the test
-  no longer runs the configuration it claims to test, so the launcher's report
-  child deliberately calls `os.Exit(0)` before `testing`'s teardown and discards
-  its own counters. Removing that call makes the suite fail outright, which is
-  what commit 5e86406 fixed; the low numbers are the price.
+  *could* be merged: the toolchain wants `-test.gocoverdir=$DIR` on the child's
+  argv and `go tool covdata textfmt` afterwards. (`GOCOVERDIR` in the
+  environment is not enough - that is honoured by `go build -cover` binaries,
+  not by test binaries.) The two packages are blocked for different reasons, so
+  do not read one as evidence about the other.
+
+  For `internal/launcher` the blocker is Landlock. A child that applied the
+  layers is confined to the run's writable grants, and the coverage directory is
+  not one; adding it to `Config.Writable` does recover the counters, but then the
+  test no longer runs the configuration it claims to test. So the report child
+  deliberately calls `os.Exit(0)` before `testing`'s teardown and discards its
+  own counters. Removing that call makes the suite fail outright, which is what
+  commit 5e86406 fixed; the low numbers are the price.
+
+  For `internal/seccomp` the blocker is only that the helpers `os.Exit` to report
+  their verdict, which skips the teardown that emits. The exec-block filter does
+  not touch `write` or `openat`, so nothing stops the child writing. That
+  coverage is genuinely recoverable - it needs the helpers restructured to return
+  rather than exit, plus `covdata` merging in `make cover`. `backend.DispatchReexec`
+  is the same shape and has not been measured either way.
 - `internal/landlock` builds `internal/landlock/internal/probe` as a separate
   binary and runs it under bwrap. That coverage is invisible even to
   `-coverpkg`, and recovering it would need the probe built with `-cover` and
