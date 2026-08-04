@@ -84,7 +84,7 @@ func newApproveCmd() *cobra.Command {
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
-			writeReapprovalNotice(os.Stdout, approval)
+			writeReapprovalNotice(os.Stdout, trust.realPath, doc, approval)
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}
@@ -104,6 +104,10 @@ func newApproveCmd() *cobra.Command {
 			if err := writeManifestAtomically(trust, out, os.Stderr); err != nil {
 				return err
 			}
+			// After the manifest, and only once it landed: the journal describes an approval
+			// that is on disk, and recording one for a stamp that failed to write would give
+			// the next re-approval a baseline no manifest ever carried.
+			writeApprovalRecord(trust.realPath, doc.Policy, !assumeYes, os.Stderr)
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
 			return nil
 		},
@@ -118,17 +122,18 @@ func newApproveCmd() *cobra.Command {
 // first approval, so the added grant that sent the reader here - `run` refuses a drifted
 // manifest and points at this command - has to be found by memory.
 //
-// It cannot mark the added lines: the stamp is a sha256 of the policy, not a copy of it,
-// so the shape that was approved is not on disk anywhere. Saying which is which needs the
-// previous shape stored, which is a change to the manifest's on-disk contract. Saying that
-// it changed at all needs nothing, and is the half a reader most needs before stamping.
-func writeReapprovalNotice(w io.Writer, approval approvalState) {
+// The stamp itself cannot say which lines are new - it is a sha256 of the policy, not a
+// copy of it - so the delta comes from the approval journal, which is this host's own
+// record of what its previous approve stamped. Where the journal has a trustworthy entry
+// the notice names the changed lines; where it does not it says which of the two reasons
+// applies, both of which are worth knowing on their own. See journal.go.
+func writeReapprovalNotice(w io.Writer, realPath string, doc *manifest.Document, approval approvalState) {
 	if approval != approvalStale {
 		return
 	}
 	fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
-	fmt.Fprintf(w, "The stamp is a hash of the policy, not a copy of it, so bento cannot mark the\n")
-	fmt.Fprintf(w, "lines that are new - read the whole policy above as if it were unapproved.\n")
+	rec, verdict := readApprovalRecord(realPath, doc)
+	writeJournalDiff(w, rec, verdict, doc.Policy)
 }
 
 // requireHonorableGrants refuses to stamp a policy holding a grant no run will honor. The

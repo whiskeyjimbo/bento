@@ -552,13 +552,17 @@ func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
 }
 
 // The stale refusal sends the reader back to re-review, and the next question is always
-// "what changed?". The fingerprint is a one-way hash over the policy fields, so there is
-// no diff to show - and a message that does not say so reads as bento withholding one.
-func TestStaleRefusalsSayWhyThereIsNoDiff(t *testing.T) {
+// "what changed?". The fingerprint is a one-way hash over the policy fields, so the
+// manifest cannot answer it - and a message that does not say where the answer is reads as
+// bento withholding one. Both refusals must point at approve, which holds the journal.
+func TestStaleRefusalsSayWhereTheDiffIs(t *testing.T) {
 	stale := doc("old")
 	err := requireApproval(stale, false)
 	if err == nil || !strings.Contains(err.Error(), noStampDiff) {
 		t.Errorf("run's stale refusal must say the stamp cannot produce a diff; got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "bento approve") {
+		t.Errorf("run's stale refusal must point at where the diff can be had; got %v", err)
 	}
 
 	var buf strings.Builder
