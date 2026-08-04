@@ -185,10 +185,8 @@ func newProfileCmd() *cobra.Command {
 				// target proceeds, until nothing new is attempted. The prompt is the consent
 				// gate - real content is mounted only for a path the user accepts.
 				cfg.targetStdin = nil // the human answers prompts on the tty; the target gets no interactive stdin
-				tty := openTTY()
-				if c, ok := tty.(io.Closer); ok {
-					defer c.Close()
-				}
+				tty, closeTTY := openTTY()
+				defer closeTTY()
 				if allowNetwork {
 					if err := confirmNetworkExfil(tty, os.Stderr); err != nil {
 						return refuse(err)
@@ -1505,13 +1503,14 @@ func interactiveStdin() bool {
 }
 
 // openTTY returns the controlling terminal for reading the convergence prompts, kept
-// separate from the target's own stdin. It falls back to os.Stdin where /dev/tty is
-// unavailable.
-func openTTY() io.Reader {
+// separate from the target's own stdin, and a cleanup to release it. It falls back to
+// os.Stdin where /dev/tty is unavailable; the cleanup is a no-op there, because closing
+// that reader would close the process's stdin rather than a handle this opened.
+func openTTY() (io.Reader, func()) {
 	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
-		return f
+		return f, func() { f.Close() }
 	}
-	return os.Stdin
+	return os.Stdin, func() {}
 }
 
 // sortedBoolKeys returns the set's keys sorted, so a manifest's grant order is stable.
