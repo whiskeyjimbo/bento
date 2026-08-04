@@ -25,9 +25,9 @@ The same property has an edge worth knowing. The fingerprint attests the text, s
 a `~`-rooted grant is portable across *users* too: the same stamped manifest
 opens whichever user's home it runs as. That is usually what you want for a fleet
 of identical workers, and it is a hazard if a manifest crosses from a service
-account to a person. `ShieldedGrantTargets` in `enforce.Result` reports the store
-each such grant actually opened, which is the check after the fact - one more
-reason to read the `Report` rather than the exit code, as in
+account to a person. `ShieldedGrants` in `enforce.Result` names each lifted
+shield by its home-expanded absolute path, so the run reports whose home it
+opened - one more reason to read the `Report` rather than the exit code, as in
 [denial-shapes.md](denial-shapes.md).
 
 ## Two auth modes, both permanent
