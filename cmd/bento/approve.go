@@ -33,6 +33,12 @@ func newApproveCmd() *cobra.Command {
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
 			"permissions, not the script's contents - it attests the policy, not the code.\n\n" +
+			"It also records the permissions it stamped under $XDG_STATE_HOME/bento/approvals/,\n" +
+			"so re-approving a manifest whose permissions drifted can name the lines that\n" +
+			"changed. That record is this host's own: a manifest approved elsewhere has none,\n" +
+			"and approve says so rather than showing a diff it cannot vouch for. Losing the\n" +
+			"record costs the diff and nothing else - the stamp in the manifest is what run\n" +
+			"and validate read.\n\n" +
 			"Approval is local drift detection, not a signature: the stamp is unkeyed and\n" +
 			"lives in the manifest, so it attests only that the permissions match what was\n" +
 			"stamped, not who stamped them. Review a manifest you got from elsewhere before\n" +
