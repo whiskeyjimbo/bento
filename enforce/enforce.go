@@ -104,9 +104,11 @@ type RunOptions struct {
 //
 // Consulting it is not the only way to learn what was refused, and a gate that returns
 // false only to log the attempt is not needed for that: on a run that brings the egress
-// stack up at all, Result.Denied reports every destination the allowlist turned away,
-// gate or no gate. The gate is what a caller reaches for to see a refusal WHILE the run
-// is alive, which Result, arriving at exit, cannot give it.
+// stack up at all, Result.Denied reports every destination that was REFUSED, gate or no
+// gate - which is not the same set the gate sees: a host outside the allowlist that the
+// gate then admits was refused by nothing, and lands in GateAdmitted instead. The gate is
+// what a caller reaches for to see a refusal WHILE the run is alive, which Result,
+// arriving at exit, cannot give it.
 //
 // "At all" is the load-bearing part: a policy that declares no network rules and gets no
 // gate runs with no proxy, so the target's connect is stopped by the egress block itself
