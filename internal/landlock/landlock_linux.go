@@ -89,6 +89,119 @@ func Restrict(writable []string) error {
 	return RestrictTo([]string{"/"}, writable)
 }
 
+// errAllowlistUnavailableABI is returned by RestrictExecAllowlist when the effective
+// Landlock ABI is below the usable floor. Unlike the plain backstop, the allowlist is
+// the ONLY thing bounding what the target may spawn - no exec-block filter is installed
+// under that mode - so a kernel that cannot apply it must refuse the run rather than
+// leave every readable binary spawnable.
+var errAllowlistUnavailableABI = errors.New("landlock: kernel ABI unavailable, refusing to run an exec allowlist that would not be enforced")
+
+// RestrictExecAllowlist is the bwrap tier's ruleset for policy exec: allowlist. It is
+// Restrict with execute withheld: the whole visible filesystem becomes readable but NOT
+// executable, the writable set stays writable but not executable, and exactly the
+// allowlisted files carry execute.
+//
+// Withholding execute from the read grants is the point, and it is what makes this
+// different from every other rule this package builds. go-landlock's read helpers
+// (RODirs/ROFiles) include the execute right, so under Restrict every readable file is
+// executable; an allowlist that added a rule without taking that away would grant
+// nothing new and bound nothing. The subtraction is conditional on this mode for the
+// same reason - it changes what a read grant confers, and the other tiers' grants must
+// keep meaning what they have always meant.
+//
+// Unlike RestrictTo this is NOT best-effort. exec: allowlist installs no exec-block
+// seccomp filter, because the target has to be able to execve at all, so this ruleset is
+// the entire mechanism: applying it must succeed or the run must not happen. A caller
+// that warns and proceeds here would be running a target with unrestricted spawn under a
+// report claiming an allowlist.
+//
+// Every allowlisted path must be a STATICALLY LINKED executable. This function does not
+// check that - the caller refuses first, where the failure can name the manifest entry -
+// but the ruleset is only sound under it: the kernel executes a dynamic binary's
+// PT_INTERP, so the loader would need execute here too, and a loader that has it will
+// execute any readable ELF passed as its argument, including one the target just wrote
+// into its own write grant. That is why no loader path is granted and no attempt is made
+// to discover one.
+//
+// The residual it does keep: this bounds WHICH binary runs, not what that binary does,
+// and Landlock governs filesystem paths - so a binary reached without one
+// (memfd_create plus execveat) is outside it, as it is outside ExecNone.
+func RestrictExecAllowlist(writable, execAllow []string) error {
+	if effectiveABI() < 1 {
+		return errAllowlistUnavailableABI
+	}
+	rules, err := execAllowlistRules([]string{"/"}, writable, execAllow)
+	if err != nil {
+		return err
+	}
+	if err := handledFS.BestEffort().RestrictPaths(rules...); err != nil {
+		return fmt.Errorf("landlock: applying exec allowlist ruleset: %w", err)
+	}
+	return nil
+}
+
+// execAllowlistRules is RestrictExecAllowlist's ruleset, split off for the reason
+// backstopRules is: which rights the tier grants can then be asserted without applying
+// the ruleset, which would Landlock the test process irreversibly.
+//
+// The read and write rules are go-landlock's sets with execute removed rather than
+// hand-written ones, so a right added to those helpers is inherited here and only the
+// one subtraction this mode is about stays local.
+func execAllowlistRules(read, write, execAllow []string) ([]ll.Rule, error) {
+	rules, err := classifyRules(nil, read, withIoctlDev(roDirsNoExec), withIoctlDev(roFilesNoExec))
+	if err != nil {
+		return nil, err
+	}
+	rules, err = classifyRules(rules, write, withIoctlDev(withRefer(rwDirsNoExec)), withIoctlDev(rwFilesNoExec))
+	if err != nil {
+		return nil, err
+	}
+	// Not classifyRules: an allowlist entry is a file by definition, and a directory
+	// there would grant execute on everything under it - the blanket this mode exists to
+	// withhold. The caller refuses a non-file entry; routing one to a directory rule here
+	// would quietly honor it instead.
+	e, err := existing(execAllow)
+	if err != nil {
+		return nil, err
+	}
+	if len(e) > 0 {
+		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
+	}
+	return rules, nil
+}
+
+// The rights the exec allowlist's read and write rules grant: exactly what
+// go-landlock's RODirs/ROFiles/RWDirs/RWFiles grant, minus AccessFSExecute. Withholding
+// execute here is how the allowlist stops being a no-op - those helpers all include it,
+// so under the ordinary Restrict every readable file is already executable and an added
+// exec rule would bound nothing.
+//
+// Landlock resolves an access against the rule for the most specific matching path
+// rather than the union along the hierarchy, so a narrow execute rule on one file still
+// wins over the broad no-execute rule above it. That is what lets the allowlist be a
+// subtraction plus a small addition rather than an enumeration of every readable path.
+//
+// Spelled out rather than derived because go-landlock keeps a rule's access set
+// unexported, so there is no way to ask a helper what it grants and take one right away.
+// That makes this a copy that can drift: a right added to those helpers is inherited by
+// every other rule this package builds and NOT by these. TestAllowlistRightsTrackTheHelpers
+// pins the difference at exactly execute so the drift fails a test rather than silently
+// narrowing what an allowlist run may do.
+const (
+	roDirNoExec  = ll.AccessFSSet(llsys.AccessFSReadFile | llsys.AccessFSReadDir)
+	roFileNoExec = ll.AccessFSSet(llsys.AccessFSReadFile)
+	rwDirNoExec  = roDirNoExec | ll.AccessFSSet(llsys.AccessFSWriteFile|llsys.AccessFSTruncate|
+		llsys.AccessFSRemoveDir|llsys.AccessFSRemoveFile|llsys.AccessFSMakeChar|llsys.AccessFSMakeDir|
+		llsys.AccessFSMakeReg|llsys.AccessFSMakeSock|llsys.AccessFSMakeFifo|llsys.AccessFSMakeBlock|
+		llsys.AccessFSMakeSym)
+	rwFileNoExec = ll.AccessFSSet(llsys.AccessFSReadFile | llsys.AccessFSWriteFile | llsys.AccessFSTruncate)
+)
+
+func roDirsNoExec(paths ...string) ll.FSRule  { return ll.PathAccess(roDirNoExec, paths...) }
+func roFilesNoExec(paths ...string) ll.FSRule { return ll.PathAccess(roFileNoExec, paths...) }
+func rwDirsNoExec(paths ...string) ll.FSRule  { return ll.PathAccess(rwDirNoExec, paths...) }
+func rwFilesNoExec(paths ...string) ll.FSRule { return ll.PathAccess(rwFileNoExec, paths...) }
+
 // RestrictTo confines the process to exactly the given read-and-execute path
 // trees and read-write path trees; every path outside them is denied. It is the
 // primitive Restrict builds on, and the basis for a future degraded tier that

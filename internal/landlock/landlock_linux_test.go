@@ -1,6 +1,9 @@
 package landlock
 
 import (
+	"bytes"
+	"debug/elf"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -128,6 +131,86 @@ func TestRestrictConfinesReads(t *testing.T) {
 			t.Errorf("the granted tree stopped being readable: %q", got)
 		}
 	})
+}
+
+// The exec allowlist's whole claim is that exactly the allowlisted binaries can be
+// spawned, and every arm here is a way that claim fails quietly.
+//
+// The allowed and other arms are the claim itself. The read arm is the control that
+// separates "execute was withheld" from "the ruleset denied everything": an allowlist
+// takes away execute, not read, and a mode that also broke reads would pass the first
+// two arms while making every run useless.
+//
+// The loader arm is the one that decides whether the mode bounds anything at all. A
+// dynamically linked binary is executed through its PT_INTERP, so making one runnable
+// means granting the loader execute - and a loader with execute runs any readable ELF
+// handed to it as an argument, including one the target wrote itself. Asserting the
+// loader is DENIED is what pins this ruleset to the only shape that holds: no loader
+// rule, and therefore statically linked entries only. If this arm ever reports OK, the
+// mode is not an allowlist and the callers that refuse dynamic entries have stopped
+// being the thing that makes it sound.
+func TestExecAllowlistPermitsOnlyTheAllowlistedBinary(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	// buildProbe builds with CGO_ENABLED=0, so the probe is itself a statically linked
+	// binary - which is what an allowlist entry has to be. Using it as the subject keeps
+	// the test from depending on a static binary happening to exist on the host.
+	bin := buildProbe(t)
+	other := filepath.Join(t.TempDir(), "other")
+	copyFile(t, bin, other)
+
+	out, err := exec.Command(bin, "execallow", t.TempDir(), bin, other, loaderPath(t)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	for _, arm := range []struct{ want, why string }{
+		{"execallow_allowed=OK", "the allowlisted binary must stay spawnable, or the mode can run nothing"},
+		{"execallow_other=DENIED", "a readable binary that is not on the allowlist must not be spawnable"},
+		{"execallow_read=OK", "an allowlist withholds execute, not read; a non-allowlisted file must stay readable"},
+		{"execallow_loader=DENIED", "the dynamic loader must not be executable: with it, loader <any readable ELF> spawns anything and the allowlist bounds nothing"},
+	} {
+		if !strings.Contains(got, arm.want) {
+			t.Errorf("%s\n got: %q\nwant: %s", arm.why, got, arm.want)
+		}
+	}
+}
+
+// loaderPath is the dynamic loader this host executes a dynamic binary through, read as
+// the PT_INTERP of one rather than guessed from a list of well-known names - it is the
+// same fact the kernel acts on, and the arm that uses it is only meaningful if it names
+// the real loader.
+func loaderPath(t *testing.T) string {
+	t.Helper()
+	f, err := elf.Open("/bin/sh")
+	if err != nil {
+		t.Skipf("cannot read /bin/sh to find the dynamic loader: %v", err)
+	}
+	defer f.Close()
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_INTERP {
+			continue
+		}
+		interp, err := io.ReadAll(p.Open())
+		if err != nil {
+			t.Fatalf("reading PT_INTERP: %v", err)
+		}
+		return string(bytes.TrimRight(interp, "\x00"))
+	}
+	t.Skip("/bin/sh is statically linked; this host has no loader to probe")
+	return ""
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Landlock is applied per thread, and the Go runtime has several. This asserts the
