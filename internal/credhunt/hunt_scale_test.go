@@ -89,6 +89,14 @@ func TestBuildHomeReachesTheContentSniff(t *testing.T) {
 	}) {
 		t.Errorf("the benchmark tree does not reach the content sniff; found %v", found)
 	}
+	// The other half of the coverage is the bounded head read, and a shield added to
+	// denylist.Home later would prune the large plants before they are ever opened -
+	// silently taking the read path back out of the measurement while every assertion
+	// above still passes.
+	big := filepath.Join(home, ".shell_history")
+	if r, ok := denylist.Covers(big, benchOpts(home).Rules); ok && r.Deny == denylist.DenyAll {
+		t.Errorf("%s is shielded, so the benchmark never reads past MaxFileSize; rename the plant", big)
+	}
 }
 
 // A wrong index looks like a fast one: missing a match makes the hunt stop pruning and
