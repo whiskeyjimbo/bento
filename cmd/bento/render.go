@@ -1106,22 +1106,21 @@ func writeSandboxHomeNote(w io.Writer, prefix string) {
 // env is the resolved environment the sandbox was given, not p.Env: an allowlisted name
 // the host never set is left out of it, and envArgs keys on the same map, so it is what
 // decides whether HOME was really passed through.
-func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) bool {
+func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
 	if _, passed := env["HOME"]; res.ExitCode == 0 || passed {
-		return false
+		return
 	}
 	// os.UserHomeDir returns $HOME verbatim, so a relative or unset value names no tree
 	// a grant can be under - there is nothing to conclude from it either way.
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
-		return false
+		return
 	}
 	home = filepath.Clean(home)
 	if !slices.ContainsFunc(slices.Concat(p.Read, p.Write), func(g string) bool { return underHome(g, home) }) {
-		return false
+		return
 	}
 	writeSandboxHomeNote(w, "[bento] ")
-	return true
 }
 
 // writeSandboxPathMiss explains a shell's exit 127 the way writeSandboxHomeMiss explains a
@@ -1137,9 +1136,9 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // extra step only the bare-name case takes.
 //
 // env carries the same meaning it does for writeSandboxHomeMiss above.
-func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) bool {
+func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
 	if _, passed := env["PATH"]; res.ExitCode != 127 || passed {
-		return false
+		return
 	}
 	interp := p.Interpreter
 	if interp == "" {
@@ -1148,7 +1147,7 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 		interp, _, _ = profile.GuessInterpreter(p.Entrypoint)
 	}
 	if !isShell(interp) {
-		return false
+		return
 	}
 	fmt.Fprintln(w, "[bento] the script exited 127, the code a shell returns when it could not find a")
 	fmt.Fprintf(w, "[bento] command. PATH is not passed through, so inside the sandbox it is %s\n", enforce.SandboxPath)
@@ -1156,7 +1155,6 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it. If the script")
 	fmt.Fprintln(w, "[bento] calls it by bare name, either allowlist PATH in env: so the shell searches")
 	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
-	return true
 }
 
 // underHome reports whether an already-resolved grant lies in the host home tree.

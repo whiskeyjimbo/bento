@@ -384,8 +384,9 @@ func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
 
 // The two halves are wired through writeRunResult, so the order and the gating are
 // asserted where a reader meets them rather than on the legend alone: the generic hint
-// first, its shapes under it. A PATH miss is the counter-case - it names the cause, and
-// the shapes below it would offer a reader holding "command not found" four more.
+// first, its shapes under it. The rule is the hint's own sentence, not the failure: where
+// bento says the sandbox denies silently it says what a denial looks like, so a PATH miss
+// - which names its cause and still gets the hint - gets the shapes too.
 func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	var r enforce.Report
 	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
@@ -405,7 +406,8 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	}
 
 	// 127 under a shell with no PATH grant: the miss note names the search path that lost
-	// the command, and nothing may stack a second reading onto it.
+	// the command, the hint follows it anyway, and so the shapes must follow the hint -
+	// the claim of silence and its mapping are never separated.
 	errOut.Reset()
 	shell := &policy.Policy{Entrypoint: "/work/t.sh", Interpreter: "/bin/sh", Read: []string{"/data"}}
 	_ = writeRunResult(&out, &errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
@@ -413,8 +415,21 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	if !strings.Contains(got, "PATH is not passed through") {
 		t.Fatalf("the PATH miss must still be explained; got:\n%s", got)
 	}
-	if strings.Contains(got, "Read-only file system") {
-		t.Errorf("the cause is already named, so the shapes must not follow it; got:\n%s", got)
+	if strings.Contains(got, "denies silently") != strings.Contains(got, "Read-only file system") {
+		t.Errorf("the claim of silence and its mapping must travel together; got:\n%s", got)
+	}
+
+	// A signal death is the branch that gets neither: its own notice names the cap or the
+	// filter that killed the run, and the generic hint never speaks there.
+	errOut.Reset()
+	limited := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}, Limits: policy.Limits{Memory: "64M"}}
+	_ = writeRunResult(&out, &errOut, false, limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
+	got = errOut.String()
+	if !strings.Contains(got, "killed by signal 9") {
+		t.Fatalf("the kill must still be named; got:\n%s", got)
+	}
+	if strings.Contains(got, "denies silently") || strings.Contains(got, "Read-only file system") {
+		t.Errorf("a signal notice explains this run alone; got:\n%s", got)
 	}
 }
 
@@ -1202,7 +1217,7 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 		grant string
 		want  string
 	}{
-		"the shield itself, which no write opts into": {inHome(".ssh"), "is inside the always-shielded path"},
+		"the shield itself, which no write opts into": {inHome(".ssh"), "no opt-in for a write"},
 		"a path inside a shield":                      {inHome(".ssh/sub"), "is inside the always-shielded path"},
 		"a write-shielded startup file":               {inHome(".bashrc"), "is at or inside the always-write-shielded path"},
 		"a grant containing a shield":                 {home, "contains the always-shielded path"},
