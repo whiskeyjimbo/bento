@@ -4,6 +4,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -140,8 +141,16 @@ func TestRunScreensTheRunIDAtTheBackendEntryPoint(t *testing.T) {
 	}
 
 	unlimited := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone}
-	if err := e.screenRunID(unlimited, "job_17"); err == nil || !strings.Contains(err.Error(), "sets no resource limits") {
+	err := e.screenRunID(unlimited, "job_17")
+	if err == nil || !strings.Contains(err.Error(), "sets no resource limits") {
 		t.Errorf("a run id on a manifest with no limits must be refused, not silently unscoped; got %v", err)
+	}
+	// Every branch here is a mistake in what the caller asked for, so all of them must
+	// sort as a refusal a supervisor does not retry - not as a run that failed for
+	// reasons out of its hands.
+	var refusal *enforce.Refusal
+	if !errors.As(err, &refusal) {
+		t.Errorf("a run id with no limits behind it must be an *enforce.Refusal, got %T", err)
 	}
 	if err := e.screenRunID(unlimited, ""); err != nil {
 		t.Errorf("no run id must stay unaffected: %v", err)
