@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -259,5 +260,54 @@ func TestWriteGrantInsideAWorkspaceShieldRefused(t *testing.T) {
 	only := []string{root}
 	if err := checkGrants(sb, &policy.Policy{Entrypoint: p.Entrypoint, Write: only}, nil, only); err != nil {
 		t.Errorf("a plain checkout write grant must still be accepted: %v", err)
+	}
+}
+
+// The shield derivation must not depend on the grant already being a directory. Gated on
+// isDir, a solo "write: <repo>/.git/hooks" naming a directory that does not exist yet was
+// admitted at preflight, created by prepareWriteDirs, and only then refused on compile's
+// second pass - with the artifact already on the host, which is exactly what preflight
+// exists to prevent.
+func TestWriteGrantInsideAWorkspaceShieldRefusedBeforeItExists(t *testing.T) {
+	root := canonTempDir(t)
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(root, ".git", "hooks") // absent
+
+	sb := persistenceSandbox(root)
+	writes := []string{hooks}
+	p := &policy.Policy{Entrypoint: filepath.Join(root, "run.sh"), Write: writes}
+	if err := checkGrants(sb, p, nil, writes); err == nil {
+		t.Error("an absent shielded hooks dir must be refused before anything creates it")
+	}
+}
+
+// Where a symlink redirects a workspace shield, the redirect refusal must win. It
+// compares literal paths and names the symlink; checkWriteNotUnderReadOnlyShield compares
+// resolved ones, so it fires on the target and tells the author to remove a grant that is
+// not the problem - and removing it just re-refuses through the redirect check.
+func TestRedirectedWorkspaceShieldRefusalWinsOverTheGrantRefusal(t *testing.T) {
+	root := canonTempDir(t)
+	if err := os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(root, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(out, filepath.Join(root, ".vscode")); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+
+	sb := persistenceSandbox(root)
+	writes := []string{root, out}
+	p := &policy.Policy{Entrypoint: filepath.Join(root, "run.sh"), Write: writes}
+	err := checkGrants(sb, p, nil, writes)
+	if err == nil {
+		t.Fatal("a symlink redirecting a workspace shield must be refused")
+	}
+	if !strings.Contains(err.Error(), "symlinked directory component") {
+		t.Errorf("the refusal must name the symlink, whose removal is the remedy that works; got %v", err)
 	}
 }

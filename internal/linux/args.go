@@ -108,13 +108,17 @@ type sandbox struct {
 	// it does not resolve. Shields bind at the resolved path because bwrap cannot
 	// create a mount point at a symlink (it aborts the whole run).
 	resolve func(string) string
-	// listDir returns a directory's immediate subdirectory names and whether it was
-	// read successfully. ok is false when the path is not a directory OR cannot be
-	// enumerated (e.g. an unreadable dir): the caller must distinguish an enumerated
-	// empty directory from one it could not see into, so a chmod cannot silently hide
-	// gitdirs from the scan. Injected alongside exists so the git-directory scan
-	// (gitDirShields) is testable against a hypothetical filesystem.
-	listDir func(string) (names []string, ok bool)
+	// listDir returns a directory's immediate children, split into the real
+	// subdirectories the scan may descend into and the symlinked entries it may not,
+	// plus whether it was read successfully. ok is false when the path is not a
+	// directory OR cannot be enumerated (e.g. an unreadable dir): the caller must
+	// distinguish an enumerated empty directory from one it could not see into, so a
+	// chmod cannot silently hide gitdirs from the scan. The links are reported rather
+	// than dropped because a name the scan skips is a name no rule covers, and the
+	// checks that refuse a redirected shield only inspect the rules it returned.
+	// Injected alongside exists so the git-directory scan (gitDirShields) is testable
+	// against a hypothetical filesystem.
+	listDir func(string) (names, links []string, ok bool)
 	// fileIDs returns the content identity and link count of every regular file at or
 	// under a host path: the file itself for a file shield, the credential files inside
 	// it for a directory shield. Injected alongside the other stat seams so the alias
@@ -650,9 +654,11 @@ type appliedShield struct {
 }
 
 // appliedShields returns the always-on shields as denyArgs will really apply them:
-// resolved, with the rules denyArgs drops removed. Every grant check goes through
-// this, so a refusal can never be raised over a shield that was never mounted, and a
-// drop condition added to denyArgs cannot land on one check and miss the siblings.
+// resolved, with the rules denyArgs drops removed. Every grant check derives its
+// always-on set from this, so a refusal can never be raised over a shield that was never
+// mounted, and a drop condition added to denyArgs cannot land on one check and miss the
+// siblings. The grant-derived workspace shields are not here; the one check that consults
+// them (checkWriteNotUnderReadOnlyShield) adds them itself, since they depend on writes.
 func appliedShields(sb sandbox) []appliedShield {
 	homes := resolvedHomes(sb)
 	var out []appliedShield
@@ -797,7 +803,7 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	// keeps its own config.worktree, which can carry core.hooksPath.
 	worktreeConfigs := func(gd string) {
 		wt := filepath.Join(gd, "worktrees")
-		names, ok := sb.listDir(wt)
+		names, links, ok := sb.listDir(wt)
 		if !ok {
 			// Unreadable but traversable-by-name: fail closed like the module walk.
 			if sb.isDir(wt) {
@@ -810,6 +816,7 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 				rules = append(rules, denylist.Rule{Path: cfg, Deny: denylist.DenyWrite})
 			}
 		}
+		rules = append(rules, redirectedEntries(wt, links)...)
 	}
 
 	// Traversal is UNCONDITIONAL over real directories; identification gates only
@@ -842,7 +849,7 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 			}
 			worktreeConfigs(d)
 		}
-		names, ok := sb.listDir(d)
+		names, links, ok := sb.listDir(d)
 		if !ok {
 			// d could not be enumerated. If it is a real directory (traversable by
 			// name, so host git still reaches gitdirs inside it) that we cannot read -
@@ -853,12 +860,30 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 			}
 			return
 		}
+		rules = append(rules, redirectedEntries(d, links)...)
 		for _, name := range names {
 			walk(filepath.Join(d, name), depth+1)
 		}
 	}
 	walk(filepath.Join(gitDir, "modules"), 0)
 	worktreeConfigs(gitDir)
+	return rules
+}
+
+// redirectedEntries covers the symlinked children the gitdir walk refuses to descend
+// into. Skipping them is right - following one could leave the tree or loop - but a
+// name the scan drops is a name no rule covers, and checkWorkspaceShieldNotRedirected,
+// which exists to refuse exactly a shield a symlink redirects, only inspects the rules
+// gitDirShields returned. So one copy of that fix landed and the sibling did not:
+// .git/modules is writable and unshielded by design, so a run can plant
+// .git/modules/<name> as a symlink to a tree it controls, populated with config and
+// hooks/, which host git follows on the next `git submodule update --init`. Emitting a
+// rule for the link itself gives the redirect check something to refuse.
+func redirectedEntries(dir string, links []string) []denylist.Rule {
+	rules := make([]denylist.Rule, 0, len(links))
+	for _, name := range links {
+		rules = append(rules, denylist.Rule{Path: filepath.Join(dir, name), Deny: denylist.DenyWrite, Dir: true})
+	}
 	return rules
 }
 
@@ -1181,13 +1206,17 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	if err := checkWriteNotShielded(sb, writes); err != nil {
 		return err
 	}
+	// Before checkWriteNotUnderReadOnlyShield, which also consults the workspace shields
+	// and compares against their RESOLVED paths: where a symlink redirects one, that
+	// check fires on the target and tells the author to remove a grant that is not the
+	// problem, while the remedy that works - remove the symlink - is this one's.
+	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+		return err
+	}
 	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
 		return err
 	}
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
-		return err
-	}
-	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
 		return err
 	}
 	if err := checkGrantNotProcess(sb, p); err != nil {
@@ -1290,18 +1319,21 @@ func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(gra
 // write grants themselves, so refusing a grant that CONTAINS one would refuse every
 // project write grant - but a self-derived shield sits strictly under its grant, so that
 // direction never matches here and needs no exemption. What does match is a second grant
-// spelled at or inside one ("write: /proj" plus "write: /proj/.git/hooks"), which was
-// previously neither refused nor honored: prepareWriteDirs creates the directory, then
-// denyArgs ro-binds it after the grant's bind, so every write fails EROFS at runtime
-// while the manifest reports the grant as honored - the same silent-neutering this
-// refusal exists for.
+// spelled at or inside one ("write: /proj" plus "write: /proj/.git/hooks"). Unrefused, it
+// is also unhonored: prepareWriteDirs would create the directory and denyArgs would
+// ro-bind it after the grant's bind, so every write fails EROFS at runtime while the
+// manifest reports the grant as honored - the same silent-neutering this refusal exists
+// for.
 func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	shields := appliedShields(sb)
+	// No isDir gate, unlike shieldRules. There the gate keeps a shield off a grant that
+	// is a plain file; here the grant is only ever the thing being TESTED, and gating it
+	// would admit "write: <repo>/.git/hooks" while the directory is still absent, let
+	// prepareWriteDirs create it, and refuse on the second pass with the artifact already
+	// on the host. checkoutRoot walks up regardless of what the grant itself is.
 	for _, w := range writes {
-		if sb.isDir(w) {
-			for _, r := range workspaceShields(sb, w) {
-				shields = append(shields, appliedShield{rule: r, resolved: sb.resolve(r.Path)})
-			}
+		for _, r := range workspaceShields(sb, w) {
+			shields = append(shields, appliedShield{rule: r, resolved: sb.resolve(r.Path)})
 		}
 	}
 	for _, g := range writes {
@@ -1683,7 +1715,10 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes, rootDirs []strin
 		if real == abs {
 			continue
 		}
-		hop := missingHop(sb, abs, real, filled)
+		hop, err := missingHop(sb, abs, real, filled)
+		if err != nil {
+			return nil, err
+		}
 		if hop == "" || seen[hop] {
 			continue
 		}
@@ -1724,16 +1759,23 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes, rootDirs []strin
 // reimplement kernel link-following, which is the same hybrid that resolving
 // grants off the seam produced. The multi-hop cases are covered against real
 // symlink trees instead (TestGrantSymlinksMultiHopRealFilesystem).
-func missingHop(sb sandbox, abs, real string, filled []string) string {
+func missingHop(sb sandbox, abs, real string, filled []string) (string, error) {
 	cur := abs
 	for range pathresolve.MaxDepth {
 		if !coveredBy(cur, filled) {
-			return cur
+			return cur, nil
 		}
 		target, err := os.Readlink(cur)
 		if err != nil {
-			// Filled and not a symlink: the mount already carries the real thing.
-			return ""
+			if errors.Is(err, syscall.EINVAL) {
+				// Not a symlink: the mount already carries the real thing.
+				return "", nil
+			}
+			// Any other errno (EACCES on a parent, ENOENT from a race) says nothing
+			// about whether the name needs recreating, and guessing "no" drops the
+			// --symlink and leaves the granted name absent inside the sandbox with
+			// nothing reporting why.
+			return "", fmt.Errorf("linux: reading the symlink %q on the way to grant %q: %w", cur, abs, err)
 		}
 		// A relative target resolves from the directory the kernel *reads the link
 		// in*, which is not the one the path spells when a parent is itself a
@@ -1748,11 +1790,11 @@ func missingHop(sb sandbox, abs, real string, filled []string) string {
 		next := filepath.Join(sb.resolve(filepath.Dir(target)), filepath.Base(target))
 		if next == real {
 			// The chain reaches the bound target on its own.
-			return ""
+			return "", nil
 		}
 		cur = next
 	}
-	return "" // a symlink loop; resolve leaves these alone too
+	return "", nil // a symlink loop; resolve leaves these alone too
 }
 
 // coveredBy reports whether path is one of roots or sits inside one.
@@ -1877,26 +1919,28 @@ func hostIsDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// hostListDir returns the names of a directory's immediate children that are
-// themselves real directories, or nil if it is not readable. Symlinks and regular
-// files are excluded: gitDirShields walks the result unconditionally, so a symlink
-// (DirEntry.Type reports it without a follow) must not be traversed or it could
-// escape .git/modules or loop.
-func hostListDir(path string) ([]string, bool) {
+// hostListDir splits a directory's immediate children into the real subdirectories
+// and the symlinked entries. gitDirShields walks names unconditionally, so a symlink
+// (DirEntry.Type reports it without a follow) must not be traversed or it could escape
+// .git/modules or loop; it is reported as a link instead so the caller can still cover
+// the name. Regular files are neither.
+func hostListDir(path string) (names, links []string, ok bool) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		// Not a directory, or a directory we cannot read (e.g. mode 0111, still
 		// traversable-by-name so host git reaches hooks inside it). ok=false lets the
 		// caller fail closed rather than treat it as empty.
-		return nil, false
+		return nil, nil, false
 	}
-	var names []string
 	for _, e := range entries {
-		if e.IsDir() { // DirEntry.IsDir is false for a symlink (even to a directory)
+		switch {
+		case e.IsDir(): // DirEntry.IsDir is false for a symlink (even to a directory)
 			names = append(names, e.Name())
+		case e.Type()&os.ModeSymlink != 0:
+			links = append(links, e.Name())
 		}
 	}
-	return names, true
+	return names, links, true
 }
 
 // hostResolve resolves a deny-list path the same way grants are resolved, so the

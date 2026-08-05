@@ -55,11 +55,14 @@ func InsideCallerShield(grant, shield string) error {
 	return fmt.Errorf("grant %q is inside %q, which the program running bento shields from this manifest; that shield has no opt-in - remove this grant, or take it up with whatever launched the run", grant, shield)
 }
 
-// WriteUnderReadOnlyShield refuses a write grant at or inside a DenyWrite shield
-// (~/.local/bin, ~/.bashrc, ...). Unlike the DenyAll shields there is no opt-in: the
-// content is readable already, so the only thing an opt-in could grant is the plant.
+// WriteUnderReadOnlyShield refuses a write grant at or inside a DenyWrite shield: a
+// home store (~/.local/bin, ~/.bashrc, ...) or a checkout's own execution surface
+// (.git/hooks, .vscode). Unlike the DenyAll shields there is no opt-in: the content is
+// readable already, so the only thing an opt-in could grant is the plant. The sentence
+// names no anchor, because the workspace shields are derived from the write grants
+// rather than applied on every run.
 func WriteUnderReadOnlyShield(grant, shield string) error {
-	return fmt.Errorf("write grant %q is at or inside the always-write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", grant, shield, shield)
+	return fmt.Errorf("write grant %q is at or inside the write-shielded path %q and cannot be honored - the shield is read-only and there is no opt-in, because it exists to stop a plant that the host runs later; remove this grant, or write somewhere outside %q", grant, shield, shield)
 }
 
 // WriteAboveShield refuses a write grant that contains a shielded path, which would make
