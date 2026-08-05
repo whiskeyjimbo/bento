@@ -271,7 +271,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		{HoldsHistory, historyDirs},
 		{HoldsPersistence, persistenceDirs},
 	}
-	files := []string{
+	credentialFiles := []string{
 		".git-credentials",
 		".config/git/credentials", // XDG location for the same
 		".netrc",
@@ -338,16 +338,6 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".rhosts",
 		".shosts",
 
-		// Graphical-login scripts (X11): shell code run at graphical login. firejail
-		// blacklists them; hidden here rather than merely write-denied, matching the
-		// autostart/systemd persistence trees above - there is no in-sandbox read need and
-		// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
-		// the systemd/autostart dirs above.)
-		".xprofile",
-		".xinitrc",
-		".xsession",
-		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
-
 		// Build-tool credential files. Each sits inside a directory whose bulk is a
 		// package cache a sandboxed build legitimately reads, so the FILE is shielded and
 		// the tree is left alone - shielding ~/.m2 or ~/.gradle wholesale would break
@@ -378,28 +368,15 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".config/plasmavaultrc", // names the vaults whose store is shielded above
 		// Mail-client config and identity files: account passwords (or the pointers to
 		// where they are stored) and the addresses the account sends as.
-		".gist",      // defunkt/gist stores the GitHub OAuth token as the file's whole content
-		".mcabberrc", // mcabber XMPP config, holds the account password
-		".pinerc",    // pine/alpine config
-		".pinercex",  // its per-host companion
-		".config/emaildefaults",
-		".config/emailidentities",
+		".gist",                  // defunkt/gist stores the GitHub OAuth token as the file's whole content
+		".mcabberrc",             // mcabber XMPP config, holds the account password
+		".pinerc",                // pine/alpine config
+		".pinercex",              // its per-host companion
 		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
 		".config/kmail2rc",
-		".config/kmailsearchindexingrc",
-		".config/specialmailcollectionsrc",
-		".pine-interrupted-mail",       // an interrupted draft: message body on disk
 		".kde/share/config/kwalletrc",  // legacy KDE location
 		".kde4/share/config/kwalletrc", // KDE4 location
 		"wallet.dat",                   // Bitcoin Core wallet at the home root: the spending keys
-
-		// Mail message stores and identity. mutt's default mailbox files/dirs and the
-		// signature; message bodies carry reset links and 2FA codes, and a signature can
-		// carry a PGP fingerprint or contact PII. The maildir roots ~/Mail and ~/mail are
-		// shielded as directories above.
-		"postponed",  // mutt default postponed-message mbox at ~/postponed
-		"sent",       // mutt sent-mail mbox at ~/sent
-		".signature", // outgoing-mail signature
 
 		// The X11 display-access cookie: reading it grants control of the live X session
 		// (keylog, screenshot, inject events), so it is a credential, not a config. Hidden,
@@ -410,14 +387,42 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// channel (a client authenticating with it can drive session restart/shutdown and
 		// talk to session peers), and a sandbox has no session to join either.
 		".ICEauthority",
+	}
 
-		// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
-		// volumes (the .zuluCrypt store dir is shielded above).
-		".zuluCrypt-socket",
+	// The user's own content rather than key material: mail bodies, the addresses an
+	// account sends as, the local search index over them.
+	privateDataFiles := []string{
+		".config/emaildefaults",
+		".config/emailidentities",
+		".config/kmailsearchindexingrc",
+		".config/specialmailcollectionsrc",
+		".pine-interrupted-mail", // an interrupted draft: message body on disk
 
-		// Graphical-session scripts and generated startup configs firejail blacklists: each
-		// is read or executed at login and a planted line runs on the host. Hidden to match
-		// firejail and the WM trees above.
+		// Mail message stores and identity. mutt's default mailbox files/dirs and the
+		// signature; message bodies carry reset links and 2FA codes, and a signature can
+		// carry a PGP fingerprint or contact PII. The maildir roots ~/Mail and ~/mail are
+		// shielded as directories above.
+		"postponed",  // mutt default postponed-message mbox at ~/postponed
+		"sent",       // mutt sent-mail mbox at ~/sent
+		".signature", // outgoing-mail signature
+	}
+
+	// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
+	// volumes (the .zuluCrypt store dir is shielded above).
+	serviceFiles := []string{".zuluCrypt-socket"}
+
+	// Graphical-session scripts and generated startup configs firejail blacklists: each
+	// is read or executed at login and a planted line runs on the host. Hidden to match
+	// firejail and the WM trees above.
+	// Graphical-login scripts (X11) belong here too: shell code run at graphical login,
+	// hidden rather than merely write-denied because there is no in-sandbox read need and
+	// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
+	// the systemd/autostart dirs above.)
+	persistenceFiles := []string{
+		".xprofile",
+		".xinitrc",
+		".xsession",
+		".xsessionrc",                          // sourced by the Debian/Ubuntu Xsession startup, like .xsession
 		".Xresources",                          // xrdb-loaded resources (read at login)
 		".Xsession",                            // capitalized X session script variant
 		".gnomerc",                             // sourced at GNOME login
@@ -429,7 +434,9 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".kde/share/config/startupconfigkeys",  // legacy KDE generated startup keys
 		".kde4/share/config/startupconfig",     // KDE4 generated startup config
 		".kde4/share/config/startupconfigkeys", // KDE4 generated startup keys
+	}
 
+	historyFiles := []string{
 		// Shell and REPL history: command lines and pasted secrets. Shielded as files
 		// (not their parent dir) so a sibling config the tool also reads stays available.
 		".lesshst",
@@ -668,7 +675,21 @@ func Home(home string, alsoHomes ...string) []Rule {
 
 	locations := func(entry string) []string { return homeLocations(home, entry) }
 
-	rules := make([]Rule, 0, len(files)+len(writeOnly)+len(writeOnlyDirs))
+	// The same buckets as dirGroups, for the stores that are genuinely one file. Keyed
+	// per group rather than stamped HoldsCredentials wholesale, so that a shell history
+	// reads as a history store here and not just where an env var relocates it.
+	fileGroups := []struct {
+		holds Holds
+		files []string
+	}{
+		{HoldsCredentials, credentialFiles},
+		{HoldsPrivateData, privateDataFiles},
+		{HoldsHistory, historyFiles},
+		{HoldsPersistence, persistenceFiles},
+		{HoldsServices, serviceFiles},
+	}
+
+	rules := make([]Rule, 0, len(credentialFiles)+len(writeOnly)+len(writeOnlyDirs))
 	emit := func(entry string, r Rule) {
 		for _, p := range locations(entry) {
 			r.Path = p
@@ -680,8 +701,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 			emit(d, Rule{Deny: DenyAll, Dir: true, Holds: g.holds})
 		}
 	}
-	for _, f := range files {
-		emit(f, Rule{Deny: DenyAll, Holds: HoldsCredentials})
+	for _, g := range fileGroups {
+		for _, f := range g.files {
+			emit(f, Rule{Deny: DenyAll, Holds: g.holds})
+		}
 	}
 	for _, f := range writeOnly {
 		emit(f, Rule{Deny: DenyWrite})
