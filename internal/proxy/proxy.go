@@ -17,6 +17,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,12 @@ const (
 	// CONNECT was read - so it carries no host or port. It is reported so a run that
 	// floods the proxy is not counted as one that never touched the network.
 	Refused Decision = "refused"
+	// Untunneled marks a request the proxy refused because it was not a CONNECT: the
+	// shape a client sends for plain http:// through a proxy. It is distinct from Denied
+	// because no rule can fix it - the destination may be granted and still never carry
+	// traffic - and distinct from a bare parse failure because it names the destination
+	// the request line addressed.
+	Untunneled Decision = "untunneled"
 	// GuardBlocked marks a connection the allowlist (or a gate) permitted by name but
 	// the upstream guard then refused, because the name resolved to an address the
 	// sandbox must not reach. It is distinct from Denied because the two call for
@@ -530,6 +537,14 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	client.SetReadDeadline(time.Now().Add(connectTimeout))
 	host, port, br, err := readConnect(client)
 	if err != nil {
+		// A non-CONNECT request that named its destination is reported before the refuse
+		// branch below, so profiling records it too. Without this the destination is lost
+		// entirely: the client sees a 400 that names no policy, and a manifest rule can
+		// grant the host and port while nothing ever tunnels to them.
+		var untunneled *untunneledError
+		if errors.As(err, &untunneled) {
+			p.report(Untunneled, untunneled.host, untunneled.port)
+		}
 		writeStatus(client, "400 Bad Request", err.Error())
 		return
 	}
@@ -660,7 +675,10 @@ const maxRequestBytes = 64 * 1024
 
 // readConnect parses a single `CONNECT host:port HTTP/1.1` request and drains its
 // headers. Only CONNECT is accepted: this proxy tunnels TLS, it does not relay
-// plaintext HTTP, so there is nothing to inspect or rewrite in a request body.
+// plaintext HTTP, so there is nothing to inspect or rewrite in a request body. A
+// non-CONNECT request that named a destination is refused through untunneledError,
+// which carries that destination so the refusal can be reported rather than read as a
+// parse failure.
 // It returns the buffered reader so the caller can keep reading the client from
 // it: bytes pipelined after the headers are already buffered here.
 func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
@@ -672,6 +690,11 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 2 || strings.ToUpper(fields[0]) != "CONNECT" {
+		if len(fields) >= 2 {
+			if host, port, ok := absoluteURITarget(fields[1]); ok {
+				return "", "", nil, &untunneledError{host: host, port: port}
+			}
+		}
 		return "", "", nil, fmt.Errorf("expected a CONNECT request")
 	}
 	host, port, err = net.SplitHostPort(fields[1])
@@ -728,6 +751,56 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// Request parsed; lift the cap so the tunnel body copy through br is unbounded.
 	lr.N = math.MaxInt64
 	return host, port, br, nil
+}
+
+// untunneledError refuses a request that is not a CONNECT but named the destination it
+// wanted, which is what a client sends for plain http:// through a proxy. The proxy
+// relays no plaintext HTTP (see readConnect), so the destination is recorded and refused
+// rather than forwarded, and the text says which of the two remedies applies - the
+// client's scheme, or the client's proxy mode - because no manifest edit is one of them.
+type untunneledError struct{ host, port string }
+
+func (e *untunneledError) Error() string {
+	return fmt.Sprintf("bento's egress proxy tunnels CONNECT only, so the plain-HTTP request to %s:%s was refused; use https, or have the client issue CONNECT", e.host, e.port)
+}
+
+// absoluteURITarget returns the destination a non-CONNECT request line addressed, when
+// that line carries the absolute URI a client sends through a proxy. It is held to
+// exactly the screen readConnect applies to a CONNECT target, because it reaches exactly
+// the same places: report(), the run's recorded destinations, and a host-side render of
+// them. A target that fails the screen is not reported with a destination at all rather
+// than carrying an unscreened one - the refusal happens either way.
+func absoluteURITarget(target string) (host, port string, ok bool) {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		return "", "", false
+	}
+	// Only the two schemes a proxy is asked to carry get a default port. Anything else
+	// is not a destination this proxy would have tunneled even in principle, so it is
+	// refused without a named destination rather than guessed at.
+	switch u.Scheme {
+	case "http":
+		port = "80"
+	case "https":
+		port = "443"
+	default:
+		return "", "", false
+	}
+	if p := u.Port(); p != "" {
+		port = p
+	}
+	// Strip the root label on the CONNECT path's precedent: one spelling at every layer,
+	// so a destination reported here matches the rule a user would write for it.
+	host = strings.TrimSuffix(u.Hostname(), ".")
+	if host == "" || !canonicalPort(port) {
+		return "", "", false
+	}
+	for _, s := range []string{host, port} {
+		if _, unsafe := policy.FirstUnsafeRune(s); unsafe {
+			return "", "", false
+		}
+	}
+	return host, port, true
 }
 
 // canonicalPort reports whether s spells a port exactly as the dialer will

@@ -347,6 +347,16 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
 		}
 	}
+	// Separate from the denial above because no prompt and no rule reaches it: the target
+	// addressed these without a CONNECT, so bento refused them whatever the human would
+	// have answered. Folding them into the denial would offer an operator a decision they
+	// never had. Quoted for the reason the denial list is.
+	if len(res.Untunneled) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused: they were addressed without a CONNECT, and bento tunnels CONNECT only"))
+		for _, hp := range res.Untunneled {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(plain http:// cannot be carried; use https or have the client tunnel)"))
+		}
+	}
 	// A grant over a built-in shield is caveat-emptor: approve() can hand one out because
 	// the human said yes to a path, and bento honors it rather than refusing. OnHost names
 	// the store it landed on where that differs from the spelling - the grantable names

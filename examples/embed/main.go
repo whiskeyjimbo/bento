@@ -277,6 +277,14 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, hp := range res.Denied {
 		fmt.Fprintf(w, "embed: egress to %q port %s was refused: no network rule covers it, and no gate admitted it\n", hp.Host, hp.Port)
 	}
+	// Untunneled: destinations addressed without a CONNECT, which is what a client sends
+	// for plain http:// through a proxy. Reported apart from Denied because the remedy is
+	// not the manifest's: a rule can name this host and port and still carry no traffic,
+	// so an embedder that folded the two would send an operator to widen an allowlist that
+	// is already wide enough. Quoted: the target chose the name.
+	for _, hp := range res.Untunneled {
+		fmt.Fprintf(w, "embed: egress to %q port %s was refused: it was addressed without a CONNECT, and bento tunnels CONNECT only - use https or have the client tunnel\n", hp.Host, hp.Port)
+	}
 	// ShieldedGrants: always-shielded stores the manifest explicitly granted, so the
 	// backend honored the grant over its own shield. bento does not refuse this - the
 	// operator chose it - so a frontend that stays quiet makes the exposure silent.
