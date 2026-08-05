@@ -218,8 +218,13 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 			fmt.Fprintf(w, "[%s]\n", section)
 		}
 		note := "missing"
-		if g.Weaker {
+		switch {
+		case g.Weaker && g.Narrowed:
+			note = "present but a DenyWrite rule on the path itself; upstream denies reads across the whole tree"
+		case g.Weaker:
 			note = "present but DenyWrite; upstream denies reads too (candidate DenyAll)"
+		case g.Narrowed:
+			note = "present but shields only the path itself; upstream shields the tree, so children stay exposed"
 		}
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}

@@ -61,7 +61,7 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 			if isCreateGuard(expanded, modes) {
 				continue
 			}
-			p, ok := trimSubtreeSuffix(expanded, home, runUser)
+			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
 			if !ok || seen[p] {
 				continue
 			}
@@ -70,6 +70,7 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 				Path:    p,
 				Deny:    deny,
 				Glob:    strings.ContainsAny(p, "*?"),
+				Dir:     dir,
 				Section: appArmorSection,
 				Raw:     line,
 			})
@@ -230,15 +231,19 @@ func substituteVars(raw, home, runUser string) (string, bool) {
 // inexpressible wildcards, rather than being diffed against the rule that covers it.
 // It runs after alternation expansion, since "{,**}" only becomes a tail once expanded.
 // A path that trims away to the home or runtime root itself says nothing and is dropped.
-func trimSubtreeSuffix(path, home, runUser string) (string, bool) {
+//
+// dir reports that a tail was actually cut, which is what makes the directive
+// directory-shaped: covering it takes a bento rule that shields the tree, not one on the
+// path alone.
+func trimSubtreeSuffix(path, home, runUser string) (trimmed string, dir, ok bool) {
 	for _, suffix := range []string{"/**", "/*", "/"} {
-		if trimmed, ok := strings.CutSuffix(path, suffix); ok {
-			path = trimmed
+		if cut, found := strings.CutSuffix(path, suffix); found {
+			path, dir = cut, true
 			break
 		}
 	}
 	if path == "" || path == home || path == runUser {
-		return "", false
+		return "", false, false
 	}
-	return path, true
+	return path, dir, true
 }
