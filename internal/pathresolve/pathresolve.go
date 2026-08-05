@@ -10,9 +10,12 @@
 package pathresolve
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // MaxDepth bounds symlink following, matching the kernel's ELOOP limit, so a
@@ -29,6 +32,10 @@ const MaxDepth = 40
 // ".." out of a non-directory still resolves here while the kernel refuses it with
 // ENOTDIR, so a caller shielding on the result shields a path nothing can be written
 // through - the safe direction, and the reason this does not re-check each component.
+//
+// A component this cannot read at all is returned unresolved for the same reason a loop
+// is: whether it is a symlink is exactly what could not be determined, and guessing it is
+// not one would put a symlink into a prefix a later ".." is popped off lexically.
 //
 // A path whose symlinks loop is returned unresolved once the budget runs out: a caller
 // that shields on the result then fails closed, and one that judges a proposal is
@@ -81,8 +88,17 @@ func existing(input, abs string, depth int) string {
 		next := filepath.Join(resolved, c)
 		target, err := os.Readlink(next)
 		if err != nil {
-			// A real directory/file, or a not-yet-existing component: take it as is.
-			// Since resolved is already symlink-free, a later ".." on it is safe.
+			// EINVAL is a real directory or file, ENOENT a component that does not exist
+			// yet, and ENOTDIR one behind a non-directory - none of them a symlink, so
+			// taking the component as is keeps resolved symlink-free and a later ".." on
+			// it lexically safe. Any other errno is a component this could not READ, which
+			// says nothing about whether it is a link: continuing would put a symlink into
+			// resolved and pop a later ".." off it, landing somewhere the kernel would
+			// not. Handing back the caller's own path is the cutoff the depth budget
+			// already uses - a shield bound on it fails closed.
+			if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+				return input
+			}
 			resolved = next
 			continue
 		}
