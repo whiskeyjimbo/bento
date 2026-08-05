@@ -2,8 +2,10 @@ package landlock
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
@@ -78,5 +80,38 @@ func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 	}
 	if err := RestrictDegraded([]string{"/"}, nil, nil); !errors.Is(err, errUnavailableABI) {
 		t.Errorf("RestrictDegraded must refuse with errUnavailableABI when ABI is unavailable; got %v", err)
+	}
+}
+
+// Landlock denies a handled right wherever no rule grants it, so a right in the handled
+// set that no rule carries is a blanket denial, not a no-op. ioctl_dev is in both handled
+// sets from ABI 5 and none of go-landlock's RO/RW helpers grant it, which from kernel
+// 6.10 would deny every ioctl on every device node the target opens - TCGETS on a freshly
+// opened /dev/tty, so isatty and termios fail. This kernel is below that ABI, so the
+// denial itself is unreachable here and the rules are inspected instead of applied.
+func TestBothTiersGrantIoctlDevOnTheirPathGrants(t *testing.T) {
+	d := t.TempDir()
+
+	tiers := map[string][]ll.Rule{}
+	backstop, err := backstopRules([]string{d}, []string{d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tiers["bwrap backstop"] = backstop
+	degraded, err := degradedRules([]string{d}, []string{d}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tiers["degraded"] = degraded
+
+	for tier, rules := range tiers {
+		if len(rules) == 0 {
+			t.Fatalf("%s tier built no rules for an existing path", tier)
+		}
+		for _, r := range rules {
+			if !strings.Contains(fmt.Sprintf("%v", r), "ioctl_dev") {
+				t.Errorf("%s tier: rule %v does not grant ioctl_dev, so a handled right is denied everywhere", tier, r)
+			}
+		}
 	}
 }

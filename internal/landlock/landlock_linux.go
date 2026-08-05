@@ -36,8 +36,9 @@ import (
 //
 // Pinning the handled set here means a kernel newer than this build enforces what this
 // build intends and nothing more. Adopting a new right is then a deliberate change: add
-// it to a handled set AND grant it on the paths that need it - which is what degradedFS
-// does for resolve_unix, and what this tier deliberately does not do.
+// it to a handled set AND grant it on the paths that need it - which is what withIoctlDev
+// does for ABI 5's ioctl_dev in both tiers, and what degradedFS does for resolve_unix and
+// this tier deliberately does not.
 //
 // RestrictPaths keeps only handledAccessFS from a Config, so the network and scoped sets
 // never reach the ruleset.
@@ -103,7 +104,7 @@ func Restrict(writable []string) error {
 // it - the target then gets EACCES on a path the policy granted, with nothing
 // naming Landlock. Returning the errno instead makes the caller warn with it.
 //
-// The read set here is always "/" (Restrict is the only caller), so the paths
+// The read set here is always "/" (Restrict is the only production caller), so the paths
 // that can trip this are the writable ones, where a silent drop buys no
 // confinement at all - bwrap still permits the write - and only breaks the
 // target.
@@ -115,11 +116,7 @@ func Restrict(writable []string) error {
 // backstop. The callers happen to pass only directories today, but that invariant
 // lives in another package, and it is this one that has to hold the ruleset together.
 func RestrictTo(read, write []string) error {
-	rules, err := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
-	if err != nil {
-		return err
-	}
-	rules, err = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
+	rules, err := backstopRules(read, write)
 	if err != nil {
 		return err
 	}
@@ -127,6 +124,19 @@ func RestrictTo(read, write []string) error {
 		return fmt.Errorf("landlock: applying ruleset: %w", err)
 	}
 	return nil
+}
+
+// backstopRules is the bwrap tier's ruleset, split from RestrictTo so which rights the
+// tier actually grants can be asserted without applying the ruleset - applying it would
+// Landlock the test process irreversibly, and the newest rights are not even handled on
+// every kernel a test runs on, so this is the only place the granted-versus-handled
+// question is answerable at all.
+func backstopRules(read, write []string) ([]ll.Rule, error) {
+	rules, err := classifyRules(nil, read, withIoctlDev(ll.RODirs), withIoctlDev(ll.ROFiles))
+	if err != nil {
+		return nil, err
+	}
+	return classifyRules(rules, write, withIoctlDev(ll.RWDirs), withIoctlDev(ll.RWFiles))
 }
 
 // classifyRules appends one rule per kind for the paths that exist, routing
@@ -179,6 +189,10 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // fatal here, where Landlock is the only filesystem mechanism and a dropped grant is a
 // denial the operator has nothing to attribute.
 //
+// Every path additionally grants ioctl_dev, which both handled sets contain from ABI 5 -
+// see withIoctlDev, without which every device node this tier grants would be openable
+// and un-ioctl-able.
+//
 // Write paths additionally grant resolve_unix, because degradedFS handles it: with no
 // mount namespace hiding the host's sockets, connect(2) to a pathname AF_UNIX socket is
 // governed by the grants like any other filesystem access, and a socket the target
@@ -191,7 +205,8 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // ABI on anything older - and a right absent from handled_access_fs is not restricted
 // at all. So on a kernel below ABI 3
 // (5.13-6.1) truncate is unhandled and a read-granted file can still be truncated
-// (zeroed), below ABI 5 (pre-6.10) the ioctl_dev right is unhandled, and below ABI 9 the
+// (zeroed), below ABI 5 (pre-6.10) the ioctl_dev right is unhandled so an ioctl on a
+// device node OUTSIDE the grants is unrestricted too, and below ABI 9 the
 // resolve_unix right is unhandled so connect(2) to any pathname socket on the host is
 // unrestricted whatever the grants say. The read/
 // write/execute access this tier grants all exists at the v1 floor, so path access is
@@ -199,8 +214,9 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // Both residuals are disclosed in the degraded run report so an operator on an old
 // kernel sees them. seccomp's BlockTerminalInjection narrows the ioctl_dev gap to what
 // matters most - it blocks the terminal-injection ioctls on the tty - but it does not
-// close it: the unhandled right leaves every other ioctl on every granted device node
-// unrestricted, which is why the report names it rather than treating it as covered.
+// close it: the unhandled right leaves every other ioctl on every device node the target
+// can open unrestricted, and with no mount namespace that is the host's whole /dev, which
+// is why the report names it rather than treating it as covered.
 func RestrictDegraded(read, write, exec []string) error {
 	// BestEffort silently restricts nothing when it detects ABI 0 (an empty ruleset
 	// returns success), which for this tier - where Landlock is the only filesystem
@@ -218,25 +234,36 @@ func RestrictDegraded(read, write, exec []string) error {
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
-	rules, err := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
+	rules, err := degradedRules(read, write, exec)
 	if err != nil {
 		return err
-	}
-	rules, err = classifyRules(rules, write, withResolveUnix(ll.RWDirs), withResolveUnix(ll.RWFiles))
-	if err != nil {
-		return err
-	}
-	e, err := existing(exec)
-	if err != nil {
-		return err
-	}
-	if len(e) > 0 {
-		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
 	}
 	if err := degradedFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying degraded ruleset: %w", err)
 	}
 	return nil
+}
+
+// degradedRules is the degraded tier's ruleset, split from RestrictDegraded for the
+// reason backstopRules is split from RestrictTo.
+func degradedRules(read, write, exec []string) ([]ll.Rule, error) {
+	rules, err := classifyRules(nil, read, withIoctlDev(ll.RODirs), withIoctlDev(ll.ROFiles))
+	if err != nil {
+		return nil, err
+	}
+	rules, err = classifyRules(rules, write, withIoctlDev(withResolveUnix(ll.RWDirs)), withIoctlDev(withResolveUnix(ll.RWFiles)))
+	if err != nil {
+		return nil, err
+	}
+	e, err := existing(exec)
+	if err != nil {
+		return nil, err
+	}
+	if len(e) > 0 {
+		// The entrypoint is a regular file, so it needs no ioctl_dev.
+		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
+	}
+	return rules, nil
 }
 
 // withResolveUnix wraps a rule constructor so the rules it builds also grant
@@ -246,6 +273,27 @@ func RestrictDegraded(read, write, exec []string) error {
 func withResolveUnix(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
 	return func(paths ...string) ll.FSRule {
 		return rule(paths...).WithResolveUnix()
+	}
+}
+
+// withIoctlDev wraps a rule constructor so the rules it builds also grant ioctl_dev,
+// which both handled sets contain and none of go-landlock's RO/RW helpers grant. Without
+// it, from ABI 5 (kernel 6.10) the right is handled and granted nowhere, which denies
+// EVERY ioctl on EVERY device node the target opens after enforcement - TCGETS and
+// TIOCGWINSZ on a freshly opened /dev/tty or /dev/pts/N, so isatty, termios, and any
+// curses or job-control consumer fails with an EACCES naming no layer. It applies to
+// both tiers and to reads as well as writes: a device is as often read-granted as
+// written, and an ioctl on a path the policy did not grant is already denied by the
+// absence of any rule for it, so scoping the right to the grants is what the file rules
+// were going to say anyway.
+//
+// A directory rule carrying it is not a new shape: the RO/RW dir helpers already put
+// file-only rights (execute, read_file) into directory rules, and the kernel's
+// file-rule restriction runs the other way - a rule on a non-directory may only carry
+// rights that apply to files, which ioctl_dev does.
+func withIoctlDev(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
+	return func(paths ...string) ll.FSRule {
+		return rule(paths...).WithIoctlDev()
 	}
 }
 
@@ -297,12 +345,13 @@ func TruncateRestricted() bool {
 }
 
 // IoctlDevRestricted reports whether this kernel's Landlock ABI (>= 5, i.e. 6.10+) can
-// restrict ioctl(2) on device files. Below it the ioctl_dev right is absent from
-// handled_access_fs and therefore unrestricted, so EVERY ioctl on EVERY granted device
-// node is available - not merely the terminal-injection set seccomp blocks separately.
-// The degraded tier grants /dev/urandom, /dev/random, /dev/zero and /dev/null to every
-// run, so this is not hypothetical there, and it has no mount namespace behind Landlock
-// to narrow what a device node exposes. It is disclosed in the run report for the same
+// restrict ioctl(2) on device files. From ABI 5 both tiers grant the right on their own
+// grants (withIoctlDev), so a granted device node keeps its ioctls either way and what
+// the ABI decides is everything else: below it the right is absent from
+// handled_access_fs and therefore unrestricted, so an ioctl on a device node the grants
+// do NOT cover is available - not merely the terminal-injection set seccomp blocks
+// separately. The degraded tier has no mount namespace behind Landlock, so "everything
+// else" there is the host's whole /dev. It is disclosed in the run report for the same
 // reason truncate is: 5.13 through 6.9 is most of the field.
 func IoctlDevRestricted() bool {
 	return effectiveABI() >= 5
