@@ -330,8 +330,8 @@ func TestRestrictDegradedDeniesOutsideProcessMemory(t *testing.T) {
 	got := strings.TrimSpace(string(out))
 	// Under ptrace_scope 2 or 3 the host forbids the read whatever Landlock does, so a
 	// DENIED result there would credit Landlock with a denial it did not make.
-	if strings.Contains(got, "procmem_baseline=DENIED") {
-		t.Skipf("this host forbids the unrestricted read too, so the restricted one proves nothing: %q", got)
+	if strings.Contains(got, "procmem_baseline=DENIED") || strings.Contains(got, "procfd_baseline=DENIED") {
+		t.Skipf("this host forbids the unrestricted reach too, so the restricted one proves nothing: %q", got)
 	}
 	if !strings.Contains(got, "procmem_restricted=DENIED") {
 		t.Errorf("a read grant of \"/\" reopened another process's memory through /proc/<pid>/mem: %q", got)

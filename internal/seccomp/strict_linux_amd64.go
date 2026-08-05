@@ -37,9 +37,10 @@ const (
 	// - and every filter here that returns it kills the offending thread rather than the
 	// process. The syscall still does not execute, so no filter loses its block; what is
 	// lost is the whole-process scope, which matters for a multithreaded target that can
-	// burn a thread per probe instead of dying. This package sets no kernel floor and the
-	// degraded tier is argued to serve exactly those older kernels, so the older behavior
-	// is reachable and is stated wherever a comment describes the kill.
+	// burn a thread per probe instead of dying. The window is 3.17 to 4.13 - everything
+	// here goes through seccomp(2), which is 3.17 - and it is reachable, since no kernel
+	// floor is set anywhere and installPolicy rejects TSYNC_ESRCH precisely to keep the
+	// degraded tier working on kernels that old.
 	// TestKillProcessActionIsAvailable reports which side of 4.14 the host is on.
 	seccompRetKillProcess = 0x80000000
 

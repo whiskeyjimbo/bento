@@ -108,10 +108,19 @@ func BlockExec() error {
 // /proc/<pid>/fd/<n> - are FILE accesses, denied by Landlock's ptrace check rather than
 // by this filter: both go through ptrace_may_access, and Landlock refuses that against
 // any process outside the domain the degraded tier creates. Every host process is
-// outside it, and only the target's own descendants, which share its domain, stay
-// reachable. The read SET does not cover this and must not be credited with it: it is
-// user-supplied, and a manifest saying read: / grants /proc recursively with nothing
-// refusing it. TestRestrictDegradedDeniesOutsideProcessMemory pins the distinction.
+// outside it, and only processes whose domain the target's is an ancestor of - its own
+// descendants - stay reachable. The read SET does not cover this and must not be
+// credited with it: it is user-supplied, and a manifest saying read: / grants /proc
+// recursively with nothing refusing it. TestRestrictDegradedDeniesOutsideProcessMemory
+// pins the distinction.
+//
+// One procfs read is not covered and is a residual rather than a gap this filter should
+// close: /proc/<pid>/cmdline reads another process's argv memory through
+// access_remote_vm with no ptrace check at all, by design, since that is how ps works.
+// A target can therefore read a host process's command line, and its environ window if
+// that process rewrote its own argv. environ, auxv, maps, smaps, syscall and the fd
+// links all take the check and are denied; cmdline is the exception, and it is bounded
+// to argv rather than being general memory reach.
 func BlockProcessReach() error {
 	if err := blockForeignArch(); err != nil {
 		return err
