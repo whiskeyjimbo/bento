@@ -67,16 +67,25 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
-	// AF_NETLINK is allowed for the same reason egressFilter allows it: it is kernel
-	// IPC and cannot egress, and runtimes enumerate interfaces with it.
-	t.Run("an AF_NETLINK socket is allowed", func(t *testing.T) {
+	// A netlink socket binds to a network namespace when it is CREATED, so one inherited
+	// on stdio still speaks to the host's however the sandbox is built afterwards - it
+	// enumerates host interfaces, addresses and routes. egressFilter permits the family
+	// because it governs creation inside the fresh netns, which is the opposite case.
+	t.Run("an AF_NETLINK socket is refused", func(t *testing.T) {
 		fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE)
 		if err != nil {
 			t.Skipf("no AF_NETLINK socket available: %v", err)
 		}
 		defer unix.Close(fd)
-		if err := refuseNetworkFD(fd); err != nil {
-			t.Errorf("an AF_NETLINK stdio socket was refused: %v", err)
+		err = refuseNetworkFD(fd)
+		if err == nil {
+			t.Fatal("an inherited AF_NETLINK stdio socket was accepted; it reaches the host network namespace")
+		}
+		// Typed like every other refused family, so an embedder doing socket activation
+		// can waive it deliberately and is warned when it does - rather than the silent
+		// pass it used to get.
+		if !strings.Contains(err.Error(), "inherited socket of family") {
+			t.Errorf("wrong refusal for an AF_NETLINK socket: %v", err)
 		}
 	})
 
