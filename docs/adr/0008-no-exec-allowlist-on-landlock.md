@@ -71,8 +71,8 @@ payload readable, and `sandboxWritableMounts` (`/tmp`, `/dev`, `/proc`) plus the
 are readable on every run by construction. The only way to close it is to deny the loader
 execute, which forces statically linked entries.
 
-**2. Static-only does not survive either, because of the target's own exec.** Under this
-mode `Block` is false - the target has to be able to `execve` at all - so
+**2. Static-only does not survive either.** Reason 1 is the load-bearing one; this is what
+it costs once obeyed. Under this mode `Block` is false - the target has to be able to `execve` at all - so
 `launcher.runTarget` takes `superviseTarget`, an ordinary `exec.Command`, and that runs
 after `applyLayers` has installed the ruleset. The target's own `argv[0]` therefore needs
 execute under the very ruleset that withholds it, and `command()` in `internal/linux/args.go`
@@ -86,6 +86,11 @@ interpreter is dynamic. What is left is a static entrypoint with no interpreter 
 static allowlisted binaries - a static Go binary that spawns other static Go binaries.
 That is neither the toolchain case that motivated the bead nor the fixed-script case it was
 later narrowed to, and no job class was named for it.
+
+The launcher ordering is not itself the obstacle, and a reader should not stop there: a
+static shim that applied the ruleset after being exec'd would move the problem without
+solving it, because every binary in the chain still has to be static. The ceiling is what
+reason 1 leaves behind, not where the ruleset happens to be installed today.
 
 Landlock governs filesystem paths; the exec allowlist is a question about which program the
 kernel loads. The two only coincide for binaries that need nothing loaded on their behalf.

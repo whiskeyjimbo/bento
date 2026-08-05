@@ -117,6 +117,29 @@ func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 	}
 }
 
+// The allowlist's two refusals, neither of which any other test reaches: a directory
+// entry would grant execute on everything beneath it - Landlock rules apply to a whole
+// subtree - which is the blanket the ruleset exists to withhold, and a missing entry
+// would silently leave the ruleset narrower than the list it was built from. Both are
+// refused where the path grants' own skip-if-absent contract would pass them, so this
+// pins the difference rather than the shared helper.
+func TestExecAllowlistRefusesADirectoryAndAMissingEntry(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "tool")
+	if err := os.WriteFile(file, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execAllowlistRules([]string{"/"}, nil, []string{dir}); err == nil {
+		t.Error("a directory allowlist entry must be refused; honoring it grants execute on every file under it")
+	}
+	if _, err := execAllowlistRules([]string{"/"}, nil, []string{filepath.Join(dir, "absent")}); err == nil {
+		t.Error("a missing allowlist entry must be refused, not skipped: the ruleset would permit fewer binaries than the policy named")
+	}
+	if _, err := execAllowlistRules([]string{"/"}, nil, []string{file}); err != nil {
+		t.Errorf("a regular file is the one shape an entry may take: %v", err)
+	}
+}
+
 // exec: allowlist installs no exec-block filter, so this ruleset is the only thing
 // bounding what the target spawns. A kernel that cannot apply it must refuse the run
 // rather than fall through to unrestricted spawn under a report claiming an allowlist -
