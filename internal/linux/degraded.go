@@ -30,7 +30,7 @@ import (
 // CA bundle (systemReadPaths), the granted reads, and the entrypoint/interpreter as
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
-func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string) (enforce.Result, error) {
+func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string, acceptAliasesUnder []string) (enforce.Result, error) {
 	report := e.Probe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
@@ -96,7 +96,18 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		sysReads = append(sysReads, extra)
 	}
 
-	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optInTargets(optIns))
+	visible := concat(sysReads, reads, writes)
+	exposed := exposedShields(sb, visible, writes, optInTargets(optIns))
+
+	// The same refusal the bwrap tier makes before launch, over this tier's own visible
+	// set. Landlock consults an inode's names no more than a bind does, so without it a
+	// hardlink to ~/.ssh/id_ed25519 inside a granted tree is readable here while the
+	// full tier refuses the run - one manifest meaning two things, in the direction
+	// that hands over a credential nobody opted into.
+	accepted, err := checkAliasedCredentials(sb, visible, optInPaths(optIns), acceptAliasesUnder)
+	if err != nil {
+		return enforce.Result{}, err
+	}
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
@@ -199,7 +210,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
