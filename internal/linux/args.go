@@ -1088,6 +1088,12 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// and taking its siblings with it. Only a directory entry has an inside; where
 			// the entry is a file (~/.netrc) the exact match is the only way in either way.
 			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
+				// Which sentence depends on whose shield it is: the opt-in InsideShield
+				// offers exists only for the built-ins, so pointing a caller-denied grant at
+				// it would name an escape that is not there.
+				if callerDenied(sb, rp) {
+					return grantrefusal.InsideCallerShield(g, r.Path)
+				}
 				return grantrefusal.InsideShield(g, r.Path)
 			}
 		}
@@ -1166,7 +1172,13 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 //     the literal path alone.
 //   - Built-in Home/Runtime shields only, never sb.extraDeny: a caller-supplied deny (a
 //     supervising embedder shielding its own control store from an untrusted target) is a
-//     different trust domain the profiled policy must not be able to lift.
+//     different trust domain the profiled policy must not be able to lift. Building the
+//     set from the built-ins is not enough on its own, because both consumers match a
+//     bare resolved path: where a caller deny lands on the same host path as a built-in
+//     (it names ~/.aws defensively, or its own store is a symlink there), an opt-in of
+//     the built-in would carry the caller's shield away with it. So a built-in whose
+//     store a caller deny also covers is not opt-in-able at all, and the read grant
+//     stays refused.
 //
 // literalReads are the policy's own absolute, un-symlink-resolved read paths. Sorted by
 // literal path, which is the order the reported opt-ins keep.
@@ -1178,11 +1190,28 @@ func explicitShieldOptIns(sb sandbox, literalReads []string) []shieldOptIn {
 			continue
 		}
 		if slices.Contains(literalReads, r.Path) {
-			out = append(out, shieldOptIn{path: r.Path, onHost: sb.resolve(r.Path), holds: r.Holds})
+			onHost := sb.resolve(r.Path)
+			if callerDenied(sb, onHost) {
+				continue
+			}
+			out = append(out, shieldOptIn{path: r.Path, onHost: onHost, holds: r.Holds})
 		}
 	}
 	slices.SortFunc(out, func(a, b shieldOptIn) int { return cmp.Compare(a.path, b.path) })
 	return out
+}
+
+// callerDenied reports whether a caller-supplied deny covers a resolved host path. Both
+// sides are resolved because a caller names its store in its own spelling and the shield
+// binds where that lands.
+func callerDenied(sb sandbox, onHost string) bool {
+	for _, r := range sb.extraDeny {
+		rp := sb.resolve(r.Path)
+		if onHost == rp || policy.CoversResolved(rp, onHost) {
+			return true
+		}
+	}
+	return false
 }
 
 // shieldOptIn is one such shield: the grant's literal spelling, the store it binds (which
