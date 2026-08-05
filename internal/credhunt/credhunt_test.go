@@ -146,6 +146,78 @@ func TestTokenAssignmentDistinguishesSecretsFromSettings(t *testing.T) {
 	}
 }
 
+// The sniff bound is a bound on the READ, not a size a file has to be under to be opened.
+// A real ~/.claude.json measured 96 KB with a token-shaped assignment in its first few KB;
+// gating on the whole file's size discarded it unread, and the name trips nothing else, so
+// the store this most wants to surface was reported nowhere.
+func TestHuntSniffsTheHeadOfAFileLargerThanTheBound(t *testing.T) {
+	home := t.TempDir()
+	big := plant(t, home, ".sometool.json", 0o600,
+		"{\n  \"apiToken\": \"0123456789abcdefghijklmnop\",\n  \"history\": [\n"+
+			strings.Repeat("    \"a line of ordinary recorded history\",\n", 4000)+"  ]\n}\n")
+
+	if info, err := os.Stat(big); err != nil {
+		t.Fatal(err)
+	} else if info.Size() <= 64<<10 {
+		t.Fatalf("the fixture is %d bytes, which does not exceed the bound it must outgrow", info.Size())
+	}
+	for _, f := range hunt(t, home) {
+		if f.Path == big {
+			if !slices.Contains(f.Signals, SignalToken) {
+				t.Errorf("%s surfaced without the content signal: %v", big, f.Signals)
+			}
+			return
+		}
+	}
+	t.Errorf("a 96 KB token store was never opened; the bound gated the file rather than the read")
+}
+
+// A config written as one long line is ordinary, and a bufio.Scanner reports a line past
+// its buffer through an Err() a Scan loop never consults - so the sniff returned "no
+// shapes", which is byte-identical to a clean file. A silent give-up is the failure this
+// tool exists to avoid, so the head is read and split rather than scanned.
+func TestHuntSniffsPastAVeryLongLine(t *testing.T) {
+	home := t.TempDir()
+	// A leading line past bufio.Scanner's 64 KiB default buffer, with the assignment after
+	// it and the bound set well clear of both - a scanner gives up on the first line and
+	// never reaches the second, where a plain read of the head has both in hand.
+	long := plant(t, home, ".longline.conf", 0o600,
+		"# "+strings.Repeat("y", 100<<10)+"\napi_token = 0123456789abcdefghijklmnop\n")
+
+	found, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range found {
+		if f.Path == long {
+			if !slices.Contains(f.Signals, SignalToken) {
+				t.Errorf("the sniff stopped at the long line and reported no shapes: %v", f.Signals)
+			}
+			return
+		}
+	}
+	t.Errorf("%s was not reported at all", long)
+}
+
+// A mode-0644 ~/.env holding an AWS secret trips no name token, no suffix, no editor
+// leaving and no private mode, so nothing but its contents can reach it - and the sniff
+// used to run only for a file some cheap signal had already flagged. The home root is
+// where the files no vocabulary enumerates live, which is the class this tool is most for,
+// so it is sniffed on position; the thousands of files below it still are not.
+func TestHuntSniffsTheHomeRootOnPosition(t *testing.T) {
+	home := t.TempDir()
+	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+	deep := plant(t, home, "notes/scratch/jotting", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, env) {
+		t.Errorf("a world-readable .env at the home root reaches no signal but its contents; got %v", got)
+	}
+	if slices.Contains(got, deep) {
+		t.Errorf("%s is not at the home root, and sniffing on position there would be a full-tree read; got %v", deep, got)
+	}
+}
+
 // A source checkout is workspace surface - bento governs it through a write grant and
 // denylist.Workspace, never through a home shield - and on a developer home it is where
 // essentially every hit comes from, which makes the report unreadable. But the home
