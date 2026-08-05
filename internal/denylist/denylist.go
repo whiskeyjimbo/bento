@@ -48,6 +48,19 @@ type Rule struct {
 	// lifting the shield exposes. Set on DenyAll rules only: a write shield cannot be
 	// lifted by a grant, so no callout has to describe one.
 	Holds Holds
+	// Source names the environment variable that put the shield at this path, and is
+	// empty for a rule at its default location.
+	//
+	// A relocation variable accepts any absolute path, so HISTFILE=/usr/bin/python3
+	// blanks the interpreter and the run then fails with an ENOENT or a link error
+	// attributed to the target. Bounding the target is not possible - there is no
+	// principled rule for which paths a user may keep a history file at - so the
+	// answer is to be able to say which variable caused it, which nothing could
+	// reconstruct after the fact from the path alone.
+	//
+	// Diagnostic only. Nothing about how a rule is enforced may read it, or an
+	// operator's environment would be deciding what the sandbox binds.
+	Source string
 }
 
 // Holds names what a shielded path contains. The deny rules are all enforced the same
@@ -704,7 +717,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".gradle/init.d",
 	}
 
-	locations := func(entry string) []string { return homeLocations(home, entry) }
+	locations := func(entry string) []location { return homeLocations(home, entry) }
 
 	// The same buckets as dirGroups, for the stores that are genuinely one file. Keyed
 	// per group rather than stamped HoldsCredentials wholesale, so that a shell history
@@ -726,8 +739,8 @@ func Home(home string, alsoHomes ...string) []Rule {
 	}
 	rules := make([]Rule, 0, nFiles+len(writeOnly)+len(writeOnlyDirs))
 	emit := func(entry string, r Rule) {
-		for _, p := range locations(entry) {
-			r.Path = p
+		for _, l := range locations(entry) {
+			r.Path, r.Source = l.path, l.source
 			rules = append(rules, r)
 		}
 	}
@@ -770,7 +783,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(base); c != join(de.def) && shieldable(c) {
-			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials})
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
 		}
 	}
 
@@ -816,7 +829,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			if underStore(p, fe.store) || !shieldable(p) {
 				continue
 			}
-			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials})
+			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: fe.env})
 		}
 	}
 
@@ -853,7 +866,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || !shieldable(c) {
 			continue
 		}
-		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds})
+		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds, Source: fe.env})
 	}
 
 	// A startup file relocated by an env var is a persistence-planting target the
@@ -878,21 +891,21 @@ func Home(home string, alsoHomes ...string) []Rule {
 		}
 		return false
 	}
-	addWriteShield := func(p string) {
+	addWriteShield := func(p, source string) {
 		if !underDenyAll(p) && shieldable(p) {
-			rules = append(rules, Rule{Path: p, Deny: DenyWrite})
+			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
 	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && filepath.Clean(zdotdir) != home {
 		// .zshrc.local is sourced by the widely-copied grml zshrc from ${ZDOTDIR:-$HOME},
 		// so it relocates with the rest of the group (the default is shielded above).
 		for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
-			addWriteShield(filepath.Join(zdotdir, f))
+			addWriteShield(filepath.Join(zdotdir, f), "ZDOTDIR")
 		}
 	}
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
 		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
-			addWriteShield(c)
+			addWriteShield(c, "GIT_CONFIG_GLOBAL")
 		}
 	}
 	// Env vars that relocate a single startup file the host runs, the DenyWrite analog of
@@ -901,7 +914,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// get designated. Both name a file with no default path to compare against.
 	for _, env := range []string{"BASH_ENV", "ENV"} {
 		if v := os.Getenv(env); filepath.IsAbs(v) {
-			addWriteShield(filepath.Clean(v))
+			addWriteShield(filepath.Clean(v), env)
 		}
 	}
 	// Env vars that each relocate a single startup/config file whose conventional default
@@ -921,7 +934,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	} {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
 			if c := filepath.Clean(v); c != join(de.def) {
-				addWriteShield(c)
+				addWriteShield(c, de.env)
 			}
 		}
 	}
@@ -931,7 +944,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// and dropped; a relative value cannot be bound.
 	if v := os.Getenv("PIP_CONFIG_FILE"); filepath.IsAbs(v) {
 		if c := filepath.Clean(v); c != join(".config/pip/pip.conf") && c != join(".pip/pip.conf") {
-			addWriteShield(c)
+			addWriteShield(c, "PIP_CONFIG_FILE")
 		}
 	}
 	// MAILCAPS is a colon-separated list of mailcap files (MIME-type -> command run on
@@ -945,7 +958,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(p); c != join(".mailcap") {
-			addWriteShield(c)
+			addWriteShield(c, "MAILCAPS")
 		}
 	}
 	// CARGO_HOME relocates BOTH severity classes at once: the registry tokens
@@ -959,10 +972,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
 		if c := filepath.Clean(base); c != join(".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
-				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials})
+				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
 			}
 			for _, f := range []string{"config.toml", "config", "env"} {
-				addWriteShield(filepath.Join(c, f))
+				addWriteShield(filepath.Join(c, f), "CARGO_HOME")
 			}
 		}
 	}
@@ -1011,7 +1024,7 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	if runtimeDir == "" || policy.CoversResolved("/run", runtimeDir) || policy.CoversResolved("/var/run", runtimeDir) || !Shieldable(runtimeDir, homes) {
 		return rules
 	}
-	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true, Holds: HoldsServices})
+	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true, Holds: HoldsServices, Source: "XDG_RUNTIME_DIR"})
 }
 
 // Covers finds the rule shielding path, returning it and true. An exact match wins;
@@ -1035,6 +1048,11 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // does cover the tree, more weakly. That is the safe direction - a spurious gap the audit
 // surfaces, never a missed one - and a caller needing both halves wants every match, not a
 // third tie-break.
+//
+// Source is likewise unspecified. A path can be reached by a default rule and by a
+// relocated one at once, and naming whichever the scan reached first would attribute the
+// shield to an arbitrary variable - so a surface that tells an operator which variable
+// put a shield somewhere must read the rules, not ask this.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
@@ -1097,25 +1115,32 @@ var xdgBases = []struct{ prefix, env, def string }{
 	{".cache/", "XDG_CACHE_HOME", ".cache"},
 }
 
+// location is one absolute path an entry must be shielded at, carrying the variable that
+// put it there so a relocated copy can be told apart from the default it sits beside.
+type location struct {
+	path   string
+	source string
+}
+
 // homeLocations expands a home-relative deny entry to every absolute path it must be
 // shielded at: its default location, plus the XDG one when the relevant base is
 // relocated.
-func homeLocations(home, entry string) []string {
+func homeLocations(home, entry string) []location {
 	join := func(p string) string { return filepath.Join(home, p) }
 	for _, b := range xdgBases {
 		if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
-			out := []string{join(entry)}
+			out := []location{{path: join(entry)}}
 			// A relative XDG base is invalid per the spec and ignored by conforming
 			// tools, which fall back to the default location - already shielded via
 			// join(entry). Emitting a relative Rule.Path here would shield nothing at
 			// the intended place, so drop it and rely on the default shield.
 			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
-				out = append(out, filepath.Join(base, rel))
+				out = append(out, location{filepath.Join(base, rel), b.env})
 			}
 			return out
 		}
 	}
-	return []string{join(entry)}
+	return []location{{path: join(entry)}}
 }
 
 // AliasAnchors returns the absolute paths whose files identify a credential, for detecting
@@ -1126,7 +1151,11 @@ func AliasAnchors(home string) []string {
 	anchors := slices.Concat(credentialAnchorDirs, walletKeyPaths)
 	out := make([]string, 0, len(anchors))
 	for _, d := range anchors {
-		out = append(out, homeLocations(home, d)...)
+		// An anchor is a place to look for a second readable name, so a relocated copy
+		// counts the same as the default and the variable that moved it does not.
+		for _, l := range homeLocations(home, d) {
+			out = append(out, l.path)
+		}
 	}
 	return out
 }

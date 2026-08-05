@@ -361,6 +361,65 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	}
 }
 
+// A relocation variable accepts any absolute path, so a shield can land on something the
+// run then needs and fail with an error naming only the target. Nothing can reconstruct
+// the cause from the path afterwards, so every family that follows a variable must record
+// which one it followed - and a rule at its default location must claim no variable, or
+// the report would blame the environment for a shield bento would have applied anyway.
+func TestHomeRecordsWhichVariableRelocatedAShield(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/secrets/gnupg")          // dirEnvs
+	t.Setenv("KUBECONFIG", "/secrets/kubeconfig")    // fileEnvs, colon-split
+	t.Setenv("HISTFILE", "/secrets/history")         // fileDenyAllEnvs
+	t.Setenv("ZDOTDIR", "/secrets/zsh")              // startup group
+	t.Setenv("PIP_CONFIG_FILE", "/secrets/pip.conf") // single-default write shield
+	t.Setenv("MAILCAPS", "/secrets/mailcap")         // colon-split write shield
+	t.Setenv("CARGO_HOME", "/secrets/cargo")         // mixed severities
+	t.Setenv("XDG_CONFIG_HOME", "/secrets/xdg")      // whole-base expansion
+
+	bySource := map[string]string{}
+	for _, r := range Home("/home/u") {
+		bySource[r.Path] = r.Source
+	}
+	for path, want := range map[string]string{
+		"/secrets/gnupg":             "GNUPGHOME",
+		"/secrets/kubeconfig":        "KUBECONFIG",
+		"/secrets/history":           "HISTFILE",
+		"/secrets/zsh/.zshrc":        "ZDOTDIR",
+		"/secrets/pip.conf":          "PIP_CONFIG_FILE",
+		"/secrets/mailcap":           "MAILCAPS",
+		"/secrets/cargo/credentials": "CARGO_HOME",
+		"/secrets/xdg/gh":            "XDG_CONFIG_HOME",
+		"/home/u/.gnupg":             "",
+		"/home/u/.bash_history":      "",
+		"/home/u/.config/gh":         "",
+	} {
+		got, ok := bySource[path]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", path)
+			continue
+		}
+		if got != want {
+			t.Errorf("shield at %q credits %q, want %q", path, got, want)
+		}
+	}
+}
+
+// XDG_RUNTIME_DIR is the one relocation outside Home, and it breaks a run the same way:
+// the socket directory follows the variable, so a value pointing somewhere the script
+// needs blanks it with nothing naming the cause.
+func TestRuntimeRecordsTheRelocatingVariable(t *testing.T) {
+	rules := Runtime("/custom/run", "/home/u")
+	for _, r := range rules {
+		want := ""
+		if r.Path == "/custom/run" {
+			want = "XDG_RUNTIME_DIR"
+		}
+		if r.Source != want {
+			t.Errorf("shield at %q credits %q, want %q", r.Path, r.Source, want)
+		}
+	}
+}
+
 // A relocation target that swallows the whole home cannot be shielded: one DenyAll on
 // the home hides every granted path, so the run confines nothing it could still do -
 // and it subsumes every other rule, which silently empties the set the completeness
