@@ -28,11 +28,15 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # The corpus of interesting inputs lives in the build cache, so carrying it between
+      # The corpus of interesting inputs lives under $GOCACHE/fuzz, so carrying it between
       # nights is the whole point: a fresh cache restarts coverage-guided search from the
       # seeds every time and never reaches anything deep. The key is unique per run so
       # each night saves its grown corpus, and restore-keys picks up the newest prior one.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      #
+      # restore and save are separate steps because the combined action skips its save
+      # when the job fails - which would discard the corpus of exactly the night that
+      # found something, the one most worth keeping.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -42,6 +46,14 @@ jobs:
             fuzz-${{ runner.os }}-
 
       - run: make fuzz FUZZTIME=${{ inputs.fuzztime || '5m' }}
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: fuzz-${{ runner.os }}-${{ github.run_id }}
 
       # A crasher is written into the package's testdata/fuzz as a regression seed that
       # every later `go test` replays, so it has to leave the runner to be committed.
