@@ -42,6 +42,7 @@ type manifest struct {
 	Write           []string      `yaml:"write,omitempty"`
 	Network         []networkRule `yaml:"network,omitempty"`
 	Exec            string        `yaml:"exec,omitempty"`
+	ExecAllow       []string      `yaml:"exec_allow,omitempty"`
 	Limits          *limits       `yaml:"limits,omitempty"`
 	Provenance      *Provenance   `yaml:"provenance,omitempty"`
 }
@@ -307,6 +308,15 @@ func Resolve(p *policy.Policy, manifestPath string) error {
 			return err
 		}
 	}
+	// Anchored like the grants rather than treated as a command name: an allowlist entry
+	// names one file, and resolveInterpreter's PATH-search branch would turn a bare name
+	// into whatever that name resolves to on the host at run time - which is the opposite
+	// of what an allowlist is for.
+	for i, e := range p.ExecAllow {
+		if p.ExecAllow[i], err = resolveAgainst(base, e); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -444,6 +454,7 @@ func fromPolicy(p *policy.Policy) manifest {
 		Read:            p.Read,
 		Write:           p.Write,
 		Exec:            string(p.Exec),
+		ExecAllow:       p.ExecAllow,
 	}
 	for _, r := range p.Network {
 		m.Network = append(m.Network, networkRule{Host: r.Host, Port: r.Port})
@@ -464,6 +475,7 @@ func (m *manifest) toPolicy() *policy.Policy {
 		Read:            m.Read,
 		Write:           m.Write,
 		Exec:            policy.ExecMode(m.Exec),
+		ExecAllow:       m.ExecAllow,
 	}
 	// An absent exec: means the default, deny-subprocesses posture. Resolving it
 	// here keeps every consumer from having to treat "" as a special case.
