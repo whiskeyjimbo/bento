@@ -462,11 +462,24 @@ func networkStdioRefusals() []error {
 }
 
 // refuseNetworkFD refuses one descriptor that is a socket of a family able to reach a
-// network. The families are an ALLOWLIST, mirroring egressFilter's: AF_UNIX and
-// AF_NETLINK pass and every other family is refused, because a denylist would miss a
-// family we did not enumerate and "no egress" must not rest on remembering every wire
-// family. Enumerating AF_INET and AF_INET6 would let an AF_PACKET descriptor - raw
-// frames on the host's wire - through the check written to stop exactly that.
+// network. The families are an ALLOWLIST - only AF_UNIX passes - because a denylist
+// would miss a family we did not enumerate and "no egress" must not rest on remembering
+// every wire family. Enumerating AF_INET and AF_INET6 would let an AF_PACKET descriptor -
+// raw frames on the host's wire - through the check written to stop exactly that.
+//
+// This allowlist is NOT egressFilter's, though it once borrowed its shape, and the
+// difference is why AF_NETLINK passes there and is refused here. That filter governs
+// socket CREATION inside the sandbox's own namespaces, where a new netlink socket binds
+// to the fresh network namespace and sees nothing of the host's. A descriptor inherited
+// on stdio was created before any of that, in the HOST's netns, and a netlink socket
+// binds to a netns at creation - so it still speaks to the host's. Nothing revokes it:
+// dropInheritedFDs skips 0-2 by design, bwrap's netns binds only new sockets, the seccomp
+// filter screens socket(2) (creation again), and Landlock governs paths, not open
+// descriptions. What it buys a target is enumeration of the host's interfaces, addresses
+// and routes (RTM_GETLINK/GETADDR/GETROUTE) and a stream of host device events
+// (NETLINK_KOBJECT_UEVENT) - an information leak rather than reconfiguration, which wants
+// CAP_NET_ADMIN the target does not hold, but the sandbox is supposed to show it none of
+// that.
 func refuseNetworkFD(fd int) error {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
@@ -485,7 +498,7 @@ func refuseNetworkFD(fd int) error {
 	if err != nil {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a socket whose domain could not be read: %w", fd, err)
 	}
-	if domain != unix.AF_UNIX && domain != unix.AF_NETLINK {
+	if domain != unix.AF_UNIX {
 		return fmt.Errorf("launcher: refusing to run - %w", &networkStdio{fd: fd, domain: domain})
 	}
 	return nil
