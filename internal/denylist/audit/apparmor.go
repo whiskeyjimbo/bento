@@ -31,7 +31,7 @@ import (
 //     inexpressible.
 func ParseAppArmor(content, home, runUser string) []Candidate {
 	var out []Candidate
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
@@ -62,10 +62,19 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 				continue
 			}
 			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
-			if !ok || seen[p] {
+			if !ok {
 				continue
 			}
-			seen[p] = true
+			// One rule can expand to both branches of foo{,/**}, the file first. Taking
+			// the first would record Dir=false and blind the diff's narrowing check for
+			// that path, so a later directory branch upgrades the candidate already kept.
+			if i, ok := seen[p]; ok {
+				if dir {
+					out[i].Dir = true
+				}
+				continue
+			}
+			seen[p] = len(out)
 			out = append(out, Candidate{
 				Path:    p,
 				Deny:    deny,

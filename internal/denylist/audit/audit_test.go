@@ -637,6 +637,24 @@ func TestParseAppArmorSubstitutesBeforeExpanding(t *testing.T) {
 	}
 }
 
+// foo{,/**} expands to the bare path and then the subtree, both trimming to one path. The
+// dedup must not keep the file branch's Dir=false: the diff reads Dir to decide whether
+// bento's shield was narrowed, so a tree candidate recorded as a file reports no narrowing
+// where there is one.
+func TestParseAppArmorKeepsTheTreeBranchOfADuplicatedPath(t *testing.T) {
+	for name, line := range map[string]string{
+		"file branch first": "  deny @{HOME}/.ssh{,/**} mrwkl,\n",
+		"tree branch first": "  deny @{HOME}/.ssh{/**,} mrwkl,\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ParseAppArmor(line, "/HOME", "/run/user/1000")
+			if len(got) != 1 || got[0].Path != "/HOME/.ssh" || !got[0].Dir {
+				t.Errorf("ParseAppArmor = %+v, want exactly /HOME/.ssh as a directory", got)
+			}
+		})
+	}
+}
+
 // Both abstractions exist only to enumerate sensitive $HOME entries, so their candidates
 // are in scope by the source rather than by a header. Without this every AppArmor gap
 // lands in the out-of-scope summary and the second corpus contributes nothing.

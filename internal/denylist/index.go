@@ -42,11 +42,11 @@ func NewIndex(rules []Rule) *Index {
 		// Two rules can name one path (the /run shields are built by more than one
 		// helper). Keeping the strictest is what Covers's "when several match, the
 		// strictest wins" means at a single path.
-		if cur, ok := ix.exact[r.Path]; !ok || r.Deny < cur.Deny {
+		if cur, ok := ix.exact[r.Path]; !ok || stricter(r, cur) {
 			ix.exact[r.Path] = r
 		}
 		if r.Dir {
-			if cur, ok := ix.dirs[r.Path]; !ok || r.Deny < cur.Deny {
+			if cur, ok := ix.dirs[r.Path]; !ok || stricter(r, cur) {
 				ix.dirs[r.Path] = r
 			}
 		}
@@ -57,7 +57,7 @@ func NewIndex(rules []Rule) *Index {
 // Covers finds the rule shielding path, returning it and true: an exact match or an
 // enclosing directory rule, strictest wins. It answers what the package's Covers
 // answers, down to the same undefined choice among equally strict matches - only the
-// returned Deny is specified.
+// returned Deny and Dir are specified.
 func (ix *Index) Covers(path string) (Rule, bool) {
 	// Once per query. Covers cleans too, but pays for it once per rule in the scan it
 	// runs; here the cost is paid before any lookup and the maps can compare literally.
@@ -72,7 +72,7 @@ func (ix *Index) Covers(path string) (Rule, bool) {
 			break
 		}
 		dir = parent
-		if r, ok := ix.dirs[dir]; ok && (!found || r.Deny < best.Deny) {
+		if r, ok := ix.dirs[dir]; ok && (!found || stricter(r, best)) {
 			best, found = r, true
 		}
 	}
