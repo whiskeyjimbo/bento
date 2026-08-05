@@ -74,8 +74,9 @@ type Config struct {
 	AppliedFD int
 	// AllowNetworkStdio carries enforce.Process.AllowNetworkStdio: the embedder
 	// deliberately handed the target an open network socket as one of its standard
-	// streams, so refuseNetworkStdio is skipped. Off by default, including for every
-	// CLI run.
+	// streams, so an inherited AF_INET/AF_INET6 socket is warned about rather than
+	// refused. It waives no other family and nothing that is not a socket. Off by
+	// default, including for every CLI run.
 	AllowNetworkStdio bool
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
@@ -109,6 +110,15 @@ func Run(cfg Config) (int, error) {
 	if cfg.BridgeLivenessFD > 0 && (cfg.BridgeLivenessFD == cfg.ObserveFD || cfg.BridgeLivenessFD == cfg.AppliedFD) {
 		return 0, fmt.Errorf("launcher: the bridge liveness descriptor %d is also the report descriptor", cfg.BridgeLivenessFD)
 	}
+	// Same floor newAppliedReport applies, for a sharper version of the same reason: the
+	// liveness descriptor is not only written to but closed once the bridge holds it, so
+	// one naming a standard stream closes the launcher's own stdio mid-setup - later
+	// allocations then land at that number and superviseTarget hands it to the target -
+	// and a bridge death writes a raw byte into the target's output. The only in-tree
+	// caller passes a constant, but DecodeLaunch takes the value off the wire.
+	if cfg.BridgeLivenessFD > 0 && cfg.BridgeLivenessFD < firstInheritableFD {
+		return 0, fmt.Errorf("launcher: the bridge liveness descriptor %d is one of the target's standard streams", cfg.BridgeLivenessFD)
+	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without
@@ -137,13 +147,13 @@ func Run(cfg Config) (int, error) {
 	// or not the policy grants egress: with no egress it falsifies the claim outright,
 	// and with egress it bypasses the host proxy's allowlist. So the refusal is
 	// unconditional, and the one caller that means to pass a connection says so.
-	// Every failing descriptor is examined, not just the first: only the socket itself
-	// is opt-in-able, and a descriptor that could not be classified at all stays fatal
-	// even under the opt-in - the embedder permitted a connection it knows it passed,
-	// not an unreadable stream.
+	// Every failing descriptor is examined, not just the first: only an IP socket is
+	// opt-in-able (see waivable), and a descriptor that could not be classified at all
+	// stays fatal even under the opt-in - the embedder permitted a connection it knows
+	// it passed, not an unreadable stream.
 	for _, err := range networkStdioRefusals() {
 		var passed *networkStdio
-		if !cfg.AllowNetworkStdio || !errors.As(err, &passed) {
+		if !cfg.AllowNetworkStdio || !errors.As(err, &passed) || !passed.waivable() {
 			return 0, err
 		}
 		// Warned from the refusal, not from the opt-in, so it names the descriptor that
@@ -181,7 +191,7 @@ func Run(cfg Config) (int, error) {
 		// emits --clearenv - so the case this covers is a POLICY-declared proxy variable.
 		// Fail-closed today (empty netns), but the intercept model requires bento's
 		// values to be authoritative.
-		env = dropEnv(env, "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")
+		env = dropEnv(env, proxyEnvNames...)
 		env = append(env, proxyEnv()...)
 	}
 
@@ -299,6 +309,14 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// never returns nil for a nonnegative fd, so an --observe-fd naming nothing would
 	// otherwise survive a full traced run and only surface as an EBADF from Truncate,
 	// under an error about the report rather than about the descriptor that was wrong.
+	//
+	// The standard-stream floor is newAppliedReport's, and it is what makes ObserveFD's
+	// documented "not inherited across exec" true: dropInheritedFDs starts at
+	// firstInheritableFD by design, so 1 or 2 would reach the target anyway - and
+	// runObserve would Seek/Truncate/Write the report over the target's own stdout.
+	if cfg.ObserveFD < firstInheritableFD {
+		return 0, fmt.Errorf("launcher: observation descriptor %d is one of the target's standard streams", cfg.ObserveFD)
+	}
 	if _, err := unix.FcntlInt(uintptr(cfg.ObserveFD), unix.F_GETFD, 0); err != nil {
 		return 0, fmt.Errorf("launcher: observation descriptor %d is not valid: %w", cfg.ObserveFD, err)
 	}
@@ -578,6 +596,17 @@ type networkStdio struct {
 	domain int
 }
 
+// waivable reports whether AllowNetworkStdio may pass this descriptor through. The
+// deliberate case the opt-in exists for is socket activation - a server handing a
+// handler its accepted connection - so it covers the IP families and nothing else. An
+// embedder that means to pass a TCP conn is not thereby permitting an inherited
+// AF_NETLINK descriptor (host interface, address and route enumeration, a stream of
+// host device events) or AF_PACKET (raw frames on the host wire), which is what a
+// family-blind waiver granted.
+func (e *networkStdio) waivable() bool {
+	return e.domain == unix.AF_INET || e.domain == unix.AF_INET6
+}
+
 func (e *networkStdio) Error() string {
 	return fmt.Sprintf("standard descriptor %d is an inherited socket of family %d; no sandbox layer can revoke an already-open network channel", e.fd, e.domain)
 }
@@ -681,6 +710,16 @@ func awaitBridgeReady(r *os.File) error {
 
 // bridgeReadyTimeout bounds the wait for the bridge's readiness byte.
 var bridgeReadyTimeout = 30 * time.Second
+
+// proxyEnvNames are the proxy variables the bridge path scrubs from the inherited
+// environment before setting its own. ALL_PROXY and FTP_PROXY are in the list even
+// though proxyEnv sets neither: curl reads ALL_PROXY for any protocol with no
+// protocol-specific variable set, so scrubbing just the HTTP pair would leave a
+// policy-declared proxy authoritative for everything else.
+var proxyEnvNames = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "no_proxy",
+}
 
 func proxyEnv() []string {
 	u := "http://" + proxyAddr

@@ -184,7 +184,9 @@ egress block filters `socket(2)`, and Landlock governs paths. So bento refuses t
 start when fd 0, 1, or 2 is a socket, and an embedder doing socket activation
 deliberately waives that through `enforce.Process.AllowNetworkStdio` - which is a Go
 field precisely so no downloaded manifest or copied command line can re-open the
-channel.
+channel. The waiver covers AF_INET and AF_INET6 only: passing an accepted TCP
+connection is not a decision about an inherited netlink socket (host interface,
+address and route enumeration) or an AF_PACKET one.
 
 **AF_UNIX on stdio is an accepted residual.** It is the one family the check still
 passes, and an inherited connected unix socket - the host's `docker.sock`, a session
