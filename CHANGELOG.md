@@ -53,6 +53,18 @@ commits that built it - none of them were ever in a release.
   A failure some narrower hint already explained - a signal death, a 126 under a
   blocked exec, a bypassed proxy, a refused destination, a `PATH` miss - is still
   left to that hint alone. Output only; nothing about what is denied changed.
+- **The legend names `network:` too, on the manifest that grants none.** A
+  manifest with egress rules gets a reporter of its own: the proxy observes the
+  refused destination and names it. A manifest with no rules has no proxy, so
+  nothing observed the attempt, and `network:` was the one grant field absent
+  from both the legend and the grant summary above it - a reader holding
+  `[Errno -3] Temporary failure in name resolution` had to guess that `network:`
+  was a manifest field at all. The summary now says `no network: rules` beside
+  the path counts and the exec mode, and the legend maps `Network is unreachable`
+  and a name that will not resolve to that field. It stays silent on the
+  Landlock-only tier, which fences egress with a seccomp filter answering `EPERM`
+  rather than with a network namespace, so those are not the shapes a reader
+  there is holding. Output only; nothing about what is denied changed.
 - **`doctor` names all three Docker restrictions at once.** A userns refusal
   inside a container named the seccomp and AppArmor flags; lifting exactly those
   granted the namespace and produced a second refusal naming a third flag, for
@@ -111,6 +123,19 @@ commits that built it - none of them were ever in a release.
   thing in every checkout - but a `~` one is, since it resolves per user. The
   boundary did not move: this
   reports on a manifest, and grants nothing.
+- **A grant this host refuses is reported as a refused grant, not as an
+  unrunnable manifest.** `runnable:` answers whether this host can start what the
+  manifest names - a missing entrypoint, an interpreter off PATH - and a write
+  into a shielded path, a symlink loop, or a write grant that is already a file
+  was folded into it, so a manifest whose entrypoint and interpreter both resolve
+  was told "this host cannot start what the manifest names" and sent after a
+  problem that was not there. The refusal also printed verbatim twice on one
+  screen. It now prints once, beside the grant it refuses, under its own
+  `grants:` verdict; `--json` carries it as `refused_grants`, and `runnable`
+  stays true where nothing is unstartable, so a gate reading the fields rather
+  than the exit code must check both. Every refusal kind is marked beside its
+  grant now, not only the shielded ones. The boundary did not move: `validate
+  --strict` and `run` refuse exactly what they refused before.
 - **`approve` now names the permissions that changed since the last approval.**
   The stamp is a sha256 over the policy, so a drifted manifest could say only
   that something changed - every refusal that sent a reader back to re-review
