@@ -74,6 +74,17 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if ok, reason := canCreateScope(); !ok {
 			return profile.Observation{}, fmt.Errorf("the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 		}
+		// canCreateScope answers only for memory and pids, the host-safety controllers.
+		// A cpu limit needs its own answer: systemd-run accepts a CPUQuota for an
+		// undelegated cpu controller and silently does not enforce it, so gating on
+		// scope creation alone would profile with the requested cap absent and say
+		// nothing. Run survives that gap because enforce.Run admits LayerLimitsCPU from
+		// the probe; this path produces no Report, so the check has to be its own.
+		if p.Limits.CPU != "" {
+			if state, reason := cpuDelegationState(delegatedControllers()); state != enforce.Enforced {
+				return profile.Observation{}, fmt.Errorf("the policy requests a cpu limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+			}
+		}
 	}
 
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
