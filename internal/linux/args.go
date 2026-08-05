@@ -800,7 +800,17 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	for i, h := range sb.homes {
 		homes[i] = sb.resolve(h)
 	}
-	seen := map[denylist.Rule]bool{}
+	// Keyed on what the shield actually does and not on the whole rule: two rules can
+	// name one resolved path and differ only in fields that describe it to a reader
+	// (which store it holds, which env var put it there). Those produce byte-identical
+	// bwrap arguments, so keying on the rule would emit the same bind twice and let a
+	// field that exists for the report change what is enforced.
+	type shieldKey struct {
+		path string
+		deny denylist.Deny
+		dir  bool
+	}
+	seen := map[shieldKey]bool{}
 	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
 		literal := r.Path
@@ -815,10 +825,11 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 			// would hide everything the policy granted rather than one store.
 			continue
 		}
-		if seen[r] {
+		k := shieldKey{r.Path, r.Deny, r.Dir}
+		if seen[k] {
 			continue
 		}
-		seen[r] = true
+		seen[k] = true
 		resolved = append(resolved, r)
 	}
 
