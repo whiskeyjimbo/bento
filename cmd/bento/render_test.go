@@ -841,8 +841,8 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 		}
 	}
 	// Each path is named by what its shield held: an operator reading this after the fact
-	// must not go looking for a key behind a service socket directory, or the reverse.
-	for _, noun := range []string{"credential store", "service socket directory"} {
+	// must not go looking for a key behind a service socket path, or the reverse.
+	for _, noun := range []string{"credential store", "service socket path"} {
 		if !strings.Contains(out, noun) {
 			t.Errorf("the notice must say what each shield held; %q missing from %q", noun, out)
 		}
