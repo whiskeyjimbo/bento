@@ -55,6 +55,7 @@ make crossbuild  # the tree still compiles for darwin and linux/arm64
 make examples    # each examples/*/verify.sh, which the root go test does not reach
 make vuln        # govulncheck over both modules; needs network
 make cover       # whole-tree coverage with -coverpkg; see "Coverage" below
+make fuzz        # every Fuzz* target for FUZZTIME each; runs nightly in CI, not in check
 ```
 
 Two of these are easy to underestimate:
