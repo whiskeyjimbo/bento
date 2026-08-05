@@ -51,7 +51,7 @@ commits that built it - none of them were ever in a release.
   like the directory lists, so `holds` in `shielded_grants`, `bento validate
   --json` and `bento profile --json` reports `history`, `private-data`,
   `persistence` or `services` where that is what is behind the shield. Consumers
-  switching on `holds` see new codes on about forty paths that previously
+  switching on `holds` see new codes on fifty-six paths that previously
   answered `credentials` - among them `~/.rhosts` and `~/.shosts`, which name the
   hosts allowed in without a password rather than holding a secret. Nothing about
   what is shielded changed.
