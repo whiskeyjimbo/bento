@@ -765,13 +765,22 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// (never at a symlink, which aborts the run). Two rules that resolve to the same
 	// real path (/var/run and /run on a merged host) collapse to one; only the
 	// identical rule is dropped, so a path shielded two different ways keeps both.
+	// denylist.Shieldable declines a relocation target that swallows a home, but it is a
+	// lexical test on the unresolved path, so GNUPGHOME=/home/u where the passwd entry
+	// reads /export/home/u passes it and lands here as a rule on the whole home. Applying
+	// the same test to the resolved paths is what closes the symlink spelling of it.
+	homes := make([]string, len(sb.homes))
+	for i, h := range sb.homes {
+		homes[i] = sb.resolve(h)
+	}
 	seen := map[denylist.Rule]bool{}
 	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
 		r.Path = sb.resolve(r.Path)
-		if r.Path == "/" {
-			// A deny dotfile that resolves to the root (a symlink to "/") would
-			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
+		if !denylist.Shieldable(r.Path, homes) {
+			// A deny dotfile that resolves to the root (a symlink to "/"), or to a home
+			// or one of its ancestors, would otherwise tmpfs or bind over the whole
+			// sandbox root or the whole grant surface; never shield it.
 			continue
 		}
 		if seen[r] {
