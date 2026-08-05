@@ -113,6 +113,31 @@ func TestAdversarialClassifyIP(t *testing.T) {
 			wantClass: ipPrivate,
 		},
 		{
+			name:      "classify_ipv6_isatap_embedded_private",
+			ipStr:     "2001:db8::5efe:10.0.0.1",
+			wantClass: ipPrivate,
+		},
+		{
+			// The u-bit-set form of the same identifier, which a host with a global v4
+			// on the tunnel uses.
+			name:      "classify_ipv6_isatap_embedded_metadata",
+			ipStr:     "2001:db8::200:5efe:169.254.169.254",
+			wantClass: ipHostReserved,
+		},
+		{
+			name:      "classify_ipv6_v4translated_embedded_private",
+			ipStr:     "::ffff:0:10.0.0.1",
+			wantClass: ipPrivate,
+		},
+		{
+			// An ordinary global address is not decoded on a partial tag: 5efe at bytes
+			// 10..11 without one of ISATAP's two defined identifiers above it stays
+			// public rather than being read as the address in its low 32 bits.
+			name:      "allow_public_ipv6_with_bare_5efe_tag",
+			ipStr:     "2607:f8b0:4005:805:1:5efe:a00:1",
+			wantClass: ipPublic,
+		},
+		{
 			name:      "allow_public_ipv4",
 			ipStr:     "8.8.8.8",
 			wantClass: ipPublic,

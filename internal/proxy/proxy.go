@@ -427,11 +427,16 @@ func classifyRFC8215(ip net.IP) ipClass {
 // RFC 8215 local-use /48 has no fixed embedding position and is handled by
 // classifyRFC8215 instead. IPv4-mapped ::ffff:a.b.c.d needs nothing here: net.IP.To4
 // answers for it, so classifyIP judges the embedded v4 directly. Operator-specific
-// prefixes, Teredo and ISATAP are left undecoded, and ISATAP could not be decoded here
-// anyway - its ::0:5efe:a.b.c.d interface identifier sits under an arbitrary /64, so no
-// prefix test can find it. Such an address classifies on its own merits, which is why
-// the site prefix a DNS64 network actually uses is learned by discovery instead (see
-// nat64.go), and why the allowlist must still permit the hostname at all.
+// prefixes and Teredo are left undecoded. Such an address classifies on its own merits,
+// which is why the site prefix a DNS64 network actually uses is learned by discovery
+// instead (see nat64.go), and why the allowlist must still permit the hostname at all.
+//
+// ISATAP and IPv4-translated are decoded on a tag rather than a prefix, which cannot be
+// exact: ISATAP's identifier sits under an arbitrary /64, so a global address whose
+// bytes 8..11 coincide with the tag decodes to an IPv4 it does not actually carry. That
+// costs nothing but an over-refusal - this is consulted only where classifyIP would
+// otherwise return ipPublic, so a decode can only make the verdict stricter, never
+// looser - and it is the same cheap direction to be wrong in that classifyRFC8215 takes.
 func embeddedIPv4(ip net.IP) net.IP {
 	ip16 := ip.To16()
 	if ip16 == nil {
@@ -449,6 +454,19 @@ func embeddedIPv4(ip net.IP) net.IP {
 	// in the last 4 bytes. ::1 and :: reach classifyIP's loopback/unspecified checks
 	// before this, so a value here is a real embedded address, not those.
 	if bytes.Equal(ip16[:12], make([]byte, 12)) {
+		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
+	}
+	// ISATAP carries the IPv4 in the last 4 bytes under an interface identifier of
+	// 0:5efe (a private v4) or 200:5efe (a global one, u-bit set) at bytes 8..11. Both
+	// defined forms are matched rather than the 5efe tag alone, so an ordinary global
+	// address collides only on all four bytes.
+	if bytes.Equal(ip16[10:12], []byte{0x5e, 0xfe}) && (ip16[8] == 0x00 || ip16[8] == 0x02) && ip16[9] == 0x00 {
+		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
+	}
+	// IPv4-translated ::ffff:0:a.b.c.d (RFC 2765) also carries it in the last 4 bytes.
+	// Its ffff sits at bytes 8..9, so unlike IPv4-mapped it is invisible to To4 and
+	// unlike ::a.b.c.d it fails the all-zero-12 test above.
+	if bytes.Equal(ip16[:10], []byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff}) {
 		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 	}
 	return nil
