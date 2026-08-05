@@ -123,6 +123,18 @@ func TestValidateRejects(t *testing.T) {
 		{"env with arrow glyph", func(p *Policy) { p.Env = []string{"OUT ← note"} }, "invalid env name"},
 		{"env starting with digit", func(p *Policy) { p.Env = []string{"1PATH"} }, "invalid env name"},
 		{"bad exec mode", func(p *Policy) { p.Exec = ExecMode("yes") }, "invalid exec mode"},
+		// The allowlist is honored only under its own mode, so under any other one these
+		// entries would read as a permission and enforce nothing.
+		{"allowlist under exec: none", func(p *Policy) { p.ExecAllow = []string{"/opt/tool"} }, "only honored under exec: allowlist"},
+		{"allowlist under exec: all", func(p *Policy) { p.Exec, p.ExecAllow = ExecAll, []string{"/opt/tool"} }, "only honored under exec: allowlist"},
+		{"allowlist mode with no entries", func(p *Policy) { p.Exec = ExecAllowlist }, "permits no subprocess at all"},
+		{"empty allowlist entry", func(p *Policy) { p.Exec, p.ExecAllow = ExecAllowlist, []string{""} }, "exec_allow[0] is empty"},
+		{"allowlist entry naming another user's home", func(p *Policy) {
+			p.Exec, p.ExecAllow = ExecAllowlist, []string{"~operator/tool"}
+		}, "exec_allow[0] \"~operator/tool\" names another user's home"},
+		{"allowlist entry with a terminal escape", func(p *Policy) {
+			p.Exec, p.ExecAllow = ExecAllowlist, []string{"/opt/\x1b]0;tool\x07"}
+		}, "not allowed in a path or argument"},
 		{"empty host", func(p *Policy) { p.Network = []NetworkRule{{Host: "", Port: "80"}} }, "empty host"},
 		{"non-canonical ip", func(p *Policy) { p.Network = []NetworkRule{{Host: "127.1", Port: "80"}} }, "canonical IP"},
 		{"integer ip", func(p *Policy) { p.Network = []NetworkRule{{Host: "2852039166", Port: "80"}} }, "canonical IP"},
@@ -258,6 +270,7 @@ func TestRequireExpandedRejectsEveryResolvedField(t *testing.T) {
 		{"write", func(p *Policy) { p.Write = []string{"~/out"} }, "write[0] \"~/out\""},
 		{"entrypoint", func(p *Policy) { p.Entrypoint = "~/run.sh" }, "entrypoint \"~/run.sh\""},
 		{"interpreter", func(p *Policy) { p.Interpreter = "~/venv/bin/python" }, "interpreter"},
+		{"exec_allow", func(p *Policy) { p.ExecAllow = []string{"~/bin/check"} }, "exec_allow[0] \"~/bin/check\""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,6 +295,19 @@ func TestRequireExpandedAcceptsResolvedPaths(t *testing.T) {
 	p.Args = []string{"~/notes.txt"}
 	if err := p.RequireExpanded(); err != nil {
 		t.Fatalf("resolved paths must pass: %v", err)
+	}
+}
+
+// The allowlist is a path-grant field, so the screens that anchor and echo the others
+// must reach it too - but only where they reach those: a non-leading tilde is an
+// ordinary filename here as much as in a read grant.
+func TestValidateAcceptsAnAllowlist(t *testing.T) {
+	p := valid()
+	p.Exec = ExecAllowlist
+	p.ExecAllow = []string{"/opt/dod/check", "./tools/~verify", "~/bin/lint"}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }
 

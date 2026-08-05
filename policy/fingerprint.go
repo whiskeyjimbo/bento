@@ -26,6 +26,12 @@ import (
 // enforcer treats the two identically. Two policies that permit the same thing but
 // spell it differently would otherwise need separate approvals.
 //
+// exec_allow is hashed for the reason the mode is, and it is the field where leaving it
+// out would be a security bug rather than an inconvenience: it names the binaries a run
+// may spawn, so two policies differing only there permit different things while sharing
+// one approval. It is sorted and emits one line per entry, so - like the argument lists
+// above - a policy that does not set it hashes exactly as it did before the field.
+//
 // The fingerprint says nothing about the *contents* of the entrypoint file: it
 // attests the policy, not the code. Swapping the script body under an approved
 // manifest still matches - by design, since the manifest governs permissions,
@@ -64,6 +70,9 @@ func (p *Policy) Fingerprint() string {
 		line("net\x00%s\x00%s", r.Host, r.Port)
 	}
 	line("exec\x00%s", p.Exec.canonical())
+	for _, e := range sortedCopy(p.ExecAllow) {
+		line("exec_allow\x00%s", e)
+	}
 	line("limits\x00%s\x00%s\x00%d", p.Limits.Memory, p.Limits.CPU, p.Limits.PIDs)
 
 	return hex.EncodeToString(h.Sum(nil))
