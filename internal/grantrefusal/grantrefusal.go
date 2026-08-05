@@ -34,6 +34,15 @@ func InsideShield(grant, shield string) error {
 	return fmt.Errorf("grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", grant, shield, shield)
 }
 
+// InsideCallerShield refuses a grant at or inside a deny path the embedding program
+// supplied. Separate from InsideShield because that sentence offers the read opt-in, and
+// there is none here: the opt-in lifts bento's own built-in shields, and an embedder's
+// deny belongs to a trust domain the manifest it runs must not be able to talk its way
+// out of.
+func InsideCallerShield(grant, shield string) error {
+	return fmt.Errorf("grant %q is inside %q, which the program running bento shields from this manifest; that shield has no opt-in - remove this grant, or take it up with whatever launched the run", grant, shield)
+}
+
 // WriteUnderReadOnlyShield refuses a write grant at or inside a DenyWrite shield
 // (~/.local/bin, ~/.bashrc, ...). Unlike the DenyAll shields there is no opt-in: the
 // content is readable already, so the only thing an opt-in could grant is the plant.

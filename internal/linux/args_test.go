@@ -600,6 +600,41 @@ func TestExtraDenyIsNotOptInable(t *testing.T) {
 	}
 }
 
+// A caller deny that lands on the same host path as a built-in shield must not be lifted
+// when the manifest opts the built-in in. Both consumers of the opt-in set match a bare
+// resolved path, so before this was closed the read grant was honored, no shield was
+// emitted, and the embedder's store was ro-bound into the sandbox with nothing said.
+func TestCallerDenyNotLiftedByBuiltinOptIn(t *testing.T) {
+	for _, tc := range []struct{ name, deny string }{
+		// The embedder names the built-in store defensively.
+		{"same path", "/home/u/.aws"},
+		// The embedder names its own store, which is a symlink onto the built-in's.
+		{"symlinked onto it", "/opt/agent/state/aws"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox("/home/u/.aws", "/home/u/.aws/credentials")
+			sb.resolve = func(p string) string {
+				if p == "/opt/agent/state/aws" {
+					return "/home/u/.aws"
+				}
+				return p
+			}
+			sb.extraDeny = []denylist.Rule{{Path: tc.deny, Deny: denylist.DenyAll, Dir: true}}
+			p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.aws"}}
+
+			_, _, err := compile(p, enforce.Process{}, sb)
+			if err == nil {
+				t.Fatal("a read grant of a caller-denied store must be refused, not honored as an opt-in")
+			}
+			// The built-in refusal offers a read opt-in; naming it here would send the
+			// author after an escape a caller deny does not have.
+			if strings.Contains(err.Error(), "opts in") {
+				t.Errorf("refusal must not offer the built-in opt-in for a caller deny: %v", err)
+			}
+		})
+	}
+}
+
 // yz3.2 must NOT widen the broad-grant carve: read: ~ without an explicit ~/.ssh grant
 // still shields ~/.ssh. This is the regression guard that the opt-in skip did not leak
 // into enclosing grants.
