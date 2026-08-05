@@ -40,8 +40,41 @@ commits that built it - none of them were ever in a release.
   `$EDITOR`). All three are write-denied, not hidden: reads stay allowed, a plant
   does not. A manifest granting write there is now refused instead of honored.
 
+- **Around eighty more shielded paths, and five relocation variables followed.**
+  The `$PATH`-resident toolchain shim directories a distro or installer puts on
+  the path (`~/go/bin`, `~/.pyenv/shims`, `~/.asdf/shims`, `~/.bun/bin`,
+  `~/.local/share/pnpm` and a dozen more) are write-denied, where a planted file
+  would otherwise run under a bare command name the user already types; so are
+  the shell plugin roots past `~/.oh-my-zsh` (`~/.zprezto`, `~/.zinit`,
+  `~/.tmux/plugins`, `~/.fzf`), the files an rc sources by name
+  (`~/.p10k.zsh`, `~/.fzf.zsh`), and `~/.config/zsh` - the conventional
+  `ZDOTDIR`, which could not be followed through the variable because a shell
+  never exports it. The VS Code forks and the JetBrains trees join
+  `~/.config/Code`, and dbus service files and GNOME Shell extensions join
+  `~/.local/share/applications` as things the session runs unprompted. Hidden
+  outright: the credential files a tool reads by default that no upstream corpus
+  lists - `~/.authinfo`, `~/.hgrc`, `~/.curlrc`, `~/.dbt/profiles.yml`,
+  `~/.config/borg/keys` and their siblings. `GOOGLE_APPLICATION_CREDENTIALS`,
+  `REGISTRY_AUTH_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `TF_CLI_CONFIG_FILE`,
+  `ANSIBLE_CONFIG`, `PGPASSFILE` and `WGETRC` now move the shield with the file
+  they point at, and a relocated credential store anchors the alias scan that
+  looks for a second readable name for it. The boundary moved inward. A write
+  grant naming one of the new write-denied trees is refused rather than honored,
+  which is the cost: `go install`, `pyenv install` and the like do not run
+  in-sandbox.
+
 ### What a Run Tells You
 
+- **`run` and `validate` say when this host's runtime directory is outside every
+  shield.** `XDG_RUNTIME_DIR` holds the container `auth.json`, the gpg-agent
+  socket, and the session bus; the shield follows it wherever it points, but not
+  when it is relative or at or above a home anchor - there only `/run` and
+  `/var/run` remain, and the rule count reads exactly like a healthy host's.
+  Only `doctor` said so, and nobody runs `doctor` before every run. A relative
+  value said it nowhere at all: it was indistinguishable from the variable being
+  unset, which shields nothing and correctly says nothing. Both now draw a note
+  before the script starts and beside validate's grants. Output only; what is
+  shielded did not change.
 - **The denial legend reaches the failing run, and names `exec:` among the
   grants.** The mapping from an errno string to the manifest field that produced
   it printed only after a clean exit - so the run where the reader was holding
