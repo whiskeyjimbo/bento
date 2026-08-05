@@ -39,7 +39,9 @@ func newValidateCmd() *cobra.Command {
 			"pass a manifest `run` refuses at its first step. --strict makes a stale or missing\n" +
 			"approval, or a manifest this host cannot start, a failure (exit non-zero), for use\n" +
 			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
-			"as `approval` and `runnable` fields and honors --strict too.\n\n" +
+			"as `approval`, `runnable` and `refused_grants` fields and honors --strict too.\n" +
+			"A grant this host refuses leaves `runnable` true - nothing is unstartable - so a\n" +
+			"gate reading the fields rather than the exit code has to check both.\n\n" +
 			"--relocatable additionally refuses a manifest whose paths do not anchor to its own\n" +
 			"directory. The approval stamp attests the manifest as written, so a manifest whose\n" +
 			"grants are all relative keeps one approval across every checkout it is copied into,\n" +
@@ -373,8 +375,8 @@ func writeRunnability(w io.Writer, r runnability) {
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
 	}
-	if n := len(r.refusals); n > 0 {
-		fmt.Fprintf(w, "grants:       NO - %d grant(s) above cannot be honored (marked REFUSED)\n", n)
+	if len(r.refusals) > 0 {
+		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
 	for _, g := range r.fileishWrites {
 		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
@@ -755,10 +757,12 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 // everything above it - which reads as confirmation that the grant right above it is safe,
 // when it is the one grant here that will not be honored at all.
 //
-// This is the only place the reason is spelled out; the verdict below counts them and
-// points here. Every refusal kind prints here for that reason, not only the shielded ones
-// the footer argument is about - a verdict that says "marked REFUSED above" has to be true
-// of all of them.
+// This is the only place the reason is spelled out; the verdict below points here rather
+// than repeating it. Every refusal kind prints here for that reason, not only the shielded
+// ones the footer argument is about - a verdict that says "marked REFUSED above" has to be
+// true of all of them. It points rather than counts because a path granted both for
+// reading and for writing is marked beside each list and is one refusal, so a count would
+// disagree with the marks.
 //
 // The sentence is run's own (grantrefusal), unwrapped: it names paths, and wrapping it to
 // the note width would break a path across lines just where the reader wants to copy it.
