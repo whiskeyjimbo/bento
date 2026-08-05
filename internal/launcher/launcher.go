@@ -467,8 +467,13 @@ func networkStdioRefusals() []error {
 	return errs
 }
 
-// refuseNetworkFD refuses one descriptor that is a socket of a family able to reach a
-// network. The families are an ALLOWLIST - only AF_UNIX passes - because a denylist
+// refuseNetworkFD refuses one descriptor that carries reach the sandbox does not grant:
+// a socket of a family able to reach a network, a directory, or a device node absent
+// from the sandbox's own /dev. The property is the same for all three - no fence bento
+// installs revokes what an already-open descriptor carries - and it is not
+// socket-specific, which is what the socket-only version of this check missed.
+//
+// The socket families are an ALLOWLIST - only AF_UNIX passes - because a denylist
 // would miss a family we did not enumerate and "no egress" must not rest on remembering
 // every wire family. Enumerating AF_INET and AF_INET6 would let an AF_PACKET descriptor -
 // raw frames on the host's wire - through the check written to stop exactly that.
@@ -507,7 +512,23 @@ func refuseNetworkFD(fd int) error {
 		}
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d could not be examined: %w", fd, err)
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
+	switch st.Mode & unix.S_IFMT {
+	case unix.S_IFSOCK:
+		// Classified below: only the socket case is opt-in-able.
+	case unix.S_IFDIR:
+		// openat(dirfd, "rel/path") resolves from the inode the descriptor names, so a
+		// directory on stdio is recursive read of a host tree that the mount namespace
+		// never covers and Landlock does not fence either - the bwrap tier's backstop
+		// restricts writes under "/" and installs no read fence at all.
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited directory; openat through it reaches a host tree outside the sandbox's mount namespace", fd)
+	case unix.S_IFBLK:
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited block device; nothing the sandbox installs revokes raw access to it", fd)
+	case unix.S_IFCHR:
+		if sandboxDevice(st.Rdev) {
+			return nil
+		}
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited character device (%d:%d) the sandbox's own /dev does not provide", fd, unix.Major(st.Rdev), unix.Minor(st.Rdev))
+	default:
 		return nil
 	}
 	domain, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
@@ -518,6 +539,35 @@ func refuseNetworkFD(fd int) error {
 		return fmt.Errorf("launcher: refusing to run - %w", &networkStdio{fd: fd, domain: domain})
 	}
 	return nil
+}
+
+// sandboxDevice reports whether a character device inherited on stdio is one the
+// sandbox's own /dev already provides, so holding it open grants nothing the target
+// could not get by path anyway. That is the whole test: an inherited descriptor is a
+// finding only when it reaches something the namespace does not.
+//
+// The set is bwrap's --dev tmpfs (args.go's pseudoFSFlags) - null, zero, full, random,
+// urandom, the tty devices, and the fresh devpts it mounts over /dev/pts. Terminals are
+// the reason this is not a blanket refusal: every interactive `bento run` has a pty on
+// 0/1/2. What a host pty still permits (TIOCSTI-style injection into the user's own
+// terminal) is a residual of running interactively at all, not something this layer can
+// take away.
+//
+// Major 1 is enumerated by minor rather than allowed wholesale: /dev/mem (1:1),
+// /dev/kmem (1:2) and /dev/port (1:4) share it with the harmless nodes and are direct
+// physical-memory channels. Everything else - /dev/kvm, /dev/net/tun, a raw disk - is
+// absent from the sandbox's /dev and refused.
+func sandboxDevice(rdev uint64) bool {
+	major, minor := unix.Major(rdev), unix.Minor(rdev)
+	switch major {
+	case 1: // mem: null, zero, full, random, urandom
+		return minor == 3 || minor == 5 || minor == 7 || minor == 8 || minor == 9
+	case 4, 5: // tty, console, ptmx
+		return true
+	case 136, 137, 138, 139, 140, 141, 142, 143: // devpts slaves
+		return true
+	}
+	return false
 }
 
 // networkStdio is the one refusal above that an embedder can opt out of, so it is
