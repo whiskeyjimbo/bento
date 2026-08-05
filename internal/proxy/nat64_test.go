@@ -179,6 +179,14 @@ func TestNAT64InconclusiveDiscoveryFailsClosed(t *testing.T) {
 			if got := p.classify(net.ParseIP("64:ff9b::808:808")); got != ipPublic {
 				t.Errorf("well-known-prefix 8.8.8.8 classified %d, want ipPublic (%d)", got, ipPublic)
 			}
+			// An ISATAP identifier is matched on a tag under an arbitrary /64, so a
+			// global address can carry one by coincidence. That is a guess, not a decode,
+			// and the demotion here rests on nothing being able to name what the address
+			// wraps - so it must not count as an answer the way the prefix decodes above
+			// do, or a coincidence would unlock the fail-closed path.
+			if got := p.classify(net.ParseIP("2001:db8::200:5efe:8.8.8.8")); got != ipPrivate {
+				t.Errorf("ISATAP-tagged IPv6 classified %d under inconclusive discovery, want ipPrivate (%d)", got, ipPrivate)
+			}
 		})
 	}
 }
