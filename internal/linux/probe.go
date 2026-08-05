@@ -256,18 +256,20 @@ func truncateResidual(truncateRestricted bool) string {
 }
 
 // ioctlDevResidual is the degraded-tier disclosure clause for a kernel whose Landlock
-// ABI (< 5, i.e. before 6.10) cannot restrict ioctl on device files. Landlock leaves an
-// unhandled right unrestricted, so every ioctl on every granted device node is available
-// - and this tier grants /dev/urandom, /dev/random, /dev/zero and /dev/null to every run.
-// seccomp's terminal-injection block covers the tty ioctls that matter most but not the
-// rest, so the gap is disclosed rather than treated as closed. Empty from 6.10 on.
+// ABI (< 5, i.e. before 6.10) cannot restrict ioctl on device files. From 6.10 the tier
+// grants the right on its own grants, so a granted device node is ioctl-able either way
+// and the disclosure is about the rest: Landlock leaves an unhandled right unrestricted,
+// so below 5 an ioctl on any device node the target can open is available, and with no
+// mount namespace that is the host's whole /dev. seccomp's terminal-injection block
+// covers the tty ioctls that matter most but not the rest, so the gap is disclosed rather
+// than treated as closed. Empty from 6.10 on.
 func ioctlDevResidual(ioctlDevRestricted bool) string {
 	if ioctlDevRestricted {
 		return ""
 	}
 	return ". This kernel's Landlock ABI is also below 5, which cannot restrict ioctl on device files, so " +
-		"any ioctl on a granted device node (/dev/urandom, /dev/random, /dev/zero, /dev/null) is available " +
-		"beyond the terminal-injection set seccomp blocks"
+		"any ioctl on any device node the target can open - the host's whole /dev, since this tier has no " +
+		"mount namespace - is available beyond the terminal-injection set seccomp blocks"
 }
 
 // unixSocketClause is the unix-socket half of the degraded tier's "no network namespace"
@@ -425,16 +427,25 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // containerUsernsRemedy is the container half of every userns-blocked diagnosis, and
 // is carried by all of them rather than gated on detecting a container: podman, k8s and
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
-// clause is the one a detection miss would silently deny it. It names both flags
+// clause is the one a detection miss would silently deny it. It names the first two flags
 // because the refusal cannot tell them apart - docker's default seccomp profile blocks
 // unshare(CLONE_NEWUSER) and its AppArmor profile restricts the namespace, and either
 // alone produces the same bwrap message. The host remedies the diagnoses lead with are
 // a sysctl a CI engineer usually cannot set; these are the ones they can.
+//
+// The third is named though it is blocking nothing yet, and says so: docker also masks
+// paths under /proc, so a container that lifts the first two reaches the namespace and
+// fails on the mount instead - the "Can't mount proc" branch below, one build-and-run
+// cycle later. The reader here is fixing a container image and the image needs all
+// three, which is what the README's container section already lists together.
 // It closes the sentence with a period, like the sysctl diagnoses it extends, so
 // joinReason's trailing-period trim still leaves a clean continuation.
 const containerUsernsRemedy = " If bento is running inside a container, the host sysctl may be out of " +
 	"reach and the container runtime's own policy is blocking the namespace too; with docker, " +
-	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it."
+	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it. Lifting those " +
+	"two exposes a third restriction rather than removing it, so grant --security-opt " +
+	"systempaths=unconfined alongside them: docker masks paths under /proc that the sandbox's " +
+	"root filesystem has to mount once the namespace is granted."
 
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string

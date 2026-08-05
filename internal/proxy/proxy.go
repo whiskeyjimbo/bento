@@ -17,6 +17,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,19 @@ const (
 	// CONNECT was read - so it carries no host or port. It is reported so a run that
 	// floods the proxy is not counted as one that never touched the network.
 	Refused Decision = "refused"
+	// GateDenied marks a connection the static allowlist did not permit and a gatekeeper,
+	// consulted about it, refused. It is the negative half of AdmittedByGate and is
+	// distinct from Denied for the same reason: the operator action differs. A Denied
+	// destination is fixed by naming it in the manifest; a GateDenied one was named to a
+	// supervisor who said no, which under the prompt-on-every-host mode (an empty
+	// network: block and a gate) is every refusal there is.
+	GateDenied Decision = "gate-deny"
+	// Untunneled marks a request the proxy refused because it was not a CONNECT: the
+	// shape a client sends for plain http:// through a proxy. It is distinct from Denied
+	// because no rule can fix it - the destination may be granted and still never carry
+	// traffic - and distinct from a bare parse failure because it names the destination
+	// the request line addressed.
+	Untunneled Decision = "untunneled"
 	// GuardBlocked marks a connection the allowlist (or a gate) permitted by name but
 	// the upstream guard then refused, because the name resolved to an address the
 	// sandbox must not reach. It is distinct from Denied because the two call for
@@ -353,6 +367,9 @@ func classifyIP(ip net.IP) ipClass {
 	if embedded := embeddedIPv4(ip); embedded != nil {
 		return classifyIP(embedded)
 	}
+	if embedded := isatapIPv4(ip); embedded != nil {
+		return classifyIP(embedded)
+	}
 	return ipPublic
 }
 
@@ -411,9 +428,18 @@ func classifyRFC8215(ip net.IP) ipClass {
 // embeddedIPv4 returns the IPv4 carried by an IPv6 transition address, or nil.
 // It covers the NAT64 well-known prefix 64:ff9b::/96 and 6to4 (2002::/16). The
 // RFC 8215 local-use /48 has no fixed embedding position and is handled by
-// classifyRFC8215 instead. Operator-specific prefixes and Teredo are not decoded;
-// the site prefix a DNS64 network actually uses is learned by discovery instead
-// (see nat64.go), and the allowlist must still permit the hostname at all.
+// classifyRFC8215 instead. IPv4-mapped ::ffff:a.b.c.d needs nothing here: net.IP.To4
+// answers for it, so classifyIP judges the embedded v4 directly. Operator-specific
+// prefixes, Teredo and ISATAP are left undecoded here. Such an address classifies on
+// its own merits, which is why the site prefix a DNS64 network actually uses is learned
+// by discovery instead (see nat64.go), and why the allowlist must still permit the
+// hostname at all.
+//
+// Every decode here is keyed on a fixed prefix, so a non-nil answer names the IPv4 the
+// address really carries. nat64.go's inconclusive-discovery demotion depends on exactly
+// that: it reads a nil from here as "nothing can tell what this wraps" and refuses
+// accordingly, which a guess would silently unlock. isatapIPv4 is kept separate for
+// that reason.
 func embeddedIPv4(ip net.IP) net.IP {
 	ip16 := ip.To16()
 	if ip16 == nil {
@@ -433,15 +459,72 @@ func embeddedIPv4(ip net.IP) net.IP {
 	if bytes.Equal(ip16[:12], make([]byte, 12)) {
 		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 	}
+	// IPv4-translated ::ffff:0:a.b.c.d (RFC 2765) also carries it in the last 4 bytes.
+	// Its ffff sits at bytes 8..9, so unlike IPv4-mapped it is invisible to To4 and
+	// unlike ::a.b.c.d it fails the all-zero-12 test above.
+	if bytes.Equal(ip16[:10], []byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff}) {
+		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
+	}
 	return nil
+}
+
+// isatapIPv4 returns the IPv4 an ISATAP address carries, or nil. Its interface
+// identifier - 0:5efe for a private v4, 200:5efe for a global one (u-bit set) - sits at
+// bytes 8..11 under an ARBITRARY /64, so unlike everything in embeddedIPv4 this is a tag
+// match and not a prefix test: an ordinary global address whose bytes 8..11 coincide
+// decodes to an IPv4 it does not carry. Both defined identifiers are matched rather than
+// the 5efe tag alone, so a coincidence has to run to all four bytes.
+//
+// That inexactness is why it is separate. classifyIP consults it only at the fallthrough
+// where the verdict would otherwise be ipPublic, so a wrong decode can only refuse an
+// address that should have passed - the cheap direction, the one classifyRFC8215 already
+// takes. Anywhere a nil is read as proof that nothing can name the wrapped address (the
+// inconclusive path in nat64.go), a guess would push the other way, so it must not be
+// consulted there.
+func isatapIPv4(ip net.IP) net.IP {
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return nil
+	}
+	if !bytes.Equal(ip16[10:12], []byte{0x5e, 0xfe}) || ip16[9] != 0x00 || (ip16[8] != 0x00 && ip16[8] != 0x02) {
+		return nil
+	}
+	return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 }
 
 // maxConcurrent bounds how many tunnels the proxy handles at once. It caps the
 // host-side goroutines and file descriptors untrusted code can pin by opening
 // connections in a loop; the cgroup limits confine the sandbox, but not this
-// host process. The limit is generous enough that no legitimate script reaches
-// it; a script that does is refused, not allowed to exhaust the host.
+// host process. The limit is generous enough that no legitimate script reaches it; a
+// script that does is refused rather than served. What that bounds is BENTO's own
+// contribution - nothing here sets an rlimit or otherwise speaks for the host, which
+// can still hit fd exhaustion from processes bento knows nothing about. Accept's own
+// retry below is what keeps that from ending the run's egress.
 const maxConcurrent = 512
+
+// Accept retry bounds after a recoverable error: start short and double to the ceiling,
+// so a condition that clears in milliseconds costs milliseconds while one that persists
+// does not spin.
+const (
+	acceptRetryStart = 5 * time.Millisecond
+	acceptRetryMax   = time.Second
+)
+
+// recoverableAccept reports whether an Accept error is a transient condition the listener
+// survives. ENFILE and EMFILE are fd exhaustion - system-wide or this process's - which
+// processes outside bento cause and which clears on its own; ECONNABORTED is a client
+// that went away between SYN and accept. net.ErrClosed is deliberately excluded: the
+// closer goroutine uses exactly that to end the run, so retrying it would spin through
+// teardown. Errors are matched by errno rather than through net.Error.Temporary, which is
+// deprecated and reports true for cases (a deadline) this must not retry blindly.
+func recoverableAccept(err error) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EMFILE) ||
+		errors.Is(err, syscall.ENFILE)
+}
 
 // Serve accepts connections on l and enforces the allowlist on each until ctx is
 // cancelled or l is closed. It returns when l stops accepting.
@@ -470,9 +553,34 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 		<-ctx.Done()
 		l.Close()
 	}()
+	retryDelay := time.Duration(0)
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			// A recoverable error is the HOST's condition, not this run's, and the fence
+			// must outlive it: returning would leave the socket still bind-mounted into the
+			// sandbox with nothing serving it, so every later CONNECT meets a dead socket
+			// instead of an allowlist decision. A run degraded that way for its whole
+			// remaining lifetime is strictly worse than a pause of milliseconds, which is
+			// why this is a retry and not a report.
+			if ctx.Err() == nil && recoverableAccept(err) {
+				if retryDelay == 0 {
+					retryDelay = acceptRetryStart
+				} else {
+					retryDelay = min(retryDelay*2, acceptRetryMax)
+				}
+				// The wait is on ctx as well as the timer: a backoff can straddle teardown,
+				// and a run that ends mid-delay must stop accepting now rather than serve out
+				// the delay first. The next Accept then meets the closed listener and takes
+				// the terminal path below.
+				t := time.NewTimer(retryDelay)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+				case <-t.C:
+				}
+				continue
+			}
 			// Whether the run had already ended is read HERE, not after the drain: an
 			// open tunnel holds wg.Wait until run teardown, so a listener that died on
 			// its own at minute one would find ctx cancelled by the time the last
@@ -485,6 +593,9 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return err
 		}
+		// The listener is healthy again, so the next transient error starts its backoff
+		// from the bottom rather than inheriting an old ceiling.
+		retryDelay = 0
 		select {
 		case sem <- struct{}{}:
 			wg.Go(func() {
@@ -530,6 +641,14 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	client.SetReadDeadline(time.Now().Add(connectTimeout))
 	host, port, br, err := readConnect(client)
 	if err != nil {
+		// A non-CONNECT request that named its destination is reported before the refuse
+		// branch below, so profiling records it too. Without this the destination is lost
+		// entirely: the client sees a 400 that names no policy, and a manifest rule can
+		// grant the host and port while nothing ever tunnels to them.
+		var untunneled *untunneledError
+		if errors.As(err, &untunneled) {
+			p.report(Untunneled, untunneled.host, untunneled.port)
+		}
 		writeStatus(client, "400 Bad Request", err.Error())
 		return
 	}
@@ -549,10 +668,24 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	admittedByGate := false
 	if !policy.Allows(p.rules, host, port) {
 		if !p.callGate(ctx, host, port) {
-			p.report(Denied, host, port)
-			// The body is plaintext so it surfaces in the script's own error output,
-			// so a curl/requests user sees exactly which host was refused, not a blank
-			// failure.
+			// Which of the two refused is recorded, because the remedy differs and only
+			// this frame knows: downstream sees one destination and one verdict. A gate
+			// that panicked is reported here too - it was consulted and did not admit,
+			// which is what the report claims and all it claims.
+			decision := Denied
+			if p.gate != nil {
+				decision = GateDenied
+			}
+			p.report(decision, host, port)
+			// The body is plaintext so it surfaces in the script's own error output, so a
+			// curl/requests user sees exactly which host was refused, not a blank failure.
+			// It is the SAME body either way, and deliberately says only what the allowlist
+			// did: naming a gate would tell a target whose every request is refused that a
+			// human is in the loop, which it could otherwise learn only by having some
+			// request admitted - and that is what it wants to know before trying to fatigue
+			// them into a yes. The gate is consulted only after the allowlist misses, so
+			// this text is true of both. The distinction the operator needs survives in the
+			// decision above, host-side, where the target cannot read it.
 			writeStatus(client, "403 Forbidden",
 				fmt.Sprintf("bento denied egress to %s:%s (not in the manifest's network allowlist)", host, port))
 			return
@@ -660,7 +793,10 @@ const maxRequestBytes = 64 * 1024
 
 // readConnect parses a single `CONNECT host:port HTTP/1.1` request and drains its
 // headers. Only CONNECT is accepted: this proxy tunnels TLS, it does not relay
-// plaintext HTTP, so there is nothing to inspect or rewrite in a request body.
+// plaintext HTTP, so there is nothing to inspect or rewrite in a request body. A
+// non-CONNECT request that named a destination is refused through untunneledError,
+// which carries that destination so the refusal can be reported rather than read as a
+// parse failure.
 // It returns the buffered reader so the caller can keep reading the client from
 // it: bytes pipelined after the headers are already buffered here.
 func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
@@ -672,6 +808,11 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 2 || strings.ToUpper(fields[0]) != "CONNECT" {
+		if len(fields) >= 2 {
+			if host, port, ok := absoluteURITarget(fields[1]); ok {
+				return "", "", nil, &untunneledError{host: host, port: port}
+			}
+		}
 		return "", "", nil, fmt.Errorf("expected a CONNECT request")
 	}
 	host, port, err = net.SplitHostPort(fields[1])
@@ -728,6 +869,56 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// Request parsed; lift the cap so the tunnel body copy through br is unbounded.
 	lr.N = math.MaxInt64
 	return host, port, br, nil
+}
+
+// untunneledError refuses a request that is not a CONNECT but named the destination it
+// wanted, which is what a client sends for plain http:// through a proxy. The proxy
+// relays no plaintext HTTP (see readConnect), so the destination is recorded and refused
+// rather than forwarded, and the text says which of the two remedies applies - the
+// client's scheme, or the client's proxy mode - because no manifest edit is one of them.
+type untunneledError struct{ host, port string }
+
+func (e *untunneledError) Error() string {
+	return fmt.Sprintf("bento's egress proxy tunnels CONNECT only, so the plain-HTTP request to %s:%s was refused; use https, or have the client issue CONNECT", e.host, e.port)
+}
+
+// absoluteURITarget returns the destination a non-CONNECT request line addressed, when
+// that line carries the absolute URI a client sends through a proxy. It is held to
+// exactly the screen readConnect applies to a CONNECT target, because it reaches exactly
+// the same places: report(), the run's recorded destinations, and a host-side render of
+// them. A target that fails the screen is not reported with a destination at all rather
+// than carrying an unscreened one - the refusal happens either way.
+func absoluteURITarget(target string) (host, port string, ok bool) {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		return "", "", false
+	}
+	// Only the two schemes a proxy is asked to carry get a default port. Anything else
+	// is not a destination this proxy would have tunneled even in principle, so it is
+	// refused without a named destination rather than guessed at.
+	switch u.Scheme {
+	case "http":
+		port = "80"
+	case "https":
+		port = "443"
+	default:
+		return "", "", false
+	}
+	if p := u.Port(); p != "" {
+		port = p
+	}
+	// Strip the root label on the CONNECT path's precedent: one spelling at every layer,
+	// so a destination reported here matches the rule a user would write for it.
+	host = strings.TrimSuffix(u.Hostname(), ".")
+	if host == "" || !canonicalPort(port) {
+		return "", "", false
+	}
+	for _, s := range []string{host, port} {
+		if _, unsafe := policy.FirstUnsafeRune(s); unsafe {
+			return "", "", false
+		}
+	}
+	return host, port, true
 }
 
 // canonicalPort reports whether s spells a port exactly as the dialer will

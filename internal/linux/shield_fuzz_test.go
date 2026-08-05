@@ -137,7 +137,8 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 	sb := testSandbox(existing...)
 
 	reads := []string{g}
-	optInLit, optInRes := explicitShieldOptIns(sb, reads)
+	optIns := explicitShieldOptIns(sb, reads)
+	optInLit, optInRes := optInPaths(optIns), optInTargets(optIns)
 
 	// Coupling 1: the opt-in set matches independent ground truth. resolve is
 	// identity here, so literal and resolved are equal and both must be exactly [g]
@@ -152,7 +153,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 
 	// Coupling 2: the accept/refuse verdict matches ground truth, so a stricter
 	// future check cannot silently delete the assertion regions below.
-	err := checkNotShielded(sb, reads, optInRes)
+	err := checkReadNotShielded(sb, reads, optInRes)
 	wantRefused := g == fuzzRefusedGrant
 	if (err != nil) != wantRefused {
 		t.Fatalf("grant %q: refused=%v (want %v): %v", g, err != nil, wantRefused, err)

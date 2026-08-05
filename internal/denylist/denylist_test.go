@@ -192,6 +192,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.nanorc",              // nano rc (include/syntax)
 		"/home/u/.plan",                // finger info: readable, tamper-protected
 		"/home/u/.Xdefaults",           // xrdb resources read at login
+		"/home/u/.bash_completion",     // sourced by the distro bash.bashrc for every interactive shell
+		"/home/u/.selected_editor",     // sensible-editor sources it and runs $SELECTED_EDITOR
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -207,19 +209,20 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// Login-persistence directories: readable, but no new entry may be created,
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
-		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
-		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
-		"/home/u/.config/nushell",           // nushell config and autoloads
-		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
-		"/home/u/.config/nvim",              // neovim config tree
-		"/home/u/.emacs.d",                  // emacs init and site-lisp
-		"/home/u/.config/environment.d",     // systemd user-session env
-		"/home/u/.local/share/direnv/allow", // direnv authorization records
-		"/home/u/.config/Code",              // VS Code User settings (git.path etc.)
-		"/home/u/.vscode",                   // VS Code extensions dir
-		"/home/u/.config/mpv",               // mpv autoloaded scripts
-		"/home/u/.xmonad",                   // xmonad.hs compiled+run
-		"/home/u/.local/lib",                // user libraries imported at runtime
+		"/home/u/.bashrc.d",                                // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
+		"/home/u/.config/fish",                             // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
+		"/home/u/.config/nushell",                          // nushell config and autoloads
+		"/home/u/.vim",                                     // auto-sourced plugin/autoload dirs
+		"/home/u/.config/nvim",                             // neovim config tree
+		"/home/u/.emacs.d",                                 // emacs init and site-lisp
+		"/home/u/.config/environment.d",                    // systemd user-session env
+		"/home/u/.local/share/direnv/allow",                // direnv authorization records
+		"/home/u/.config/Code",                             // VS Code User settings (git.path etc.)
+		"/home/u/.vscode",                                  // VS Code extensions dir
+		"/home/u/.config/mpv",                              // mpv autoloaded scripts
+		"/home/u/.xmonad",                                  // xmonad.hs compiled+run
+		"/home/u/.local/lib",                               // user libraries imported at runtime
+		"/home/u/.local/share/bash-completion/completions", // sourced on the first tab-complete of that command
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
@@ -355,6 +358,65 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	}
 	if !byPath["/home/u/.password-store"] {
 		t.Error("the default password store must stay shielded")
+	}
+}
+
+// A relocation variable accepts any absolute path, so a shield can land on something the
+// run then needs and fail with an error naming only the target. Nothing can reconstruct
+// the cause from the path afterwards, so every family that follows a variable must record
+// which one it followed - and a rule at its default location must claim no variable, or
+// the report would blame the environment for a shield bento would have applied anyway.
+func TestHomeRecordsWhichVariableRelocatedAShield(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/secrets/gnupg")          // dirEnvs
+	t.Setenv("KUBECONFIG", "/secrets/kubeconfig")    // fileEnvs, colon-split
+	t.Setenv("HISTFILE", "/secrets/history")         // fileDenyAllEnvs
+	t.Setenv("ZDOTDIR", "/secrets/zsh")              // startup group
+	t.Setenv("PIP_CONFIG_FILE", "/secrets/pip.conf") // single-default write shield
+	t.Setenv("MAILCAPS", "/secrets/mailcap")         // colon-split write shield
+	t.Setenv("CARGO_HOME", "/secrets/cargo")         // mixed severities
+	t.Setenv("XDG_CONFIG_HOME", "/secrets/xdg")      // whole-base expansion
+
+	bySource := map[string]string{}
+	for _, r := range Home("/home/u") {
+		bySource[r.Path] = r.Source
+	}
+	for path, want := range map[string]string{
+		"/secrets/gnupg":             "GNUPGHOME",
+		"/secrets/kubeconfig":        "KUBECONFIG",
+		"/secrets/history":           "HISTFILE",
+		"/secrets/zsh/.zshrc":        "ZDOTDIR",
+		"/secrets/pip.conf":          "PIP_CONFIG_FILE",
+		"/secrets/mailcap":           "MAILCAPS",
+		"/secrets/cargo/credentials": "CARGO_HOME",
+		"/secrets/xdg/gh":            "XDG_CONFIG_HOME",
+		"/home/u/.gnupg":             "",
+		"/home/u/.bash_history":      "",
+		"/home/u/.config/gh":         "",
+	} {
+		got, ok := bySource[path]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", path)
+			continue
+		}
+		if got != want {
+			t.Errorf("shield at %q credits %q, want %q", path, got, want)
+		}
+	}
+}
+
+// XDG_RUNTIME_DIR is the one relocation outside Home, and it breaks a run the same way:
+// the socket directory follows the variable, so a value pointing somewhere the script
+// needs blanks it with nothing naming the cause.
+func TestRuntimeRecordsTheRelocatingVariable(t *testing.T) {
+	rules := Runtime("/custom/run", "/home/u")
+	for _, r := range rules {
+		want := ""
+		if r.Path == "/custom/run" {
+			want = "XDG_RUNTIME_DIR"
+		}
+		if r.Source != want {
+			t.Errorf("shield at %q credits %q, want %q", r.Path, r.Source, want)
+		}
 	}
 }
 
@@ -865,6 +927,10 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		"/home/u/.local/bin",     // on $PATH via the distro default profile
 		"/home/u/bin",            // same
 		"/home/u/.gradle/init.d", // every .gradle here runs before each build
+		// bento's own approval journal. A forged entry makes the re-approval diff lie about
+		// which grant is new, and the entry is trusted precisely because only this host's
+		// approve writes it - so a sandboxed run must not be able to author one.
+		"/home/u/.local/state/bento",
 	} {
 		r, ok := byPath[p]
 		if !ok {
@@ -1149,5 +1215,105 @@ func TestRuntimeFollowsRelocatedRuntimeDir(t *testing.T) {
 		if got := len(Runtime(dir, "/home/u")); got != 2 {
 			t.Errorf("Runtime(%q) emitted %d rules, want only the 2 base rules - it cannot shield the grant surface itself", dir, got)
 		}
+	}
+}
+
+// The journal must stay shielded under a relocated state home too: XDG_STATE_HOME is in
+// profile's discovery set, so a sandboxed script can see where the journal was pointed, and
+// the default location is guessable without any passthrough. homeLocations expands the
+// home-relative entry to both, which is the whole reason the entry is spelled that way.
+func TestApprovalJournalIsShieldedUnderARelocatedStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/home/u/state")
+	byPath := make(map[string]Rule)
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{"/home/u/.local/state/bento", "/home/u/state/bento"} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s is not shielded, so a sandboxed run could forge an approval record there", p)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s must be a DenyWrite dir shield, got %+v", p, r)
+		}
+	}
+}
+
+// Every DenyAll rule has to say what it hides: the callouts that ask a reviewer to
+// approve lifting a shield print Holds, and an unclassified rule would fall back to the
+// vague wording for a store that has a name. A new entry added to a list nobody wired
+// into dirGroups fails here rather than in a user-facing sentence.
+func TestDenyAllRulesAreClassified(t *testing.T) {
+	// The relocations are exercised too: each emits its own rule, and those are the sites
+	// where a Holds is easiest to leave off.
+	t.Setenv("GNUPGHOME", "/srv/keys")
+	t.Setenv("KUBECONFIG", "/srv/kube.yaml")
+	t.Setenv("HISTFILE", "/srv/history")
+	t.Setenv("CARGO_HOME", "/srv/cargo")
+	rules := slices.Concat(Home("/home/u"), Runtime("/tmp/rt", "/home/u"))
+	for _, r := range rules {
+		if r.Deny == DenyAll && r.Holds == HoldsUnknown {
+			t.Errorf("%q is hidden but unclassified; add it to a list dirGroups names", r.Path)
+		}
+	}
+}
+
+// The buckets exist so a callout can name what it exposes. A history store described as
+// a credential store is the drain this classification exists to stop, so the examples
+// that motivated it are pinned.
+func TestHomeShieldClassification(t *testing.T) {
+	byPath := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = r
+	}
+	for path, want := range map[string]Holds{
+		"/home/u/.ssh":              HoldsCredentials,
+		"/home/u/.netrc":            HoldsCredentials,
+		"/home/u/.mozilla":          HoldsPrivateData,
+		"/home/u/.local/state/nvim": HoldsHistory,
+		"/home/u/.config/autostart": HoldsPersistence,
+		"/home/u/.bash_history":     HoldsHistory,
+		"/home/u/.viminfo":          HoldsHistory,
+		"/home/u/.xinitrc":          HoldsPersistence,
+		"/home/u/postponed":         HoldsPrivateData,
+		"/home/u/.zuluCrypt-socket": HoldsServices,
+		"/home/u/.rhosts":           HoldsPersistence,
+		"/home/u/.config/kwalletrc": HoldsPrivateData,
+	} {
+		if got := byPath[path]; got.Holds != want {
+			t.Errorf("%s: Holds = %v (%q), want %v", path, got.Holds, got.Holds.Noun(), want)
+		}
+	}
+	if got := Runtime("/tmp/rt", "/home/u")[0]; got.Holds != HoldsServices {
+		t.Errorf("%s: Holds = %v, want HoldsServices", got.Path, got.Holds)
+	}
+}
+
+// A store's classification is a property of the store, not of how it was reached: a
+// relocation env var moves where the rule points and must not change what bento says is
+// behind it. Exporting LESSHISTFILE used to turn the same history file from a credential
+// store into a history store.
+func TestRelocationKeepsTheSameClassification(t *testing.T) {
+	for _, tc := range []struct{ env, def, relocated string }{
+		{"LESSHISTFILE", "/home/u/.lesshst", "/srv/lesshst"},
+		{"MYSQL_HISTFILE", "/home/u/.mysql_history", "/srv/mysql_history"},
+		{"NPM_CONFIG_USERCONFIG", "/home/u/.npmrc", "/srv/npmrc"},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv(tc.env, tc.relocated)
+			var def, moved Rule
+			for _, r := range Home("/home/u") {
+				switch r.Path {
+				case tc.def:
+					def = r
+				case tc.relocated:
+					moved = r
+				}
+			}
+			if def.Holds != moved.Holds {
+				t.Errorf("%s: default %q holds %v, relocated %q holds %v", tc.env, tc.def, def.Holds, tc.relocated, moved.Holds)
+			}
+		})
 	}
 }

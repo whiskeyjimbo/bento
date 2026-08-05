@@ -27,7 +27,8 @@ const (
 // requests that inject into a terminal, TIOCSTI and TIOCLINUX, with EPERM. It is a
 // denylist on the ioctl request (every other ioctl passes) because only these two
 // forge terminal input; a broad ioctl block would break ordinary terminal use
-// (window size, line discipline). A wrong architecture is killed, as is any x32-ABI
+// (window size, line discipline). A wrong architecture is killed (whole-process from
+// 4.14, thread-only below it - see seccompRetKillProcess), as is any x32-ABI
 // ioctl: x32 shares the amd64 audit arch but tags its syscall numbers, so an x32
 // ioctl would miss the nr equality check and slip past the request filter.
 func terminalInjectionFilter() []unix.SockFilter {
@@ -69,8 +70,8 @@ func terminalInjectionFilter() []unix.SockFilter {
 // TIOCSTI has nothing to inject into; the degraded tier execs the target directly and
 // it inherits the parent's terminal on stdin, so the block is the substitute. Landlock
 // would also cover this via its ioctl_dev right, but only at ABI 5 (kernel 6.10) and
-// above - far newer than the kernels this tier exists to serve - so the guarantee
-// cannot rest on it.
+// above. The tier is entered for a missing bwrap or unprivileged userns, not for an old
+// kernel, so its hosts span both sides of that line and the guarantee cannot rest on it.
 func BlockTerminalInjection() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)

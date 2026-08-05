@@ -2,10 +2,10 @@ package audit
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
@@ -261,6 +261,25 @@ func TestDiffCoverageAndClass(t *testing.T) {
 	}
 	if _, ok := byPath["/HOME/.ssh/authorized_keys"]; ok {
 		t.Error("a file under a shielded dir must not be reported as a gap")
+	}
+}
+
+// Moving an entry from a directory list to the flat file list is a one-line diff - the
+// same string, a different loop - that shrinks the shield from the whole tree to one
+// inode. denylist.Covers answers the exact path match either way, which is right where it
+// enforces and blind here, so the gate has to compare shapes.
+func TestDiffReportsADirectoryShieldNarrowedToAFile(t *testing.T) {
+	candidates := []Candidate{{Path: "/HOME/.gist", Deny: denylist.DenyAll, Dir: true}}
+
+	tree := []denylist.Rule{{Path: "/HOME/.gist", Deny: denylist.DenyAll, Dir: true}}
+	if gaps := Diff(candidates, tree); len(gaps) != 0 {
+		t.Errorf("a directory rule covers a directory-shaped candidate; got %+v", gaps)
+	}
+
+	inode := []denylist.Rule{{Path: "/HOME/.gist", Deny: denylist.DenyAll}}
+	gaps := Diff(candidates, inode)
+	if len(gaps) != 1 || !gaps[0].Narrowed || gaps[0].Weaker {
+		t.Errorf("a file rule under a directory-shaped candidate must report Narrowed; got %+v", gaps)
 	}
 }
 
@@ -547,6 +566,7 @@ func TestParseAppArmor(t *testing.T) {
   audit deny @{HOME}/.config/ w,
   deny @{HOME}/.{,z}log{in,out} mrk,
   audit deny owner @{HOME}/.ssh/{,**} mrwkl,
+  owner deny @{HOME}/.gnupg/{,**} mrwkl,
   audit deny @{run}/user/[0-9]*/keyring** mrwkl,
   deny /etc/shadow r,
   allow @{HOME}/.cache/{,**} rw,
@@ -581,6 +601,11 @@ func TestParseAppArmor(t *testing.T) {
 	if c := got["/HOME/bin"]; c.Deny != denylist.DenyWrite {
 		t.Errorf("wl modes are DenyWrite; got %v", c.Deny)
 	}
+	// Either qualifier can sit on either side of "deny". Matching only one side silently
+	// dropped the whole rule, so the path read as one upstream does not shield.
+	if _, ok := got["/HOME/.gnupg"]; !ok {
+		t.Errorf("a qualifier preceding deny must not drop the rule; got %v", keysOf(got))
+	}
 	if c := got["/HOME/.ssh"]; c.Deny != denylist.DenyAll {
 		t.Errorf("mrwkl modes hide the content, so DenyAll; got %v", c.Deny)
 	}
@@ -612,6 +637,42 @@ func TestParseAppArmorSubstitutesBeforeExpanding(t *testing.T) {
 	}
 }
 
+// foo{,/**} expands to the bare path and then the subtree, both trimming to one path. The
+// dedup must not keep the file branch's Dir=false: the diff reads Dir to decide whether
+// bento's shield was narrowed, so a tree candidate recorded as a file reports no narrowing
+// where there is one.
+func TestParseAppArmorKeepsTheTreeBranchOfADuplicatedPath(t *testing.T) {
+	for name, line := range map[string]string{
+		"file branch first": "  deny @{HOME}/.ssh{,/**} mrwkl,\n",
+		"tree branch first": "  deny @{HOME}/.ssh{/**,} mrwkl,\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ParseAppArmor(line, "/HOME", "/run/user/1000")
+			if len(got) != 1 || got[0].Path != "/HOME/.ssh" || !got[0].Dir {
+				t.Errorf("ParseAppArmor = %+v, want exactly /HOME/.ssh as a directory", got)
+			}
+		})
+	}
+}
+
+// seen dedups across lines too, where the modes CAN differ. Keeping whichever line came
+// first makes the reference profile's claim about a path depend on its order in the file:
+// the weaker Deny hides a gap from the Weaker check the same way the file branch hid one
+// from the narrowing check.
+func TestParseAppArmorMergesTheStrongestClaimAcrossLines(t *testing.T) {
+	for name, profile := range map[string]string{
+		"write first": "  deny @{HOME}/.foo w,\n  deny @{HOME}/.foo{,/**} mrwkl,\n",
+		"read first":  "  deny @{HOME}/.foo{,/**} mrwkl,\n  deny @{HOME}/.foo w,\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ParseAppArmor(profile, "/HOME", "/run/user/1000")
+			if len(got) != 1 || got[0].Deny != denylist.DenyAll || !got[0].Dir {
+				t.Errorf("ParseAppArmor = %+v, want one DenyAll directory candidate for /HOME/.foo", got)
+			}
+		})
+	}
+}
+
 // Both abstractions exist only to enumerate sensitive $HOME entries, so their candidates
 // are in scope by the source rather than by a header. Without this every AppArmor gap
 // lands in the out-of-scope summary and the second corpus contributes nothing.
@@ -624,12 +685,7 @@ func TestAppArmorCandidatesAreInScope(t *testing.T) {
 }
 
 func keysOf(m map[string]Candidate) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }
 
 // inScopeSection fails open: a section whose title no longer matches any keyword bins its

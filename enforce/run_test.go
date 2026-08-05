@@ -29,6 +29,7 @@ type fakeEnforcer struct {
 	gotDegraded      bool
 	gotAcceptAliases []string
 	gotDenyPaths     []string
+	gotRunID         string
 	// silentStage makes the fake return a stage that never attested its setup, which
 	// Run refuses. A backend that reached the target attests, so that is the default
 	// here rather than Result.Setup's zero value - otherwise every test that only
@@ -44,6 +45,7 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opt
 	f.gotDegraded = opts.Degraded
 	f.gotAcceptAliases = opts.AcceptAliasesUnder
 	f.gotDenyPaths = opts.DenyPaths
+	f.gotRunID = opts.RunID
 	if opts.Gate != nil {
 		f.gotGate = opts.Gate(ctx, "example.com", "443")
 	}
@@ -924,6 +926,73 @@ func TestRefusalErrorCarriesTheWholeDisclosure(t *testing.T) {
 	} {
 		if !strings.Contains(err.Error(), consequences) {
 			t.Errorf("%s dropped the layer's consequences: %v", name, err)
+		}
+	}
+}
+
+// runIDPolicy is a policy that would actually get a scope: a run id is only admitted
+// over limits, so every run-id test needs one.
+func runIDPolicy() *policy.Policy {
+	p := validPolicy()
+	p.Limits = policy.Limits{Memory: "128M"}
+	return p
+}
+
+func TestRunIDReachesTheBackend(t *testing.T) {
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, runIDPolicy(), Process{}, Options{RunID: "job_17"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if f.gotRunID != "job_17" {
+		t.Errorf("backend got run id %q, want job_17", f.gotRunID)
+	}
+}
+
+func TestRunIDRefusedWithoutLimits(t *testing.T) {
+	// No limits means no scope, so the supervisor would hold a unit name that never
+	// exists - the exact failure the id is for.
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{RunID: "job_17"})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a Refusal", err)
+	}
+	if f.ran {
+		t.Error("the run reached the backend despite being refused")
+	}
+	if !strings.Contains(refusal.Reason, "no resource limits") {
+		t.Errorf("refusal does not say why: %q", refusal.Reason)
+	}
+}
+
+func TestRunIDRefusedWhenTheHostCannotScope(t *testing.T) {
+	// --allow-degraded waives an unenforceable limit, but it must not silently waive
+	// the supervisor's ability to kill the target along with it.
+	probe := fullyEnforced()
+	probe.Set(LayerLimits, Unavailable, "no usable systemd user manager")
+	f := &fakeEnforcer{probe: probe}
+	_, err := Run(context.Background(), f, runIDPolicy(), Process{}, Options{RunID: "job_17", AllowDegraded: true})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a Refusal", err)
+	}
+	if f.ran {
+		t.Error("the run reached the backend despite being refused")
+	}
+	if !hasLayer(refusal.Short, LayerLimits) {
+		t.Errorf("refusal does not name the limits layer: %+v", refusal.Short)
+	}
+}
+
+func TestRunIDSpellingIsScreened(t *testing.T) {
+	// The id is interpolated into a unit name, where these select a different unit or
+	// come back systemd-escaped and unrecognizable to the caller that chose them.
+	for _, id := range []string{"job-17", "job.17", "job/17", "job@17", "job 17", "jöb", strings.Repeat("j", 65)} {
+		f := &fakeEnforcer{probe: fullyEnforced()}
+		if _, err := Run(context.Background(), f, runIDPolicy(), Process{}, Options{RunID: id}); err == nil {
+			t.Errorf("run id %q was admitted", id)
+		} else if f.ran {
+			t.Errorf("run id %q reached the backend", id)
 		}
 	}
 }

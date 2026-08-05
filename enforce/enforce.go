@@ -87,6 +87,32 @@ type RunOptions struct {
 	// tier refuses. The guarantee is absent rather than waived, and what the tier does
 	// expose is reported through the Report.
 	AcceptAliasesUnder []string
+
+	// RunID names this run so a supervisor outside it can reap the sandboxed tree. A
+	// backend that confines through a transient systemd scope MUST name that scope
+	// "bento-run-<RunID>.scope" in the user manager; empty means the backend names it
+	// however it likes and the caller gets no handle.
+	//
+	// The caller supplies the id rather than reading one back deliberately. Under exec:
+	// all the target has children, so a supervisor that recorded bento's own pid can
+	// report a job dead while a test runner it spawned still holds the checkout - the
+	// tree, not the pid, is the thing to kill. Every design that hands the handle BACK
+	// has a window between the target starting and the supervisor learning the name,
+	// which is precisely when a run that hangs immediately needs killing. An id chosen
+	// before the run is exec'd has no such window: the derivation above is one-way and
+	// documented, so the supervisor knows the unit name in advance and can
+	// `systemctl --user kill` it (or read its cgroup path back with
+	// `systemctl --user show -p ControlGroup`) at any point, including before the scope
+	// exists.
+	//
+	// It is not a policy field and never enters the fingerprint: it identifies one
+	// invocation, not what that invocation is permitted to do, and a manifest carrying it
+	// would name every run started from that manifest the same thing.
+	//
+	// enforce.Run refuses a run whose id could not get a scope, so a backend reaching
+	// here with a non-empty id has already been told a scope will be created. Whether
+	// the id is well-formed is settled there too.
+	RunID string
 }
 
 // NetworkGate decides an egress host the manifest's allowlist does not permit.
@@ -154,6 +180,34 @@ type Process struct {
 type CredentialAlias struct {
 	Path       string
 	Credential string
+}
+
+// ShieldedGrant is one always-shielded path a policy explicitly granted, so the backend
+// honored the grant over its own shield. See Result.ShieldedGrants.
+type ShieldedGrant struct {
+	// Path is the grant as the policy spelled it, which is the name the deny-list gave
+	// the shield it matched.
+	Path string
+	// OnHost is the store the grant actually bound, set only where that differs from
+	// Path. The deny-list builds the names that count as an opt-in from the run's home
+	// anchors, and $HOME is caller-chosen, so a grant can name a symlink while the
+	// exposure lands elsewhere; a frontend that reported only the spelling would name a
+	// scratch path where a private key was handed over.
+	//
+	// The backend resolves this as it binds, not afterwards. Re-resolving at report time
+	// would name whatever the path points at once the target has exited, which for a run
+	// that moved a symlink underneath itself is not what was exposed.
+	OnHost string
+	// Holds is what the shield was hiding: "credentials", "private-data", "history",
+	// "persistence", "services", or "unknown" for a path the backend cannot classify.
+	// A string rather than an enum for the reason ShieldApplied.Kind is one - the seam
+	// is what an out-of-tree embedder sees, and the classification lives in a package
+	// they cannot import.
+	//
+	// It is here because "credential store" is the sentence a reviewer reads while
+	// deciding whether an exposure was acceptable, and the shields also cover history
+	// stores, session layout, and the host's service sockets.
+	Holds string
 }
 
 // SetupState is how far the in-sandbox stage got before the target ran: whether the
@@ -277,18 +331,51 @@ type Result struct {
 	// with no egress at all, reports empty too.
 	GuardBlocked []HostPort
 	// Denied lists the destinations the allowlist refused outright - no rule named them,
-	// and no gate admitted them - deduped and sorted. It is the answer to what the target
+	// and no gate was there to be asked - deduped and sorted. A destination a gate was
+	// consulted about and refused is in GateDenied instead, so this list is exactly the
+	// set a manifest rule would have admitted. It is the answer to what the target
 	// tried to reach and what was refused, which nothing else in the result carries: the
 	// sandbox meets the refusal as a 403 from the proxy inside its own error, with nothing
 	// naming the rule it fell outside of.
 	//
 	// Distinct from GuardBlocked because the operator action differs: a denial is fixed by
 	// naming the destination in the manifest, a guard block is not fixable that way at all.
+	// Distinct from GateDenied on a different axis: a gate denial is also fixable by a
+	// manifest rule, but it is a decision someone already made, so telling them to add
+	// the rule describes the choice they declined rather than an oversight.
 	//
 	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
 	// a consumer rendering it to a terminal must quote it. Empty is not evidence the target
 	// stayed inside the allowlist: a run that made no connections reports empty too.
 	Denied []HostPort
+	// GateDenied lists the destinations no manifest rule covered and a NetworkGate,
+	// consulted about them, refused - deduped and sorted. It is the negative half of
+	// GateAdmitted, and the whole of what a supervised run with an empty network: block
+	// refuses: every destination goes to the gate, so nothing in such a run is ever
+	// refused by the allowlist alone.
+	//
+	// Distinct from Denied because the remedy differs and the operator is usually the
+	// one who chose it. Reporting one as the other tells someone who just answered a
+	// prompt that their manifest is missing a rule, in the workflow where adding that
+	// rule is precisely the decision they declined to make.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
+	// a consumer rendering it to a terminal must quote it. Empty is also what every
+	// ungated run reports, so it is not evidence a gate admitted everything.
+	GateDenied []HostPort
+	// Untunneled lists the destinations a request addressed without asking the proxy to
+	// tunnel to them - the shape a client sends for plain http:// - deduped and sorted.
+	// bento's egress rides an HTTP CONNECT proxy, so such a request is refused with a
+	// 400 whatever the manifest grants, and a network rule naming the host and port
+	// reads as granted everywhere else while carrying no traffic at all.
+	//
+	// Distinct from Denied because no manifest edit fixes it: the remedy is the client's
+	// scheme or its proxy mode. Empty is not evidence every request was tunneled - a run
+	// that made no connections reports empty too.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the request target), so
+	// a consumer rendering it to a terminal must quote it.
+	Untunneled []HostPort
 	// AcceptedAliases lists the credential aliases this run was allowed to read past a
 	// shield because the caller acknowledged the tree they sit in. Each names the path
 	// that reaches the content and the credential it reaches. Non-empty means the run
@@ -296,26 +383,13 @@ type Result struct {
 	// harmless - an audit that showed only the shields would claim a guarantee this run
 	// did not have. Sorted and deduped; empty for the ordinary run.
 	AcceptedAliases []CredentialAlias
-	// ShieldedGrants lists the always-shielded credential paths (~/.ssh, ~/.gnupg, the
-	// runtime dir, ...) the policy explicitly granted, so the backend honored the grant
-	// over its built-in shield. These are a deliberate caveat-emptor opt-in: exposing a
-	// credential store to the sandboxed program. Sorted, empty for the common run that
-	// opts into none. A frontend surfaces each as a loud warning so the exposure is
-	// never silent - the backend does not refuse it, the operator chose it.
-	ShieldedGrants []string
-	// ShieldedGrantTargets pairs an opted-in grant with the store it actually bound, for
-	// the entries where the two differ - Path is the spelling from ShieldedGrants,
-	// Credential the path it reached. The deny-list builds the names that count as an
-	// opt-in from the run's home anchors, and $HOME is caller-chosen, so a grant can name
-	// a symlink while the exposure lands elsewhere; a frontend that reported only the
-	// spelling would name a scratch path where a private key was handed over.
-	//
-	// The backend resolves these as it binds them, not afterwards. Re-resolving at report
-	// time would name whatever the path points at once the target has exited, which for a
-	// run that moved a symlink underneath itself is not what was exposed. Sorted by Path,
-	// empty for the ordinary run that opted into nothing and for opt-ins that name their
-	// own target.
-	ShieldedGrantTargets []CredentialAlias
+	// ShieldedGrants lists the always-shielded paths (~/.ssh, ~/.gnupg, the runtime dir,
+	// ...) the policy explicitly granted, so the backend honored the grant over its
+	// built-in shield. These are a deliberate caveat-emptor opt-in: exposing a store the
+	// sandbox would otherwise hide to the program. Sorted by Path, empty for the common
+	// run that opts into none. A frontend surfaces each as a loud warning so the exposure
+	// is never silent - the backend does not refuse it, the operator chose it.
+	ShieldedGrants []ShieldedGrant
 	// Shields lists the always-on shields the run actually engaged: the credential
 	// and host-service paths the sandbox hid or made read-only for this policy, plus
 	// any path the caller shielded through Options.DenyPaths. It is
@@ -352,6 +426,11 @@ type Result struct {
 type ShieldApplied struct {
 	Path string
 	Kind string
+	// Source names the environment variable that put the shield at this path, empty
+	// for a shield at its default location. A relocation variable accepts any absolute
+	// path, so a run can fail on a path the shield blanked with nothing else naming the
+	// variable that moved it there.
+	Source string
 }
 
 // HostPort is one egress destination admitted at runtime by a NetworkGate rather

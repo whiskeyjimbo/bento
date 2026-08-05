@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -145,6 +146,110 @@ func TestTokenAssignmentDistinguishesSecretsFromSettings(t *testing.T) {
 	}
 }
 
+// Only the FIRST separator on a line is tested, so a secret-named key later on the same
+// line is not reached. That is a measured choice rather than an oversight: scanning every
+// separator was tried three ways against the population a real hunt sniffs on a developer
+// home, and each added thousands of hits on telemetry JSON, agent transcripts and minified
+// JS while reaching not one config that holds a secret this way. Bounding the key to the
+// text just before the separator, which is what stops the whole line's prefix from
+// counting as the key, also dropped real matches the single-separator form already makes.
+// This pins the shape so the next person to notice it sees the trade before retrying it.
+func TestTokenAssignmentReadsOnlyTheFirstSeparator(t *testing.T) {
+	line := `{"model":"opus","createdAt":"2026-08-04","apiToken":"sk-0123456789abcdefghijklmnop"}`
+	if tokenAssignment(line) {
+		t.Errorf("tokenAssignment(%q) = true; widening past the first separator costs more than it finds", line)
+	}
+}
+
+// The sniff bound is a bound on the READ, not a size a file has to be under to be opened.
+// A real ~/.claude.json measured 96 KB with a token-shaped assignment in its first few KB;
+// gating on the whole file's size discarded it unread, and the name trips nothing else, so
+// the store this most wants to surface was reported nowhere.
+func TestHuntSniffsTheHeadOfAFileLargerThanTheBound(t *testing.T) {
+	home := t.TempDir()
+	big := plant(t, home, ".sometool.json", 0o600,
+		"{\n  \"apiToken\": \"0123456789abcdefghijklmnop\",\n  \"history\": [\n"+
+			strings.Repeat("    \"a line of ordinary recorded history\",\n", 4000)+"  ]\n}\n")
+
+	if info, err := os.Stat(big); err != nil {
+		t.Fatal(err)
+	} else if info.Size() <= 64<<10 {
+		t.Fatalf("the fixture is %d bytes, which does not exceed the bound it must outgrow", info.Size())
+	}
+	for _, f := range hunt(t, home) {
+		if f.Path == big {
+			if !slices.Contains(f.Signals, SignalToken) {
+				t.Errorf("%s surfaced without the content signal: %v", big, f.Signals)
+			}
+			return
+		}
+	}
+	t.Errorf("a 96 KB token store was never opened; the bound gated the file rather than the read")
+}
+
+// A config written as one long line is ordinary, and a bufio.Scanner reports a line past
+// its buffer through an Err() a Scan loop never consults - so the sniff returned "no
+// shapes", which is byte-identical to a clean file. A silent give-up is the failure this
+// tool exists to avoid, so the head is read and split rather than scanned.
+func TestHuntSniffsPastAVeryLongLine(t *testing.T) {
+	home := t.TempDir()
+	// A leading line past bufio.Scanner's 64 KiB default buffer, with the assignment after
+	// it and the bound set well clear of both - a scanner gives up on the first line and
+	// never reaches the second, where a plain read of the head has both in hand.
+	long := plant(t, home, ".longline.conf", 0o600,
+		"# "+strings.Repeat("y", 100<<10)+"\napi_token = 0123456789abcdefghijklmnop\n")
+
+	found, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range found {
+		if f.Path == long {
+			if !slices.Contains(f.Signals, SignalToken) {
+				t.Errorf("the sniff stopped at the long line and reported no shapes: %v", f.Signals)
+			}
+			return
+		}
+	}
+	t.Errorf("%s was not reported at all", long)
+}
+
+// A mode-0644 ~/.env holding an AWS secret trips no name token, no suffix, no editor
+// leaving and no private mode, so nothing but its contents can reach it - and the sniff
+// used to run only for a file some cheap signal had already flagged. The home root is
+// where the files no vocabulary enumerates live, which is the class this tool is most for,
+// so it is sniffed on position; the thousands of files below it still are not.
+func TestHuntSniffsTheHomeRootOnPosition(t *testing.T) {
+	home := t.TempDir()
+	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+	deep := plant(t, home, "notes/scratch/jotting", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, env) {
+		t.Errorf("a world-readable .env at the home root reaches no signal but its contents; got %v", got)
+	}
+	if slices.Contains(got, deep) {
+		t.Errorf("%s is not at the home root, and sniffing on position there would be a full-tree read; got %v", deep, got)
+	}
+}
+
+// The walk asks whether an entry is the root and whether its parent is, and filepath.Dir
+// answers with a cleaned path. A caller that spells Home with a trailing separator would
+// match neither test, turning the home-root sniff off and reporting a clean home - so the
+// root is cleaned once and every comparison is against that.
+func TestHuntAcceptsAnUncleanHome(t *testing.T) {
+	home := t.TempDir()
+	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+
+	found, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(paths(found), env) {
+		t.Errorf("a trailing separator on Home silently switched off the home-root sniff; got %v", paths(found))
+	}
+}
+
 // A source checkout is workspace surface - bento governs it through a write grant and
 // denylist.Workspace, never through a home shield - and on a developer home it is where
 // essentially every hit comes from, which makes the report unreadable. But the home
@@ -217,5 +322,31 @@ func TestHuntRefusesAnUnwalkableRoot(t *testing.T) {
 	found, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Errorf("Hunt over a nonexistent home returned %d findings and no error; a clean report over a scan that never happened is the failure this refuses", len(found))
+	}
+}
+
+// A relocated or bind-mounted home reaches Hunt as a symlink - HomeAnchors resolves
+// neither anchor - and the walk Lstats its root, so the scan ends on the first entry and
+// reports the same clean home as a nonexistent one. Refusing must name the target, because
+// the shields are lexical: the operator's fix is to re-anchor on the resolved path, where
+// the walk and the deny-list finally agree.
+func TestHuntRefusesASymlinkedHome(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real-home")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plant(t, real, ".some-tool-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	link := filepath.Join(root, "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	found, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
+	if err == nil {
+		t.Fatalf("Hunt over a symlinked home returned %d findings and no error; the walk never entered it", len(found))
+	}
+	if !strings.Contains(err.Error(), real) {
+		t.Errorf("the refusal must name the path to re-anchor on; got %v", err)
 	}
 }

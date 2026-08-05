@@ -31,7 +31,7 @@ import (
 //     inexpressible.
 func ParseAppArmor(content, home, runUser string) []Candidate {
 	var out []Candidate
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
@@ -61,15 +61,34 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 			if isCreateGuard(expanded, modes) {
 				continue
 			}
-			p, ok := trimSubtreeSuffix(expanded, home, runUser)
-			if !ok || seen[p] {
+			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
+			if !ok {
 				continue
 			}
-			seen[p] = true
+			// One rule can expand to both branches of foo{,/**}, the file first, and
+			// seen dedups across LINES as well, so the same path can arrive from two
+			// profile entries with different modes. Taking the first would record
+			// Dir=false and blind the diff's narrowing check, or record the weaker
+			// Deny and hide a gap in the Weaker check - both are order-dependent
+			// answers to "what does the reference profile shield here". Each field
+			// takes the stronger claim independently, since the two branches of one
+			// alternation carry the same modes and only cross-line duplicates can
+			// disagree on Deny.
+			if i, ok := seen[p]; ok {
+				if dir {
+					out[i].Dir = true
+				}
+				if deny < out[i].Deny {
+					out[i].Deny = deny
+				}
+				continue
+			}
+			seen[p] = len(out)
 			out = append(out, Candidate{
 				Path:    p,
 				Deny:    deny,
 				Glob:    strings.ContainsAny(p, "*?"),
+				Dir:     dir,
 				Section: appArmorSection,
 				Raw:     line,
 			})
@@ -91,14 +110,19 @@ const appArmorSection = "AppArmor private-files abstraction"
 func denyRule(line string) (string, bool) {
 	fields := strings.Fields(line)
 	i := 0
-	for i < len(fields) && fields[i] == "audit" {
+	// AppArmor's grammar takes either qualifier on either side of "deny", so both sides
+	// skip both: matching "owner" only after it dropped a whole "owner deny @{HOME}/..."
+	// rule with no diagnostic, and a rule that leaves the corpus reads downstream as a
+	// path upstream does not shield.
+	qualifier := func(f string) bool { return f == "audit" || f == "owner" }
+	for i < len(fields) && qualifier(fields[i]) {
 		i++
 	}
 	if i >= len(fields) || fields[i] != "deny" {
 		return "", false
 	}
 	i++
-	for i < len(fields) && fields[i] == "owner" {
+	for i < len(fields) && qualifier(fields[i]) {
 		i++
 	}
 	if i >= len(fields) {
@@ -225,15 +249,19 @@ func substituteVars(raw, home, runUser string) (string, bool) {
 // inexpressible wildcards, rather than being diffed against the rule that covers it.
 // It runs after alternation expansion, since "{,**}" only becomes a tail once expanded.
 // A path that trims away to the home or runtime root itself says nothing and is dropped.
-func trimSubtreeSuffix(path, home, runUser string) (string, bool) {
+//
+// dir reports that a tail was actually cut, which is what makes the directive
+// directory-shaped: covering it takes a bento rule that shields the tree, not one on the
+// path alone.
+func trimSubtreeSuffix(path, home, runUser string) (trimmed string, dir, ok bool) {
 	for _, suffix := range []string{"/**", "/*", "/"} {
-		if trimmed, ok := strings.CutSuffix(path, suffix); ok {
-			path = trimmed
+		if cut, found := strings.CutSuffix(path, suffix); found {
+			path, dir = cut, true
 			break
 		}
 	}
 	if path == "" || path == home || path == runUser {
-		return "", false
+		return "", false, false
 	}
-	return path, true
+	return path, dir, true
 }

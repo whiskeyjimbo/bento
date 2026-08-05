@@ -309,7 +309,7 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeDenialLegend(&b, tc.p, tc.res)
+			writeDenialLegend(&b, tc.p, tc.res, false)
 			out := b.String()
 			if wantAny := tc.wantFS || tc.wantExec != ""; (b.Len() > 0) != wantAny {
 				t.Errorf("legend emitted = %v, want %v (output: %q)", b.Len() > 0, wantAny, out)
@@ -340,6 +340,182 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	}
 }
 
+// A zero-rule manifest is the one egress case with no reporter of its own: no proxy runs,
+// so nothing observes the attempt and the reader is left holding an errno. The line is
+// claimed off the filesystem layer, since a zero-rule run carries no network layer at all.
+func TestDenialLegendNamesAnEmptyNetworkField(t *testing.T) {
+	report := func(fs enforce.State) enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerFilesystem, fs, "")
+		r.Add(enforce.LayerExec, enforce.Enforced, "")
+		return r
+	}
+	const line = "no network: rules"
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, &policy.Policy{}, enforce.Result{Report: report(enforce.Enforced)}, false)
+	if !strings.Contains(b.String(), line) {
+		t.Errorf("the field responsible for the failure is missing from the legend: %q", b.String())
+	}
+
+	// With rules there is a proxy, and its own hint names the destination it refused.
+	b.Reset()
+	writeDenialLegend(&b, &policy.Policy{Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}}}, enforce.Result{Report: report(enforce.Enforced)}, false)
+	if strings.Contains(b.String(), line) {
+		t.Errorf("legend claims no rules over a manifest that has one: %q", b.String())
+	}
+
+	// The Landlock-only tier fences egress with a seccomp filter instead of a netns, so it
+	// answers EPERM on socket() and these two shapes are not the ones a reader will hold.
+	b.Reset()
+	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded)}, false)
+	if strings.Contains(b.String(), line) {
+		t.Errorf("legend claims a denial no layer here produces: %q", b.String())
+	}
+}
+
+// The failing run is the one holding an errno string, and the generic hint tells it only
+// that the sandbox denies silently - the mapping withheld. The two print together there,
+// and the lead sentence stops claiming the exit code is unaffected, which that branch
+// disproves.
+func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecNone, Read: []string{"/data"}}
+	res := enforce.Result{ExitCode: 1, Report: r}
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, res, true)
+	out := b.String()
+	if !strings.Contains(out, "Read-only file system") || !strings.Contains(out, "exec: none") {
+		t.Errorf("the branch that most needs the mapping must get it: %q", out)
+	}
+	if strings.Contains(out, "does not change its exit code") {
+		t.Errorf("the run exited non-zero, so that lead is false here: %q", out)
+	}
+
+	// A signal death is explained by its own notice, which names the cap or the filter
+	// that killed the run; the mapping under it offers four more causes to consider.
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{Signal: 9, Report: r}, false)
+	if b.Len() > 0 {
+		t.Errorf("a signal notice already explained this run: %q", b.String())
+	}
+
+	// The layer gate still decides whether there is a mapping at all, and it sits above
+	// the lead: a tier that can produce none of these errnos must not print the sentence
+	// that introduces them and then stop.
+	var degraded enforce.Report
+	degraded.Add(enforce.LayerFilesystem, enforce.Degraded, "")
+	degraded.Add(enforce.LayerExec, enforce.Unavailable, "")
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{ExitCode: 1, Report: degraded}, true)
+	if b.Len() > 0 {
+		t.Errorf("no layer can produce these errnos, so there is nothing to introduce: %q", b.String())
+	}
+}
+
+// The two halves are wired through writeRunResult, so the order and the gating are
+// asserted where a reader meets them rather than on the legend alone: the generic hint
+// first, its shapes under it. The rule is the hint's own sentence, not the failure: where
+// bento says the sandbox denies silently it says what a denial looks like, so a PATH miss
+// - which names its cause and still gets the hint - gets the shapes too.
+func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+
+	var out, errOut bytes.Buffer
+	p := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}}
+	_ = writeRunResult(&out, &errOut, false, p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
+	got := errOut.String()
+	hint := strings.Index(got, "denies silently")
+	shapes := strings.Index(got, "Read-only file system")
+	if hint < 0 || shapes < 0 {
+		t.Fatalf("a failing run gets both the hint and the shapes; got:\n%s", got)
+	}
+	if shapes < hint {
+		t.Errorf("the shapes explain the hint's own sentence, so they follow it; got:\n%s", got)
+	}
+
+	// 127 under a shell with no PATH grant: the miss note names the search path that lost
+	// the command, the hint follows it anyway, and so the shapes must follow the hint -
+	// the claim of silence and its mapping are never separated.
+	errOut.Reset()
+	shell := &policy.Policy{Entrypoint: "/work/t.sh", Interpreter: "/bin/sh", Read: []string{"/data"}}
+	_ = writeRunResult(&out, &errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
+	got = errOut.String()
+	if !strings.Contains(got, "PATH is not passed through") {
+		t.Fatalf("the PATH miss must still be explained; got:\n%s", got)
+	}
+	if strings.Contains(got, "denies silently") != strings.Contains(got, "Read-only file system") {
+		t.Errorf("the claim of silence and its mapping must travel together; got:\n%s", got)
+	}
+
+	// A signal death is the branch that gets neither: its own notice names the cap or the
+	// filter that killed the run, and the generic hint never speaks there.
+	errOut.Reset()
+	limited := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}, Limits: policy.Limits{Memory: "64M"}}
+	_ = writeRunResult(&out, &errOut, false, limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
+	got = errOut.String()
+	if !strings.Contains(got, "killed by signal 9") {
+		t.Fatalf("the kill must still be named; got:\n%s", got)
+	}
+	if strings.Contains(got, "denies silently") || strings.Contains(got, "Read-only file system") {
+		t.Errorf("a signal notice explains this run alone; got:\n%s", got)
+	}
+}
+
+// EPERM on an execve is bento's own verdict as much as EROFS is, so a summary that counts
+// only paths leaves the reader hunting a field that is not the one that refused them.
+func TestProfileHintNamesTheExecMode(t *testing.T) {
+	report := func(exec enforce.State) enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, exec, "")
+		return r
+	}
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want string
+	}{
+		{"a blocked exec is a grant withheld", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none"},
+		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none"},
+		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none-strict"},
+		{"subprocesses are allowed, so nothing was withheld", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, ""},
+		{"a block that never landed withheld nothing either", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: report(enforce.Unavailable)}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			if !writeProfileHint(&b, tc.p, tc.res) {
+				t.Fatalf("a failing run gets the hint: %q", b.String())
+			}
+			out := b.String()
+			if tc.want == "" {
+				if strings.Contains(out, "exec:") {
+					t.Errorf("hint names an exec block that withheld nothing: %q", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("hint does not name %q, the field that refused a subprocess: %q", tc.want, out)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				if len(line) > textWidth {
+					t.Errorf("line runs past the wrap column (%d): %q", len(line), line)
+				}
+			}
+		})
+	}
+	var b bytes.Buffer
+	if writeProfileHint(&b, &policy.Policy{}, enforce.Result{}) {
+		t.Errorf("a clean run is not the hint's subject: %q", b.String())
+	}
+}
+
 // A shield binds a read-only path inside a write grant, so EROFS arrives from a path the
 // grant plainly covers. Naming only the grants there sends the reader to a manifest line
 // that is correct, which is the misattribution the legend exists to avoid - and bento
@@ -352,7 +528,7 @@ func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
 
 	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
 	var b bytes.Buffer
-	writeDenialLegend(&b, p, readOnly)
+	writeDenialLegend(&b, p, readOnly, false)
 	if !strings.Contains(b.String(), "shielded path inside one") {
 		t.Errorf("a read-only shield engaged, so the write line must admit it: %q", b.String())
 	}
@@ -361,12 +537,49 @@ func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
 	// the line for it would hedge a cause that did not apply.
 	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
 	b.Reset()
-	writeDenialLegend(&b, p, hidden)
+	writeDenialLegend(&b, p, hidden, false)
 	if strings.Contains(b.String(), "shielded path inside one") {
 		t.Errorf("no read-only shield engaged, so the grants stand alone: %q", b.String())
 	}
 	if !strings.Contains(b.String(), "Read-only file system") {
 		t.Errorf("the write line must still appear: %q", b.String())
+	}
+}
+
+// The errno lines are the whole legend only if every denial has an errno, and a hidden
+// shield has none: the directory stats as an empty tmpfs, the file reads zero bytes. A
+// reader who took the mapping as exhaustive would read that silence as access.
+func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll, Read: []string{"/home/u"}}
+	const shapes = "reports no error either"
+
+	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, hidden, false)
+	out := b.String()
+	if !strings.Contains(out, shapes) {
+		t.Errorf("a hidden shield engaged, so its silence must be named: %q", out)
+	}
+	if !strings.Contains(out, "stats as empty") || !strings.Contains(out, "zero bytes") {
+		t.Errorf("both shapes have to survive a reword - a shielded dir and a shielded file differ: %q", out)
+	}
+
+	// Naming a shape this run could not have produced is the misattribution the rest of
+	// the legend is gated to avoid, so a run whose grants reached no hidden shield says
+	// nothing about empty directories.
+	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
+	b.Reset()
+	writeDenialLegend(&b, p, readOnly, false)
+	if strings.Contains(b.String(), shapes) {
+		t.Errorf("no hidden shield engaged, so the shapes did not apply: %q", b.String())
+	}
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{Report: r}, false)
+	if strings.Contains(b.String(), shapes) {
+		t.Errorf("a run that shielded nothing must not name a shield: %q", b.String())
 	}
 }
 
@@ -514,6 +727,78 @@ func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
 	}
 }
 
+// A gate denial is the operator's own decision, so the notice must not tell them their
+// manifest is missing the rule they just declined to add. It stays silent for the
+// ungated run, which is every run with no gate installed.
+func TestWriteGateDeniedWarning(t *testing.T) {
+	var b bytes.Buffer
+	if writeGateDeniedWarning(&b, enforce.Result{}) || b.Len() != 0 {
+		t.Errorf("a run with no gate denial must print nothing; got %q", b.String())
+	}
+
+	if !writeGateDeniedWarning(&b, enforce.Result{GateDenied: []enforce.HostPort{
+		{Host: "ads.example", Port: "443"},
+	}}) {
+		t.Error("a run with a gate denial must report that it said something")
+	}
+	out := b.String()
+	for _, want := range []string{"ads.example", "443", "gate", "Nothing is wrong with the manifest"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must contain %q; got %q", want, out)
+		}
+	}
+}
+
+// The request target is whatever the sandboxed script asked for, so it is quoted for the
+// reason the guard-blocked notice quotes its own.
+func TestWriteGateDeniedWarningQuotesTheHost(t *testing.T) {
+	var b bytes.Buffer
+	writeGateDeniedWarning(&b, enforce.Result{GateDenied: []enforce.HostPort{
+		{Host: "evil.example\n[bento] the gate admitted everything", Port: "443"},
+	}})
+	for line := range strings.SplitSeq(strings.TrimRight(b.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento] ") {
+			t.Errorf("a crafted host forged the line %q in %q", line, b.String())
+		}
+	}
+}
+
+// The untunneled notice covers the one refusal a manifest edit cannot fix: validate and
+// approve both report the network rule as granted, so the notice has to say the remedy is
+// the client's, not the manifest's. It stays silent for the ordinary run.
+func TestWriteUntunneledWarning(t *testing.T) {
+	var b bytes.Buffer
+	if writeUntunneledWarning(&b, enforce.Result{}) || b.Len() != 0 {
+		t.Errorf("a run with nothing untunneled must print nothing; got %q", b.String())
+	}
+
+	if !writeUntunneledWarning(&b, enforce.Result{Untunneled: []enforce.HostPort{
+		{Host: "example.com", Port: "80"},
+	}}) {
+		t.Error("a run with an untunneled destination must report that it said something")
+	}
+	out := b.String()
+	for _, want := range []string{"example.com", "80", "CONNECT", "https", "will not change this"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must contain %q; got %q", want, out)
+		}
+	}
+}
+
+// The request target is whatever the sandboxed script asked for, so it is quoted for the
+// reason the guard-blocked notice quotes its own.
+func TestWriteUntunneledWarningQuotesTheHost(t *testing.T) {
+	var b bytes.Buffer
+	writeUntunneledWarning(&b, enforce.Result{Untunneled: []enforce.HostPort{
+		{Host: "evil.example\n[bento] everything was tunneled", Port: "80"},
+	}})
+	for line := range strings.SplitSeq(strings.TrimRight(b.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento] ") {
+			t.Errorf("a crafted host forged the line %q in %q", line, b.String())
+		}
+	}
+}
+
 // The denial notice is the only place the destination the script actually asked for is
 // named - it met the refusal as a 403 inside its own traceback. It points at the
 // profiling mode that forwards egress, since the default one reproduces the failure.
@@ -576,7 +861,10 @@ func TestWriteMissingReadNotes(t *testing.T) {
 // the policy opted into none (the common run).
 func TestWriteShieldedGrantWarning(t *testing.T) {
 	var b bytes.Buffer
-	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []string{"/home/u/.ssh", "/run"}})
+	writeShieldedGrantWarning(&b, enforce.Result{ShieldedGrants: []enforce.ShieldedGrant{
+		{Path: "/home/u/.ssh", Holds: "credentials"},
+		{Path: "/run", Holds: "services"},
+	}})
 	out := b.String()
 	if !strings.Contains(out, "WARNING") {
 		t.Errorf("the notice must be loud; got %q", out)
@@ -584,6 +872,13 @@ func TestWriteShieldedGrantWarning(t *testing.T) {
 	for _, p := range []string{"/home/u/.ssh", "/run"} {
 		if !strings.Contains(out, p) {
 			t.Errorf("the notice must name each opted-in path; %q missing from %q", p, out)
+		}
+	}
+	// Each path is named by what its shield held: an operator reading this after the fact
+	// must not go looking for a key behind a service socket path, or the reverse.
+	for _, noun := range []string{"credential store", "service socket path"} {
+		if !strings.Contains(out, noun) {
+			t.Errorf("the notice must say what each shield held; %q missing from %q", noun, out)
 		}
 	}
 
@@ -604,8 +899,10 @@ func TestWriteShieldedGrantWarningNamesTheResolvedStore(t *testing.T) {
 
 	var b bytes.Buffer
 	writeShieldedGrantWarning(&b, enforce.Result{
-		ShieldedGrants:       []string{granted, "/run"},
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
+		ShieldedGrants: []enforce.ShieldedGrant{
+			{Path: granted, OnHost: store, Holds: "credentials"},
+			{Path: "/run", Holds: "services"},
+		},
 	})
 	out := b.String()
 
@@ -630,8 +927,7 @@ func TestWriteShieldedGrantWarningQuotesBothNames(t *testing.T) {
 
 	var b bytes.Buffer
 	writeShieldedGrantWarning(&b, enforce.Result{
-		ShieldedGrants:       []string{granted},
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: forged}},
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: granted, OnHost: forged, Holds: "credentials"}},
 	})
 	out := b.String()
 
@@ -670,6 +966,35 @@ func TestWriteShieldAnchors(t *testing.T) {
 		if strings.Contains(out, "only anchor") {
 			t.Errorf("the single-anchor caveat must not fire where passwd answered; got %q", out)
 		}
+	}
+}
+
+// Runtime drops its shield when XDG_RUNTIME_DIR names a home or an ancestor of one,
+// because the rule would hide the whole grant surface. It is dropped silently and the
+// remaining rule set is byte-identical to an ordinary host's, so the operator has no way
+// to tell that the directory holding their agent sockets and container auth.json is
+// reachable under a broad grant. It stays a report rather than a refusal because
+// XDG_RUNTIME_DIR=$HOME is ordinary on a minimal container.
+func TestWriteShieldAnchorsReportsAnUnshieldableRuntimeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", home)
+
+	var b bytes.Buffer
+	writeShieldAnchors(&b)
+	if out := b.String(); !strings.Contains(out, "XDG_RUNTIME_DIR") || !strings.Contains(out, strconv.Quote(home)) {
+		t.Errorf("an unshieldable runtime dir must be named; got %q", out)
+	}
+
+	// A runtime dir outside every anchor is shielded normally, and saying so on every
+	// ordinary host would be the noise this report exists to stay clear of. Matched on the
+	// caveat itself rather than on the variable's name: the relocation section below names
+	// the same variable for a different and correct reason, that the shield moved off /run.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	b.Reset()
+	writeShieldAnchors(&b)
+	if out := b.String(); strings.Contains(out, "at or above an anchor") {
+		t.Errorf("a shieldable runtime dir must not draw the unshieldable caveat; got %q", out)
 	}
 }
 
@@ -784,10 +1109,11 @@ func TestExplicitShieldGrants(t *testing.T) {
 	t.Setenv("HOME", home)
 	sshDir := filepath.Join(home, ".ssh")
 
-	got, err := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
+	grants, err := explicitShieldGrants([]string{sshDir, filepath.Join(sshDir, "id_rsa"), home, "/srv/app"})
 	if err != nil {
 		t.Fatalf("explicitShieldGrants: %v", err)
 	}
+	got := shieldGrantPaths(grants)
 	if !slices.Contains(got, sshDir) {
 		t.Errorf("a grant naming the shield exactly must be reported; got %v", got)
 	}
@@ -927,7 +1253,7 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 		grant string
 		want  string
 	}{
-		"the shield itself, which no write opts into": {inHome(".ssh"), "is inside the always-shielded path"},
+		"the shield itself, which no write opts into": {inHome(".ssh"), "no opt-in for a write"},
 		"a path inside a shield":                      {inHome(".ssh/sub"), "is inside the always-shielded path"},
 		"a write-shielded startup file":               {inHome(".bashrc"), "is at or inside the always-write-shielded path"},
 		"a grant containing a shield":                 {home, "contains the always-shielded path"},
@@ -994,4 +1320,132 @@ func TestShieldedGrantProblemsFollowTheGrantsSymlinks(t *testing.T) {
 		t.Fatalf("shieldedWriteProblems: %v", err)
 	}
 	assertProblem(t, got, "is inside the always-shielded path")
+}
+
+func TestToReportJSONEmptyReportIsNotACleanPosture(t *testing.T) {
+	// A refusal raised before anything was probed - a malformed run id, an invalid
+	// policy - carries the zero Report. Reporting it as fully enforced would claim a
+	// posture the run never had.
+	got := toReportJSON(enforce.Report{})
+	if got.FullyEnforced {
+		t.Error("a report with no layers evaluated reads as fully enforced")
+	}
+	if got.Layers == nil {
+		t.Error("layers must serialize as [] rather than null")
+	}
+}
+
+// A relocation variable accepts any absolute path, so a shield can land on something the
+// run needs and the failure surfaces as an ENOENT naming only the target. The summary is
+// where an operator who just hit that reads why, so it must put the variable beside the
+// path - and must stay a bare count where every shield sits at its default.
+func TestShieldSummaryNamesTheRelocatingVariable(t *testing.T) {
+	var b bytes.Buffer
+	writeShieldSummary(&b, enforce.Result{Shields: []enforce.ShieldApplied{
+		{Path: "/home/u/.ssh", Kind: "hidden"},
+		{Path: "/usr/bin/python3", Kind: "hidden", Source: "HISTFILE"},
+	}})
+	out := b.String()
+	for _, want := range []string{"HISTFILE", "/usr/bin/python3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary must name the variable and its target; %q missing from %q", want, out)
+		}
+	}
+	if strings.Contains(out, "/home/u/.ssh") {
+		t.Errorf("a shield at its default path needs no line of its own; got %q", out)
+	}
+
+	var quiet bytes.Buffer
+	writeShieldSummary(&quiet, enforce.Result{Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}})
+	if strings.Contains(quiet.String(), "environment variable") {
+		t.Errorf("a run with no relocated shield must stay a count; got %q", quiet.String())
+	}
+}
+
+// One variable can relocate a whole group - ZDOTDIR takes the entire zsh startup set - and
+// a line per path would bury every other variable under it.
+func TestShieldSummaryGroupsAGroupRelocation(t *testing.T) {
+	var b bytes.Buffer
+	writeShieldSummary(&b, enforce.Result{Shields: []enforce.ShieldApplied{
+		{Path: "/z/.zshrc", Kind: "read-only", Source: "ZDOTDIR"},
+		{Path: "/z/.zshenv", Kind: "read-only", Source: "ZDOTDIR"},
+		{Path: "/z/.zprofile", Kind: "read-only", Source: "ZDOTDIR"},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "3 shields under") || !strings.Contains(out, `"/z"`) {
+		t.Errorf("a group relocation must collapse to its common directory; got %q", out)
+	}
+	if strings.Contains(out, ".zshrc") {
+		t.Errorf("the group must not be listed per path; got %q", out)
+	}
+}
+
+// Doctor is where an operator can see a relocation BEFORE a run breaks on it. What earns a
+// line is a variable that MOVED a shield, which is why an ordinary host is silent: a
+// variable at its conventional value produces the default rule, carrying no source at all.
+func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZDOTDIR", "")
+	// The shape that is genuinely ordinary: Runtime leaves a runtime dir under /run to the
+	// /run shield and stamps no source, so it is not a relocation and must not print.
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	var quiet bytes.Buffer
+	writeRelocatedShields(&quiet)
+	if quiet.Len() != 0 {
+		t.Errorf("a host with no relocation must produce no lines; got %q", quiet.String())
+	}
+
+	t.Setenv("HISTFILE", "/usr/bin/python3")
+	var b bytes.Buffer
+	writeRelocatedShields(&b)
+	out := b.String()
+	for _, want := range []string{"HISTFILE", strconv.Quote("/usr/bin/python3")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor must name the variable and its target; %q missing from %q", want, out)
+		}
+	}
+}
+
+// A runtime dir parked outside /run - a session manager, a container - IS a relocation:
+// the socket shield follows the variable there, so a value pointing at something the run
+// needs blanks it. Doctor said nothing about that case while the run summary reported it,
+// which left the two surfaces disagreeing about what counts as relocated.
+func TestDoctorNamesARelocatedRuntimeDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZDOTDIR", "")
+	runtime := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+
+	var b bytes.Buffer
+	writeRelocatedShields(&b)
+	out := b.String()
+	if !strings.Contains(out, "XDG_RUNTIME_DIR") || !strings.Contains(out, strconv.Quote(runtime)) {
+		t.Errorf("a runtime dir moved off /run must be named; got %q", out)
+	}
+}
+
+// $HOME inside the passwd home, with the inner one a credential store, is shielded whole
+// on purpose - the alternative unshields the credentials the rule exists to hide. What is
+// missing without this is any way for the operator to tell an empty tmpfs from a bug, and
+// only the anchor relationship explains it.
+func TestDoctorNamesAnAnchorInsideAnotherAnchor(t *testing.T) {
+	var b bytes.Buffer
+	writeNestedAnchors(&b, []string{"/home/u/.aws", "/home/u"})
+	out := b.String()
+	for _, want := range []string{strconv.Quote("/home/u/.aws"), strconv.Quote("/home/u"), "tmpfs"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nesting must be named with its consequence; %q missing from %q", want, out)
+		}
+	}
+
+	// The ordinary shape - two unrelated anchors, or one - explains nothing and must not
+	// print, or every host with a $HOME that disagrees with passwd carries this paragraph.
+	for _, anchors := range [][]string{{"/home/u"}, {"/home/u", "/var/home/u"}} {
+		var quiet bytes.Buffer
+		writeNestedAnchors(&quiet, anchors)
+		if quiet.Len() != 0 {
+			t.Errorf("anchors %v are not nested and must produce no lines; got %q", anchors, quiet.String())
+		}
+	}
 }

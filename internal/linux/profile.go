@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -74,6 +75,17 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if ok, reason := canCreateScope(); !ok {
 			return profile.Observation{}, fmt.Errorf("the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 		}
+		// canCreateScope answers only for memory and pids, the host-safety controllers.
+		// A cpu limit needs its own answer: systemd-run accepts a CPUQuota for an
+		// undelegated cpu controller and silently does not enforce it, so gating on
+		// scope creation alone would profile with the requested cap absent and say
+		// nothing. Run survives that gap because enforce.Run admits LayerLimitsCPU from
+		// the probe; this path produces no Report, so the check has to be its own.
+		if p.Limits.CPU != "" {
+			if state, reason := cpuDelegationState(delegatedControllers()); state != enforce.Enforced {
+				return profile.Observation{}, fmt.Errorf("the policy requests a cpu limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+			}
+		}
 	}
 
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
@@ -109,19 +121,23 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
 	defer removeCreatedShields(shieldDirs, shieldFiles)
 
-	report, err := os.CreateTemp("", "bento-observe-")
+	// Inside the run's own 0700 directory rather than shared /tmp, and read back below
+	// through this handle rather than by path: between the child exiting and a re-open,
+	// another same-uid host process could substitute a report proposing grants the run
+	// never asked for, which the operator would then review as the run's own findings.
+	report, err := os.CreateTemp(sb.runDir, "observe-")
 	if err != nil {
 		return profile.Observation{}, fmt.Errorf("linux: creating observation report: %w", err)
 	}
-	reportPath := report.Name()
-	defer os.Remove(reportPath)
+	defer os.Remove(report.Name())
 	defer report.Close()
 	sb.observe = true
 
 	var (
-		mu      sync.Mutex
-		hosts   []profile.HostPort
-		blocked []profile.HostPort
+		mu         sync.Mutex
+		hosts      []profile.HostPort
+		blocked    []profile.HostPort
+		untunneled []profile.HostPort
 	)
 	var stopProxy func()
 	// Safety net for early error returns; the happy path stops it explicitly below.
@@ -131,13 +147,20 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		}
 	}()
 	if sb.proxySocket != "" {
-		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(host, port string, guardBlocked bool) {
+		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(d proxy.Decision, host, port string) {
 			mu.Lock()
+			defer mu.Unlock()
+			// An untunneled destination is recorded apart from the proposable hosts, not
+			// beside them: no manifest rule makes bento carry a plain-HTTP request, so it
+			// belongs in the proposal's declined half rather than its grants.
+			if d == proxy.Untunneled {
+				untunneled = append(untunneled, profile.HostPort{Host: host, Port: port})
+				return
+			}
 			hosts = append(hosts, profile.HostPort{Host: host, Port: port})
-			if guardBlocked {
+			if d == proxy.GuardBlocked {
 				blocked = append(blocked, profile.HostPort{Host: host, Port: port})
 			}
-			mu.Unlock()
 		})
 		if err != nil {
 			return profile.Observation{}, err
@@ -160,7 +183,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if err := preflightLimits(p.Limits, nil); err != nil {
 			return profile.Observation{}, fmt.Errorf("linux: %w", err)
 		}
-		exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+		// Unnamed: profiling is an operator watching one run to learn what it touches,
+		// not a job a supervisor reaps, and there is no run id on this path to name it with.
+		exe, cargs = wrapWithLimits(bwrap, args, p.Limits, "")
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return profile.Observation{}, err
@@ -172,13 +197,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// it close-on-exec, so the profiled target never inherits the channel - though a
 	// descendant can still reach it via /proc/<launcher>/fd, so the report is
 	// trustworthy only to the degree the profiled code is (see the launcher's
-	// runObserve). The host reads it back by path below.
+	// runObserve).
 	cmd.ExtraFiles = []*os.File{report}
 	if err := cmd.Run(); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
 	}
 
-	obs, err := parseObservations(reportPath)
+	obs, err := parseObservations(report)
 	if err != nil {
 		return profile.Observation{}, err
 	}
@@ -190,7 +215,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		stopProxy = nil
 	}
 	mu.Lock()
-	obs.Hosts, obs.Blocked = hosts, blocked
+	obs.Hosts, obs.Blocked, obs.Untunneled = hosts, blocked, untunneled
 	mu.Unlock()
 	obs.Interpreter = sb.interpreter
 	obs.InterpreterName = sb.interpreterName
@@ -203,12 +228,14 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 // allowNetwork forwards the traffic for a faithful run of network-dependent code.
 // Either way the host is recorded, so the proposed manifest is the same.
 //
-// record's guardBlocked says the upstream guard refused this destination - the name
-// resolved into space the sandbox must not reach. It is the only refusal that
-// distinguishes one recorded host from another (the discovery allowlist is *:* and
-// there is no gate), and it can only happen when a dial is attempted at all, so it is
-// never set without allowNetwork.
-func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(host, port string, guardBlocked bool)) (func(), error) {
+// record receives the proxy's own decision so the caller can tell the two refusals a
+// profiling run can see apart from an ordinary recording. GuardBlocked says the upstream
+// guard refused the destination - the name resolved into space the sandbox must not
+// reach - which needs a dial to be attempted at all, so it never appears without
+// allowNetwork. Untunneled says the request was not a CONNECT, which is decided before
+// any dial and so appears in either mode. Nothing else distinguishes one recorded host
+// from another: the discovery allowlist is *:* and there is no gate.
+func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(d proxy.Decision, host, port string)) (func(), error) {
 	var opts []proxy.Option
 	if allowNetwork {
 		// Forwarding mode dials upstream, so it needs the same SSRF hardening as the
@@ -226,7 +253,7 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 		if d == proxy.Refused {
 			return
 		}
-		record(host, port, d == proxy.GuardBlocked)
+		record(d, host, port)
 	}, opts...)
 	if err != nil {
 		return nil, err
@@ -242,12 +269,15 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 // line if the target spawned a subprocess, an "EXIT <code>"
 // or "SIGNAL <n>" line carrying the run's exit status, and a "DROPPED <n>" line
 // counting accesses the observer could not name.
-func parseObservations(path string) (profile.Observation, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return profile.Observation{}, fmt.Errorf("linux: reading observations: %w", err)
+//
+// f is the descriptor the host held open since before the child started, so a
+// substitution at the path cannot reach what this parses. The child inherited a dup and
+// so shares the offset its writes left at end-of-file; without the rewind every report
+// would scan as empty, the same trap parseApplied's Seek closes.
+func parseObservations(f *os.File) (profile.Observation, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return profile.Observation{}, fmt.Errorf("linux: rewinding observations: %w", err)
 	}
-	defer f.Close()
 
 	var obs profile.Observation
 	var ended bool
@@ -328,6 +358,12 @@ func parseObservations(path string) (profile.Observation, error) {
 			obs.Signaled = true
 			obs.Signal = n
 			obs.ExitCode = 128 + n
+		// Every line the launcher writes is handled above, so anything else is either a
+		// writer this reader was never taught or a record something else appended.
+		// Dropping it silently would let a future writer's key vanish into a manifest
+		// that looks complete, which is the failure the DROPPED count exists to prevent.
+		default:
+			return profile.Observation{}, fmt.Errorf("linux: observation report has an unrecognized record %q", line)
 		}
 	}
 	if err := s.Err(); err != nil {

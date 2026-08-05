@@ -180,7 +180,9 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	// it directly, with no bwrap --new-session to detach it), so block the ioctls that
 	// forge terminal input - otherwise the target could push a command line into the
 	// shell that reads after the sandbox exits. Landlock's ioctl_dev right would also
-	// cover this, but only at ABI 5 (kernel 6.10+), newer than this tier's kernels.
+	// cover this, but only at ABI 5 (kernel 6.10+). The tier is entered for a missing
+	// bwrap or unprivileged userns rather than for an old kernel, so its hosts span both
+	// sides of that line and the block cannot rest on Landlock.
 	if err := seccomp.BlockTerminalInjection(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the terminal-injection block: %w", err)
 	}

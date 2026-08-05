@@ -1,6 +1,9 @@
 package landlock
 
 import (
+	"bytes"
+	"debug/elf"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -128,6 +131,89 @@ func TestRestrictConfinesReads(t *testing.T) {
 			t.Errorf("the granted tree stopped being readable: %q", got)
 		}
 	})
+}
+
+// This is the executable evidence for ADR-0008. No policy reaches
+// RestrictExecAllowlist - there is no exec: allowlist mode - so what this test pins is
+// not a shipped guarantee but the kernel behaviour the ADR rests on, kept runnable so
+// the decision can be re-checked rather than re-argued.
+//
+// The allowed and other arms are the claim itself. The read arm is the control that
+// separates "execute was withheld" from "the ruleset denied everything": an allowlist
+// takes away execute, not read, and a mode that also broke reads would pass the first
+// two arms while making every run useless.
+//
+// The loader arm is the one that decides whether the mode bounds anything at all. A
+// dynamically linked binary is executed through its PT_INTERP, so making one runnable
+// means granting the loader execute - and a loader with execute runs any readable ELF
+// handed to it as an argument, including one the target wrote itself. Asserting the
+// loader is DENIED is the finding: it is what forces statically linked entries, and
+// forcing those is what made the mode too narrow to serve any job class - a script under
+// an interpreter needs a dynamic binary to be executable. If this arm ever reports OK on
+// some future kernel, ADR-0008's first reason has changed and the decision is worth
+// reopening.
+func TestExecAllowlistPermitsOnlyTheAllowlistedBinary(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	// buildProbe builds with CGO_ENABLED=0, so the probe is itself a statically linked
+	// binary - which is what an allowlist entry has to be. Using it as the subject keeps
+	// the test from depending on a static binary happening to exist on the host.
+	bin := buildProbe(t)
+	other := filepath.Join(t.TempDir(), "other")
+	copyFile(t, bin, other)
+
+	out, err := exec.Command(bin, "execallow", t.TempDir(), bin, other, loaderPath(t)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	for _, arm := range []struct{ want, why string }{
+		{"execallow_allowed=OK", "the allowlisted binary must stay spawnable, or the mode can run nothing"},
+		{"execallow_other=DENIED", "a readable binary that is not on the allowlist must not be spawnable"},
+		{"execallow_read=OK", "an allowlist withholds execute, not read; a non-allowlisted file must stay readable"},
+		{"execallow_loader=DENIED", "the dynamic loader must not be executable: with it, loader <any readable ELF> spawns anything and the allowlist bounds nothing"},
+	} {
+		if !strings.Contains(got, arm.want) {
+			t.Errorf("%s\n got: %q\nwant: %s", arm.why, got, arm.want)
+		}
+	}
+}
+
+// loaderPath is the dynamic loader this host executes a dynamic binary through, read as
+// the PT_INTERP of one rather than guessed from a list of well-known names - it is the
+// same fact the kernel acts on, and the arm that uses it is only meaningful if it names
+// the real loader.
+func loaderPath(t *testing.T) string {
+	t.Helper()
+	f, err := elf.Open("/bin/sh")
+	if err != nil {
+		t.Skipf("cannot read /bin/sh to find the dynamic loader: %v", err)
+	}
+	defer f.Close()
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_INTERP {
+			continue
+		}
+		interp, err := io.ReadAll(p.Open())
+		if err != nil {
+			t.Fatalf("reading PT_INTERP: %v", err)
+		}
+		return string(bytes.TrimRight(interp, "\x00"))
+	}
+	t.Skip("/bin/sh is statically linked; this host has no loader to probe")
+	return ""
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Landlock is applied per thread, and the Go runtime has several. This asserts the
@@ -306,6 +392,53 @@ func TestRestrictDegradedGrantsResolveUnixOnWritesOnly(t *testing.T) {
 	}
 }
 
+// The degraded tier's cross-process memory guarantee rests on Landlock's ptrace check,
+// NOT on /proc being absent from the read set - the read set is user-supplied, and
+// nothing refuses a manifest that says read: /, which grants /proc recursively along
+// with everything else. What actually holds is that Landlock refuses ptrace_may_access
+// against a process outside the domain, and /proc/<pid>/mem goes through mm_access,
+// which is that check. So the broadest read grant expressible still cannot reach a host
+// process's address space.
+//
+// The probe grants "/" deliberately: a narrower grant would leave the reason for the
+// denial ambiguous between the read set and the ptrace check, and the read set is the
+// half that does not hold.
+func TestRestrictDegradedDeniesOutsideProcessMemory(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	out, err := exec.Command(bin, "procmem", "/").CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	// Under ptrace_scope 2 or 3 the host forbids the read whatever Landlock does, so a
+	// DENIED result there would credit Landlock with a denial it did not make.
+	if strings.Contains(got, "procmem_baseline=DENIED") || strings.Contains(got, "procfd_baseline=DENIED") {
+		t.Skipf("this host forbids the unrestricted reach too, so the restricted one proves nothing: %q", got)
+	}
+	if !strings.Contains(got, "procmem_restricted=DENIED") {
+		t.Errorf("a read grant of \"/\" reopened another process's memory through /proc/<pid>/mem: %q", got)
+	}
+	if !strings.Contains(got, "procfd_restricted=DENIED") {
+		t.Errorf("a read grant of \"/\" reopened another process's descriptors through /proc/<pid>/fd: %q", got)
+	}
+
+	// The control. Without it the denial above could be any blanket ptrace refusal
+	// rather than Landlock's domain comparison, and the test would keep passing if the
+	// domain check were removed and replaced with something that denied everything.
+	out, err = exec.Command(bin, "procmemchild", "/").CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got = strings.TrimSpace(string(out))
+	if !strings.Contains(got, "procmem_samedomain=OK") || !strings.Contains(got, "procfd_samedomain=OK") {
+		t.Errorf("a process inside the domain must stay reachable, or the denials above are not the domain check: %q", got)
+	}
+}
+
 // listen binds a unix listener at path and serves it for the test's duration, returning
 // path. The accept loop only has to complete the handshake - the probe reports whether the
 // connect succeeded, and nothing is sent.
@@ -326,4 +459,61 @@ func listen(t *testing.T, path string) string {
 		}
 	}()
 	return path
+}
+
+// Landlock denies rename(2) and link(2) ACROSS directories unless the write rules grant
+// refer, even when both directories sit inside the same write grant - so the backstop
+// broke the write-a-temp-file-then-rename-into-place shape most tools use to write
+// atomically, with an EXDEV that names no layer. This only shows against the real kernel:
+// the granted-versus-handled question is answerable from the rules (the invariant test in
+// abi_internal_linux_test.go), but whether the kernel then permits the rename is not.
+//
+// The same-directory arm is the control. Without refer it stays OK while the two
+// cross-directory arms fail, which is exactly why the bug survived: the write grant looks
+// like it works.
+func TestRestrictPermitsReparentingInsideAWriteGrant(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	if !referSupported() {
+		t.Skipf("effective ABI %d: refer arrived in ABI 2, and below it the kernel denies "+
+			"cross-directory reparenting under any ruleset", effectiveABI())
+	}
+	bin := buildProbe(t)
+
+	// One tree, so the read root covers the write grant and the ungranted directory both -
+	// the escape arm has to fail for want of a WRITE grant, not for want of a path.
+	root := t.TempDir()
+	write := filepath.Join(root, "write")
+	outside := filepath.Join(root, "outside")
+	for _, d := range []string{filepath.Join(write, "a"), filepath.Join(write, "b"), outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(write, "a", "f"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(bin, "reparent", root, write, outside).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, "samedir=OK") {
+		t.Fatalf("a rename within one directory of the write grant was denied, so the grant "+
+			"itself is broken and the cross-directory arms below prove nothing: %q", got)
+	}
+	if !strings.Contains(got, "crossdir=OK") {
+		t.Errorf("a rename between two directories inside the same write grant was denied; "+
+			"the write rules are not granting refer: %q", got)
+	}
+	if !strings.Contains(got, "crosslink=OK") {
+		t.Errorf("a link between two directories inside the same write grant was denied; "+
+			"refer governs link(2) as well as rename(2): %q", got)
+	}
+	if !strings.Contains(got, "escape=DENIED") {
+		t.Errorf("a rename out of the write grant into the read-only tree succeeded, so "+
+			"granting refer widened reparenting past the write grants: %q", got)
+	}
 }

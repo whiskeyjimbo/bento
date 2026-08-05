@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -25,8 +24,7 @@ import (
 // installing thread, so nothing but a working TSYNC can produce the denial. The
 // filter is process-wide and permanent, so it runs in a re-exec'd child.
 func TestExecBlockCoversPreexistingThreads(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestExecBlockCoversPreexistingThreadsHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_TSYNC=1")
+	cmd := helperCommand(t, "TestExecBlockCoversPreexistingThreadsHelper", "BENTO_TEST_TSYNC=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("tsync helper exited with error: %v\n%s", err, out)

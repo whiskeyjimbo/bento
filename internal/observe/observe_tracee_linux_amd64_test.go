@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -43,6 +44,8 @@ import (
 //	outliveroot backgrounds a probeforever child and exits while it is still probing.
 //	killedprobes SIGKILLs a probeforever child mid-probe and outlives its whole drain.
 //	probeforever N threads probe a path in a loop and never stop; started by the two above.
+//	enosysprobe N faccessat2 probes of an existing path, under a filter answering ENOSYS.
+//	widelen    connect(2) to a unix socket with the high half of addrlen set.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
 	if mode == "" {
@@ -294,11 +297,87 @@ func TestObserveTraceeHelper(t *testing.T) {
 			uintptr(unsafe.Pointer(&envp[0])), 0, 0)
 		fmt.Fprintln(os.Stderr, "TRACEE_EXECVEAT_ERR", errno)
 		os.Exit(7)
+	case "enosysprobe":
+		// A path-existence syscall answered with a REAL -ENOSYS, the shape a kernel that
+		// predates faccessat2 gives glibc >=2.32 and a container's seccomp policy gives
+		// any kernel. rax then holds -ENOSYS at the exit stop too, so a decoder that tells
+		// the pair apart by reading rax never reaches the exit and strands the pathname
+		// the entry stop held.
+		if err := enosysOn(unix.SYS_FACCESSAT2); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_SECCOMP_ERR", err)
+			os.Exit(13)
+		}
+		path, err := syscall.BytePtrFromString(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), probeName))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(13)
+		}
+		for range n {
+			if _, _, errno := syscall.Syscall6(unix.SYS_FACCESSAT2, ^uintptr(99),
+				uintptr(unsafe.Pointer(path)), unix.F_OK, 0, 0, 0); errno != syscall.ENOSYS {
+				fmt.Fprintln(os.Stderr, "TRACEE_FACCESSAT2_ERRNO", errno)
+				os.Exit(13)
+			}
+		}
+	case "widelen":
+		// connect(2) with the socklen_t argument's unused high half set. The kernel takes
+		// the low 32 bits and connects; a decoder reading the whole register sees an
+		// over-long address, calls it "names no filesystem entry", and silently omits the
+		// host socket the target reached. The connect must SUCCEED, or it proves nothing.
+		fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_SOCKET_ERR", err)
+			os.Exit(14)
+		}
+		var sa unix.RawSockaddrUnix
+		sa.Family = unix.AF_UNIX
+		for i, c := range []byte(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), sockName)) {
+			sa.Path[i] = int8(c)
+		}
+		if _, _, errno := syscall.Syscall(unix.SYS_CONNECT, uintptr(fd),
+			uintptr(unsafe.Pointer(&sa)), 0x1_0000_0000|unix.SizeofSockaddrUnix); errno != 0 {
+			fmt.Fprintln(os.Stderr, "TRACEE_CONNECT_ERRNO", errno)
+			os.Exit(14)
+		}
+		syscall.Close(fd)
 	default:
 		fmt.Fprintln(os.Stderr, "TRACEE_BAD_MODE", mode)
 		os.Exit(5)
 	}
 	os.Exit(0)
+}
+
+// enosysOn installs a seccomp filter answering one syscall with ENOSYS and allowing
+// everything else - a container policy's treatment of a syscall it does not know, and the
+// only way to produce a real -ENOSYS for a syscall the running kernel does implement.
+// Hand-written because internal/seccomp's own BPF helpers are unexported and its filters
+// all serve the sandbox rather than a test.
+func enosysOn(nr uint32) error {
+	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
+		return fmt.Errorf("no_new_privs: %w", e)
+	}
+	const (
+		offNr        = 0 // struct seccomp_data: nr first, then arch
+		retAllow     = 0x7fff0000
+		retErrnoBase = 0x00050000 // SECCOMP_RET_ERRNO, errno in the low 16 bits
+		setModeF     = 1
+		flagTSync    = 1
+	)
+	f := []unix.SockFilter{
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: offNr},
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: nr, Jt: 0, Jf: 1},
+		{Code: unix.BPF_RET | unix.BPF_K, K: retErrnoBase | uint32(syscall.ENOSYS)},
+		{Code: unix.BPF_RET | unix.BPF_K, K: retAllow},
+	}
+	prog := unix.SockFprog{Len: uint16(len(f)), Filter: &f[0]}
+	r1, _, e := unix.Syscall(unix.SYS_SECCOMP, setModeF, flagTSync, uintptr(unsafe.Pointer(&prog)))
+	if e != 0 {
+		return fmt.Errorf("installing the filter: %w", e)
+	}
+	if r1 != 0 {
+		return fmt.Errorf("filter could not be synced to thread %d", r1)
+	}
+	return nil
 }
 
 // startProbeForever spawns the probeforever mode and returns once every one of its probers
@@ -332,6 +411,9 @@ const badHowName = "openat2-how-unreadable"
 
 // probeName is the path the prober threads probe while they wait to be killed or reaped.
 const probeName = "sibling-probe-target"
+
+// sockName is the AF_UNIX socket the widelen mode connects to; the parent listens on it.
+const sockName = "widelen.sock"
 
 // plantProbeTarget writes the file the prober threads probe, reached through a chain of
 // symlinks that each re-walk a long run of directories, and returns the directory to hand
@@ -1103,5 +1185,63 @@ func TestTraceDoesNotCountANullPathnameAsALostAccess(t *testing.T) {
 	res := traceHelper(t, "nullpath", t.TempDir(), calls)
 	if res.Dropped != 0 {
 		t.Errorf("Dropped = %d after %d utimensat+futimesat calls that name no file, want 0; ~%d is the signature of decoding a NULL pathname as one", res.Dropped, 2*calls, 2*calls)
+	}
+}
+
+// A path-existence syscall that returns a REAL -ENOSYS still resolved a pathname at its
+// entry stop, and only its exit stop can release it. Telling the pair apart by reading
+// rax cannot see that exit - the kernel's own entry-stop marker IS -ENOSYS - so the held
+// entry outlives the trace and is swept at root's exit as a lost access. A run that lost
+// nothing then reports Dropped > 0, corrupting the one channel that tells the user their
+// manifest is short.
+//
+// Reachable on kernels 5.3-5.7, where glibc issues faccessat2 and falls back on ENOSYS,
+// and on any kernel under a seccomp policy answering ENOSYS for an unknown syscall - a
+// common container default, which is what this installs.
+func TestTraceDoesNotCountARealENOSYSProbeAsALostAccess(t *testing.T) {
+	const probes = 8
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := traceHelper(t, "enosysprobe", dir, probes)
+	if res.Dropped != 0 {
+		t.Errorf("Dropped = %d after %d probes that lost nothing; want 0", res.Dropped, probes)
+	}
+}
+
+// socklen_t is 32 bits and the kernel reads only the low half of the register, so a target
+// can set the high half and connect to a host socket - the SSH/gpg agent, docker.sock -
+// while a decoder reading the full 64-bit register calls the address over-long and reports
+// no filesystem entry. That answer is not a drop either, so the socket is silently absent
+// from the consent surface and Dropped still says the observation is complete. A hide the
+// profiled target chooses is the wrong direction in a repo whose premise is that it is
+// untrusted.
+//
+// The connect must succeed for the case to be the one described; the tracee exits non-zero
+// otherwise, which traceHelper fails on.
+func TestTraceRecordsAConnectWhoseAddrlenHasAHighHalf(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, sockName)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	res := traceHelper(t, "widelen", dir, 0)
+	if a, ok := find(res, sock); !ok {
+		t.Errorf("no access recorded for the connected socket %q; accesses: %v", sock, res.Accesses)
+	} else if a.Write {
+		t.Errorf("connect to %q recorded as a write, want a read", sock)
 	}
 }

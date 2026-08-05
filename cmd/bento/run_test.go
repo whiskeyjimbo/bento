@@ -194,7 +194,7 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 	res := enforce.Result{
 		ExitCode: 3, Report: report, EgressConnections: 2,
-		ShieldedGrants: []string{"/home/u/.ssh"},
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
 	}
 
@@ -205,11 +205,14 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 
 	var env struct {
-		Event             string   `json:"event"`
-		ExitCode          int      `json:"exit_code"`
-		EgressConnections int      `json:"egress_connections"`
-		ShieldedGrants    []string `json:"shielded_grants"`
-		Shields           []struct {
+		Event             string `json:"event"`
+		ExitCode          int    `json:"exit_code"`
+		EgressConnections int    `json:"egress_connections"`
+		ShieldedGrants    []struct {
+			Path  string `json:"path"`
+			Holds string `json:"holds"`
+		} `json:"shielded_grants"`
+		Shields []struct {
 			Path string `json:"path"`
 			Kind string `json:"kind"`
 		} `json:"shields"`
@@ -246,28 +249,33 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	res := enforce.Result{
-		ShieldedGrants:       []string{granted, "/etc/hosts"},
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: granted, Credential: store}},
+		ShieldedGrants: []enforce.ShieldedGrant{
+			{Path: granted, OnHost: store, Holds: "credentials"},
+			{Path: "/run", Holds: "services"},
+		},
 	}
 	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 
 	var env struct {
-		ShieldedGrants       []string `json:"shielded_grants"`
-		ShieldedGrantTargets []struct {
+		ShieldedGrants []struct {
 			Path   string `json:"path"`
 			OnHost string `json:"on_host"`
-		} `json:"shielded_grant_targets"`
+			Holds  string `json:"holds"`
+		} `json:"shielded_grants"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("envelope is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if !slices.Equal(env.ShieldedGrants, res.ShieldedGrants) {
-		t.Errorf("shielded_grants = %v, want the grants as the policy spelled them", env.ShieldedGrants)
+	if len(env.ShieldedGrants) != 2 || env.ShieldedGrants[0].Path != granted || env.ShieldedGrants[1].Path != "/run" {
+		t.Fatalf("shielded_grants = %+v, want the grants as the policy spelled them", env.ShieldedGrants)
 	}
-	// Only the aliased one: /etc/hosts names its own target, and an entry claiming
-	// otherwise would be noise a consumer has to filter.
-	if len(env.ShieldedGrantTargets) != 1 || env.ShieldedGrantTargets[0].Path != granted || env.ShieldedGrantTargets[0].OnHost != store {
-		t.Errorf("shielded_grant_targets = %+v, want just %q -> %q", env.ShieldedGrantTargets, granted, store)
+	if env.ShieldedGrants[0].OnHost != store || env.ShieldedGrants[0].Holds != "credentials" {
+		t.Errorf("shielded_grants[0] = %+v, want %q on %q as a credential store", env.ShieldedGrants[0], granted, store)
+	}
+	// Only the aliased entry carries on_host: /run names its own target, and a
+	// field claiming otherwise would be noise a consumer has to filter.
+	if env.ShieldedGrants[1].OnHost != "" {
+		t.Errorf("shielded_grants[1] = %+v, want no on_host for a grant that names its own target", env.ShieldedGrants[1])
 	}
 }
 
@@ -383,7 +391,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 	res := enforce.Result{
 		ExitCode:       1, // non-zero + zero egress triggers the egress-bypass hint
 		Report:         report,
-		ShieldedGrants: []string{"/home/u/.ssh"},
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", Holds: "credentials"}},
 	}
 	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 

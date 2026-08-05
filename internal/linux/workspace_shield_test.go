@@ -57,7 +57,7 @@ func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 			isDir:      hostIsDir,
 			listDir:    hostListDir,
 			resolve:    hostResolve,
-			rootDirs:   func() []string { return nil },
+			rootDirs:   func() ([]string, error) { return nil, nil },
 		}
 	}
 

@@ -1,0 +1,66 @@
+name: fuzz
+
+# Nightly rather than per-PR: the run is time-boxed, not deterministic, so gating a
+# pull request on it would be slow and would fail on whichever mutation happened to
+# land inside the budget. Nothing here needs bwrap or the firejail corpus - the fuzz
+# targets drive parsers, policy matching and a real temp-dir symlink tree, not sandboxes.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: Per-target fuzzing budget
+        default: 5m
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The corpus of interesting inputs lives under $GOCACHE/fuzz, so carrying it between
+      # nights is the whole point: a fresh cache restarts coverage-guided search from the
+      # seeds every time and never reaches anything deep. The key is unique per run so
+      # each night saves its grown corpus, and restore-keys picks up the newest prior one.
+      #
+      # restore and save are separate steps because the combined action skips its save
+      # when the job fails - which would discard the corpus of exactly the night that
+      # found something, the one most worth keeping.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: fuzz-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-${{ runner.os }}-
+
+      - run: make fuzz FUZZTIME=${{ inputs.fuzztime || '5m' }}
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: fuzz-${{ runner.os }}-${{ github.run_id }}
+
+      # A crasher is written into the package's testdata/fuzz as a regression seed that
+      # every later `go test` replays, so it has to leave the runner to be committed.
+      - name: Collect crashers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore

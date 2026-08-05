@@ -5,7 +5,6 @@ package seccomp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -18,8 +17,7 @@ import (
 // would break the launcher's own exec:all supervise path. It runs in a re-exec'd
 // child because the filter is process-wide and permanent.
 func TestBlockProcessReach(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestBlockProcessReachHelper", "-test.v")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_BLOCK_PROCESS_REACH=1")
+	cmd := helperCommand(t, "TestBlockProcessReachHelper", "BENTO_TEST_BLOCK_PROCESS_REACH=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("process-reach helper exited with error: %v\n%s", err, out)
@@ -95,5 +93,4 @@ func TestBlockProcessReachHelper(t *testing.T) {
 	}
 	unix.Close(int(fd))
 	fmt.Println("PROCESS_REACH_OK")
-	os.Exit(0)
 }

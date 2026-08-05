@@ -33,6 +33,12 @@ func newApproveCmd() *cobra.Command {
 			"then reports the manifest as approved until the permissions change; after a\n" +
 			"deliberate edit, run approve again to re-stamp it. The fingerprint covers the\n" +
 			"permissions, not the script's contents - it attests the policy, not the code.\n\n" +
+			"It also records the permissions it stamped under $XDG_STATE_HOME/bento/approvals/,\n" +
+			"so re-approving a manifest whose permissions drifted can name the lines that\n" +
+			"changed. That record is this host's own: a manifest approved elsewhere has none,\n" +
+			"and approve says so rather than showing a diff it cannot vouch for. Losing the\n" +
+			"record costs the diff and nothing else - the stamp in the manifest is what run\n" +
+			"and validate read.\n\n" +
 			"Approval is local drift detection, not a signature: the stamp is unkeyed and\n" +
 			"lives in the manifest, so it attests only that the permissions match what was\n" +
 			"stamped, not who stamped them. Review a manifest you got from elsewhere before\n" +
@@ -84,7 +90,7 @@ func newApproveCmd() *cobra.Command {
 			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
-			writeReapprovalNotice(os.Stdout, approval)
+			writeReapprovalNotice(os.Stdout, trust.realPath, doc, approval)
 			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
 				return err
 			}
@@ -104,6 +110,10 @@ func newApproveCmd() *cobra.Command {
 			if err := writeManifestAtomically(trust, out, os.Stderr); err != nil {
 				return err
 			}
+			// After the manifest, and only once it landed: the journal describes an approval
+			// that is on disk, and recording one for a stamp that failed to write would give
+			// the next re-approval a baseline no manifest ever carried.
+			writeApprovalRecord(trust.realPath, doc.Policy, !assumeYes, os.Stderr)
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
 			return nil
 		},
@@ -118,17 +128,18 @@ func newApproveCmd() *cobra.Command {
 // first approval, so the added grant that sent the reader here - `run` refuses a drifted
 // manifest and points at this command - has to be found by memory.
 //
-// It cannot mark the added lines: the stamp is a sha256 of the policy, not a copy of it,
-// so the shape that was approved is not on disk anywhere. Saying which is which needs the
-// previous shape stored, which is a change to the manifest's on-disk contract. Saying that
-// it changed at all needs nothing, and is the half a reader most needs before stamping.
-func writeReapprovalNotice(w io.Writer, approval approvalState) {
+// The stamp itself cannot say which lines are new - it is a sha256 of the policy, not a
+// copy of it - so the delta comes from the approval journal, which is this host's own
+// record of what its previous approve stamped. Where the journal has a trustworthy entry
+// the notice names the changed lines; where it does not it says which of the two reasons
+// applies, both of which are worth knowing on their own. See journal.go.
+func writeReapprovalNotice(w io.Writer, realPath string, doc *manifest.Document, approval approvalState) {
 	if approval != approvalStale {
 		return
 	}
 	fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
-	fmt.Fprintf(w, "The stamp is a hash of the policy, not a copy of it, so bento cannot mark the\n")
-	fmt.Fprintf(w, "lines that are new - read the whole policy above as if it were unapproved.\n")
+	rec, verdict := readApprovalRecord(realPath, doc)
+	writeJournalDiff(w, rec, verdict, doc.Policy)
 }
 
 // requireHonorableGrants refuses to stamp a policy holding a grant no run will honor. The
@@ -236,10 +247,10 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 		// so this prompt is where the exposure can still be declined.
 		shieldGrants, err := explicitShieldGrants(resolved.Read)
 		if err != nil {
-			notes = append(notes, fmt.Sprintf("bento could not work out where the credential shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
+			notes = append(notes, fmt.Sprintf("bento could not work out where the shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
 		}
 		for _, g := range shieldGrants {
-			notes = append(notes, fmt.Sprintf("read: %q is a credential store bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script read the credentials in it.", g))
+			notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
 		}
 		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
 			for _, g := range grants {
@@ -276,8 +287,21 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 		return fmt.Errorf("not approved: approving is a human reading the permissions above, and stdin is not a terminal, so there is nothing to read an answer from. " +
 			"Attach a terminal, or pass --yes to stamp them unreviewed")
 	}
+	// openTTY only once the gates above have passed: it opens /dev/tty, which a --yes run
+	// has no reason to hold.
+	tty, closeTTY := openTTY()
+	defer closeTTY()
+	return readApprovalAnswer(tty, w)
+}
+
+// readApprovalAnswer prompts and reads the verdict, taking the reader as confirmNetworkExfil
+// does - in the same argument order - rather than opening the terminal itself, which is what
+// lets the answer handling be exercised without one. Anything but an explicit yes declines:
+// the question is whether a human affirmed these permissions, so a typo, an empty line and a
+// closed stream must all mean no.
+func readApprovalAnswer(in io.Reader, w io.Writer) error {
 	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
-	line, _ := bufio.NewReader(openTTY()).ReadString('\n')
+	line, _ := bufio.NewReader(in).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return nil

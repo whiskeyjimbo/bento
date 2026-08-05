@@ -380,8 +380,22 @@ func TestConfirmApprovalNeedsAnAnswerOrTheFlag(t *testing.T) {
 	})
 
 	t.Run("stdin is not a terminal", func(t *testing.T) {
+		// stdin is swapped for a pipe rather than trusting whatever the test binary
+		// inherited: run from a terminal, this subtest otherwise takes the interactive
+		// branch and asserts a refusal that never comes - or blocks on the developer's own
+		// terminal waiting for an answer. A pipe is not a terminal anywhere.
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close()
+		saved := os.Stdin
+		os.Stdin = r
+		defer func() { os.Stdin = saved }()
+
 		var buf strings.Builder
-		err := confirmApproval(&buf, false)
+		err = confirmApproval(&buf, false)
 		if err == nil {
 			t.Fatal("a stdin nobody can answer on must refuse rather than stamp")
 		}
@@ -552,13 +566,17 @@ func TestApproveRefusesAGrantTheRunWillNotHonor(t *testing.T) {
 }
 
 // The stale refusal sends the reader back to re-review, and the next question is always
-// "what changed?". The fingerprint is a one-way hash over the policy fields, so there is
-// no diff to show - and a message that does not say so reads as bento withholding one.
-func TestStaleRefusalsSayWhyThereIsNoDiff(t *testing.T) {
+// "what changed?". The fingerprint is a one-way hash over the policy fields, so the
+// manifest cannot answer it - and a message that does not say where the answer is reads as
+// bento withholding one. Both refusals must point at approve, which holds the journal.
+func TestStaleRefusalsSayWhereTheDiffIs(t *testing.T) {
 	stale := doc("old")
 	err := requireApproval(stale, false)
 	if err == nil || !strings.Contains(err.Error(), noStampDiff) {
 		t.Errorf("run's stale refusal must say the stamp cannot produce a diff; got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "bento approve") {
+		t.Errorf("run's stale refusal must point at where the diff can be had; got %v", err)
 	}
 
 	var buf strings.Builder

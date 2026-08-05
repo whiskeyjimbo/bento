@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,6 +96,277 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("target %q: expected a rejection naming %q; got %v", tc.target, tc.want, err)
 		}
+	}
+}
+
+// acceptErr wraps errno the way a real net.Listener does - *net.OpError around an
+// *os.SyscallError around the errno - so a test exercises the unwrapping recoverableAccept
+// actually has to do. A bare errno would pass an equality check that production never sees.
+func acceptErr(errno syscall.Errno) error {
+	return &net.OpError{Op: "accept", Net: "unix", Err: os.NewSyscallError("accept", errno)}
+}
+
+// flakyListener wraps a listener and makes the first n Accept calls fail with err, so a
+// transient host condition can be reproduced without one: ENFILE is caused by processes
+// outside bento and cannot be provoked from a test.
+type flakyListener struct {
+	net.Listener
+	mu        sync.Mutex
+	remaining int
+	err       error
+	failures  int
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	if l.remaining > 0 {
+		l.remaining--
+		l.failures++
+		l.mu.Unlock()
+		return nil, l.err
+	}
+	l.mu.Unlock()
+	return l.Listener.Accept()
+}
+
+func (l *flakyListener) failed() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures
+}
+
+// The egress fence has to outlive a transient Accept failure. The host can hit ENFILE for
+// a moment because of processes bento knows nothing about; if that ended Serve, the unix
+// socket would stay bind-mounted into the sandbox with nothing behind it, and every later
+// CONNECT would meet a dead socket rather than an allowlist decision - the run's egress
+// silently unenforced-by-absence for its whole remaining lifetime.
+func TestServeSurvivesATransientAcceptError(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED} {
+		dir := t.TempDir()
+		sock := dir + "/proxy.sock"
+		base, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := &flakyListener{Listener: base, remaining: 3, err: acceptErr(errno)}
+
+		p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.Serve(ctx, l) }()
+
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatalf("%v: dialing the proxy after a transient Accept error: %v", errno, err)
+		}
+		status, _ := connect(t, c, "example.com:443")
+		c.Close()
+		cancel()
+
+		if !strings.Contains(status, "200") {
+			t.Errorf("%v: status = %q, want 200 - the fence stopped serving after a recoverable error", errno, status)
+		}
+		if l.failed() != 3 {
+			t.Errorf("%v: listener failed %d times, want 3 - the test did not exercise the retry", errno, l.failed())
+		}
+		if err := <-done; err != nil {
+			t.Errorf("%v: Serve = %v, want nil - the run ended cleanly", errno, err)
+		}
+	}
+}
+
+// The retry must not swallow the failure that ends the run: the closer goroutine ends
+// Serve by closing the listener, so treating net.ErrClosed as recoverable would spin
+// through teardown instead of returning.
+func TestServeStopsOnAClosedListener(t *testing.T) {
+	dir := t.TempDir()
+	base, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(nil, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx, base) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve = %v, want nil on a cancelled run", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after cancellation; a closed listener is being retried")
+	}
+}
+
+// An unrecoverable Accept error still ends Serve and is still reported, so the caller can
+// mark the run degraded. The retry narrows what counts as terminal; it does not remove it.
+func TestServeStillReportsAFatalAcceptError(t *testing.T) {
+	dir := t.TempDir()
+	base, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	l := &flakyListener{Listener: base, remaining: 1, err: acceptErr(syscall.EINVAL)}
+
+	p := New(nil, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := p.Serve(ctx, l); !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("Serve = %v, want the EINVAL that stopped it", err)
+	}
+}
+
+// The two refusals of an undeclared destination call for different operator action, and
+// this frame is the only one that can tell them apart: downstream sees one destination
+// and one verdict. Reporting a gate's "no" as an allowlist denial tells the human who
+// just answered the prompt that their manifest is missing a rule.
+func TestGateDenialIsReportedApartFromAllowlistDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gate func(context.Context, string, string) bool
+		want Decision
+	}{
+		{"no gate at all", nil, Denied},
+		{"a gate that refuses", func(context.Context, string, string) bool { return false }, GateDenied},
+	} {
+		var got []Decision
+		opts := []Option{WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, _, _ string) { got = append(got, d) })}
+		if tc.gate != nil {
+			opts = append(opts, WithGatekeeper(tc.gate))
+		}
+		p := New(nil, opts...)
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		status, _ := connect(t, c, "example.com:443")
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "403") {
+			t.Errorf("%s: status = %q, want 403", tc.name, status)
+		}
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s: decisions = %v, want exactly [%v]", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A supervised run with an empty network: block is the documented prompt-on-every-host
+// mode, so every refusal in it is the operator's own - nothing there is refused by an
+// allowlist that has no rules to refuse with.
+func TestGatedRunWithNoRulesNeverReportsAnAllowlistDenial(t *testing.T) {
+	var got []Decision
+	p := New(nil,
+		WithDialer(fakeDialer("HELLO")),
+		WithGatekeeper(func(_ context.Context, host, _ string) bool { return host == "ok.example" }),
+		WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+	dialProxy, stop := startProxy(t, p)
+	for _, target := range []string{"ok.example:443", "no.example:443"} {
+		c := dialProxy()
+		connect(t, c, target)
+		c.Close()
+	}
+	stop()
+
+	want := []Decision{AdmittedByGate, GateDenied}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("decisions = %v, want %v", got, want)
+	}
+}
+
+// A client speaking plain http:// through a proxy sends an absolute-URI request rather
+// than a CONNECT. The proxy tunnels CONNECT only, so the request is refused - but the
+// destination it named must reach the observer, or a manifest rule covering that host
+// reads as granted everywhere while carrying no traffic and nothing in the run says so.
+func TestUntunneledRequestReportsItsDestination(t *testing.T) {
+	for _, tc := range []struct{ line, host, port string }{
+		{"GET http://example.com/ HTTP/1.1", "example.com", "80"},
+		{"POST http://example.com:8080/x HTTP/1.1", "example.com", "8080"},
+		{"GET https://example.com/ HTTP/1.1", "example.com", "443"},
+		{"GET http://[2606:2800::1]/ HTTP/1.1", "2606:2800::1", "80"},
+		// The root label is stripped here as it is on the CONNECT path, so the reported
+		// destination matches the rule a user would write for it.
+		{"GET http://example.com./ HTTP/1.1", "example.com", "80"},
+	} {
+		var got []Decision
+		var gotHost, gotPort string
+		p := New([]policy.NetworkRule{{Host: "example.com", Port: "80"}},
+			WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, host, port string) {
+				got = append(got, d)
+				gotHost, gotPort = host, port
+			}))
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		fmt.Fprintf(c, "%s\r\nHost: example.com\r\n\r\n", tc.line)
+		status, _ := bufio.NewReader(c).ReadString('\n')
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "400") {
+			t.Errorf("%q: status = %q, want 400", tc.line, strings.TrimSpace(status))
+		}
+		if len(got) != 1 || got[0] != Untunneled {
+			t.Errorf("%q: decisions = %v, want exactly [%v]", tc.line, got, Untunneled)
+		}
+		if gotHost != tc.host || gotPort != tc.port {
+			t.Errorf("%q: reported %q:%q, want %q:%q", tc.line, gotHost, gotPort, tc.host, tc.port)
+		}
+	}
+}
+
+// The absolute-URI host reaches report(), the run's recorded destinations, and a
+// host-side render of them - exactly where a CONNECT target goes, so it gets exactly the
+// screen a CONNECT target gets. A target that fails it is still refused, but must be
+// reported with no destination rather than carrying an unscreened one onward.
+func TestUntunneledRequestScreensItsDestination(t *testing.T) {
+	for _, target := range []string{
+		"http://ex\x1bample.com/",
+		"http://ex\u202eample.com/",
+		"http://example.com:08080/",
+		"ftp://example.com/",
+		"/relative/path",
+	} {
+		var got []Decision
+		p := New(nil, WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", target)
+		status, _ := bufio.NewReader(c).ReadString('\n')
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "400") {
+			t.Errorf("%q: status = %q, want 400", target, strings.TrimSpace(status))
+		}
+		if len(got) != 0 {
+			t.Errorf("%q: reported %v, want nothing - an unscreened destination must not be carried", target, got)
+		}
+	}
+}
+
+// Profiling refuses every CONNECT it records, but a non-CONNECT request dies before that
+// branch is reached - which is why a plain-HTTP destination was silently absent from the
+// proposal. The report has to happen on the read path, in either mode.
+func TestUntunneledRequestIsReportedWhileProfiling(t *testing.T) {
+	var got []Decision
+	p := New(nil, WithoutEgress(),
+		WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+	dialProxy, stop := startProxy(t, p)
+	c := dialProxy()
+	fmt.Fprint(c, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
+		t.Fatalf("reading status: %v", err)
+	}
+	c.Close()
+	stop()
+
+	if len(got) != 1 || got[0] != Untunneled {
+		t.Errorf("decisions = %v, want exactly [%v]", got, Untunneled)
 	}
 }
 
@@ -1139,8 +1412,10 @@ func TestGatekeeperPanicIsDeny(t *testing.T) {
 	if !strings.Contains(status, "403") {
 		t.Fatalf("status = %q, want 403 (a panicking gate denies)", status)
 	}
-	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(Denied)) {
-		t.Errorf("observer saw %v, want a single deny", seen)
+	// Reported as a gate denial, not an allowlist one: the gate was consulted and did not
+	// admit, which is what that decision claims and the whole of what it claims.
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(GateDenied)) {
+		t.Errorf("observer saw %v, want a single gate deny", seen)
 	}
 }
 
@@ -1296,7 +1571,9 @@ func TestGatekeeperUnderConcurrencyOpensOnlyAdmittedTunnels(t *testing.T) {
 		case strings.HasPrefix(host, "admit"):
 			want = AdmittedByGate
 		case strings.HasPrefix(host, "deny"):
-			want = Denied
+			// The gate was consulted on these and refused, which is GateDenied - no rule
+			// covered them, so the allowlist alone never got the chance to refuse.
+			want = GateDenied
 		default:
 			want = Allowed // permitted by rule, so the gate was never consulted
 		}

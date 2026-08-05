@@ -23,11 +23,21 @@ import (
 // amd64 and refuses to decode any other ABI, so a tracee issuing i386 syscalls - a
 // 32-bit helper, or int 0x80 from a 64-bit process - has every one of those accesses
 // dropped rather than recorded. Nothing is fabricated, but the manifest is missing them,
-// and it becomes enforcement policy on the next run. Killing the process is what turns
-// that silent gap into a refused run: seccomp keys on the syscall ABI rather than the
+// and it becomes enforcement policy on the next run. Killing is what turns that silent
+// gap into a refused run - below kernel 4.14 it kills only the offending thread (see
+// seccompRetKillProcess), which still refuses the syscall but may leave the profile to
+// finish short a thread: seccomp keys on the syscall ABI rather than the
 // code segment, so it catches the int 0x80 case a register check would miss, and a
 // profile that cannot be trusted must not complete. It also closes i386 io_uring_setup,
 // which is 425 there too.
+//
+// Off amd64 the guard has no implementation, so this returns its error and refuses
+// rather than installing the ring block without it. That is the same argument taken to
+// its conclusion: on arm64 the block alone would assemble (go-seccomp-bpf has the
+// aarch64 syscall table and emits its audit-arch gate), but aarch32 would reach the
+// default-allow and leave the observation as incomplete as the guard exists to prevent.
+// Nothing reaches this refusal today, because profiling is gated on the observation
+// backend, which is amd64-only and is checked before a run launches.
 func BlockIoUring() error {
 	if err := blockForeignArch(); err != nil {
 		return err

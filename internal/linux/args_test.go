@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,7 +39,7 @@ func testSandbox(existing ...string) sandbox {
 			}
 			return false
 		},
-		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
+		rootDirs: func() ([]string, error) { return []string{"/usr", "/home", "/etc"}, nil },
 		// The hypothetical filesystem has no symlinks, so shields bind in place.
 		resolve: func(p string) string { return p },
 		// listDir returns the immediate SUBDIRECTORY names of p implied by the fake
@@ -540,6 +541,33 @@ func TestWriteGrantOfShieldIsRefused(t *testing.T) {
 	}
 }
 
+// The refusal a write grant gets must not send the author to add a read: grant. The
+// opt-in is read-only by construction, so a manifest that follows that advice is refused
+// again for the same reason - a loop with no exit. The read grant's own refusal still
+// offers it, since there it is the remedy.
+func TestWriteGrantRefusalDoesNotOfferTheReadOptIn(t *testing.T) {
+	write := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.ssh"}}
+	_, _, err := compile(write, enforce.Process{}, testSandbox("/home/u/.ssh"))
+	if err == nil {
+		t.Fatal("a write grant of ~/.ssh must be refused")
+	}
+	if strings.Contains(err.Error(), "opts in") {
+		t.Errorf("the write refusal names a remedy a write cannot take: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no opt-in for a write") {
+		t.Errorf("the write refusal must say why there is no way in: %v", err)
+	}
+
+	read := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh/pubkeys"}}
+	_, _, err = compile(read, enforce.Process{}, testSandbox("/home/u/.ssh"))
+	if err == nil {
+		t.Fatal("a read grant inside ~/.ssh must be refused")
+	}
+	if !strings.Contains(err.Error(), "opts in") {
+		t.Errorf("the read refusal must keep offering the opt-in: %v", err)
+	}
+}
+
 // A read opt-in exposes the shield read-only; it must not carry a co-present write
 // grant with it. Reading ~/.gnupg does not make its private-key directory writable.
 func TestReadOptInDoesNotLiftShieldForWrite(t *testing.T) {
@@ -597,6 +625,41 @@ func TestExtraDenyIsNotOptInable(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/proj/store"}}
 	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
 		t.Error("a caller extraDeny path must stay refused - it is not an opt-in-able built-in shield")
+	}
+}
+
+// A caller deny that lands on the same host path as a built-in shield must not be lifted
+// when the manifest opts the built-in in. Both consumers of the opt-in set match a bare
+// resolved path, so before this was closed the read grant was honored, no shield was
+// emitted, and the embedder's store was ro-bound into the sandbox with nothing said.
+func TestCallerDenyNotLiftedByBuiltinOptIn(t *testing.T) {
+	for _, tc := range []struct{ name, deny string }{
+		// The embedder names the built-in store defensively.
+		{"same path", "/home/u/.aws"},
+		// The embedder names its own store, which is a symlink onto the built-in's.
+		{"symlinked onto it", "/opt/agent/state/aws"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox("/home/u/.aws", "/home/u/.aws/credentials")
+			sb.resolve = func(p string) string {
+				if p == "/opt/agent/state/aws" {
+					return "/home/u/.aws"
+				}
+				return p
+			}
+			sb.extraDeny = []denylist.Rule{{Path: tc.deny, Deny: denylist.DenyAll, Dir: true}}
+			p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.aws"}}
+
+			_, _, err := compile(p, enforce.Process{}, sb)
+			if err == nil {
+				t.Fatal("a read grant of a caller-denied store must be refused, not honored as an opt-in")
+			}
+			// The built-in refusal offers a read opt-in; naming it here would send the
+			// author after an escape a caller deny does not have.
+			if strings.Contains(err.Error(), "opts in") {
+				t.Errorf("refusal must not offer the built-in opt-in for a caller deny: %v", err)
+			}
+		})
 	}
 }
 
@@ -1289,6 +1352,36 @@ func TestRootReadGrantExpandsToChildren(t *testing.T) {
 	}
 }
 
+// A root the host cannot enumerate must refuse the run. Expanding it to nothing binds
+// nothing while the deny-list still emits shields for the paths a "/" grant reaches, so
+// the run would exit 0 reporting confinement over a filesystem it never mounted.
+func TestRootReadGrantRefusesAnUnreadableRoot(t *testing.T) {
+	sb := testSandbox()
+	sb.rootDirs = func() ([]string, error) { return nil, errors.New("permission denied") }
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}
+
+	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
+		t.Error("a \"/\" read grant whose expansion fails must refuse the run, not bind nothing")
+	}
+}
+
+// The expansion feeds both the binds and the symlink decision, so it must be read once:
+// a second enumeration can disagree with the first, leaving a name bound that the
+// symlink pass never accounted for.
+func TestRootReadGrantEnumeratesTheRootOnce(t *testing.T) {
+	sb := testSandbox()
+	calls := 0
+	sb.rootDirs = func() ([]string, error) {
+		calls++
+		return []string{"/usr", "/home", "/etc"}, nil
+	}
+	compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}, sb)
+
+	if calls != 1 {
+		t.Errorf("the root expansion must be read once and carried; got %d reads", calls)
+	}
+}
+
 // The exec-block is a hardening layer: on a host without seccomp the launcher must
 // run the target without the filter (matching the LayerExec=Unavailable warning),
 // never hard-refuse to install one it cannot. StrictBlock always implies Block.
@@ -1687,7 +1780,7 @@ func TestReadRootShieldsHostRuntimeSockets(t *testing.T) {
 	sb := testSandbox("/run", "/run/docker.sock", "/usr", "/home", "/etc")
 	// The "/" expansion binds the host's root children, which is what puts /run in
 	// the sandbox in the first place; the default fake root omits it.
-	sb.rootDirs = func() []string { return []string{"/usr", "/home", "/etc", "/run"} }
+	sb.rootDirs = func() ([]string, error) { return []string{"/usr", "/home", "/etc", "/run"}, nil }
 	args := compileOrFail(t, &policy.Policy{Read: []string{"/"}}, sb)
 
 	if !has(args, "--tmpfs", "/run") {

@@ -29,7 +29,7 @@ func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 	exe, args := wrapWithLimits("sh", []string{
 		"-c",
 		"sleep 300 & echo $! > " + pidFile + "; sleep 1",
-	}, policy.Limits{Memory: "64M"})
+	}, policy.Limits{Memory: "64M"}, "")
 
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

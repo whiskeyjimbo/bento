@@ -53,7 +53,8 @@ func EgressSupported() bool { return true }
 // and AF_NETLINK pass, every other family (AF_INET, AF_INET6, AF_PACKET, AF_XDP,
 // AF_VSOCK, ...) is refused with EPERM. An allowlist is the guarantee: a denylist
 // would miss an address family we did not enumerate, and "no egress" must not depend
-// on remembering every wire family. A wrong architecture is killed, as is any x32-ABI
+// on remembering every wire family. A wrong architecture is killed (whole-process from
+// 4.14, thread-only below it - see seccompRetKillProcess), as is any x32-ABI
 // syscall (x32 shares the amd64 audit arch but tags its numbers, so an x32 socket()
 // would miss the equality check and slip through).
 func egressFilter() []unix.SockFilter {
@@ -98,9 +99,14 @@ func egressFilter() []unix.SockFilter {
 //
 // It filters socket CREATION, not I/O, so it cannot revoke a socket the target already
 // holds. The two ways to hold one are an inherited stdio descriptor, which the launcher
-// refuses before installing this filter (refuseNetworkStdio, whose family allowlist
-// mirrors this one), and an AF_UNIX SCM_RIGHTS passing - a documented residual, since
-// the filter allows AF_UNIX by design.
+// refuses before installing this filter (refuseNetworkStdio), and an AF_UNIX SCM_RIGHTS
+// passing - a documented residual, since the filter allows AF_UNIX by design.
+//
+// That launcher check's family allowlist is deliberately STRICTER than this one, and the
+// two must not be conflated: this filter governs creation inside the sandbox's fresh
+// netns, where a new AF_NETLINK socket binds to that netns and sees nothing of the host's,
+// so the family is permitted here. A netlink socket inherited on stdio was created in the
+// host's netns and stays bound to it, so refuseNetworkFD refuses the family outright.
 func BlockEgress() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)
