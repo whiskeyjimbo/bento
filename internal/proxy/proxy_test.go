@@ -97,6 +97,64 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 	}
 }
 
+// The two refusals of an undeclared destination call for different operator action, and
+// this frame is the only one that can tell them apart: downstream sees one destination
+// and one verdict. Reporting a gate's "no" as an allowlist denial tells the human who
+// just answered the prompt that their manifest is missing a rule.
+func TestGateDenialIsReportedApartFromAllowlistDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gate func(context.Context, string, string) bool
+		want Decision
+	}{
+		{"no gate at all", nil, Denied},
+		{"a gate that refuses", func(context.Context, string, string) bool { return false }, GateDenied},
+	} {
+		var got []Decision
+		opts := []Option{WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, _, _ string) { got = append(got, d) })}
+		if tc.gate != nil {
+			opts = append(opts, WithGatekeeper(tc.gate))
+		}
+		p := New(nil, opts...)
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		status, _ := connect(t, c, "example.com:443")
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "403") {
+			t.Errorf("%s: status = %q, want 403", tc.name, status)
+		}
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s: decisions = %v, want exactly [%v]", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A supervised run with an empty network: block is the documented prompt-on-every-host
+// mode, so every refusal in it is the operator's own - nothing there is refused by an
+// allowlist that has no rules to refuse with.
+func TestGatedRunWithNoRulesNeverReportsAnAllowlistDenial(t *testing.T) {
+	var got []Decision
+	p := New(nil,
+		WithDialer(fakeDialer("HELLO")),
+		WithGatekeeper(func(_ context.Context, host, _ string) bool { return host == "ok.example" }),
+		WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+	dialProxy, stop := startProxy(t, p)
+	for _, target := range []string{"ok.example:443", "no.example:443"} {
+		c := dialProxy()
+		connect(t, c, target)
+		c.Close()
+	}
+	stop()
+
+	want := []Decision{AdmittedByGate, GateDenied}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("decisions = %v, want %v", got, want)
+	}
+}
+
 // A client speaking plain http:// through a proxy sends an absolute-URI request rather
 // than a CONNECT. The proxy tunnels CONNECT only, so the request is refused - but the
 // destination it named must reach the observer, or a manifest rule covering that host
@@ -1232,8 +1290,10 @@ func TestGatekeeperPanicIsDeny(t *testing.T) {
 	if !strings.Contains(status, "403") {
 		t.Fatalf("status = %q, want 403 (a panicking gate denies)", status)
 	}
-	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(Denied)) {
-		t.Errorf("observer saw %v, want a single deny", seen)
+	// Reported as a gate denial, not an allowlist one: the gate was consulted and did not
+	// admit, which is what that decision claims and the whole of what it claims.
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(GateDenied)) {
+		t.Errorf("observer saw %v, want a single gate deny", seen)
 	}
 }
 
@@ -1389,7 +1449,9 @@ func TestGatekeeperUnderConcurrencyOpensOnlyAdmittedTunnels(t *testing.T) {
 		case strings.HasPrefix(host, "admit"):
 			want = AdmittedByGate
 		case strings.HasPrefix(host, "deny"):
-			want = Denied
+			// The gate was consulted on these and refused, which is GateDenied - no rule
+			// covered them, so the allowlist alone never got the chance to refuse.
+			want = GateDenied
 		default:
 			want = Allowed // permitted by rule, so the gate was never consulted
 		}

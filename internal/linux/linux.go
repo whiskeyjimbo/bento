@@ -208,7 +208,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -220,7 +220,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -626,8 +626,8 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 // egressCollector records the proxy's per-connection decisions for the run
 // result: a total count, the deduped set of hosts the gate admitted beyond
 // the manifest, the deduped set the upstream guard refused to dial, the
-// deduped set the allowlist itself refused, and the deduped set refused for
-// not being a CONNECT at all. The
+// deduped set the allowlist itself refused, the deduped set a consulted gate
+// refused, and the deduped set refused for not being a CONNECT at all. The
 // observer runs in each handler's own goroutine, so a mutex guards the shared
 // state; the gate itself is never called under this lock (it runs in the handler,
 // the observer only records the outcome).
@@ -637,6 +637,7 @@ type egressCollector struct {
 	admitted   map[string]enforce.HostPort
 	blocked    map[string]enforce.HostPort
 	denied     map[string]enforce.HostPort
+	gateDenied map[string]enforce.HostPort
 	untunneled map[string]enforce.HostPort
 }
 
@@ -667,6 +668,11 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.denied = make(map[string]enforce.HostPort)
 		}
 		c.denied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.GateDenied:
+		if c.gateDenied == nil {
+			c.gateDenied = make(map[string]enforce.HostPort)
+		}
+		c.gateDenied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	case proxy.Untunneled:
 		if c.untunneled == nil {
 			c.untunneled = make(map[string]enforce.HostPort)
@@ -703,6 +709,14 @@ func (c *egressCollector) allowlistDenied() []enforce.HostPort {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return sortedHostPorts(c.denied)
+}
+
+// gateRefused returns a copy of the set a consulted gate refused, sorted for the same
+// reason gateAdmitted is.
+func (c *egressCollector) gateRefused() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.gateDenied)
 }
 
 // untunneledDestinations returns a copy of the set refused for not being a CONNECT,

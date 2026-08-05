@@ -336,11 +336,21 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
-	// A denial is either half of this wrapper's own decision: a host no rule covered and
-	// the human declined at the prompt, or one the manifest simply does not carry. Both
-	// leave the target with a 403 it reports as its own failure, so the summary names the
-	// destination without claiming which - the human who answered a prompt already knows
-	// which one they said no to. Quoted for the reason the admitted list is.
+	// The destinations the human said no to at the prompt, which in this wrapper is where
+	// nearly every refusal lands: it supervises with the manifest's own rules, so anything
+	// not already granted reaches the gate. Named apart from Denied below so the summary
+	// does not tell the operator to add a rule for the host they just declined. Quoted for
+	// the reason the admitted list is.
+	if len(res.GateDenied) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused at the prompt"))
+		for _, hp := range res.GateDenied {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
+		}
+	}
+	// A destination the manifest did not carry and no gate was asked about. With a gate
+	// installed this stays empty - every such host goes to the prompt above - so it is the
+	// ungated run's half, kept because this wrapper's run path is reachable without one.
+	// Quoted for the same reason.
 	if len(res.Denied) > 0 {
 		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused: no network rule covers them, and none was admitted"))
 		for _, hp := range res.Denied {

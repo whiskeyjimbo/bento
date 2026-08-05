@@ -268,14 +268,20 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 		fmt.Fprintf(w, "embed: the egress guard refused %q port %s: it resolved to an address the sandbox may not reach (list a private address as an explicit IP rule to allow it)\n", hp.Host, hp.Port)
 	}
 	// Denied: destinations that were refused - no rule named them, and no gate admitted
-	// them. The target met the refusal as a 403 from the proxy inside its own error, with
-	// nothing naming the rule it fell outside of, so an embedder that stays quiet turns a
-	// one-letter typo in a manifest into a script that looks broken. It does not say which
-	// of the two refused it: a gate that declined is the same fact to the target, and a
-	// wrapper that asserted "no rule covers it" would misdescribe a host its own gate was
-	// asked about and said no to. Quoted: the target chose the name.
+	// no gate was there to be asked. The target met the refusal as a 403 from the proxy
+	// inside its own error, with nothing naming the rule it fell outside of, so an embedder
+	// that stays quiet turns a one-letter typo in a manifest into a script that looks
+	// broken. A host a gate declined is in GateDenied below instead, so this line's "no
+	// rule covers it" is true of everything it names. Quoted: the target chose the name.
 	for _, hp := range res.Denied {
 		fmt.Fprintf(w, "embed: egress to %q port %s was refused: no network rule covers it, and no gate admitted it\n", hp.Host, hp.Port)
+	}
+	// GateDenied: destinations a gate was asked about and refused. Reported apart from
+	// Denied because "no network rule covers it" misdescribes a host the embedder's own
+	// gate was consulted on and said no to - and under a gate with an empty network:
+	// block, every refusal is one of these. Quoted: the target chose the name.
+	for _, hp := range res.GateDenied {
+		fmt.Fprintf(w, "embed: egress to %q port %s was refused: the network gate did not admit it\n", hp.Host, hp.Port)
 	}
 	// Untunneled: destinations addressed without a CONNECT, which is what a client sends
 	// for plain http:// through a proxy. Reported apart from Denied because the remedy is

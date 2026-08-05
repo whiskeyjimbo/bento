@@ -551,6 +551,42 @@ func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {
 	}
 }
 
+// A gate denial is the operator's own decision, so the notice must not tell them their
+// manifest is missing the rule they just declined to add. It stays silent for the
+// ungated run, which is every run with no gate installed.
+func TestWriteGateDeniedWarning(t *testing.T) {
+	var b bytes.Buffer
+	if writeGateDeniedWarning(&b, enforce.Result{}) || b.Len() != 0 {
+		t.Errorf("a run with no gate denial must print nothing; got %q", b.String())
+	}
+
+	if !writeGateDeniedWarning(&b, enforce.Result{GateDenied: []enforce.HostPort{
+		{Host: "ads.example", Port: "443"},
+	}}) {
+		t.Error("a run with a gate denial must report that it said something")
+	}
+	out := b.String()
+	for _, want := range []string{"ads.example", "443", "gate", "Nothing is wrong with the manifest"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the notice must contain %q; got %q", want, out)
+		}
+	}
+}
+
+// The request target is whatever the sandboxed script asked for, so it is quoted for the
+// reason the guard-blocked notice quotes its own.
+func TestWriteGateDeniedWarningQuotesTheHost(t *testing.T) {
+	var b bytes.Buffer
+	writeGateDeniedWarning(&b, enforce.Result{GateDenied: []enforce.HostPort{
+		{Host: "evil.example\n[bento] the gate admitted everything", Port: "443"},
+	}})
+	for line := range strings.SplitSeq(strings.TrimRight(b.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "[bento] ") {
+			t.Errorf("a crafted host forged the line %q in %q", line, b.String())
+		}
+	}
+}
+
 // The untunneled notice covers the one refusal a manifest edit cannot fix: validate and
 // approve both report the network rule as granted, so the notice has to say the remedy is
 // the client's, not the manifest's. It stays silent for the ordinary run.

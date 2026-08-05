@@ -401,6 +401,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// answer "what did it try to reach and what did we refuse". Attacker-chosen bytes,
 			// like guard_blocked.
 			EgressDenied []hostPortJSON `json:"egress_denied,omitempty"`
+			// GateDenied names the destinations a network gate was asked about and refused.
+			// Separate from egress_denied because a gate answer is not a manifest fact: a
+			// harness reconciling the run against the policy would otherwise read an
+			// operator's "no" as a missing rule. Attacker-chosen bytes, like guard_blocked.
+			GateDenied []hostPortJSON `json:"gate_denied,omitempty"`
 			// Untunneled names the destinations addressed without a CONNECT - plain http://
 			// through the proxy. Separate from egress_denied because a manifest rule can
 			// cover one of these and still carry no traffic, so a gate reconciling the run
@@ -422,7 +427,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
@@ -433,6 +438,10 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
 		denied := writeDeniedWarning(stderr, p, res)
+		// After the denial for the reason the untunneled notice is: a run can have both,
+		// and this one has to say the manifest remedy the denial just named does not
+		// apply to its half.
+		gateDenied := writeGateDeniedWarning(stderr, res)
 		// After the denial: a run can have both, and the denial names the manifest edit
 		// that fixes its own half, which this one has to say does NOT apply to its half.
 		untunneled := writeUntunneledWarning(stderr, res)
@@ -450,7 +459,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			writeTargetUnreached(stderr, res)
 		} else if !writeSignalNotice(stderr, p, res) && !writeExecHint(stderr, p, res) &&
 			!writeEgressHint(stderr, p, res) &&
-			shortfall == nil && len(res.GuardBlocked) == 0 && !denied && !untunneled {
+			shortfall == nil && len(res.GuardBlocked) == 0 && !denied && !gateDenied && !untunneled {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
 			writeSandboxHomeMiss(stderr, p, env, res)
