@@ -363,7 +363,7 @@ func TestUnreadableDirectoryIsCounted(t *testing.T) {
 	if err := os.Chmod(closed, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(closed, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
 
 	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
