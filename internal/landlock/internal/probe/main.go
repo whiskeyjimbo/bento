@@ -36,6 +36,24 @@
 // ruleset instead of intersecting the right away would return no error while confining
 // nothing.
 //
+// Usage: probe procmem <read-dir>
+// Starts a child, reaches into its /proc/<pid>/mem and /proc/<pid>/fd once unrestricted,
+// then applies the DEGRADED ruleset with read-dir as the sole read grant and reaches
+// again. Prints "procmem_baseline=... procmem_restricted=... procfd_baseline=...
+// procfd_restricted=...", each OK|DENIED. Pass "/" to grant the broadest read there is:
+// what this observes is that both reaches are denied even then, because Landlock's
+// ptrace check - not the read set - is what covers them.
+//
+// Usage: probe procmemchild <read-dir>
+// The same, except the child is started AFTER the ruleset is applied, so it inherits
+// the domain. Prints "procmem_samedomain=... procfd_samedomain=...". This is the
+// control: both must be OK, or the denials above would be the host's ptrace_scope
+// rather than Landlock.
+//
+// Usage: probe sleeper
+// Blocks until killed. The two modes above re-exec this as their child rather than
+// depending on a sleep(1) on PATH.
+//
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
 // whose /sys/kernel/security has been masked, reproducing a container.
@@ -45,8 +63,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
@@ -62,6 +84,17 @@ func main() {
 	}
 	if len(os.Args) == 7 && os.Args[1] == "degraded" {
 		degraded(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6])
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "sleeper" {
+		select {}
+	}
+	if len(os.Args) == 3 && os.Args[1] == "procmem" {
+		procMem(os.Args[2])
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "procmemchild" {
+		procMemSameDomain(os.Args[2])
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "available" {
@@ -115,6 +148,112 @@ func degraded(read, write, outside, ungranted, granted string) {
 	}
 	fmt.Printf("degraded_outside=%s degraded_unixconnect=%s degraded_grantedsocket=%s\n",
 		readable(outside), dial(ungranted), dial(granted))
+}
+
+// procMem reads a child's /proc/<pid>/mem before and after the degraded ruleset is
+// applied. The child is started FIRST, so it stays outside the domain this process
+// creates - the position every host process is in relative to a degraded run.
+//
+// The before/after pair is what makes the result readable: a host whose ptrace_scope
+// forbids the read outright reports DENIED for both, and the caller skips rather than
+// crediting Landlock with a denial the host would have made anyway.
+func procMem(read string) {
+	child, err := startSleeper()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sleeper:", err)
+		os.Exit(2)
+	}
+	defer func() { _ = child.Kill() }()
+
+	baseline, fdBaseline := memReadable(child.Pid), fdReachable(child.Pid)
+	if err := landlock.RestrictDegraded([]string{read}, nil, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("procmem_baseline=%s procmem_restricted=%s procfd_baseline=%s procfd_restricted=%s\n",
+		baseline, memReadable(child.Pid), fdBaseline, fdReachable(child.Pid))
+}
+
+// procMemSameDomain starts the child AFTER restricting, so it inherits the domain and
+// the ptrace check permits the read. Without this arm the denial in procMem would not
+// be attributable to Landlock.
+func procMemSameDomain(read string) {
+	if err := landlock.RestrictDegraded([]string{read}, nil, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	child, err := startSleeper()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sleeper:", err)
+		os.Exit(2)
+	}
+	defer func() { _ = child.Kill() }()
+	fmt.Printf("procmem_samedomain=%s procfd_samedomain=%s\n", memReadable(child.Pid), fdReachable(child.Pid))
+}
+
+// startSleeper re-execs this binary in its sleeper mode. Its descriptors are the
+// probe's own already-open ones: the default would have os/exec open /dev/null, which
+// a restricted caller has no write grant for.
+func startSleeper() (*os.Process, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(self, "sleeper")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	// The read below needs the child's address space mapped, which it is not until the
+	// exec completes; poll for the maps rather than racing it.
+	for range 100 {
+		if _, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", cmd.Process.Pid)); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cmd.Process, nil
+}
+
+// memReadable opens the target's /proc/<pid>/mem and reads a byte from the first
+// readable mapping. The open alone is not enough: it succeeds under a permissive
+// ptrace_scope and only the read enters mm_access.
+func memReadable(pid int) string {
+	maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return "DENIED"
+	}
+	f, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
+	if err != nil {
+		return "DENIED"
+	}
+	defer f.Close()
+	for line := range strings.SplitSeq(string(maps), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasPrefix(fields[1], "r") {
+			continue
+		}
+		lo, err := strconv.ParseUint(strings.Split(fields[0], "-")[0], 16, 64)
+		if err != nil {
+			continue
+		}
+		if _, err := f.ReadAt(make([]byte, 1), int64(lo)); err == nil {
+			return "OK"
+		}
+	}
+	return "DENIED"
+}
+
+// fdReachable resolves the target's /proc/<pid>/fd/0 magic link, the other half of the
+// procfs cross-process reach: following one reopens the file the target holds, with the
+// opener's own credentials rather than the grants. Readlink is enough - it takes the
+// same ptrace check the open does. Listing the directory is NOT: readdir yields bare
+// descriptor numbers and is permitted either way, so it would report OK regardless.
+func fdReachable(pid int) string {
+	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/0", pid)); err != nil {
+		return "DENIED"
+	}
+	return "OK"
 }
 
 func dial(socket string) string {

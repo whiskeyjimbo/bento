@@ -306,6 +306,53 @@ func TestRestrictDegradedGrantsResolveUnixOnWritesOnly(t *testing.T) {
 	}
 }
 
+// The degraded tier's cross-process memory guarantee rests on Landlock's ptrace check,
+// NOT on /proc being absent from the read set - the read set is user-supplied, and
+// nothing refuses a manifest that says read: /, which grants /proc recursively along
+// with everything else. What actually holds is that Landlock refuses ptrace_may_access
+// against a process outside the domain, and /proc/<pid>/mem goes through mm_access,
+// which is that check. So the broadest read grant expressible still cannot reach a host
+// process's address space.
+//
+// The probe grants "/" deliberately: a narrower grant would leave the reason for the
+// denial ambiguous between the read set and the ptrace check, and the read set is the
+// half that does not hold.
+func TestRestrictDegradedDeniesOutsideProcessMemory(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	out, err := exec.Command(bin, "procmem", "/").CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	// Under ptrace_scope 2 or 3 the host forbids the read whatever Landlock does, so a
+	// DENIED result there would credit Landlock with a denial it did not make.
+	if strings.Contains(got, "procmem_baseline=DENIED") {
+		t.Skipf("this host forbids the unrestricted read too, so the restricted one proves nothing: %q", got)
+	}
+	if !strings.Contains(got, "procmem_restricted=DENIED") {
+		t.Errorf("a read grant of \"/\" reopened another process's memory through /proc/<pid>/mem: %q", got)
+	}
+	if !strings.Contains(got, "procfd_restricted=DENIED") {
+		t.Errorf("a read grant of \"/\" reopened another process's descriptors through /proc/<pid>/fd: %q", got)
+	}
+
+	// The control. Without it the denial above could be any blanket ptrace refusal
+	// rather than Landlock's domain comparison, and the test would keep passing if the
+	// domain check were removed and replaced with something that denied everything.
+	out, err = exec.Command(bin, "procmemchild", "/").CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got = strings.TrimSpace(string(out))
+	if !strings.Contains(got, "procmem_samedomain=OK") || !strings.Contains(got, "procfd_samedomain=OK") {
+		t.Errorf("a process inside the domain must stay reachable, or the denials above are not the domain check: %q", got)
+	}
+}
+
 // listen binds a unix listener at path and serves it for the test's duration, returning
 // path. The accept loop only has to complete the handshake - the probe reports whether the
 // connect succeeded, and nothing is sent.

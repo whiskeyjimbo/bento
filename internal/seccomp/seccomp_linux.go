@@ -105,8 +105,13 @@ func BlockExec() error {
 // os/exec manages a child with those two plus waitid, which the launcher's exec:all
 // supervise path relies on; blocking the whole pidfd family would break bento's own
 // child management. The remaining cross-process reach vectors - /proc/<pid>/mem and
-// /proc/<pid>/fd/<n> - are FILE accesses, already denied because /proc is not in the
-// degraded Landlock read set. seccomp and Landlock split the work.
+// /proc/<pid>/fd/<n> - are FILE accesses, denied by Landlock's ptrace check rather than
+// by this filter: both go through ptrace_may_access, and Landlock refuses that against
+// any process outside the domain the degraded tier creates. Every host process is
+// outside it, and only the target's own descendants, which share its domain, stay
+// reachable. The read SET does not cover this and must not be credited with it: it is
+// user-supplied, and a manifest saying read: / grants /proc recursively with nothing
+// refusing it. TestRestrictDegradedDeniesOutsideProcessMemory pins the distinction.
 func BlockProcessReach() error {
 	if err := blockForeignArch(); err != nil {
 		return err
