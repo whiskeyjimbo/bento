@@ -1100,15 +1100,8 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	return checkGrantNotLooped(p)
 }
 
-// checkNotShielded rejects a grant that falls inside a fully-shielded location
-// (a DenyAll deny-list directory such as ~/.ssh). Such a grant cannot be honored
-// - the shield wins - so silently dropping it would leave the user believing a
-// path is available when it is not. A READ grant that *contains* a shield is fine
-// and common (read: ~ with ~/.ssh shielded inside it); a WRITE grant that contains
-// one is refused separately by checkWriteNotAboveShield, since it would make the
-// shield's parent writable.
-// checkReadNotShielded and checkWriteNotShielded are the two kinds the check comes in.
-// They share every rule and differ only in the sentence they refuse with, because the
+// checkReadNotShielded and checkWriteNotShielded are the two kinds the check below comes
+// in. They share every rule and differ only in the sentence they refuse with, because the
 // read opt-in InsideShield names is read-only by construction (see explicitShieldOptIns)
 // - naming it to the author of a write grant instructs them to add a line that will not
 // lift their refusal.
@@ -1120,6 +1113,16 @@ func checkWriteNotShielded(sb sandbox, writes []string) error {
 	return checkNotShielded(sb, writes, nil, grantrefusal.WriteInsideShield)
 }
 
+// checkNotShielded rejects a grant that falls inside a fully-shielded location
+// (a DenyAll deny-list directory such as ~/.ssh). Such a grant cannot be honored
+// - the shield wins - so silently dropping it would leave the user believing a
+// path is available when it is not. A READ grant that *contains* a shield is fine
+// and common (read: ~ with ~/.ssh shielded inside it); a WRITE grant that contains
+// one is refused separately by checkWriteNotAboveShield, since it would make the
+// shield's parent writable.
+//
+// refuse is the sentence the grant's kind is refused in; the two wrappers above are the
+// only callers, so a third kind cannot arrive without choosing one.
 func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(grant, shield string) error) error {
 	rules := alwaysShields(sb)
 	for _, g := range grants {
