@@ -1298,3 +1298,78 @@ func TestToReportJSONEmptyReportIsNotACleanPosture(t *testing.T) {
 		t.Error("layers must serialize as [] rather than null")
 	}
 }
+
+// A relocation variable accepts any absolute path, so a shield can land on something the
+// run needs and the failure surfaces as an ENOENT naming only the target. The summary is
+// where an operator who just hit that reads why, so it must put the variable beside the
+// path - and must stay a bare count where every shield sits at its default.
+func TestShieldSummaryNamesTheRelocatingVariable(t *testing.T) {
+	var b bytes.Buffer
+	writeShieldSummary(&b, enforce.Result{Shields: []enforce.ShieldApplied{
+		{Path: "/home/u/.ssh", Kind: "hidden"},
+		{Path: "/usr/bin/python3", Kind: "hidden", Source: "HISTFILE"},
+	}})
+	out := b.String()
+	for _, want := range []string{"HISTFILE", "/usr/bin/python3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary must name the variable and its target; %q missing from %q", want, out)
+		}
+	}
+	if strings.Contains(out, "/home/u/.ssh") {
+		t.Errorf("a shield at its default path needs no line of its own; got %q", out)
+	}
+
+	var quiet bytes.Buffer
+	writeShieldSummary(&quiet, enforce.Result{Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}})
+	if strings.Contains(quiet.String(), "environment variable") {
+		t.Errorf("a run with no relocated shield must stay a count; got %q", quiet.String())
+	}
+}
+
+// One variable can relocate a whole group - ZDOTDIR takes the entire zsh startup set - and
+// a line per path would bury every other variable under it.
+func TestShieldSummaryGroupsAGroupRelocation(t *testing.T) {
+	var b bytes.Buffer
+	writeShieldSummary(&b, enforce.Result{Shields: []enforce.ShieldApplied{
+		{Path: "/z/.zshrc", Kind: "read-only", Source: "ZDOTDIR"},
+		{Path: "/z/.zshenv", Kind: "read-only", Source: "ZDOTDIR"},
+		{Path: "/z/.zprofile", Kind: "read-only", Source: "ZDOTDIR"},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "3 shields under") || !strings.Contains(out, `"/z"`) {
+		t.Errorf("a group relocation must collapse to its common directory; got %q", out)
+	}
+	if strings.Contains(out, ".zshrc") {
+		t.Errorf("the group must not be listed per path; got %q", out)
+	}
+}
+
+// Doctor is where an operator can see a relocation BEFORE a run breaks on it. It must stay
+// silent on an ordinary host, where the only variable of this kind that is normally set is
+// XDG_RUNTIME_DIR - whose one reportable case the anchors block above already covers, so
+// repeating it here would be the noise that report exists to stay clear of.
+func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	var quiet bytes.Buffer
+	writeRelocatedShields(&quiet)
+	if quiet.Len() != 0 {
+		t.Errorf("a host with no relocation must produce no lines; got %q", quiet.String())
+	}
+
+	t.Setenv("HISTFILE", "/usr/bin/python3")
+	var b bytes.Buffer
+	writeRelocatedShields(&b)
+	out := b.String()
+	for _, want := range []string{"HISTFILE", strconv.Quote("/usr/bin/python3")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor must name the variable and its target; %q missing from %q", want, out)
+		}
+	}
+	if strings.Contains(out, "XDG_RUNTIME_DIR") {
+		t.Errorf("the ordinary runtime dir must not be relisted here; got %q", out)
+	}
+}
