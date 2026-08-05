@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,6 +95,119 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("target %q: expected a rejection naming %q; got %v", tc.target, tc.want, err)
 		}
+	}
+}
+
+// flakyListener wraps a listener and makes the first n Accept calls fail with err, so a
+// transient host condition can be reproduced without one: ENFILE is caused by processes
+// outside bento and cannot be provoked from a test.
+type flakyListener struct {
+	net.Listener
+	mu        sync.Mutex
+	remaining int
+	err       error
+	failures  int
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	if l.remaining > 0 {
+		l.remaining--
+		l.failures++
+		l.mu.Unlock()
+		return nil, l.err
+	}
+	l.mu.Unlock()
+	return l.Listener.Accept()
+}
+
+func (l *flakyListener) failed() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures
+}
+
+// The egress fence has to outlive a transient Accept failure. The host can hit ENFILE for
+// a moment because of processes bento knows nothing about; if that ended Serve, the unix
+// socket would stay bind-mounted into the sandbox with nothing behind it, and every later
+// CONNECT would meet a dead socket rather than an allowlist decision - the run's egress
+// silently unenforced-by-absence for its whole remaining lifetime.
+func TestServeSurvivesATransientAcceptError(t *testing.T) {
+	for _, errno := range []error{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED} {
+		dir := t.TempDir()
+		sock := dir + "/proxy.sock"
+		base, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := &flakyListener{Listener: base, remaining: 3, err: errno}
+
+		p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.Serve(ctx, l) }()
+
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatalf("%v: dialing the proxy after a transient Accept error: %v", errno, err)
+		}
+		status, _ := connect(t, c, "example.com:443")
+		c.Close()
+		cancel()
+
+		if !strings.Contains(status, "200") {
+			t.Errorf("%v: status = %q, want 200 - the fence stopped serving after a recoverable error", errno, status)
+		}
+		if l.failed() != 3 {
+			t.Errorf("%v: listener failed %d times, want 3 - the test did not exercise the retry", errno, l.failed())
+		}
+		if err := <-done; err != nil {
+			t.Errorf("%v: Serve = %v, want nil - the run ended cleanly", errno, err)
+		}
+	}
+}
+
+// The retry must not swallow the failure that ends the run: the closer goroutine ends
+// Serve by closing the listener, so treating net.ErrClosed as recoverable would spin
+// through teardown instead of returning.
+func TestServeStopsOnAClosedListener(t *testing.T) {
+	dir := t.TempDir()
+	base, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(nil, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx, base) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve = %v, want nil on a cancelled run", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after cancellation; a closed listener is being retried")
+	}
+}
+
+// An unrecoverable Accept error still ends Serve and is still reported, so the caller can
+// mark the run degraded. The retry narrows what counts as terminal; it does not remove it.
+func TestServeStillReportsAFatalAcceptError(t *testing.T) {
+	dir := t.TempDir()
+	base, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	l := &flakyListener{Listener: base, remaining: 1, err: syscall.EINVAL}
+
+	p := New(nil, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := p.Serve(ctx, l); !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("Serve = %v, want the EINVAL that stopped it", err)
 	}
 }
 
