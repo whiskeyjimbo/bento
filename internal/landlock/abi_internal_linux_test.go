@@ -2,7 +2,11 @@ package landlock
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	ll "github.com/landlock-lsm/go-landlock/landlock"
 )
 
 // The availability gate and the enforcement path must detect the same effective ABI.
@@ -28,6 +32,37 @@ func TestFlooredABI(t *testing.T) {
 func TestAvailableMatchesEffectiveABI(t *testing.T) {
 	if Available() != (effectiveABI() >= 1) {
 		t.Errorf("Available()=%v but effectiveABI()=%d; the gate and enforcement detection disagree", Available(), effectiveABI())
+	}
+}
+
+// A path that cannot be stat'd is not the same fact as a path that is absent. Dropping
+// it builds a ruleset that denies a granted path, and the target then gets EACCES with
+// nothing naming Landlock - so the errno has to reach the caller. ENOTDIR is the arm
+// used here because it does not depend on the test's uid.
+func TestClassifyRulesSeparatesMissingFromUnstattable(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "regular")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := classifyRules(nil, []string{filepath.Join(dir, "absent")}, ll.RODirs, ll.ROFiles)
+	if err != nil {
+		t.Errorf("a missing path must be skipped, not refused; got %v", err)
+	}
+	if len(rules) != 0 {
+		t.Errorf("a missing path must contribute no rule; got %d", len(rules))
+	}
+
+	under := filepath.Join(file, "child")
+	if _, err := classifyRules(nil, []string{under}, ll.RWDirs, ll.RWFiles); err == nil {
+		t.Errorf("a path under a regular file must be refused, not silently dropped")
+	}
+	if _, err := existing([]string{under}); err == nil {
+		t.Errorf("an entrypoint that cannot be stat'd must be refused, not silently dropped")
+	}
+	if got, err := existing([]string{filepath.Join(dir, "absent"), file}); err != nil || len(got) != 1 {
+		t.Errorf("existing must keep the paths that exist and skip the absent one; got %v, %v", got, err)
 	}
 }
 

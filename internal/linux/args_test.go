@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,7 +39,7 @@ func testSandbox(existing ...string) sandbox {
 			}
 			return false
 		},
-		rootDirs: func() []string { return []string{"/usr", "/home", "/etc"} },
+		rootDirs: func() ([]string, error) { return []string{"/usr", "/home", "/etc"}, nil },
 		// The hypothetical filesystem has no symlinks, so shields bind in place.
 		resolve: func(p string) string { return p },
 		// listDir returns the immediate SUBDIRECTORY names of p implied by the fake
@@ -1324,6 +1325,36 @@ func TestRootReadGrantExpandsToChildren(t *testing.T) {
 	}
 }
 
+// A root the host cannot enumerate must refuse the run. Expanding it to nothing binds
+// nothing while the deny-list still emits shields for the paths a "/" grant reaches, so
+// the run would exit 0 reporting confinement over a filesystem it never mounted.
+func TestRootReadGrantRefusesAnUnreadableRoot(t *testing.T) {
+	sb := testSandbox()
+	sb.rootDirs = func() ([]string, error) { return nil, errors.New("permission denied") }
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}
+
+	if _, _, err := compile(p, enforce.Process{}, sb); err == nil {
+		t.Error("a \"/\" read grant whose expansion fails must refuse the run, not bind nothing")
+	}
+}
+
+// The expansion feeds both the binds and the symlink decision, so it must be read once:
+// a second enumeration can disagree with the first, leaving a name bound that the
+// symlink pass never accounted for.
+func TestRootReadGrantEnumeratesTheRootOnce(t *testing.T) {
+	sb := testSandbox()
+	calls := 0
+	sb.rootDirs = func() ([]string, error) {
+		calls++
+		return []string{"/usr", "/home", "/etc"}, nil
+	}
+	compileOrFail(t, &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}, sb)
+
+	if calls != 1 {
+		t.Errorf("the root expansion must be read once and carried; got %d reads", calls)
+	}
+}
+
 // The exec-block is a hardening layer: on a host without seccomp the launcher must
 // run the target without the filter (matching the LayerExec=Unavailable warning),
 // never hard-refuse to install one it cannot. StrictBlock always implies Block.
@@ -1722,7 +1753,7 @@ func TestReadRootShieldsHostRuntimeSockets(t *testing.T) {
 	sb := testSandbox("/run", "/run/docker.sock", "/usr", "/home", "/etc")
 	// The "/" expansion binds the host's root children, which is what puts /run in
 	// the sandbox in the first place; the default fake root omits it.
-	sb.rootDirs = func() []string { return []string{"/usr", "/home", "/etc", "/run"} }
+	sb.rootDirs = func() ([]string, error) { return []string{"/usr", "/home", "/etc", "/run"}, nil }
 	args := compileOrFail(t, &policy.Policy{Read: []string{"/"}}, sb)
 
 	if !has(args, "--tmpfs", "/run") {
