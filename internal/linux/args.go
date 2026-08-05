@@ -646,6 +646,63 @@ func alwaysShields(sb sandbox) []denylist.Rule {
 	return append(rules, sb.extraDeny...)
 }
 
+// appliedShield is a deny-list rule paired with the path its shield actually mounts
+// at. The rule is kept whole because a refusal names the path the deny-list built
+// (~/.gnupg), not the target the host's symlinks lead to.
+type appliedShield struct {
+	rule     denylist.Rule
+	resolved string
+}
+
+// appliedShields returns the always-on shields as denyArgs will really apply them:
+// resolved, with the rules denyArgs drops removed. Every grant check goes through
+// this, so a refusal can never be raised over a shield that was never mounted, and a
+// drop condition added to denyArgs cannot land on one check and miss the siblings.
+func appliedShields(sb sandbox) []appliedShield {
+	homes := resolvedHomes(sb)
+	var out []appliedShield
+	for _, r := range alwaysShields(sb) {
+		if rp, ok := shieldTarget(sb, r.Path, homes); ok {
+			out = append(out, appliedShield{rule: r, resolved: rp})
+		}
+	}
+	return out
+}
+
+// shieldTarget resolves a deny-list path to where its shield would mount and reports
+// whether denyArgs applies it at all. Two resolutions leave nothing to shield:
+//
+//   - the root, which a deny dotfile symlinked to "/" reaches: tmpfs or binding over
+//     it would swallow the whole sandbox root;
+//   - a path that moved onto a home or an ancestor of one, where the shield would hide
+//     everything the policy granted rather than one store. Only where resolution MOVED
+//     it: denylist.Shieldable already guarded what it chose to emit and deliberately
+//     exempts a store that IS an anchor ($HOME=/home/u/.aws beside a passwd home of
+//     /home/u), which a blanket test here would silently unshield.
+//
+// homes are the run's anchors already resolved, hoisted by the caller because every
+// caller tests many rules against one set.
+func shieldTarget(sb sandbox, literal string, homes []string) (string, bool) {
+	rp := sb.resolve(literal)
+	if rp == "/" {
+		return "", false
+	}
+	if rp != literal && !denylist.Shieldable(rp, homes) {
+		return "", false
+	}
+	return rp, true
+}
+
+// resolvedHomes is the run's home anchors as the host's symlinks leave them, the form
+// shieldTarget compares a moved shield against.
+func resolvedHomes(sb sandbox) []string {
+	homes := make([]string, len(sb.homes))
+	for i, h := range sb.homes {
+		homes[i] = sb.resolve(h)
+	}
+	return homes
+}
+
 // homeShields is the credential deny-list anchored on every home the run knows about.
 func homeShields(sb sandbox) []denylist.Rule {
 	var rules []denylist.Rule
@@ -787,21 +844,9 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// (never at a symlink, which aborts the run). Two rules that resolve to the same
 	// real path (/var/run and /run on a merged host) collapse to one; only the
 	// identical rule is dropped, so a path shielded two different ways keeps both.
-	// denylist.Shieldable declines a relocation target that swallows a home, but it is a
-	// lexical test on the unresolved path, so GNUPGHOME=/home/u where the passwd entry
-	// reads /export/home/u passes it and lands here as a rule on the whole home. Repeating
-	// it on the resolved paths closes that spelling.
-	//
-	// Only where resolution MOVED the path. denylist applies its own guard to everything
-	// it chose to emit, and deliberately exempts the base store rules: where an anchor is
-	// itself a store ($HOME=/home/u/.aws beside a passwd home of /home/u), the rule on
-	// that store equals an anchor and a blanket test here would drop it - silently
-	// unshielding the credentials it exists to hide. What denylist could not judge is
-	// where a path lands once the host's symlinks are followed, so that is all this adds.
-	homes := make([]string, len(sb.homes))
-	for i, h := range sb.homes {
-		homes[i] = sb.resolve(h)
-	}
+	// shieldTarget carries the drops, shared with the grant checks so neither side can
+	// refuse over a shield the other never applied.
+	homes := resolvedHomes(sb)
 	// Keyed on what the shield actually does and not on the whole rule: two rules can
 	// name one resolved path and differ only in fields that describe it to a reader
 	// (which store it holds, which env var put it there). Those produce byte-identical
@@ -815,18 +860,11 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	seen := map[shieldKey]int{}
 	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
-		literal := r.Path
-		r.Path = sb.resolve(r.Path)
-		if r.Path == "/" {
-			// A deny dotfile that resolves to the root (a symlink to "/") would
-			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
+		rp, ok := shieldTarget(sb, r.Path, homes)
+		if !ok {
 			continue
 		}
-		if r.Path != literal && !denylist.Shieldable(r.Path, homes) {
-			// Resolution landed it on a home or an ancestor of one, where the shield
-			// would hide everything the policy granted rather than one store.
-			continue
-		}
+		r.Path = rp
 		k := shieldKey{r.Path, r.Deny, r.Dir}
 		if i, ok := seen[k]; ok {
 			// One path can be both a default store under one anchor and a relocation
@@ -927,10 +965,15 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 // mount point for them and there is nothing to clean up.
 func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []string) {
 	rules := shieldRules(sb, writes)
+	homes := resolvedHomes(sb)
 	seen := map[string]bool{}
 	for _, r := range rules {
-		r.Path = sb.resolve(r.Path)
-		if r.Path == "/" || !shieldNeeded(r, sb, grants, writes, optIns) || sb.exists(r.Path) {
+		rp, ok := shieldTarget(sb, r.Path, homes)
+		if !ok {
+			continue
+		}
+		r.Path = rp
+		if !shieldNeeded(r, sb, grants, writes, optIns) || sb.exists(r.Path) {
 			continue
 		}
 		if r.Dir {
@@ -1144,21 +1187,15 @@ func checkWriteNotShielded(sb sandbox, writes []string) error {
 // refuse is the sentence the grant's kind is refused in; the two wrappers above are the
 // only callers, so a third kind cannot arrive without choosing one.
 func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(grant, shield string) error) error {
-	rules := alwaysShields(sb)
+	// The shields as denyArgs applies them: resolved, so a grant naming a symlinked
+	// shield's real target (write: /data/keys with ~/.ssh -> /data/keys) is caught
+	// rather than silently honored, and with denyArgs' drops carried, so a rule it
+	// never mounts cannot refuse a run and blame an unrelated dotfile for it.
+	shields := appliedShields(sb)
 	for _, g := range grants {
-		for _, r := range rules {
+		for _, s := range shields {
+			r, rp := s.rule, s.resolved
 			if r.Deny != denylist.DenyAll {
-				continue
-			}
-			// Resolve the rule path as grants are resolved, so a grant that names a
-			// symlinked shield's real target (write: /data/keys with ~/.ssh ->
-			// /data/keys) is still caught, not silently honored.
-			rp := sb.resolve(r.Path)
-			// A rule resolving to "/" covers every absolute grant, so it would refuse
-			// every run and name an unrelated dotfile as the cause. denyArgs drops such a
-			// rule rather than shielding the whole root, so the refusal would be over a
-			// shield that was never applied.
-			if rp == "/" {
 				continue
 			}
 			// A READ grant that names the shielded path itself is a deliberate, warned
@@ -1217,21 +1254,14 @@ func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(gra
 // the write grants themselves (.git/hooks and .vscode under a granted checkout), so
 // refusing a grant that contains them would refuse every project write grant.
 func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
+	shields := appliedShields(sb)
 	for _, g := range writes {
-		for _, r := range alwaysShields(sb) {
-			if r.Deny != denylist.DenyWrite {
+		for _, s := range shields {
+			if s.rule.Deny != denylist.DenyWrite {
 				continue
 			}
-			// Resolved as the grants are, so a write naming a symlinked shield's real
-			// target is caught rather than silently no-op'd. A rule resolving to "/" is
-			// skipped for the same reason denyArgs never shields it: it would swallow
-			// every write grant and blame an unrelated dotfile for it.
-			rp := sb.resolve(r.Path)
-			if rp == "/" {
-				continue
-			}
-			if policy.CoversResolved(rp, g) {
-				return grantrefusal.WriteUnderReadOnlyShield(g, r.Path)
+			if policy.CoversResolved(s.resolved, g) {
+				return grantrefusal.WriteUnderReadOnlyShield(g, s.rule.Path)
 			}
 		}
 	}
@@ -1395,11 +1425,16 @@ func checkWriteNotRoot(writes []string) error {
 }
 
 func checkWriteNotAboveShield(sb sandbox, writes []string) error {
+	// Only the shields denyArgs really mounts: a rule it drops protects nothing, so
+	// refusing a grant that sits above it would blame a shield that never existed.
+	// The comparison below stays on the literal path - see the loc comment.
+	shields := appliedShields(sb)
 	for _, w := range writes {
 		if w == "/" {
 			continue // rejected with a clearer message by checkWriteNotRoot
 		}
-		for _, r := range alwaysShields(sb) {
+		for _, s := range shields {
+			r := s.rule
 			if r.Deny != denylist.DenyAll {
 				continue
 			}
