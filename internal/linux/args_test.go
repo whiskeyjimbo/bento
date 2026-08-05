@@ -43,8 +43,8 @@ func testSandbox(existing ...string) sandbox {
 		// The hypothetical filesystem has no symlinks, so shields bind in place.
 		resolve: func(p string) string { return p },
 		// listDir returns the immediate SUBDIRECTORY names of p implied by the fake
-		// entries (a segment with something under it), matching hostListDir which
-		// excludes files and symlinks. ok is true when p is a directory (has any entry
+		// entries (a segment with something under it), matching hostListDir, which
+		// reports files nowhere and symlinks as links. ok is true when p is a directory (has any entry
 		// under it); the fake has no unreadable directories. A bare leaf entry directly
 		// under p is a file. The fake filesystem has no symlinks, so links is always nil.
 		listDir: func(p string) (names, links []string, ok bool) {
@@ -1984,5 +1984,46 @@ func TestCommandPutsInterpreterArgsBeforeTheEntrypoint(t *testing.T) {
 	}
 	if got := strings.Join(args[sep+1:], " "); got != "/bin/sh -eu /work/run.py --flag" {
 		t.Errorf("command = %q", got)
+	}
+}
+
+// The walk's ROOTS are followed through a symlink too: listDir enumerates whatever the
+// link points at. A run that replaces .git/modules with a link to an EMPTY directory it
+// controls therefore enumerates clean and emits no rule at all - the same plant as a
+// symlinked child, moved one level up, and the one spelling a populated target would
+// have given away by producing redirected rules from inside.
+func TestGitDirShieldsCoversASymlinkedWalkRoot(t *testing.T) {
+	for _, root := range []string{"modules", "worktrees"} {
+		t.Run(root, func(t *testing.T) {
+			dir := t.TempDir()
+			decoy := filepath.Join(dir, "decoy") // empty, so the walk finds nothing inside
+			if err := os.MkdirAll(decoy, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			planted := filepath.Join(dir, ".git", root)
+			if err := os.Symlink(decoy, planted); err != nil {
+				t.Fatal(err)
+			}
+			sb := sandbox{
+				homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
+				exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+			}
+
+			covered := false
+			for _, r := range gitDirShields(sb, dir) {
+				if r.Path == planted {
+					covered = true
+				}
+			}
+			if !covered {
+				t.Errorf("a symlinked %q must carry a rule; an empty target emits nothing from inside it", planted)
+			}
+			if err := checkWorkspaceShieldNotRedirected(sb, []string{dir}); err == nil {
+				t.Errorf("a symlinked %q redirects the walk and must be refused", planted)
+			}
+		})
 	}
 }

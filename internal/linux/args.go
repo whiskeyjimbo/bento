@@ -803,6 +803,7 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	// keeps its own config.worktree, which can carry core.hooksPath.
 	worktreeConfigs := func(gd string) {
 		wt := filepath.Join(gd, "worktrees")
+		rules = append(rules, redirectedPath(sb, wt)...)
 		names, links, ok := sb.listDir(wt)
 		if !ok {
 			// Unreadable but traversable-by-name: fail closed like the module walk.
@@ -827,8 +828,9 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	// walk and hide a real submodule's hooks. Walking every real subdirectory removes
 	// that lever - a decoy can only add a harmless extra ro-bind. The cost is walking
 	// git's store dirs (objects/refs/...), which hold no config file so emit nothing
-	// and are bounded and setup-time. sb.listDir returns only real subdirectories
-	// (symlinks skipped), so a planted symlink cannot escape the tree or loop; depth
+	// and are bounded and setup-time. Recursion is over sb.listDir's real subdirectories
+	// only, never its symlinked entries (those get a rule instead, see
+	// redirectedEntries), so a planted symlink cannot escape the tree or loop; depth
 	// bounds a deeply-nested planted tree as a backstop.
 	var walk func(d string, depth int)
 	walk = func(d string, depth int) {
@@ -865,7 +867,9 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 			walk(filepath.Join(d, name), depth+1)
 		}
 	}
-	walk(filepath.Join(gitDir, "modules"), 0)
+	modules := filepath.Join(gitDir, "modules")
+	rules = append(rules, redirectedPath(sb, modules)...)
+	walk(modules, 0)
 	worktreeConfigs(gitDir)
 	return rules
 }
@@ -874,17 +878,28 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 // into. Skipping them is right - following one could leave the tree or loop - but a
 // name the scan drops is a name no rule covers, and checkWorkspaceShieldNotRedirected,
 // which exists to refuse exactly a shield a symlink redirects, only inspects the rules
-// gitDirShields returned. So one copy of that fix landed and the sibling did not:
-// .git/modules is writable and unshielded by design, so a run can plant
-// .git/modules/<name> as a symlink to a tree it controls, populated with config and
-// hooks/, which host git follows on the next `git submodule update --init`. Emitting a
-// rule for the link itself gives the redirect check something to refuse.
+// gitDirShields returned. .git/modules is writable and unshielded by design, so a run
+// can plant .git/modules/<name> as a symlink to a tree it controls, populated with config
+// and hooks/, which host git follows on the next `git submodule update --init`. A rule on
+// the link itself gives the redirect check something to refuse.
 func redirectedEntries(dir string, links []string) []denylist.Rule {
 	rules := make([]denylist.Rule, 0, len(links))
 	for _, name := range links {
 		rules = append(rules, denylist.Rule{Path: filepath.Join(dir, name), Deny: denylist.DenyWrite, Dir: true})
 	}
 	return rules
+}
+
+// redirectedPath covers a walk ROOT that is itself a symlink. Its children are covered
+// by redirectedEntries, but listDir follows a link at the path it is handed, so a root
+// replaced by a link to an empty directory the run controls enumerates clean and emits
+// nothing at all: the same plant with the link moved one level up, and the one spelling
+// where a populated target would have given itself away by producing redirected rules.
+func redirectedPath(sb sandbox, path string) []denylist.Rule {
+	if !sb.exists(path) || sb.resolve(path) == path {
+		return nil
+	}
+	return []denylist.Rule{{Path: path, Deny: denylist.DenyWrite, Dir: true}}
 }
 
 // maxGitdirDepth bounds the .git/modules recursion so a symlink loop a prior run
@@ -1484,7 +1499,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 		}
 		for _, r := range workspaceShields(sb, w) {
 			if real := sb.resolve(r.Path); real != r.Path {
-				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink or grant a narrower directory", w, r.Path, real)
+				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink, or move the checkout out from under the grant", w, r.Path, real)
 			}
 		}
 	}
