@@ -177,6 +177,25 @@ literal IP; RFC1918 and CGNAT ranges (including NAT64-embedded forms) are refuse
 unless a rule names the literal address. A program that ignores the proxy doesn't
 slip out - it fails.
 
+The fence governs sockets the target *creates*. A socket inherited on stdio was
+created by the parent, before any namespace existed, and nothing bento installs
+revokes an already-open description: a netns binds at socket creation, the seccomp
+egress block filters `socket(2)`, and Landlock governs paths. So bento refuses to
+start when fd 0, 1, or 2 is a socket, and an embedder doing socket activation
+deliberately waives that through `enforce.Process.AllowNetworkStdio` - which is a Go
+field precisely so no downloaded manifest or copied command line can re-open the
+channel.
+
+**AF_UNIX on stdio is an accepted residual.** It is the one family the check still
+passes, and an inherited connected unix socket - the host's `docker.sock`, a session
+bus, an agent socket - is a full escape channel like any other. It is permitted
+because under systemd a unit's stdout and stderr *are* AF_UNIX sockets to journald,
+so refusing the family would make `bento run` refuse to start under any systemd unit,
+and the check runs before anything is known about the peer. Narrowing it to
+unconnected sockets (`getpeername`) or to a trusted peer credential is possible and
+unbuilt. A parent that hands bento a privileged unix socket on stdio hands the target
+that socket; that is the parent's decision, and bento does not detect it.
+
 ### 4.5 Watching without reading
 
 The ptrace observer pulls the path argument of an attempted open straight from
