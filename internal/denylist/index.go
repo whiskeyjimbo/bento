@@ -23,10 +23,12 @@ import (
 //
 // It rests on rule paths being clean, absolute and free of a trailing separator, since
 // the lookups compare them literally where Covers compares them through
-// policy.CoversResolved. Every rule this package builds is spelled that way: the literal
-// tables are compile-time constants, and every rule whose spelling comes from outside -
-// GNUPGHOME, KUBECONFIG, the HISTFILE family, ZDOTDIR, CARGO_HOME, MAILCAPS, the XDG
-// bases - is cleaned at its emit site. TestRulePathsAreIndexable pins both populations.
+// policy.CoversResolved. Every rule this package builds is spelled that way, by two
+// different routes: the literal tables are compile-time constants, while the rules whose
+// spelling arrives from an environment variable (the relocation vars, the *_HISTFILE
+// family, the XDG bases) are cleaned at their emit site. Only the second route can
+// violate the invariant, so TestRulePathsAreIndexable sets those vars to unclean values
+// rather than trusting a bare environment, where the first route is all it would see.
 type Index struct {
 	// exact holds the strictest rule at each path, whatever its Dir flag: a rule always
 	// covers its own path.

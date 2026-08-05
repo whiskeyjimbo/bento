@@ -425,12 +425,13 @@ func classifyRFC8215(ip net.IP) ipClass {
 // embeddedIPv4 returns the IPv4 carried by an IPv6 transition address, or nil.
 // It covers the NAT64 well-known prefix 64:ff9b::/96 and 6to4 (2002::/16). The
 // RFC 8215 local-use /48 has no fixed embedding position and is handled by
-// classifyRFC8215 instead. Everything else is left undecoded: operator-specific
-// prefixes, Teredo, IPv4-translated ::ffff:0:0/96, and ISATAP, whose ::0:5efe:a.b.c.d
-// suffix sits under an arbitrary /64 and so cannot be recognized by prefix at all. Such
-// an address classifies on its own merits, which is why the site prefix a DNS64 network
-// actually uses is learned by discovery instead (see nat64.go), and why the allowlist
-// must still permit the hostname at all.
+// classifyRFC8215 instead. IPv4-mapped ::ffff:a.b.c.d needs nothing here: net.IP.To4
+// answers for it, so classifyIP judges the embedded v4 directly. Operator-specific
+// prefixes, Teredo and ISATAP are left undecoded, and ISATAP could not be decoded here
+// anyway - its ::0:5efe:a.b.c.d interface identifier sits under an arbitrary /64, so no
+// prefix test can find it. Such an address classifies on its own merits, which is why
+// the site prefix a DNS64 network actually uses is learned by discovery instead (see
+// nat64.go), and why the allowlist must still permit the hostname at all.
 func embeddedIPv4(ip net.IP) net.IP {
 	ip16 := ip.To16()
 	if ip16 == nil {

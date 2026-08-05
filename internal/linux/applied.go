@@ -148,7 +148,8 @@ func parseApplied(f *os.File) applied {
 // that names a weaker filter - or none - is judged against the request rather than
 // taken at face value. mountConfined says whether a mount namespace stands behind
 // Landlock on this tier, which is what decides whether a failed Landlock ruleset leaves
-// the filesystem degraded or unconfined. exitCode goes into the reason for a silent child: the exit code
+// the filesystem degraded or unconfined. exitCode goes into the reason for a silent
+// child: the exit code
 // alone cannot separate a bento setup failure from a target that exits 125 itself, and
 // the report is what does.
 //
@@ -216,6 +217,13 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 		// detail rewrite because enforce.Run's overlay propagates only a worsening state,
 		// so an Enforced-with-a-new-reason would be dropped and the run would still claim
 		// the backstop was active.
+		//
+		// The degraded branch does not fire today: that launcher makes a Landlock failure
+		// fatal before it writes the marker, so a complete report from it always says the
+		// ruleset landed. It is kept because the two are coupled by nothing but that
+		// fatality - soften it, or let a tampered report through, and the alternative is
+		// a run with no filesystem confinement reporting Degraded while naming a mount
+		// namespace it never had.
 		if mountConfined {
 			r.Set(enforce.LayerFilesystem, enforce.Degraded,
 				"the Landlock backstop could not be applied inside the sandbox ("+why+
