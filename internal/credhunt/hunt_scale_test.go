@@ -67,8 +67,7 @@ func benchOpts(home string) Options {
 func BenchmarkHunt(b *testing.B) {
 	home := buildHome(b, 200, 50) // ~10k files
 	opts := benchOpts(home)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, _, err := Hunt(opts); err != nil {
 			b.Fatal(err)
 		}

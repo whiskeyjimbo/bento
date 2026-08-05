@@ -66,7 +66,7 @@ func BenchmarkCoversResolved(b *testing.B) {
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				sink = CoversResolved(tc.grant, tc.path)
 			}
 		})
