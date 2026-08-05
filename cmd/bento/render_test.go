@@ -365,7 +365,8 @@ func TestDenialLegendNamesAnEmptyNetworkField(t *testing.T) {
 		t.Errorf("legend claims no rules over a manifest that has one: %q", b.String())
 	}
 
-	// The Landlock-only tier has no netns, so egress is not fenced and the claim is false.
+	// The Landlock-only tier fences egress with a seccomp filter instead of a netns, so it
+	// answers EPERM on socket() and these two shapes are not the ones a reader will hold.
 	b.Reset()
 	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded)}, false)
 	if strings.Contains(b.String(), line) {

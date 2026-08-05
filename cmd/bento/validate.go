@@ -251,9 +251,16 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 // approval rather than folded into it: an unrunnable manifest here may be exactly right
 // where it is meant to run.
 type runnability struct {
-	// problems are the reasons run would refuse before the script started. Worded as run
-	// words them, since that is the message the reader will meet if they ignore this one.
+	// problems are the reasons this host cannot START what the manifest names - a moved
+	// entrypoint, an interpreter off PATH. Worded as run words them, since that is the
+	// message the reader will meet if they ignore this one.
 	problems []string
+	// refusals are the grants run will not honor: a shielded path, a symlink loop, a write
+	// grant that already exists as a file. Separate from problems because they are a
+	// different failure - nothing here is unstartable, and reporting them as "this host
+	// cannot start what the manifest names" sends the reader hunting an entrypoint that is
+	// fine. Both still refuse a run, so both fail --strict.
+	refusals []string
 	// fileishWrites are write grants that name nothing on this host and are spelled like
 	// a file. Not a problem, because nothing here can know: run creates the directory and
 	// the script may well have meant one. Silence is still wrong - write grants name
@@ -296,9 +303,9 @@ func checkRunnable(resolved *policy.Policy) runnability {
 	// refused for the same reason, so failing --strict on it would only rename it.
 	shieldedReads, _ := shieldedReadProblems(resolved.Read)
 	shieldedWrites, _ := shieldedWriteProblems(resolved.Write)
-	r.problems = append(r.problems, append(shieldedReads, shieldedWrites...)...)
-	r.problems = append(r.problems, loopedGrantProblems(resolved.Read, resolved.Write)...)
-	r.problems = append(r.problems, fileWriteGrantProblems(resolved.Write)...)
+	r.refusals = append(r.refusals, append(shieldedReads, shieldedWrites...)...)
+	r.refusals = append(r.refusals, loopedGrantProblems(resolved.Read, resolved.Write)...)
+	r.refusals = append(r.refusals, fileWriteGrantProblems(resolved.Write)...)
 	r.fileishWrites = fileishWriteGrants(resolved.Write)
 	r.missingReads = missingReadGrants(resolved.Read)
 	return r
@@ -348,6 +355,12 @@ func fileWriteGrantProblems(write []string) []string {
 
 // writeRunnability prints the host's verdict in the same shape as the approval line
 // below it, and lists the notes that are not a verdict at all.
+//
+// Refused grants get a line of their own rather than being folded into runnable:, and it
+// counts them rather than repeating them. The refusal paragraph names paths and runs to
+// forty words; it is already printed beside the grant it refuses, which is where a reader
+// scanning the permissions needs it, and printing it again nine lines later taught nothing
+// the count does not.
 func writeRunnability(w io.Writer, r runnability) {
 	switch {
 	case r.unresolved:
@@ -359,6 +372,9 @@ func writeRunnability(w io.Writer, r runnability) {
 		}
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
+	}
+	if n := len(r.refusals); n > 0 {
+		fmt.Fprintf(w, "grants:       NO - %d grant(s) above cannot be honored (marked REFUSED)\n", n)
 	}
 	for _, g := range r.fileishWrites {
 		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
@@ -380,10 +396,11 @@ func writeRunnability(w io.Writer, r runnability) {
 // the paths does not fail: the manifest was not shown to be wrong, and validate's other
 // answers already degrade rather than refuse there.
 func strictRunnableError(r runnability, strict bool) error {
-	if !strict || len(r.problems) == 0 {
+	blocking := slices.Concat(r.problems, r.refusals)
+	if !strict || len(blocking) == 0 {
 		return nil
 	}
-	return fmt.Errorf("manifest cannot run on this host: %s", strings.Join(r.problems, "; "))
+	return fmt.Errorf("manifest cannot run on this host: %s", strings.Join(blocking, "; "))
 }
 
 // pinnedPaths names the paths that tie a manifest to one location, in the order the
@@ -506,6 +523,10 @@ type policyJSON struct {
 	// resolved_read makes: see toPolicyJSON.
 	Runnable         *bool    `json:"runnable,omitempty"`
 	RunnableProblems []string `json:"runnable_problems,omitempty"`
+	// RefusedGrants are the grants run will not honor, in run's own wording. A verdict,
+	// not a note: --strict fails on one and run exits 125. Beside runnable rather than
+	// inside it, because a manifest can be perfectly startable and still hold one.
+	RefusedGrants []string `json:"refused_grants,omitempty"`
 	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
 	// runnable stays true beside them, and --strict does not fail on them.
 	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
@@ -537,6 +558,7 @@ func (o *policyJSON) setRunnable(r runnability) {
 	ok := len(r.problems) == 0
 	o.Runnable = &ok
 	o.RunnableProblems = r.problems
+	o.RefusedGrants = r.refusals
 	o.MissingReadGrants = r.missingReads
 	o.FileishWriteGrants = r.fileishWrites
 }
@@ -655,11 +677,11 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	// shieldErr carries, and the footer below reports it once in words rather than twice
 	// as an empty list.
 	readRefusals, _ := shieldedReadProblems(resolvedRead)
-	writeShieldRefusals(w, readRefusals)
+	writeGrantRefusals(w, readRefusals, loopedGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
 	writeRefusals, _ := shieldedWriteProblems(resolvedWrite)
-	writeShieldRefusals(w, writeRefusals)
+	writeGrantRefusals(w, writeRefusals, loopedGrantProblems(nil, resolvedWrite), fileWriteGrantProblems(resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 
@@ -728,20 +750,23 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
 }
 
-// writeShieldRefusals prints the grants a run refuses over the shields, beside the list
-// they were spelled in. Beside, and not only in the runnability block below, because the
-// footer under that list asserts the shields hold over everything above it - which reads
-// as confirmation that the grant right above it is safe, when it is the one grant here
-// that will not be honored at all.
+// writeGrantRefusals prints the grants a run will not honor, beside the list they were
+// spelled in. Beside, because the footer under that list asserts the shields hold over
+// everything above it - which reads as confirmation that the grant right above it is safe,
+// when it is the one grant here that will not be honored at all.
+//
+// This is the only place the reason is spelled out; the verdict below counts them and
+// points here. Every refusal kind prints here for that reason, not only the shielded ones
+// the footer argument is about - a verdict that says "marked REFUSED above" has to be true
+// of all of them.
 //
 // The sentence is run's own (grantrefusal), unwrapped: it names paths, and wrapping it to
 // the note width would break a path across lines just where the reader wants to copy it.
-// It appears twice on a human screen - here, and below as the reason `runnable: NO` gives
-// - which is the price of the two jobs it does: the reader scanning the grants needs it at
-// the grant, and the reader who skipped to the verdict needs the verdict to say why.
-func writeShieldRefusals(w io.Writer, problems []string) {
-	for _, p := range problems {
-		fmt.Fprintf(w, "  REFUSED: %s\n", p)
+func writeGrantRefusals(w io.Writer, kinds ...[]string) {
+	for _, kind := range kinds {
+		for _, p := range kind {
+			fmt.Fprintf(w, "  REFUSED: %s\n", p)
+		}
 	}
 }
 
