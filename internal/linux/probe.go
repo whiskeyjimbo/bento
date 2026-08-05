@@ -256,18 +256,20 @@ func truncateResidual(truncateRestricted bool) string {
 }
 
 // ioctlDevResidual is the degraded-tier disclosure clause for a kernel whose Landlock
-// ABI (< 5, i.e. before 6.10) cannot restrict ioctl on device files. Landlock leaves an
-// unhandled right unrestricted, so every ioctl on every granted device node is available
-// - and this tier grants /dev/urandom, /dev/random, /dev/zero and /dev/null to every run.
-// seccomp's terminal-injection block covers the tty ioctls that matter most but not the
-// rest, so the gap is disclosed rather than treated as closed. Empty from 6.10 on.
+// ABI (< 5, i.e. before 6.10) cannot restrict ioctl on device files. From 6.10 the tier
+// grants the right on its own grants, so a granted device node is ioctl-able either way
+// and the disclosure is about the rest: Landlock leaves an unhandled right unrestricted,
+// so below 5 an ioctl on any device node the target can open is available, and with no
+// mount namespace that is the host's whole /dev. seccomp's terminal-injection block
+// covers the tty ioctls that matter most but not the rest, so the gap is disclosed rather
+// than treated as closed. Empty from 6.10 on.
 func ioctlDevResidual(ioctlDevRestricted bool) string {
 	if ioctlDevRestricted {
 		return ""
 	}
 	return ". This kernel's Landlock ABI is also below 5, which cannot restrict ioctl on device files, so " +
-		"any ioctl on a granted device node (/dev/urandom, /dev/random, /dev/zero, /dev/null) is available " +
-		"beyond the terminal-injection set seccomp blocks"
+		"any ioctl on any device node the target can open - the host's whole /dev, since this tier has no " +
+		"mount namespace - is available beyond the terminal-injection set seccomp blocks"
 }
 
 // unixSocketClause is the unix-socket half of the degraded tier's "no network namespace"
