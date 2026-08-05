@@ -71,7 +71,8 @@ const (
 	HoldsHistory
 	// HoldsPersistence is a path the host runs code from at the next login or session.
 	HoldsPersistence
-	// HoldsServices is a directory of the host's service control sockets.
+	// HoldsServices is the host's service control sockets: a directory of them (/run,
+	// XDG_RUNTIME_DIR) or a single socket file (~/.zuluCrypt-socket).
 	HoldsServices
 )
 
@@ -119,7 +120,9 @@ func (h Holds) Noun() string {
 	case HoldsPersistence:
 		return "host-startup path"
 	case HoldsServices:
-		return "service socket directory"
+		// Not "directory": the bucket also holds single socket files, and a noun naming a
+		// directory sends a reader looking for contents that are not there.
+		return "service socket path"
 	}
 	return "always-shielded path"
 }
@@ -144,7 +147,10 @@ func (h Holds) Exposure() string {
 	case HoldsPersistence:
 		return "read the session layout the host runs code from at the next login"
 	case HoldsServices:
-		return "reach the host services listening in it - the container daemon, the session bus, the agent sockets"
+		// Hedged with "such as" rather than enumerated, because the bucket runs from a
+		// directory of every session socket down to one tool's IPC socket, and a clause
+		// listing three daemons misdescribes the single-socket end of it.
+		return "reach the host services behind it, such as the container daemon, the session bus, and the agent sockets"
 	}
 	return "read what bento shields there"
 }
@@ -235,6 +241,17 @@ func RuntimeDir() string {
 // whole deny-list with one DenyAll on the home - which also silently nullifies the
 // completeness audit, since it leaves no per-store rule left to compare against
 // firejail's.
+//
+// The test is lexical - it compares the spellings it is handed and resolves nothing - so
+// an alias for a home (/home a symlink to /export/home, or a plain symlink to $HOME)
+// passes here while naming the very tree the test exists to protect. Callers that
+// ENFORCE a rule close that themselves by re-testing the resolved path against the
+// resolved homes (see the Linux backend's denyArgs), which is the only place the two
+// spellings are both known. Callers that only READ the rule set - the parity audit, the
+// credential hunt - are safe for a different reason: they compare lexically too, and a
+// rule that cannot lexically enclose an anchor cannot lexically cover anything walked
+// from one, so the worst case is an inert rule. Teaching a reader to resolve without
+// teaching it to re-test here would turn that inert rule into a shield over a whole home.
 func Shieldable(p string, homes []string) bool {
 	if p == "/" {
 		return false
@@ -1006,9 +1023,11 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // question about Rule, and the parity audit and the credential hunt both have to answer
 // it the same way - a second copy is how they would come to disagree about what bento
 // covers.
-// Only the returned rule's Deny is specified. When two rules match with equal
-// strictness - nested directory shields of the same class - which of them comes back is
-// not defined, and no caller reads more than the strength.
+// The returned rule's Deny and Dir are specified; nothing else is. Among equally strict
+// matches a directory rule wins, because a caller asking whether the shield extends past
+// this one path (the parity audit's Narrowed verdict) would otherwise get the answer from
+// whichever equally strict rule the slice happened to list first. Beyond that - two
+// nested directory shields of the same class - which rule comes back is not defined.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
@@ -1020,12 +1039,22 @@ func Covers(path string, rules []Rule) (Rule, bool) {
 	found := false
 	for _, r := range rules {
 		if r.Path == path || (r.Dir && policy.CoversResolved(r.Path, path)) {
-			if !found || r.Deny < best.Deny {
+			if !found || stricter(r, best) {
 				best, found = r, true
 			}
 		}
 	}
 	return best, found
+}
+
+// stricter reports whether a shields more than b: a lower Deny, or the same Deny over a
+// tree rather than a single path. Shared with Index so the two cannot drift on the
+// tie-break Covers now promises.
+func stricter(a, b Rule) bool {
+	if a.Deny != b.Deny {
+		return a.Deny < b.Deny
+	}
+	return a.Dir && !b.Dir
 }
 
 // Workspace returns the rules that apply inside a directory a policy grants

@@ -79,12 +79,30 @@ func TestIndexAgreesWithCovers(t *testing.T) {
 			t.Errorf("Covers(%q): index covered = %v, linear = %v", p, gotOK, wantOK)
 			continue
 		}
-		// Deny is the whole contract - it is all either caller reads, and Covers leaves
-		// the choice among equally strict matches undefined, so comparing rule identity
-		// here would pin an arbitrary tie-break neither side promises.
-		if wantOK && gotRule.Deny != wantRule.Deny {
+		// Deny and Dir are the whole contract - they are all either caller reads, and
+		// Covers leaves the choice among equally strict directory rules undefined, so
+		// comparing rule identity here would pin a tie-break neither side promises.
+		if wantOK && (gotRule.Deny != wantRule.Deny || gotRule.Dir != wantRule.Dir) {
 			t.Errorf("Covers(%q): index returned %+v, linear returned %+v", p, gotRule, wantRule)
 		}
+	}
+}
+
+// A file rule and a directory rule at one path are equally strict, so nothing but the
+// tie-break decides which comes back - and the audit reads Dir off it to judge whether a
+// shield was narrowed to a single file. Both implementations must answer "the tree".
+func TestCoversPrefersTheTreeRuleOnATie(t *testing.T) {
+	for name, rules := range map[string][]Rule{
+		"file first": {{Path: "/x", Deny: DenyAll}, {Path: "/x", Deny: DenyAll, Dir: true}},
+		"dir first":  {{Path: "/x", Deny: DenyAll, Dir: true}, {Path: "/x", Deny: DenyAll}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			linear, _ := Covers("/x", rules)
+			indexed, _ := NewIndex(rules).Covers("/x")
+			if !linear.Dir || !indexed.Dir {
+				t.Errorf("Covers(/x) = linear %+v, index %+v, want the directory rule from both", linear, indexed)
+			}
+		})
 	}
 }
 
