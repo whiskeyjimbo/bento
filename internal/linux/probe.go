@@ -122,14 +122,14 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 	} else {
 		out = append(out, enforce.LayerStatus{
 			Layer: enforce.LayerExec, State: enforce.Unavailable,
-			Reason: "this kernel does not support seccomp BPF, so subprocess-blocking cannot be enforced",
+			Reason: "this host cannot install the exec-block filter - either the kernel has no seccomp BPF support, or the filter is not implemented for this architecture - so subprocess-blocking cannot be enforced",
 		})
 	}
 	switch {
 	case !seccompOK:
 		out = append(out, enforce.LayerStatus{
 			Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
-			Reason: "this kernel does not support seccomp BPF",
+			Reason: "this host cannot install the exec-block filter - either the kernel has no seccomp BPF support, or the filter is not implemented for this architecture",
 		})
 	case !strictOK:
 		out = append(out, enforce.LayerStatus{
