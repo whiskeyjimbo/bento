@@ -1189,3 +1189,39 @@ func TestWalksDivergeOnAnUnreadableSubtree(t *testing.T) {
 		t.Errorf("hostAliasesUnder over an unreadable granted subtree = %v, want it skipped", err)
 	}
 }
+
+// failingEntry is a walk entry whose second lstat fails - what a rotating credential
+// store hands the walk when readdir saw a name that the following Info() no longer finds.
+type failingEntry struct {
+	fs.DirEntry
+	err error
+}
+
+func (e failingEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+// A second-lstat failure is not evidence about the file. Swallowing it in hostFileIDs
+// under-counts links, and linked == false skips the entire granted-tree walk - "could not
+// look" read as proof no hardlink exists.
+func TestIdentifyReportsASecondLstatFailure(t *testing.T) {
+	dir := t.TempDir()
+	cred := filepath.Join(dir, "id_rsa")
+	if err := os.WriteFile(cred, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := identify(cred, entries[0]); err != nil {
+		t.Fatalf("identify of a readable credential = %v, want it identified", err)
+	}
+	// EIO stands in for the class the anchors' walk must refuse; ENOENT for the rotation
+	// that names no file at all and is skipped by the caller.
+	for _, want := range []error{syscall.EIO, syscall.ENOENT} {
+		_, err := identify(cred, failingEntry{DirEntry: entries[0], err: &fs.PathError{Op: "lstat", Path: cred, Err: want}})
+		if !errors.Is(err, want) {
+			t.Errorf("identify with a failing Info = %v, want %v", err, want)
+		}
+	}
+}
