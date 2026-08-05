@@ -154,3 +154,36 @@ func TestRunEscapesHostileFilenames(t *testing.T) {
 		t.Errorf("the hostile name is missing from the report entirely:\n%s", out.String())
 	}
 }
+
+// A relocation env var can name a credential store through a symlink that resolves onto
+// the whole home ($HOME unset, passwd home /export/home/u, GNUPGHOME=/home/u). denylist's
+// Shieldable is lexical, so it does not recognize that spelling and emits the rule; the
+// enforcing backend catches it on the resolved path, but credhunt builds its rules
+// straight from denylist and has no resolver. What keeps the report honest here is that
+// the rule cannot lexically enclose a walk root - Shieldable rejects exactly the paths
+// that would, and the walk roots are the anchors it was tested against. Pinned because
+// teaching Index.Covers to resolve would quietly turn that inert rule into a shield over
+// the entire home, and a home reported fully covered is this tool's silent wrong answer.
+func TestRunIsNotBlindedByARelocationSpelledThroughASymlink(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "export", "home", "u")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "export", "home"), filepath.Join(root, "home")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GNUPGHOME", filepath.Join(root, "home", "u"))
+
+	if err := os.WriteFile(filepath.Join(home, ".toolrc"), []byte("token = abcdef0123456789abcdef0123456789abcdef01\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if code := run(&out, &out, []string{home}); code != 0 {
+		t.Fatalf("run = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), ".toolrc") {
+		t.Errorf("the lead is gone; the relocation shielded the home it resolves onto:\n%s", out.String())
+	}
+}
