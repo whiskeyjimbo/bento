@@ -192,6 +192,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.nanorc",              // nano rc (include/syntax)
 		"/home/u/.plan",                // finger info: readable, tamper-protected
 		"/home/u/.Xdefaults",           // xrdb resources read at login
+		"/home/u/.bash_completion",     // sourced by the distro bash.bashrc for every interactive shell
+		"/home/u/.selected_editor",     // sensible-editor sources it and runs $SELECTED_EDITOR
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -207,19 +209,20 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 	// Login-persistence directories: readable, but no new entry may be created,
 	// so a broad home write grant cannot plant an autostart entry or user service.
 	wantDenyWriteDir := []string{
-		"/home/u/.bashrc.d",                 // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
-		"/home/u/.config/fish",              // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
-		"/home/u/.config/nushell",           // nushell config and autoloads
-		"/home/u/.vim",                      // auto-sourced plugin/autoload dirs
-		"/home/u/.config/nvim",              // neovim config tree
-		"/home/u/.emacs.d",                  // emacs init and site-lisp
-		"/home/u/.config/environment.d",     // systemd user-session env
-		"/home/u/.local/share/direnv/allow", // direnv authorization records
-		"/home/u/.config/Code",              // VS Code User settings (git.path etc.)
-		"/home/u/.vscode",                   // VS Code extensions dir
-		"/home/u/.config/mpv",               // mpv autoloaded scripts
-		"/home/u/.xmonad",                   // xmonad.hs compiled+run
-		"/home/u/.local/lib",                // user libraries imported at runtime
+		"/home/u/.bashrc.d",                                // Fedora/RHEL .bashrc sources ~/.bashrc.d/*.sh
+		"/home/u/.config/fish",                             // config.fish, conf.d/*.fish, and autoloaded functions/*.fish
+		"/home/u/.config/nushell",                          // nushell config and autoloads
+		"/home/u/.vim",                                     // auto-sourced plugin/autoload dirs
+		"/home/u/.config/nvim",                             // neovim config tree
+		"/home/u/.emacs.d",                                 // emacs init and site-lisp
+		"/home/u/.config/environment.d",                    // systemd user-session env
+		"/home/u/.local/share/direnv/allow",                // direnv authorization records
+		"/home/u/.config/Code",                             // VS Code User settings (git.path etc.)
+		"/home/u/.vscode",                                  // VS Code extensions dir
+		"/home/u/.config/mpv",                              // mpv autoloaded scripts
+		"/home/u/.xmonad",                                  // xmonad.hs compiled+run
+		"/home/u/.local/lib",                               // user libraries imported at runtime
+		"/home/u/.local/share/bash-completion/completions", // sourced on the first tab-complete of that command
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
