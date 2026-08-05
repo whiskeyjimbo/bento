@@ -377,8 +377,8 @@ func TestAStoreThatIsAlsoAHomeAnchorStaysShielded(t *testing.T) {
 	}
 }
 
-// Rule carries fields that only describe a shield to a reader - which store it holds, and
-// (once the diagnostic lands) which env var relocated it. Two rules differing in nothing
+// Rule carries fields that only describe a shield to a reader: which store it holds, and
+// which env var relocated it. Two rules differing in nothing
 // else bind identically, so the dedup must collapse them: keying it on the whole rule
 // would emit the same bind twice and let a report-only field change what is enforced.
 func TestRulesDifferingOnlyInDescriptionBindOnce(t *testing.T) {
@@ -421,5 +421,35 @@ func TestShieldResolvingToRootDoesNotRefuseGrants(t *testing.T) {
 	// The other shields still bite: this must not have disarmed the check itself.
 	if err := checkReadNotShielded(sb, []string{"/home/u/.ssh"}, nil); err == nil {
 		t.Error("a grant inside a shield that resolves normally must still be refused")
+	}
+}
+
+// A path can be a default store under one anchor and a relocation target under another,
+// so which spelling reaches the dedup first is only anchor order. Crediting a variable for
+// a shield bento would have applied anyway would point an operator at an env var they can
+// unset without changing anything.
+func TestADefaultShieldIsNotCreditedToAVariable(t *testing.T) {
+	for name, extra := range map[string][]denylist.Rule{
+		"relocation first": {
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Source: "SOME_VAR"},
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true},
+		},
+		"default first": {
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true},
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Source: "SOME_VAR"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sb := testSandbox("/home/u", "/home/u/store")
+			sb.homes = []string{"/home/u"}
+			sb.extraDeny = extra
+
+			_, applied := denyArgs(sb, []string{"/home/u"}, nil, nil)
+			for _, r := range applied {
+				if r.Path == "/home/u/store" && r.Source != "" {
+					t.Errorf("a path bento shields by default must claim no variable; got %q", r.Source)
+				}
+			}
+		})
 	}
 }
