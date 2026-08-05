@@ -20,8 +20,11 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
-// maxFileSize bounds the content sniff. A credential file is a few KB at most; past that
-// the file is a dataset or a binary, and the shape this hunts is not in it.
+// maxFileSize bounds how much of each candidate's head the content sniff reads, not which
+// files it will open. A credential sits in the first few KB of the file that holds it,
+// whatever that file grows to behind it: ~/.claude.json reaches ~96 KB on a working host
+// and the shell histories go further, and reading every byte of those to re-find a token
+// already seen would cost a full-tree read for nothing.
 const maxFileSize = 64 << 10
 
 // machineStores are the package and build caches under home. They hold content-addressed

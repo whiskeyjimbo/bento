@@ -218,6 +218,23 @@ func TestHuntSniffsTheHomeRootOnPosition(t *testing.T) {
 	}
 }
 
+// The walk asks whether an entry is the root and whether its parent is, and filepath.Dir
+// answers with a cleaned path. A caller that spells Home with a trailing separator would
+// match neither test, turning the home-root sniff off and reporting a clean home - so the
+// root is cleaned once and every comparison is against that.
+func TestHuntAcceptsAnUncleanHome(t *testing.T) {
+	home := t.TempDir()
+	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
+
+	found, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(paths(found), env) {
+		t.Errorf("a trailing separator on Home silently switched off the home-root sniff; got %v", paths(found))
+	}
+}
+
 // A source checkout is workspace surface - bento governs it through a write grant and
 // denylist.Workspace, never through a home shield - and on a developer home it is where
 // essentially every hit comes from, which makes the report unreadable. But the home
