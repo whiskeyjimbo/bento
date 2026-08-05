@@ -5,6 +5,7 @@ package seccomp
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -122,6 +123,91 @@ func TestStrictFilterBlocksProcessCreationHelper(t *testing.T) {
 		}
 	}
 	fmt.Println("STRICT_OK")
+}
+
+// The none-strict filter is installed per THREAD, and TSYNC is what carries it to the
+// siblings the Go runtime already has. TestStrictFilterBlocksProcessCreation probes only
+// the installing thread, so a BlockExecStrict that dropped the flag - or misread the
+// nonzero return that reports a partial sync - would pass every branch assertion above
+// while leaving each sibling free to fork and execve, on a run that reports enforced.
+// TestExecBlockCoversPreexistingThreads pins this for BlockExec; the two installs are
+// separate call sites and neither covers the other.
+//
+// The probes here are the process-creating ones rather than execve, which the BlockExec
+// test already covers on a sibling.
+func TestStrictExecBlockCoversPreexistingThreads(t *testing.T) {
+	if !Supported() {
+		t.Skip("seccomp not supported on this kernel")
+	}
+	if !StrictExecSupported() {
+		t.Skip("no none-strict filter on this architecture")
+	}
+	cmd := helperCommand(t, "TestStrictExecBlockCoversPreexistingThreadsHelper", "BENTO_TEST_STRICT_TSYNC=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("none-strict tsync helper exited with error: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "STRICT_TSYNC_OK") {
+		t.Errorf("helper did not confirm the none-strict filter reached a pre-existing sibling thread:\n%s", out)
+	}
+}
+
+// TestStrictExecBlockCoversPreexistingThreadsHelper is the child half: it pins a sibling
+// thread that exists before the install, probes it, and exits nonzero (with a tag) on any
+// mismatch. Inert unless the parent set the trigger env var.
+func TestStrictExecBlockCoversPreexistingThreadsHelper(t *testing.T) {
+	if os.Getenv("BENTO_TEST_STRICT_TSYNC") != "1" {
+		t.Skip("child helper for TestStrictExecBlockCoversPreexistingThreads")
+	}
+	// Pin this goroutine too, so the installing thread's identity is stable and the
+	// sibling below is provably a different one.
+	runtime.LockOSThread()
+	installer := unix.Gettid()
+
+	probe, result, ready := make(chan func() unix.Errno), make(chan unix.Errno), make(chan int)
+	go func() {
+		runtime.LockOSThread()
+		ready <- unix.Gettid()
+		for p := range probe {
+			result <- p()
+		}
+	}()
+	sibling := <-ready
+	if sibling == installer {
+		fmt.Println("SAME_THREAD", sibling)
+		os.Exit(3)
+	}
+
+	// The positive control, on the very thread the assertions below use: the kernel
+	// refuses these flags with EINVAL, so this sibling reaches the kernel unfiltered and
+	// the EPERM afterwards is caused by the filter rather than by anything intrinsic to a
+	// locked sibling thread. fork gets no control, for the reason the branch probes give:
+	// it takes no arguments and cannot return EPERM from the kernel, and running it
+	// unfiltered would be running the thing under test.
+	cloneProcess := func() unix.Errno { return cloneErrno(unix.CLONE_SIGHAND) }
+
+	probe <- cloneProcess
+	if errno := <-result; errno != unix.EINVAL {
+		fmt.Println("CONTROL_NOT_EINVAL", errno)
+		os.Exit(4)
+	}
+
+	if err := BlockExecStrict(); err != nil {
+		fmt.Println("BLOCKEXECSTRICT_ERR", err)
+		os.Exit(5)
+	}
+
+	probe <- cloneProcess
+	if errno := <-result; errno != unix.EPERM {
+		fmt.Println("SIBLING_CLONE_NOT_EPERM", errno)
+		os.Exit(6)
+	}
+	probe <- func() unix.Errno { return forkErrno(unix.SYS_FORK) }
+	if errno := <-result; errno != unix.EPERM {
+		fmt.Println("SIBLING_FORK_NOT_EPERM", errno)
+		os.Exit(7)
+	}
+	fmt.Println("STRICT_TSYNC_OK")
 }
 
 // x32 shares the amd64 audit arch but tags its syscall numbers, so a tagged number misses
