@@ -810,7 +810,7 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 		deny denylist.Deny
 		dir  bool
 	}
-	seen := map[shieldKey]bool{}
+	seen := map[shieldKey]int{}
 	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
 		literal := r.Path
@@ -826,10 +826,17 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 			continue
 		}
 		k := shieldKey{r.Path, r.Deny, r.Dir}
-		if seen[k] {
+		if i, ok := seen[k]; ok {
+			// One path can be both a default store under one anchor and a relocation
+			// target under another, and which arrives first is just anchor order. A
+			// shield bento would have applied anyway must not be reported as something
+			// an environment variable caused, so the default claim wins the merge.
+			if r.Source == "" {
+				resolved[i].Source = ""
+			}
 			continue
 		}
-		seen[k] = true
+		seen[k] = len(resolved)
 		resolved = append(resolved, r)
 	}
 

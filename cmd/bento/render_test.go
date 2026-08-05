@@ -953,12 +953,14 @@ func TestWriteShieldAnchorsReportsAnUnshieldableRuntimeDir(t *testing.T) {
 	}
 
 	// A runtime dir outside every anchor is shielded normally, and saying so on every
-	// ordinary host would be the noise this report exists to stay clear of.
+	// ordinary host would be the noise this report exists to stay clear of. Matched on the
+	// caveat itself rather than on the variable's name: the relocation section below names
+	// the same variable for a different and correct reason, that the shield moved off /run.
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	b.Reset()
 	writeShieldAnchors(&b)
-	if out := b.String(); strings.Contains(out, "XDG_RUNTIME_DIR") {
-		t.Errorf("a shieldable runtime dir must stay quiet; got %q", out)
+	if out := b.String(); strings.Contains(out, "at or above an anchor") {
+		t.Errorf("a shieldable runtime dir must not draw the unshieldable caveat; got %q", out)
 	}
 }
 
@@ -1344,15 +1346,15 @@ func TestShieldSummaryGroupsAGroupRelocation(t *testing.T) {
 	}
 }
 
-// Doctor is where an operator can see a relocation BEFORE a run breaks on it. It must stay
-// silent on an ordinary host, where the only variable of this kind that is normally set is
-// XDG_RUNTIME_DIR - whose one reportable case the anchors block above already covers, so
-// repeating it here would be the noise that report exists to stay clear of.
+// Doctor is where an operator can see a relocation BEFORE a run breaks on it. What earns a
+// line is a variable that MOVED a shield, which is why an ordinary host is silent: a
+// variable at its conventional value produces the default rule, carrying no source at all.
 func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZDOTDIR", "")
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	// The shape that is genuinely ordinary: Runtime leaves a runtime dir under /run to the
+	// /run shield and stamps no source, so it is not a relocation and must not print.
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	var quiet bytes.Buffer
 	writeRelocatedShields(&quiet)
@@ -1369,8 +1371,23 @@ func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
 			t.Errorf("doctor must name the variable and its target; %q missing from %q", want, out)
 		}
 	}
-	if strings.Contains(out, "XDG_RUNTIME_DIR") {
-		t.Errorf("the ordinary runtime dir must not be relisted here; got %q", out)
+}
+
+// A runtime dir parked outside /run - a session manager, a container - IS a relocation:
+// the socket shield follows the variable there, so a value pointing at something the run
+// needs blanks it. Doctor said nothing about that case while the run summary reported it,
+// which left the two surfaces disagreeing about what counts as relocated.
+func TestDoctorNamesARelocatedRuntimeDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZDOTDIR", "")
+	runtime := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+
+	var b bytes.Buffer
+	writeRelocatedShields(&b)
+	out := b.String()
+	if !strings.Contains(out, "XDG_RUNTIME_DIR") || !strings.Contains(out, strconv.Quote(runtime)) {
+		t.Errorf("a runtime dir moved off /run must be named; got %q", out)
 	}
 }
 

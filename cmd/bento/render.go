@@ -1576,6 +1576,11 @@ func writeNestedAnchors(w io.Writer, anchors []string) {
 // fails with an ENOENT or a link error naming only the target. This is where an operator
 // can see the shield and the variable side by side before a run rather than after, which
 // is the whole diagnostic: the path alone cannot be traced back to the variable.
+//
+// A variable left at its conventional value costs no line here, because the rule it
+// produces is the default one and carries no source. XDG_RUNTIME_DIR is the case worth
+// naming: it is set on nearly every host, but Runtime stamps it only where it points
+// somewhere other than /run, which is a real relocation and not an ordinary host.
 func writeRelocatedShields(w io.Writer) {
 	rules, err := builtinShieldRules()
 	if err != nil {
@@ -1583,10 +1588,7 @@ func writeRelocatedShields(w io.Writer) {
 	}
 	paths := map[string][]string{}
 	for _, r := range rules {
-		// XDG_RUNTIME_DIR is set on nearly every desktop host, so listing it here would
-		// fire on an ordinary machine. The block above already reports the one case that
-		// is worth an operator's attention - the value that cannot be shielded at all.
-		if r.Source == "" || r.Source == "XDG_RUNTIME_DIR" {
+		if r.Source == "" {
 			continue
 		}
 		// Every anchor is passed to every Home call, so a relocation is re-derived once
