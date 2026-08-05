@@ -146,6 +146,21 @@ func TestTokenAssignmentDistinguishesSecretsFromSettings(t *testing.T) {
 	}
 }
 
+// Only the FIRST separator on a line is tested, so a secret-named key later on the same
+// line is not reached. That is a measured choice rather than an oversight: scanning every
+// separator was tried three ways against the population a real hunt sniffs on a developer
+// home, and each added thousands of hits on telemetry JSON, agent transcripts and minified
+// JS while reaching not one config that holds a secret this way. Bounding the key to the
+// text just before the separator, which is what stops the whole line's prefix from
+// counting as the key, also dropped real matches the single-separator form already makes.
+// This pins the shape so the next person to notice it sees the trade before retrying it.
+func TestTokenAssignmentReadsOnlyTheFirstSeparator(t *testing.T) {
+	line := `{"model":"opus","createdAt":"2026-08-04","apiToken":"sk-0123456789abcdefghijklmnop"}`
+	if tokenAssignment(line) {
+		t.Errorf("tokenAssignment(%q) = true; widening past the first separator costs more than it finds", line)
+	}
+}
+
 // The sniff bound is a bound on the READ, not a size a file has to be under to be opened.
 // A real ~/.claude.json measured 96 KB with a token-shaped assignment in its first few KB;
 // gating on the whole file's size discarded it unread, and the name trips nothing else, so
