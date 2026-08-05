@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +35,39 @@ func TestFlooredABI(t *testing.T) {
 func TestAvailableMatchesEffectiveABI(t *testing.T) {
 	if Available() != (effectiveABI() >= 1) {
 		t.Errorf("Available()=%v but effectiveABI()=%d; the gate and enforcement detection disagree", Available(), effectiveABI())
+	}
+}
+
+// The allowlist's read and write rights are a hand-written copy of go-landlock's
+// helpers minus execute, because a rule's access set is unexported and cannot be asked
+// for one right less. A copy drifts: a right added to those helpers would be inherited
+// by every other rule this package builds and silently NOT by these, which narrows an
+// allowlist run without failing anything.
+//
+// So the difference is pinned rather than the sets. FSRule.String names the rights it
+// carries, which is the only handle the package exposes; comparing the two name sets
+// asserts exactly one thing - that execute, and nothing else, is what the allowlist
+// withholds.
+func TestAllowlistRightsTrackTheHelpers(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		helper  func(...string) ll.FSRule
+		without func(...string) ll.FSRule
+	}{
+		{"RODirs", ll.RODirs, roDirsNoExec},
+		{"ROFiles", ll.ROFiles, roFilesNoExec},
+		{"RWDirs", ll.RWDirs, rwDirsNoExec},
+		{"RWFiles", ll.RWFiles, rwFilesNoExec},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			full := slices.DeleteFunc(rightNames(c.helper("/").String()), func(n string) bool { return n == "execute" })
+			less := rightNames(c.without("/").String())
+			slices.Sort(full)
+			slices.Sort(less)
+			if !slices.Equal(full, less) {
+				t.Errorf("the allowlist's %s rights are no longer that helper's minus execute:\n helper minus execute: %v\n allowlist: %v", c.name, full, less)
+			}
+		})
 	}
 }
 
@@ -80,6 +114,20 @@ func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 	}
 	if err := RestrictDegraded([]string{"/"}, nil, nil); !errors.Is(err, errUnavailableABI) {
 		t.Errorf("RestrictDegraded must refuse with errUnavailableABI when ABI is unavailable; got %v", err)
+	}
+}
+
+// exec: allowlist installs no exec-block filter, so this ruleset is the only thing
+// bounding what the target spawns. A kernel that cannot apply it must refuse the run
+// rather than fall through to unrestricted spawn under a report claiming an allowlist -
+// the same stance RestrictDegraded takes, and for the same reason: in both cases
+// Landlock is not a backstop behind something else, it IS the mechanism.
+func TestRestrictExecAllowlistRefusesWithoutABI(t *testing.T) {
+	if effectiveABI() >= 1 {
+		t.Skip("Landlock available; the refusal guard fires only when it is not")
+	}
+	if err := RestrictExecAllowlist(nil, []string{"/opt/tool"}); !errors.Is(err, errAllowlistUnavailableABI) {
+		t.Errorf("RestrictExecAllowlist must refuse with errAllowlistUnavailableABI when ABI is unavailable; got %v", err)
 	}
 }
 

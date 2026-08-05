@@ -58,6 +58,14 @@
 // control: both must be OK, or the denials above would be the host's ptrace_scope
 // rather than Landlock.
 //
+// Usage: probe execallow <write-dir> <allowed-binary> <other-binary> <loader>
+// Applies the EXEC ALLOWLIST ruleset - the whole tree readable but not executable, with
+// execute granted on allowed-binary alone - then prints "execallow_allowed=OK|DENIED
+// execallow_other=... execallow_loader=... execallow_read=...". allowed-binary must be
+// statically linked, which is the mode's own precondition: a dynamic one cannot run
+// without the loader, and the loader arm here is what shows why granting the loader
+// execute would be a bypass rather than a fix.
+//
 // Usage: probe sleeper
 // Sleeps until killed. The two modes above re-exec this as their child rather than
 // depending on a sleep(1) on PATH.
@@ -68,6 +76,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -113,6 +122,10 @@ func main() {
 		procMemSameDomain(os.Args[2])
 		return
 	}
+	if len(os.Args) == 6 && os.Args[1] == "execallow" {
+		execAllow(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "available" {
 		fmt.Printf("available=%v\n", landlock.Available())
 		return
@@ -131,6 +144,45 @@ func main() {
 		os.Exit(2)
 	}
 	fmt.Printf("inside=%s outside=%s\n", readable(os.Args[2]), readable(os.Args[3]))
+}
+
+// execAllow applies the exec-allowlist ruleset with allowed as its single entry, then
+// tries to spawn three things: the allowlisted binary, a second binary that is readable
+// but not allowlisted, and the allowlisted binary again through the dynamic loader.
+// Prints "execallow_allowed=... execallow_other=... execallow_loader=...
+// execallow_read=...", each OK|DENIED.
+//
+// The loader arm is the one that decides whether this mode bounds anything at all. If
+// the loader is executable, "loader <any readable ELF>" runs it whatever the allowlist
+// says, so that arm must be DENIED - and it is what forces allowlist entries to be
+// statically linked. The read arm is the control: an allowlist withholds EXECUTE, not
+// read, so a file that is merely readable must stay readable.
+func execAllow(writeDir, allowed, other, loader string) {
+	if err := landlock.RestrictExecAllowlist([]string{writeDir}, []string{allowed}); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("execallow_allowed=%s execallow_other=%s execallow_loader=%s execallow_read=%s\n",
+		spawnable(allowed), spawnable(other), spawnable(loader, allowed), readable(other))
+}
+
+// spawnable reports whether argv can be executed, as OK or DENIED. Only the exec
+// transition is judged: a binary that starts and then exits nonzero for its own reasons
+// still answers the question this asks.
+func spawnable(argv ...string) string {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	// The child inherits this process's own stdio rather than being left nil. os/exec
+	// opens /dev/null for every nil stream, and under an allowlist ruleset built for a
+	// temp directory that open is denied - so every arm would report DENIED for a reason
+	// that has nothing to do with the execute right under test. A real run does not meet
+	// this: /dev is in the sandbox's writable mounts.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return "OK"
+	}
+	return verdict(err)
 }
 
 func readable(path string) string {
