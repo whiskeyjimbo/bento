@@ -721,6 +721,33 @@ func TestWriteShieldAnchors(t *testing.T) {
 	}
 }
 
+// Runtime drops its shield when XDG_RUNTIME_DIR names a home or an ancestor of one,
+// because the rule would hide the whole grant surface. It is dropped silently and the
+// remaining rule set is byte-identical to an ordinary host's, so the operator has no way
+// to tell that the directory holding their agent sockets and container auth.json is
+// reachable under a broad grant. It stays a report rather than a refusal because
+// XDG_RUNTIME_DIR=$HOME is ordinary on a minimal container.
+func TestWriteShieldAnchorsReportsAnUnshieldableRuntimeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", home)
+
+	var b bytes.Buffer
+	writeShieldAnchors(&b)
+	if out := b.String(); !strings.Contains(out, "XDG_RUNTIME_DIR") || !strings.Contains(out, strconv.Quote(home)) {
+		t.Errorf("an unshieldable runtime dir must be named; got %q", out)
+	}
+
+	// A runtime dir outside every anchor is shielded normally, and saying so on every
+	// ordinary host would be the noise this report exists to stay clear of.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	b.Reset()
+	writeShieldAnchors(&b)
+	if out := b.String(); strings.Contains(out, "XDG_RUNTIME_DIR") {
+		t.Errorf("a shieldable runtime dir must stay quiet; got %q", out)
+	}
+}
+
 func TestWriteExposedWarning(t *testing.T) {
 	var b bytes.Buffer
 	writeExposedWarning(&b, enforce.Result{Exposed: []enforce.ShieldApplied{
