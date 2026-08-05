@@ -354,24 +354,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".passwd-s3fs",       // s3fs password file
 		".s3cmd",             // s3cmd state firejail blacklists (the .s3cfg config file is shielded above)
 
-		// Password-manager and wallet config files, hidden alongside the stores they
-		// point at: each names the vault's location and its recently-opened entries,
-		// which is reconnaissance for an attacker even where the secret itself lives
-		// in the shielded store.
-		".config/KeePassXCrc",
-		".config/kwalletrc",
-		".config/plasmavaultrc", // names the vaults whose store is shielded above
-		// Mail-client config and identity files: account passwords (or the pointers to
-		// where they are stored) and the addresses the account sends as.
+		// Mail-client config files whose dominant content is an account password.
 		".gist",                  // defunkt/gist stores the GitHub OAuth token as the file's whole content
 		".mcabberrc",             // mcabber XMPP config, holds the account password
-		".pinerc",                // pine/alpine config
+		".pinerc",                // pine/alpine config, which carries the account password inline
 		".pinercex",              // its per-host companion
 		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
-		".config/kmail2rc",
-		".kde/share/config/kwalletrc",  // legacy KDE location
-		".kde4/share/config/kwalletrc", // KDE4 location
-		"wallet.dat",                   // Bitcoin Core wallet at the home root: the spending keys
+		"wallet.dat",             // Bitcoin Core wallet at the home root: the spending keys
 
 		// The X11 display-access cookie: reading it grants control of the live X session
 		// (keylog, screenshot, inject events), so it is a credential, not a config. Hidden,
@@ -387,6 +376,20 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// The user's own content rather than key material: mail bodies, the addresses an
 	// account sends as, the local search index over them.
 	privateDataFiles := []string{
+		// Password-manager and wallet CONFIG files, hidden alongside the stores they point
+		// at: each names the vault's location and its recently-opened entries. That is
+		// reconnaissance, not key material - the secret itself lives in the shielded store -
+		// so a callout promising the credentials in it sends a reviewer after something
+		// that is not there.
+		".config/KeePassXCrc",
+		".config/kwalletrc",
+		".config/plasmavaultrc",        // names the vaults whose store is shielded above
+		".kde/share/config/kwalletrc",  // legacy KDE location
+		".kde4/share/config/kwalletrc", // KDE4 location
+
+		// KMail's general config: account structure and identity pointers. The passwords
+		// live in KWallet and .config/mailtransports, which are shielded on their own.
+		".config/kmail2rc",
 		".config/emaildefaults",
 		".config/emailidentities",
 		".config/kmailsearchindexingrc",
