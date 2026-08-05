@@ -333,3 +333,26 @@ func TestRunDegradedRefusesDenyPaths(t *testing.T) {
 		t.Errorf("error = %v, want it to name the caller deny paths as the reason", err)
 	}
 }
+
+// denylist.Shieldable is lexical, so a relocation whose target only reaches a home
+// through a symlink passes it and arrives here as a rule on the whole home - a tmpfs
+// over the grant surface, with the run failing for no stated reason. The same test on
+// the resolved paths is what catches it.
+func TestSymlinkedRelocationOntoAHomeIsNotShielded(t *testing.T) {
+	sb := testSandbox("/export/home/u", "/export/home/u/work")
+	sb.homes = []string{"/export/home/u"}
+	// The passwd entry is /export/home/u and /home is a symlink to /export/home.
+	sb.resolve = func(p string) string {
+		if after, ok := strings.CutPrefix(p, "/home/"); ok {
+			return "/export/home/" + after
+		}
+		return p
+	}
+	// What GNUPGHOME=/home/u produces: Shieldable saw no lexical relation to the anchor.
+	sb.extraDeny = []denylist.Rule{{Path: "/home/u", Deny: denylist.DenyAll, Dir: true}}
+
+	args, _ := denyArgs(sb, []string{"/export/home/u"}, nil, nil)
+	if has(args, "--tmpfs", "/export/home/u") {
+		t.Errorf("a shield resolving onto the home must be dropped, not mounted over it: %v", args)
+	}
+}
