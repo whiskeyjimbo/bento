@@ -140,7 +140,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// does. It matters more here: every fence in this tier is the only one of its kind,
 	// so a stage that died before applying them ran nothing confined, and the report
 	// must not describe a shielded run.
-	appliedReport, dropApplied, err := newAppliedReport()
+	appliedReport, dropApplied, err := newAppliedReport(dir)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -198,7 +198,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
