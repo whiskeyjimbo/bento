@@ -47,8 +47,8 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
-	// The families are an allowlist, mirroring egressFilter's, so a family nobody
-	// enumerated does not slip past. AF_PACKET is the one egress_linux_amd64.go names
+	// The families are an allowlist, so a family nobody enumerated does not slip past.
+	// AF_PACKET is the one egress_linux_amd64.go names
 	// explicitly: raw frames on the host wire, which an AF_INET/AF_INET6 denylist would
 	// wave through. Creating one needs CAP_NET_RAW, so the check runs against a
 	// non-IP socket that any user can make instead - it exercises the same branch.

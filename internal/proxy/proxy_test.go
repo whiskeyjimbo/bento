@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,6 +99,13 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 	}
 }
 
+// acceptErr wraps errno the way a real net.Listener does - *net.OpError around an
+// *os.SyscallError around the errno - so a test exercises the unwrapping recoverableAccept
+// actually has to do. A bare errno would pass an equality check that production never sees.
+func acceptErr(errno syscall.Errno) error {
+	return &net.OpError{Op: "accept", Net: "unix", Err: os.NewSyscallError("accept", errno)}
+}
+
 // flakyListener wraps a listener and makes the first n Accept calls fail with err, so a
 // transient host condition can be reproduced without one: ENFILE is caused by processes
 // outside bento and cannot be provoked from a test.
@@ -133,14 +141,14 @@ func (l *flakyListener) failed() int {
 // CONNECT would meet a dead socket rather than an allowlist decision - the run's egress
 // silently unenforced-by-absence for its whole remaining lifetime.
 func TestServeSurvivesATransientAcceptError(t *testing.T) {
-	for _, errno := range []error{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED} {
+	for _, errno := range []syscall.Errno{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED} {
 		dir := t.TempDir()
 		sock := dir + "/proxy.sock"
 		base, err := net.Listen("unix", sock)
 		if err != nil {
 			t.Fatal(err)
 		}
-		l := &flakyListener{Listener: base, remaining: 3, err: errno}
+		l := &flakyListener{Listener: base, remaining: 3, err: acceptErr(errno)}
 
 		p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -201,7 +209,7 @@ func TestServeStillReportsAFatalAcceptError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer base.Close()
-	l := &flakyListener{Listener: base, remaining: 1, err: syscall.EINVAL}
+	l := &flakyListener{Listener: base, remaining: 1, err: acceptErr(syscall.EINVAL)}
 
 	p := New(nil, WithDialer(fakeDialer("HELLO")))
 	ctx, cancel := context.WithCancel(context.Background())
