@@ -52,6 +52,12 @@ func TestBuildExtraDeny(t *testing.T) {
 	if _, err := buildExtraDeny([]string{"/"}, sb); err == nil {
 		t.Error("a deny path resolving to the root must be refused")
 	}
+	// denyArgs drops a rule that would take the whole grant surface, so accepting one
+	// here would mean a caller's deny was honored in the API and never mounted.
+	sb.homes = []string{"/home/u"}
+	if _, err := buildExtraDeny([]string{"/home/u"}, sb); err == nil {
+		t.Error("a deny path resolving to a home must be refused, not silently dropped later")
+	}
 }
 
 // A dangling symlink deny path (Lstat sees the link, its target is absent) must be
