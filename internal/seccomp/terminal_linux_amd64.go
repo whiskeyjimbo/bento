@@ -27,7 +27,8 @@ const (
 // requests that inject into a terminal, TIOCSTI and TIOCLINUX, with EPERM. It is a
 // denylist on the ioctl request (every other ioctl passes) because only these two
 // forge terminal input; a broad ioctl block would break ordinary terminal use
-// (window size, line discipline). A wrong architecture is killed, as is any x32-ABI
+// (window size, line discipline). A wrong architecture is killed (whole-process from
+// 4.14, thread-only below it - see seccompRetKillProcess), as is any x32-ABI
 // ioctl: x32 shares the amd64 audit arch but tags its syscall numbers, so an x32
 // ioctl would miss the nr equality check and slip past the request filter.
 func terminalInjectionFilter() []unix.SockFilter {

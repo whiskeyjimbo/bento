@@ -53,7 +53,8 @@ func EgressSupported() bool { return true }
 // and AF_NETLINK pass, every other family (AF_INET, AF_INET6, AF_PACKET, AF_XDP,
 // AF_VSOCK, ...) is refused with EPERM. An allowlist is the guarantee: a denylist
 // would miss an address family we did not enumerate, and "no egress" must not depend
-// on remembering every wire family. A wrong architecture is killed, as is any x32-ABI
+// on remembering every wire family. A wrong architecture is killed (whole-process from
+// 4.14, thread-only below it - see seccompRetKillProcess), as is any x32-ABI
 // syscall (x32 shares the amd64 audit arch but tags its numbers, so an x32 socket()
 // would miss the equality check and slip through).
 func egressFilter() []unix.SockFilter {
