@@ -886,14 +886,6 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// differs from the default (already shielded above), the shield follows to the
 	// target too. A relative value is dropped: the shield is an absolute bwrap bind, so
 	// a relative target cannot be shielded at the place the tool would actually read it.
-	dirEnvs := []struct{ env, def string }{
-		{"GNUPGHOME", ".gnupg"},
-		{"PASSWORD_STORE_DIR", ".password-store"},
-		{"DOCKER_CONFIG", ".docker"},
-		{"CLOUDSDK_CONFIG", ".config/gcloud"},
-		{"GH_CONFIG_DIR", ".config/gh"},
-		{"AZURE_CONFIG_DIR", ".azure"},
-	}
 	for _, de := range dirEnvs {
 		base := os.Getenv(de.env)
 		if base == "" || !filepath.IsAbs(base) {
@@ -923,10 +915,25 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// user gets a zero-byte kubeconfig: a silent wrong answer rather than a refusal. The
 	// sibling anchor's own pass emits the directory shield that covers the path, so dropping
 	// it here loses no coverage.
-	fileEnvs := []struct{ env, store string }{
-		{"KUBECONFIG", ".kube"},
-		{"AWS_SHARED_CREDENTIALS_FILE", ".aws"},
-		{"AWS_CONFIG_FILE", ".aws"},
+	//
+	// Only KUBECONFIG is a search list. The rest name one file, and a path may legally
+	// contain a colon, so splitting them would shield two halves of a name and leave the
+	// real file exposed.
+	fileEnvs := []struct {
+		env, store string
+		list       bool
+	}{
+		{env: "KUBECONFIG", store: ".kube", list: true},
+		{env: "AWS_SHARED_CREDENTIALS_FILE", store: ".aws"},
+		{env: "AWS_CONFIG_FILE", store: ".aws"},
+		// The service-account JSON private key, the canonical GCP credential. The directory
+		// beside it (CLOUDSDK_CONFIG) is already followed above, so the file pointer being
+		// absent was an inconsistency.
+		{env: "GOOGLE_APPLICATION_CREDENTIALS", store: ".config/gcloud"},
+		{env: "AWS_WEB_IDENTITY_TOKEN_FILE", store: ".aws"},
+		// podman/skopeo/buildah's registry auth.json. Its primary default is under
+		// XDG_RUNTIME_DIR, which Runtime shields; this is the pointer that moves it out.
+		{env: "REGISTRY_AUTH_FILE", store: ".config/containers"},
 	}
 	underStore := func(p, store string) bool {
 		for _, h := range anchors {
@@ -938,12 +945,23 @@ func Home(home string, alsoHomes ...string) []Rule {
 		return false
 	}
 	for _, fe := range fileEnvs {
-		for _, p := range filepath.SplitList(os.Getenv(fe.env)) {
+		v := os.Getenv(fe.env)
+		targets := []string{v}
+		if fe.list {
+			targets = filepath.SplitList(v)
+		}
+		for _, p := range targets {
 			if p == "" || !filepath.IsAbs(p) {
 				continue
 			}
 			p = filepath.Clean(p)
-			if underStore(p, fe.store) || !shieldable(p) {
+			// The store itself is relocatable (CLOUDSDK_CONFIG moves ~/.config/gcloud), and a
+			// target inside the RELOCATED store is covered by the directory rule the dirEnvs
+			// block just emitted - which underStore, keyed on the default path under each
+			// anchor, cannot see. An interior file rule there is the same silent wrong answer
+			// the store check exists to prevent: it survives a `read:` opt-in on the directory
+			// and hands back a zero-byte file.
+			if underStore(p, fe.store) || underDenyAll(p, rules) || !shieldable(p) {
 				continue
 			}
 			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: fe.env})
@@ -973,6 +991,11 @@ func Home(home string, alsoHomes ...string) []Rule {
 		{"SQLITE_HISTORY", ".sqlite_history", HoldsHistory},
 		{"REDISCLI_HISTFILE", ".rediscli_history", HoldsHistory},
 		{"NODE_REPL_HISTORY", ".node_repl_history", HoldsHistory},
+		// Both name a single config file whose default is shielded above and whose content
+		// is a credential (a Terraform Cloud token, a galaxy_token) beside an exec knob
+		// (ANSIBLE_CONFIG's library/roles_path/vault_password_file).
+		{"TF_CLI_CONFIG_FILE", ".terraformrc", HoldsCredentials},
+		{"ANSIBLE_CONFIG", ".ansible.cfg", HoldsCredentials},
 	}
 	for _, fe := range fileDenyAllEnvs {
 		v := os.Getenv(fe.env)
@@ -997,19 +1020,8 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// A relocation landing at or under a DenyAll rule is skipped: the DenyAll rule
 	// already hides the whole subtree, so a DenyWrite there grants nothing further and
 	// only adds a redundant rule for a backend to enforce and a reader to reconcile.
-	underDenyAll := func(p string) bool {
-		for _, r := range rules {
-			if r.Deny != DenyAll {
-				continue
-			}
-			if p == r.Path || (r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator))) {
-				return true
-			}
-		}
-		return false
-	}
 	addWriteShield := func(p, source string) {
-		if !underDenyAll(p) && shieldable(p) {
+		if !underDenyAll(p, rules) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
@@ -1097,6 +1109,22 @@ func Home(home string, alsoHomes ...string) []Rule {
 		}
 	}
 	return rules
+}
+
+// underDenyAll reports whether an already-emitted DenyAll rule covers p. A rule landing
+// there shields nothing further: it is redundant when it is another DenyAll, and when it
+// is a DenyWrite or an interior file rule it is worse than redundant, because it survives
+// an opt-in that matches only the enclosing rule.
+func underDenyAll(p string, rules []Rule) bool {
+	for _, r := range rules {
+		if r.Deny != DenyAll {
+			continue
+		}
+		if p == r.Path || (r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
 }
 
 // Runtime returns the mandatory rules for the host's runtime state directories.
@@ -1264,17 +1292,50 @@ func homeLocations(home, entry string) []location {
 // a second readable name for one. It is narrower than the full set of hidden directories:
 // see credentialAnchorDirs for which stores count and why, and walletKeyPaths for the
 // full-node clients that anchor only their key subtree.
-func AliasAnchors(home string) []string {
+//
+// It takes every home anchor the run has, not one, for the reason Home does: a store
+// relocated out of the homes altogether belongs to the run and not to whichever anchor the
+// caller happened to pass first.
+func AliasAnchors(homes ...string) []string {
 	anchors := slices.Concat(credentialAnchorDirs, walletKeyPaths)
-	out := make([]string, 0, len(anchors))
-	for _, d := range anchors {
-		// An anchor is a place to look for a second readable name, so a relocated copy
-		// counts the same as the default and the variable that moved it does not.
-		for _, l := range homeLocations(home, d) {
-			out = append(out, l.path)
+	out := make([]string, 0, len(anchors)*len(homes))
+	for _, home := range homes {
+		for _, d := range anchors {
+			// An anchor is a place to look for a second readable name, so a relocated copy
+			// counts the same as the default and the variable that moved it does not.
+			for _, l := range homeLocations(home, d) {
+				out = append(out, l.path)
+			}
+		}
+	}
+	// A tool-specific relocation moves a whole store off the XDG bases homeLocations knows
+	// about, so GNUPGHOME=/srv/keys is shielded (Home follows it) but would anchor nothing -
+	// leaving a second readable name for those keys undetectable. Skipping the target when
+	// it is at or above an anchor matches the shield: the scan would otherwise walk a whole
+	// home looking for aliases of it.
+	for _, de := range dirEnvs {
+		base := os.Getenv(de.env)
+		if !filepath.IsAbs(base) {
+			continue
+		}
+		if c := filepath.Clean(base); Shieldable(c, homes) && !slices.Contains(out, c) {
+			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// The tool-specific variables that move a whole credential directory off its default path.
+// Shared between the rule that follows the shield there and the alias scan that anchors on
+// it: a store the two disagree about is one that is hidden but whose second readable name
+// nothing looks for.
+var dirEnvs = []struct{ env, def string }{
+	{"GNUPGHOME", ".gnupg"},
+	{"PASSWORD_STORE_DIR", ".password-store"},
+	{"DOCKER_CONFIG", ".docker"},
+	{"CLOUDSDK_CONFIG", ".config/gcloud"},
+	{"GH_CONFIG_DIR", ".config/gh"},
+	{"AZURE_CONFIG_DIR", ".azure"},
 }
 
 // The hidden home directories, split by what the contents ARE. Every bucket is shielded
