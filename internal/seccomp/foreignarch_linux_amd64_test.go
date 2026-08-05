@@ -143,7 +143,18 @@ func TestForeignArchHelper(t *testing.T) {
 // the same answer.
 func TestKillProcessActionIsAvailable(t *testing.T) {
 	action := uint32(seccompRetKillProcess)
-	if _, _, e := unix.Syscall(unix.SYS_SECCOMP, seccompGetActionAvail, 0, uintptr(unsafe.Pointer(&action))); e != 0 {
-		t.Skipf("this kernel does not support SECCOMP_RET_KILL_PROCESS (%v), so the foreign-arch guard kills the offending thread rather than the process; the block holds, its scope does not", e)
+	_, _, e := unix.Syscall(unix.SYS_SECCOMP, seccompGetActionAvail, 0, uintptr(unsafe.Pointer(&action)))
+	switch e {
+	case 0:
+	case unix.EINVAL:
+		// The operation itself is missing, which dates the kernel below 4.14. Skipping is
+		// the honest answer: an old kernel is supported, and the degradation is a narrowing
+		// of the kill's scope rather than a defect.
+		t.Skipf("this kernel has no SECCOMP_GET_ACTION_AVAIL, so it predates SECCOMP_RET_KILL_PROCESS and the foreign-arch guard kills the offending thread rather than the process; the block holds, its scope does not")
+	default:
+		// The operation exists and rejected the value, so the kernel is new enough and the
+		// constant is not an action it recognizes. Skipping that would hide a typo in a
+		// filter's kill verdict behind a message about old kernels.
+		t.Fatalf("the kernel has SECCOMP_GET_ACTION_AVAIL but does not recognize %#x as an action (%v); the value every filter here returns for a foreign arch is wrong", seccompRetKillProcess, e)
 	}
 }

@@ -51,7 +51,7 @@
 // rather than Landlock.
 //
 // Usage: probe sleeper
-// Blocks until killed. The two modes above re-exec this as their child rather than
+// Sleeps until killed. The two modes above re-exec this as their child rather than
 // depending on a sleep(1) on PATH.
 //
 // Usage: probe available
@@ -87,7 +87,10 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "sleeper" {
-		select {}
+		// A bare select{} would trip the runtime's deadlock detector and abort, leaving
+		// the parent reading a process that has already died.
+		time.Sleep(time.Hour)
+		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "procmem" {
 		procMem(os.Args[2])
@@ -165,13 +168,19 @@ func procMem(read string) {
 	}
 	defer func() { _ = child.Kill() }()
 
-	baseline, fdBaseline := memReadable(child.Pid), fdReachable(child.Pid)
+	// The mapped address is captured here and reused after the restriction. Re-deriving
+	// it from /proc/<pid>/maps would not work: maps takes the same ptrace check mem does,
+	// so it fails first afterwards and the result would report a maps denial under the
+	// name of a mem denial.
+	addr, baseline := memReadable(child.Pid, 0)
+	fdBaseline := fdReachable(child.Pid)
 	if err := landlock.RestrictDegraded([]string{read}, nil, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
+	_, restricted := memReadable(child.Pid, addr)
 	fmt.Printf("procmem_baseline=%s procmem_restricted=%s procfd_baseline=%s procfd_restricted=%s\n",
-		baseline, memReadable(child.Pid), fdBaseline, fdReachable(child.Pid))
+		baseline, restricted, fdBaseline, fdReachable(child.Pid))
 }
 
 // procMemSameDomain starts the child AFTER restricting, so it inherits the domain and
@@ -188,7 +197,8 @@ func procMemSameDomain(read string) {
 		os.Exit(2)
 	}
 	defer func() { _ = child.Kill() }()
-	fmt.Printf("procmem_samedomain=%s procfd_samedomain=%s\n", memReadable(child.Pid), fdReachable(child.Pid))
+	_, mem := memReadable(child.Pid, 0)
+	fmt.Printf("procmem_samedomain=%s procfd_samedomain=%s\n", mem, fdReachable(child.Pid))
 }
 
 // startSleeper re-execs this binary in its sleeper mode. Its descriptors are the
@@ -215,19 +225,29 @@ func startSleeper() (*os.Process, error) {
 	return cmd.Process, nil
 }
 
-// memReadable opens the target's /proc/<pid>/mem and reads a byte from the first
-// readable mapping. The open alone is not enough: it succeeds under a permissive
-// ptrace_scope and only the read enters mm_access.
-func memReadable(pid int) string {
-	maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
-	if err != nil {
-		return "DENIED"
-	}
+// memReadable reads one byte of the target's address space through /proc/<pid>/mem and
+// returns the address it succeeded at along with the verdict. With at 0 it discovers a
+// readable mapping from /proc/<pid>/maps; with an address from an earlier call it goes
+// straight to the read, which is what lets a caller reach mem without touching maps.
+//
+// The open alone is not the test: it succeeds under a permissive ptrace_scope, and only
+// the read enters mm_access.
+func memReadable(pid int, at uint64) (uint64, string) {
 	f, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
-		return "DENIED"
+		return at, "DENIED"
 	}
 	defer f.Close()
+	if at != 0 {
+		if _, err := f.ReadAt(make([]byte, 1), int64(at)); err != nil {
+			return at, "DENIED"
+		}
+		return at, "OK"
+	}
+	maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return 0, "DENIED"
+	}
 	for line := range strings.SplitSeq(string(maps), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || !strings.HasPrefix(fields[1], "r") {
@@ -238,10 +258,10 @@ func memReadable(pid int) string {
 			continue
 		}
 		if _, err := f.ReadAt(make([]byte, 1), int64(lo)); err == nil {
-			return "OK"
+			return lo, "OK"
 		}
 	}
-	return "DENIED"
+	return 0, "DENIED"
 }
 
 // fdReachable resolves the target's /proc/<pid>/fd/0 magic link, the other half of the
