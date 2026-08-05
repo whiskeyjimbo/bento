@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/denylist/audit"
 )
 
@@ -395,6 +396,24 @@ func TestFetchRefusesOnlyPastTheSizeCeiling(t *testing.T) {
 				t.Errorf("body = %d bytes, want %d; a silently truncated profile drops its tail from the diff", len(body), tc.size)
 			}
 		})
+	}
+}
+
+// The audit compares its own rule set against an upstream corpus, so that rule set has to
+// be the same on every host: a relocation variable in the developer's shell adds a rule CI
+// does not have, which can cover an upstream candidate and turn a real gap green. run
+// clears them before building anything, and it must clear ALL of them - the list is
+// assembled from the tables the rules read, so a variable added there is cleared here.
+func TestRunClearsTheRelocationEnvironment(t *testing.T) {
+	for _, v := range denylist.RelocationVars() {
+		t.Setenv(v, "/srv/planted")
+	}
+	var b bytes.Buffer
+	run(func(string) (string, error) { return "", errors.New("offline") }, &b, &b)
+	for _, v := range denylist.RelocationVars() {
+		if got := os.Getenv(v); got != "" {
+			t.Errorf("$%s is still %q after run, so the audit's rule set is this host's", v, got)
+		}
 	}
 }
 

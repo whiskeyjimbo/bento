@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -585,6 +586,24 @@ func TestHomeSkipsFileRelocationInsideARelocatedStore(t *testing.T) {
 	}
 }
 
+// The same guard on the other relocation loop: a def-shaped pointer compares against ONE
+// default spelling, so a target inside any other hidden tree reaches the same interior
+// rule that survives an opt-in on the tree.
+func TestHomeSkipsFileDenyAllRelocationUnderAHiddenTree(t *testing.T) {
+	t.Setenv("PGPASSFILE", "/home/u/.ssh/pgpass")
+	t.Setenv("HISTFILE", "/home/u/.gnupg/hist")
+
+	byPath := map[string]bool{}
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = true
+	}
+	for _, p := range []string{"/home/u/.ssh/pgpass", "/home/u/.gnupg/hist"} {
+		if byPath[p] {
+			t.Errorf("%q is already inside a DenyAll tree and must not get an interior rule", p)
+		}
+	}
+}
+
 // ZDOTDIR relocates zsh's startup files off $HOME, and GIT_CONFIG_GLOBAL points git
 // at a different global config file. The persistence shields (DenyWrite: readable,
 // not plantable) must follow, or a write grant over the relocated path could plant a
@@ -956,6 +975,72 @@ func TestAliasAnchorsFollowRelocatedStores(t *testing.T) {
 	for _, unwanted := range []string{"relative/docker", "/home/u"} {
 		if slices.Contains(anchors, unwanted) {
 			t.Errorf("%q must not anchor the alias scan", unwanted)
+		}
+	}
+}
+
+// A runtime dir no shield can follow has to be distinguishable from an unset one, which
+// RuntimeDir cannot do: both have no path to answer with, but only one leaves a real
+// directory of sockets exposed under a broad grant.
+func TestUnshieldableRuntimeDir(t *testing.T) {
+	homes := []string{"/home/u"}
+	for _, tc := range []struct{ name, value, want string }{
+		{"unset", "", ""},
+		{"relative", "run/user/1000", "run/user/1000"},
+		{"at an anchor", "/home/u", "/home/u"},
+		{"above an anchor", "/home", "/home"},
+		{"shieldable", "/run/user/1000", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", tc.value)
+			if got := UnshieldableRuntimeDir(homes); got != tc.want {
+				t.Errorf("UnshieldableRuntimeDir(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// RelocationVars is what lets the completeness audit build a rule set that does not vary
+// with the environment of whoever runs it, so a variable this package reads but does not
+// name there re-opens exactly the hole it closes: a rule CI does not have, covering an
+// upstream candidate, turning a real gap green.
+//
+// The table-driven reads are covered by construction. This reads the source for the reads
+// that are NOT - os.Getenv with a literal name - which is the only kind that can be added
+// without touching a table.
+func TestRelocationVarsNamesEveryEnvRead(t *testing.T) {
+	src, err := os.ReadFile("denylist.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]bool{}
+	for _, v := range RelocationVars() {
+		named[v] = true
+	}
+	for _, m := range regexp.MustCompile(`os\.Getenv\("([A-Z0-9_]+)"\)`).FindAllStringSubmatch(string(src), -1) {
+		if !named[m[1]] {
+			t.Errorf("denylist.go reads $%s but RelocationVars does not name it, so the audit cannot clear it", m[1])
+		}
+	}
+}
+
+// The audit's guarantee, end to end: with every relocation variable cleared, the rules are
+// exactly the ones a home path implies, and nothing an operator's shell holds can add one.
+func TestHomeIsEnvironmentFreeWithRelocationVarsCleared(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/srv/keys")
+	t.Setenv("XDG_CONFIG_HOME", "/srv/cfg")
+	t.Setenv("KUBECONFIG", "/srv/kube.yaml")
+	t.Setenv("CARGO_HOME", "/srv/cargo")
+
+	for _, v := range RelocationVars() {
+		t.Setenv(v, "")
+	}
+	for _, r := range Home("/home/u") {
+		if r.Source != "" {
+			t.Errorf("rule %q carries source $%s with every relocation variable cleared", r.Path, r.Source)
+		}
+		if !strings.HasPrefix(r.Path, "/home/u/") {
+			t.Errorf("rule %q is outside the home it was built for", r.Path)
 		}
 	}
 }
