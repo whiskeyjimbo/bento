@@ -367,6 +367,9 @@ func classifyIP(ip net.IP) ipClass {
 	if embedded := embeddedIPv4(ip); embedded != nil {
 		return classifyIP(embedded)
 	}
+	if embedded := isatapIPv4(ip); embedded != nil {
+		return classifyIP(embedded)
+	}
 	return ipPublic
 }
 
@@ -427,16 +430,16 @@ func classifyRFC8215(ip net.IP) ipClass {
 // RFC 8215 local-use /48 has no fixed embedding position and is handled by
 // classifyRFC8215 instead. IPv4-mapped ::ffff:a.b.c.d needs nothing here: net.IP.To4
 // answers for it, so classifyIP judges the embedded v4 directly. Operator-specific
-// prefixes and Teredo are left undecoded. Such an address classifies on its own merits,
-// which is why the site prefix a DNS64 network actually uses is learned by discovery
-// instead (see nat64.go), and why the allowlist must still permit the hostname at all.
+// prefixes, Teredo and ISATAP are left undecoded here. Such an address classifies on
+// its own merits, which is why the site prefix a DNS64 network actually uses is learned
+// by discovery instead (see nat64.go), and why the allowlist must still permit the
+// hostname at all.
 //
-// ISATAP and IPv4-translated are decoded on a tag rather than a prefix, which cannot be
-// exact: ISATAP's identifier sits under an arbitrary /64, so a global address whose
-// bytes 8..11 coincide with the tag decodes to an IPv4 it does not actually carry. That
-// costs nothing but an over-refusal - this is consulted only where classifyIP would
-// otherwise return ipPublic, so a decode can only make the verdict stricter, never
-// looser - and it is the same cheap direction to be wrong in that classifyRFC8215 takes.
+// Every decode here is keyed on a fixed prefix, so a non-nil answer names the IPv4 the
+// address really carries. nat64.go's inconclusive-discovery demotion depends on exactly
+// that: it reads a nil from here as "nothing can tell what this wraps" and refuses
+// accordingly, which a guess would silently unlock. isatapIPv4 is kept separate for
+// that reason.
 func embeddedIPv4(ip net.IP) net.IP {
 	ip16 := ip.To16()
 	if ip16 == nil {
@@ -456,13 +459,6 @@ func embeddedIPv4(ip net.IP) net.IP {
 	if bytes.Equal(ip16[:12], make([]byte, 12)) {
 		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 	}
-	// ISATAP carries the IPv4 in the last 4 bytes under an interface identifier of
-	// 0:5efe (a private v4) or 200:5efe (a global one, u-bit set) at bytes 8..11. Both
-	// defined forms are matched rather than the 5efe tag alone, so an ordinary global
-	// address collides only on all four bytes.
-	if bytes.Equal(ip16[10:12], []byte{0x5e, 0xfe}) && (ip16[8] == 0x00 || ip16[8] == 0x02) && ip16[9] == 0x00 {
-		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
-	}
 	// IPv4-translated ::ffff:0:a.b.c.d (RFC 2765) also carries it in the last 4 bytes.
 	// Its ffff sits at bytes 8..9, so unlike IPv4-mapped it is invisible to To4 and
 	// unlike ::a.b.c.d it fails the all-zero-12 test above.
@@ -470,6 +466,30 @@ func embeddedIPv4(ip net.IP) net.IP {
 		return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 	}
 	return nil
+}
+
+// isatapIPv4 returns the IPv4 an ISATAP address carries, or nil. Its interface
+// identifier - 0:5efe for a private v4, 200:5efe for a global one (u-bit set) - sits at
+// bytes 8..11 under an ARBITRARY /64, so unlike everything in embeddedIPv4 this is a tag
+// match and not a prefix test: an ordinary global address whose bytes 8..11 coincide
+// decodes to an IPv4 it does not carry. Both defined identifiers are matched rather than
+// the 5efe tag alone, so a coincidence has to run to all four bytes.
+//
+// That inexactness is why it is separate. classifyIP consults it only at the fallthrough
+// where the verdict would otherwise be ipPublic, so a wrong decode can only refuse an
+// address that should have passed - the cheap direction, the one classifyRFC8215 already
+// takes. Anywhere a nil is read as proof that nothing can name the wrapped address (the
+// inconclusive path in nat64.go), a guess would push the other way, so it must not be
+// consulted there.
+func isatapIPv4(ip net.IP) net.IP {
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return nil
+	}
+	if !bytes.Equal(ip16[10:12], []byte{0x5e, 0xfe}) || ip16[9] != 0x00 || (ip16[8] != 0x00 && ip16[8] != 0x02) {
+		return nil
+	}
+	return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
 }
 
 // maxConcurrent bounds how many tunnels the proxy handles at once. It caps the
