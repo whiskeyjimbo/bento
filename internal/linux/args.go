@@ -767,8 +767,15 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// identical rule is dropped, so a path shielded two different ways keeps both.
 	// denylist.Shieldable declines a relocation target that swallows a home, but it is a
 	// lexical test on the unresolved path, so GNUPGHOME=/home/u where the passwd entry
-	// reads /export/home/u passes it and lands here as a rule on the whole home. Applying
-	// the same test to the resolved paths is what closes the symlink spelling of it.
+	// reads /export/home/u passes it and lands here as a rule on the whole home. Repeating
+	// it on the resolved paths closes that spelling.
+	//
+	// Only where resolution MOVED the path. denylist applies its own guard to everything
+	// it chose to emit, and deliberately exempts the base store rules: where an anchor is
+	// itself a store ($HOME=/home/u/.aws beside a passwd home of /home/u), the rule on
+	// that store equals an anchor and a blanket test here would drop it - silently
+	// unshielding the credentials it exists to hide. What denylist could not judge is
+	// where a path lands once the host's symlinks are followed, so that is all this adds.
 	homes := make([]string, len(sb.homes))
 	for i, h := range sb.homes {
 		homes[i] = sb.resolve(h)
@@ -776,11 +783,16 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	seen := map[denylist.Rule]bool{}
 	resolved := make([]denylist.Rule, 0, len(rules))
 	for _, r := range rules {
+		literal := r.Path
 		r.Path = sb.resolve(r.Path)
-		if !denylist.Shieldable(r.Path, homes) {
-			// A deny dotfile that resolves to the root (a symlink to "/"), or to a home
-			// or one of its ancestors, would otherwise tmpfs or bind over the whole
-			// sandbox root or the whole grant surface; never shield it.
+		if r.Path == "/" {
+			// A deny dotfile that resolves to the root (a symlink to "/") would
+			// otherwise tmpfs or bind over the whole sandbox root; never shield it.
+			continue
+		}
+		if r.Path != literal && !denylist.Shieldable(r.Path, homes) {
+			// Resolution landed it on a home or an ancestor of one, where the shield
+			// would hide everything the policy granted rather than one store.
 			continue
 		}
 		if seen[r] {
