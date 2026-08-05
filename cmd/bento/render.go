@@ -1539,8 +1539,32 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  shielded there - a grant reaching that directory hands out whatever sockets and\n")
 		fmt.Fprintf(w, "  tokens it holds. Point it at a directory outside the home to shield it.\n")
 	}
+	writeNestedAnchors(w, anchors)
 	writeRelocatedShields(w)
 	fmt.Fprintln(w)
+}
+
+// writeNestedAnchors reports an anchor that sits inside another one.
+//
+// Where $HOME is itself a credential store beside a passwd home that contains it
+// ($HOME=/home/u/.aws, passwd /home/u), the store's own rule from the passwd pass names
+// exactly the other anchor - so the run hides the whole of $HOME. That is the right call
+// and deliberately kept: dropping the rule would unshield the credentials it exists to
+// hide. But the two outcomes are indistinguishable from inside the sandbox, and an
+// operator gets a home replaced by an empty tmpfs with nothing naming the cause. Only the
+// anchors can explain it, which is why it is said here rather than at the rule.
+func writeNestedAnchors(w io.Writer, anchors []string) {
+	for _, inner := range anchors {
+		for _, outer := range anchors {
+			if inner == outer || !policy.CoversResolved(outer, inner) {
+				continue
+			}
+			fmt.Fprintf(w, "  %s sits inside %s, and both anchor the shields. If the inner one is\n", strconv.Quote(inner), strconv.Quote(outer))
+			fmt.Fprintf(w, "  a credential store bento shields whole, the run replaces it with an empty\n")
+			fmt.Fprintf(w, "  tmpfs - correct, since the credentials must stay hidden, but it means a home\n")
+			fmt.Fprintf(w, "  that reads as empty to the script. Point $HOME outside the other home to undo it.\n")
+		}
+	}
 }
 
 // writeRelocatedShields names the shields an environment variable moved off their default

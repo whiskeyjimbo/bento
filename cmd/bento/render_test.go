@@ -1373,3 +1373,28 @@ func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
 		t.Errorf("the ordinary runtime dir must not be relisted here; got %q", out)
 	}
 }
+
+// $HOME inside the passwd home, with the inner one a credential store, is shielded whole
+// on purpose - the alternative unshields the credentials the rule exists to hide. What is
+// missing without this is any way for the operator to tell an empty tmpfs from a bug, and
+// only the anchor relationship explains it.
+func TestDoctorNamesAnAnchorInsideAnotherAnchor(t *testing.T) {
+	var b bytes.Buffer
+	writeNestedAnchors(&b, []string{"/home/u/.aws", "/home/u"})
+	out := b.String()
+	for _, want := range []string{strconv.Quote("/home/u/.aws"), strconv.Quote("/home/u"), "tmpfs"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nesting must be named with its consequence; %q missing from %q", want, out)
+		}
+	}
+
+	// The ordinary shape - two unrelated anchors, or one - explains nothing and must not
+	// print, or every host with a $HOME that disagrees with passwd carries this paragraph.
+	for _, anchors := range [][]string{{"/home/u"}, {"/home/u", "/var/home/u"}} {
+		var quiet bytes.Buffer
+		writeNestedAnchors(&quiet, anchors)
+		if quiet.Len() != 0 {
+			t.Errorf("anchors %v are not nested and must produce no lines; got %q", anchors, quiet.String())
+		}
+	}
+}
