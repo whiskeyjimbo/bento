@@ -313,6 +313,30 @@ func withScopeBusVars(env []string, policyEnv map[string]string) (out []string, 
 // here is what the supervisor spelled.
 func scopeUnitName(runID string) string { return "bento-run-" + runID + ".scope" }
 
+// screenRunID re-runs, at this entry point, both halves of the run-id contract
+// enforce.Run applies - the spelling and the promise that a scope will exist to be
+// reaped through. Run is exported and an embedder can call it directly, and unlike the
+// policy checks above it neither half fails loudly on its own: an unscreened id reaches
+// --unit unvalidated, and an id whose run gets no scope at all (no limits are set, or
+// this host cannot create one) leaves the supervisor holding a unit name that never
+// comes into existence, learning so only when its kill does nothing to a still-running
+// target. The screen is enforce's so there is one spelling of the id, not two.
+func (e *Enforcer) screenRunID(p *policy.Policy, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	if err := enforce.ValidateRunID(runID); err != nil {
+		return err
+	}
+	if p.Limits.IsZero() {
+		return fmt.Errorf("linux: a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id")
+	}
+	if ok, reason := canCreateScope(); !ok {
+		return fmt.Errorf("linux: a run id asks for a reapable scope, but this host cannot create one, so there would be nothing to reap through: %s", reason)
+	}
+	return nil
+}
+
 // wrapWithLimits prepends a transient systemd user scope carrying the policy's
 // limits. With no limits set it returns the command unchanged, so the scope is
 // only paid for when a manifest asks for it. runID, when set, names the scope so a

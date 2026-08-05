@@ -120,3 +120,30 @@ func TestRunIDNamesTheScopeOnTheDegradedTier(t *testing.T) {
 		t.Errorf("scope cgroup is %q, want one ending in %s", path, unit)
 	}
 }
+
+// Run is exported, so an embedder reaches it without enforce.Run's admission ahead of
+// it. Both halves of the run-id contract have to hold here too: the spelling, because an
+// id that reaches --unit unscreened is a unit name the supervisor did not spell, and the
+// promise of a scope, because a run id on a manifest with no limits is never wrapped at
+// all - the supervisor's kill then does nothing to a target still running, with no error
+// anywhere and the run reporting success.
+func TestRunScreensTheRunIDAtTheBackendEntryPoint(t *testing.T) {
+	e := New()
+	limited := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{Memory: "128M"}}
+	for _, id := range []string{"job.17", "job-17", "a/b", strings.Repeat("a", 65)} {
+		if err := e.screenRunID(limited, id); err == nil {
+			t.Errorf("run id %q reached the unit name unscreened", id)
+		}
+	}
+	if err := e.screenRunID(limited, "job_17"); err != nil && !strings.Contains(err.Error(), "cannot create one") {
+		t.Errorf("a well-spelled id on a limited manifest must pass: %v", err)
+	}
+
+	unlimited := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone}
+	if err := e.screenRunID(unlimited, "job_17"); err == nil || !strings.Contains(err.Error(), "sets no resource limits") {
+		t.Errorf("a run id on a manifest with no limits must be refused, not silently unscoped; got %v", err)
+	}
+	if err := e.screenRunID(unlimited, ""); err != nil {
+		t.Errorf("no run id must stay unaffected: %v", err)
+	}
+}
