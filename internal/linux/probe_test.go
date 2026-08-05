@@ -30,28 +30,30 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 		truncateRestricted    bool
 		ioctlDevRestricted    bool
 		resolveUnixRestricted bool
+		scopedIPCRestricted   bool
 		degradedFencesOK      bool
 		want                  enforce.State
 		reasonHas             string
 	}{
-		{"userns ok, landlock present", namespacesUsable, true, true, true, true, true, enforce.Enforced, "backstop"},
-		{"userns ok, no landlock", namespacesUsable, false, true, true, true, true, enforce.Enforced, "bwrap alone"},
-		{"userns blocked, landlock present, fences ok", namespacesBlocked, true, true, true, true, true, enforce.Degraded, "Landlock path rules"},
-		{"userns blocked, landlock present, truncate unrestricted", namespacesBlocked, true, false, true, true, true, enforce.Degraded, "cannot restrict truncate"},
-		{"userns blocked, landlock present, ioctl_dev unrestricted", namespacesBlocked, true, true, false, true, true, enforce.Degraded, "cannot restrict ioctl on device files"},
-		{"userns blocked, landlock present, resolve_unix unrestricted", namespacesBlocked, true, true, true, false, true, enforce.Degraded, "cannot restrict connect(2) on pathname"},
-		{"userns blocked, landlock present, no seccomp fences", namespacesBlocked, true, true, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
-		{"userns blocked, no landlock", namespacesBlocked, false, true, true, true, true, enforce.Unavailable, "no filesystem confinement"},
+		{"userns ok, landlock present", namespacesUsable, true, true, true, true, true, true, enforce.Enforced, "backstop"},
+		{"userns ok, no landlock", namespacesUsable, false, true, true, true, true, true, enforce.Enforced, "bwrap alone"},
+		{"userns blocked, landlock present, fences ok", namespacesBlocked, true, true, true, true, true, true, enforce.Degraded, "Landlock path rules"},
+		{"userns blocked, landlock present, truncate unrestricted", namespacesBlocked, true, false, true, true, true, true, enforce.Degraded, "cannot restrict truncate"},
+		{"userns blocked, landlock present, ioctl_dev unrestricted", namespacesBlocked, true, true, false, true, true, true, enforce.Degraded, "cannot restrict ioctl on device files"},
+		{"userns blocked, landlock present, resolve_unix unrestricted", namespacesBlocked, true, true, true, false, true, true, enforce.Degraded, "cannot restrict connect(2) on pathname"},
+		{"userns blocked, landlock present, IPC scoping unavailable", namespacesBlocked, true, true, true, false, false, true, enforce.Degraded, "abstract-namespace one no grant is needed to reach"},
+		{"userns blocked, landlock present, no seccomp fences", namespacesBlocked, true, true, true, true, true, false, enforce.Unavailable, "reduced-confinement fallback needs a seccomp"},
+		{"userns blocked, no landlock", namespacesBlocked, false, true, true, true, true, true, enforce.Unavailable, "no filesystem confinement"},
 		// An unanswered probe must never select the weaker tier: the host may run bwrap
 		// fine, and a degraded run decided from a measurement that was never taken is the
 		// wrong sandbox under a wrong reason. Unknown fails closed even where Landlock -
 		// and the fences the degraded tier needs - are present.
-		{"userns unknown, landlock and fences present", namespacesUnknown, true, true, true, true, true, enforce.Unavailable, "userns blocked here"},
-		{"userns unknown, no landlock", namespacesUnknown, false, true, true, true, true, enforce.Unavailable, "userns blocked here"},
+		{"userns unknown, landlock and fences present", namespacesUnknown, true, true, true, true, true, true, enforce.Unavailable, "userns blocked here"},
+		{"userns unknown, no landlock", namespacesUnknown, false, true, true, true, true, true, enforce.Unavailable, "userns blocked here"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			l := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.resolveUnixRestricted, tc.degradedFencesOK)
+			l := filesystemLayer(tc.ns, nsReason, tc.landlockAvail, tc.truncateRestricted, tc.ioctlDevRestricted, tc.resolveUnixRestricted, tc.scopedIPCRestricted, tc.degradedFencesOK)
 			state, reason := l.State, l.Disclosure()
 			if state != tc.want {
 				t.Errorf("state = %v, want %v", state, tc.want)
@@ -69,7 +71,7 @@ func TestFilesystemLayerThreeStates(t *testing.T) {
 // - every fact the one string carried has to still be in one half or the other.
 func TestFilesystemLayerSplitsConsequencesFromTheRemedy(t *testing.T) {
 	const nsReason = "userns blocked here. Set it to 1 to allow them."
-	l := filesystemLayer(namespacesBlocked, nsReason, true, false, false, false, true)
+	l := filesystemLayer(namespacesBlocked, nsReason, true, false, false, false, false, true)
 	if l.State != enforce.Degraded {
 		t.Fatalf("state = %v, want Degraded", l.State)
 	}
@@ -84,9 +86,9 @@ func TestFilesystemLayerSplitsConsequencesFromTheRemedy(t *testing.T) {
 	// Every other state describes itself in one string; a stray consequences field there
 	// is a fact no refusal prints and only doctor's note block would ever show.
 	for _, other := range []enforce.LayerStatus{
-		filesystemLayer(namespacesUsable, "", true, true, true, true, true),
-		filesystemLayer(namespacesBlocked, nsReason, false, true, true, true, true),
-		filesystemLayer(namespacesUnknown, nsReason, true, true, true, true, true),
+		filesystemLayer(namespacesUsable, "", true, true, true, true, true, true),
+		filesystemLayer(namespacesBlocked, nsReason, false, true, true, true, true, true),
+		filesystemLayer(namespacesUnknown, nsReason, true, true, true, true, true, true),
 	} {
 		if other.Consequences != "" {
 			t.Errorf("%v carries consequences no refusal points at: %q", other.State, other.Consequences)
@@ -101,7 +103,7 @@ func TestFilesystemLayerSplitsConsequencesFromTheRemedy(t *testing.T) {
 // characters downstream where nobody acts on it.
 func TestFilesystemLayerDegradedLeadsWithProbeReason(t *testing.T) {
 	const nsReason = "bubblewrap (bwrap) is not installed, so it cannot isolate anything"
-	l := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true)
+	l := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true, true)
 	state, reason := l.State, l.Reason
 	if state != enforce.Degraded {
 		t.Fatalf("state = %v, want Degraded", state)
@@ -145,7 +147,7 @@ func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
 		{"no landlock", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, tc.fencesOK).Disclosure()
+			reason := filesystemLayer(namespacesBlocked, nsReason, tc.landlockAvail, true, true, true, true, tc.fencesOK).Disclosure()
 			if strings.Contains(reason, ".;") {
 				t.Errorf("reason runs a period into a semicolon: %q", reason)
 			}
@@ -315,28 +317,38 @@ func swap(t *testing.T, fn *func() bool, v bool) {
 }
 
 // The degraded tier's unix-socket disclosure has to track what the kernel can actually
-// restrict, not repeat one fixed sentence. From ABI 9 the degraded ruleset handles
-// resolve_unix and grants it only on the write set, so telling the operator a pathname
-// socket to a host daemon is reachable would be false - and on a kernel below 9 it is
-// true, and the residual has to say so. The two directions are asserted together because
-// the failure that matters is the report contradicting itself.
+// restrict, not repeat one fixed sentence. From ABI 6 the tier scopes the abstract
+// namespace and from ABI 9 the ruleset handles resolve_unix, granting it only on the
+// write set, so telling the operator either kind of socket is reachable would be false -
+// and on a kernel below those it is true, and the residual has to say so. The directions
+// are asserted together because the failure that matters is the report contradicting
+// itself.
 func TestFilesystemLayerUnixSocketDisclosureTracksTheABI(t *testing.T) {
 	const nsReason = "userns blocked here"
-	restricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true).Disclosure()
+	restricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, true, true, true).Disclosure()
 	if strings.Contains(restricted, "including an abstract-namespace one no grant is needed to reach") {
 		t.Errorf("with resolve_unix restricted the reason still claims any unix socket is reachable: %q", restricted)
 	}
-	if !strings.Contains(restricted, "abstract-namespace unix socket") {
-		t.Errorf("the abstract namespace stays reachable and must still be disclosed: %q", restricted)
+	if !strings.Contains(restricted, "an abstract-namespace one by Landlock's IPC scoping") {
+		t.Errorf("with IPC scoping applied the reason must say the abstract namespace is denied: %q", restricted)
 	}
 	// The one denial an operator cannot diagnose from the target's own behaviour, so the
 	// report has to name it rather than leave it to "a pathname socket is denied".
 	if !strings.Contains(restricted, "/dev/log") {
 		t.Errorf("the silent syslog denial must be named: %q", restricted)
 	}
-	unrestricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true).Disclosure()
+	unrestricted := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, true, true).Disclosure()
 	if !strings.Contains(unrestricted, "any host daemon socket its path names") {
 		t.Errorf("below ABI 9 the pathname-socket residual must be disclosed: %q", unrestricted)
+	}
+	// Below ABI 6 the abstract namespace is reachable whatever the file grants say, and it
+	// is the residual no other layer covers, so the report must not go quiet about it.
+	unscoped := filesystemLayer(namespacesBlocked, nsReason, true, true, true, false, false, true).Disclosure()
+	if !strings.Contains(unscoped, "including an abstract-namespace one no grant is needed to reach") {
+		t.Errorf("below ABI 6 the abstract-socket residual must be disclosed: %q", unscoped)
+	}
+	if strings.Contains(unscoped, "IPC scoping denies") {
+		t.Errorf("below ABI 6 nothing scopes signals and the reason must not claim otherwise: %q", unscoped)
 	}
 }
 
@@ -357,7 +369,7 @@ func layerStatus(t *testing.T, layer enforce.Layer) enforce.LayerStatus {
 func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 	const nsReason = "AppArmor restricts unprivileged user namespaces"
 	for _, landlock := range []bool{true, false} {
-		l := filesystemLayer(namespacesBlocked, nsReason, landlock, true, true, true, true)
+		l := filesystemLayer(namespacesBlocked, nsReason, landlock, true, true, true, true, true)
 		state, reason := l.State, l.Reason
 		if !strings.Contains(reason, nsReason) {
 			t.Errorf("landlock=%v: %v reason %q dropped the namespace reason", landlock, state, reason)
@@ -548,7 +560,7 @@ func TestProcMountRemedyLeadsTheReason(t *testing.T) {
 	// Two joins sit between this reason and the block the reader actually sees:
 	// joinReason appends the tier's clause after it, and Disclosure appends the
 	// consequences after that. The flag leads only if both keep the reason in front.
-	block := filesystemLayer(namespacesBlocked, reason, true, true, true, true, true).Disclosure()
+	block := filesystemLayer(namespacesBlocked, reason, true, true, true, true, true, true).Disclosure()
 	flag, tier := strings.Index(block, "--security-opt systempaths=unconfined"), strings.Index(block, "confinement falls back")
 	if flag < 0 || tier < 0 {
 		t.Fatalf("the degraded block dropped the flag or the tier clause: %q", block)
