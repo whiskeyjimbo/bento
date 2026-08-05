@@ -479,6 +479,14 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".bash_login", // bash login shells read the first of bash_profile/bash_login/.profile
 		".bash_aliases",
 		".bash_logout",
+		// The bash-completion package's main script, sourced unconditionally by the
+		// distro /etc/bash.bashrc for every interactive shell. Usually absent, so the
+		// same plantable-because-absent case as .bash_aliases above.
+		".bash_completion",
+		// sensible-editor and select-editor source this and run $SELECTED_EDITOR, so a
+		// planted value runs at the next `git commit`, `crontab -e` or `visudo` on a host
+		// with no $EDITOR set. The .mailcap analog: a config that names a command.
+		".selected_editor",
 		".zshenv", // zsh reads this for EVERY invocation, including non-interactive
 		".zshrc",
 		".zprofile",
@@ -555,18 +563,19 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// files cannot be pre-enumerated - a not-yet-created entry is still plantable, the
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
-		".bashrc.d",                 // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
-		".config/environment.d",     // systemd user-session env (LD_PRELOAD, PATH, ...)
-		".config/fish",              // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
-		".config/nushell",           // config.nu/env.nu and autoloads
-		".vim",                      // plugin/, autoload/, after/plugin/ are auto-sourced
-		".config/nvim",              // init.{vim,lua}, lua/, plugin/, after/
-		".emacs.d",                  // init.el and site-lisp
-		".config/emacs",             // XDG location for the same
-		".config/gdb",               // gdb 11+ reads gdbinit/gdbearlyinit here
-		".config/tmux",              // XDG location for tmux.conf
-		".config/direnv",            // direnvrc, sourced on cd for direnv users
-		".local/share/direnv/allow", // authorization records: an entry pre-approves a workspace .envrc
+		".bashrc.d", // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
+		".local/share/bash-completion/completions", // per-command completion scripts, sourced the first time the user tab-completes that command name; planting `git` here runs on the host at the next git
+		".config/environment.d",                    // systemd user-session env (LD_PRELOAD, PATH, ...)
+		".config/fish",                             // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
+		".config/nushell",                          // config.nu/env.nu and autoloads
+		".vim",                                     // plugin/, autoload/, after/plugin/ are auto-sourced
+		".config/nvim",                             // init.{vim,lua}, lua/, plugin/, after/
+		".emacs.d",                                 // init.el and site-lisp
+		".config/emacs",                            // XDG location for the same
+		".config/gdb",                              // gdb 11+ reads gdbinit/gdbearlyinit here
+		".config/tmux",                             // XDG location for tmux.conf
+		".config/direnv",                           // direnvrc, sourced on cd for direnv users
+		".local/share/direnv/allow",                // authorization records: an entry pre-approves a workspace .envrc
 		// bento's own approval journal: each entry is this host's record of the permissions a
 		// human approved, and re-approval names the changed lines by diffing against it. A
 		// sandboxed run that could write one would author its own baseline, so the next
