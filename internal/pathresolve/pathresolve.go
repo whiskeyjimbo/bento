@@ -19,7 +19,7 @@ import (
 // self-referential or cyclic symlink cannot spin forever.
 const MaxDepth = 40
 
-// Existing resolves abs where it exists via the kernel (EvalSymlinks, which is
+// Existing resolves path where it exists via the kernel (EvalSymlinks, which is
 // accurate through parent symlinks, "..", and chains). Where a component does not
 // exist - including a *dangling* leaf symlink pointing into a not-yet-populated store -
 // it walks the components against a fully-resolved prefix, following each symlink
@@ -30,7 +30,27 @@ const MaxDepth = 40
 // A path whose symlinks loop is returned unresolved once the budget runs out: a caller
 // that shields on the result then fails closed, and one that judges a proposal is
 // judging a path the backend refuses anyway.
-func Existing(abs string) string { return existing(abs, abs, 0) }
+//
+// A relative path is made absolute against the working directory first, the same way the
+// backend does it before binding a grant. The walk below starts from "/", so taking a
+// relative path as given would silently re-root it - "foo/bar" answering for /foo/bar,
+// and "" for "/" - and the gate would then judge a different path than the run binds,
+// which is the one divergence this package exists to prevent. A working directory that
+// cannot be read leaves the path as it came: the backend refuses such a run outright, so
+// there is nothing for a caller here to shield on anyway.
+func Existing(path string) string {
+	abs := path
+	if !filepath.IsAbs(path) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return path
+		}
+		// Joined raw rather than through filepath.Join, so a ".." in path is walked
+		// against resolved components below instead of being cleaned away lexically.
+		abs = filepath.Clean(wd) + "/" + path
+	}
+	return existing(abs, abs, 0)
+}
 
 // existing carries the caller's own path alongside the one being walked, because the
 // budget runs out mid-chain: by then abs is a path this function rebuilt out of a link
