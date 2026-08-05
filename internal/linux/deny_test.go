@@ -362,3 +362,17 @@ func TestSymlinkedRelocationOntoAHomeIsNotShielded(t *testing.T) {
 		t.Errorf("a shield resolving onto the home must be dropped, not mounted over it: %v", args)
 	}
 }
+
+// ...and the drop must stay narrow. denylist exempts its base store rules from the same
+// guard on purpose: where a caller's $HOME is itself a credential store, beside a passwd
+// home that contains it, the store's own rule equals a home anchor. Dropping that rule
+// unshields the credentials it exists to hide - the opposite of what the guard is for.
+func TestAStoreThatIsAlsoAHomeAnchorStaysShielded(t *testing.T) {
+	sb := testSandbox("/home/u/.aws", "/home/u/.aws/credentials")
+	sb.homes = []string{"/home/u/.aws", "/home/u"}
+
+	args, _ := denyArgs(sb, []string{"/home/u"}, nil, nil)
+	if !has(args, "--tmpfs", "/home/u/.aws") {
+		t.Errorf("a credential store that coincides with a home anchor must still be shielded: %v", args)
+	}
+}
