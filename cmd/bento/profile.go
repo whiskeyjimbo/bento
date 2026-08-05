@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -1530,12 +1531,7 @@ func openTTY() (io.Reader, func()) {
 
 // sortedBoolKeys returns the set's keys sorted, so a manifest's grant order is stable.
 func sortedBoolKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }
 
 // discoveryPolicy is the policy a profiling run executes under. It is default-deny,
@@ -1598,12 +1594,7 @@ func discoveryEnv() map[string]string {
 }
 
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // droppedWarning names the accesses the observer saw but could not name, which are
@@ -1879,18 +1870,10 @@ func homeRoot(path string) (string, bool) {
 // the shielded, over-broad read, and over-broad write paths to warn about.
 func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, broadReads, broadWrites []string) {
 	p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(p.Read, p.Write)
-	p.Write, broadWrites = clampBroadWrites(p.Write)
-	p.Read, broadReads = clampBroadReads(p.Read)
+	p.Write, broadWrites = partitionBroad(p.Write)
+	p.Read, broadReads = partitionBroad(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
 	return shielded, writeShielded, broadReads, broadWrites
-}
-
-func clampBroadWrites(writes []string) (kept, dropped []string) {
-	return partitionBroad(writes)
-}
-
-func clampBroadReads(reads []string) (kept, dropped []string) {
-	return partitionBroad(reads)
 }
 
 // partitionBroad splits grants into those safe to bind whole and those too broad
@@ -1909,7 +1892,7 @@ func partitionBroad(paths []string) (kept, dropped []string) {
 // isBroadDir reports whether path is too broad to bind as a whole: the root, a
 // top-level directory (a direct child of "/", such as /etc or /home), or the user's
 // home directory itself. Binding any of these exposes far more than a profiled script
-// needs - as an automatic write grant (clampBroadWrites) or as the discovery run's own
+// needs - as an automatic write grant (partitionBroad) or as the discovery run's own
 // script-directory grant (discoveryPolicy).
 func isBroadDir(path string) bool {
 	if path == "/" || filepath.Dir(path) == "/" {

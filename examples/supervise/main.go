@@ -21,11 +21,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -569,12 +570,7 @@ func discoveryEnv() map[string]string {
 // sortedEnvNames returns the env variable names present in m, sorted, for a stable
 // env allowlist on the approved policy.
 func sortedEnvNames(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // approve walks the synthesized proposal and builds the policy the enforced run is
