@@ -29,6 +29,7 @@ package credhunt
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -130,7 +131,8 @@ type Options struct {
 // already-covered files and hide the handful that matter. A DenyWrite rule is not
 // coverage - see the walk body. Symlinks are never followed -
 // a link out of the home would walk the host, and a link within it would report the same
-// file twice under two names.
+// file twice under two names. That includes the root, whose own type is checked rather
+// than assumed: a home that is a link walks nothing, and nothing walked reads as clean.
 //
 // A file it cannot stat or read is skipped rather than failing the walk. That is the one
 // place this tool swallows an error on purpose: it runs over a live home where an
@@ -157,6 +159,20 @@ func Hunt(opts Options) ([]Finding, int, error) {
 				return fs.SkipDir
 			}
 			return nil
+		}
+		// WalkDir Lstats the root, so a home that is itself a symlink - a relocated or
+		// bind-mounted home, which HomeAnchors hands over unresolved - is not a directory
+		// here. It would fall through to the regular-file drop below and end the walk,
+		// reporting a clean home over a scan that never happened. Resolving it here would
+		// not fix that so much as break the report the other way: the shields are lexical
+		// and anchored on the unresolved path, so a walk over the target matches none of
+		// them and every file in the home reads as uncovered. Naming the target is what the
+		// operator can act on - a run anchored there has the walk and the shields agreeing.
+		if path == opts.Home && !d.IsDir() {
+			if target, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil && target != path {
+				return fmt.Errorf("home %q resolves to %q: scan that path instead, so the shields anchor where the walk goes", path, target)
+			}
+			return fmt.Errorf("home %q is not a directory (mode %s)", path, d.Type())
 		}
 		// Only a DenyAll rule counts as covered. DenyWrite leaves the path fully
 		// READABLE - it exists to stop a plant, not to hide a secret - so treating it as
