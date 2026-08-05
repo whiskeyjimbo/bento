@@ -1892,7 +1892,7 @@ func partitionBroad(paths []string) (kept, dropped []string) {
 // isBroadDir reports whether path is too broad to bind as a whole: the root, a
 // top-level directory (a direct child of "/", such as /etc or /home), or the user's
 // home directory itself. Binding any of these exposes far more than a profiled script
-// needs - as an automatic write grant (partitionBroad) or as the discovery run's own
+// needs - as an automatic read or write grant (partitionBroad) or as the discovery run's own
 // script-directory grant (discoveryPolicy).
 func isBroadDir(path string) bool {
 	if path == "/" || filepath.Dir(path) == "/" {

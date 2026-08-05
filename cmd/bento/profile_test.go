@@ -151,7 +151,7 @@ func TestForeignHomeShieldsFollowsTheRunsAnchors(t *testing.T) {
 	}
 }
 
-func TestClampBroadWrites(t *testing.T) {
+func TestPartitionBroad(t *testing.T) {
 	home, _ := os.UserHomeDir()
 
 	deep := "/srv/app/data" // a specific directory, safe to grant

@@ -2,10 +2,10 @@ package audit
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
@@ -685,12 +685,7 @@ func TestAppArmorCandidatesAreInScope(t *testing.T) {
 }
 
 func keysOf(m map[string]Candidate) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }
 
 // inScopeSection fails open: a section whose title no longer matches any keyword bins its
