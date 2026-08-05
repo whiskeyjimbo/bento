@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -134,7 +135,7 @@ func TestDegradedRunReportRestsOnWhatTheChildApplied(t *testing.T) {
 
 	var out strings.Builder
 	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"GRANTED": filepath.Join(granted, "ok.txt"), "UNGRANTED": filepath.Join(t.TempDir(), "absent")}})
+		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"GRANTED": filepath.Join(granted, "ok.txt"), "UNGRANTED": filepath.Join(t.TempDir(), "absent")}}, "")
 	if err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}
@@ -255,7 +256,7 @@ func TestAppliedReconcile(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			parseApplied(path).reconcile(&r, tc.blockWanted, tc.strictWanted, 125)
+			parseApplied(openReport(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, true, 125)
 
 			for layer, want := range tc.want {
 				if got := r.StateOf(layer); got != want {
@@ -271,10 +272,14 @@ func TestAppliedReconcile(t *testing.T) {
 	}
 }
 
-// A missing report file is the same claim-nothing case as an unfinished one: the run
-// happened, so this must not be an error, and it must not read as a clean report.
-func TestParseAppliedMissingFileClaimsNothing(t *testing.T) {
-	a := parseApplied(filepath.Join(t.TempDir(), "does-not-exist"))
+// A report the host cannot read back is the same claim-nothing case as an unfinished
+// one: the run happened, so this must not be an error, and it must not read as a clean
+// report. The handle is closed, which is the one way the read can fail now that the host
+// holds the descriptor open across the run instead of re-opening a path.
+func TestParseAppliedUnreadableClaimsNothing(t *testing.T) {
+	f := openReport(t, filepath.Join(t.TempDir(), "applied"))
+	f.Close()
+	a := parseApplied(f)
 	if a.complete {
 		t.Fatal("an absent applied-layer report was read as complete")
 	}
@@ -300,12 +305,58 @@ func TestParseAppliedQuotedReasonCannotForgeRecords(t *testing.T) {
 	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a := parseApplied(path)
+	a := parseApplied(openReport(t, path))
 	if !a.complete {
 		t.Fatal("a quoted multi-line reason broke the completion marker")
 	}
 	if !strings.Contains(a.landlockErr, "line one") {
 		t.Errorf("landlockErr = %q, want the quoted reason back intact", a.landlockErr)
+	}
+}
+
+// A failed Landlock ruleset means different things on the two tiers, and the report has
+// to say which. Behind bwrap the mount namespace still confines the filesystem, so the
+// layer is Degraded; on the degraded tier Landlock is the whole confinement, so the same
+// report means the filesystem was not confined at all. Reporting that one as Degraded
+// would name a mount namespace the run never had.
+func TestReconcileGradesLandlockFailureByTier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedNo + " " + fmt.Sprintf("%q", "landlock: applying ruleset: invalid argument") + "\n" +
+		launcher.AppliedMarker + "\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		mountConfined bool
+		want          enforce.State
+		unwanted      string
+	}{
+		{name: "behind bwrap", mountConfined: true, want: enforce.Degraded},
+		{name: "degraded tier", mountConfined: false, want: enforce.Unavailable, unwanted: "mount namespace still confines"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r enforce.Report
+			r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+			parseApplied(openReport(t, path)).reconcile(&r, true, false, tc.mountConfined, 125)
+
+			if got := r.StateOf(enforce.LayerFilesystem); got != tc.want {
+				t.Errorf("filesystem layer = %v, want %v", got, tc.want)
+			}
+			var reason string
+			for _, l := range r.Layers {
+				if l.Layer == enforce.LayerFilesystem {
+					reason = l.Reason
+				}
+			}
+			if !strings.Contains(reason, "invalid argument") {
+				t.Errorf("reason = %q, want the child's own failure in it", reason)
+			}
+			if tc.unwanted != "" && strings.Contains(reason, tc.unwanted) {
+				t.Errorf("reason = %q, must not claim %q on a tier with no mount namespace", reason, tc.unwanted)
+			}
+		})
 	}
 }
 
@@ -323,7 +374,7 @@ func TestReconcileNamesWhyTheTargetWasNeverReached(t *testing.T) {
 	}
 	var r enforce.Report
 	r.Add(enforce.LayerExec, enforce.Enforced, "")
-	parseApplied(path).reconcile(&r, true, false, 125)
+	parseApplied(openReport(t, path)).reconcile(&r, true, false, true, 125)
 
 	if got := r.StateOf(enforce.LayerExec); got != enforce.Unavailable {
 		t.Fatalf("exec layer = %v for a target that never ran, want unavailable", got)
@@ -390,9 +441,68 @@ func TestReconcileReportsSetupState(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			if got := parseApplied(path).reconcile(&r, true, true, 125); got != tc.want {
+			if got := parseApplied(openReport(t, path)).reconcile(&r, true, true, true, 125); got != tc.want {
 				t.Errorf("reconcile setup state = %v, want %v", got, tc.want)
 			}
 		})
 	}
+}
+
+// openReport gives a test the descriptor the host would have held open across the run.
+func openReport(t *testing.T, path string) *os.File {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// The host reads the report back through the descriptor it opened before the child
+// started, never by re-opening the path. Two things have to hold for that: a file
+// substituted at the path after the run is not what gets parsed - the substitution is
+// how a same-uid host process could otherwise have reconcile attest layers that were
+// never installed - and the rewind happens, because the child inherits a dup of this
+// descriptor and shares its offset, so the writes leave it at end-of-file.
+func TestParseAppliedReadsTheRetainedDescriptorNotThePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	f := openReport(t, path)
+
+	// Write through a dup, as the child does, so the shared offset is left at EOF.
+	child := os.NewFile(uintptr(mustDup(t, f)), path)
+	defer child.Close()
+	written := launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n"
+	if _, err := child.Write([]byte(written)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Substitute a report claiming the strict layers, exactly as an attacker at the path
+	// would. Unlinking first is what a re-opening host would follow.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	forged := launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n"
+	if err := os.WriteFile(path, []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := parseApplied(f)
+	if !a.complete {
+		t.Fatal("the report written through the inherited descriptor did not read back; the rewind is missing")
+	}
+	if a.execFilter != launcher.AppliedExecBasic {
+		t.Errorf("execFilter = %q, want %q - the forged file at the path was parsed instead of the retained descriptor", a.execFilter, launcher.AppliedExecBasic)
+	}
+}
+
+func mustDup(t *testing.T, f *os.File) int {
+	t.Helper()
+	fd, err := syscall.Dup(int(f.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fd
 }

@@ -132,3 +132,26 @@ func TestExistingReturnsInputOnLoop(t *testing.T) {
 		t.Errorf("Existing is not a fixed point on a loop: %q", got)
 	}
 }
+
+// The gate calls this with the grant as the manifest spells it, and the backend calls it
+// with the same grant after prepending the working directory. A relative grant must land
+// on the same path through both, or the gate judges /foo/bar while the run binds
+// $PWD/foo/bar - and the empty grant, which reaches here too, must not answer for the
+// whole filesystem.
+func TestExistingAbsolutizesAgainstTheWorkingDirectory(t *testing.T) {
+	d := canonDir(t)
+	if err := os.MkdirAll(filepath.Join(d, "work", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(d, "work"))
+
+	if got, want := Existing("sub"), filepath.Join(d, "work", "sub"); got != want {
+		t.Errorf("Existing(%q) = %q, want %q (a relative grant must not be re-rooted at /)", "sub", got, want)
+	}
+	if got, want := Existing("absent/leaf"), filepath.Join(d, "work", "absent", "leaf"); got != want {
+		t.Errorf("Existing(%q) = %q, want %q", "absent/leaf", got, want)
+	}
+	if got, want := Existing(""), filepath.Join(d, "work"); got != want {
+		t.Errorf("Existing(%q) = %q, want %q (the empty grant must not resolve to the root)", "", got, want)
+	}
+}

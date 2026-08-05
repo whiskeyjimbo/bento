@@ -30,7 +30,7 @@ import (
 // CA bundle (systemReadPaths), the granted reads, and the entrypoint/interpreter as
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
-func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process) (enforce.Result, error) {
+func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string) (enforce.Result, error) {
 	report := e.Probe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
@@ -58,7 +58,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
-	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
+	optIns := explicitShieldOptIns(sb, p.Read)
 	// Write grants are prepared exactly as the bwrap tier prepares them, through the
 	// same function: a missing directory is created so Landlock has a path to grant
 	// (its rules skip a path that does not exist), and a grant naming an existing FILE
@@ -96,7 +96,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		sysReads = append(sysReads, extra)
 	}
 
-	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optIns)
+	exposed := exposedShields(sb, concat(sysReads, reads, writes), writes, optInTargets(optIns))
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
@@ -140,7 +140,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// does. It matters more here: every fence in this tier is the only one of its kind,
 	// so a stage that died before applying them ran nothing confined, and the report
 	// must not describe a shielded run.
-	appliedReport, dropApplied, err := newAppliedReport()
+	appliedReport, dropApplied, err := newAppliedReport(dir)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -163,7 +163,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// set below and the process-group sweep still reaches anything it leaks.
 	exe, cargs := sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)
 	if scoped {
-		exe, cargs = wrapWithLimits(exe, cargs, p.Limits)
+		exe, cargs = wrapWithLimits(exe, cargs, p.Limits, runID)
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return enforce.Result{}, err
@@ -198,8 +198,8 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Exposed: exposed}, nil
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, false, code)
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

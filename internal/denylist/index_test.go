@@ -17,6 +17,25 @@ func auditRules() []Rule {
 // segment would be found by Covers and missed by the index - a shield that silently
 // stops covering. Pin the property the index rests on rather than trusting it.
 func TestRulePathsAreIndexable(t *testing.T) {
+	// The literal tables are compile-time constants and can never be unclean, so on a
+	// bare environment this pin only ever sees rules that cannot violate it. The rules
+	// that CAN are the ones whose spelling arrives from outside the package, and they
+	// only exist when their variable is set - so set them, deliberately unclean, and let
+	// the assertions below prove each emit site cleans what it was handed.
+	for env, unclean := range map[string]string{
+		"GNUPGHOME":                   "/srv/gpg/",
+		"KUBECONFIG":                  "/srv/k8s/../k8s/config",
+		"HISTFILE":                    "/srv/sh//history",
+		"ZDOTDIR":                     "/srv/zsh/",
+		"CARGO_HOME":                  "/srv/cargo/",
+		"MAILCAPS":                    "/srv/mail/mailcap/",
+		"XDG_CONFIG_HOME":             "/srv/xdg/config/",
+		"XDG_DATA_HOME":               "/srv/xdg/data/",
+		"AWS_SHARED_CREDENTIALS_FILE": "/srv/aws/./credentials",
+	} {
+		t.Setenv(env, unclean)
+	}
+
 	var all []Rule
 	all = append(all, auditRules()...)
 	all = append(all, Runtime("/tmp/rt", "/home/u")...)
@@ -79,12 +98,30 @@ func TestIndexAgreesWithCovers(t *testing.T) {
 			t.Errorf("Covers(%q): index covered = %v, linear = %v", p, gotOK, wantOK)
 			continue
 		}
-		// Deny is the whole contract - it is all either caller reads, and Covers leaves
-		// the choice among equally strict matches undefined, so comparing rule identity
-		// here would pin an arbitrary tie-break neither side promises.
-		if wantOK && gotRule.Deny != wantRule.Deny {
+		// Deny and Dir are the whole contract - they are all either caller reads, and
+		// Covers leaves the choice among equally strict directory rules undefined, so
+		// comparing rule identity here would pin a tie-break neither side promises.
+		if wantOK && (gotRule.Deny != wantRule.Deny || gotRule.Dir != wantRule.Dir) {
 			t.Errorf("Covers(%q): index returned %+v, linear returned %+v", p, gotRule, wantRule)
 		}
+	}
+}
+
+// A file rule and a directory rule at one path are equally strict, so nothing but the
+// tie-break decides which comes back - and the audit reads Dir off it to judge whether a
+// shield was narrowed to a single file. Both implementations must answer "the tree".
+func TestCoversPrefersTheTreeRuleOnATie(t *testing.T) {
+	for name, rules := range map[string][]Rule{
+		"file first": {{Path: "/x", Deny: DenyAll}, {Path: "/x", Deny: DenyAll, Dir: true}},
+		"dir first":  {{Path: "/x", Deny: DenyAll, Dir: true}, {Path: "/x", Deny: DenyAll}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			linear, _ := Covers("/x", rules)
+			indexed, _ := NewIndex(rules).Covers("/x")
+			if !linear.Dir || !indexed.Dir {
+				t.Errorf("Covers(/x) = linear %+v, index %+v, want the directory rule from both", linear, indexed)
+			}
+		})
 	}
 }
 

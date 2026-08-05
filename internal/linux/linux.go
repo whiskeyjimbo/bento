@@ -55,6 +55,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err := p.RequireExpanded(); err != nil {
 		return enforce.Result{}, err
 	}
+	if err := e.screenRunID(p, opts.RunID); err != nil {
+		return enforce.Result{}, err
+	}
 	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
 	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
 	// after admitting the run under --allow-degraded, so this never silently downgrades.
@@ -75,7 +78,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
-		return e.runDegraded(ctx, p, proc)
+		return e.runDegraded(ctx, p, proc, opts.RunID)
 	}
 
 	report := e.Probe(ctx)
@@ -97,7 +100,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	optedIn, optIns, accepted := preflight.optedIn, preflight.optIns, preflight.aliases
+	optIns, accepted := preflight.optIns, preflight.aliases
 
 	// bwrap creates a shield mount point on the host when the shielded path does not
 	// exist yet and a write grant makes its parent writable (e.g. a project's unborn
@@ -132,7 +135,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// installs would be claimed on the strength of a host-side probe alone. Set before
 	// compile, which encodes the descriptor into the launch invocation.
 	sb.applied = true
-	appliedReport, dropApplied, err := newAppliedReport()
+	appliedReport, dropApplied, err := newAppliedReport(sb.runDir)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -147,9 +150,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// a transient systemd scope carrying the limits. When it cannot, the run has
 	// already been admitted (refused by default, or permitted under
 	// --allow-degraded) - here it simply proceeds unwrapped, and the report says so
-	// without a second check: canCreateScope is memoized for the life of the process,
-	// so the probe above recorded LayerLimits Unavailable from the same answer this
-	// reads. There is no window in which the report can claim a limit nothing applied.
+	// without a second check. canCreateScope caches every definitive verdict, so where
+	// the probe above answered, this reads that same answer. Where it could not answer
+	// it recorded LayerLimits Unavailable and this re-probes, which can only go the
+	// harmless way: limits applied under a report that did not claim them. There is no
+	// window in which the report claims a limit nothing applied.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(); ok {
@@ -159,7 +164,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			if err := preflightLimits(p.Limits, nil); err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
-			exe, cargs = wrapWithLimits(bwrap, args, p.Limits)
+			exe, cargs = wrapWithLimits(bwrap, args, p.Limits, opts.RunID)
 			// An undelegated cpu controller is reported by the probe as LayerLimitsCPU
 			// Unavailable and refused at admission; a run that reaches here with a cpu
 			// limit was either delegated or explicitly permitted under --allow-degraded,
@@ -202,10 +207,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, true, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -214,10 +219,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// target as 128+signal itself. What reaches this branch signaled is the scope
 		// coming down around the run, which is how a cgroup limit ends it.
 		code, signaled, sig := exitStatusOf(ee.ProcessState)
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, true, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: optedIn, ShieldedGrantTargets: shieldGrantTargets(optedIn, optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -302,17 +307,17 @@ func isExitError(err error) bool {
 // back in, and the aliases the caller acknowledged.
 type preflighted struct {
 	reads, writes []string
-	// optedIn are the LITERAL deny-list paths the policy opted back into the sandbox,
-	// for the frontend to warn about by the name the deny-list uses; optIns are the
-	// same paths resolved, which is what the shield bookkeeping compares against.
-	optedIn, optIns []string
-	aliases         []credentialAlias
+	// optIns are the shields the policy opted back into the sandbox: the literal
+	// deny-list names for the frontend's warning, and the resolved ones the shield
+	// bookkeeping compares against.
+	optIns  []shieldOptIn
+	aliases []credentialAlias
 }
 
 // createdShields names the shield mount points bwrap will create on the host for this
 // run, so the caller can remove them afterwards.
 func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
-	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, pf.optIns)
+	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, optInTargets(pf.optIns))
 }
 
 // preflightGrants decides everything that can refuse a run and then prepares the host
@@ -342,10 +347,10 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 		return preflighted{}, err
 	}
 
-	// Surface any always-shielded credential store the policy explicitly opted back into
-	// the sandbox (yz3.2) for the frontend to warn about, named by its literal deny-list
-	// path. The shields still protect every path not opted into.
-	optedIn, optIns := explicitShieldOptIns(sb, p.Read)
+	// Surface any always-shielded store the policy explicitly opted back into the sandbox
+	// (yz3.2) for the frontend to warn about, named by its literal deny-list path and by
+	// what it holds. The shields still protect every path not opted into.
+	optIns := explicitShieldOptIns(sb, p.Read)
 
 	// A shield hides a credential's path, not the content behind it. Refuse before the
 	// target starts if anything this run can read holds a second name for a shielded
@@ -355,7 +360,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	// is bound too and may sit under the home. An explicit opt-in is honored - those
 	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
 	// the aliases in it, so this refuses only what nobody asked for.
-	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optedIn)
+	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optInPaths(optIns))
 	if err != nil {
 		return preflighted{}, err
 	}
@@ -370,7 +375,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return preflighted{}, err
 	}
-	return preflighted{reads: reads, writes: writes, optedIn: optedIn, optIns: optIns, aliases: accepted}, nil
+	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted}, nil
 }
 
 // prepareWriteDirs makes each granted write directory exist on the host before it
@@ -393,7 +398,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	}
 	// Writes never carry the read opt-in, so no host directory is created under a
 	// shield the policy merely reads.
-	if err := checkNotShielded(sb, writes, nil); err != nil {
+	if err := checkWriteNotShielded(sb, writes); err != nil {
 		return err
 	}
 	// Refuse a grant above a credential shield before creating any directory, so a
@@ -474,6 +479,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 
 	sb := sandbox{
 		homes:           homes,
+		runDir:          dir,
 		runtimeDir:      denylist.RuntimeDir(),
 		emptyFile:       empty,
 		entrypoint:      entrypoint,
@@ -531,8 +537,25 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		// target) all get a directory shield - so a nonexistent target never leaves an
 		// uncleanable empty host file.
 		rp := sb.resolve(p)
+		homes := make([]string, len(sb.homes))
+		for i, h := range sb.homes {
+			homes[i] = sb.resolve(h)
+		}
 		if rp == "/" {
 			return nil, fmt.Errorf("deny path %q resolves to the root and cannot be shielded", p)
+		}
+		// The same test denyArgs applies to every resolved rule, raised here so a caller
+		// learns its deny cannot be shielded instead of having it accepted and then
+		// silently dropped - a shield over a home or one of its ancestors would take the
+		// whole grant surface with it, so there is nothing to enforce either way.
+		// It is a check at this instant, not a guarantee: denyArgs resolves again at
+		// compile time and drops silently what fails there, so a symlink component
+		// rewritten in between passes here and vanishes later. Closing that would mean
+		// resolving once and carrying the result, which costs the shield machinery its
+		// own late resolution of grants; the residue is an unenforced CALLER deny, never
+		// an exposure of anything bento shields itself.
+		if !denylist.Shieldable(rp, homes) {
+			return nil, fmt.Errorf("deny path %q resolves to %q, which is a home directory or contains one, so shielding it would hide everything the policy grants", p, rp)
 		}
 		dir := true
 		if sb.exists(rp) && !sb.isDir(rp) {
@@ -610,17 +633,20 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 
 // egressCollector records the proxy's per-connection decisions for the run
 // result: a total count, the deduped set of hosts the gate admitted beyond
-// the manifest, the deduped set the upstream guard refused to dial, and the
-// deduped set the allowlist itself refused. The
+// the manifest, the deduped set the upstream guard refused to dial, the
+// deduped set the allowlist itself refused, the deduped set a consulted gate
+// refused, and the deduped set refused for not being a CONNECT at all. The
 // observer runs in each handler's own goroutine, so a mutex guards the shared
 // state; the gate itself is never called under this lock (it runs in the handler,
 // the observer only records the outcome).
 type egressCollector struct {
-	mu       sync.Mutex
-	count    int
-	admitted map[string]enforce.HostPort
-	blocked  map[string]enforce.HostPort
-	denied   map[string]enforce.HostPort
+	mu         sync.Mutex
+	count      int
+	admitted   map[string]enforce.HostPort
+	blocked    map[string]enforce.HostPort
+	denied     map[string]enforce.HostPort
+	gateDenied map[string]enforce.HostPort
+	untunneled map[string]enforce.HostPort
 }
 
 func (c *egressCollector) observe(d proxy.Decision, host, port string) {
@@ -650,6 +676,16 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.denied = make(map[string]enforce.HostPort)
 		}
 		c.denied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.GateDenied:
+		if c.gateDenied == nil {
+			c.gateDenied = make(map[string]enforce.HostPort)
+		}
+		c.gateDenied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.Untunneled:
+		if c.untunneled == nil {
+			c.untunneled = make(map[string]enforce.HostPort)
+		}
+		c.untunneled[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	}
 }
 
@@ -681,6 +717,22 @@ func (c *egressCollector) allowlistDenied() []enforce.HostPort {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return sortedHostPorts(c.denied)
+}
+
+// gateRefused returns a copy of the set a consulted gate refused, sorted for the same
+// reason gateAdmitted is.
+func (c *egressCollector) gateRefused() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.gateDenied)
+}
+
+// untunneledDestinations returns a copy of the set refused for not being a CONNECT,
+// sorted for the same reason gateAdmitted is.
+func (c *egressCollector) untunneledDestinations() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.untunneled)
 }
 
 func sortedHostPorts(m map[string]enforce.HostPort) []enforce.HostPort {

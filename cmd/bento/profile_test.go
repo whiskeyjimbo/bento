@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -23,7 +24,7 @@ import (
 // bv2-2wy regression: the clamp order is load-bearing - DropCovered must run LAST,
 // after the broad-write clamp, so a read under a write that gets dropped as too broad
 // is NOT swallowed by that write but surfaces as its own read grant. This fails if
-// DropCovered is reordered ahead of clampBroadWrites (the shape of the original bug).
+// DropCovered is reordered ahead of partitionBroad (the shape of the original bug).
 func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 	p := &policy.Policy{
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
@@ -150,7 +151,7 @@ func TestForeignHomeShieldsFollowsTheRunsAnchors(t *testing.T) {
 	}
 }
 
-func TestClampBroadWrites(t *testing.T) {
+func TestPartitionBroad(t *testing.T) {
 	home, _ := os.UserHomeDir()
 
 	deep := "/srv/app/data" // a specific directory, safe to grant
@@ -159,7 +160,7 @@ func TestClampBroadWrites(t *testing.T) {
 		writes = append(writes, home)
 	}
 
-	kept, dropped := clampBroadWrites(writes)
+	kept, dropped := partitionBroad(writes)
 
 	if !slices.Equal(kept, []string{deep}) {
 		t.Fatalf("kept = %v, want just the specific directory %q", kept, deep)
@@ -296,11 +297,39 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 
 	resolvedSSH := filepath.Join(real, ".ssh", "id_rsa") // observed via the resolved home
 	linkSSH := filepath.Join(link, ".ssh", "id_rsa")     // observed via $HOME as configured
-	_, _, dropped, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	_, _, shielded, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	dropped := shieldGrantPaths(shielded)
 	for _, p := range []string{resolvedSSH, linkSSH} {
 		if !slices.Contains(dropped, p) {
 			t.Errorf("%q is inside the ~/.ssh shield and must be dropped; dropped=%v", p, dropped)
 		}
+	}
+}
+
+// A grant withheld from the proposal is warned about by what it holds, so the drop
+// carries the shield's own classification rather than calling everything a credential.
+func TestClampShieldedGrantsCarriesWhatTheShieldHolds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	hist := filepath.Join(home, ".local", "state", "nvim", "shada")
+	_, _, shielded, _ := clampShieldedGrants([]string{hist}, nil)
+	if len(shielded) != 1 || shielded[0].Holds != denylist.HoldsHistory {
+		t.Errorf("%q is a history store and must be withheld as one; got %+v", hist, shielded)
+	}
+}
+
+// The withheld note is what a harness reads instead of the prose beside it, so the
+// bucket has to reach the note too - a gate that re-proposes what a run declined needs to
+// tell a withheld history store from a withheld private key.
+func TestProposalWarningsCarryWhatTheShieldHolds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := &policy.Policy{Read: []string{filepath.Join(home, ".local", "state", "nvim")}}
+	withheld, _ := printProposalWarnings(io.Discard, p)
+	if len(withheld) != 1 || withheld[0].Reason != "read-shielded" || withheld[0].Holds != "history" {
+		t.Errorf("withheld = %+v, want one read-shielded note holding history", withheld)
 	}
 }
 
@@ -315,7 +344,8 @@ func TestClampShieldedGrantsClampsThePasswdHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	ssh := filepath.Join(u.HomeDir, ".ssh", "id_rsa")
-	if _, _, dropped, _ := clampShieldedGrants([]string{ssh}, nil); !slices.Contains(dropped, ssh) {
+	_, _, shielded, _ := clampShieldedGrants([]string{ssh}, nil)
+	if dropped := shieldGrantPaths(shielded); !slices.Contains(dropped, ssh) {
 		t.Errorf("%q is inside the passwd home's ~/.ssh shield and must be dropped; dropped=%v", ssh, dropped)
 	}
 }
@@ -406,7 +436,8 @@ func TestClampShieldedGrants(t *testing.T) {
 	reads := []string{ssh, sshDir, netrc, home, ordinary, underHome}
 	writes := []string{home + "/.gnupg/x", ordinary}
 
-	keptR, keptW, dropped, _ := clampShieldedGrants(reads, writes)
+	keptR, keptW, shielded, _ := clampShieldedGrants(reads, writes)
+	dropped := shieldGrantPaths(shielded)
 
 	// A grant AT or INSIDE a shield is dropped, whether the shield is a directory
 	// (~/.ssh) or a file (~/.netrc); the run refuses all of them.
@@ -1116,7 +1147,7 @@ func TestProfileResultJSON(t *testing.T) {
 		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}},
 	}
 	status := roundStatus{
-		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "read-shielded", Holds: "credentials"}},
 		flagged:  []accessNoteJSON{{Kind: "read", Path: "/work", Reason: "whole-workdir"}},
 	}
 	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, approvalVoided: true}
@@ -1194,7 +1225,7 @@ func TestProfileResultJSONRespellsFlaggedGrants(t *testing.T) {
 			{Kind: "read", Path: "/work", Reason: "whole-workdir"},
 			{Kind: "write", Path: "/tmp/guessed", Reason: "target-steerable-tmp"},
 		},
-		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "shielded-credential"}},
+		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "read-shielded", Holds: "credentials"}},
 	}
 
 	env := profileResultJSON("m.yaml", proposed, written, manifest.Provenance{}, status, mergeOutcome{}, "")
@@ -1382,5 +1413,45 @@ func TestMergeReportsAChangedInterpreterArgs(t *testing.T) {
 	if merged.interpreterWas != "/bin/sh" || !slices.Equal(merged.interpreterArgsWas, []string{"-eu"}) {
 		t.Errorf("the drift fields must carry the manifest's own values unquoted; got %q %q",
 			merged.interpreterWas, merged.interpreterArgsWas)
+	}
+}
+
+// The --allow-network consent gate. It forwards the target's egress while the content
+// the user granted is mounted with real data, so an answer that is not an explicit yes
+// must abort - a near-miss must not be read as consent to that.
+func TestConfirmNetworkExfil(t *testing.T) {
+	for _, tc := range []struct {
+		answer   string
+		proceeds bool
+	}{
+		{"y\n", true},
+		{"Y\n", true},
+		{"yes\n", true},
+		{"YES\n", true},
+		{"  y  \n", true},
+		{"n\n", false},
+		{"no\n", false},
+		{"\n", false},    // the default the prompt advertises with [y/N]
+		{"", false},      // a closed stream, no newline
+		{"y", true},      // a stream ending mid-line is still a complete answer
+		{"yep\n", false}, // close enough to yes to be worth pinning
+		{"ye\n", false},
+		{"1\n", false},
+	} {
+		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
+			var buf strings.Builder
+			err := confirmNetworkExfil(strings.NewReader(tc.answer), &buf)
+			if proceeded := err == nil; proceeded != tc.proceeds {
+				t.Errorf("answer %q proceeded = %v, want %v (err %v)", tc.answer, proceeded, tc.proceeds, err)
+			}
+			if !strings.Contains(buf.String(), "[y/N]") {
+				t.Errorf("the prompt must state the default; got %q", buf.String())
+			}
+			// The warning is the reason the gate exists: an answer given without it is
+			// not informed consent.
+			if !strings.Contains(buf.String(), "exfiltrate") {
+				t.Errorf("the prompt must state what is at risk; got %q", buf.String())
+			}
+		})
 	}
 }

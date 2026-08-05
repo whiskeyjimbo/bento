@@ -70,7 +70,27 @@ credentials shielded even under a grant that covers them.
 ```sh
 make build                    # reproducible static binary (trimmed paths, source-derived stamp)
 go build -o bento ./cmd/bento # plain build
+make install                  # install to /usr/local/bin (needs write access there)
 ```
+
+`make install` honours the usual packaging variables: `PREFIX` (default
+`/usr/local`), `BINDIR` (default `$PREFIX/bin`), and `DESTDIR` for staging into a
+package root. `GOFLAGS` is passed through by the Go toolchain, and `LDFLAGS` is
+appended to the version stamp rather than replacing it, so an override cannot
+produce a binary that misreports itself:
+
+```sh
+make install DESTDIR=./pkg PREFIX=/usr    # stages ./pkg/usr/bin/bento
+```
+
+`CGO_ENABLED` is deliberately not overridable. The build forces a static,
+`osusergo` binary because the credential shields anchor on the uid's passwd entry,
+and routing that lookup through libc NSS would put it back under caller control -
+see the comment in the Makefile.
+
+`make build` keeps the symbol table and DWARF so a failure inside a sandbox layer
+can be debugged. Only the release build strips (`-s -w` in `.goreleaser.yaml`),
+where archive size is the concern and the binary is reproducible from the tag.
 
 Every install path answers `bento version`. `make build` stamps the commit and build
 time it derived from the source; a plain build or `go install` reports the module
@@ -216,7 +236,8 @@ widened to `all` and an approval stamp the write drops.
 **2. Validate** reports the approval state; `--strict` makes a missing or stale approval a
 failure, so it belongs after step 3 (in CI), not here. It also reports whether this host
 can start what the manifest names - an entrypoint that is not there, an interpreter not on
-PATH - which `--strict` fails on too.
+PATH - and, separately, whether this host will honor every grant: a write into a shielded
+path, a symlink loop, a write grant that is already a file. `--strict` fails on either.
 
 **3. Approve** prints the policy, calls out what deserves a second look, and asks. `--yes`
 for CI; a stdin that is not a terminal (a pipe, a Makefile recipe) is refused rather than
@@ -294,6 +315,14 @@ provenance:
   approves: <sha256-fingerprint-over-policy-fields>
   blocked-hosts: []             # Destinations bento's own egress guard refused to reach
 ```
+
+Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
+the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an
+absolute-URI request instead of a `CONNECT` and is refused with a 400 no matter what the
+rule says - use `https://`, or configure the client to tunnel (`curl --proxytunnel`). A
+run that hits this names the destination and the remedy in its summary, and `bento
+profile` records it as an access it declined to propose rather than writing a rule that
+would carry nothing.
 
 A destination lands there only when the guard refused it because the name resolved into
 space the sandbox must not reach - loopback, private ranges, cloud metadata - not because
@@ -471,7 +500,9 @@ Explore the [`examples/`](examples/) directory for complete, runnable reference 
 When building a supervised wrapper (such as an editor agent or interactive CLI tool), Bento exposes two distinct interaction models:
 
 - **Live Network Egress (`NetworkGate`)**: Outbound traffic is routed through Bento's host-side proxy, allowing your application to supply a live callback (`opts.NetworkGate`) that prompts or evaluates egress requests synchronously at connect time.
-- **Pre-Run Filesystem Approvals**: File access is enforced directly inside the Linux kernel (Landlock and mount namespaces) and fails fast with `EACCES` without a userspace callback seam. Supervised wrappers implement filesystem policy by running a trial profiling pass (`backend.Profile`), prompting the user to approve/deny recorded file paths, and passing the resulting policy into the enforced run (`enforce.Run`).
+- **Pre-Run Filesystem Approvals**: File access is enforced directly inside the Linux kernel (Landlock and mount namespaces) and fails fast, without a userspace callback seam. Supervised wrappers implement filesystem policy by running a trial profiling pass (`backend.Profile`), prompting the user to approve/deny recorded file paths, and passing the resulting policy into the enforced run (`enforce.Run`).
+
+A denied path does not announce itself as denied: it reads as absent, empty, or read-only, which is a trap for an agent target that reacts to errors rather than reporting them. See **[`docs/denial-shapes.md`](docs/denial-shapes.md)** for the four shapes and what an embedder should surface. For running a fleet of agents on one approved manifest per agent class, see **[`docs/agent-fleets.md`](docs/agent-fleets.md)**.
 
 ---
 
@@ -490,6 +521,9 @@ make crossbuild # the tree still compiles for darwin and linux/arm64
 make examples   # each examples/*/verify.sh; the root go test does not reach them
 
 make check      # every gate above - the bar before merging
+
+make fuzz       # every Fuzz* target for FUZZTIME each (default 30s); nightly in CI, not
+                # in check, because the run is time-boxed rather than deterministic
 ```
 
 `-race` on `internal/proxy` is a gate, not extra credit: the proxy's

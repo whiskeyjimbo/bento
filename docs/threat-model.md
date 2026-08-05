@@ -116,18 +116,22 @@ what a policy grants, so a broad `read: /` or `read: ~` can't reach them.
 The precedence is fixed and does not depend on how the grant is written: no read
 grant that merely *covers* a shielded path lifts it. What does lift one is a grant
 naming the shielded store exactly - `read: ~/.ssh`, not `read: ~` - which is the
-deliberate handover of section 3, and it warns. It has to be the store itself: a
-shield covers a whole directory and cannot be partly lifted, so `read:
-~/.ssh/id_rsa` is refused outright rather than honored under the shield - opting
-one file in means naming the directory and taking the rest with it. Only the
+deliberate handover of section 3, and it warns. It has to be the shield entry
+itself, spelled exactly as the deny-list carries it: a grant that lands *inside*
+an entry is refused outright rather than honored under the shield, so `read:
+~/.ssh/id_rsa` is refused and opting one key in means naming `~/.ssh` and taking
+the rest with it. Where the entry is a single file - `~/.netrc` - naming that
+file is the exact match, and there is nothing inside it to ask for. Only the
 hidden-outright shields are opt-in-able at all; the read-only ones have nothing to
 grant but the write they exist to refuse, and a write grant under one is refused
 outright.
 
-Credential stores are shielded as whole directories, not named files. Shielding
-`~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there, and does
-nothing about a file the program creates itself - so the whole directory goes.
-When a tool relocates its store with an env var (GNUPGHOME, KUBECONFIG, the AWS_*
+A credential store that is a directory is shielded whole, not file by file.
+Shielding `~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there,
+and does nothing about a key the program generates itself - so the whole
+directory goes. A store that is genuinely one file (`~/.netrc`,
+`~/.claude/.credentials.json`) is shielded by name, because there is no directory
+to take: its parent holds unrelated content the tool needs. When a tool relocates its store with an env var (GNUPGHOME, KUBECONFIG, the AWS_*
 file vars), the shield follows to the new location.
 
 Config a tool legitimately reads - `.gitconfig`, shell rc - is shielded
@@ -172,6 +176,25 @@ the resolved IP again at connect time. Loopback, link-local, and the
 literal IP; RFC1918 and CGNAT ranges (including NAT64-embedded forms) are refused
 unless a rule names the literal address. A program that ignores the proxy doesn't
 slip out - it fails.
+
+The fence governs sockets the target *creates*. A socket inherited on stdio was
+created by the parent, before any namespace existed, and nothing bento installs
+revokes an already-open description: a netns binds at socket creation, the seccomp
+egress block filters `socket(2)`, and Landlock governs paths. So bento refuses to
+start when fd 0, 1, or 2 is a socket, and an embedder doing socket activation
+deliberately waives that through `enforce.Process.AllowNetworkStdio` - which is a Go
+field precisely so no downloaded manifest or copied command line can re-open the
+channel.
+
+**AF_UNIX on stdio is an accepted residual.** It is the one family the check still
+passes, and an inherited connected unix socket - the host's `docker.sock`, a session
+bus, an agent socket - is a full escape channel like any other. It is permitted
+because under systemd a unit's stdout and stderr *are* AF_UNIX sockets to journald,
+so refusing the family would make `bento run` refuse to start under any systemd unit,
+and the check runs before anything is known about the peer. Narrowing it to
+unconnected sockets (`getpeername`) or to a trusted peer credential is possible and
+unbuilt. A parent that hands bento a privileged unix socket on stdio hands the target
+that socket; that is the parent's decision, and bento does not detect it.
 
 ### 4.5 Watching without reading
 

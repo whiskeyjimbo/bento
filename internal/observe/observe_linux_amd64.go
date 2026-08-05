@@ -647,10 +647,9 @@ const dropSlots = 2
 // undercount this channel exists to prevent.
 //
 // A key outlives its pair whenever the exit stop never reaches the release: a failed
-// register read (which has no registers to key on, and so keys on the zero regs), a
-// syscall the kernel does not implement, whose real -ENOSYS makes both its stops read as
-// entries, and a tracee that dies mid-pair. Each collapses its repeats into one drop, and
-// the last cannot repeat at all - the process is gone.
+// register read (which has no registers to key on, and so keys on the zero regs), and a
+// tracee that dies mid-pair. Each collapses its repeats into one drop, and the second
+// cannot repeat at all - the process is gone.
 func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs)) {
 	key := func(regs *syscall.PtraceRegs, slot int) string {
 		return fmt.Sprintf("%s\x00%d", stopKey(pid, regs), slot)
@@ -829,7 +828,8 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	}
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
 	// dropOnce. Deferred so it runs after the decode below has had its chance to count.
-	if !atSyscallEntry(&regs) {
+	atExit := op == unix.PTRACE_SYSCALL_INFO_EXIT
+	if atExit {
 		defer releaseDrop(&regs)
 	}
 	drop := func() { countDrop(&regs, 0) }
@@ -867,7 +867,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	// never touched - and over-attribution silently widens the manifest the user consents
 	// to. The exit stop is still needed for one thing, the existence syscalls' success
 	// filter, and that replays what was captured here rather than reading again.
-	if !atSyscallEntry(&regs) {
+	if atExit {
 		recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
 		return
 	}
@@ -942,16 +942,6 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	}
 }
 
-// atSyscallEntry reports whether this stop is the syscall's entry rather than its
-// exit. The kernel leaves -ENOSYS in rax across the entry stop and overwrites it with
-// the return value before the exit stop, so the pair is told apart without any
-// per-tracee bookkeeping. A syscall the running kernel does not implement returns
-// -ENOSYS for real and so reads as an entry stop twice; callers that only act on the
-// exit therefore skip it, which is right - it touched nothing.
-func atSyscallEntry(regs *syscall.PtraceRegs) bool {
-	return int64(regs.Rax) == -int64(syscall.ENOSYS)
-}
-
 // inspectExistence decodes the path-EXISTENCE syscalls - the ones that ask whether a
 // path is there without opening it. Under enforcement an ungranted path is not merely
 // unreadable but absent, so a target that stats a config it never opens sees it during
@@ -969,7 +959,7 @@ func atSyscallEntry(regs *syscall.PtraceRegs) bool {
 // A successful access(W_OK) is recorded as a read, not a write. It reports that a write
 // would be permitted, which a read-only bind makes false - but over-attribution silently
 // widens the manifest while under-attribution fails the run closed and is fixed by
-// adding a grant, the same asymmetry openat2Resolve turns on.
+// adding a grant, the same asymmetry the openat2 decode turns on.
 //
 // getdents64 and fchdir carry no pathname, and the descriptor they act on came from an
 // openat this decoder already recorded. getcwd names the run's own working directory,
@@ -1152,7 +1142,7 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// than NUL-terminated, so it needs its own read. Abstract and unnamed sockets make
 	// no filesystem entry and are skipped by sockaddrUnixPath.
 	case unix.SYS_BIND:
-		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
+		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), uint32(regs.Rdx)); !ok {
 			dropSlot(0)
 		} else if path != "" {
 			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
@@ -1171,7 +1161,7 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 	// sockets make no filesystem entry and are netns-fenced in this tier, so they are
 	// skipped - nothing to grant.
 	case unix.SYS_CONNECT:
-		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), regs.Rdx); !ok {
+		if path, ok := sockaddrUnixPath(pid, uintptr(regs.Rsi), uint32(regs.Rdx)); !ok {
 			dropSlot(0)
 		} else if path != "" {
 			if anchored, anchorOK := resolveAt(pid, atFdCwd, path); anchorOK {
@@ -1186,7 +1176,13 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 // sockaddrUnixPath returns the filesystem path an AF_UNIX bind(2) or connect(2) names,
 // or "" when the address makes no filesystem entry. It reads addrlen bytes of the
 // sockaddr from the traced process and hands them to unixSockaddrPath for the parse.
-func sockaddrUnixPath(pid int, addr uintptr, addrlen uint64) (string, bool) {
+//
+// addrlen is uint32 because socklen_t is: the kernel reads only the low half of the
+// register, so a target that sets the high half - hand-written asm, or a syscall(2) call
+// whose long argument has an uncleared top half - connects successfully to a host socket
+// while a 64-bit read here sees an over-long address and reports no filesystem entry.
+// Narrowed in the signature rather than at each call site so bind and connect cannot drift.
+func sockaddrUnixPath(pid int, addr uintptr, addrlen uint32) (string, bool) {
 	// sockaddr_un is a 2-byte family plus up to 108 bytes of sun_path; a larger addrlen
 	// is rejected by the kernel (EINVAL), so it names no file. That is an answer, not a
 	// failure, so it is not a drop.
@@ -1295,8 +1291,9 @@ func readPathAt(pid int, dirfd int32, addr uintptr) (string, bool) {
 
 // openHow reads the openat2 open_how struct at addr: flags at offset 0 and resolve
 // at offset 16 (mode, at offset 8, is not needed). ok is false if the read fails, in
-// which case the caller (via openat2Resolve) treats the open as a non-write anchored
-// at the dirfd - the fail-safe for an unreadable /proc/<pid>/mem.
+// which case the caller drops the observation rather than recording anything: without
+// the resolve flags there is no honest path, and guessing one named a file the kernel
+// never opened.
 func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {

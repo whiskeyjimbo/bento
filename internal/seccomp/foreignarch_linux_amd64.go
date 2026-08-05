@@ -13,9 +13,11 @@ import (
 // go-seccomp-bpf jumps any non-x86_64 audit arch straight to that default - so an
 // i386 syscall via `int 0x80` (execve is 11 there, ptrace 26) reaches the allow
 // path and bypasses the block. This companion filter, installed alongside those
-// two, closes that: it kills the whole process on a foreign arch, so the compat
-// ABI cannot reach the default-allow. The hand-rolled strict/egress filters already
-// carry this arch guard inline; this gives the library-backed ones the same.
+// two, closes that: it kills on a foreign arch, so the compat ABI cannot reach the
+// default-allow. The kill is whole-process from kernel 4.14 and thread-only below it
+// (see seccompRetKillProcess); the block holds either way, only its scope narrows.
+// The hand-rolled filters (strict, egress, terminal-injection) already carry this arch
+// guard inline; this gives the library-backed ones the same.
 //
 // KILL, not EPERM, matches the egress filter's treatment of a foreign arch: a
 // 32-bit x86 target is refused under the exec-block just as it already is under the

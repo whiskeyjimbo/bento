@@ -268,30 +268,42 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 		fmt.Fprintf(w, "embed: the egress guard refused %q port %s: it resolved to an address the sandbox may not reach (list a private address as an explicit IP rule to allow it)\n", hp.Host, hp.Port)
 	}
 	// Denied: destinations that were refused - no rule named them, and no gate admitted
-	// them. The target met the refusal as a 403 from the proxy inside its own error, with
-	// nothing naming the rule it fell outside of, so an embedder that stays quiet turns a
-	// one-letter typo in a manifest into a script that looks broken. It does not say which
-	// of the two refused it: a gate that declined is the same fact to the target, and a
-	// wrapper that asserted "no rule covers it" would misdescribe a host its own gate was
-	// asked about and said no to. Quoted: the target chose the name.
+	// no gate was there to be asked. The target met the refusal as a 403 from the proxy
+	// inside its own error, with nothing naming the rule it fell outside of, so an embedder
+	// that stays quiet turns a one-letter typo in a manifest into a script that looks
+	// broken. A host a gate declined is in GateDenied below instead, so this line's "no
+	// rule covers it" is true of everything it names. Quoted: the target chose the name.
 	for _, hp := range res.Denied {
 		fmt.Fprintf(w, "embed: egress to %q port %s was refused: no network rule covers it, and no gate admitted it\n", hp.Host, hp.Port)
 	}
-	// ShieldedGrants: always-shielded credential stores the manifest explicitly granted,
-	// so the backend honored the grant over its own shield. bento does not refuse this -
-	// the operator chose it - so a frontend that stays quiet makes the exposure silent.
-	// ShieldedGrantTargets names the store a grant actually bound where the two differ:
+	// GateDenied: destinations a gate was asked about and refused. Reported apart from
+	// Denied because "no network rule covers it" misdescribes a host the embedder's own
+	// gate was consulted on and said no to - and under a gate with an empty network:
+	// block, every refusal is one of these. Quoted: the target chose the name.
+	for _, hp := range res.GateDenied {
+		fmt.Fprintf(w, "embed: egress to %q port %s was refused: the network gate did not admit it\n", hp.Host, hp.Port)
+	}
+	// Untunneled: destinations addressed without a CONNECT, which is what a client sends
+	// for plain http:// through a proxy. Reported apart from Denied because the remedy is
+	// not the manifest's: a rule can name this host and port and still carry no traffic,
+	// so an embedder that folded the two would send an operator to widen an allowlist that
+	// is already wide enough. Quoted: the target chose the name.
+	for _, hp := range res.Untunneled {
+		fmt.Fprintf(w, "embed: egress to %q port %s was refused: it was addressed without a CONNECT, and bento tunnels CONNECT only - use https or have the client tunnel\n", hp.Host, hp.Port)
+	}
+	// ShieldedGrants: always-shielded stores the manifest explicitly granted, so the
+	// backend honored the grant over its own shield. bento does not refuse this - the
+	// operator chose it - so a frontend that stays quiet makes the exposure silent.
+	// OnHost names the store a grant actually bound where that differs from the spelling:
 	// the deny-list builds the grantable names from $HOME, so a grant can name a symlink
 	// while the exposure lands elsewhere, and naming only the spelling would point a
-	// reviewer at a scratch path instead of the private key that was handed over.
-	lands := make(map[string]string, len(res.ShieldedGrantTargets))
-	for _, t := range res.ShieldedGrantTargets {
-		lands[t.Path] = t.Credential
-	}
-	for _, path := range res.ShieldedGrants {
-		fmt.Fprintf(w, "embed: WARNING: exposed shielded credential path to the target: %q\n", path)
-		if target, ok := lands[path]; ok {
-			fmt.Fprintf(w, "embed: WARNING:   on this host that path is %q\n", target)
+	// reviewer at a scratch path instead of the private key that was handed over. Holds
+	// says which kind of store it was, so this line does not call a shell history a
+	// credential.
+	for _, g := range res.ShieldedGrants {
+		fmt.Fprintf(w, "embed: WARNING: exposed an always-shielded path to the target: %q (holds %s)\n", g.Path, g.Holds)
+		if g.OnHost != "" {
+			fmt.Fprintf(w, "embed: WARNING:   on this host that path is %q\n", g.OnHost)
 		}
 	}
 	// AcceptedAliases: paths the run could read as a second name for a shielded

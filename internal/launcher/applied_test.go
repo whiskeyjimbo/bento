@@ -57,8 +57,10 @@ func TestApplyLayersRecordsTheLandlockOutcome(t *testing.T) {
 		want      string
 	}{
 		{"applied", func([]string) error { return nil }, func() bool { return true }, "landlock " + AppliedYes},
-		{"failed", func([]string) error { return errors.New("ruleset refused") }, func() bool { return true },
-			"landlock " + AppliedNo + " \"ruleset refused\""},
+		{
+			"failed", func([]string) error { return errors.New("ruleset refused") }, func() bool { return true },
+			"landlock " + AppliedNo + " \"ruleset refused\"",
+		},
 		// Restrict is best-effort: below the usable ABI it installs nothing and still
 		// returns nil, so a report keyed on the error alone would claim a backstop that
 		// does not exist.
@@ -137,7 +139,8 @@ func TestNewAppliedReportValidatesTheDescriptor(t *testing.T) {
 func TestRunTargetKeepsTheRecordOffARunThatHappened(t *testing.T) {
 	reap := reapChildren
 	t.Cleanup(func() { reapChildren = reap })
-	reapChildren = func(int) (int, error) { return 0, errors.New("launcher: reaping children: no child processes") }
+	waitFailed := errors.New("launcher: reaping children: no child processes")
+	reapChildren = func(int) (int, error) { return 0, waitFailed }
 
 	got, err := reportOf(t, func(a *appliedReport) error {
 		if err := a.write(); err != nil {
@@ -154,6 +157,71 @@ func TestRunTargetKeepsTheRecordOffARunThatHappened(t *testing.T) {
 	}
 	if !strings.Contains(got, AppliedMarker) {
 		t.Errorf("report %q lost its completion marker", got)
+	}
+	// errTargetRan is a marker wrapper, not a replacement: the cause must stay
+	// inspectable through it, or the caller that decides what to tell the user about a
+	// failed wait sees only the marker type.
+	if !errors.Is(err, waitFailed) {
+		t.Errorf("the cause did not survive the errTargetRan wrapper: %v", err)
+	}
+}
+
+// The cause of a failed run is an arbitrary error string, and it is appended to a
+// line-oriented report the host parses. Quoting is what stops a newline in it from
+// forging a record the stage never wrote - "landlock yes" being the one that matters,
+// since it would claim a backstop on a run where none was applied.
+func TestTargetUnreachedQuotesTheCause(t *testing.T) {
+	got, err := reportOf(t, func(a *appliedReport) error {
+		return a.targetUnreached(errors.New("no such file\n" + AppliedLandlock + " " + AppliedYes))
+	})
+	if err != nil {
+		t.Fatalf("targetUnreached: %v", err)
+	}
+	if strings.Contains(got, "\n"+AppliedLandlock+" ") {
+		t.Errorf("a newline in the cause forged a layer record: %q", got)
+	}
+	if !strings.Contains(got, AppliedTargetUnreached+` "no such file\n`) {
+		t.Errorf("report %q does not carry the quoted cause", got)
+	}
+}
+
+// This append is all that stands between the host and a complete report for a run that
+// never happened, so a write that fails must not leave the marker readable as a clean
+// run. The report is discarded instead - and when the discard fails too, both failures
+// have to surface, since the caller is the only thing left that can tell the operator
+// the report cannot be trusted.
+//
+// A read-only descriptor fails both operations, which is the reachable half. The other
+// - a write that fails where a shrinking ftruncate still succeeds - is the full
+// filesystem the code was written for, and nothing in a test can provoke it without a
+// seam in the report itself.
+func TestTargetUnreachedSurfacesADiscardThatAlsoFailed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte(AppliedMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fd, err := unix.Dup(int(f.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := newAppliedReport(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = a.targetUnreached(errors.New("no such file"))
+	if err == nil {
+		t.Fatal("targetUnreached reported success on a descriptor it could not write")
+	}
+	for _, want := range []string{"writing the unreached-target record", "discarding the applied-layer report"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %v does not name %q", err, want)
+		}
 	}
 }
 
@@ -244,4 +312,9 @@ func runReportChild(mode string) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stdout, "RUN_OK %d\n", code)
+	// Exit before testing's teardown: the layers Run applied are still in force, so a
+	// -cover build's data emit fails on the temp dir and turns a clean stage into a
+	// nonzero exit. The child's own counters are unrecoverable either way - Landlock is
+	// the blocker, and the only way past it would be to widen the grant under test.
+	os.Exit(0)
 }

@@ -110,7 +110,7 @@ func TestGrantSymlinksMultiHopRealFilesystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveGrants: %v", err)
 	}
-	args, err := grantSymlinks(sb, p, reads, writes)
+	args, err := grantSymlinks(sb, p, reads, writes, nil)
 	if err != nil {
 		t.Fatalf("grantSymlinks: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestGrantSymlinksSkipsChainAlreadyMounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveGrants: %v", err)
 	}
-	args, err := grantSymlinks(sb, p, reads, writes)
+	args, err := grantSymlinks(sb, p, reads, writes, nil)
 	if err != nil {
 		t.Fatalf("grantSymlinks: %v", err)
 	}

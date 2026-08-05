@@ -21,11 +21,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,32 +337,48 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
-	// A denial is either half of this wrapper's own decision: a host no rule covered and
-	// the human declined at the prompt, or one the manifest simply does not carry. Both
-	// leave the target with a 403 it reports as its own failure, so the summary names the
-	// destination without claiming which - the human who answered a prompt already knows
-	// which one they said no to. Quoted for the reason the admitted list is.
+	// The destinations the human said no to at the prompt, which in this wrapper is where
+	// nearly every refusal lands: it supervises with the manifest's own rules, so anything
+	// not already granted reaches the gate. Named apart from Denied below so the summary
+	// does not tell the operator to add a rule for the host they just declined. Quoted for
+	// the reason the admitted list is.
+	if len(res.GateDenied) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused at the prompt"))
+		for _, hp := range res.GateDenied {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
+		}
+	}
+	// A destination the manifest did not carry and no gate was asked about. With a gate
+	// installed this stays empty - every such host goes to the prompt above - so it is the
+	// ungated run's half, kept because this wrapper's run path is reachable without one.
+	// Quoted for the same reason.
 	if len(res.Denied) > 0 {
 		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused: no network rule covers them, and none was admitted"))
 		for _, hp := range res.Denied {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(the target saw only a 403 from the proxy)"))
 		}
 	}
-	// A grant over a built-in credential shield is caveat-emptor: approve() can hand one
-	// out because the human said yes to a path, and bento honors it rather than refusing.
-	// ShieldedGrantTargets names the store it landed on where that differs from the
-	// spelling - the grantable names are built from $HOME, so a grant can name a symlink
-	// while the exposure lands on the real key. Both quoted: neither is manifest text.
-	if len(res.ShieldedGrants) > 0 {
-		lands := make(map[string]string, len(res.ShieldedGrantTargets))
-		for _, g := range res.ShieldedGrantTargets {
-			lands[g.Path] = g.Credential
+	// Separate from the denial above because no prompt and no rule reaches it: the target
+	// addressed these without a CONNECT, so bento refused them whatever the human would
+	// have answered. Folding them into the denial would offer an operator a decision they
+	// never had. Quoted for the reason the denial list is.
+	if len(res.Untunneled) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("egress to these destinations was refused: they were addressed without a CONNECT, and bento tunnels CONNECT only"))
+		for _, hp := range res.Untunneled {
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(plain http:// cannot be carried; use https or have the client tunnel)"))
 		}
-		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields as credential stores:"))
+	}
+	// A grant over a built-in shield is caveat-emptor: approve() can hand one out because
+	// the human said yes to a path, and bento honors it rather than refusing. OnHost names
+	// the store it landed on where that differs from the spelling - the grantable names
+	// are built from $HOME, so a grant can name a symlink while the exposure lands on the
+	// real key. Both quoted: neither is manifest text.
+	if len(res.ShieldedGrants) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("the script was given paths bento normally shields on every run:"))
 		for _, g := range res.ShieldedGrants {
-			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
-			if target, ok := lands[g]; ok {
-				fmt.Fprintf(w, "    %s %s\n", t.dim("on this host:"), t.bold(strconv.Quote(target)))
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(g.Path)), t.dim("holds "+g.Holds))
+			if g.OnHost != "" {
+				fmt.Fprintf(w, "    %s %s\n", t.dim("on this host:"), t.bold(strconv.Quote(g.OnHost)))
 			}
 		}
 	}
@@ -553,12 +570,7 @@ func discoveryEnv() map[string]string {
 // sortedEnvNames returns the env variable names present in m, sorted, for a stable
 // env allowlist on the approved policy.
 func sortedEnvNames(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // approve walks the synthesized proposal and builds the policy the enforced run is

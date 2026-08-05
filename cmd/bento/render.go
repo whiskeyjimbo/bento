@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -95,6 +96,13 @@ type doctorJSON struct {
 }
 
 func toReportJSON(r enforce.Report) reportJSON {
+	// A report with no layers evaluated no layer, and !HasDegradation() would call that
+	// fully enforced - the clean posture noReport exists to keep off a run that never had
+	// one. It reaches here through a refusal raised before anything was probed, e.g. a
+	// malformed run id, whose Report is the zero value.
+	if len(r.Layers) == 0 {
+		return noReport
+	}
 	out := reportJSON{Layers: make([]layerJSON, 0, len(r.Layers)), FullyEnforced: !r.HasDegradation()}
 	for _, l := range r.Layers {
 		out.Layers = append(out.Layers, layerJSON{
@@ -129,9 +137,14 @@ type accessNoteJSON struct {
 	Host string `json:"host,omitempty"`
 	Port string `json:"port,omitempty"`
 	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
-	// shielded-credential, write-shielded, too-broad (withheld); foreign-home-shield,
+	// not-tunneled, read-shielded, write-shielded, too-broad (withheld); foreign-home-shield,
 	// target-steerable-tmp, whole-workdir (proposed and flagged).
 	Reason string `json:"reason"`
+	// Holds is what the shield was hiding (denylist.Holds.Code), on a read-shielded note
+	// and no other - it is the one decision whose consequence differs by bucket, and a
+	// reviewer weighing a withheld read of a history store is weighing something other
+	// than a withheld read of a private key.
+	Holds string `json:"holds,omitempty"`
 	// Absent says nothing was found at Path, so the run only probed for it - the
 	// difference between a file the script read under a name a manifest cannot hold and
 	// an interpreter's search miss, which is the routine case. A pointer because unknown
@@ -199,8 +212,9 @@ type mergeJSON struct {
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is
 // "hidden" or "read-only"; see enforce.ShieldApplied.
 type shieldJSON struct {
-	Path string `json:"path"`
-	Kind string `json:"kind"`
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Source string `json:"source,omitempty"`
 }
 
 func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
@@ -209,7 +223,7 @@ func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
 	}
 	out := make([]shieldJSON, 0, len(shields))
 	for _, s := range shields {
-		out = append(out, shieldJSON{Path: s.Path, Kind: s.Kind})
+		out = append(out, shieldJSON{Path: s.Path, Kind: s.Kind, Source: s.Source})
 	}
 	return out
 }
@@ -274,11 +288,22 @@ func grantTarget(literal, resolved string) (string, bool) {
 	return resolved, resolved != literal
 }
 
-// toShieldedTargetsJSON renders the pairs the backend resolved as it bound them.
-func toShieldedTargetsJSON(targets []enforce.CredentialAlias) []grantTargetJSON {
-	var out []grantTargetJSON
-	for _, t := range targets {
-		out = append(out, grantTargetJSON{Path: t.Path, OnHost: t.Credential})
+// shieldedGrantJSON is one always-shielded path a manifest grants, which lifts the shield.
+// OnHost is present only where the grant reached somewhere other than its own name, and
+// Holds is what the lifted shield was hiding (denylist.Holds.Code) - "credential store" is
+// the sentence a gate's operator reads while judging the exposure, and the shields also
+// cover history stores, session layout, and the host's service sockets.
+type shieldedGrantJSON struct {
+	Path   string `json:"path"`
+	OnHost string `json:"on_host,omitempty"`
+	Holds  string `json:"holds"`
+}
+
+// toShieldedGrantsJSON renders what the backend resolved as it bound the opt-ins.
+func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
+	var out []shieldedGrantJSON
+	for _, g := range grants {
+		out = append(out, shieldedGrantJSON{Path: g.Path, OnHost: g.OnHost, Holds: g.Holds})
 	}
 	return out
 }
@@ -290,7 +315,7 @@ func toShieldedTargetsJSON(targets []enforce.CredentialAlias) []grantTargetJSON 
 //
 // This is validate's answer, resolved when the summary is written - there is no run to
 // take it from, and the comment on writeResolvedGrants owns that gap. The run's own
-// envelope uses toShieldedTargetsJSON instead, which carries what was actually bound.
+// envelope uses toShieldedGrantsJSON instead, which carries what was actually bound.
 func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	if len(resolved) != len(literal) {
 		return nil
@@ -304,7 +329,7 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	return out
 }
 
-// explicitShieldGrants reports the read grants that name a mandatory credential shield
+// explicitShieldGrants reports the read grants that name a mandatory shield
 // (~/.ssh, ~/.gnupg, the runtime dir's agent sockets) exactly, which the backend honors
 // as a deliberate, read-only exception rather than refusing. It is the pre-run answer to
 // what writeShieldedGrantWarning reports after the fact, so validate and approve can
@@ -324,19 +349,50 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // has no shield rules to compare against, which is returned as an error rather than as
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
-func explicitShieldGrants(reads []string) ([]string, error) {
+func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
 	rules, err := resolvedShieldRules()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []shieldGrant
+	seen := map[string]bool{}
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !slices.Contains(out, r.Path) {
-			out = append(out, r.Path)
+		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !seen[r.Path] {
+			seen[r.Path] = true
+			out = append(out, shieldGrant{Path: r.Path, Holds: r.Holds})
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, func(a, b shieldGrant) int { return strings.Compare(a.Path, b.Path) })
 	return out, nil
+}
+
+// shieldGrant is one such grant: the path, and what the shield it lifts was hiding. The
+// callouts carry the second because "credential store" is the sentence a reviewer reads
+// while deciding to approve, and the shields also cover history stores, session layout,
+// and the host's service sockets - naming those a credential store drains the phrase for
+// the grants where it is the truth.
+type shieldGrant struct {
+	Path  string
+	Holds denylist.Holds
+}
+
+// toShieldGrantsJSON renders the grants validate resolved for itself, which is why no
+// on_host is set: there is no run to have bound one, and resolved_read is validate's
+// answer to what a grant reaches.
+func toShieldGrantsJSON(gs []shieldGrant) []shieldedGrantJSON {
+	var out []shieldedGrantJSON
+	for _, g := range gs {
+		out = append(out, shieldedGrantJSON{Path: g.Path, Holds: g.Holds.Code()})
+	}
+	return out
+}
+
+func shieldGrantPaths(gs []shieldGrant) []string {
+	out := make([]string, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, g.Path)
+	}
+	return out
 }
 
 // builtinShieldRules is the always-on deny-list the backend builds for every run, as far
@@ -420,9 +476,11 @@ func resolvedShieldRules() ([]shieldRule, error) {
 // so a grant that trips more than one (a write naming a shield exactly is both inside it
 // and above it) is reported in the sentence the run would have printed:
 //
-//   - checkNotShielded - a grant at or inside a DenyAll shield. A read naming one exactly
-//     is the deliberate opt-in explicitShieldGrants reports instead; a write of the same
-//     path is not, which is the asymmetry this exists to say out loud.
+//   - checkReadNotShielded / checkWriteNotShielded - a grant at or inside a DenyAll
+//     shield. A read naming one exactly is the deliberate opt-in explicitShieldGrants
+//     reports instead; a write of the same path is not, which is the asymmetry this
+//     exists to say out loud - and why the two kinds are refused in different sentences,
+//     only one of which offers the opt-in as a remedy.
 //   - checkWriteNotUnderReadOnlyShield - a write at or inside a DenyWrite shield, which
 //     has no opt-in at all.
 //   - checkWriteNotAboveShield - a write containing a DenyAll shield.
@@ -444,10 +502,11 @@ func shieldedReadProblems(reads []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	optIns, err := explicitShieldGrants(reads)
+	grants, err := explicitShieldGrants(reads)
 	if err != nil {
 		return nil, err
 	}
+	optIns := shieldGrantPaths(grants)
 	var problems []string
 	for _, g := range reads {
 		// The opt-in is tested on the spelling, not on where it lands: the backend honors a
@@ -493,7 +552,7 @@ func writeShieldProblem(rules []shieldRule, g string) (string, bool) {
 	lands := pathresolve.Existing(g)
 	for _, r := range rules {
 		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
-			return grantrefusal.InsideShield(g, r.Path).Error(), true
+			return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
 		}
 	}
 	for _, r := range rules {
@@ -541,6 +600,33 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 		msg += fmt.Sprintf(", %d read-only", readonly)
 	}
 	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg)
+
+	// The count alone is enough for the default shields, which land where a reader
+	// expects. A relocated one does not: the variable accepts any absolute path, so the
+	// shield can sit on something the run needs, and the failure surfaces as an ENOENT
+	// or a link error naming only the target. These are named in full rather than
+	// counted, because the whole point is to put the variable next to the path.
+	// Grouped by variable rather than listed per path, for the reason doctor's copy is:
+	// one variable can relocate a whole startup group and would bury the rest.
+	paths := map[string][]string{}
+	for _, s := range res.Shields {
+		if s.Source != "" && !slices.Contains(paths[s.Source], s.Path) {
+			paths[s.Source] = append(paths[s.Source], s.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] some of those followed an environment variable, so they shield a path bento")
+	fmt.Fprintln(w, "[bento] would not have chosen - if this run failed on one of these, that is why:")
+	for _, src := range slices.Sorted(maps.Keys(paths)) {
+		p := paths[src]
+		if len(p) == 1 {
+			fmt.Fprintf(w, "[bento]   $%s -> %q\n", src, p[0])
+			continue
+		}
+		fmt.Fprintf(w, "[bento]   $%s -> %d shields under %q\n", src, len(p), commonDir(p))
+	}
 }
 
 func writeJSON(w io.Writer, v any) error {
@@ -649,21 +735,14 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 //
 // It reports whether it said anything, so no second explanation stacks on top.
 func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
-	if res.ExitCode != 126 || p.Exec == policy.ExecAll {
+	// The declared mode is not enough, which is why this asks blockedExecMode rather than
+	// p.Exec: exec-block is a hardening layer, so a run whose filter never landed proceeds
+	// anyway - and writeDegradations has just said so a few lines above. Blaming the
+	// manifest there both contradicts that line and sends the reader to change a setting
+	// that had no part in the failure.
+	mode := blockedExecMode(p, res)
+	if res.ExitCode != 126 || mode == "" {
 		return false
-	}
-	// The declared mode is not enough: exec-block is a hardening layer, so a run whose
-	// filter never landed proceeds anyway - and writeDegradations has just said so a few
-	// lines above. Blaming the manifest there both contradicts that line and sends the
-	// reader to change a setting that had no part in the failure.
-	if res.Report.StateOf(enforce.LayerExec) != enforce.Enforced {
-		return false
-	}
-	// Spelled as the manifest spells it, so the reader can find the line to change. Only
-	// the two blocking modes reach here, and the zero value of ExecMode is none.
-	mode := policy.ExecNone
-	if p.Exec == policy.ExecNoneStrict {
-		mode = policy.ExecNoneStrict
 	}
 	fmt.Fprintln(w, "[bento] the script exited 126, the code a shell returns when it could not execute a")
 	// "runs under", not "sets": exec is the deny default, so a manifest that never
@@ -685,14 +764,46 @@ func shieldsReadOnly(res enforce.Result) bool {
 	return false
 }
 
+func shieldsHidden(res enforce.Result) bool {
+	for _, s := range res.Shields {
+		if s.Kind == "hidden" {
+			return true
+		}
+	}
+	return false
+}
+
+// blockedExecMode names the exec: mode a run actually withheld subprocesses under, or
+// "" where it withheld none. Two things it settles for every caller: a declared block
+// whose filter never landed refused nothing, and the zero value of ExecMode is the empty
+// string rather than "none", so a manifest that never mentions exec would otherwise be
+// told to look for a field spelled nothing at all.
+func blockedExecMode(p *policy.Policy, res enforce.Result) policy.ExecMode {
+	if p.Exec == policy.ExecAll || res.Report.StateOf(enforce.LayerExec) != enforce.Enforced {
+		return ""
+	}
+	if p.Exec == policy.ExecNoneStrict {
+		return policy.ExecNoneStrict
+	}
+	return policy.ExecNone
+}
+
 // writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
 // target prints itself and bento never sees.
 //
-// The hints above all key on a failure - a signal, exit 126, a non-zero exit with no
-// egress - because each explains one. This explains none: it is the standing note that a
-// script continuing past a refused read, write or exec exits 0, so a clean exit is not
-// evidence the box let everything through. That case has no signal at all to key on, and
-// it is the one that reads as success.
+// It covers the two outcomes no other hint can speak to. A clean exit is the one that
+// reads as success: a script continuing past a refused read, write or exec exits 0, so
+// there is no signal at all to key on. And a failure the generic profile hint took -
+// one no more specific hint claimed - is the branch where the reader is holding an errno
+// string right now and needs the field that produced it. The profile hint's own sentence
+// says only that the sandbox denies silently, which is that mapping withheld; the two
+// print together, the general statement and then the shapes it is about.
+//
+// The hints that DO name a cause - a signal death, exit 126 under a blocked exec, a
+// bypassed proxy, a refused destination - keep the run to themselves, and the caller
+// gates on that. Each of them has already named the layer that produced the failure, and
+// a mapping of every other errno underneath it offers a reader who has their answer four
+// more causes to consider.
 //
 // The read line states an ambiguity rather than a cause, and has to keep doing so. An
 // ungranted path, the contents of a shielded directory and a file that genuinely is not
@@ -704,19 +815,24 @@ func shieldsReadOnly(res enforce.Result) bool {
 // The mapping runs errno to cause, not the reverse, which is what keeps the line true
 // where the shields do not all behave alike: a file shield binds an empty file rather
 // than hiding it, so reading one succeeds and yields nothing instead of answering ENOENT.
-// It is therefore not among the causes a reader should consider for this errno, and
-// nothing here should be reworded into claiming every shield produces it.
+// It is therefore not among the causes a reader should consider for this errno, and no
+// errno line here should be reworded into claiming every shield produces it. That is why
+// the hidden-shield shapes get a closing sentence of their own instead: a shielded
+// directory stats as an empty tmpfs and a shielded file reads zero bytes, so neither
+// raises an errno the reader could look up, and folding them into the mapping above would
+// be the one rewording this paragraph rules out.
 //
 // Deliberately naming no paths. Spelling the grants back would need the manifest's own
 // wording rather than the resolved absolutes this side holds, and the reader has the
 // manifest open; what they do not have is the mapping from an errno string to the field
 // that produced it.
-func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
-	// A clean exit only. Every hint above explains a failure the target reported, and on
-	// a failing run the profile hint already says the sandbox denies silently - a second
-	// telling there would stack onto it and close by explaining an exit 0 that did not
-	// happen. What none of them cover is the run that reported nothing.
-	if res.ExitCode != 0 || res.Signal != 0 {
+// hinted says the generic profile hint just spoke, which is the caller's answer to
+// whether any narrower hint claimed this failure.
+func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted bool) {
+	// A clean exit, or the failure the profile hint took. Anything else was explained by
+	// a hint that named its own cause, and stacking a second reading onto it would send a
+	// reader who has the answer back through the other shapes.
+	if !hinted && (res.ExitCode != 0 || res.Signal != 0) {
 		return
 	}
 	// Each line answers for the layer that produces its errno, because the layers do not
@@ -732,13 +848,32 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 	// Requiring Enforced drops a true line in that one case, which is the safe direction
 	// to be wrong in, and writeDegradations has already spoken there.
 	mountNSConfines := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
-	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
-	if !mountNSConfines && !blocksExec {
+	execMode := blockedExecMode(p, res)
+	// A manifest with no rules has no proxy, so nothing observes the attempt and the
+	// egress reporter that would name the destination never speaks - the errno is all the
+	// reader gets, and it is the one grant field the legend used to leave out. With rules
+	// present the proxy answers, and that hint names the destination itself.
+	//
+	// Read off the filesystem layer rather than LayerNetwork, which a zero-rule run does
+	// not carry at all (requiredLayers: namespace isolation alone denies egress, so the
+	// allowlist stack is not asked for). Enforced there is exactly namespacesUsable, and
+	// the netns that fences egress comes with it. The Landlock-only tier fences egress too,
+	// but with a seccomp filter that answers EPERM on socket() rather than a netns, so
+	// these errnos are not the shapes it produces and this stays silent there.
+	netDenied := len(p.Network) == 0 && mountNSConfines
+	if !mountNSConfines && execMode == "" {
 		return
 	}
 	// One sentence carrying both halves the reader needs: bento is not the one reporting
-	// this, and the exit code will not reflect it either.
-	fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
+	// this, and the exit code will not reflect it either. After the profile hint the
+	// second half is the wrong claim to lead with - the run did exit non-zero, and the
+	// hint has just said the script's message is all there is - so that branch names the
+	// message instead, as the thing the shapes below are read against.
+	if hinted {
+		fmt.Fprintln(w, "[bento] if that message was a denial, these are the shapes it arrives in:")
+	} else {
+		fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
+	}
 	if mountNSConfines {
 		switch {
 		case len(p.Write) == 0:
@@ -758,14 +893,18 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 		}
 		fmt.Fprintln(w, "[bento]   \"No such file or directory\" - ungranted or shielded, and identical to truly absent")
 	}
-	if blocksExec {
-		// The zero value is the empty string, not "none", so a manifest that never
-		// mentions exec would name a field spelled nothing at all.
-		mode := policy.ExecNone
-		if p.Exec == policy.ExecNoneStrict {
-			mode = policy.ExecNoneStrict
-		}
-		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
+	if netDenied {
+		fmt.Fprintln(w, "[bento]   \"Network is unreachable\", or a name that will not resolve - this manifest grants no network: rules")
+	}
+	if execMode != "" {
+		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", execMode)
+	}
+	// A hidden shield raises no error at all - unlike the read-only one the write line
+	// above already accounts for - so a reader who took the errno lines as the whole list
+	// would read that silence as access. Gated on one actually engaging, so it never names
+	// a shape this run could not have produced.
+	if mountNSConfines && shieldsHidden(res) {
+		fmt.Fprintln(w, "[bento] a hidden shield reports no error either: the directory stats as empty, the file reads as zero bytes")
 	}
 }
 
@@ -864,16 +1003,38 @@ func signalDeath(res enforce.Result) (sig int, certain bool) {
 // caller keeps it off a run the target never reached: a refusal returns before the output,
 // a strict shortfall is reported by its own line, and a launcher that applied its layers
 // and then could not exec the target gets writeTargetUnreached instead.
-func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
+//
+// The summary counts the read and write grants and names the exec mode and an empty
+// network:, because those are what the run withheld and any of them can be what the
+// script died on - a manifest that blocks exec answers EPERM to a subprocess, which is
+// bento's verdict as much as EROFS is, and counting paths alone leaves a reader hunting
+// the wrong field. A manifest with no network rules is the case with no reporter of its
+// own: with rules the proxy names the destination it refused, without them nothing
+// observes the attempt at all.
+// It reports whether it said anything, so the legend below knows this failure was left
+// generic rather than explained.
+func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if res.ExitCode == 0 {
-		return
+		return false
 	}
-	fmt.Fprintf(w, "[bento] the script exited %d. It ran with %d read and %d write path(s) granted, and the\n", res.ExitCode, len(p.Read), len(p.Write))
-	fmt.Fprintln(w, "[bento] sandbox denies silently - so if it failed on a missing file or a permission")
-	fmt.Fprintln(w, "[bento] error, the script's own message is all you get. To see what it actually touches:")
+	grants := fmt.Sprintf("%d read and %d write path(s) granted", len(p.Read), len(p.Write))
+	if len(p.Network) == 0 {
+		grants += ", no network: rules"
+	}
+	if mode := blockedExecMode(p, res); mode != "" {
+		grants += fmt.Sprintf(", and exec: %s", mode)
+	}
+	// Wrapped rather than hand-broken: the summary's length depends on the manifest, so a
+	// break placed to fit one grant summary runs off the column under another.
+	for _, line := range wrapText(fmt.Sprintf("the script exited %d. It ran with %s, and the sandbox denies "+
+		"silently - so if it failed on a missing file or a permission error, the script's own "+
+		"message is all you get. To see what it actually touches:", res.ExitCode, grants), textWidth-len("[bento] ")) {
+		fmt.Fprintf(w, "[bento] %s\n", line)
+	}
 	// Quoted: the entrypoint is manifest text, and a newline in it would otherwise forge a
 	// line of this hint.
 	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
+	return true
 }
 
 // writeRefusal prints a pre-run refusal in the shape main's generic error printer gives
@@ -1219,16 +1380,75 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 	return true
 }
 
+// writeGateDeniedWarning names the destinations a network gate was asked about and
+// refused. It is separate from writeDeniedWarning because that notice's whole remedy -
+// add the destination under network: and re-approve - describes a decision the operator
+// has already made and declined, and under the prompt-on-every-host mode (an empty
+// network: block plus a gate) it would describe a manifest allowlist that does not exist.
+//
+// The hosts came from the sandbox's own CONNECT requests, so they are quoted for the same
+// reason writeGuardBlockedWarning quotes its own.
+//
+// It reports whether it said anything, so no second explanation of the same failure
+// stacks on top of it.
+func writeGateDeniedWarning(w io.Writer, res enforce.Result) bool {
+	if len(res.GateDenied) == 0 {
+		return false
+	}
+	fmt.Fprintln(w, "[bento] the network gate was asked about these destinations and refused them:")
+	for _, hp := range res.GateDenied {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	fmt.Fprintln(w, "[bento] the script saw a 403 from the proxy. Nothing is wrong with the manifest - this")
+	fmt.Fprintln(w, "[bento] was a decision made during the run. To stop being asked, add the destination")
+	fmt.Fprintln(w, "[bento] under network: in the manifest and re-approve.")
+	return true
+}
+
+// writeUntunneledWarning names the destinations a request addressed without asking the
+// proxy to tunnel to them. bento's egress rides an HTTP CONNECT proxy, so a client that
+// speaks plain http:// through it sends an absolute-URI GET instead of a CONNECT and
+// meets a 400 the manifest cannot change - while validate and approve both report the
+// matching network rule as granted. That gap is invisible without this: the run's other
+// egress warnings all describe destinations no rule covered, so a reader who checked the
+// manifest first finds the rule there and concludes the report is about something else.
+//
+// The hosts came from the sandbox's own request line, so they are quoted for the same
+// reason writeGuardBlockedWarning quotes its own.
+//
+// It reports whether it said anything, so no second explanation of the same failure
+// stacks on top of it.
+func writeUntunneledWarning(w io.Writer, res enforce.Result) bool {
+	if len(res.Untunneled) == 0 {
+		return false
+	}
+	fmt.Fprintln(w, "[bento] these destinations were addressed without a CONNECT, so the egress proxy")
+	fmt.Fprintln(w, "[bento] refused them - a network rule granting them carries no traffic:")
+	for _, hp := range res.Untunneled {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	fmt.Fprintln(w, "[bento] the script saw a 400 from the proxy, not a 403. bento forwards CONNECT tunnels")
+	fmt.Fprintln(w, "[bento] only, so plain http:// cannot be carried: use https, or configure the client to")
+	fmt.Fprintln(w, "[bento] tunnel (curl --proxytunnel). Editing the manifest will not change this.")
+	return true
+}
+
 // writeShieldedGrantWarning tells the user that the policy granted a path bento would
-// otherwise shield as a credential store, so the backend honored the grant and exposed
-// it to the script. This is a deliberate opt-in bento does not refuse, so the notice is
-// the only thing that keeps the exposure from being silent.
+// otherwise shield, so the backend honored the grant and exposed it to the script. This
+// is a deliberate opt-in bento does not refuse, so the notice is the only thing that
+// keeps the exposure from being silent.
+//
+// Each grant names what its shield was hiding, as the pre-run callouts do - validate's
+// per-grant note and approve's prompt, where the exposure can still be declined. This one
+// arrives after the script has already read whatever it read, so it is what an operator
+// reconstructing an incident reads, and "credential store" for a history store sends them
+// looking for a key that was never there.
 func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	if len(res.ShieldedGrants) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields as")
-	fmt.Fprintln(w, "[bento] credential stores, so the script could read them - review that this is intended:")
+	fmt.Fprintln(w, "[bento] WARNING: the policy explicitly grants these paths bento normally shields on")
+	fmt.Fprintln(w, "[bento] every run, so the script could read them - review that this is intended:")
 	// A grant matches a shield by the name the deny-list gives it, and those names are
 	// built from $HOME - so where $HOME reaches the real home through a symlink, the grant
 	// names one path and the script reads another. Naming the store the exposure landed on
@@ -1241,14 +1461,10 @@ func writeShieldedGrantWarning(w io.Writer, res enforce.Result) {
 	// the target is enumerated from the filesystem - so a directory (or a $HOME) whose name
 	// holds a newline would otherwise print as a second line and forge a summary line of
 	// its own, in the block that exists to make an exposure impossible to miss.
-	lands := make(map[string]string, len(res.ShieldedGrantTargets))
-	for _, t := range res.ShieldedGrantTargets {
-		lands[t.Path] = t.Credential
-	}
 	for _, g := range res.ShieldedGrants {
-		fmt.Fprintf(w, "[bento]   %q\n", g)
-		if target, ok := lands[g]; ok {
-			fmt.Fprintf(w, "[bento]     on this host: %q\n", target)
+		fmt.Fprintf(w, "[bento]   %q - %s\n", g.Path, denylist.HoldsByCode(g.Holds).Noun())
+		if g.OnHost != "" {
+			fmt.Fprintf(w, "[bento]     on this host: %q\n", g.OnHost)
 		}
 	}
 }
@@ -1331,7 +1547,107 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")
 		fmt.Fprintf(w, "  them too, which is what a caller-chosen $HOME cannot move.\n")
 	}
+	// The runtime shield follows XDG_RUNTIME_DIR wherever it points, because a host that
+	// relocates it keeps the same contents there - the container auth.json, the gpg-agent
+	// socket, the dbus and wayland sockets. When the variable names a home or an ancestor
+	// of one, the shield would hide the whole grant surface, so it is dropped and only
+	// /run and /var/run remain. That leaves the real runtime directory readable under a
+	// broad grant, and the rule count alone reads exactly like an ordinary host's, so this
+	// is the only place an operator can learn it. Not a refusal: XDG_RUNTIME_DIR=$HOME is
+	// normal on the minimal containers bento is meant to run in.
+	if rd := denylist.RuntimeDir(); rd != "" && !denylist.Shieldable(rd, anchors) {
+		fmt.Fprintf(w, "  XDG_RUNTIME_DIR is %s, at or above an anchor, so only /run and /var/run are\n", strconv.Quote(rd))
+		fmt.Fprintf(w, "  shielded there - a grant reaching that directory hands out whatever sockets and\n")
+		fmt.Fprintf(w, "  tokens it holds. Point it at a directory outside the home to shield it.\n")
+	}
+	writeNestedAnchors(w, anchors)
+	writeRelocatedShields(w)
 	fmt.Fprintln(w)
+}
+
+// writeNestedAnchors reports an anchor that sits inside another one.
+//
+// Where $HOME is itself a credential store beside a passwd home that contains it
+// ($HOME=/home/u/.aws, passwd /home/u), the store's own rule from the passwd pass names
+// exactly the other anchor - so the run hides the whole of $HOME. That is the right call
+// and deliberately kept: dropping the rule would unshield the credentials it exists to
+// hide. But the two outcomes are indistinguishable from inside the sandbox, and an
+// operator gets a home replaced by an empty tmpfs with nothing naming the cause. Only the
+// anchors can explain it, which is why it is said here rather than at the rule.
+func writeNestedAnchors(w io.Writer, anchors []string) {
+	for _, inner := range anchors {
+		for _, outer := range anchors {
+			if inner == outer || !policy.CoversResolved(outer, inner) {
+				continue
+			}
+			fmt.Fprintf(w, "  %s sits inside %s, and both anchor the shields. If the inner one is\n", strconv.Quote(inner), strconv.Quote(outer))
+			fmt.Fprintf(w, "  a credential store bento shields whole, the run replaces it with an empty\n")
+			fmt.Fprintf(w, "  tmpfs - correct, since the credentials must stay hidden, but it means a home\n")
+			fmt.Fprintf(w, "  that reads as empty to the script. Point $HOME outside the other home to undo it.\n")
+		}
+	}
+}
+
+// writeRelocatedShields names the shields an environment variable moved off their default
+// path, and the variable that moved each.
+//
+// A relocation variable accepts any absolute path - there is no principled rule for where
+// a user may keep a history file or a kubeconfig, so nothing bounds the target to a
+// plausible one. HISTFILE=/usr/bin/python3 therefore hides the interpreter, and the run
+// fails with an ENOENT or a link error naming only the target. This is where an operator
+// can see the shield and the variable side by side before a run rather than after, which
+// is the whole diagnostic: the path alone cannot be traced back to the variable.
+//
+// A variable left at its conventional value costs no line here, because the rule it
+// produces is the default one and carries no source. XDG_RUNTIME_DIR is the case worth
+// naming: it is set on nearly every host, but Runtime stamps it only where it points
+// somewhere other than /run, which is a real relocation and not an ordinary host.
+func writeRelocatedShields(w io.Writer) {
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return
+	}
+	paths := map[string][]string{}
+	for _, r := range rules {
+		if r.Source == "" {
+			continue
+		}
+		// Every anchor is passed to every Home call, so a relocation is re-derived once
+		// per anchor and would otherwise be counted as many times.
+		if !slices.Contains(paths[r.Source], r.Path) {
+			paths[r.Source] = append(paths[r.Source], r.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  %d environment variable(s) move a shield off its default path:\n", len(paths))
+	for _, src := range slices.Sorted(maps.Keys(paths)) {
+		// One line per variable, not per path: a variable that relocates a group (ZDOTDIR
+		// takes the whole zsh startup set) would otherwise bury the others under its own
+		// entries. Quoted for the reason the anchors are - the value is the host's, so a
+		// newline in one would forge a line of this report.
+		p := paths[src]
+		if len(p) == 1 {
+			fmt.Fprintf(w, "    $%s -> %s\n", src, strconv.Quote(p[0]))
+			continue
+		}
+		fmt.Fprintf(w, "    $%s -> %d shields under %s\n", src, len(p), strconv.Quote(commonDir(p)))
+	}
+	fmt.Fprintf(w, "  Nothing bounds these targets, so a variable pointing at a path the script needs\n")
+	fmt.Fprintf(w, "  hides it and the run fails naming only that path. Unset the variable to undo one.\n")
+}
+
+// commonDir returns the deepest directory holding every path, for naming a group of
+// shields one variable relocated together without listing each.
+func commonDir(paths []string) string {
+	dir := filepath.Dir(paths[0])
+	for _, p := range paths[1:] {
+		for dir != "/" && !policy.CoversResolved(dir, p) {
+			dir = filepath.Dir(dir)
+		}
+	}
+	return dir
 }
 
 // writeExposedWarning tells the user which credential and persistence paths a full

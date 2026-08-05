@@ -1,6 +1,7 @@
 package credhunt
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,14 @@ import (
 )
 
 // buildHome plants a tree shaped like a developer home: many ordinary files in nested
-// project dirs, a scattering of dotfile config dirs, and a few credential-shaped files.
+// project dirs, a scattering of home-root dotfiles, and a few credential-shaped files.
+//
+// The root dotfiles are what put the content sniff in the measurement. Nothing under
+// proj*/ reaches contentShapes - those files trip no name, suffix or mode signal - so a
+// tree of only those measures the walk and the coverage index while leaving the read path
+// dark. Their names carry no signal on purpose: at the root the sniff runs on contents
+// alone, which is the branch a size-gate regression would land in. Two of them run well
+// past MaxFileSize so the bound on the head read is exercised rather than assumed.
 func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 	tb.Helper()
 	home := tb.TempDir()
@@ -27,6 +35,23 @@ func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 			}
 		}
 	}
+	write := func(name string, body []byte) {
+		if err := os.WriteFile(filepath.Join(home, name), body, 0o644); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	for i := 0; i < 40; i++ {
+		write(fmt.Sprintf(".tool%02dconf", i), []byte("theme = dark\nverbose = true\n"))
+	}
+	// A shell history and an editor session are the realistic large root dotfiles, and
+	// they are what makes reading a bounded head rather than the whole file matter. Each
+	// carries a token, one inside the head and one past it, so the pair pins the read and
+	// the bound on it rather than only the cost of both.
+	bulk := bytes.Repeat([]byte("cd ~/src/proj && make test\n"), 12000) // ~316 KB
+	write(".shell_history", append([]byte("export API_TOKEN=sk-0123456789abcdefghijklmnop\n"), bulk...))
+	write(".editor_session", append(bulk, []byte("export API_TOKEN=sk-0123456789abcdefghijklmnop\n")...))
+	// The lead the sniff alone can reach: no name token, no suffix, world-readable.
+	write(".envfile", []byte("theme = dark\napi_token = sk-0123456789abcdefghijklmnop\n"))
 	return home
 }
 
@@ -42,11 +67,52 @@ func benchOpts(home string) Options {
 func BenchmarkHunt(b *testing.B) {
 	home := buildHome(b, 200, 50) // ~10k files
 	opts := benchOpts(home)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, _, err := Hunt(opts); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The benchmark can only measure the sniff if the tree it walks reaches it, and it
+// reports the same number either way - a tree that plants nothing sniffable reads as a
+// clean benchmark rather than a broken one. Pin the reachability here: .envfile trips no
+// name, suffix or mode signal, so a token finding on it means contentShapes ran on a
+// home-root file, which is the path the benchmark exists to cover.
+func TestBuildHomeReachesTheContentSniff(t *testing.T) {
+	home := buildHome(t, 2, 2)
+	opts := benchOpts(home)
+	found, _, err := Hunt(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenFound := func(name string) bool {
+		return slices.ContainsFunc(found, func(f Finding) bool {
+			return f.Path == filepath.Join(home, name) && slices.Contains(f.Signals, SignalToken)
+		})
+	}
+	// A shield added to denylist.Home later would skip a plant before it is ever opened,
+	// which fails the assertions below for a reason that has nothing to do with the sniff.
+	// Say so here, where the fix is to rename the plant rather than to chase the read path.
+	for _, name := range []string{".envfile", ".shell_history", ".editor_session"} {
+		if r, ok := denylist.Covers(filepath.Join(home, name), opts.Rules); ok && r.Deny == denylist.DenyAll {
+			t.Fatalf("the plant %s is now shielded, so the benchmark never opens it; rename it", name)
+		}
+	}
+	// .envfile trips no name, suffix or mode signal, so a token finding on it can only
+	// have come from the home-root branch of the sniff.
+	if !tokenFound(".envfile") {
+		t.Errorf("the benchmark tree does not reach the content sniff; found %v", found)
+	}
+	// The other half of the coverage is the bounded head read, and the two large plants
+	// pin it from both sides: a size gate on the FILE - the misreading Options.MaxFileSize
+	// warns against - would drop the first, and an unbounded read would pick up the second.
+	// Neither shows up as a failing benchmark, only as a quietly faster one.
+	if !tokenFound(".shell_history") {
+		t.Errorf("a token in the head of a file past MaxFileSize was missed, so the benchmark no longer reads one; found %v", found)
+	}
+	if tokenFound(".editor_session") {
+		t.Errorf("a token past MaxFileSize was reported, so the head read is no longer bounded; found %v", found)
 	}
 }
 

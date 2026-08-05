@@ -44,6 +44,128 @@ type Rule struct {
 	// directory rather than each known filename is what closes the "plant a new
 	// credential file" hole.
 	Dir bool
+	// Holds is what the path contains, for the callouts that tell a reviewer what
+	// lifting the shield exposes. Set on DenyAll rules only: a write shield cannot be
+	// lifted by a grant, so no callout has to describe one.
+	Holds Holds
+	// Source names the environment variable that put the shield at this path, and is
+	// empty for a rule at its default location.
+	//
+	// A relocation variable accepts any absolute path, so HISTFILE=/usr/bin/python3
+	// blanks the interpreter and the run then fails with an ENOENT or a link error
+	// attributed to the target. Bounding the target is not possible - there is no
+	// principled rule for which paths a user may keep a history file at - so the
+	// answer is to be able to say which variable caused it, which nothing could
+	// reconstruct after the fact from the path alone.
+	//
+	// Diagnostic only. Nothing about how a rule is enforced may read it, or an
+	// operator's environment would be deciding what the sandbox binds.
+	Source string
+}
+
+// Holds names what a shielded path contains. The deny rules are all enforced the same
+// way, so this exists purely for the sentence a reviewer reads while deciding whether to
+// approve a grant that lifts the shield - which is the sentence that has to say what is
+// behind it. Keyed on the rule and not on the reader so that every callout says the same
+// thing about the same path.
+type Holds int
+
+const (
+	// HoldsUnknown is the zero value, so a rule built without a classification reads as
+	// vague rather than as a credential store it may not be. Callouts fall back to
+	// naming it an always-shielded path, which is never wrong.
+	HoldsUnknown Holds = iota
+	// HoldsCredentials is key material: private keys, tokens, keyrings, vaults.
+	HoldsCredentials
+	// HoldsPrivateData is a store of the user's own content - saved logins, session
+	// cookies, mail, wallets - too large to enumerate.
+	HoldsPrivateData
+	// HoldsHistory is a record of what was typed, pasted, or edited.
+	HoldsHistory
+	// HoldsPersistence is a path the host runs code from at the next login or session.
+	HoldsPersistence
+	// HoldsServices is the host's service control sockets: a directory of them (/run,
+	// XDG_RUNTIME_DIR) or a single socket file (~/.zuluCrypt-socket).
+	HoldsServices
+)
+
+// Code is the machine-readable spelling, for the surfaces that carry the bucket past a
+// package boundary: the enforce seam (enforce.ShieldedGrant.Holds, which cannot name a
+// type from internal/) and the JSON a gate switches on. Stable - the nouns above are
+// prose and get reworded, these do not.
+func (h Holds) Code() string {
+	switch h {
+	case HoldsCredentials:
+		return "credentials"
+	case HoldsPrivateData:
+		return "private-data"
+	case HoldsHistory:
+		return "history"
+	case HoldsPersistence:
+		return "persistence"
+	case HoldsServices:
+		return "services"
+	}
+	return "unknown"
+}
+
+// HoldsByCode reads a Code back, for a frontend turning what a backend reported into the
+// prose of Noun and Exposure. An unrecognized code reads as HoldsUnknown, whose wording
+// is true of every shielded path.
+func HoldsByCode(code string) Holds {
+	for _, h := range []Holds{HoldsCredentials, HoldsPrivateData, HoldsHistory, HoldsPersistence, HoldsServices} {
+		if h.Code() == code {
+			return h
+		}
+	}
+	return HoldsUnknown
+}
+
+// Noun names the store, for a sentence about one path.
+func (h Holds) Noun() string {
+	switch h {
+	case HoldsCredentials:
+		return "credential store"
+	case HoldsPrivateData:
+		return "private data store"
+	case HoldsHistory:
+		return "history store"
+	case HoldsPersistence:
+		return "host-startup path"
+	case HoldsServices:
+		// Not "directory": the bucket also holds single socket files, and a noun naming a
+		// directory sends a reader looking for contents that are not there.
+		return "service socket path"
+	}
+	return "always-shielded path"
+}
+
+// Exposure completes a sentence about lifting the shield: "... which lets the script
+// <Exposure>". It is carried beside the noun because the callouts name a consequence as
+// well as a store, and a consequence written for credentials ("read the credentials in
+// it") misdescribes the other buckets exactly as the noun does.
+func (h Holds) Exposure() string {
+	switch h {
+	case HoldsCredentials:
+		return "read the credentials in it"
+	case HoldsPrivateData:
+		// Hedged rather than enumerated: the bucket runs from browser cookie jars to
+		// mail to wallets to a decrypted home, so a clause naming three of those
+		// misdescribes the rest the way "credentials" misdescribed this bucket - but
+		// several of them do hold a password or a key, and the sentence must not read
+		// as softer than the credential one for the stores where it is the same thing.
+		return "read the private data in it, which for many of these stores includes saved passwords and keys"
+	case HoldsHistory:
+		return "read what was typed, pasted, and edited on this host"
+	case HoldsPersistence:
+		return "read the session layout the host runs code from at the next login"
+	case HoldsServices:
+		// Hedged with "such as" rather than enumerated, because the bucket runs from a
+		// directory of every session socket down to one tool's IPC socket, and a clause
+		// listing three daemons misdescribes the single-socket end of it.
+		return "reach the host services behind it, such as the container daemon, the session bus, and the agent sockets"
+	}
+	return "read what bento shields there"
 }
 
 // HomeAnchors returns the home directories the shields anchor on: $HOME and the passwd
@@ -132,6 +254,17 @@ func RuntimeDir() string {
 // whole deny-list with one DenyAll on the home - which also silently nullifies the
 // completeness audit, since it leaves no per-store rule left to compare against
 // firejail's.
+//
+// The test is lexical - it compares the spellings it is handed and resolves nothing - so
+// an alias for a home (/home a symlink to /export/home, or a plain symlink to $HOME)
+// passes here while naming the very tree the test exists to protect. Callers that
+// ENFORCE a rule close that themselves by re-testing the resolved path against the
+// resolved homes (see the Linux backend's denyArgs), which is the only place the two
+// spellings are both known. Callers that only READ the rule set - the parity audit, the
+// credential hunt - are safe for a different reason: they compare lexically too, and a
+// rule that cannot lexically enclose an anchor cannot lexically cover anything walked
+// from one, so the worst case is an inert rule. Teaching a reader to resolve without
+// teaching it to re-test here would turn that inert rule into a shield over a whole home.
 func Shieldable(p string, homes []string) bool {
 	if p == "/" {
 		return false
@@ -146,9 +279,11 @@ func Shieldable(p string, homes []string) bool {
 
 // Home returns the mandatory rules for a user's home directory.
 //
-// Credential stores are shielded as whole directories on purpose. Naming
+// A credential store that is a directory is shielded whole on purpose. Naming
 // individual files (~/.ssh/id_rsa) leaves siblings exposed (~/.ssh/my_deploy_key)
-// and cannot stop a script from creating a new file in the directory.
+// and cannot stop a script from creating a new file in the directory. The file
+// entries below are the stores that are genuinely one file, whose parent holds
+// unrelated content the tool needs - there is no directory to take.
 //
 // alsoHomes are the run's other home anchors, when it has more than one (a caller
 // whose $HOME disagrees with the passwd entry). Home is called once per anchor, so
@@ -157,8 +292,16 @@ func Shieldable(p string, homes []string) bool {
 func Home(home string, alsoHomes ...string) []Rule {
 	join := func(p string) string { return filepath.Join(home, p) }
 
-	dirs := slices.Concat(credentialAnchorDirs, bulkStoreDirs, persistenceDirs)
-	files := []string{
+	dirGroups := []struct {
+		holds Holds
+		dirs  []string
+	}{
+		{HoldsCredentials, credentialAnchorDirs},
+		{HoldsPrivateData, bulkStoreDirs},
+		{HoldsHistory, historyDirs},
+		{HoldsPersistence, persistenceDirs},
+	}
+	credentialFiles := []string{
 		".git-credentials",
 		".config/git/credentials", // XDG location for the same
 		".netrc",
@@ -220,21 +363,6 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// sibling .Rprofile stays DenyWrite: it is R code R sources, the .vimrc analog.
 		".Renviron",
 
-		// Remote-login trust: writable would grant persistence, and the contents name
-		// trusted hosts/users; sshd treats these as security-sensitive.
-		".rhosts",
-		".shosts",
-
-		// Graphical-login scripts (X11): shell code run at graphical login. firejail
-		// blacklists them; hidden here rather than merely write-denied, matching the
-		// autostart/systemd persistence trees above - there is no in-sandbox read need and
-		// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
-		// the systemd/autostart dirs above.)
-		".xprofile",
-		".xinitrc",
-		".xsession",
-		".xsessionrc", // sourced by the Debian/Ubuntu Xsession startup, like .xsession
-
 		// Build-tool credential files. Each sits inside a directory whose bulk is a
 		// package cache a sandboxed build legitimately reads, so the FILE is shielded and
 		// the tree is left alone - shielding ~/.m2 or ~/.gradle wholesale would break
@@ -256,37 +384,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".passwd-s3fs",       // s3fs password file
 		".s3cmd",             // s3cmd state firejail blacklists (the .s3cfg config file is shielded above)
 
-		// Password-manager and wallet config files, hidden alongside the stores they
-		// point at: each names the vault's location and its recently-opened entries,
-		// which is reconnaissance for an attacker even where the secret itself lives
-		// in the shielded store.
-		".config/KeePassXCrc",
-		".config/kwalletrc",
-		".config/plasmavaultrc", // names the vaults whose store is shielded above
-		// Mail-client config and identity files: account passwords (or the pointers to
-		// where they are stored) and the addresses the account sends as.
-		".gist",      // defunkt/gist stores the GitHub OAuth token as the file's whole content
-		".mcabberrc", // mcabber XMPP config, holds the account password
-		".pinerc",    // pine/alpine config
-		".pinercex",  // its per-host companion
-		".config/emaildefaults",
-		".config/emailidentities",
+		// Mail-client config files whose dominant content is an account password.
+		".gist",                  // defunkt/gist stores the GitHub OAuth token as the file's whole content
+		".mcabberrc",             // mcabber XMPP config, holds the account password
+		".pinerc",                // pine/alpine config, which carries the account password inline
+		".pinercex",              // its per-host companion
 		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
-		".config/kmail2rc",
-		".config/kmailsearchindexingrc",
-		".config/specialmailcollectionsrc",
-		".pine-interrupted-mail",       // an interrupted draft: message body on disk
-		".kde/share/config/kwalletrc",  // legacy KDE location
-		".kde4/share/config/kwalletrc", // KDE4 location
-		"wallet.dat",                   // Bitcoin Core wallet at the home root: the spending keys
-
-		// Mail message stores and identity. mutt's default mailbox files/dirs and the
-		// signature; message bodies carry reset links and 2FA codes, and a signature can
-		// carry a PGP fingerprint or contact PII. The maildir roots ~/Mail and ~/mail are
-		// shielded as directories above.
-		"postponed",  // mutt default postponed-message mbox at ~/postponed
-		"sent",       // mutt sent-mail mbox at ~/sent
-		".signature", // outgoing-mail signature
+		"wallet.dat",             // Bitcoin Core wallet at the home root: the spending keys
 
 		// The X11 display-access cookie: reading it grants control of the live X session
 		// (keylog, screenshot, inject events), so it is a credential, not a config. Hidden,
@@ -297,14 +401,63 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// channel (a client authenticating with it can drive session restart/shutdown and
 		// talk to session peers), and a sandbox has no session to join either.
 		".ICEauthority",
+	}
 
-		// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
-		// volumes (the .zuluCrypt store dir is shielded above).
-		".zuluCrypt-socket",
+	// The user's own content rather than key material: mail bodies, the addresses an
+	// account sends as, the local search index over them.
+	privateDataFiles := []string{
+		// Password-manager and wallet CONFIG files, hidden alongside the stores they point
+		// at: each names the vault's location and its recently-opened entries. That is
+		// reconnaissance, not key material - the secret itself lives in the shielded store -
+		// so a callout promising the credentials in it sends a reviewer after something
+		// that is not there.
+		".config/KeePassXCrc",
+		".config/kwalletrc",
+		".config/plasmavaultrc",        // names the vaults whose store is shielded above
+		".kde/share/config/kwalletrc",  // legacy KDE location
+		".kde4/share/config/kwalletrc", // KDE4 location
 
-		// Graphical-session scripts and generated startup configs firejail blacklists: each
-		// is read or executed at login and a planted line runs on the host. Hidden to match
-		// firejail and the WM trees above.
+		// KMail's general config: account structure and identity pointers. The passwords
+		// live in KWallet and .config/mailtransports, which are shielded on their own.
+		".config/kmail2rc",
+		".config/emaildefaults",
+		".config/emailidentities",
+		".config/kmailsearchindexingrc",
+		".config/specialmailcollectionsrc",
+		".pine-interrupted-mail", // an interrupted draft: message body on disk
+
+		// Mail message stores and identity. mutt's default mailbox files/dirs and the
+		// signature; message bodies carry reset links and 2FA codes, and a signature can
+		// carry a PGP fingerprint or contact PII. The maildir roots ~/Mail and ~/mail are
+		// shielded as directories above.
+		"postponed",  // mutt default postponed-message mbox at ~/postponed
+		"sent",       // mutt sent-mail mbox at ~/sent
+		".signature", // outgoing-mail signature
+	}
+
+	// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
+	// volumes (the .zuluCrypt store dir is shielded above).
+	serviceFiles := []string{".zuluCrypt-socket"}
+
+	// Graphical-session scripts and generated startup configs firejail blacklists: each
+	// is read or executed at login and a planted line runs on the host. Hidden to match
+	// firejail and the WM trees above.
+	// Graphical-login scripts (X11) belong here too: shell code run at graphical login,
+	// hidden rather than merely write-denied because there is no in-sandbox read need and
+	// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
+	// the systemd/autostart dirs above.)
+	persistenceFiles := []string{
+		// Remote-login trust: the contents name the hosts and users allowed in without a
+		// password, so a planted line is host login at the attacker's convenience. Not key
+		// material - the callout would send a reviewer looking for a secret that is not
+		// there - and sshd treats these as security-sensitive for the same reason.
+		".rhosts",
+		".shosts",
+
+		".xprofile",
+		".xinitrc",
+		".xsession",
+		".xsessionrc",                          // sourced by the Debian/Ubuntu Xsession startup, like .xsession
 		".Xresources",                          // xrdb-loaded resources (read at login)
 		".Xsession",                            // capitalized X session script variant
 		".gnomerc",                             // sourced at GNOME login
@@ -316,7 +469,9 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".kde/share/config/startupconfigkeys",  // legacy KDE generated startup keys
 		".kde4/share/config/startupconfig",     // KDE4 generated startup config
 		".kde4/share/config/startupconfigkeys", // KDE4 generated startup keys
+	}
 
+	historyFiles := []string{
 		// Shell and REPL history: command lines and pasted secrets. Shielded as files
 		// (not their parent dir) so a sibling config the tool also reads stays available.
 		".lesshst",
@@ -359,6 +514,14 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".bash_login", // bash login shells read the first of bash_profile/bash_login/.profile
 		".bash_aliases",
 		".bash_logout",
+		// The bash-completion package's main script, sourced unconditionally by the
+		// distro /etc/bash.bashrc for every interactive shell. Usually absent, so the
+		// same plantable-because-absent case as .bash_aliases above.
+		".bash_completion",
+		// sensible-editor and select-editor source this and run $SELECTED_EDITOR, so a
+		// planted value runs at the next `git commit`, `crontab -e` or `visudo` on a host
+		// with no $EDITOR set. The .mailcap analog: a config that names a command.
+		".selected_editor",
 		".zshenv", // zsh reads this for EVERY invocation, including non-interactive
 		".zshrc",
 		".zprofile",
@@ -435,18 +598,38 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// files cannot be pre-enumerated - a not-yet-created entry is still plantable, the
 	// same reason git hooks are shielded as a directory.
 	writeOnlyDirs := []string{
-		".bashrc.d",                 // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
-		".config/environment.d",     // systemd user-session env (LD_PRELOAD, PATH, ...)
-		".config/fish",              // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
-		".config/nushell",           // config.nu/env.nu and autoloads
-		".vim",                      // plugin/, autoload/, after/plugin/ are auto-sourced
-		".config/nvim",              // init.{vim,lua}, lua/, plugin/, after/
-		".emacs.d",                  // init.el and site-lisp
-		".config/emacs",             // XDG location for the same
-		".config/gdb",               // gdb 11+ reads gdbinit/gdbearlyinit here
-		".config/tmux",              // XDG location for tmux.conf
-		".config/direnv",            // direnvrc, sourced on cd for direnv users
-		".local/share/direnv/allow", // authorization records: an entry pre-approves a workspace .envrc
+		".bashrc.d", // Fedora/RHEL default .bashrc sources ~/.bashrc.d/*.sh; a planted entry runs on next shell (.bashrc itself is write-shielded, but the loop only checks the dir exists)
+		".local/share/bash-completion/completions", // per-command completion scripts, sourced the first time the user tab-completes that command name; planting `git` here runs on the host at the next git
+		".config/environment.d",                    // systemd user-session env (LD_PRELOAD, PATH, ...)
+		".config/fish",                             // config.fish, conf.d/*.fish, autoloaded functions/*.fish (planting ls.fish hijacks `ls`)
+		".config/nushell",                          // config.nu/env.nu and autoloads
+		".vim",                                     // plugin/, autoload/, after/plugin/ are auto-sourced
+		".config/nvim",                             // init.{vim,lua}, lua/, plugin/, after/
+		".emacs.d",                                 // init.el and site-lisp
+		".config/emacs",                            // XDG location for the same
+		".config/gdb",                              // gdb 11+ reads gdbinit/gdbearlyinit here
+		".config/tmux",                             // XDG location for tmux.conf
+		".config/direnv",                           // direnvrc, sourced on cd for direnv users
+		".local/share/direnv/allow",                // authorization records: an entry pre-approves a workspace .envrc
+		// bento's own approval journal: each entry is this host's record of the permissions a
+		// human approved, and re-approval names the changed lines by diffing against it. A
+		// sandboxed run that could write one would author its own baseline, so the next
+		// reviewer is told an added grant is old news. Shielded at the bento directory so a
+		// later state file is covered without a second entry.
+		//
+		// Write-denied rather than hidden, which is the weaker of the two and a deliberate
+		// choice: it holds no key material, so hiding it would buy only that a sandboxed run
+		// cannot enumerate the paths and grants of other manifests approved on this host.
+		// That is real reconnaissance and an argument for DenyAll, but the callouts that
+		// describe a lifted shield all call what they name a credential store - approve's
+		// prompt, validate's note and footer, the post-run exposure warning, and the
+		// proposal filter. Hiding the journal would make every one of them say something
+		// false at the moment a reviewer is deciding whether to stamp, which costs more than
+		// the disclosure buys. Widening that vocabulary is the precondition for revisiting
+		// it, and not the only cost to weigh then: DenyAll also flips a read grant strictly
+		// inside the journal from honored to refused, leaving an exact-name opt-in as the
+		// only way for bento-adjacent tooling to read its own records.
+		".local/state/bento",
 		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
 		".vscode",                   // extensions/ load on startup
 		".config/mpv",               // scripts/*.lua autoloaded on launch
@@ -534,25 +717,48 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".gradle/init.d",
 	}
 
-	locations := func(entry string) []string { return homeLocations(home, entry) }
+	locations := func(entry string) []location { return homeLocations(home, entry) }
 
-	rules := make([]Rule, 0, len(dirs)+len(files)+len(writeOnly)+len(writeOnlyDirs))
-	emit := func(entry string, deny Deny, dir bool) {
-		for _, p := range locations(entry) {
-			rules = append(rules, Rule{Path: p, Deny: deny, Dir: dir})
+	// The same buckets as dirGroups, for the stores that are genuinely one file. Keyed
+	// per group rather than stamped HoldsCredentials wholesale, so that a shell history
+	// reads as a history store here and not just where an env var relocates it.
+	fileGroups := []struct {
+		holds Holds
+		files []string
+	}{
+		{HoldsCredentials, credentialFiles},
+		{HoldsPrivateData, privateDataFiles},
+		{HoldsHistory, historyFiles},
+		{HoldsPersistence, persistenceFiles},
+		{HoldsServices, serviceFiles},
+	}
+
+	nFiles := 0
+	for _, g := range fileGroups {
+		nFiles += len(g.files)
+	}
+	rules := make([]Rule, 0, nFiles+len(writeOnly)+len(writeOnlyDirs))
+	emit := func(entry string, r Rule) {
+		for _, l := range locations(entry) {
+			r.Path, r.Source = l.path, l.source
+			rules = append(rules, r)
 		}
 	}
-	for _, d := range dirs {
-		emit(d, DenyAll, true)
+	for _, g := range dirGroups {
+		for _, d := range g.dirs {
+			emit(d, Rule{Deny: DenyAll, Dir: true, Holds: g.holds})
+		}
 	}
-	for _, f := range files {
-		emit(f, DenyAll, false)
+	for _, g := range fileGroups {
+		for _, f := range g.files {
+			emit(f, Rule{Deny: DenyAll, Holds: g.holds})
+		}
 	}
 	for _, f := range writeOnly {
-		emit(f, DenyWrite, false)
+		emit(f, Rule{Deny: DenyWrite})
 	}
 	for _, d := range writeOnlyDirs {
-		emit(d, DenyWrite, true)
+		emit(d, Rule{Deny: DenyWrite, Dir: true})
 	}
 
 	anchors := append([]string{home}, alsoHomes...)
@@ -577,7 +783,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(base); c != join(de.def) && shieldable(c) {
-			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true})
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
 		}
 	}
 
@@ -623,7 +829,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			if underStore(p, fe.store) || !shieldable(p) {
 				continue
 			}
-			rules = append(rules, Rule{Path: p, Deny: DenyAll})
+			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: fe.env})
 		}
 	}
 
@@ -637,16 +843,19 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// R_ENVIRON_USER moves ~/.Renviron (plaintext API keys/DB passwords) - both credential
 	// configs, hidden for the same reason as the histories. A value equal to the named
 	// default is already covered and dropped; relative values cannot be bound.
-	fileDenyAllEnvs := []struct{ env, def string }{
-		{"HISTFILE", ""},
-		{"NPM_CONFIG_USERCONFIG", ".npmrc"},
-		{"R_ENVIRON_USER", ".Renviron"},
-		{"LESSHISTFILE", ".lesshst"},
-		{"MYSQL_HISTFILE", ".mysql_history"},
-		{"PSQL_HISTORY", ".psql_history"},
-		{"SQLITE_HISTORY", ".sqlite_history"},
-		{"REDISCLI_HISTFILE", ".rediscli_history"},
-		{"NODE_REPL_HISTORY", ".node_repl_history"},
+	fileDenyAllEnvs := []struct {
+		env, def string
+		holds    Holds
+	}{
+		{"HISTFILE", "", HoldsHistory},
+		{"NPM_CONFIG_USERCONFIG", ".npmrc", HoldsCredentials},
+		{"R_ENVIRON_USER", ".Renviron", HoldsCredentials},
+		{"LESSHISTFILE", ".lesshst", HoldsHistory},
+		{"MYSQL_HISTFILE", ".mysql_history", HoldsHistory},
+		{"PSQL_HISTORY", ".psql_history", HoldsHistory},
+		{"SQLITE_HISTORY", ".sqlite_history", HoldsHistory},
+		{"REDISCLI_HISTFILE", ".rediscli_history", HoldsHistory},
+		{"NODE_REPL_HISTORY", ".node_repl_history", HoldsHistory},
 	}
 	for _, fe := range fileDenyAllEnvs {
 		v := os.Getenv(fe.env)
@@ -657,7 +866,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || !shieldable(c) {
 			continue
 		}
-		rules = append(rules, Rule{Path: c, Deny: DenyAll})
+		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds, Source: fe.env})
 	}
 
 	// A startup file relocated by an env var is a persistence-planting target the
@@ -682,21 +891,21 @@ func Home(home string, alsoHomes ...string) []Rule {
 		}
 		return false
 	}
-	addWriteShield := func(p string) {
+	addWriteShield := func(p, source string) {
 		if !underDenyAll(p) && shieldable(p) {
-			rules = append(rules, Rule{Path: p, Deny: DenyWrite})
+			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
 	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && filepath.Clean(zdotdir) != home {
 		// .zshrc.local is sourced by the widely-copied grml zshrc from ${ZDOTDIR:-$HOME},
 		// so it relocates with the rest of the group (the default is shielded above).
 		for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
-			addWriteShield(filepath.Join(zdotdir, f))
+			addWriteShield(filepath.Join(zdotdir, f), "ZDOTDIR")
 		}
 	}
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
 		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
-			addWriteShield(c)
+			addWriteShield(c, "GIT_CONFIG_GLOBAL")
 		}
 	}
 	// Env vars that relocate a single startup file the host runs, the DenyWrite analog of
@@ -705,7 +914,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// get designated. Both name a file with no default path to compare against.
 	for _, env := range []string{"BASH_ENV", "ENV"} {
 		if v := os.Getenv(env); filepath.IsAbs(v) {
-			addWriteShield(filepath.Clean(v))
+			addWriteShield(filepath.Clean(v), env)
 		}
 	}
 	// Env vars that each relocate a single startup/config file whose conventional default
@@ -725,7 +934,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	} {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
 			if c := filepath.Clean(v); c != join(de.def) {
-				addWriteShield(c)
+				addWriteShield(c, de.env)
 			}
 		}
 	}
@@ -735,7 +944,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// and dropped; a relative value cannot be bound.
 	if v := os.Getenv("PIP_CONFIG_FILE"); filepath.IsAbs(v) {
 		if c := filepath.Clean(v); c != join(".config/pip/pip.conf") && c != join(".pip/pip.conf") {
-			addWriteShield(c)
+			addWriteShield(c, "PIP_CONFIG_FILE")
 		}
 	}
 	// MAILCAPS is a colon-separated list of mailcap files (MIME-type -> command run on
@@ -749,7 +958,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(p); c != join(".mailcap") {
-			addWriteShield(c)
+			addWriteShield(c, "MAILCAPS")
 		}
 	}
 	// CARGO_HOME relocates BOTH severity classes at once: the registry tokens
@@ -763,10 +972,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
 		if c := filepath.Clean(base); c != join(".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
-				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll})
+				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
 			}
 			for _, f := range []string{"config.toml", "config", "env"} {
-				addWriteShield(filepath.Join(c, f))
+				addWriteShield(filepath.Join(c, f), "CARGO_HOME")
 			}
 		}
 	}
@@ -802,10 +1011,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 // ~/.git-credential-cache); elsewhere under a granted home directory they are not.
 func Runtime(runtimeDir string, homes ...string) []Rule {
 	rules := []Rule{
-		{Path: "/run", Deny: DenyAll, Dir: true},
+		{Path: "/run", Deny: DenyAll, Dir: true, Holds: HoldsServices},
 		// A symlink to /run on most hosts (resolved before it is shielded, so it
 		// costs nothing there), a real directory on those that predate the merge.
-		{Path: "/var/run", Deny: DenyAll, Dir: true},
+		{Path: "/var/run", Deny: DenyAll, Dir: true, Holds: HoldsServices},
 	}
 	// A host that points XDG_RUNTIME_DIR somewhere other than /run (a container, a
 	// session manager that parks it under /tmp) keeps the same contents there: the
@@ -815,7 +1024,7 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	if runtimeDir == "" || policy.CoversResolved("/run", runtimeDir) || policy.CoversResolved("/var/run", runtimeDir) || !Shieldable(runtimeDir, homes) {
 		return rules
 	}
-	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true})
+	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true, Holds: HoldsServices, Source: "XDG_RUNTIME_DIR"})
 }
 
 // Covers finds the rule shielding path, returning it and true. An exact match wins;
@@ -827,9 +1036,23 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // question about Rule, and the parity audit and the credential hunt both have to answer
 // it the same way - a second copy is how they would come to disagree about what bento
 // covers.
-// Only the returned rule's Deny is specified. When two rules match with equal
-// strictness - nested directory shields of the same class - which of them comes back is
-// not defined, and no caller reads more than the strength.
+// The returned rule's Deny and Dir are specified; nothing else is. Among equally strict
+// matches a directory rule wins, because a caller asking whether the shield extends past
+// this one path (the parity audit's Narrowed verdict) would otherwise get the answer from
+// whichever equally strict rule the slice happened to list first. Beyond that - two
+// nested directory shields of the same class - which rule comes back is not defined.
+//
+// Strength is two-dimensional and one rule cannot report both halves of a composite
+// shield: a DenyAll file rule beside a DenyWrite directory rule loses the Dir, since Deny
+// is compared first. A tree candidate then reads as narrowed although the directory rule
+// does cover the tree, more weakly. That is the safe direction - a spurious gap the audit
+// surfaces, never a missed one - and a caller needing both halves wants every match, not a
+// third tie-break.
+//
+// Source is likewise unspecified. A path can be reached by a default rule and by a
+// relocated one at once, and naming whichever the scan reached first would attribute the
+// shield to an arbitrary variable - so a surface that tells an operator which variable
+// put a shield somewhere must read the rules, not ask this.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
@@ -841,12 +1064,22 @@ func Covers(path string, rules []Rule) (Rule, bool) {
 	found := false
 	for _, r := range rules {
 		if r.Path == path || (r.Dir && policy.CoversResolved(r.Path, path)) {
-			if !found || r.Deny < best.Deny {
+			if !found || stricter(r, best) {
 				best, found = r, true
 			}
 		}
 	}
 	return best, found
+}
+
+// stricter reports whether a shields more than b: a lower Deny, or the same Deny over a
+// tree rather than a single path. Shared with Index so the two cannot drift on the
+// tie-break Covers promises.
+func stricter(a, b Rule) bool {
+	if a.Deny != b.Deny {
+		return a.Deny < b.Deny
+	}
+	return a.Dir && !b.Dir
 }
 
 // Workspace returns the rules that apply inside a directory a policy grants
@@ -882,25 +1115,32 @@ var xdgBases = []struct{ prefix, env, def string }{
 	{".cache/", "XDG_CACHE_HOME", ".cache"},
 }
 
+// location is one absolute path an entry must be shielded at, carrying the variable that
+// put it there so a relocated copy can be told apart from the default it sits beside.
+type location struct {
+	path   string
+	source string
+}
+
 // homeLocations expands a home-relative deny entry to every absolute path it must be
 // shielded at: its default location, plus the XDG one when the relevant base is
 // relocated.
-func homeLocations(home, entry string) []string {
+func homeLocations(home, entry string) []location {
 	join := func(p string) string { return filepath.Join(home, p) }
 	for _, b := range xdgBases {
 		if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
-			out := []string{join(entry)}
+			out := []location{{path: join(entry)}}
 			// A relative XDG base is invalid per the spec and ignored by conforming
 			// tools, which fall back to the default location - already shielded via
 			// join(entry). Emitting a relative Rule.Path here would shield nothing at
 			// the intended place, so drop it and rely on the default shield.
 			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
-				out = append(out, filepath.Join(base, rel))
+				out = append(out, location{filepath.Join(base, rel), b.env})
 			}
 			return out
 		}
 	}
-	return []string{join(entry)}
+	return []location{{path: join(entry)}}
 }
 
 // AliasAnchors returns the absolute paths whose files identify a credential, for detecting
@@ -911,7 +1151,11 @@ func AliasAnchors(home string) []string {
 	anchors := slices.Concat(credentialAnchorDirs, walletKeyPaths)
 	out := make([]string, 0, len(anchors))
 	for _, d := range anchors {
-		out = append(out, homeLocations(home, d)...)
+		// An anchor is a place to look for a second readable name, so a relocated copy
+		// counts the same as the default and the variable that moved it does not.
+		for _, l := range homeLocations(home, d) {
+			out = append(out, l.path)
+		}
 	}
 	return out
 }
@@ -1089,6 +1333,12 @@ var walletKeyPaths = []string{
 // them (mail sync deduplicates identical messages), which would trip the alias scan on a
 // message rather than a credential. A saved mail password or browser login inside one of
 // these is therefore not an alias anchor; the tree is still hidden from the sandbox.
+//
+// The split is by what the alias scan can enumerate, not by severity, so the bucket is
+// mixed on that axis: chain data and mail sit beside stores whose whole point is a saved
+// password (~/.config/gajim, ~/.config/Mumble's client certificate). The callouts name
+// the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
+// promising the reader nothing here is a credential.
 var bulkStoreDirs = []string{
 	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
 	// that carry reset links and 2FA codes.
@@ -1213,9 +1463,14 @@ var bulkStoreDirs = []string{
 	".config/Bitcoin",
 	".ethereum",
 	".dashcore",
+}
 
-	// History and clipboard stores: can hold pasted or typed secrets. Under bento's
-	// default-deny a program that legitimately needs its own history opts in per-path.
+// historyDirs record what was typed, pasted, or edited. They can hold a secret that
+// passed through them, which is why they are hidden rather than merely write-denied, but
+// they hold no credential a tool would look for by name - so a grant lifting one exposes
+// a record of the user's session, not a key. Under bento's default-deny a program that
+// legitimately needs its own history opts in per-path.
+var historyDirs = []string{
 	".adobe",      // Flash local storage (LSO)
 	".macromedia", // Flash local storage (legacy)
 	".ne",         // ne editor state, incl. history

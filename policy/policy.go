@@ -177,13 +177,10 @@ func (p *Policy) Problems() []error {
 	// reviewing the run sees no grant at all - and then the enforcer joins it onto the
 	// working directory, handing the target everything under it. A manifest carrying
 	// write: [""] and run from $HOME grants the whole home directory under a value that
-	// reads as absent. Read and Write are the only fields where empty means that: an
+	// reads as absent. The path-grant fields are the only ones where empty means that: an
 	// absent Interpreter and an empty argv element (sh -c '') are both legitimate, which
 	// is why this cannot fold into the character screen above.
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if path == "" {
 				// The YAML hint earns its place: an unquoted `- ~` is the null tag, so the
@@ -208,10 +205,7 @@ func (p *Policy) Problems() []error {
 			probs = append(probs, err)
 		}
 	}
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if err := screenTilde(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
 				probs = append(probs, err)
@@ -290,10 +284,7 @@ func (p *Policy) RequireExpanded() error {
 			return err
 		}
 	}
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if err := screenExpanded(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
 				return err
@@ -301,6 +292,23 @@ func (p *Policy) RequireExpanded() error {
 		}
 	}
 	return nil
+}
+
+// pathGrants is every field holding host paths the frontends anchor, expand and echo,
+// paired with the name the manifest spells it. The screens that must cover all of them -
+// the empty-grant check, the tilde refusal, and the resolved-path precondition - iterate
+// this rather than each listing the fields itself, so a new path-bearing field is
+// screened by all three or by none, instead of silently by whichever loops were
+// remembered. Args are absent deliberately: they are never anchored or expanded, and an
+// empty one is legitimate.
+func pathGrants(p *Policy) []struct {
+	name  string
+	paths []string
+} {
+	return []struct {
+		name  string
+		paths []string
+	}{{"read", p.Read}, {"write", p.Write}}
 }
 
 func screenExpanded(field, path string) error {

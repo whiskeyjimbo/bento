@@ -30,11 +30,24 @@ const (
 	offArch   = 4
 	offArg0Lo = 16
 
-	seccompRetAllow       = 0x7fff0000
-	seccompRetErrnoBase   = 0x00050000
+	seccompRetAllow     = 0x7fff0000
+	seccompRetErrnoBase = 0x00050000
+	// SECCOMP_RET_KILL_PROCESS arrived in kernel 4.14. Below that the action mask is
+	// SECCOMP_RET_ACTION (0x7fff0000), so 0x80000000 masks to 0 - SECCOMP_RET_KILL_THREAD
+	// - and every filter here that returns it kills the offending thread rather than the
+	// process. The syscall still does not execute, so no filter loses its block; what is
+	// lost is the whole-process scope, which matters for a multithreaded target that can
+	// burn a thread per probe instead of dying. The window is 3.17 to 4.13 - everything
+	// here goes through seccomp(2), which is 3.17 - and it is reachable, since no kernel
+	// floor is set anywhere and installPolicy rejects TSYNC_ESRCH precisely to keep the
+	// degraded tier working on kernels that old.
+	// TestKillProcessActionIsAvailable reports which side of 4.14 the host is on.
 	seccompRetKillProcess = 0x80000000
 
-	seccompSetModeFilter   = 1
+	seccompSetModeFilter = 1
+	// SECCOMP_GET_ACTION_AVAIL. Used only by the test that reports whether this kernel
+	// has the kill action above.
+	seccompGetActionAvail  = 2
 	seccompFilterFlagTSync = 1
 )
 
@@ -46,7 +59,8 @@ func errnoRet(e unix.Errno) uint32 { return seccompRetErrnoBase | uint32(uint16(
 // set, so threads work while a new process is refused with EPERM. Everything else
 // is allowed - including execveat, so this stops subprocess *creation*, not a target
 // replacing itself in place (the same soft-block caveat BlockExec carries). A wrong
-// architecture is killed, as is any x32-ABI syscall: x32 shares
+// architecture is killed (whole-process from 4.14, thread-only below it - see
+// seccompRetKillProcess), as is any x32-ABI syscall: x32 shares
 // the amd64 audit arch but tags its syscall numbers, so without this an x32 execve
 // or clone would miss the equality checks and slip through.
 func strictFilter() []unix.SockFilter {

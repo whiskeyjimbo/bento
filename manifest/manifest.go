@@ -326,6 +326,20 @@ func resolveInterpreter(base, interp string) (string, error) {
 	return resolveAgainst(base, interp)
 }
 
+// NonAnchoring reports whether a manifest path means something other than "relative
+// to the manifest's own directory". Those are the paths that pin a manifest to one
+// location: the approval stamp attests the manifest as written, so a manifest whose
+// grants are all relative keeps a single approval across every checkout it is copied
+// into, and one absolute or ~ path silently ends that.
+//
+// It is the inverse of the branch resolveAgainst takes to join a path to the base, and
+// sits beside it so the two cannot drift - a path form added there and not here would
+// stop being reported without anything failing. A ~ path counts: it anchors to whoever
+// runs it rather than to the manifest, which pins harder than an absolute path does.
+func NonAnchoring(path string) bool {
+	return strings.HasPrefix(path, "~") || filepath.IsAbs(path)
+}
+
 func resolveAgainst(base, path string) (string, error) {
 	if strings.HasPrefix(path, "~") {
 		return expandHome(path)

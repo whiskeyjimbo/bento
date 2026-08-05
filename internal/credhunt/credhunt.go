@@ -28,7 +28,7 @@
 package credhunt
 
 import (
-	"bufio"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -47,8 +47,10 @@ type Finding struct {
 	// Mode is the file's permission bits, so a reader can weigh a 0600 hit against a
 	// world-readable one without re-stat'ing.
 	Mode fs.FileMode
-	// Signals names the shapes that fired, in the order Signal declares them. A single
-	// signal is a lead; several on one file is close to a certainty.
+	// Signals names the shapes that fired, cheap signals first and the content shapes
+	// last, following the order shapesOf tests them in - the sniff runs after the cheap
+	// ones, either because one of them narrowed the file or because it sits at the home
+	// root. A single signal is a lead; several on one file is close to a certainty.
 	Signals []string
 }
 
@@ -115,10 +117,12 @@ type Options struct {
 	// sees the tool narrowed and can shorten the list. A silent suppression list here is
 	// exactly what would hide the findings this exists to surface.
 	MachineStores []string
-	// MaxFileSize bounds the content sniff. A credential file is small; reading a
-	// multi-gigabyte dataset to look for a PEM header would make the tool unusable on a
-	// developer's home, and a secret buried past the first few KB of a large binary is
-	// not the class this hunts.
+	// MaxFileSize bounds the content sniff: it is how many bytes of a file's head are
+	// read, never a size a file must be under to be looked at. Reading a multi-gigabyte
+	// dataset whole to find a PEM header would make the tool unusable on a developer's
+	// home, and a secret buried past the first few KB of one is not the class this hunts.
+	// A file is never too big to open, though: the token stores put their credential in
+	// the first KB and their bulk - a project list, a command history - after it.
 	MaxFileSize int64
 }
 
@@ -130,7 +134,8 @@ type Options struct {
 // already-covered files and hide the handful that matter. A DenyWrite rule is not
 // coverage - see the walk body. Symlinks are never followed -
 // a link out of the home would walk the host, and a link within it would report the same
-// file twice under two names.
+// file twice under two names. That includes the root, whose own type is checked rather
+// than assumed: a home that is a link walks nothing, and nothing walked reads as clean.
 //
 // A file it cannot stat or read is skipped rather than failing the walk. That is the one
 // place this tool swallows an error on purpose: it runs over a live home where an
@@ -139,24 +144,47 @@ type Options struct {
 func Hunt(opts Options) ([]Finding, int, error) {
 	var out []Finding
 	pruned := 0
+	// Cleaned once, and every comparison below is against this rather than the caller's
+	// spelling. The walk asks whether an entry IS the root and whether its parent is, and
+	// filepath.Dir hands back a cleaned path: a root spelled with a trailing separator
+	// would match neither, switching the home-root sniff off and reporting a clean home.
+	home := filepath.Clean(opts.Home)
 	// Prepared once for the whole walk: coverage is asked about every entry in the home,
 	// and a linear scan of the rule set per entry measured as a third of this function's
 	// CPU time. See denylist.Index for why that is a different access pattern rather than
 	// a different definition of coverage.
 	shields := denylist.NewIndex(opts.Rules)
-	err := filepath.WalkDir(opts.Home, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// The root is the exception to the skip-and-continue rule below: a home that
 			// cannot be walked yields zero findings, which reads as a clean home. That is
 			// the silent wrong answer this tool exists to avoid, so it is the one error
 			// worth refusing over.
-			if path == opts.Home {
+			if path == home {
 				return err
 			}
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
+		}
+		// WalkDir Lstats the root, so a home that is itself a symlink - a relocated or
+		// bind-mounted home, which HomeAnchors hands over unresolved - is not a directory
+		// here. It would fall through to the regular-file drop below and end the walk,
+		// reporting a clean home over a scan that never happened. Resolving it here would
+		// not fix that so much as break the report the other way: the shields are lexical
+		// and anchored on the unresolved path, so a walk over the target matches none of
+		// them and every file in the home reads as uncovered. Naming the target is what the
+		// operator can act on - a run anchored there has the walk and the shields agreeing.
+		if path == home && !d.IsDir() {
+			if d.Type()&fs.ModeSymlink == 0 {
+				return fmt.Errorf("home %q is not a directory (mode %s)", path, d.Type())
+			}
+			target, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil {
+				return fmt.Errorf("home %q is a symlink that does not resolve: %w", path, resolveErr)
+			}
+			return fmt.Errorf("home %q resolves to %q: scan that path instead, so the shields anchor where the walk goes", path, target)
 		}
 		// Only a DenyAll rule counts as covered. DenyWrite leaves the path fully
 		// READABLE - it exists to stop a plant, not to hide a secret - so treating it as
@@ -183,7 +211,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 			// hunt feeds. Never the scan root, though: a home that is itself a dotfiles
 			// checkout is common, and pruning there scans nothing and reports a clean
 			// home - a silent wrong answer, the failure this tool exists to avoid.
-			if path != opts.Home && isCheckout(path) {
+			if path != home && isCheckout(path) {
 				pruned++
 				return fs.SkipDir
 			}
@@ -199,7 +227,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		// A file that vanished between the walk and the stat cannot be shape-tested; see
 		// the function doc for why a live home makes that ordinary rather than fatal.
 		if info, statErr := d.Info(); statErr == nil {
-			if signals := shapesOf(path, info, opts.MaxFileSize); len(signals) > 0 {
+			if signals := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home); len(signals) > 0 {
 				out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
 			}
 		}
@@ -214,11 +242,16 @@ func Hunt(opts Options) ([]Finding, int, error) {
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing.
 //
-// The content sniff runs only for a file that already tripped a name or mode signal.
-// Reading every file in a home to look for a PEM header would cost a full-tree read for
-// leads the cheap signals have already narrowed, and a PEM block in a file with an
-// ordinary name and world-readable mode is a certificate, not a hunt result.
-func shapesOf(path string, info fs.FileInfo, maxSize int64) []string {
+// The content sniff runs for a file that already tripped a name or mode signal, and for
+// any file sitting directly at the home root. Reading every file in a home to look for a
+// PEM header would cost a full-tree read for leads the cheap signals have already
+// narrowed, and a PEM block in a file with an ordinary name and world-readable mode is a
+// certificate, not a hunt result. The home root is the exception because it is the class
+// this tool is most for and the one the cheap signals systematically miss: a mode-0644
+// ~/.env holding an AWS_SECRET_ACCESS_KEY trips no name token, no suffix, no editor
+// leaving and no mode, so nothing but its contents can reach it. The extra reads are the
+// few dozen files at the root rather than the thousands under it.
+func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []string {
 	var signals []string
 	name := strings.ToLower(info.Name())
 
@@ -236,7 +269,11 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64) []string {
 	if strings.HasPrefix(name, ".") && (slices.ContainsFunc(editorLeavingSuffixes, func(s string) bool { return strings.HasSuffix(name, s) }) || numberedBackup(name)) {
 		signals = append(signals, SignalEditorLeaving)
 	}
-	if len(signals) > 0 && info.Size() > 0 && info.Size() <= maxSize {
+	// Sized on the READ, not on the file: a file's own size says nothing about whether it
+	// holds a credential. A real ~/.claude.json carries an oauth token in its first few KB
+	// behind ~96 KB of project history, and the shell and editor histories that accumulate
+	// an exported token are larger still. The bound belongs on what contentShapes reads.
+	if (len(signals) > 0 || atHomeRoot) && info.Size() > 0 {
 		signals = append(signals, contentShapes(path, maxSize)...)
 	}
 	// A private mode on its own is a weak prior, not a shape: measured on a developer
@@ -260,10 +297,19 @@ func contentShapes(path string, maxSize int64) []string {
 	}
 	defer f.Close()
 
+	// The head is read whole and split here rather than scanned. A bufio.Scanner gives up on
+	// a line longer than its buffer and reports it only through Err(), so a config written
+	// as one long line - minified JSON, a generated toml - would look identical to a clean
+	// file. maxSize bounds the read either way, so splitting costs the same and has no
+	// give-up path to forget to check.
+	// A read that failed partway still returns the bytes it got, and those are shape-tested
+	// rather than discarded: a file this hunt has already decided to open is a candidate,
+	// and dropping a PEM header that was read because the read later hit an I/O error is
+	// the same silent give-up the scanner used to produce.
+	head, _ := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
+
 	var signals []string
-	sc := bufio.NewScanner(&io.LimitedReader{R: f, N: maxSize})
-	for sc.Scan() {
-		line := sc.Text()
+	for line := range strings.SplitSeq(string(head), "\n") {
 		if !slices.Contains(signals, SignalPEM) && strings.HasPrefix(strings.TrimSpace(line), "-----BEGIN ") && strings.Contains(line, "PRIVATE KEY") {
 			signals = append(signals, SignalPEM)
 		}

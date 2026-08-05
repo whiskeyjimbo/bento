@@ -5,7 +5,9 @@ package linux
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -50,10 +52,17 @@ type applied struct {
 }
 
 // newAppliedReport creates the file the in-sandbox stage writes its applied-layer
-// report to, returning it and a cleanup. The caller passes it as the child's first
-// extra file and reads it back by path after the run.
-func newAppliedReport() (*os.File, func(), error) {
-	f, err := os.CreateTemp("", "bento-applied-")
+// report to inside the run's own directory, returning it and a cleanup. The caller
+// passes it as the child's first extra file and reads it back through the returned
+// handle - never by path.
+//
+// dir is the per-run 0700 directory that already holds the shield file and the proxy
+// socket. Shared /tmp was the wrong home for it: between the child exiting and the host
+// re-opening the path, another same-uid host process could unlink the report and
+// substitute one claiming the exec and filesystem layers held, which reconcile would
+// then attest - the "no proof the layer was in place" case this report exists to refuse.
+func newAppliedReport(dir string) (*os.File, func(), error) {
+	f, err := os.OpenFile(filepath.Join(dir, "applied"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("linux: creating the applied-layer report: %w", err)
 	}
@@ -65,12 +74,16 @@ func newAppliedReport() (*os.File, func(), error) {
 // report: the honest outcome is one that claims nothing, since neither can be told from
 // a stage that never wrote. It is not the same as knowing the target did not run -
 // enforce.Run refuses on an absent report and words it accordingly.
-func parseApplied(path string) applied {
-	f, err := os.Open(path)
-	if err != nil {
+//
+// It reads the descriptor the host has held open since before the child started, so
+// what it parses is the file the stage actually wrote to - a substitution at the path
+// cannot reach it. The child inherited a dup of this descriptor and so shares its
+// offset, which its writes left at end-of-file; without the rewind every report would
+// scan as empty and claim nothing.
+func parseApplied(f *os.File) applied {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return applied{}
 	}
-	defer f.Close()
 
 	var a applied
 	s := bufio.NewScanner(f)
@@ -88,8 +101,8 @@ func parseApplied(path string) applied {
 			switch {
 			case key == launcher.AppliedTargetUnreached:
 				a.targetUnreached = true
-				if a.targetErr, err = strconv.Unquote(rest); err != nil {
-					a.targetErr = ""
+				if v, err := strconv.Unquote(rest); err == nil {
+					a.targetErr = v
 				}
 			case line != "":
 				return applied{}
@@ -112,7 +125,9 @@ func parseApplied(path string) applied {
 			if value == launcher.AppliedNo {
 				// Quoted by the writer so a newline in the error cannot forge a record; an
 				// unquotable detail still counts as a failure, just without the reason.
-				if a.landlockErr, err = strconv.Unquote(detail); err != nil {
+				if v, err := strconv.Unquote(detail); err == nil {
+					a.landlockErr = v
+				} else {
 					a.landlockErr = "reason unreadable"
 				}
 			}
@@ -131,14 +146,17 @@ func parseApplied(path string) applied {
 // RUN enforced. Where they disagree the child wins, and it only ever worsens a layer.
 // blockWanted/strictWanted are what the policy asked the child to install, so a report
 // that names a weaker filter - or none - is judged against the request rather than
-// taken at face value. exitCode goes into the reason for a silent child: the exit code
+// taken at face value. mountConfined says whether a mount namespace stands behind
+// Landlock on this tier, which is what decides whether a failed Landlock ruleset leaves
+// the filesystem degraded or unconfined. exitCode goes into the reason for a silent
+// child: the exit code
 // alone cannot separate a bento setup failure from a target that exits 125 itself, and
 // the report is what does.
 //
 // The returned SetupState is that same separation made readable by an embedder: it is
 // derived here rather than re-decided anywhere else, so the state and the layer
 // verdicts can never disagree about whether the target ran.
-func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, exitCode int) enforce.SetupState {
+func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountConfined bool, exitCode int) enforce.SetupState {
 	if !a.complete {
 		// The reason states what is known - no report, and the code the run ended with -
 		// rather than asserting a cause: the same absence covers a launcher that died in
@@ -192,14 +210,29 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		if why == "" {
 			why = fmt.Sprintf("the sandbox reported no Landlock outcome, %q", a.landlock)
 		}
-		// Degraded, not Unavailable: on the bwrap tier the mount namespace still confines
-		// the filesystem and only the second-layer backstop is missing. Reported as a
-		// state change rather than a detail rewrite because enforce.Run's overlay
-		// propagates only a worsening state, so an Enforced-with-a-new-reason would be
-		// dropped and the run would still claim the backstop was active.
-		r.Set(enforce.LayerFilesystem, enforce.Degraded,
-			"the Landlock backstop could not be applied inside the sandbox ("+why+
-				"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+		// How far this drops depends on what stands behind Landlock. On the bwrap tier the
+		// mount namespace still confines the filesystem and only the second layer is
+		// missing; on the degraded tier Landlock IS the filesystem confinement, so the
+		// same report means there is none. Reported as a state change rather than a
+		// detail rewrite because enforce.Run's overlay propagates only a worsening state,
+		// so an Enforced-with-a-new-reason would be dropped and the run would still claim
+		// the backstop was active.
+		//
+		// The degraded branch does not fire today: that launcher makes a Landlock failure
+		// fatal before it writes the marker, so a complete report from it always says the
+		// ruleset landed. It is kept because the two are coupled by nothing but that
+		// fatality - soften it, or let a tampered report through, and the alternative is
+		// a run with no filesystem confinement reporting Degraded while naming a mount
+		// namespace it never had.
+		if mountConfined {
+			r.Set(enforce.LayerFilesystem, enforce.Degraded,
+				"the Landlock backstop could not be applied inside the sandbox ("+why+
+					"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+		} else {
+			r.Set(enforce.LayerFilesystem, enforce.Unavailable,
+				"the Landlock confinement could not be applied inside the sandbox ("+why+
+					"); this tier has no mount namespace behind it, so the filesystem was not confined")
+		}
 	}
 	// The stage reported a complete setup and reached the target, so the exit code the
 	// caller sees is the target's own - whatever the layer verdicts above say about how

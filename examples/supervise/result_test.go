@@ -30,13 +30,13 @@ func populatedResult() enforce.Result {
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
 		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
+		Untunneled:        []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
+		GateDenied:        []enforce.HostPort{{Host: "declined.example\x1b[2K", Port: "443"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
-		ShieldedGrants:    []string{"/home/u/.ssh"},
-		// Keyed to the ShieldedGrants entry above, which is what pairs the two in the
-		// output; the store it lands on is enumerated from the host filesystem.
-		ShieldedGrantTargets: []enforce.CredentialAlias{{Path: "/home/u/.ssh", Credential: "/home/u/real\x1b[2K/.ssh"}},
-		Shields:              []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
-		Exposed:              []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
+		// OnHost is the store the grant landed on, enumerated from the host filesystem.
+		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
+		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
+		Exposed:        []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
 	}
 }
 
@@ -57,8 +57,12 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		"the egress guard refused",                   // GuardBlocked
 		`"api.githb.example\x1b[2K" port 443`,        // Denied, quoted
 		"egress to these destinations was refused",   // Denied
+		`"plain.example\x1b[2K" port 80`,             // Untunneled, quoted
+		"addressed without a CONNECT",                // Untunneled
+		`"declined.example\x1b[2K" port 443`,         // GateDenied, quoted
+		"refused at the prompt",                      // GateDenied
 		`"/home/u/.ssh"`,                             // ShieldedGrants
-		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrantTargets, quoted
+		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrants OnHost, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted
 		"read-only on a host that can shield",        // Exposed
 		"no connection through the egress proxy",     // EgressConnections read as a bypass
@@ -91,7 +95,7 @@ func TestWriteSummaryQuotesPathsFromTheHost(t *testing.T) {
 // here, or record why it needs no warning.
 //
 // What it does NOT cover, so it is not read as more than it is: a field added to a
-// nested type (ShieldApplied, CredentialAlias, Report) is invisible to it, as is an
+// nested type (ShieldApplied, ShieldedGrant, CredentialAlias, Report) is invisible to it, as is an
 // exported field promoted from an UNEXPORTED embedded struct. Naming a field in warned
 // without printing it also passes here - TestWriteSummarySurfacesEveryHonestyField is
 // what catches that, since a field named but unprinted fails its output assertions.
@@ -102,8 +106,8 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"Report":   "warned about through Degradations(), which is the part that fell short",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "AcceptedAliases": true,
-		"ShieldedGrants": true, "ShieldedGrantTargets": true, "Shields": true, "Exposed": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
+		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true,
 	}
 

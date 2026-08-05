@@ -622,3 +622,34 @@ func TestInterpreterArgsRoundTrip(t *testing.T) {
 		t.Errorf("fingerprint changed across marshal round trip:\n%s", out)
 	}
 }
+
+// NonAnchoring's whole value is being the exact inverse of the branch resolveAgainst
+// takes to join a path to the manifest's directory, and its comment says the two cannot
+// drift. Sitting next to each other does not make that true - this does: a path form
+// added to one and not the other fails here.
+func TestNonAnchoringInvertsResolveAgainst(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "checkout")
+	paths := []string{
+		"x", "./data", "../shared", "venv/bin/python",
+		"/srv/corpus", "/", "~", "~/.cache/models",
+		"$HOME/x", "./~x", "data/",
+	}
+	for _, p := range paths {
+		got, err := resolveAgainst(base, p)
+		if err != nil {
+			// A ~ path on a host with no usable $HOME: it did not anchor, which is the
+			// only thing being asserted.
+			if !NonAnchoring(p) {
+				t.Errorf("resolveAgainst(%q) failed (%v) but NonAnchoring says it anchors", p, err)
+			}
+			continue
+		}
+		// Compared against the join itself rather than a prefix test: "../shared" is
+		// joined to the base like any relative path and then cleaned above it, so a
+		// prefix test would call the one path that moves with the manifest non-anchoring.
+		anchored := got == filepath.Join(base, p)
+		if anchored == NonAnchoring(p) {
+			t.Errorf("%q resolved to %q (anchored=%v) but NonAnchoring reports %v", p, got, anchored, NonAnchoring(p))
+		}
+	}
+}

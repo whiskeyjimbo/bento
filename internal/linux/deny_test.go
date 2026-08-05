@@ -52,6 +52,12 @@ func TestBuildExtraDeny(t *testing.T) {
 	if _, err := buildExtraDeny([]string{"/"}, sb); err == nil {
 		t.Error("a deny path resolving to the root must be refused")
 	}
+	// denyArgs drops a rule that would take the whole grant surface, so accepting one
+	// here would mean a caller's deny was honored in the API and never mounted.
+	sb.homes = []string{"/home/u"}
+	if _, err := buildExtraDeny([]string{"/home/u"}, sb); err == nil {
+		t.Error("a deny path resolving to a home must be refused, not silently dropped later")
+	}
 }
 
 // A dangling symlink deny path (Lstat sees the link, its target is absent) must be
@@ -331,5 +337,119 @@ func TestRunDegradedRefusesDenyPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "deny path") {
 		t.Errorf("error = %v, want it to name the caller deny paths as the reason", err)
+	}
+}
+
+// denylist.Shieldable is lexical, so a relocation whose target only reaches a home
+// through a symlink passes it and arrives here as a rule on the whole home - a tmpfs
+// over the grant surface, with the run failing for no stated reason. The same test on
+// the resolved paths is what catches it.
+func TestSymlinkedRelocationOntoAHomeIsNotShielded(t *testing.T) {
+	sb := testSandbox("/export/home/u", "/export/home/u/work")
+	sb.homes = []string{"/export/home/u"}
+	// The passwd entry is /export/home/u and /home is a symlink to /export/home.
+	sb.resolve = func(p string) string {
+		if after, ok := strings.CutPrefix(p, "/home/"); ok {
+			return "/export/home/" + after
+		}
+		return p
+	}
+	// What GNUPGHOME=/home/u produces: Shieldable saw no lexical relation to the anchor.
+	sb.extraDeny = []denylist.Rule{{Path: "/home/u", Deny: denylist.DenyAll, Dir: true}}
+
+	args, _ := denyArgs(sb, []string{"/export/home/u"}, nil, nil)
+	if has(args, "--tmpfs", "/export/home/u") {
+		t.Errorf("a shield resolving onto the home must be dropped, not mounted over it: %v", args)
+	}
+}
+
+// ...and the drop must stay narrow. denylist exempts its base store rules from the same
+// guard on purpose: where a caller's $HOME is itself a credential store, beside a passwd
+// home that contains it, the store's own rule equals a home anchor. Dropping that rule
+// unshields the credentials it exists to hide - the opposite of what the guard is for.
+func TestAStoreThatIsAlsoAHomeAnchorStaysShielded(t *testing.T) {
+	sb := testSandbox("/home/u/.aws", "/home/u/.aws/credentials")
+	sb.homes = []string{"/home/u/.aws", "/home/u"}
+
+	args, _ := denyArgs(sb, []string{"/home/u"}, nil, nil)
+	if !has(args, "--tmpfs", "/home/u/.aws") {
+		t.Errorf("a credential store that coincides with a home anchor must still be shielded: %v", args)
+	}
+}
+
+// Rule carries fields that only describe a shield to a reader: which store it holds, and
+// which env var relocated it. Two rules differing in nothing
+// else bind identically, so the dedup must collapse them: keying it on the whole rule
+// would emit the same bind twice and let a report-only field change what is enforced.
+func TestRulesDifferingOnlyInDescriptionBindOnce(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/store")
+	sb.homes = []string{"/home/u"}
+	sb.extraDeny = []denylist.Rule{
+		{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Holds: denylist.HoldsCredentials},
+		{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Holds: denylist.HoldsHistory},
+	}
+
+	args, _ := denyArgs(sb, []string{"/home/u"}, nil, nil)
+	n := 0
+	for _, a := range args {
+		if a == "/home/u/store" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("one shielded path must bind once; got %d binds in %v", n, args)
+	}
+}
+
+// A deny-list dotfile whose host symlink resolves to the root must not refuse every
+// grant on the host. denyArgs drops such a rule rather than shielding the whole root,
+// so refusing here would blame an unrelated dotfile for a shield that was never
+// applied - and CoversResolved("/", g) is true for every absolute grant, so it would
+// refuse every run in both tiers.
+func TestShieldResolvingToRootDoesNotRefuseGrants(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string {
+		if p == "/home/u/.gnupg" {
+			return "/"
+		}
+		return p
+	}
+
+	if err := checkReadNotShielded(sb, []string{"/work"}, nil); err != nil {
+		t.Errorf("a shield resolving to the root must not refuse an unrelated grant: %v", err)
+	}
+	// The other shields still bite: this must not have disarmed the check itself.
+	if err := checkReadNotShielded(sb, []string{"/home/u/.ssh"}, nil); err == nil {
+		t.Error("a grant inside a shield that resolves normally must still be refused")
+	}
+}
+
+// A path can be a default store under one anchor and a relocation target under another,
+// so which spelling reaches the dedup first is only anchor order. Crediting a variable for
+// a shield bento would have applied anyway would point an operator at an env var they can
+// unset without changing anything.
+func TestADefaultShieldIsNotCreditedToAVariable(t *testing.T) {
+	for name, extra := range map[string][]denylist.Rule{
+		"relocation first": {
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Source: "SOME_VAR"},
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true},
+		},
+		"default first": {
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true},
+			{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Source: "SOME_VAR"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sb := testSandbox("/home/u", "/home/u/store")
+			sb.homes = []string{"/home/u"}
+			sb.extraDeny = extra
+
+			_, applied := denyArgs(sb, []string{"/home/u"}, nil, nil)
+			for _, r := range applied {
+				if r.Path == "/home/u/store" && r.Source != "" {
+					t.Errorf("a path bento shields by default must claim no variable; got %q", r.Source)
+				}
+			}
+		})
 	}
 }

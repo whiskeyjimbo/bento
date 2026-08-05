@@ -25,6 +25,7 @@ func newRunCmd() *cobra.Command {
 		envFlags        []string
 		acceptAliases   []string
 		asJSON          bool
+		runID           string
 	)
 
 	cmd := &cobra.Command{
@@ -133,6 +134,7 @@ func newRunCmd() *cobra.Command {
 				Strict:             strict,
 				AllowDegraded:      allowDegraded,
 				AcceptAliasesUnder: acceptAliases,
+				RunID:              runID,
 			})
 			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, env, res, missingReads, stream, err)
 		},
@@ -143,6 +145,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
+	cmd.Flags().StringVar(&runID, "run-id", "", "name this run so a supervisor can reap the whole process tree it leaves behind, not just bento's own pid. The run gets a transient systemd user scope named bento-run-<id>.scope, which `systemctl --user kill` ends and `systemctl --user show -p ControlGroup` resolves to a cgroup path. The id is letters, digits and underscore, up to 64. It needs a scope to name, so a manifest that sets no resource limits, or a host that cannot create one, is refused rather than run without a handle")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON on stdout, one object per line: the script's own output as it arrives, tagged with which stream produced it and base64-encoded, then one final object with the outcome. The script is given no stdin. Switch on the event field - stdout, stderr, then verdict, refusal or failed. A refusal, including a mistake in this command line, is an object too, so stdout is never empty")
 	return cmd
 }
@@ -303,13 +306,9 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 		return runErr
 	}
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
-	// carries the zero Report, which toReportJSON would answer fully_enforced:true for -
-	// a clean posture on a run that never had one. See noReport.
-	report := noReport
-	if len(res.Report.Layers) > 0 {
-		report = toReportJSON(res.Report)
-	}
-	stream.emit(streamRefusalJSON{"failed", runErr.Error(), report})
+	// carries the zero Report; toReportJSON answers that with noReport rather than the
+	// clean posture !HasDegradation() would read as.
+	stream.emit(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report)})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -381,15 +380,16 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			Signal int `json:"signal,omitempty"`
 			// The target's own output is not here: it went out as stdout and stderr events
 			// while the run happened, so nothing about a run is held in memory until it ends.
-			EgressConnections int      `json:"egress_connections"`
-			ShieldedGrants    []string `json:"shielded_grants,omitempty"`
-			// ShieldedGrantTargets names what an opted-in grant bound, for the entries where
-			// that differs from the spelling. shielded_grants carries the spelling that opted
-			// in, and the deny-list builds those spellings from $HOME - so under a
-			// caller-chosen environment the name a consumer sees can be a link while the
-			// exposure lands elsewhere. Resolved by the backend as it bound them, so a target
-			// that moved a symlink mid-run cannot rewrite what this reports.
-			ShieldedGrantTargets []grantTargetJSON `json:"shielded_grant_targets,omitempty"`
+			EgressConnections int `json:"egress_connections"`
+			// ShieldedGrants names each always-shielded path the manifest granted, which
+			// lifted the shield for this run. path is the spelling that opted in, and the
+			// deny-list builds those spellings from $HOME - so under a caller-chosen
+			// environment the name a consumer sees can be a link while the exposure lands
+			// elsewhere, which is what on_host says. Resolved by the backend as it bound
+			// them, so a target that moved a symlink mid-run cannot rewrite what this
+			// reports. holds is what was behind the shield, so a gate can tell a lifted
+			// credential store from a lifted history store without a path table of its own.
+			ShieldedGrants []shieldedGrantJSON `json:"shielded_grants,omitempty"`
 			// GuardBlocked names the destinations the allowlist permitted but the egress guard
 			// refused to dial. The sandbox was told only that it could not connect, so this is
 			// the operator's only signal that a permitted name resolved somewhere it must not
@@ -400,7 +400,18 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// egress_connections counts but does not identify - it is what lets a consumer
 			// answer "what did it try to reach and what did we refuse". Attacker-chosen bytes,
 			// like guard_blocked.
-			EgressDenied    []hostPortJSON `json:"egress_denied,omitempty"`
+			EgressDenied []hostPortJSON `json:"egress_denied,omitempty"`
+			// GateDenied names the destinations a network gate was asked about and refused.
+			// Separate from egress_denied because a gate answer is not a manifest fact: a
+			// harness reconciling the run against the policy would otherwise read an
+			// operator's "no" as a missing rule. Attacker-chosen bytes, like guard_blocked.
+			GateDenied []hostPortJSON `json:"gate_denied,omitempty"`
+			// Untunneled names the destinations addressed without a CONNECT - plain http://
+			// through the proxy. Separate from egress_denied because a manifest rule can
+			// cover one of these and still carry no traffic, so a gate reconciling the run
+			// against the policy would otherwise read the rule as honored. Attacker-chosen
+			// bytes, like guard_blocked.
+			Untunneled      []hostPortJSON `json:"untunneled,omitempty"`
 			Shields         []shieldJSON   `json:"shields,omitempty"`
 			Exposed         []shieldJSON   `json:"exposed,omitempty"`
 			AcceptedAliases []aliasJSON    `json:"accepted_aliases,omitempty"`
@@ -416,7 +427,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, res.ShieldedGrants, toShieldedTargetsJSON(res.ShieldedGrantTargets), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
@@ -427,6 +438,13 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
 		denied := writeDeniedWarning(stderr, p, res)
+		// After the denial for the reason the untunneled notice is: a run can have both,
+		// and this one has to say the manifest remedy the denial just named does not
+		// apply to its half.
+		gateDenied := writeGateDeniedWarning(stderr, res)
+		// After the denial: a run can have both, and the denial names the manifest edit
+		// that fixes its own half, which this one has to say does NOT apply to its half.
+		untunneled := writeUntunneledWarning(stderr, res)
 		// Last, and only where nothing above already explained the failure. A signal
 		// death is not a script failure at all, a strict shortfall gets its own line
 		// below, and a guard block is a destination no amount of profiling will widen
@@ -437,26 +455,32 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// TARGET reported, so a run whose target never started gets its own line instead.
 		// The exec hint precedes the egress one: 126 under a manifest that blocks exec names
 		// a cause the bypass hint would otherwise blame on the network.
+		hinted := false
 		if res.Setup == enforce.SetupTargetUnreached {
 			writeTargetUnreached(stderr, res)
 		} else if !writeSignalNotice(stderr, p, res) && !writeExecHint(stderr, p, res) &&
 			!writeEgressHint(stderr, p, res) &&
-			shortfall == nil && len(res.GuardBlocked) == 0 && !denied {
+			shortfall == nil && len(res.GuardBlocked) == 0 && !denied && !gateDenied && !untunneled {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
+			// Neither suppresses the legend below, though both name a cause: the hint
+			// between them still claims the sandbox denies silently, and that claim
+			// travels with its mapping or not at all. The HOME note settles it either
+			// way - it fires on any non-zero exit under a home-relative grant, so it
+			// suspects a cause rather than establishing one.
 			writeSandboxHomeMiss(stderr, p, env, res)
 			writeSandboxPathMiss(stderr, p, env, res)
-			writeProfileHint(stderr, p, res)
+			hinted = writeProfileHint(stderr, p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that
-		// reported none, and answers for itself that the exit was clean, so no hint
-		// keyed on a failure can have fired. The warnings above it are not all keyed
-		// that way - a refused destination and a guard block are reported on their own
-		// count and do reach a clean run - so this sits under them rather than instead
-		// of them. A target that never started denied nothing, whatever code the
-		// refusal carried.
+		// reported none, and the one the chain left with the generic hint - which says
+		// the sandbox denies silently without saying what a denial looks like. The
+		// warnings above it are not all keyed on a failure - a refused destination and a
+		// guard block are reported on their own count and do reach a clean run - so this
+		// sits under them rather than instead of them. A target that never started denied
+		// nothing, whatever code the refusal carried.
 		if res.Setup != enforce.SetupTargetUnreached {
-			writeDenialLegend(stderr, p, res)
+			writeDenialLegend(stderr, p, res, hinted)
 		}
 	}
 
@@ -500,7 +524,7 @@ func requireApproval(doc *manifest.Document, allow bool) error {
 		return nil
 	case approvalStale:
 		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; %s - "+
-			"re-review the whole manifest and run `bento approve`, or pass --allow-unapproved", noStampDiff)
+			"re-review it there, or pass --allow-unapproved", noStampDiff)
 	default:
 		return fmt.Errorf("refusing to run: the manifest is not approved; " +
 			"review it and run `bento approve`, or pass --allow-unapproved")

@@ -434,12 +434,9 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 //
 // A credential whose own path is explicitly opted into the sandbox is dropped - its
 // shield never engages, so there is no shield for an alias to defeat. literalOptIns are
-// the LITERAL deny-list paths explicitShieldOptIns matched, not its resolved second
-// return: this resolves them itself, alongside the anchors it resolves anyway.
+// the LITERAL deny-list paths explicitShieldOptIns matched, not the resolved ones it
+// also carries: this resolves them itself, alongside the anchors it resolves anyway.
 func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool, err error) {
-	if len(sb.homes) == 0 {
-		return nil, false, nil
-	}
 	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
 	// to bind them: on a host where a store sits behind a symlink an unresolved path
 	// matches nothing and the whole scan silently no-ops.
