@@ -857,8 +857,9 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// Read off the filesystem layer rather than LayerNetwork, which a zero-rule run does
 	// not carry at all (requiredLayers: namespace isolation alone denies egress, so the
 	// allowlist stack is not asked for). Enforced there is exactly namespacesUsable, and
-	// the netns that fences egress comes with it - the Landlock-only tier has neither, so
-	// this stays silent where the claim would be false.
+	// the netns that fences egress comes with it. The Landlock-only tier fences egress too,
+	// but with a seccomp filter that answers EPERM on socket() rather than a netns, so
+	// these errnos are not the shapes it produces and this stays silent there.
 	netDenied := len(p.Network) == 0 && mountNSConfines
 	if !mountNSConfines && execMode == "" {
 		return

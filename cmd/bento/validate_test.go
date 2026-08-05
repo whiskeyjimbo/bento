@@ -539,8 +539,17 @@ func TestValidateStrictFailsOnAWriteGrantThatIsAFile(t *testing.T) {
 	if err == nil {
 		t.Fatalf("--strict must fail on a write grant run refuses; got:\n%s", out)
 	}
-	if !strings.Contains(out, "runnable:     NO") || !strings.Contains(out, "grant its parent directory instead") {
+	if !strings.Contains(out, "grants:       NO") || !strings.Contains(out, "grant its parent directory instead") {
 		t.Errorf("summary must refuse the file grant in run's words; got:\n%s", out)
+	}
+	// The entrypoint resolves, so runnable: - "this host cannot start what the manifest
+	// names" - is not what is wrong here, and saying so sends the reader hunting for it.
+	if !strings.Contains(out, "runnable:     yes") {
+		t.Errorf("a refused grant is not an unstartable manifest; got:\n%s", out)
+	}
+	// Said once. It is a forty-word paragraph naming paths, and the verdict counts it.
+	if n := strings.Count(out, "grant its parent directory instead"); n != 1 {
+		t.Errorf("the refusal printed %d times, want 1; got:\n%s", n, out)
 	}
 
 	jsonOut, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
@@ -551,8 +560,11 @@ func TestValidateStrictFailsOnAWriteGrantThatIsAFile(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
 		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, jsonOut)
 	}
-	if got.Runnable == nil || *got.Runnable {
-		t.Errorf("runnable = %v, want false", got.Runnable)
+	if got.Runnable == nil || !*got.Runnable {
+		t.Errorf("runnable = %v, want true - nothing here is unstartable", got.Runnable)
+	}
+	if len(got.RefusedGrants) != 1 || !strings.Contains(got.RefusedGrants[0], target) {
+		t.Errorf("refused_grants = %v, want the file write grant %q", got.RefusedGrants, target)
 	}
 }
 
@@ -705,6 +717,16 @@ func TestValidateFailsOnAGrantTheRunRefuses(t *testing.T) {
 	}
 	if !strings.Contains(out, "REFUSED: write grant") || !strings.Contains(out, "always-shielded") {
 		t.Errorf("the summary must name the refusal beside the grant; got:\n%s", out)
+	}
+	// Once. The reason is a forty-word paragraph naming the same path twice, and the
+	// verdict below counts the refusals rather than reprinting them nine lines later.
+	if n := strings.Count(out, "always-shielded"); n != 1 {
+		t.Errorf("the refusal printed %d times, want 1; got:\n%s", n, out)
+	}
+	// Both /bin/sh and the entrypoint resolve, so runnable: - "this host cannot start what
+	// the manifest names" - would send the reader after a problem that is not there.
+	if !strings.Contains(out, "grants:       NO") || strings.Contains(out, "runnable:     NO") {
+		t.Errorf("a refused grant belongs under its own verdict, not runnable:; got:\n%s", out)
 	}
 }
 

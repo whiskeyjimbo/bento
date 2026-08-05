@@ -236,7 +236,8 @@ widened to `all` and an approval stamp the write drops.
 **2. Validate** reports the approval state; `--strict` makes a missing or stale approval a
 failure, so it belongs after step 3 (in CI), not here. It also reports whether this host
 can start what the manifest names - an entrypoint that is not there, an interpreter not on
-PATH - which `--strict` fails on too.
+PATH - and, separately, whether this host will honor every grant: a write into a shielded
+path, a symlink loop, a write grant that is already a file. `--strict` fails on either.
 
 **3. Approve** prints the policy, calls out what deserves a second look, and asks. `--yes`
 for CI; a stdin that is not a terminal (a pipe, a Makefile recipe) is refused rather than
