@@ -53,6 +53,12 @@ commits that built it - none of them were ever in a release.
   A failure some narrower hint already explained - a signal death, a 126 under a
   blocked exec, a bypassed proxy, a refused destination, a `PATH` miss - is still
   left to that hint alone. Output only; nothing about what is denied changed.
+- **`doctor` names all three Docker restrictions at once.** A userns refusal
+  inside a container named the seccomp and AppArmor flags; lifting exactly those
+  granted the namespace and produced a second refusal naming a third flag, for
+  the `/proc` mask docker applies by default. The container remedy now lists all
+  three, and says the third is exposed by lifting the first two rather than
+  blocking anything yet - so an image is fixed in one cycle instead of two.
 - **A write grant inside a credential shield is refused in its own words.** Both
   kinds shared one sentence, which offers the read opt-in as the way in - and
   that opt-in is read-only by construction, so an author following it added a

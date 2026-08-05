@@ -418,6 +418,10 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 // AppArmor profiles block the namespace anyway. Which of the three userns branches this
 // host takes depends on its sysctls, so every one of them has to carry the container
 // remedy for the diagnosis to be actionable wherever it lands.
+//
+// All three flags, not the two this refusal is about: lifting the seccomp and AppArmor
+// ones grants the namespace and lands the reader on the proc-mask refusal instead, so a
+// remedy naming only those costs a build-and-run cycle to discover the third.
 func TestClassifyUnshareNamesTheContainerRemedy(t *testing.T) {
 	for _, out := range []string{
 		"bwrap: No permissions to create new user namespace",
@@ -427,7 +431,7 @@ func TestClassifyUnshareNamesTheContainerRemedy(t *testing.T) {
 		if state != namespacesBlocked {
 			t.Fatalf("state = %v, want namespacesBlocked", state)
 		}
-		for _, want := range []string{"--security-opt seccomp=unconfined", "--security-opt apparmor=unconfined"} {
+		for _, want := range []string{"--security-opt seccomp=unconfined", "--security-opt apparmor=unconfined", "--security-opt systempaths=unconfined"} {
 			if !strings.Contains(reason, want) {
 				t.Errorf("reason %q does not name %q", reason, want)
 			}

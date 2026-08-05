@@ -427,16 +427,25 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // containerUsernsRemedy is the container half of every userns-blocked diagnosis, and
 // is carried by all of them rather than gated on detecting a container: podman, k8s and
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
-// clause is the one a detection miss would silently deny it. It names both flags
+// clause is the one a detection miss would silently deny it. It names the first two flags
 // because the refusal cannot tell them apart - docker's default seccomp profile blocks
 // unshare(CLONE_NEWUSER) and its AppArmor profile restricts the namespace, and either
 // alone produces the same bwrap message. The host remedies the diagnoses lead with are
 // a sysctl a CI engineer usually cannot set; these are the ones they can.
+//
+// The third is named though it is blocking nothing yet, and says so: docker also masks
+// paths under /proc, so a container that lifts the first two reaches the namespace and
+// fails on the mount instead - the "Can't mount proc" branch below, one build-and-run
+// cycle later. The reader here is fixing a container image and the image needs all
+// three, which is what the README's container section already lists together.
 // It closes the sentence with a period, like the sysctl diagnoses it extends, so
 // joinReason's trailing-period trim still leaves a clean continuation.
 const containerUsernsRemedy = " If bento is running inside a container, the host sysctl may be out of " +
 	"reach and the container runtime's own policy is blocking the namespace too; with docker, " +
-	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it."
+	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it. Lifting those " +
+	"two exposes a third restriction rather than removing it, so grant --security-opt " +
+	"systempaths=unconfined alongside them: docker masks paths under /proc that the sandbox's " +
+	"root filesystem has to mount once the namespace is granted."
 
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
