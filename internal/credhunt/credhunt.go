@@ -28,7 +28,6 @@
 package credhunt
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"io/fs"
@@ -116,10 +115,11 @@ type Options struct {
 	// sees the tool narrowed and can shorten the list. A silent suppression list here is
 	// exactly what would hide the findings this exists to surface.
 	MachineStores []string
-	// MaxFileSize bounds the content sniff. A credential file is small; reading a
-	// multi-gigabyte dataset to look for a PEM header would make the tool unusable on a
-	// developer's home, and a secret buried past the first few KB of a large binary is
-	// not the class this hunts.
+	// MaxFileSize bounds the content sniff: it is how many bytes of a file's head are
+	// read, never a size a file must be under to be looked at. Reading a multi-gigabyte
+	// dataset whole to find a PEM header would make the tool unusable on a developer's
+	// home, and a secret buried past the first few KB of one is not the class this hunts -
+	// but refusing to open the file at all is how a 96 KB token store went unread.
 	MaxFileSize int64
 }
 
@@ -215,7 +215,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		// A file that vanished between the walk and the stat cannot be shape-tested; see
 		// the function doc for why a live home makes that ordinary rather than fatal.
 		if info, statErr := d.Info(); statErr == nil {
-			if signals := shapesOf(path, info, opts.MaxFileSize); len(signals) > 0 {
+			if signals := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == opts.Home); len(signals) > 0 {
 				out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
 			}
 		}
@@ -230,11 +230,16 @@ func Hunt(opts Options) ([]Finding, int, error) {
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing.
 //
-// The content sniff runs only for a file that already tripped a name or mode signal.
-// Reading every file in a home to look for a PEM header would cost a full-tree read for
-// leads the cheap signals have already narrowed, and a PEM block in a file with an
-// ordinary name and world-readable mode is a certificate, not a hunt result.
-func shapesOf(path string, info fs.FileInfo, maxSize int64) []string {
+// The content sniff runs for a file that already tripped a name or mode signal, and for
+// any file sitting directly at the home root. Reading every file in a home to look for a
+// PEM header would cost a full-tree read for leads the cheap signals have already
+// narrowed, and a PEM block in a file with an ordinary name and world-readable mode is a
+// certificate, not a hunt result. The home root is the exception because it is the class
+// this tool is most for and the one the cheap signals systematically miss: a mode-0644
+// ~/.env holding an AWS_SECRET_ACCESS_KEY trips no name token, no suffix, no editor
+// leaving and no mode, so nothing but its contents can reach it. The extra reads are the
+// few dozen files at the root rather than the thousands under it.
+func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []string {
 	var signals []string
 	name := strings.ToLower(info.Name())
 
@@ -252,7 +257,11 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64) []string {
 	if strings.HasPrefix(name, ".") && (slices.ContainsFunc(editorLeavingSuffixes, func(s string) bool { return strings.HasSuffix(name, s) }) || numberedBackup(name)) {
 		signals = append(signals, SignalEditorLeaving)
 	}
-	if len(signals) > 0 && info.Size() > 0 && info.Size() <= maxSize {
+	// Sized on the READ, not on the file. Gating the sniff on the whole file's size skipped
+	// exactly the store it most needed to open: a real ~/.claude.json is ~96 KB of config
+	// carrying an oauth token in its first few KB, so a 64 KiB whole-file bound discarded it
+	// unread while a 64 KiB head reaches the token with room to spare.
+	if (len(signals) > 0 || atHomeRoot) && info.Size() > 0 {
 		signals = append(signals, contentShapes(path, maxSize)...)
 	}
 	// A private mode on its own is a weak prior, not a shape: measured on a developer
@@ -276,10 +285,18 @@ func contentShapes(path string, maxSize int64) []string {
 	}
 	defer f.Close()
 
+	// The head is read whole and split here rather than scanned. A bufio.Scanner reports a
+	// line longer than its buffer through Err(), which a range-over-Scan loop never reaches,
+	// so a config written as one long line returned "no shapes" - identical to a clean file,
+	// and the operator saw nothing that said the sniff had given up. maxSize bounds the read
+	// either way, so this costs nothing and cannot fail quietly.
+	head, err := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
+	if err != nil {
+		return nil
+	}
+
 	var signals []string
-	sc := bufio.NewScanner(&io.LimitedReader{R: f, N: maxSize})
-	for sc.Scan() {
-		line := sc.Text()
+	for line := range strings.SplitSeq(string(head), "\n") {
 		if !slices.Contains(signals, SignalPEM) && strings.HasPrefix(strings.TrimSpace(line), "-----BEGIN ") && strings.Contains(line, "PRIVATE KEY") {
 			signals = append(signals, SignalPEM)
 		}
