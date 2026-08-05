@@ -733,7 +733,7 @@ func TestRealBindAliasIsFound(t *testing.T) {
 	key := filepath.Join(home, ".ssh", "id_rsa")
 
 	sb := sandbox{homes: []string{home}, resolve: hostResolve, fileIDs: hostFileIDs,
-		aliasesUnder: hostAliasesUnder, mountpoints: hostMountpoints, statID: hostStatID}
+		aliasesUnder: hostAliasesUnder, mountpoints: hostMountpoints, statID: hostStatIDOK}
 	t.Log(reached)
 
 	// The grant names the backup, which mentions no credential path at all - and the key
@@ -1223,5 +1223,44 @@ func TestIdentifyReportsASecondLstatFailure(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Errorf("identify with a failing Info = %v, want %v", err, want)
 		}
+	}
+}
+
+// The device filter is on the mount, not on the path to it: a bind of a credential
+// directory made underneath a dead NFS export carries the home's device, passes the
+// filter, and is then lstat'd through the export - the hang the filter is otherwise
+// credited with preventing. Pinned as the known ceiling, because the ancestry filter that
+// would drop it also drops a home on its own device under an ordinary rootfs.
+func TestMountinfoPathsReturnsAWantedMountNestedInAnUnwantedOne(t *testing.T) {
+	const info = `26 30 8:2 / / rw,relatime - ext4 /dev/sda2 rw
+29 26 0:99 / /mnt/dead-nfs rw - nfs4 srv:/export rw
+31 29 8:2 /home/u/.ssh /mnt/dead-nfs/keys rw,relatime - ext4 /dev/sda2 rw`
+
+	got, err := mountinfoPaths(strings.NewReader(info), []uint64{uint64(unix.Mkdev(8, 2))})
+	if err != nil {
+		t.Fatalf("mountinfoPaths: %v", err)
+	}
+	if !slices.Contains(got, "/mnt/dead-nfs/keys") {
+		t.Errorf("mountinfoPaths = %v; the nested bind is filtered out - if that is deliberate, the docstring's ancestry note is stale", got)
+	}
+}
+
+// A mountpoint that cannot be identified is either gone or unreachable to this uid - both
+// skippable - or a could-not-look, which must not shorten the mount list.
+func TestHostStatIDSeparatesAbsenceFromFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root is not refused by directory permissions, so there is no EACCES to raise")
+	}
+	dir := t.TempDir()
+	if _, err := hostStatID(filepath.Join(dir, "absent")); !nothingBehind(err) {
+		t.Errorf("hostStatID of an absent path = %v, want it read as nothing behind the path", err)
+	}
+	closed := filepath.Join(dir, "closed")
+	if err := os.Mkdir(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+	if _, err := hostStatID(filepath.Join(closed, "mnt")); !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("hostStatID under an untraversable parent = %v, want a permission error", err)
 	}
 }
