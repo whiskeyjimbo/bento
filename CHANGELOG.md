@@ -27,8 +27,11 @@ commits that built it - none of them were ever in a release.
 - **A shield that resolves onto the home is dropped rather than mounted over
   it.** The guard that declines a relocation target swallowing the whole grant
   surface compared unresolved paths, so on a host whose `/home` is a symlink a
-  `GNUPGHOME=/home/u` arrived as a tmpfs over the entire home - the run failed
-  with nothing said about why. The same test now runs on the resolved paths.
+  `GNUPGHOME=/home/u` arrived as a tmpfs over the entire home - a run granting
+  nothing under that home failed with nothing said about why, since a grant that
+  is under it is refused before the shield is ever built. The same test now runs
+  on the resolved paths, and a caller `DenyPaths` entry that resolves onto a home
+  is refused up front rather than accepted and then dropped.
 - **Three more paths the host runs code from are shielded**: `~/.bash_completion`
   (sourced by the distro `bash.bashrc` for every interactive shell),
   `~/.local/share/bash-completion/completions` (sourced on the first tab-complete
@@ -49,7 +52,9 @@ commits that built it - none of them were ever in a release.
   --json` and `bento profile --json` reports `history`, `private-data`,
   `persistence` or `services` where that is what is behind the shield. Consumers
   switching on `holds` see new codes on about forty paths that previously
-  answered `credentials`. Nothing about what is shielded changed.
+  answered `credentials` - among them `~/.rhosts` and `~/.shosts`, which name the
+  hosts allowed in without a password rather than holding a secret. Nothing about
+  what is shielded changed.
 
 ### Running Under a Supervisor
 

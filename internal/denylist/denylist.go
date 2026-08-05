@@ -333,11 +333,6 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// sibling .Rprofile stays DenyWrite: it is R code R sources, the .vimrc analog.
 		".Renviron",
 
-		// Remote-login trust: writable would grant persistence, and the contents name
-		// trusted hosts/users; sshd treats these as security-sensitive.
-		".rhosts",
-		".shosts",
-
 		// Build-tool credential files. Each sits inside a directory whose bulk is a
 		// package cache a sandboxed build legitimately reads, so the FILE is shielded and
 		// the tree is left alone - shielding ~/.m2 or ~/.gradle wholesale would break
@@ -419,6 +414,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// hiding blocks both planting and reconnaissance. (Wayland persistence routes through
 	// the systemd/autostart dirs above.)
 	persistenceFiles := []string{
+		// Remote-login trust: the contents name the hosts and users allowed in without a
+		// password, so a planted line is host login at the attacker's convenience. Not key
+		// material - the callout would send a reviewer looking for a secret that is not
+		// there - and sshd treats these as security-sensitive for the same reason.
+		".rhosts",
+		".shosts",
+
 		".xprofile",
 		".xinitrc",
 		".xsession",
@@ -698,7 +700,11 @@ func Home(home string, alsoHomes ...string) []Rule {
 		{HoldsServices, serviceFiles},
 	}
 
-	rules := make([]Rule, 0, len(credentialFiles)+len(writeOnly)+len(writeOnlyDirs))
+	nFiles := 0
+	for _, g := range fileGroups {
+		nFiles += len(g.files)
+	}
+	rules := make([]Rule, 0, nFiles+len(writeOnly)+len(writeOnlyDirs))
 	emit := func(entry string, r Rule) {
 		for _, p := range locations(entry) {
 			r.Path = p

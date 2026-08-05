@@ -1219,6 +1219,7 @@ func TestHomeShieldClassification(t *testing.T) {
 		"/home/u/.xinitrc":          HoldsPersistence,
 		"/home/u/postponed":         HoldsPrivateData,
 		"/home/u/.zuluCrypt-socket": HoldsServices,
+		"/home/u/.rhosts":           HoldsPersistence,
 	} {
 		if got := byPath[path]; got.Holds != want {
 			t.Errorf("%s: Holds = %v (%q), want %v", path, got.Holds, got.Holds.Noun(), want)
