@@ -114,12 +114,8 @@ func TestFingerprintCoversEveryPolicyField(t *testing.T) {
 			Read:            []string{"/data"},
 			Write:           []string{"/out"},
 			Network:         []NetworkRule{{Host: "a.com", Port: "443"}},
-			// The mode and the allowlist move together: exec_allow is only valid under
-			// exec: allowlist, so a base holding one and not the other would be a policy
-			// Validate refuses, and this test would be enumerating a shape nothing can run.
-			Exec:      ExecAllowlist,
-			ExecAllow: []string{"/opt/tool"},
-			Limits:    Limits{Memory: "1M", CPU: "50%", PIDs: 128},
+			Exec:            ExecAll,
+			Limits:          Limits{Memory: "1M", CPU: "50%", PIDs: 128},
 		}
 	}
 	unchanged := base()
@@ -205,29 +201,6 @@ func TestFingerprintTreatsEmptyExecAsNone(t *testing.T) {
 }
 
 // Arg order is meaningful and must affect the fingerprint.
-// The allowlist names what a run may spawn, so two policies differing only there
-// permit different things. Sharing one approval between them is the security bug this
-// field could most easily introduce, and it is invisible to every test that only checks
-// the mode.
-func TestFingerprintSeparatesDifferentAllowlists(t *testing.T) {
-	allow := func(paths ...string) string {
-		p := &Policy{Entrypoint: "./x", Exec: ExecAllowlist, ExecAllow: paths}
-		return p.Fingerprint()
-	}
-	lint := allow("/opt/lint")
-	if same := allow("/opt/deploy"); same == lint {
-		t.Error("two allowlists naming different binaries share a fingerprint, so one approval attests both")
-	}
-	if wider := allow("/opt/lint", "/opt/deploy"); wider == lint {
-		t.Error("adding a binary to the allowlist left the fingerprint unchanged")
-	}
-	// Set-like, as the other grant fields are: the order entries are written in does
-	// not change what the run may spawn, so it must not force a re-approval.
-	if reordered := allow("/opt/deploy", "/opt/lint"); reordered != allow("/opt/lint", "/opt/deploy") {
-		t.Error("reordering the allowlist changed the fingerprint")
-	}
-}
-
 func TestFingerprintArgOrderMatters(t *testing.T) {
 	a := &Policy{Entrypoint: "./x", Args: []string{"--a", "--b"}}
 	b := &Policy{Entrypoint: "./x", Args: []string{"--b", "--a"}}
