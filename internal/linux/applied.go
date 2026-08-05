@@ -146,14 +146,16 @@ func parseApplied(f *os.File) applied {
 // RUN enforced. Where they disagree the child wins, and it only ever worsens a layer.
 // blockWanted/strictWanted are what the policy asked the child to install, so a report
 // that names a weaker filter - or none - is judged against the request rather than
-// taken at face value. exitCode goes into the reason for a silent child: the exit code
+// taken at face value. mountConfined says whether a mount namespace stands behind
+// Landlock on this tier, which is what decides whether a failed Landlock ruleset leaves
+// the filesystem degraded or unconfined. exitCode goes into the reason for a silent child: the exit code
 // alone cannot separate a bento setup failure from a target that exits 125 itself, and
 // the report is what does.
 //
 // The returned SetupState is that same separation made readable by an embedder: it is
 // derived here rather than re-decided anywhere else, so the state and the layer
 // verdicts can never disagree about whether the target ran.
-func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, exitCode int) enforce.SetupState {
+func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountConfined bool, exitCode int) enforce.SetupState {
 	if !a.complete {
 		// The reason states what is known - no report, and the code the run ended with -
 		// rather than asserting a cause: the same absence covers a launcher that died in
@@ -207,14 +209,22 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted bool, ex
 		if why == "" {
 			why = fmt.Sprintf("the sandbox reported no Landlock outcome, %q", a.landlock)
 		}
-		// Degraded, not Unavailable: on the bwrap tier the mount namespace still confines
-		// the filesystem and only the second-layer backstop is missing. Reported as a
-		// state change rather than a detail rewrite because enforce.Run's overlay
-		// propagates only a worsening state, so an Enforced-with-a-new-reason would be
-		// dropped and the run would still claim the backstop was active.
-		r.Set(enforce.LayerFilesystem, enforce.Degraded,
-			"the Landlock backstop could not be applied inside the sandbox ("+why+
-				"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+		// How far this drops depends on what stands behind Landlock. On the bwrap tier the
+		// mount namespace still confines the filesystem and only the second layer is
+		// missing; on the degraded tier Landlock IS the filesystem confinement, so the
+		// same report means there is none. Reported as a state change rather than a
+		// detail rewrite because enforce.Run's overlay propagates only a worsening state,
+		// so an Enforced-with-a-new-reason would be dropped and the run would still claim
+		// the backstop was active.
+		if mountConfined {
+			r.Set(enforce.LayerFilesystem, enforce.Degraded,
+				"the Landlock backstop could not be applied inside the sandbox ("+why+
+					"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+		} else {
+			r.Set(enforce.LayerFilesystem, enforce.Unavailable,
+				"the Landlock confinement could not be applied inside the sandbox ("+why+
+					"); this tier has no mount namespace behind it, so the filesystem was not confined")
+		}
 	}
 	// The stage reported a complete setup and reached the target, so the exit code the
 	// caller sees is the target's own - whatever the layer verdicts above say about how

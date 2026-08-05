@@ -351,6 +351,12 @@ func parseObservations(path string) (profile.Observation, error) {
 			obs.Signaled = true
 			obs.Signal = n
 			obs.ExitCode = 128 + n
+		// Every line the launcher writes is handled above, so anything else is either a
+		// writer this reader was never taught or a record something else appended.
+		// Dropping it silently would let a future writer's key vanish into a manifest
+		// that looks complete, which is the failure the DROPPED count exists to prevent.
+		default:
+			return profile.Observation{}, fmt.Errorf("linux: observation report has an unrecognized record %q", line)
 		}
 	}
 	if err := s.Err(); err != nil {
