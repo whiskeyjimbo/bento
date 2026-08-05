@@ -1097,6 +1097,13 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 			// symlinked shield's real target (write: /data/keys with ~/.ssh ->
 			// /data/keys) is still caught, not silently honored.
 			rp := sb.resolve(r.Path)
+			// A rule resolving to "/" covers every absolute grant, so it would refuse
+			// every run and name an unrelated dotfile as the cause. denyArgs drops such a
+			// rule rather than shielding the whole root, so the refusal would be over a
+			// shield that was never applied.
+			if rp == "/" {
+				continue
+			}
 			// A READ grant that names the shielded path itself is a deliberate, warned
 			// opt-in (a program that legitimately reads ~/.ssh, no source change): honor it
 			// - denyArgs skips the shield so the real content binds read-only, and Run

@@ -376,3 +376,26 @@ func TestAStoreThatIsAlsoAHomeAnchorStaysShielded(t *testing.T) {
 		t.Errorf("a credential store that coincides with a home anchor must still be shielded: %v", args)
 	}
 }
+
+// A deny-list dotfile whose host symlink resolves to the root must not refuse every
+// grant on the host. denyArgs drops such a rule rather than shielding the whole root,
+// so refusing here would blame an unrelated dotfile for a shield that was never
+// applied - and CoversResolved("/", g) is true for every absolute grant, so it would
+// refuse every run in both tiers.
+func TestShieldResolvingToRootDoesNotRefuseGrants(t *testing.T) {
+	sb := testSandbox()
+	sb.resolve = func(p string) string {
+		if p == "/home/u/.gnupg" {
+			return "/"
+		}
+		return p
+	}
+
+	if err := checkNotShielded(sb, []string{"/work"}, nil); err != nil {
+		t.Errorf("a shield resolving to the root must not refuse an unrelated grant: %v", err)
+	}
+	// The other shields still bite: this must not have disarmed the check itself.
+	if err := checkNotShielded(sb, []string{"/home/u/.ssh"}, nil); err == nil {
+		t.Error("a grant inside a shield that resolves normally must still be refused")
+	}
+}
