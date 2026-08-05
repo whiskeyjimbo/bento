@@ -256,7 +256,7 @@ func TestAppliedReconcile(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			parseApplied(openApplied(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, 125)
+			parseApplied(openApplied(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, true, 125)
 
 			for layer, want := range tc.want {
 				if got := r.StateOf(layer); got != want {
@@ -314,6 +314,52 @@ func TestParseAppliedQuotedReasonCannotForgeRecords(t *testing.T) {
 	}
 }
 
+// A failed Landlock ruleset means different things on the two tiers, and the report has
+// to say which. Behind bwrap the mount namespace still confines the filesystem, so the
+// layer is Degraded; on the degraded tier Landlock is the whole confinement, so the same
+// report means the filesystem was not confined at all. Reporting that one as Degraded
+// would name a mount namespace the run never had.
+func TestReconcileGradesLandlockFailureByTier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := launcher.AppliedExecFilter + " " + launcher.AppliedExecBasic + "\n" +
+		launcher.AppliedLandlock + " " + launcher.AppliedNo + " " + fmt.Sprintf("%q", "landlock: applying ruleset: invalid argument") + "\n" +
+		launcher.AppliedMarker + "\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		mountConfined bool
+		want          enforce.State
+		unwanted      string
+	}{
+		{name: "behind bwrap", mountConfined: true, want: enforce.Degraded},
+		{name: "degraded tier", mountConfined: false, want: enforce.Unavailable, unwanted: "mount namespace still confines"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r enforce.Report
+			r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+			parseApplied(openApplied(t, path)).reconcile(&r, true, false, tc.mountConfined, 125)
+
+			if got := r.StateOf(enforce.LayerFilesystem); got != tc.want {
+				t.Errorf("filesystem layer = %v, want %v", got, tc.want)
+			}
+			var reason string
+			for _, l := range r.Layers {
+				if l.Layer == enforce.LayerFilesystem {
+					reason = l.Reason
+				}
+			}
+			if !strings.Contains(reason, "invalid argument") {
+				t.Errorf("reason = %q, want the child's own failure in it", reason)
+			}
+			if tc.unwanted != "" && strings.Contains(reason, tc.unwanted) {
+				t.Errorf("reason = %q, must not claim %q on a tier with no mount namespace", reason, tc.unwanted)
+			}
+		})
+	}
+}
+
 // The unreached-target reason is what tells an operator WHY nothing ran, and it is the
 // one thing separating this from the silent-launcher case, which reports the exit code
 // instead because it has nothing else. It travels the same quoted field as the Landlock
@@ -328,7 +374,7 @@ func TestReconcileNamesWhyTheTargetWasNeverReached(t *testing.T) {
 	}
 	var r enforce.Report
 	r.Add(enforce.LayerExec, enforce.Enforced, "")
-	parseApplied(openApplied(t, path)).reconcile(&r, true, false, 125)
+	parseApplied(openApplied(t, path)).reconcile(&r, true, false, true, 125)
 
 	if got := r.StateOf(enforce.LayerExec); got != enforce.Unavailable {
 		t.Fatalf("exec layer = %v for a target that never ran, want unavailable", got)
@@ -395,7 +441,7 @@ func TestReconcileReportsSetupState(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			if got := parseApplied(openApplied(t, path)).reconcile(&r, true, true, 125); got != tc.want {
+			if got := parseApplied(openApplied(t, path)).reconcile(&r, true, true, true, 125); got != tc.want {
 				t.Errorf("reconcile setup state = %v, want %v", got, tc.want)
 			}
 		})

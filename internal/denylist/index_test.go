@@ -17,6 +17,25 @@ func auditRules() []Rule {
 // segment would be found by Covers and missed by the index - a shield that silently
 // stops covering. Pin the property the index rests on rather than trusting it.
 func TestRulePathsAreIndexable(t *testing.T) {
+	// The literal tables are compile-time constants and can never be unclean, so on a
+	// bare environment this pin only ever sees rules that cannot violate it. The rules
+	// that CAN are the ones whose spelling arrives from outside the package, and they
+	// only exist when their variable is set - so set them, deliberately unclean, and let
+	// the assertions below prove each emit site cleans what it was handed.
+	for env, unclean := range map[string]string{
+		"GNUPGHOME":                   "/srv/gpg/",
+		"KUBECONFIG":                  "/srv/k8s/../k8s/config",
+		"HISTFILE":                    "/srv/sh//history",
+		"ZDOTDIR":                     "/srv/zsh/",
+		"CARGO_HOME":                  "/srv/cargo/",
+		"MAILCAPS":                    "/srv/mail/mailcap/",
+		"XDG_CONFIG_HOME":             "/srv/xdg/config/",
+		"XDG_DATA_HOME":               "/srv/xdg/data/",
+		"AWS_SHARED_CREDENTIALS_FILE": "/srv/aws/./credentials",
+	} {
+		t.Setenv(env, unclean)
+	}
+
 	var all []Rule
 	all = append(all, auditRules()...)
 	all = append(all, Runtime("/tmp/rt", "/home/u")...)
