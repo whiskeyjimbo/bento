@@ -752,11 +752,19 @@ func shieldsHidden(res enforce.Result) bool {
 // writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
 // target prints itself and bento never sees.
 //
-// The hints above all key on a failure - a signal, exit 126, a non-zero exit with no
-// egress - because each explains one. This explains none: it is the standing note that a
-// script continuing past a refused read, write or exec exits 0, so a clean exit is not
-// evidence the box let everything through. That case has no signal at all to key on, and
-// it is the one that reads as success.
+// It covers the two outcomes no other hint can speak to. A clean exit is the one that
+// reads as success: a script continuing past a refused read, write or exec exits 0, so
+// there is no signal at all to key on. And a failure the generic profile hint took -
+// one no more specific hint claimed - is the branch where the reader is holding an errno
+// string right now and needs the field that produced it. The profile hint's own sentence
+// says only that the sandbox denies silently, which is that mapping withheld; the two
+// print together, the general statement and then the shapes it is about.
+//
+// The hints that DO name a cause - a signal death, exit 126 under a blocked exec, a
+// bypassed proxy, a refused destination - keep the run to themselves, and the caller
+// gates on that. Each of them has already named the layer that produced the failure, and
+// a mapping of every other errno underneath it offers a reader who has their answer four
+// more causes to consider.
 //
 // The read line states an ambiguity rather than a cause, and has to keep doing so. An
 // ungranted path, the contents of a shielded directory and a file that genuinely is not
@@ -779,12 +787,13 @@ func shieldsHidden(res enforce.Result) bool {
 // wording rather than the resolved absolutes this side holds, and the reader has the
 // manifest open; what they do not have is the mapping from an errno string to the field
 // that produced it.
-func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
-	// A clean exit only. Every hint above explains a failure the target reported, and on
-	// a failing run the profile hint already says the sandbox denies silently - a second
-	// telling there would stack onto it and close by explaining an exit 0 that did not
-	// happen. What none of them cover is the run that reported nothing.
-	if res.ExitCode != 0 || res.Signal != 0 {
+// hinted says the generic profile hint just spoke, which is the caller's answer to
+// whether any narrower hint claimed this failure.
+func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted bool) {
+	// A clean exit, or the failure the profile hint took. Anything else was explained by
+	// a hint that named its own cause, and stacking a second reading onto it would send a
+	// reader who has the answer back through the other shapes.
+	if !hinted && (res.ExitCode != 0 || res.Signal != 0) {
 		return
 	}
 	// Each line answers for the layer that produces its errno, because the layers do not
@@ -805,8 +814,15 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result) {
 		return
 	}
 	// One sentence carrying both halves the reader needs: bento is not the one reporting
-	// this, and the exit code will not reflect it either.
-	fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
+	// this, and the exit code will not reflect it either. After the profile hint the
+	// second half is the wrong claim to lead with - the run did exit non-zero, and the
+	// hint has just said the script's message is all there is - so that branch names the
+	// message instead, as the thing the shapes below are read against.
+	if hinted {
+		fmt.Fprintln(w, "[bento] if that message was a denial, these are the shapes it arrives in:")
+	} else {
+		fmt.Fprintln(w, "[bento] a denial is the script's own error to report, and does not change its exit code:")
+	}
 	if mountNSConfines {
 		switch {
 		case len(p.Write) == 0:
@@ -939,16 +955,42 @@ func signalDeath(res enforce.Result) (sig int, certain bool) {
 // caller keeps it off a run the target never reached: a refusal returns before the output,
 // a strict shortfall is reported by its own line, and a launcher that applied its layers
 // and then could not exec the target gets writeTargetUnreached instead.
-func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) {
+//
+// The summary counts the read and write grants and names the exec mode, because those
+// are the three things the run withheld and any of them can be what the script died on -
+// a manifest that blocks exec answers EPERM to a subprocess, which is bento's verdict
+// as much as EROFS is, and counting paths alone leaves a reader hunting the wrong field.
+// It reports whether it said anything, so the legend below knows this failure was left
+// generic rather than explained.
+func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if res.ExitCode == 0 {
-		return
+		return false
 	}
-	fmt.Fprintf(w, "[bento] the script exited %d. It ran with %d read and %d write path(s) granted, and the\n", res.ExitCode, len(p.Read), len(p.Write))
-	fmt.Fprintln(w, "[bento] sandbox denies silently - so if it failed on a missing file or a permission")
-	fmt.Fprintln(w, "[bento] error, the script's own message is all you get. To see what it actually touches:")
+	// Named only where the block is in force, for writeExecHint's reason: a manifest whose
+	// filter never landed withheld nothing, and writeDegradations has already said so.
+	grants := fmt.Sprintf("%d read and %d write path(s)", len(p.Read), len(p.Write))
+	if p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced {
+		// The zero value is the empty string, as in the legend: a manifest that never
+		// mentions exec would otherwise name a field spelled nothing at all.
+		mode := policy.ExecNone
+		if p.Exec == policy.ExecNoneStrict {
+			mode = policy.ExecNoneStrict
+		}
+		grants += fmt.Sprintf(" granted and exec: %s", mode)
+	} else {
+		grants += " granted"
+	}
+	// Wrapped rather than hand-broken: the summary's length depends on the manifest, so a
+	// break placed to fit one grant summary runs off the column under another.
+	for _, line := range wrapText(fmt.Sprintf("the script exited %d. It ran with %s, and the sandbox denies "+
+		"silently - so if it failed on a missing file or a permission error, the script's own "+
+		"message is all you get. To see what it actually touches:", res.ExitCode, grants), textWidth-len("[bento] ")) {
+		fmt.Fprintf(w, "[bento] %s\n", line)
+	}
 	// Quoted: the entrypoint is manifest text, and a newline in it would otherwise forge a
 	// line of this hint.
 	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
+	return true
 }
 
 // writeRefusal prints a pre-run refusal in the shape main's generic error printer gives

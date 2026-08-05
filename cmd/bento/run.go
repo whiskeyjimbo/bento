@@ -455,6 +455,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// TARGET reported, so a run whose target never started gets its own line instead.
 		// The exec hint precedes the egress one: 126 under a manifest that blocks exec names
 		// a cause the bypass hint would otherwise blame on the network.
+		hinted := false
 		if res.Setup == enforce.SetupTargetUnreached {
 			writeTargetUnreached(stderr, res)
 		} else if !writeSignalNotice(stderr, p, res) && !writeExecHint(stderr, p, res) &&
@@ -464,17 +465,17 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// reader who has this cause in hand should not be sent around that loop first.
 			writeSandboxHomeMiss(stderr, p, env, res)
 			writeSandboxPathMiss(stderr, p, env, res)
-			writeProfileHint(stderr, p, res)
+			hinted = writeProfileHint(stderr, p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that
-		// reported none, and answers for itself that the exit was clean, so no hint
-		// keyed on a failure can have fired. The warnings above it are not all keyed
-		// that way - a refused destination and a guard block are reported on their own
-		// count and do reach a clean run - so this sits under them rather than instead
-		// of them. A target that never started denied nothing, whatever code the
-		// refusal carried.
+		// reported none, and the one the chain left with the generic hint - which says
+		// the sandbox denies silently without saying what a denial looks like. The
+		// warnings above it are not all keyed on a failure - a refused destination and a
+		// guard block are reported on their own count and do reach a clean run - so this
+		// sits under them rather than instead of them. A target that never started denied
+		// nothing, whatever code the refusal carried.
 		if res.Setup != enforce.SetupTargetUnreached {
-			writeDenialLegend(stderr, p, res)
+			writeDenialLegend(stderr, p, res, hinted)
 		}
 	}
 
