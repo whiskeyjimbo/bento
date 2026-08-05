@@ -136,7 +136,7 @@ func backstopRules(read, write []string) ([]ll.Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	return classifyRules(rules, write, withIoctlDev(ll.RWDirs), withIoctlDev(ll.RWFiles))
+	return classifyRules(rules, write, withIoctlDev(withRefer(ll.RWDirs)), withIoctlDev(ll.RWFiles))
 }
 
 // classifyRules appends one rule per kind for the paths that exist, routing
@@ -225,12 +225,11 @@ func RestrictDegraded(read, write, exec []string) error {
 	//
 	// This guard covers the ABI-0 route only. BestEffort's downgrade has a second
 	// silent-success path - a config it cannot satisfy collapses to v0 and returns nil,
-	// having restricted nothing - which an ABI check cannot see. Nothing reaches it
-	// today because it needs a refer rule on ABI 1, and this package never asks for
-	// one; adding WithRefer would put a total fail-open back behind a guard that still
-	// passes. WithResolveUnix below does not: refer is the only right whose absence
-	// from the downgraded handled set makes a rule unsatisfiable rather than merely
-	// intersected down.
+	// having restricted nothing - which an ABI check cannot see. Reaching it needs a refer
+	// rule on ABI 1, and withRefer asks for refer only from ABI 2 precisely so that
+	// ruleset is never built. WithResolveUnix needs no such gate: refer is the only right
+	// whose absence from the downgraded handled set makes a rule unsatisfiable rather than
+	// merely intersected down.
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
@@ -251,7 +250,7 @@ func degradedRules(read, write, exec []string) ([]ll.Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	rules, err = classifyRules(rules, write, withIoctlDev(withResolveUnix(ll.RWDirs)), withIoctlDev(withResolveUnix(ll.RWFiles)))
+	rules, err = classifyRules(rules, write, withIoctlDev(withResolveUnix(withRefer(ll.RWDirs))), withIoctlDev(withResolveUnix(ll.RWFiles)))
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +273,52 @@ func withResolveUnix(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
 	return func(paths ...string) ll.FSRule {
 		return rule(paths...).WithResolveUnix()
 	}
+}
+
+// withRefer wraps the DIRECTORY write-rule constructor so the rules it builds also grant
+// refer, the right that governs rename(2) and link(2) ACROSS directories. Both handled sets contain
+// it from ABI 2 (kernel 5.19) and none of go-landlock's RW helpers grant it, so without
+// this it is handled and granted nowhere - which denies every cross-directory rename even
+// when source and destination are inside the SAME write grant. The symptom is EXDEV or
+// EACCES naming no layer, and it hits the write-a-temp-file-then-rename-into-place shape
+// that most tools use to write atomically. Within one directory rename is unaffected,
+// which is why it survives a casual test.
+//
+// Only the write rules get it. A read grant with refer would let the target hardlink a
+// read-only file into a write grant, where the write rules then govern the new path - so
+// granting it there is the escalation, not the feature. Cross-directory moves OUT of a
+// read grant need remove_file on the source, which a read rule does not carry either way.
+//
+// Only the DIRECTORY constructor, unlike withIoctlDev: refer names an operation on the two
+// parent directories, so the kernel's file-rule check - a rule on a non-directory may only
+// carry rights that apply to files - rejects it with EINVAL. RestrictPaths is
+// all-or-nothing, so a file rule carrying refer discards the entire ruleset and the run
+// has no backstop at all. A rename is governed by the directories either way, so scoping
+// it here costs nothing.
+//
+// The ABI gate is not an optimisation, it is what keeps the fix from fail-open: refer is
+// the one right whose absence from the downgraded handled set makes a rule UNSATISFIABLE
+// rather than merely intersected down (v0.9.0 path_opt.go, FSRule.downgrade), and
+// go-landlock answers that by collapsing the whole config to v0 and returning nil having
+// restricted nothing. Asking for refer only where the kernel handles it means a ruleset is
+// never built that BestEffort would rather discard than downgrade. Below ABI 2 the tier
+// keeps today's behaviour, which is the kernel's own: Landlock denies cross-directory
+// reparenting implicitly there, whatever the handled set says, so there is nothing to
+// restore and nothing to disclose - unlike truncate or ioctl_dev, the old kernel is MORE
+// restrictive, not less.
+func withRefer(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
+	return func(paths ...string) ll.FSRule {
+		if !referSupported() {
+			return rule(paths...)
+		}
+		return rule(paths...).WithRefer()
+	}
+}
+
+// referSupported reports whether this kernel's Landlock ABI (>= 2) has the refer right,
+// so a rule may ask for it without BestEffort discarding the ruleset. See withRefer.
+func referSupported() bool {
+	return effectiveABI() >= 2
 }
 
 // withIoctlDev wraps a rule constructor so the rules it builds also grant ioctl_dev,

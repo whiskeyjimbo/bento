@@ -374,3 +374,60 @@ func listen(t *testing.T, path string) string {
 	}()
 	return path
 }
+
+// Landlock denies rename(2) and link(2) ACROSS directories unless the write rules grant
+// refer, even when both directories sit inside the same write grant - so the backstop
+// broke the write-a-temp-file-then-rename-into-place shape most tools use to write
+// atomically, with an EXDEV that names no layer. This only shows against the real kernel:
+// the granted-versus-handled question is answerable from the rules (the invariant test in
+// abi_internal_linux_test.go), but whether the kernel then permits the rename is not.
+//
+// The same-directory arm is the control. Without refer it stays OK while the two
+// cross-directory arms fail, which is exactly why the bug survived: the write grant looks
+// like it works.
+func TestRestrictPermitsReparentingInsideAWriteGrant(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	if !referSupported() {
+		t.Skipf("effective ABI %d: refer arrived in ABI 2, and below it the kernel denies "+
+			"cross-directory reparenting under any ruleset", effectiveABI())
+	}
+	bin := buildProbe(t)
+
+	// One tree, so the read root covers the write grant and the ungranted directory both -
+	// the escape arm has to fail for want of a WRITE grant, not for want of a path.
+	root := t.TempDir()
+	write := filepath.Join(root, "write")
+	outside := filepath.Join(root, "outside")
+	for _, d := range []string{filepath.Join(write, "a"), filepath.Join(write, "b"), outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(write, "a", "f"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(bin, "reparent", root, write, outside).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, "samedir=OK") {
+		t.Fatalf("a rename within one directory of the write grant was denied, so the grant "+
+			"itself is broken and the cross-directory arms below prove nothing: %q", got)
+	}
+	if !strings.Contains(got, "crossdir=OK") {
+		t.Errorf("a rename between two directories inside the same write grant was denied; "+
+			"the write rules are not granting refer: %q", got)
+	}
+	if !strings.Contains(got, "crosslink=OK") {
+		t.Errorf("a link between two directories inside the same write grant was denied; "+
+			"refer governs link(2) as well as rename(2): %q", got)
+	}
+	if !strings.Contains(got, "escape=DENIED") {
+		t.Errorf("a rename out of the write grant into the read-only tree succeeded, so "+
+			"granting refer widened reparenting past the write grants: %q", got)
+	}
+}

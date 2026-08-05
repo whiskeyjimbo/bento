@@ -23,6 +23,14 @@
 // or not any rule grants it - so this observes what the handled set is, from outside
 // the package.
 //
+// Usage: probe reparent <read-root> <write-dir> <outside-dir>
+// Confines itself with read-root readable and write-dir writable, then reparents files.
+// Prints "samedir=OK|DENIED crossdir=OK|DENIED crosslink=OK|DENIED escape=OK|DENIED".
+// The refer right governs rename(2) and link(2) across directories and nothing else, so
+// samedir is the control that separates "the write grant works" from "reparenting works":
+// without refer granted, samedir stays OK while crossdir and crosslink fail with EXDEV
+// even though both directories are inside the same write grant.
+//
 // Usage: probe degraded <read-dir> <write-dir> <outside-path> <ungranted-socket> <granted-socket>
 // Applies the DEGRADED ruleset - which handles resolve_unix and grants it back on the
 // write set - then prints "degraded_outside=OK|DENIED degraded_unixconnect=OK|DENIED
@@ -64,6 +72,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -80,6 +89,10 @@ func main() {
 	}
 	if len(os.Args) == 4 && os.Args[1] == "unixconnect" {
 		unixConnect(os.Args[2], os.Args[3])
+		return
+	}
+	if len(os.Args) == 5 && os.Args[1] == "reparent" {
+		reparent(os.Args[2], os.Args[3], os.Args[4])
 		return
 	}
 	if len(os.Args) == 7 && os.Args[1] == "degraded" {
@@ -136,6 +149,35 @@ func unixConnect(allowed, socket string) {
 		os.Exit(2)
 	}
 	fmt.Printf("unixconnect=%s\n", dial(socket))
+}
+
+// reparent confines itself, then moves and links files between two directories that are
+// both inside the SAME write grant - the case Landlock denies outright unless the write
+// rules grant refer, whatever else they permit.
+//
+// The layout the caller builds is fixed: write/a/f exists, write/b is an empty directory,
+// and outside is a directory under the read root but under no write grant. The escape arm
+// is the one that must stay DENIED; it is not a refer test (a move out of the write grant
+// needs make_reg on the destination, which no read rule carries) but the check that
+// granting refer widened reparenting only where the write grants already reach.
+func reparent(read, write, outside string) {
+	if err := landlock.RestrictTo([]string{read}, []string{write}); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	a, b := filepath.Join(write, "a"), filepath.Join(write, "b")
+	fmt.Printf("samedir=%s crossdir=%s crosslink=%s escape=%s\n",
+		verdict(os.Rename(filepath.Join(a, "f"), filepath.Join(a, "moved"))),
+		verdict(os.Rename(filepath.Join(a, "moved"), filepath.Join(b, "f"))),
+		verdict(os.Link(filepath.Join(b, "f"), filepath.Join(a, "linked"))),
+		verdict(os.Rename(filepath.Join(b, "f"), filepath.Join(outside, "f"))))
+}
+
+func verdict(err error) string {
+	if err != nil {
+		return "DENIED"
+	}
+	return "OK"
 }
 
 // degraded applies the degraded ruleset, then reports the three things the tier's posture
