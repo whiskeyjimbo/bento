@@ -11,6 +11,46 @@ commits that built it - none of them were ever in a release.
 
 ## Unreleased
 
+### Boundary Hardening
+
+- **A manifest can no longer lift a deny path its caller supplied.** An embedder
+  passing `DenyPaths` is told a policy cannot lift one, and that held only while
+  the caller's path was unrelated to a built-in shield. Both consumers of the
+  read opt-in matched a bare resolved path with no record of which rule set it
+  came from, so a caller denying `~/.aws` - defensively, or through its own store
+  being a symlink there - had its shield skipped entirely by a manifest granting
+  `read: ~/.aws`: no shield was mounted, the real store was bound read-only, and
+  the run reported nothing. A built-in shield whose store a caller deny also
+  covers is no longer opt-in-able, so the grant is refused, in its own words: the
+  refusal for a caller deny no longer offers the read opt-in that does not apply
+  to it. The boundary moved inward, and only for a run that supplies deny paths.
+- **A shield that resolves onto the home is dropped rather than mounted over
+  it.** The guard that declines a relocation target swallowing the whole grant
+  surface compared unresolved paths, so on a host whose `/home` is a symlink a
+  `GNUPGHOME=/home/u` arrived as a tmpfs over the entire home - the run failed
+  with nothing said about why. The same test now runs on the resolved paths.
+- **Three more paths the host runs code from are shielded**: `~/.bash_completion`
+  (sourced by the distro `bash.bashrc` for every interactive shell),
+  `~/.local/share/bash-completion/completions` (sourced on the first tab-complete
+  of that command name), and `~/.selected_editor` (`sensible-editor` runs
+  `$SELECTED_EDITOR`, at the next `git commit` or `crontab -e` on a host with no
+  `$EDITOR`). All three are write-denied, not hidden: reads stay allowed, a plant
+  does not. A manifest granting write there is now refused instead of honored.
+
+### What a Run Tells You
+
+- **A shielded file now says what it holds, the way a shielded directory
+  already did.** Every single-file shield was stamped `credentials`, so the
+  sentence a reviewer reads before approving a grant called `~/.bash_history`,
+  `~/.viminfo`, `~/.xinitrc` and `~/postponed` credential stores - and the same
+  path changed its answer depending on how it was reached, since `LESSHISTFILE`
+  and its siblings already reported `history`. The file lists are now bucketed
+  like the directory lists, so `holds` in `shielded_grants`, `bento validate
+  --json` and `bento profile --json` reports `history`, `private-data`,
+  `persistence` or `services` where that is what is behind the shield. Consumers
+  switching on `holds` see new codes on about forty paths that previously
+  answered `credentials`. Nothing about what is shielded changed.
+
 ### Running Under a Supervisor
 
 - **`run --run-id <id>` makes a run reapable as a tree.** Under `exec: all` the
