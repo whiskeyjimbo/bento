@@ -391,11 +391,11 @@ func TestShieldResolvingToRootDoesNotRefuseGrants(t *testing.T) {
 		return p
 	}
 
-	if err := checkNotShielded(sb, []string{"/work"}, nil); err != nil {
+	if err := checkReadNotShielded(sb, []string{"/work"}, nil); err != nil {
 		t.Errorf("a shield resolving to the root must not refuse an unrelated grant: %v", err)
 	}
 	// The other shields still bite: this must not have disarmed the check itself.
-	if err := checkNotShielded(sb, []string{"/home/u/.ssh"}, nil); err == nil {
+	if err := checkReadNotShielded(sb, []string{"/home/u/.ssh"}, nil); err == nil {
 		t.Error("a grant inside a shield that resolves normally must still be refused")
 	}
 }

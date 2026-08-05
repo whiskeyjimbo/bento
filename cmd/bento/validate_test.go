@@ -703,7 +703,7 @@ func TestValidateFailsOnAGrantTheRunRefuses(t *testing.T) {
 	if err == nil {
 		t.Errorf("--strict must fail on a grant run refuses; got:\n%s", out)
 	}
-	if !strings.Contains(out, "REFUSED: grant") || !strings.Contains(out, "always-shielded") {
+	if !strings.Contains(out, "REFUSED: write grant") || !strings.Contains(out, "always-shielded") {
 		t.Errorf("the summary must name the refusal beside the grant; got:\n%s", out)
 	}
 }

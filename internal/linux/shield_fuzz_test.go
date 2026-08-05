@@ -153,7 +153,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 
 	// Coupling 2: the accept/refuse verdict matches ground truth, so a stricter
 	// future check cannot silently delete the assertion regions below.
-	err := checkNotShielded(sb, reads, optInRes)
+	err := checkReadNotShielded(sb, reads, optInRes)
 	wantRefused := g == fuzzRefusedGrant
 	if (err != nil) != wantRefused {
 		t.Fatalf("grant %q: refused=%v (want %v): %v", g, err != nil, wantRefused, err)

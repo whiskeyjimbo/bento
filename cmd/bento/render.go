@@ -474,9 +474,11 @@ func resolvedShieldRules() ([]shieldRule, error) {
 // so a grant that trips more than one (a write naming a shield exactly is both inside it
 // and above it) is reported in the sentence the run would have printed:
 //
-//   - checkNotShielded - a grant at or inside a DenyAll shield. A read naming one exactly
-//     is the deliberate opt-in explicitShieldGrants reports instead; a write of the same
-//     path is not, which is the asymmetry this exists to say out loud.
+//   - checkReadNotShielded / checkWriteNotShielded - a grant at or inside a DenyAll
+//     shield. A read naming one exactly is the deliberate opt-in explicitShieldGrants
+//     reports instead; a write of the same path is not, which is the asymmetry this
+//     exists to say out loud - and why the two kinds are refused in different sentences,
+//     only one of which offers the opt-in as a remedy.
 //   - checkWriteNotUnderReadOnlyShield - a write at or inside a DenyWrite shield, which
 //     has no opt-in at all.
 //   - checkWriteNotAboveShield - a write containing a DenyAll shield.
@@ -548,7 +550,7 @@ func writeShieldProblem(rules []shieldRule, g string) (string, bool) {
 	lands := pathresolve.Existing(g)
 	for _, r := range rules {
 		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
-			return grantrefusal.InsideShield(g, r.Path).Error(), true
+			return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
 		}
 	}
 	for _, r := range rules {
@@ -704,21 +706,14 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 //
 // It reports whether it said anything, so no second explanation stacks on top.
 func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
-	if res.ExitCode != 126 || p.Exec == policy.ExecAll {
+	// The declared mode is not enough, which is why this asks blockedExecMode rather than
+	// p.Exec: exec-block is a hardening layer, so a run whose filter never landed proceeds
+	// anyway - and writeDegradations has just said so a few lines above. Blaming the
+	// manifest there both contradicts that line and sends the reader to change a setting
+	// that had no part in the failure.
+	mode := blockedExecMode(p, res)
+	if res.ExitCode != 126 || mode == "" {
 		return false
-	}
-	// The declared mode is not enough: exec-block is a hardening layer, so a run whose
-	// filter never landed proceeds anyway - and writeDegradations has just said so a few
-	// lines above. Blaming the manifest there both contradicts that line and sends the
-	// reader to change a setting that had no part in the failure.
-	if res.Report.StateOf(enforce.LayerExec) != enforce.Enforced {
-		return false
-	}
-	// Spelled as the manifest spells it, so the reader can find the line to change. Only
-	// the two blocking modes reach here, and the zero value of ExecMode is none.
-	mode := policy.ExecNone
-	if p.Exec == policy.ExecNoneStrict {
-		mode = policy.ExecNoneStrict
 	}
 	fmt.Fprintln(w, "[bento] the script exited 126, the code a shell returns when it could not execute a")
 	// "runs under", not "sets": exec is the deny default, so a manifest that never
@@ -747,6 +742,21 @@ func shieldsHidden(res enforce.Result) bool {
 		}
 	}
 	return false
+}
+
+// blockedExecMode names the exec: mode a run actually withheld subprocesses under, or
+// "" where it withheld none. Two things it settles for every caller: a declared block
+// whose filter never landed refused nothing, and the zero value of ExecMode is the empty
+// string rather than "none", so a manifest that never mentions exec would otherwise be
+// told to look for a field spelled nothing at all.
+func blockedExecMode(p *policy.Policy, res enforce.Result) policy.ExecMode {
+	if p.Exec == policy.ExecAll || res.Report.StateOf(enforce.LayerExec) != enforce.Enforced {
+		return ""
+	}
+	if p.Exec == policy.ExecNoneStrict {
+		return policy.ExecNoneStrict
+	}
+	return policy.ExecNone
 }
 
 // writeDenialLegend decodes the errors the kernel reports for a bento denial, which the
@@ -809,8 +819,8 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// Requiring Enforced drops a true line in that one case, which is the safe direction
 	// to be wrong in, and writeDegradations has already spoken there.
 	mountNSConfines := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
-	blocksExec := p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced
-	if !mountNSConfines && !blocksExec {
+	execMode := blockedExecMode(p, res)
+	if !mountNSConfines && execMode == "" {
 		return
 	}
 	// One sentence carrying both halves the reader needs: bento is not the one reporting
@@ -842,14 +852,8 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 		}
 		fmt.Fprintln(w, "[bento]   \"No such file or directory\" - ungranted or shielded, and identical to truly absent")
 	}
-	if blocksExec {
-		// The zero value is the empty string, not "none", so a manifest that never
-		// mentions exec would name a field spelled nothing at all.
-		mode := policy.ExecNone
-		if p.Exec == policy.ExecNoneStrict {
-			mode = policy.ExecNoneStrict
-		}
-		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", mode)
+	if execMode != "" {
+		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", execMode)
 	}
 	// A hidden shield raises no error at all - unlike the read-only one the write line
 	// above already accounts for - so a reader who took the errno lines as the whole list
@@ -966,19 +970,9 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	if res.ExitCode == 0 {
 		return false
 	}
-	// Named only where the block is in force, for writeExecHint's reason: a manifest whose
-	// filter never landed withheld nothing, and writeDegradations has already said so.
-	grants := fmt.Sprintf("%d read and %d write path(s)", len(p.Read), len(p.Write))
-	if p.Exec != policy.ExecAll && res.Report.StateOf(enforce.LayerExec) == enforce.Enforced {
-		// The zero value is the empty string, as in the legend: a manifest that never
-		// mentions exec would otherwise name a field spelled nothing at all.
-		mode := policy.ExecNone
-		if p.Exec == policy.ExecNoneStrict {
-			mode = policy.ExecNoneStrict
-		}
-		grants += fmt.Sprintf(" granted and exec: %s", mode)
-	} else {
-		grants += " granted"
+	grants := fmt.Sprintf("%d read and %d write path(s) granted", len(p.Read), len(p.Write))
+	if mode := blockedExecMode(p, res); mode != "" {
+		grants += fmt.Sprintf(" and exec: %s", mode)
 	}
 	// Wrapped rather than hand-broken: the summary's length depends on the manifest, so a
 	// break placed to fit one grant summary runs off the column under another.
@@ -1112,21 +1106,22 @@ func writeSandboxHomeNote(w io.Writer, prefix string) {
 // env is the resolved environment the sandbox was given, not p.Env: an allowlisted name
 // the host never set is left out of it, and envArgs keys on the same map, so it is what
 // decides whether HOME was really passed through.
-func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) bool {
 	if _, passed := env["HOME"]; res.ExitCode == 0 || passed {
-		return
+		return false
 	}
 	// os.UserHomeDir returns $HOME verbatim, so a relative or unset value names no tree
 	// a grant can be under - there is nothing to conclude from it either way.
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
-		return
+		return false
 	}
 	home = filepath.Clean(home)
 	if !slices.ContainsFunc(slices.Concat(p.Read, p.Write), func(g string) bool { return underHome(g, home) }) {
-		return
+		return false
 	}
 	writeSandboxHomeNote(w, "[bento] ")
+	return true
 }
 
 // writeSandboxPathMiss explains a shell's exit 127 the way writeSandboxHomeMiss explains a
@@ -1142,9 +1137,9 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // extra step only the bare-name case takes.
 //
 // env carries the same meaning it does for writeSandboxHomeMiss above.
-func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) {
+func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, res enforce.Result) bool {
 	if _, passed := env["PATH"]; res.ExitCode != 127 || passed {
-		return
+		return false
 	}
 	interp := p.Interpreter
 	if interp == "" {
@@ -1153,7 +1148,7 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 		interp, _, _ = profile.GuessInterpreter(p.Entrypoint)
 	}
 	if !isShell(interp) {
-		return
+		return false
 	}
 	fmt.Fprintln(w, "[bento] the script exited 127, the code a shell returns when it could not find a")
 	fmt.Fprintf(w, "[bento] command. PATH is not passed through, so inside the sandbox it is %s\n", enforce.SandboxPath)
@@ -1161,6 +1156,7 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 	fmt.Fprintln(w, "[bento] Grant the tool's own directory in read: so the box carries it. If the script")
 	fmt.Fprintln(w, "[bento] calls it by bare name, either allowlist PATH in env: so the shell searches")
 	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
+	return true
 }
 
 // underHome reports whether an already-resolved grant lies in the host home tree.

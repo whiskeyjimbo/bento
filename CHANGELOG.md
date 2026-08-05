@@ -42,6 +42,24 @@ commits that built it - none of them were ever in a release.
 
 ### What a Run Tells You
 
+- **The denial legend reaches the failing run, and names `exec:` among the
+  grants.** The mapping from an errno string to the manifest field that produced
+  it printed only after a clean exit - so the run where the reader was holding
+  `Read-only file system` in the script's own traceback got the generic note that
+  the sandbox denies silently, which is that mapping withheld. It now follows
+  that note, and the summary above it names the exec mode alongside the read and
+  write path counts, since `EPERM` on a subprocess is bento's own verdict as much
+  as `EROFS` is and counting paths alone sent the reader hunting the wrong field.
+  A failure some narrower hint already explained - a signal death, a 126 under a
+  blocked exec, a bypassed proxy, a refused destination, a `PATH` miss - is still
+  left to that hint alone. Output only; nothing about what is denied changed.
+- **A write grant inside a credential shield is refused in its own words.** Both
+  kinds shared one sentence, which offers the read opt-in as the way in - and
+  that opt-in is read-only by construction, so an author following it added a
+  `read:` line and met the same refusal again. The write refusal now says there
+  is no opt-in for a write, and why: it would grant exactly the plant the shield
+  is held for. The refusal itself is unchanged, in `bento run`, `bento validate`
+  and `bento approve` alike.
 - **A shielded file now says what it holds, the way a shielded directory
   already did.** Every single-file shield was stamped `credentials`, so the
   sentence a reviewer reads before approving a grant called `~/.bash_history`,
