@@ -311,11 +311,10 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// complete is worse than a failed profile.
 	//
 	// The wording stays neutral about the architecture. Off amd64 BlockIoUring refuses
-	// outright (its foreign-arch guard has no implementation there), but a host cannot
-	// reach this: Profile refuses an unsupported architecture before it launches
-	// anything, naming the missing observation backend. So every failure that arrives
-	// here is a native one - a failed install, a partial thread sync - and an
-	// architecture-specific message would misdescribe all of them.
+	// outright, its foreign-arch guard having no implementation there, but Profile
+	// rejects an unsupported architecture before launching anything - so every failure
+	// reaching here is a native one, a failed install or a partial thread sync, that an
+	// architecture-specific message would misdescribe.
 	if err := seccomp.BlockIoUring(); err != nil {
 		return 0, fmt.Errorf("launcher: securing complete observation: %w", err)
 	}

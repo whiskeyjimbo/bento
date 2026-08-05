@@ -176,6 +176,7 @@ func procMem(read string) {
 	fdBaseline := fdReachable(child.Pid)
 	if err := landlock.RestrictDegraded([]string{read}, nil, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
+		_ = child.Kill()
 		os.Exit(2)
 	}
 	_, restricted := memReadable(child.Pid, addr)
