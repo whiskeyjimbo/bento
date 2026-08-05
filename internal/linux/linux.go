@@ -546,6 +546,12 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		// learns its deny cannot be shielded instead of having it accepted and then
 		// silently dropped - a shield over a home or one of its ancestors would take the
 		// whole grant surface with it, so there is nothing to enforce either way.
+		// It is a check at this instant, not a guarantee: denyArgs resolves again at
+		// compile time and drops silently what fails there, so a symlink component
+		// rewritten in between passes here and vanishes later. Closing that would mean
+		// resolving once and carrying the result, which costs the shield machinery its
+		// own late resolution of grants; the residue is an unenforced CALLER deny, never
+		// an exposure of anything bento shields itself.
 		if !denylist.Shieldable(rp, homes) {
 			return nil, fmt.Errorf("deny path %q resolves to %q, which is a home directory or contains one, so shielding it would hide everything the policy grants", p, rp)
 		}
