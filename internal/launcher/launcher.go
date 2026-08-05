@@ -480,6 +480,16 @@ func networkStdioRefusals() []error {
 // (NETLINK_KOBJECT_UEVENT) - an information leak rather than reconfiguration, which wants
 // CAP_NET_ADMIN the target does not hold, but the sandbox is supposed to show it none of
 // that.
+//
+// AF_UNIX passing is an ACCEPTED RESIDUAL, not a finding that it is safe. An inherited,
+// already-connected unix socket - the host's docker.sock, a session bus, an agent socket -
+// is as unrevokable as any of the above and a fuller escape channel than netlink. It is
+// permitted because under systemd a unit's stdout and stderr ARE AF_UNIX sockets to
+// journald, so refusing the family outright would make `bento run` refuse to start under
+// any systemd unit, and this check runs before anything is known about the peer.
+// Narrowing it (a getpeername connected-vs-unconnected test, or a peer-cred check) is
+// possible and unbuilt; docs/threat-model.md carries it as a residual so it is not read
+// as a guarantee this layer makes.
 func refuseNetworkFD(fd int) error {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
