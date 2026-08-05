@@ -1,6 +1,7 @@
 package credhunt
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,14 @@ import (
 )
 
 // buildHome plants a tree shaped like a developer home: many ordinary files in nested
-// project dirs, a scattering of dotfile config dirs, and a few credential-shaped files.
+// project dirs, a scattering of home-root dotfiles, and a few credential-shaped files.
+//
+// The root dotfiles are what put the content sniff in the measurement. Nothing under
+// proj*/ reaches contentShapes - those files trip no name, suffix or mode signal - so a
+// tree of only those measures the walk and the coverage index while leaving the read path
+// dark. Their names carry no signal on purpose: at the root the sniff runs on contents
+// alone, which is the branch a size-gate regression would land in. Two of them run well
+// past MaxFileSize so the bound on the head read is exercised rather than assumed.
 func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 	tb.Helper()
 	home := tb.TempDir()
@@ -27,6 +35,21 @@ func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 			}
 		}
 	}
+	write := func(name string, body []byte) {
+		if err := os.WriteFile(filepath.Join(home, name), body, 0o644); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	for i := 0; i < 40; i++ {
+		write(fmt.Sprintf(".tool%02dconf", i), []byte("theme = dark\nverbose = true\n"))
+	}
+	// A shell history and an editor session are the realistic large root dotfiles, and
+	// they are what makes reading a bounded head rather than the whole file matter.
+	big := bytes.Repeat([]byte("cd ~/src/proj && make test\n"), 12000) // ~316 KB
+	write(".shell_history", big)
+	write(".editor_session", big)
+	// The lead the sniff alone can reach: no name token, no suffix, world-readable.
+	write(".envfile", []byte("theme = dark\napi_token = sk-0123456789abcdefghijklmnop\n"))
 	return home
 }
 
@@ -47,6 +70,24 @@ func BenchmarkHunt(b *testing.B) {
 		if _, _, err := Hunt(opts); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The benchmark can only measure the sniff if the tree it walks reaches it, and it
+// reports the same number either way - a tree that plants nothing sniffable reads as a
+// clean benchmark rather than a broken one. Pin the reachability here: .envfile trips no
+// name, suffix or mode signal, so a token finding on it means contentShapes ran on a
+// home-root file, which is the path the benchmark exists to cover.
+func TestBuildHomeReachesTheContentSniff(t *testing.T) {
+	home := buildHome(t, 2, 2)
+	found, _, err := Hunt(benchOpts(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(found, func(f Finding) bool {
+		return f.Path == filepath.Join(home, ".envfile") && slices.Contains(f.Signals, SignalToken)
+	}) {
+		t.Errorf("the benchmark tree does not reach the content sniff; found %v", found)
 	}
 }
 
