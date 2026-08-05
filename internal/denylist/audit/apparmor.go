@@ -91,14 +91,19 @@ const appArmorSection = "AppArmor private-files abstraction"
 func denyRule(line string) (string, bool) {
 	fields := strings.Fields(line)
 	i := 0
-	for i < len(fields) && fields[i] == "audit" {
+	// AppArmor's grammar takes either qualifier on either side of "deny", so both sides
+	// skip both: matching "owner" only after it dropped a whole "owner deny @{HOME}/..."
+	// rule with no diagnostic, and a rule that leaves the corpus reads downstream as a
+	// path upstream does not shield.
+	qualifier := func(f string) bool { return f == "audit" || f == "owner" }
+	for i < len(fields) && qualifier(fields[i]) {
 		i++
 	}
 	if i >= len(fields) || fields[i] != "deny" {
 		return "", false
 	}
 	i++
-	for i < len(fields) && fields[i] == "owner" {
+	for i < len(fields) && qualifier(fields[i]) {
 		i++
 	}
 	if i >= len(fields) {
