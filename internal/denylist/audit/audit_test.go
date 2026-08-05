@@ -655,6 +655,24 @@ func TestParseAppArmorKeepsTheTreeBranchOfADuplicatedPath(t *testing.T) {
 	}
 }
 
+// seen dedups across lines too, where the modes CAN differ. Keeping whichever line came
+// first makes the reference profile's claim about a path depend on its order in the file:
+// the weaker Deny hides a gap from the Weaker check the same way the file branch hid one
+// from the narrowing check.
+func TestParseAppArmorMergesTheStrongestClaimAcrossLines(t *testing.T) {
+	for name, profile := range map[string]string{
+		"write first": "  deny @{HOME}/.foo w,\n  deny @{HOME}/.foo{,/**} mrwkl,\n",
+		"read first":  "  deny @{HOME}/.foo{,/**} mrwkl,\n  deny @{HOME}/.foo w,\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ParseAppArmor(profile, "/HOME", "/run/user/1000")
+			if len(got) != 1 || got[0].Deny != denylist.DenyAll || !got[0].Dir {
+				t.Errorf("ParseAppArmor = %+v, want one DenyAll directory candidate for /HOME/.foo", got)
+			}
+		})
+	}
+}
+
 // Both abstractions exist only to enumerate sensitive $HOME entries, so their candidates
 // are in scope by the source rather than by a header. Without this every AppArmor gap
 // lands in the out-of-scope summary and the second corpus contributes nothing.

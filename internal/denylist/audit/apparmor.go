@@ -65,12 +65,21 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 			if !ok {
 				continue
 			}
-			// One rule can expand to both branches of foo{,/**}, the file first. Taking
-			// the first would record Dir=false and blind the diff's narrowing check for
-			// that path, so a later directory branch upgrades the candidate already kept.
+			// One rule can expand to both branches of foo{,/**}, the file first, and
+			// seen dedups across LINES as well, so the same path can arrive from two
+			// profile entries with different modes. Taking the first would record
+			// Dir=false and blind the diff's narrowing check, or record the weaker
+			// Deny and hide a gap in the Weaker check - both are order-dependent
+			// answers to "what does the reference profile shield here". Each field
+			// takes the stronger claim independently, since the two branches of one
+			// alternation carry the same modes and only cross-line duplicates can
+			// disagree on Deny.
 			if i, ok := seen[p]; ok {
 				if dir {
 					out[i].Dir = true
+				}
+				if deny < out[i].Deny {
+					out[i].Deny = deny
 				}
 				continue
 			}

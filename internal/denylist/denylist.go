@@ -1028,6 +1028,13 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // this one path (the parity audit's Narrowed verdict) would otherwise get the answer from
 // whichever equally strict rule the slice happened to list first. Beyond that - two
 // nested directory shields of the same class - which rule comes back is not defined.
+//
+// Strength is two-dimensional and one rule cannot report both halves of a composite
+// shield: a DenyAll file rule beside a DenyWrite directory rule loses the Dir, since Deny
+// is compared first. A tree candidate then reads as narrowed although the directory rule
+// does cover the tree, more weakly. That is the safe direction - a spurious gap the audit
+// surfaces, never a missed one - and a caller needing both halves wants every match, not a
+// third tie-break.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
@@ -1049,7 +1056,7 @@ func Covers(path string, rules []Rule) (Rule, bool) {
 
 // stricter reports whether a shields more than b: a lower Deny, or the same Deny over a
 // tree rather than a single path. Shared with Index so the two cannot drift on the
-// tie-break Covers now promises.
+// tie-break Covers promises.
 func stricter(a, b Rule) bool {
 	if a.Deny != b.Deny {
 		return a.Deny < b.Deny
