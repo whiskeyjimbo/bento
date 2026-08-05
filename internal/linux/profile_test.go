@@ -25,7 +25,7 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	obs, err := parseObservations(good)
+	obs, err := parseObservations(openReport(t, good))
 	if err != nil {
 		t.Fatalf("a complete report should parse: %v", err)
 	}
@@ -45,9 +45,28 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 		if err := os.WriteFile(bad, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := parseObservations(bad); err == nil {
+		if _, err := parseObservations(openReport(t, bad)); err == nil {
 			t.Errorf("%s report (no completion marker) should be an error, not a silent observation", name)
 		}
+	}
+}
+
+// The host parses the descriptor it held open across the run, and the child's writes
+// went through a dup of it - so the handle sits at end-of-file by the time the parse
+// starts. Without the rewind every report scans as empty and surfaces as one the
+// launcher never wrote, which is a run that observed nothing rather than an error.
+func TestParseObservationsRewindsTheSharedDescriptor(t *testing.T) {
+	f := openReport(t, filepath.Join(t.TempDir(), "report"))
+	if _, err := fmt.Fprintf(f, "R %q\nEXIT 0\n%s\n", "/a", observe.ReportEnd); err != nil {
+		t.Fatal(err)
+	}
+
+	obs, err := parseObservations(f)
+	if err != nil {
+		t.Fatalf("parse from a descriptor left at EOF: %v", err)
+	}
+	if !slices.Equal(obs.Reads, []string{"/a"}) {
+		t.Errorf("reads = %q, want the written record", obs.Reads)
 	}
 }
 
@@ -59,7 +78,7 @@ func TestParseObservationsRejectsContentAfterMarker(t *testing.T) {
 	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parseObservations(report); err == nil {
+	if _, err := parseObservations(openReport(t, report)); err == nil {
 		t.Error("a record after the completion marker should be rejected as tampered")
 	}
 }
@@ -74,7 +93,7 @@ func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	obs, err := parseObservations(report)
+	obs, err := parseObservations(openReport(t, report))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -96,7 +115,7 @@ func TestParseObservationsReadsExitStatus(t *testing.T) {
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		obs, err := parseObservations(p)
+		obs, err := parseObservations(openReport(t, p))
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
@@ -128,7 +147,7 @@ func TestParseObservationsRefusesUnreadableStatusLines(t *testing.T) {
 			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if obs, err := parseObservations(p); err == nil {
+			if obs, err := parseObservations(openReport(t, p)); err == nil {
 				t.Errorf("parse accepted %q and reported ExitCode=%d Dropped=%d", line, obs.ExitCode, obs.Dropped)
 			}
 		})
@@ -182,7 +201,7 @@ func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	obs, err := parseObservations(path)
+	obs, err := parseObservations(openReport(t, path))
 	if err != nil {
 		t.Fatalf("parseObservations: %v", err)
 	}
@@ -373,7 +392,7 @@ func TestParseObservationsReadsAbsentAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	obs, err := parseObservations(p)
+	obs, err := parseObservations(openReport(t, p))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

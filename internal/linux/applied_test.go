@@ -256,7 +256,7 @@ func TestAppliedReconcile(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			parseApplied(openApplied(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, true, 125)
+			parseApplied(openReport(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, true, 125)
 
 			for layer, want := range tc.want {
 				if got := r.StateOf(layer); got != want {
@@ -277,7 +277,7 @@ func TestAppliedReconcile(t *testing.T) {
 // report. The handle is closed, which is the one way the read can fail now that the host
 // holds the descriptor open across the run instead of re-opening a path.
 func TestParseAppliedUnreadableClaimsNothing(t *testing.T) {
-	f := openApplied(t, filepath.Join(t.TempDir(), "applied"))
+	f := openReport(t, filepath.Join(t.TempDir(), "applied"))
 	f.Close()
 	a := parseApplied(f)
 	if a.complete {
@@ -305,7 +305,7 @@ func TestParseAppliedQuotedReasonCannotForgeRecords(t *testing.T) {
 	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a := parseApplied(openApplied(t, path))
+	a := parseApplied(openReport(t, path))
 	if !a.complete {
 		t.Fatal("a quoted multi-line reason broke the completion marker")
 	}
@@ -339,7 +339,7 @@ func TestReconcileGradesLandlockFailureByTier(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var r enforce.Report
 			r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-			parseApplied(openApplied(t, path)).reconcile(&r, true, false, tc.mountConfined, 125)
+			parseApplied(openReport(t, path)).reconcile(&r, true, false, tc.mountConfined, 125)
 
 			if got := r.StateOf(enforce.LayerFilesystem); got != tc.want {
 				t.Errorf("filesystem layer = %v, want %v", got, tc.want)
@@ -374,7 +374,7 @@ func TestReconcileNamesWhyTheTargetWasNeverReached(t *testing.T) {
 	}
 	var r enforce.Report
 	r.Add(enforce.LayerExec, enforce.Enforced, "")
-	parseApplied(openApplied(t, path)).reconcile(&r, true, false, true, 125)
+	parseApplied(openReport(t, path)).reconcile(&r, true, false, true, 125)
 
 	if got := r.StateOf(enforce.LayerExec); got != enforce.Unavailable {
 		t.Fatalf("exec layer = %v for a target that never ran, want unavailable", got)
@@ -441,15 +441,15 @@ func TestReconcileReportsSetupState(t *testing.T) {
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
 				r.Add(l, enforce.Enforced, "")
 			}
-			if got := parseApplied(openApplied(t, path)).reconcile(&r, true, true, true, 125); got != tc.want {
+			if got := parseApplied(openReport(t, path)).reconcile(&r, true, true, true, 125); got != tc.want {
 				t.Errorf("reconcile setup state = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// openApplied gives a test the descriptor the host would have held open across the run.
-func openApplied(t *testing.T, path string) *os.File {
+// openReport gives a test the descriptor the host would have held open across the run.
+func openReport(t *testing.T, path string) *os.File {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -467,7 +467,7 @@ func openApplied(t *testing.T, path string) *os.File {
 // descriptor and shares its offset, so the writes leave it at end-of-file.
 func TestParseAppliedReadsTheRetainedDescriptorNotThePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "applied")
-	f := openApplied(t, path)
+	f := openReport(t, path)
 
 	// Write through a dup, as the child does, so the shared offset is left at EOF.
 	child := os.NewFile(uintptr(mustDup(t, f)), path)

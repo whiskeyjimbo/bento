@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -120,12 +121,15 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
 	defer removeCreatedShields(shieldDirs, shieldFiles)
 
-	report, err := os.CreateTemp("", "bento-observe-")
+	// Inside the run's own 0700 directory rather than shared /tmp, and read back below
+	// through this handle rather than by path: between the child exiting and a re-open,
+	// another same-uid host process could substitute a report proposing grants the run
+	// never asked for, which the operator would then review as the run's own findings.
+	report, err := os.CreateTemp(sb.runDir, "observe-")
 	if err != nil {
 		return profile.Observation{}, fmt.Errorf("linux: creating observation report: %w", err)
 	}
-	reportPath := report.Name()
-	defer os.Remove(reportPath)
+	defer os.Remove(report.Name())
 	defer report.Close()
 	sb.observe = true
 
@@ -193,13 +197,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// it close-on-exec, so the profiled target never inherits the channel - though a
 	// descendant can still reach it via /proc/<launcher>/fd, so the report is
 	// trustworthy only to the degree the profiled code is (see the launcher's
-	// runObserve). The host reads it back by path below.
+	// runObserve).
 	cmd.ExtraFiles = []*os.File{report}
 	if err := cmd.Run(); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
 	}
 
-	obs, err := parseObservations(reportPath)
+	obs, err := parseObservations(report)
 	if err != nil {
 		return profile.Observation{}, err
 	}
@@ -265,12 +269,15 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 // line if the target spawned a subprocess, an "EXIT <code>"
 // or "SIGNAL <n>" line carrying the run's exit status, and a "DROPPED <n>" line
 // counting accesses the observer could not name.
-func parseObservations(path string) (profile.Observation, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return profile.Observation{}, fmt.Errorf("linux: reading observations: %w", err)
+//
+// f is the descriptor the host held open since before the child started, so a
+// substitution at the path cannot reach what this parses. The child inherited a dup and
+// so shares the offset its writes left at end-of-file; without the rewind every report
+// would scan as empty, the same trap parseApplied's Seek closes.
+func parseObservations(f *os.File) (profile.Observation, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return profile.Observation{}, fmt.Errorf("linux: rewinding observations: %w", err)
 	}
-	defer f.Close()
 
 	var obs profile.Observation
 	var ended bool
