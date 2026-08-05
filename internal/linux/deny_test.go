@@ -377,6 +377,30 @@ func TestAStoreThatIsAlsoAHomeAnchorStaysShielded(t *testing.T) {
 	}
 }
 
+// Rule carries fields that only describe a shield to a reader - which store it holds, and
+// (once the diagnostic lands) which env var relocated it. Two rules differing in nothing
+// else bind identically, so the dedup must collapse them: keying it on the whole rule
+// would emit the same bind twice and let a report-only field change what is enforced.
+func TestRulesDifferingOnlyInDescriptionBindOnce(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/store")
+	sb.homes = []string{"/home/u"}
+	sb.extraDeny = []denylist.Rule{
+		{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Holds: denylist.HoldsCredentials},
+		{Path: "/home/u/store", Deny: denylist.DenyAll, Dir: true, Holds: denylist.HoldsHistory},
+	}
+
+	args, _ := denyArgs(sb, []string{"/home/u"}, nil, nil)
+	n := 0
+	for _, a := range args {
+		if a == "/home/u/store" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("one shielded path must bind once; got %d binds in %v", n, args)
+	}
+}
+
 // A deny-list dotfile whose host symlink resolves to the root must not refuse every
 // grant on the host. denyArgs drops such a rule rather than shielding the whole root,
 // so refusing here would blame an unrelated dotfile for a shield that was never
