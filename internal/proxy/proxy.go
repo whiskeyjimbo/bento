@@ -41,6 +41,13 @@ const (
 	// CONNECT was read - so it carries no host or port. It is reported so a run that
 	// floods the proxy is not counted as one that never touched the network.
 	Refused Decision = "refused"
+	// GateDenied marks a connection the static allowlist did not permit and a gatekeeper,
+	// consulted about it, refused. It is the negative half of AdmittedByGate and is
+	// distinct from Denied for the same reason: the operator action differs. A Denied
+	// destination is fixed by naming it in the manifest; a GateDenied one was named to a
+	// supervisor who said no, which under the prompt-on-every-host mode (an empty
+	// network: block and a gate) is every refusal there is.
+	GateDenied Decision = "gate-deny"
 	// Untunneled marks a request the proxy refused because it was not a CONNECT: the
 	// shape a client sends for plain http:// through a proxy. It is distinct from Denied
 	// because no rule can fix it - the destination may be granted and still never carry
@@ -564,10 +571,23 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	admittedByGate := false
 	if !policy.Allows(p.rules, host, port) {
 		if !p.callGate(ctx, host, port) {
-			p.report(Denied, host, port)
+			// Which of the two refused is recorded, because the remedy differs and only
+			// this frame knows: downstream sees one destination and one verdict. A gate
+			// that panicked is reported here too - it was consulted and did not admit,
+			// which is what the report claims and all it claims.
+			//
 			// The body is plaintext so it surfaces in the script's own error output,
 			// so a curl/requests user sees exactly which host was refused, not a blank
-			// failure.
+			// failure. It names the refusing layer for the same reason the report does;
+			// that a gate is present is already evident to a target that sees one
+			// destination admitted and another not.
+			if p.gate != nil {
+				p.report(GateDenied, host, port)
+				writeStatus(client, "403 Forbidden",
+					fmt.Sprintf("bento denied egress to %s:%s (the run's network gate did not admit it)", host, port))
+				return
+			}
+			p.report(Denied, host, port)
 			writeStatus(client, "403 Forbidden",
 				fmt.Sprintf("bento denied egress to %s:%s (not in the manifest's network allowlist)", host, port))
 			return

@@ -1294,6 +1294,31 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 	return true
 }
 
+// writeGateDeniedWarning names the destinations a network gate was asked about and
+// refused. It is separate from writeDeniedWarning because that notice's whole remedy -
+// add the destination under network: and re-approve - describes a decision the operator
+// has already made and declined, and under the prompt-on-every-host mode (an empty
+// network: block plus a gate) it would describe a manifest allowlist that does not exist.
+//
+// The hosts came from the sandbox's own CONNECT requests, so they are quoted for the same
+// reason writeGuardBlockedWarning quotes its own.
+//
+// It reports whether it said anything, so no second explanation of the same failure
+// stacks on top of it.
+func writeGateDeniedWarning(w io.Writer, res enforce.Result) bool {
+	if len(res.GateDenied) == 0 {
+		return false
+	}
+	fmt.Fprintln(w, "[bento] the network gate was asked about these destinations and refused them:")
+	for _, hp := range res.GateDenied {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	fmt.Fprintln(w, "[bento] the script saw a 403 from the proxy. Nothing is wrong with the manifest - this")
+	fmt.Fprintln(w, "[bento] was a decision made during the run. To stop being asked, add the destination")
+	fmt.Fprintln(w, "[bento] under network: in the manifest and re-approve.")
+	return true
+}
+
 // writeUntunneledWarning names the destinations a request addressed without asking the
 // proxy to tunnel to them. bento's egress rides an HTTP CONNECT proxy, so a client that
 // speaks plain http:// through it sends an absolute-URI GET instead of a CONNECT and

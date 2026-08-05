@@ -314,18 +314,36 @@ type Result struct {
 	// with no egress at all, reports empty too.
 	GuardBlocked []HostPort
 	// Denied lists the destinations the allowlist refused outright - no rule named them,
-	// and no gate admitted them - deduped and sorted. It is the answer to what the target
+	// and no gate was there to be asked - deduped and sorted. A destination a gate was
+	// consulted about and refused is in GateDenied instead, so this list is exactly the
+	// set a manifest rule would have admitted. It is the answer to what the target
 	// tried to reach and what was refused, which nothing else in the result carries: the
 	// sandbox meets the refusal as a 403 from the proxy inside its own error, with nothing
 	// naming the rule it fell outside of.
 	//
 	// Distinct from GuardBlocked because the operator action differs: a denial is fixed by
 	// naming the destination in the manifest, a guard block is not fixable that way at all.
+	// Distinct from GateDenied for the same reason - see there.
 	//
 	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
 	// a consumer rendering it to a terminal must quote it. Empty is not evidence the target
 	// stayed inside the allowlist: a run that made no connections reports empty too.
 	Denied []HostPort
+	// GateDenied lists the destinations no manifest rule covered and a NetworkGate,
+	// consulted about them, refused - deduped and sorted. It is the negative half of
+	// GateAdmitted, and the whole of what a supervised run with an empty network: block
+	// refuses: every destination goes to the gate, so nothing in such a run is ever
+	// refused by the allowlist alone.
+	//
+	// Distinct from Denied because the remedy differs and the operator is usually the
+	// one who chose it. Reporting one as the other tells someone who just answered a
+	// prompt that their manifest is missing a rule, in the workflow where adding that
+	// rule is precisely the decision they declined to make.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
+	// a consumer rendering it to a terminal must quote it. Empty is also what every
+	// ungated run reports, so it is not evidence a gate admitted everything.
+	GateDenied []HostPort
 	// Untunneled lists the destinations a request addressed without asking the proxy to
 	// tunnel to them - the shape a client sends for plain http:// - deduped and sorted.
 	// bento's egress rides an HTTP CONNECT proxy, so such a request is refused with a
