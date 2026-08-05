@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1734,12 +1735,7 @@ func resolve(path string) (string, error) {
 // through, plus the minimum an interpreter needs to run.
 func envArgs(proc enforce.Process) []string {
 	args := []string{"--clearenv"}
-	names := make([]string, 0, len(proc.Env))
-	for k := range proc.Env {
-		names = append(names, k)
-	}
-	slices.Sort(names)
-	for _, k := range names {
+	for _, k := range slices.Sorted(maps.Keys(proc.Env)) {
 		args = append(args, "--setenv", k, proc.Env[k])
 	}
 	if _, ok := proc.Env["PATH"]; !ok {
