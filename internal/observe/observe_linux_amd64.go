@@ -860,13 +860,19 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		drop()
 		return
 	}
-	// Every pathname this decoder reads is read HERE, at the entry stop, while the tracee
-	// is frozen before the kernel has copied its arguments. Reading one at the exit stop
-	// instead lets a sibling sharing the address space (a thread, or any CLONE_VM child)
-	// overwrite the buffer after the syscall ran, so the observer records a path the call
-	// never touched - and over-attribution silently widens the manifest the user consents
-	// to. The exit stop is still needed for one thing, the existence syscalls' success
-	// filter, and that replays what was captured here rather than reading again.
+	// Every pathname this decoder reads is read HERE, at the entry stop, before the kernel
+	// has copied the tracee's arguments. Reading one at the exit stop instead lets a
+	// sibling sharing the address space (a thread, or any CLONE_VM child) overwrite the
+	// buffer after the syscall ran, so the observer records a path the call never touched -
+	// and over-attribution silently widens the manifest the user consents to. The exit stop
+	// is still needed for one thing, the existence syscalls' success filter, and that
+	// replays what was captured here rather than reading again.
+	//
+	// This narrows the window rather than closing it. ptrace freezes the stopped THREAD,
+	// not the address space, so a CLONE_VM sibling still runs between this read and the
+	// kernel's copyin after the resume. What is left is a race the sibling has to win
+	// inside that window instead of across the whole syscall, and for the existence
+	// syscalls the success filter discards a planted path outright.
 	if atExit {
 		recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
 		return
@@ -949,8 +955,8 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 // branch. Existence and read are the same grant here - making a stat succeed means
 // binding the path into the sandbox - so each is recorded as a plain read.
 //
-// Unlike every other case in this decoder these are read at the syscall EXIT stop and
-// recorded only when the call SUCCEEDED. A failed open still needs a grant, because the
+// Unlike every other case in this decoder these are recorded only when the call found
+// something. A failed open still needs a grant, because the
 // script meant to open that file; a stat that already returned ENOENT needs none,
 // because enforcement reproduces that exact answer. The filter is what keeps manifests
 // tight: a shell's PATH search misses hundreds of times per command, and recording those
@@ -964,9 +970,10 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 // getdents64 and fchdir carry no pathname, and the descriptor they act on came from an
 // openat this decoder already recorded. getcwd names the run's own working directory,
 // which the sandbox must have bound for the process to be running in it.
+//
 // It runs at the ENTRY stop and only captures: the pathname is read and resolved here,
-// while the tracee is frozen and the buffer still holds what the kernel is about to read,
-// then held under this stop's key until recordHeldExistence can apply the success filter.
+// before the kernel has copied it, then held under this stop's key until
+// recordHeldExistence can apply the filter against the return value at the exit stop.
 // Reading it at the exit stop instead - where the return value lives - is what let a
 // sibling sharing the address space plant a path the call never touched.
 func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[string]heldPath) {
