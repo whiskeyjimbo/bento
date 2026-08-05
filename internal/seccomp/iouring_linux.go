@@ -30,6 +30,14 @@ import (
 // code segment, so it catches the int 0x80 case a register check would miss, and a
 // profile that cannot be trusted must not complete. It also closes i386 io_uring_setup,
 // which is 425 there too.
+//
+// Off amd64 the guard has no implementation, so this returns its error and profiling is
+// refused on those hosts rather than run without it. That is the same argument taken to
+// its conclusion, not an oversight: the ring block alone would install fine (the
+// assembler emits a native audit-arch gate for every GOARCH), but the compat ABI would
+// reach the default-allow and leave the observation exactly as incomplete as the guard
+// exists to prevent. The launcher states that consequence in profiling's terms, since
+// this error describes a fence rather than the feature it takes away.
 func BlockIoUring() error {
 	if err := blockForeignArch(); err != nil {
 		return err
