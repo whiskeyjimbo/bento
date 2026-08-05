@@ -1408,6 +1408,19 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")
 		fmt.Fprintf(w, "  them too, which is what a caller-chosen $HOME cannot move.\n")
 	}
+	// The runtime shield follows XDG_RUNTIME_DIR wherever it points, because a host that
+	// relocates it keeps the same contents there - the container auth.json, the gpg-agent
+	// socket, the dbus and wayland sockets. When the variable names a home or an ancestor
+	// of one, the shield would hide the whole grant surface, so it is dropped and only
+	// /run and /var/run remain. That leaves the real runtime directory readable under a
+	// broad grant, and the rule count alone reads exactly like an ordinary host's, so this
+	// is the only place an operator can learn it. Not a refusal: XDG_RUNTIME_DIR=$HOME is
+	// normal on the minimal containers bento is meant to run in.
+	if rd := denylist.RuntimeDir(); rd != "" && !denylist.Shieldable(rd, anchors) {
+		fmt.Fprintf(w, "  XDG_RUNTIME_DIR is %s, at or above an anchor, so only /run and /var/run are\n", strconv.Quote(rd))
+		fmt.Fprintf(w, "  shielded there - a grant reaching that directory hands out whatever sockets and\n")
+		fmt.Fprintf(w, "  tokens it holds. Point it at a directory outside the home to shield it.\n")
+	}
 	fmt.Fprintln(w)
 }
 
