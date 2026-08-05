@@ -453,9 +453,36 @@ func embeddedIPv4(ip net.IP) net.IP {
 // maxConcurrent bounds how many tunnels the proxy handles at once. It caps the
 // host-side goroutines and file descriptors untrusted code can pin by opening
 // connections in a loop; the cgroup limits confine the sandbox, but not this
-// host process. The limit is generous enough that no legitimate script reaches
-// it; a script that does is refused, not allowed to exhaust the host.
+// host process. The limit is generous enough that no legitimate script reaches it; a
+// script that does is refused rather than served. What that bounds is BENTO's own
+// contribution - nothing here sets an rlimit or otherwise speaks for the host, which
+// can still hit fd exhaustion from processes bento knows nothing about. Accept's own
+// retry below is what keeps that from ending the run's egress.
 const maxConcurrent = 512
+
+// Accept retry bounds after a recoverable error: start short and double to the ceiling,
+// so a condition that clears in milliseconds costs milliseconds while one that persists
+// does not spin.
+const (
+	acceptRetryStart = 5 * time.Millisecond
+	acceptRetryMax   = time.Second
+)
+
+// recoverableAccept reports whether an Accept error is a transient condition the listener
+// survives. ENFILE and EMFILE are fd exhaustion - system-wide or this process's - which
+// processes outside bento cause and which clears on its own; ECONNABORTED is a client
+// that went away between SYN and accept. net.ErrClosed is deliberately excluded: the
+// closer goroutine uses exactly that to end the run, so retrying it would spin through
+// teardown. Errors are matched by errno rather than through net.Error.Temporary, which is
+// deprecated and reports true for cases (a deadline) this must not retry blindly.
+func recoverableAccept(err error) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EMFILE) ||
+		errors.Is(err, syscall.ENFILE)
+}
 
 // Serve accepts connections on l and enforces the allowlist on each until ctx is
 // cancelled or l is closed. It returns when l stops accepting.
@@ -484,9 +511,34 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 		<-ctx.Done()
 		l.Close()
 	}()
+	retryDelay := time.Duration(0)
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			// A recoverable error is the HOST's condition, not this run's, and the fence
+			// must outlive it: returning would leave the socket still bind-mounted into the
+			// sandbox with nothing serving it, so every later CONNECT meets a dead socket
+			// instead of an allowlist decision. A run degraded that way for its whole
+			// remaining lifetime is strictly worse than a pause of milliseconds, which is
+			// why this is a retry and not a report.
+			if ctx.Err() == nil && recoverableAccept(err) {
+				if retryDelay == 0 {
+					retryDelay = acceptRetryStart
+				} else {
+					retryDelay = min(retryDelay*2, acceptRetryMax)
+				}
+				// The wait is on ctx as well as the timer: a backoff can straddle teardown,
+				// and a run that ends mid-delay must stop accepting now rather than serve out
+				// the delay first. The next Accept then meets the closed listener and takes
+				// the terminal path below.
+				t := time.NewTimer(retryDelay)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+				case <-t.C:
+				}
+				continue
+			}
 			// Whether the run had already ended is read HERE, not after the drain: an
 			// open tunnel holds wg.Wait until run teardown, so a listener that died on
 			// its own at minute one would find ctx cancelled by the time the last
@@ -499,6 +551,9 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return err
 		}
+		// The listener is healthy again, so the next transient error starts its backoff
+		// from the bottom rather than inheriting an old ceiling.
+		retryDelay = 0
 		select {
 		case sem <- struct{}{}:
 			wg.Go(func() {
@@ -575,19 +630,20 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			// this frame knows: downstream sees one destination and one verdict. A gate
 			// that panicked is reported here too - it was consulted and did not admit,
 			// which is what the report claims and all it claims.
-			//
-			// The body is plaintext so it surfaces in the script's own error output,
-			// so a curl/requests user sees exactly which host was refused, not a blank
-			// failure. It names the refusing layer for the same reason the report does;
-			// that a gate is present is already evident to a target that sees one
-			// destination admitted and another not.
+			decision := Denied
 			if p.gate != nil {
-				p.report(GateDenied, host, port)
-				writeStatus(client, "403 Forbidden",
-					fmt.Sprintf("bento denied egress to %s:%s (the run's network gate did not admit it)", host, port))
-				return
+				decision = GateDenied
 			}
-			p.report(Denied, host, port)
+			p.report(decision, host, port)
+			// The body is plaintext so it surfaces in the script's own error output, so a
+			// curl/requests user sees exactly which host was refused, not a blank failure.
+			// It is the SAME body either way, and deliberately says only what the allowlist
+			// did: naming a gate would tell a target whose every request is refused that a
+			// human is in the loop, which it could otherwise learn only by having some
+			// request admitted - and that is what it wants to know before trying to fatigue
+			// them into a yes. The gate is consulted only after the allowlist misses, so
+			// this text is true of both. The distinction the operator needs survives in the
+			// decision above, host-side, where the target cannot read it.
 			writeStatus(client, "403 Forbidden",
 				fmt.Sprintf("bento denied egress to %s:%s (not in the manifest's network allowlist)", host, port))
 			return

@@ -323,7 +323,9 @@ type Result struct {
 	//
 	// Distinct from GuardBlocked because the operator action differs: a denial is fixed by
 	// naming the destination in the manifest, a guard block is not fixable that way at all.
-	// Distinct from GateDenied for the same reason - see there.
+	// Distinct from GateDenied on a different axis: a gate denial is also fixable by a
+	// manifest rule, but it is a decision someone already made, so telling them to add
+	// the rule describes the choice they declined rather than an oversight.
 	//
 	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the CONNECT target), so
 	// a consumer rendering it to a terminal must quote it. Empty is not evidence the target
