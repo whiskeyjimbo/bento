@@ -66,6 +66,13 @@ type Candidate struct {
 	// express (it shields directories instead). A glob candidate needs a human to
 	// decide the covering directory shield, so it is reported separately.
 	Glob bool
+	// Dir reports that the upstream directive was directory-shaped - firejail's trailing
+	// slash, AppArmor's {,**} tail - so covering it takes a rule that shields the tree.
+	// Carried because denylist.Covers answers an exact path match whatever the rule's
+	// Dir is, which is right for enforcement and blind here: it is what lets the same
+	// entry move from a directory list to the flat file list, narrowing the shield from
+	// the whole tree to one inode with the ratchet still green.
+	Dir bool
 	// Section is what scope classification keys off: firejail's section-header comment
 	// for a headed profile, or a constant naming the source where the format has no
 	// headers. It separates bento's secret/exec threat model from an upstream's broader
@@ -294,6 +301,10 @@ type Gap struct {
 	// blacklists it (DenyAll) - the content is still readable, a possible
 	// misclassification rather than a missing entry.
 	Weaker bool
+	// Narrowed is set when the upstream directive covers a tree and bento's rule covers
+	// only the path itself, so every child - including one a sandboxed run creates -
+	// stays exposed.
+	Narrowed bool
 }
 
 // ParseFirejail maps the blacklist/blacklist-nolog/read-only directives of a firejail profile into
@@ -371,7 +382,7 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		if !ok {
 			continue
 		}
-		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Section: section, Raw: line})
+		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Dir: strings.HasSuffix(raw, "/"), Section: section, Raw: line})
 	}
 	return out
 }
@@ -430,7 +441,11 @@ func expand(raw, home, runUser string) (string, bool) {
 // cover unborn children, so firejail's per-file entries under a shielded dir are
 // covered). A glob candidate is covered only when a directory rule encloses its
 // parent, since bento cannot express the wildcard itself. A candidate bento shields
-// as DenyWrite while firejail blacklists it is reported as Weaker, not missing.
+// as DenyWrite while firejail blacklists it is reported as Weaker, not missing. A
+// directory-shaped candidate covered only by a rule on the path itself is reported as
+// Narrowed: Covers answers the exact match whatever the rule's Dir is, so without this
+// moving an entry from a directory list to the flat file list - the same string, a
+// different loop - shrinks the shield to one inode and the ratchet stays green.
 func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 	var gaps []Gap
 	for _, c := range candidates {
@@ -439,8 +454,10 @@ func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 			gaps = append(gaps, Gap{Candidate: c})
 			continue
 		}
-		if c.Deny == denylist.DenyAll && covering.Deny == denylist.DenyWrite {
-			gaps = append(gaps, Gap{Candidate: c, Weaker: true})
+		weaker := c.Deny == denylist.DenyAll && covering.Deny == denylist.DenyWrite
+		narrowed := c.Dir && !covering.Dir
+		if weaker || narrowed {
+			gaps = append(gaps, Gap{Candidate: c, Weaker: weaker, Narrowed: narrowed})
 		}
 	}
 	return gaps

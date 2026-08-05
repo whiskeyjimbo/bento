@@ -264,6 +264,25 @@ func TestDiffCoverageAndClass(t *testing.T) {
 	}
 }
 
+// Moving an entry from a directory list to the flat file list is a one-line diff - the
+// same string, a different loop - that shrinks the shield from the whole tree to one
+// inode. denylist.Covers answers the exact path match either way, which is right where it
+// enforces and blind here, so the gate has to compare shapes.
+func TestDiffReportsADirectoryShieldNarrowedToAFile(t *testing.T) {
+	candidates := []Candidate{{Path: "/HOME/.gist", Deny: denylist.DenyAll, Dir: true}}
+
+	tree := []denylist.Rule{{Path: "/HOME/.gist", Deny: denylist.DenyAll, Dir: true}}
+	if gaps := Diff(candidates, tree); len(gaps) != 0 {
+		t.Errorf("a directory rule covers a directory-shaped candidate; got %+v", gaps)
+	}
+
+	inode := []denylist.Rule{{Path: "/HOME/.gist", Deny: denylist.DenyAll}}
+	gaps := Diff(candidates, inode)
+	if len(gaps) != 1 || !gaps[0].Narrowed || gaps[0].Weaker {
+		t.Errorf("a file rule under a directory-shaped candidate must report Narrowed; got %+v", gaps)
+	}
+}
+
 func TestSplitByScopeUsesFirejailSections(t *testing.T) {
 	gaps := []Gap{
 		{Candidate: Candidate{Path: "/HOME/.aws", Section: "top secret"}},
