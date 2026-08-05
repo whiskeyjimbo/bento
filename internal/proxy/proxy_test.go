@@ -97,6 +97,99 @@ func TestReadConnectRejectsDeceivingTarget(t *testing.T) {
 	}
 }
 
+// A client speaking plain http:// through a proxy sends an absolute-URI request rather
+// than a CONNECT. The proxy tunnels CONNECT only, so the request is refused - but the
+// destination it named must reach the observer, or a manifest rule covering that host
+// reads as granted everywhere while carrying no traffic and nothing in the run says so.
+func TestUntunneledRequestReportsItsDestination(t *testing.T) {
+	for _, tc := range []struct{ line, host, port string }{
+		{"GET http://example.com/ HTTP/1.1", "example.com", "80"},
+		{"POST http://example.com:8080/x HTTP/1.1", "example.com", "8080"},
+		{"GET https://example.com/ HTTP/1.1", "example.com", "443"},
+		{"GET http://[2606:2800::1]/ HTTP/1.1", "2606:2800::1", "80"},
+		// The root label is stripped here as it is on the CONNECT path, so the reported
+		// destination matches the rule a user would write for it.
+		{"GET http://example.com./ HTTP/1.1", "example.com", "80"},
+	} {
+		var got []Decision
+		var gotHost, gotPort string
+		p := New([]policy.NetworkRule{{Host: "example.com", Port: "80"}},
+			WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, host, port string) {
+				got = append(got, d)
+				gotHost, gotPort = host, port
+			}))
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		fmt.Fprintf(c, "%s\r\nHost: example.com\r\n\r\n", tc.line)
+		status, _ := bufio.NewReader(c).ReadString('\n')
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "400") {
+			t.Errorf("%q: status = %q, want 400", tc.line, strings.TrimSpace(status))
+		}
+		if len(got) != 1 || got[0] != Untunneled {
+			t.Errorf("%q: decisions = %v, want exactly [%v]", tc.line, got, Untunneled)
+		}
+		if gotHost != tc.host || gotPort != tc.port {
+			t.Errorf("%q: reported %q:%q, want %q:%q", tc.line, gotHost, gotPort, tc.host, tc.port)
+		}
+	}
+}
+
+// The absolute-URI host reaches report(), the run's recorded destinations, and a
+// host-side render of them - exactly where a CONNECT target goes, so it gets exactly the
+// screen a CONNECT target gets. A target that fails it is still refused, but must be
+// reported with no destination rather than carrying an unscreened one onward.
+func TestUntunneledRequestScreensItsDestination(t *testing.T) {
+	for _, target := range []string{
+		"http://ex\x1bample.com/",
+		"http://ex\u202eample.com/",
+		"http://example.com:08080/",
+		"ftp://example.com/",
+		"/relative/path",
+	} {
+		var got []Decision
+		p := New(nil, WithDialer(fakeDialer("HELLO")),
+			WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+		dialProxy, stop := startProxy(t, p)
+		c := dialProxy()
+		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", target)
+		status, _ := bufio.NewReader(c).ReadString('\n')
+		c.Close()
+		stop()
+
+		if !strings.Contains(status, "400") {
+			t.Errorf("%q: status = %q, want 400", target, strings.TrimSpace(status))
+		}
+		if len(got) != 0 {
+			t.Errorf("%q: reported %v, want nothing - an unscreened destination must not be carried", target, got)
+		}
+	}
+}
+
+// Profiling refuses every CONNECT it records, but a non-CONNECT request dies before that
+// branch is reached - which is why a plain-HTTP destination was silently absent from the
+// proposal. The report has to happen on the read path, in either mode.
+func TestUntunneledRequestIsReportedWhileProfiling(t *testing.T) {
+	var got []Decision
+	p := New(nil, WithoutEgress(),
+		WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+	dialProxy, stop := startProxy(t, p)
+	c := dialProxy()
+	fmt.Fprint(c, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
+		t.Fatalf("reading status: %v", err)
+	}
+	c.Close()
+	stop()
+
+	if len(got) != 1 || got[0] != Untunneled {
+		t.Errorf("decisions = %v, want exactly [%v]", got, Untunneled)
+	}
+}
+
 // A port the dialer will silently renumber ("08080" becomes 8080) or reject
 // outright ("0x1f90") must not reach the allowlist: Allows would see the raw
 // spelling while guardUpstream sees the resolved one, so the two layers would

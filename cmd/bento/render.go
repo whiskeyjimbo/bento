@@ -136,7 +136,7 @@ type accessNoteJSON struct {
 	Host string `json:"host,omitempty"`
 	Port string `json:"port,omitempty"`
 	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
-	// read-shielded, write-shielded, too-broad (withheld); foreign-home-shield,
+	// not-tunneled, read-shielded, write-shielded, too-broad (withheld); foreign-home-shield,
 	// target-steerable-tmp, whole-workdir (proposed and flagged).
 	Reason string `json:"reason"`
 	// Holds is what the shield was hiding (denylist.Holds.Code), on a read-shielded note
@@ -1291,6 +1291,34 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 	fmt.Fprintf(w, "[bento]   bento profile %q --allow-network\n", p.Entrypoint)
 	fmt.Fprintln(w, "[bento] the default records destinations without forwarding them, so a plain re-profile")
 	fmt.Fprintln(w, "[bento] reproduces this same failure.")
+	return true
+}
+
+// writeUntunneledWarning names the destinations a request addressed without asking the
+// proxy to tunnel to them. bento's egress rides an HTTP CONNECT proxy, so a client that
+// speaks plain http:// through it sends an absolute-URI GET instead of a CONNECT and
+// meets a 400 the manifest cannot change - while validate and approve both report the
+// matching network rule as granted. That gap is invisible without this: the run's other
+// egress warnings all describe destinations no rule covered, so a reader who checked the
+// manifest first finds the rule there and concludes the report is about something else.
+//
+// The hosts came from the sandbox's own request line, so they are quoted for the same
+// reason writeGuardBlockedWarning quotes its own.
+//
+// It reports whether it said anything, so no second explanation of the same failure
+// stacks on top of it.
+func writeUntunneledWarning(w io.Writer, res enforce.Result) bool {
+	if len(res.Untunneled) == 0 {
+		return false
+	}
+	fmt.Fprintln(w, "[bento] these destinations were addressed without a CONNECT, so the egress proxy")
+	fmt.Fprintln(w, "[bento] refused them - a network rule granting them carries no traffic:")
+	for _, hp := range res.Untunneled {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
+	fmt.Fprintln(w, "[bento] the script saw a 400 from the proxy, not a 403. bento forwards CONNECT tunnels")
+	fmt.Fprintln(w, "[bento] only, so plain http:// cannot be carried: use https, or configure the client to")
+	fmt.Fprintln(w, "[bento] tunnel (curl --proxytunnel). Editing the manifest will not change this.")
 	return true
 }
 

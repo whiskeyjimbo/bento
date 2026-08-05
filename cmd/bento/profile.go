@@ -1151,6 +1151,18 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 		// quoting also delimits a host that is empty or carries spaces.
 		fmt.Fprintf(out, "[bento] not proposing network access to %q port %q - %v. The connection was recorded; if the script needs it, add a network: rule naming the host in that form by hand.\n", h.Host, h.Port, err)
 	}
+	seenUntunneled := map[string]bool{}
+	for _, h := range obs.Untunneled {
+		key := h.Host + ":" + h.Port
+		if seenUntunneled[key] {
+			continue
+		}
+		seenUntunneled[key] = true
+		notes = append(notes, accessNoteJSON{Kind: "network", Host: h.Host, Port: h.Port, Reason: "not-tunneled"})
+		// Quoted for the reason the unrepresentable note above is: the host is
+		// target-chosen and this is where it reaches the operator's terminal.
+		fmt.Fprintf(out, "[bento] not proposing network access to %q port %q - the script addressed it without a CONNECT, which is what a client sends for plain http:// through a proxy. bento's egress forwards CONNECT tunnels only, so a rule granting that destination would carry no traffic. The attempt was recorded; if the script needs it, use https or configure the client to tunnel, then re-profile.\n", h.Host, h.Port)
+	}
 	return notes
 }
 

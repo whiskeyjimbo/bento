@@ -30,6 +30,7 @@ func populatedResult() enforce.Result {
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
 		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
 		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
+		Untunneled:        []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
 		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		// OnHost is the store the grant landed on, enumerated from the host filesystem.
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
@@ -55,6 +56,8 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		"the egress guard refused",                   // GuardBlocked
 		`"api.githb.example\x1b[2K" port 443`,        // Denied, quoted
 		"egress to these destinations was refused",   // Denied
+		`"plain.example\x1b[2K" port 80`,             // Untunneled, quoted
+		"addressed without a CONNECT",                // Untunneled
 		`"/home/u/.ssh"`,                             // ShieldedGrants
 		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrants OnHost, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted
@@ -100,7 +103,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"Report":   "warned about through Degradations(), which is the part that fell short",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "AcceptedAliases": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true,
 	}

@@ -315,6 +315,14 @@ provenance:
   blocked-hosts: []             # Destinations bento's own egress guard refused to reach
 ```
 
+Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
+the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an
+absolute-URI request instead of a `CONNECT` and is refused with a 400 no matter what the
+rule says - use `https://`, or configure the client to tunnel (`curl --proxytunnel`). A
+run that hits this names the destination and the remedy in its summary, and `bento
+profile` records it as an access it declined to propose rather than writing a rule that
+would carry nothing.
+
 A destination lands there only when the guard refused it because the name resolved into
 space the sandbox must not reach - loopback, private ranges, cloud metadata - not because
 a profiling run declined to forward it. A default `bento profile` forwards no egress at

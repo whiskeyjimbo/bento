@@ -59,7 +59,14 @@ type Observation struct {
 	// so this is populated only under --allow-network. A host recorded here is one an
 	// enforced run would refuse the same way, whatever the manifest grants.
 	Blocked []HostPort
-	Execed  bool
+	// Untunneled are the destinations the run addressed without asking the proxy to
+	// tunnel to them - plain http:// through a CONNECT proxy. They are NOT in Hosts:
+	// bento's egress cannot carry such a request whatever the manifest says, so proposing
+	// a rule for one would write a grant that reads as satisfied and never carries
+	// traffic. They are recorded instead, so the proposal can say what it declined to
+	// propose and why, which is the only place the destination survives at all.
+	Untunneled []HostPort
+	Execed     bool
 	// Interpreter is the absolute, resolved path the interpreter ran from (empty
 	// for a self-interpreting binary). It anchors dropping the interpreter's own
 	// runtime tree from the proposal - under a version manager that tree lives in

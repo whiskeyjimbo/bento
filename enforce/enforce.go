@@ -326,6 +326,19 @@ type Result struct {
 	// a consumer rendering it to a terminal must quote it. Empty is not evidence the target
 	// stayed inside the allowlist: a run that made no connections reports empty too.
 	Denied []HostPort
+	// Untunneled lists the destinations a request addressed without asking the proxy to
+	// tunnel to them - the shape a client sends for plain http:// - deduped and sorted.
+	// bento's egress rides an HTTP CONNECT proxy, so such a request is refused with a
+	// 400 whatever the manifest grants, and a network rule naming the host and port
+	// reads as granted everywhere else while carrying no traffic at all.
+	//
+	// Distinct from Denied because no manifest edit fixes it: the remedy is the client's
+	// scheme or its proxy mode. Empty is not evidence every request was tunneled - a run
+	// that made no connections reports empty too.
+	//
+	// The Host is ATTACKER-CONTROLLED (the sandboxed target chose the request target), so
+	// a consumer rendering it to a terminal must quote it.
+	Untunneled []HostPort
 	// AcceptedAliases lists the credential aliases this run was allowed to read past a
 	// shield because the caller acknowledged the tree they sit in. Each names the path
 	// that reaches the content and the credential it reaches. Non-empty means the run
