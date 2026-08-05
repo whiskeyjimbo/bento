@@ -340,6 +340,39 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	}
 }
 
+// A zero-rule manifest is the one egress case with no reporter of its own: no proxy runs,
+// so nothing observes the attempt and the reader is left holding an errno. The line is
+// claimed off the filesystem layer, since a zero-rule run carries no network layer at all.
+func TestDenialLegendNamesAnEmptyNetworkField(t *testing.T) {
+	report := func(fs enforce.State) enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerFilesystem, fs, "")
+		r.Add(enforce.LayerExec, enforce.Enforced, "")
+		return r
+	}
+	const line = "no network: rules"
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, &policy.Policy{}, enforce.Result{Report: report(enforce.Enforced)}, false)
+	if !strings.Contains(b.String(), line) {
+		t.Errorf("the field responsible for the failure is missing from the legend: %q", b.String())
+	}
+
+	// With rules there is a proxy, and its own hint names the destination it refused.
+	b.Reset()
+	writeDenialLegend(&b, &policy.Policy{Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}}}, enforce.Result{Report: report(enforce.Enforced)}, false)
+	if strings.Contains(b.String(), line) {
+		t.Errorf("legend claims no rules over a manifest that has one: %q", b.String())
+	}
+
+	// The Landlock-only tier has no netns, so egress is not fenced and the claim is false.
+	b.Reset()
+	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded)}, false)
+	if strings.Contains(b.String(), line) {
+		t.Errorf("legend claims a denial no layer here produces: %q", b.String())
+	}
+}
+
 // The failing run is the one holding an errno string, and the generic hint tells it only
 // that the sandbox denies silently - the mapping withheld. The two print together there,
 // and the lead sentence stops claiming the exit code is unaffected, which that branch

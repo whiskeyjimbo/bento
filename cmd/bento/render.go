@@ -849,6 +849,17 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// to be wrong in, and writeDegradations has already spoken there.
 	mountNSConfines := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Enforced
 	execMode := blockedExecMode(p, res)
+	// A manifest with no rules has no proxy, so nothing observes the attempt and the
+	// egress reporter that would name the destination never speaks - the errno is all the
+	// reader gets, and it is the one grant field the legend used to leave out. With rules
+	// present the proxy answers, and that hint names the destination itself.
+	//
+	// Read off the filesystem layer rather than LayerNetwork, which a zero-rule run does
+	// not carry at all (requiredLayers: namespace isolation alone denies egress, so the
+	// allowlist stack is not asked for). Enforced there is exactly namespacesUsable, and
+	// the netns that fences egress comes with it - the Landlock-only tier has neither, so
+	// this stays silent where the claim would be false.
+	netDenied := len(p.Network) == 0 && mountNSConfines
 	if !mountNSConfines && execMode == "" {
 		return
 	}
@@ -880,6 +891,9 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
 		}
 		fmt.Fprintln(w, "[bento]   \"No such file or directory\" - ungranted or shielded, and identical to truly absent")
+	}
+	if netDenied {
+		fmt.Fprintln(w, "[bento]   \"Network is unreachable\", or a name that will not resolve - this manifest grants no network: rules")
 	}
 	if execMode != "" {
 		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", execMode)
@@ -989,10 +1003,13 @@ func signalDeath(res enforce.Result) (sig int, certain bool) {
 // a strict shortfall is reported by its own line, and a launcher that applied its layers
 // and then could not exec the target gets writeTargetUnreached instead.
 //
-// The summary counts the read and write grants and names the exec mode, because those
-// are the three things the run withheld and any of them can be what the script died on -
-// a manifest that blocks exec answers EPERM to a subprocess, which is bento's verdict
-// as much as EROFS is, and counting paths alone leaves a reader hunting the wrong field.
+// The summary counts the read and write grants and names the exec mode and an empty
+// network:, because those are what the run withheld and any of them can be what the
+// script died on - a manifest that blocks exec answers EPERM to a subprocess, which is
+// bento's verdict as much as EROFS is, and counting paths alone leaves a reader hunting
+// the wrong field. A manifest with no network rules is the case with no reporter of its
+// own: with rules the proxy names the destination it refused, without them nothing
+// observes the attempt at all.
 // It reports whether it said anything, so the legend below knows this failure was left
 // generic rather than explained.
 func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
@@ -1000,8 +1017,11 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		return false
 	}
 	grants := fmt.Sprintf("%d read and %d write path(s) granted", len(p.Read), len(p.Write))
+	if len(p.Network) == 0 {
+		grants += ", no network: rules"
+	}
 	if mode := blockedExecMode(p, res); mode != "" {
-		grants += fmt.Sprintf(" and exec: %s", mode)
+		grants += fmt.Sprintf(", and exec: %s", mode)
 	}
 	// Wrapped rather than hand-broken: the summary's length depends on the manifest, so a
 	// break placed to fit one grant summary runs off the column under another.

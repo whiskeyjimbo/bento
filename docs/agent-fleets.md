@@ -30,6 +30,24 @@ shield by its home-expanded absolute path, so the run reports whose home it
 opened - one more reason to read the `Report` rather than the exit code, as in
 [denial-shapes.md](denial-shapes.md).
 
+## Naming a run so you can reap it
+
+An orchestrator that has to stop a job needs a handle on more than bento's pid: a
+runaway agent's children outlive it. `--run-id` gives the run a transient systemd
+user scope named `bento-run-<id>.scope`, and the scope is the handle for the whole
+process tree:
+
+```sh
+bento run --run-id job1 ./agent.py.manifest.yaml
+systemctl --user kill bento-run-job1.scope
+systemctl --user show -p ControlGroup bento-run-job1.scope
+```
+
+The id is letters, digits and underscore, up to 64. A scope only exists where the
+manifest sets a resource limit (`memory`, `cpu`, or `pids`), so a manifest without
+one is refused rather than run with a handle that names nothing - if you plan to
+reap jobs, put a limit in the class manifest.
+
 ## Two auth modes, both permanent
 
 An agent needs credentials to talk to its model provider. There are two ways to
