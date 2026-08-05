@@ -146,4 +146,20 @@ func TestSymlinkedCredentialInsideADirectoryShieldIsShielded(t *testing.T) {
 	if i := slices.Index(args, key); i < 3 || args[i-2] != "--ro-bind" || args[i-1] != sb.emptyFile {
 		t.Errorf("the argv does not blank %q with the empty file: %v", key, args)
 	}
+
+	// The shield must stay opt-in-able by the path it is mounted at. A rule the opt-in
+	// machinery cannot see refuses the grant that names it and then offers that same
+	// grant as the remedy - which is why the rule names the target and not the link.
+	p := &policy.Policy{Entrypoint: entry, Read: []string{canon, key}}
+	optedIn, applied, err := compile(p, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatalf("a read grant naming the shielded target must opt in, not be refused: %v", err)
+	}
+	if i := slices.Index(optedIn, key); i < 1 || i+1 >= len(optedIn) || optedIn[i-1] != "--ro-bind-try" || optedIn[i+1] != key {
+		t.Errorf("the opted-in key is not bound as itself: %v", optedIn)
+	}
+	// The store around it stays shielded: opting into one file is not opting into ~/.ssh.
+	if len(applied) != 1 || applied[0].Path != filepath.Join(canon, ".ssh") {
+		t.Errorf("applied shields = %v, want only the store itself", applied)
+	}
 }
