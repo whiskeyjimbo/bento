@@ -118,8 +118,9 @@ type Options struct {
 	// MaxFileSize bounds the content sniff: it is how many bytes of a file's head are
 	// read, never a size a file must be under to be looked at. Reading a multi-gigabyte
 	// dataset whole to find a PEM header would make the tool unusable on a developer's
-	// home, and a secret buried past the first few KB of one is not the class this hunts -
-	// but refusing to open the file at all is how a 96 KB token store went unread.
+	// home, and a secret buried past the first few KB of one is not the class this hunts.
+	// A file is never too big to open, though: the token stores put their credential in
+	// the first KB and their bulk - a project list, a command history - after it.
 	MaxFileSize int64
 }
 
@@ -141,18 +142,23 @@ type Options struct {
 func Hunt(opts Options) ([]Finding, int, error) {
 	var out []Finding
 	pruned := 0
+	// Cleaned once, and every comparison below is against this rather than the caller's
+	// spelling. The walk asks whether an entry IS the root and whether its parent is, and
+	// filepath.Dir hands back a cleaned path: a root spelled with a trailing separator
+	// would match neither, switching the home-root sniff off and reporting a clean home.
+	home := filepath.Clean(opts.Home)
 	// Prepared once for the whole walk: coverage is asked about every entry in the home,
 	// and a linear scan of the rule set per entry measured as a third of this function's
 	// CPU time. See denylist.Index for why that is a different access pattern rather than
 	// a different definition of coverage.
 	shields := denylist.NewIndex(opts.Rules)
-	err := filepath.WalkDir(opts.Home, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// The root is the exception to the skip-and-continue rule below: a home that
 			// cannot be walked yields zero findings, which reads as a clean home. That is
 			// the silent wrong answer this tool exists to avoid, so it is the one error
 			// worth refusing over.
-			if path == opts.Home {
+			if path == home {
 				return err
 			}
 			if d != nil && d.IsDir() {
@@ -168,11 +174,15 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		// and anchored on the unresolved path, so a walk over the target matches none of
 		// them and every file in the home reads as uncovered. Naming the target is what the
 		// operator can act on - a run anchored there has the walk and the shields agreeing.
-		if path == opts.Home && !d.IsDir() {
-			if target, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil && target != path {
-				return fmt.Errorf("home %q resolves to %q: scan that path instead, so the shields anchor where the walk goes", path, target)
+		if path == home && !d.IsDir() {
+			if d.Type()&fs.ModeSymlink == 0 {
+				return fmt.Errorf("home %q is not a directory (mode %s)", path, d.Type())
 			}
-			return fmt.Errorf("home %q is not a directory (mode %s)", path, d.Type())
+			target, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil {
+				return fmt.Errorf("home %q is a symlink that does not resolve: %w", path, resolveErr)
+			}
+			return fmt.Errorf("home %q resolves to %q: scan that path instead, so the shields anchor where the walk goes", path, target)
 		}
 		// Only a DenyAll rule counts as covered. DenyWrite leaves the path fully
 		// READABLE - it exists to stop a plant, not to hide a secret - so treating it as
@@ -199,7 +209,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 			// hunt feeds. Never the scan root, though: a home that is itself a dotfiles
 			// checkout is common, and pruning there scans nothing and reports a clean
 			// home - a silent wrong answer, the failure this tool exists to avoid.
-			if path != opts.Home && isCheckout(path) {
+			if path != home && isCheckout(path) {
 				pruned++
 				return fs.SkipDir
 			}
@@ -215,7 +225,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		// A file that vanished between the walk and the stat cannot be shape-tested; see
 		// the function doc for why a live home makes that ordinary rather than fatal.
 		if info, statErr := d.Info(); statErr == nil {
-			if signals := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == opts.Home); len(signals) > 0 {
+			if signals := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home); len(signals) > 0 {
 				out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
 			}
 		}
@@ -257,10 +267,10 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []s
 	if strings.HasPrefix(name, ".") && (slices.ContainsFunc(editorLeavingSuffixes, func(s string) bool { return strings.HasSuffix(name, s) }) || numberedBackup(name)) {
 		signals = append(signals, SignalEditorLeaving)
 	}
-	// Sized on the READ, not on the file. Gating the sniff on the whole file's size skipped
-	// exactly the store it most needed to open: a real ~/.claude.json is ~96 KB of config
-	// carrying an oauth token in its first few KB, so a 64 KiB whole-file bound discarded it
-	// unread while a 64 KiB head reaches the token with room to spare.
+	// Sized on the READ, not on the file: a file's own size says nothing about whether it
+	// holds a credential. A real ~/.claude.json carries an oauth token in its first few KB
+	// behind ~96 KB of project history, and the shell and editor histories that accumulate
+	// an exported token are larger still. The bound belongs on what contentShapes reads.
 	if (len(signals) > 0 || atHomeRoot) && info.Size() > 0 {
 		signals = append(signals, contentShapes(path, maxSize)...)
 	}
@@ -285,15 +295,16 @@ func contentShapes(path string, maxSize int64) []string {
 	}
 	defer f.Close()
 
-	// The head is read whole and split here rather than scanned. A bufio.Scanner reports a
-	// line longer than its buffer through Err(), which a range-over-Scan loop never reaches,
-	// so a config written as one long line returned "no shapes" - identical to a clean file,
-	// and the operator saw nothing that said the sniff had given up. maxSize bounds the read
-	// either way, so this costs nothing and cannot fail quietly.
-	head, err := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
-	if err != nil {
-		return nil
-	}
+	// The head is read whole and split here rather than scanned. A bufio.Scanner gives up on
+	// a line longer than its buffer and reports it only through Err(), so a config written
+	// as one long line - minified JSON, a generated toml - would look identical to a clean
+	// file. maxSize bounds the read either way, so splitting costs the same and has no
+	// give-up path to forget to check.
+	// A read that failed partway still returns the bytes it got, and those are shape-tested
+	// rather than discarded: a file this hunt has already decided to open is a candidate,
+	// and dropping a PEM header that was read because the read later hit an I/O error is
+	// the same silent give-up the scanner used to produce.
+	head, _ := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
 
 	var signals []string
 	for line := range strings.SplitSeq(string(head), "\n") {
