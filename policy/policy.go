@@ -52,6 +52,16 @@ type Policy struct {
 	Network []NetworkRule
 	// Exec is the subprocess-spawning policy. The zero value is ExecNone.
 	Exec ExecMode
+	// ExecAllow are the binaries the target may spawn under ExecAllowlist, and is
+	// valid only under that mode. Each names one file, not a directory: a directory
+	// of executables is what the mode exists to avoid granting.
+	//
+	// Every entry must be a STATICALLY LINKED executable, which the enforcer checks
+	// and refuses. That is not a packaging preference: a dynamically linked binary is
+	// executed through its interpreter, so the loader would need execute too, and an
+	// executable loader runs any readable binary handed to it as an argument -
+	// including one the target writes into its own write grant. See ExecAllowlist.
+	ExecAllow []string
 	// Limits are resource ceilings; the zero value imposes none.
 	Limits Limits
 }
@@ -67,6 +77,26 @@ const (
 	// while permitting thread-creating clone. Not a total no-child guarantee:
 	// execveat and io_uring remain reachable.
 	ExecNoneStrict ExecMode = "none-strict"
+	// ExecAllowlist permits spawning exactly the binaries named in ExecAllow and
+	// nothing else. Unlike the none modes it installs no exec-block filter - the
+	// target must be able to execve - so the whole guarantee rests on Landlock's
+	// execute right, and a host that cannot apply it refuses the run rather than
+	// falling back to unrestricted spawn.
+	//
+	// It bounds WHICH binary, not what that binary then does: an allowlisted
+	// interpreter still runs arbitrary code handed to it as an argument, which is why
+	// the mode is only as narrow as the entries chosen for it. Landlock governs
+	// filesystem paths, so a binary reached without one - memfd_create plus
+	// execveat(fd) - is outside what this can bound, the same hole ExecNone's comment
+	// admits.
+	//
+	// ExecAllow entries must be statically linked, and the enforcer refuses a policy
+	// whose entries are not. The kernel executes a dynamic binary's PT_INTERP, so the
+	// loader needs the execute right, and a loader carrying it takes any readable ELF
+	// as its argument - a bypass reachable through any language's ordinary subprocess
+	// call, and not bounded by what is installed on the host, since the target can
+	// write the payload into its own write grant first.
+	ExecAllowlist ExecMode = "allowlist"
 	// ExecAll permits arbitrary subprocesses. It never relaxes filesystem or
 	// network confinement.
 	ExecAll ExecMode = "all"
@@ -157,6 +187,7 @@ func (p *Policy) Problems() []error {
 	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
 	fields = append(fields, p.InterpreterArgs...)
 	fields = append(append(fields, p.Read...), p.Write...)
+	fields = append(fields, p.ExecAllow...)
 	for _, f := range fields {
 		if r, ok := FirstUnsafeRune(f); ok {
 			return []error{fmt.Errorf("policy: value %q contains %s, which is not allowed in a path or argument", f, DescribeUnsafeRune(r))}
@@ -177,13 +208,10 @@ func (p *Policy) Problems() []error {
 	// reviewing the run sees no grant at all - and then the enforcer joins it onto the
 	// working directory, handing the target everything under it. A manifest carrying
 	// write: [""] and run from $HOME grants the whole home directory under a value that
-	// reads as absent. Read and Write are the only fields where empty means that: an
+	// reads as absent. The path-grant fields are the only ones where empty means that: an
 	// absent Interpreter and an empty argv element (sh -c '') are both legitimate, which
 	// is why this cannot fold into the character screen above.
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if path == "" {
 				// The YAML hint earns its place: an unquoted `- ~` is the null tag, so the
@@ -208,10 +236,7 @@ func (p *Policy) Problems() []error {
 			probs = append(probs, err)
 		}
 	}
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if err := screenTilde(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
 				probs = append(probs, err)
@@ -241,6 +266,7 @@ func (p *Policy) Problems() []error {
 	if err := p.Exec.validate(); err != nil {
 		probs = append(probs, err)
 	}
+	probs = append(probs, p.execAllowProblems()...)
 	for i, r := range p.Network {
 		if err := r.Validate(); err != nil {
 			probs = append(probs, fmt.Errorf("policy: network rule %d: %w", i, err))
@@ -290,10 +316,7 @@ func (p *Policy) RequireExpanded() error {
 			return err
 		}
 	}
-	for _, l := range []struct {
-		name  string
-		paths []string
-	}{{"read", p.Read}, {"write", p.Write}} {
+	for _, l := range pathGrants(p) {
 		for i, path := range l.paths {
 			if err := screenExpanded(fmt.Sprintf("%s[%d]", l.name, i), path); err != nil {
 				return err
@@ -301,6 +324,23 @@ func (p *Policy) RequireExpanded() error {
 		}
 	}
 	return nil
+}
+
+// pathGrants is every field holding host paths the frontends anchor, expand and echo,
+// paired with the name the manifest spells it. The screens that must cover all of them -
+// the empty-grant check, the tilde refusal, and the resolved-path precondition - iterate
+// this rather than each listing the fields itself, so a new path-bearing field is
+// screened by all three or by none, instead of silently by whichever loops were
+// remembered. Args are absent deliberately: they are never anchored or expanded, and an
+// empty one is legitimate.
+func pathGrants(p *Policy) []struct {
+	name  string
+	paths []string
+} {
+	return []struct {
+		name  string
+		paths []string
+	}{{"read", p.Read}, {"write", p.Write}, {"exec_allow", p.ExecAllow}}
 }
 
 func screenExpanded(field, path string) error {
@@ -447,11 +487,38 @@ func (m ExecMode) canonical() ExecMode {
 
 func (m ExecMode) validate() error {
 	switch m {
-	case "", ExecNone, ExecNoneStrict, ExecAll:
+	case "", ExecNone, ExecNoneStrict, ExecAllowlist, ExecAll:
 		return nil
 	default:
-		return fmt.Errorf("policy: invalid exec mode %q: want one of none, none-strict, all", string(m))
+		return fmt.Errorf("policy: invalid exec mode %q: want one of none, none-strict, allowlist, all", string(m))
 	}
+}
+
+// execAllowProblems reports the ways the exec mode and the allowlist disagree. Both
+// directions are refused rather than reconciled, because each reads as permitting
+// something it would not.
+//
+// An allowlist under another mode is the one that matters: `exec: none` beside a filled
+// exec_allow reads as "these and nothing else" and would silently enforce "nothing at
+// all", so the entries an author reviewed and approved would never run. Treating them as
+// a mode declaration instead would be worse - it would widen a policy that says none.
+//
+// An empty allowlist under the mode is refused for the symmetric reason: it reads as a
+// list to be filled and enforces the same thing exec: none does, more expensively and
+// with a Landlock dependency that can refuse the run. Whichever the author meant, the
+// other spelling says it plainly.
+func (p *Policy) execAllowProblems() []error {
+	var probs []error
+	if p.Exec.canonical() != ExecAllowlist {
+		if len(p.ExecAllow) > 0 {
+			probs = append(probs, fmt.Errorf("policy: exec_allow names %d binaries but exec is %q; the allowlist is only honored under exec: allowlist, and under any other mode it would read as a permission nothing enforces", len(p.ExecAllow), p.Exec.canonical()))
+		}
+		return probs
+	}
+	if len(p.ExecAllow) == 0 {
+		probs = append(probs, fmt.Errorf("policy: exec: allowlist with an empty exec_allow permits no subprocess at all; name the binaries the target may spawn, or write exec: none, which enforces that more directly"))
+	}
+	return probs
 }
 
 // Validate reports whether the rule can appear in a policy: its host must be a
