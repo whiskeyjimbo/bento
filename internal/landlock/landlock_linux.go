@@ -284,10 +284,13 @@ func withResolveUnix(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
 // that most tools use to write atomically. Within one directory rename is unaffected,
 // which is why it survives a casual test.
 //
-// Only the write rules get it. A read grant with refer would let the target hardlink a
-// read-only file into a write grant, where the write rules then govern the new path - so
-// granting it there is the escalation, not the feature. Cross-directory moves OUT of a
-// read grant need remove_file on the source, which a read rule does not carry either way.
+// Only the write rules get it, on least-privilege grounds rather than to close a hole:
+// reparenting out of a read grant needs remove_file on the source and make_reg on the
+// destination, which no read rule carries, and the kernel refuses any reparenting where
+// the file would gain rights it did not have at the source - a check built into refer's
+// own semantics, which runs wherever refer is granted. So a read rule carrying refer
+// would not actually widen anything; it would just be a right the read side has no use
+// for, in the one package whose whole subject is which rights are handled and granted.
 //
 // Only the DIRECTORY constructor, unlike withIoctlDev: refer names an operation on the two
 // parent directories, so the kernel's file-rule check - a rule on a non-directory may only
