@@ -959,7 +959,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 // A successful access(W_OK) is recorded as a read, not a write. It reports that a write
 // would be permitted, which a read-only bind makes false - but over-attribution silently
 // widens the manifest while under-attribution fails the run closed and is fixed by
-// adding a grant, the same asymmetry openat2Resolve turns on.
+// adding a grant, the same asymmetry the openat2 decode turns on.
 //
 // getdents64 and fchdir carry no pathname, and the descriptor they act on came from an
 // openat this decoder already recorded. getcwd names the run's own working directory,
@@ -1291,8 +1291,9 @@ func readPathAt(pid int, dirfd int32, addr uintptr) (string, bool) {
 
 // openHow reads the openat2 open_how struct at addr: flags at offset 0 and resolve
 // at offset 16 (mode, at offset 8, is not needed). ok is false if the read fails, in
-// which case the caller (via openat2Resolve) treats the open as a non-write anchored
-// at the dirfd - the fail-safe for an unreadable /proc/<pid>/mem.
+// which case the caller drops the observation rather than recording anything: without
+// the resolve flags there is no honest path, and guessing one named a file the kernel
+// never opened.
 func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {

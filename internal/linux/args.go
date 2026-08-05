@@ -56,8 +56,9 @@ type sandbox struct {
 	// interpreter is empty when the entrypoint is its own interpreter.
 	entrypoint  string
 	interpreter string
-	// interpreterName is the interpreter's absolute path BEFORE symlink resolution -
-	// the name the target actually runs under, and so the prefix its stdlib reads carry.
+	// interpreterName is the interpreter's absolute path BEFORE symlink resolution - the
+	// name the policy asked for, kept so the observation record can show what a proposal
+	// named. command() builds argv from the resolved interpreter, not from this.
 	// Empty when there is no interpreter or when resolution changed nothing.
 	interpreterName string
 	// proxySocket is the host path of the egress proxy's unix socket, set when the

@@ -150,9 +150,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// a transient systemd scope carrying the limits. When it cannot, the run has
 	// already been admitted (refused by default, or permitted under
 	// --allow-degraded) - here it simply proceeds unwrapped, and the report says so
-	// without a second check: canCreateScope is memoized for the life of the process,
-	// so the probe above recorded LayerLimits Unavailable from the same answer this
-	// reads. There is no window in which the report can claim a limit nothing applied.
+	// without a second check. canCreateScope caches every definitive verdict, so where
+	// the probe above answered, this reads that same answer. Where it could not answer
+	// it recorded LayerLimits Unavailable and this re-probes, which can only go the
+	// harmless way: limits applied under a report that did not claim them. There is no
+	// window in which the report claims a limit nothing applied.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(); ok {

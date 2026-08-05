@@ -73,8 +73,9 @@ type appliedReport struct {
 // exec filter is installed and the target is one syscall away: a descriptor naming
 // nothing would lose the report under an error about the report rather than about the
 // descriptor, and one naming a standard stream would write the layer report into the
-// target's own stdio and then close it out from under the target. The same stance
-// runObserve takes with the observation descriptor.
+// target's own stdio and then close it out from under the target. runObserve validates
+// its own descriptor up front for the first of those reasons, but has no standard-stream
+// floor: it writes its report after the traced target has already exited.
 func newAppliedReport(fd int) (*appliedReport, error) {
 	if fd == 0 {
 		return &appliedReport{}, nil

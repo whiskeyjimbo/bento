@@ -70,8 +70,8 @@ func terminalInjectionFilter() []unix.SockFilter {
 // TIOCSTI has nothing to inject into; the degraded tier execs the target directly and
 // it inherits the parent's terminal on stdin, so the block is the substitute. Landlock
 // would also cover this via its ioctl_dev right, but only at ABI 5 (kernel 6.10) and
-// above - far newer than the kernels this tier exists to serve - so the guarantee
-// cannot rest on it.
+// above. The tier is entered for a missing bwrap or unprivileged userns, not for an old
+// kernel, so its hosts span both sides of that line and the guarantee cannot rest on it.
 func BlockTerminalInjection() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)
