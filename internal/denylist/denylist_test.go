@@ -148,6 +148,12 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.pine-interrupted-mail",   // draft message body on disk
 		"/home/u/.config/plasmavaultrc",    // names the vaults whose store is shielded
 		"/home/u/.gist",                    // GitHub OAuth token, a file not a dir
+		"/home/u/.authinfo",                // Emacs auth-source, the .netrc sibling default
+		"/home/u/.hgrc",                    // Mercurial [auth] passwords and [hooks] host exec
+		"/home/u/.config/hg/hgrc",          // the XDG spelling hg reads the same way
+		"/home/u/.curlrc",                  // --user user:pass, read by default
+		"/home/u/.dbt/profiles.yml",        // warehouse passwords, the .pgpass class
+		"/home/u/.ansible/galaxy_token",    // the token, not the collections cache beside it
 	}
 	for _, p := range wantDenyAllFile {
 		r, ok := byPath[p]
