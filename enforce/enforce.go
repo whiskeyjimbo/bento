@@ -409,6 +409,11 @@ type Result struct {
 type ShieldApplied struct {
 	Path string
 	Kind string
+	// Source names the environment variable that put the shield at this path, empty
+	// for a shield at its default location. A relocation variable accepts any absolute
+	// path, so a run can fail on a path the shield blanked with nothing else naming the
+	// variable that moved it there.
+	Source string
 }
 
 // HostPort is one egress destination admitted at runtime by a NetworkGate rather

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -211,8 +212,9 @@ type mergeJSON struct {
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is
 // "hidden" or "read-only"; see enforce.ShieldApplied.
 type shieldJSON struct {
-	Path string `json:"path"`
-	Kind string `json:"kind"`
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Source string `json:"source,omitempty"`
 }
 
 func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
@@ -221,7 +223,7 @@ func toShieldsJSON(shields []enforce.ShieldApplied) []shieldJSON {
 	}
 	out := make([]shieldJSON, 0, len(shields))
 	for _, s := range shields {
-		out = append(out, shieldJSON{Path: s.Path, Kind: s.Kind})
+		out = append(out, shieldJSON{Path: s.Path, Kind: s.Kind, Source: s.Source})
 	}
 	return out
 }
@@ -598,6 +600,33 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 		msg += fmt.Sprintf(", %d read-only", readonly)
 	}
 	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg)
+
+	// The count alone is enough for the default shields, which land where a reader
+	// expects. A relocated one does not: the variable accepts any absolute path, so the
+	// shield can sit on something the run needs, and the failure surfaces as an ENOENT
+	// or a link error naming only the target. These are named in full rather than
+	// counted, because the whole point is to put the variable next to the path.
+	// Grouped by variable rather than listed per path, for the reason doctor's copy is:
+	// one variable can relocate a whole startup group and would bury the rest.
+	paths := map[string][]string{}
+	for _, s := range res.Shields {
+		if s.Source != "" && !slices.Contains(paths[s.Source], s.Path) {
+			paths[s.Source] = append(paths[s.Source], s.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] some of those followed an environment variable, so they shield a path bento")
+	fmt.Fprintln(w, "[bento] would not have chosen - if this run failed on one of these, that is why:")
+	for _, src := range slices.Sorted(maps.Keys(paths)) {
+		p := paths[src]
+		if len(p) == 1 {
+			fmt.Fprintf(w, "[bento]   $%s -> %q\n", src, p[0])
+			continue
+		}
+		fmt.Fprintf(w, "[bento]   $%s -> %d shields under %q\n", src, len(p), commonDir(p))
+	}
 }
 
 func writeJSON(w io.Writer, v any) error {
@@ -1510,7 +1539,68 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  shielded there - a grant reaching that directory hands out whatever sockets and\n")
 		fmt.Fprintf(w, "  tokens it holds. Point it at a directory outside the home to shield it.\n")
 	}
+	writeRelocatedShields(w)
 	fmt.Fprintln(w)
+}
+
+// writeRelocatedShields names the shields an environment variable moved off their default
+// path, and the variable that moved each.
+//
+// A relocation variable accepts any absolute path - there is no principled rule for where
+// a user may keep a history file or a kubeconfig, so nothing bounds the target to a
+// plausible one. HISTFILE=/usr/bin/python3 therefore hides the interpreter, and the run
+// fails with an ENOENT or a link error naming only the target. This is where an operator
+// can see the shield and the variable side by side before a run rather than after, which
+// is the whole diagnostic: the path alone cannot be traced back to the variable.
+func writeRelocatedShields(w io.Writer) {
+	rules, err := builtinShieldRules()
+	if err != nil {
+		return
+	}
+	paths := map[string][]string{}
+	for _, r := range rules {
+		// XDG_RUNTIME_DIR is set on nearly every desktop host, so listing it here would
+		// fire on an ordinary machine. The block above already reports the one case that
+		// is worth an operator's attention - the value that cannot be shielded at all.
+		if r.Source == "" || r.Source == "XDG_RUNTIME_DIR" {
+			continue
+		}
+		// Every anchor is passed to every Home call, so a relocation is re-derived once
+		// per anchor and would otherwise be counted as many times.
+		if !slices.Contains(paths[r.Source], r.Path) {
+			paths[r.Source] = append(paths[r.Source], r.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  %d environment variable(s) move a shield off its default path:\n", len(paths))
+	for _, src := range slices.Sorted(maps.Keys(paths)) {
+		// One line per variable, not per path: a variable that relocates a group (ZDOTDIR
+		// takes the whole zsh startup set) would otherwise bury the others under its own
+		// entries. Quoted for the reason the anchors are - the value is the host's, so a
+		// newline in one would forge a line of this report.
+		p := paths[src]
+		if len(p) == 1 {
+			fmt.Fprintf(w, "    $%s -> %s\n", src, strconv.Quote(p[0]))
+			continue
+		}
+		fmt.Fprintf(w, "    $%s -> %d shields under %s\n", src, len(p), strconv.Quote(commonDir(p)))
+	}
+	fmt.Fprintf(w, "  Nothing bounds these targets, so a variable pointing at a path the script needs\n")
+	fmt.Fprintf(w, "  hides it and the run fails naming only that path. Unset the variable to undo one.\n")
+}
+
+// commonDir returns the deepest directory holding every path, for naming a group of
+// shields one variable relocated together without listing each.
+func commonDir(paths []string) string {
+	dir := filepath.Dir(paths[0])
+	for _, p := range paths[1:] {
+		for dir != "/" && !policy.CoversResolved(dir, p) {
+			dir = filepath.Dir(dir)
+		}
+	}
+	return dir
 }
 
 // writeExposedWarning tells the user which credential and persistence paths a full

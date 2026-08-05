@@ -374,7 +374,7 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 		if r.Deny == denylist.DenyWrite {
 			kind = "read-only"
 		}
-		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind})
+		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind, Source: r.Source})
 	}
 	slices.SortFunc(out, func(a, b enforce.ShieldApplied) int { return cmp.Compare(a.Path, b.Path) })
 	return out
