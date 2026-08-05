@@ -89,24 +89,34 @@ func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 // 6.10 would deny every ioctl on every device node the target opens - TCGETS on a freshly
 // opened /dev/tty, so isatty and termios fail. This kernel is below that ABI, so the
 // denial itself is unreachable here and the rules are inspected instead of applied.
+//
+// Each set carries a directory AND a regular file, so classifyRules routes both ways and
+// the file constructors are covered too - a device node is a file, and a grant naming one
+// directly is the case the right exists for.
 func TestBothTiersGrantIoctlDevOnTheirPathGrants(t *testing.T) {
 	d := t.TempDir()
+	f := filepath.Join(d, "regular")
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{d, f}
 
 	tiers := map[string][]ll.Rule{}
-	backstop, err := backstopRules([]string{d}, []string{d})
+	backstop, err := backstopRules(paths, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tiers["bwrap backstop"] = backstop
-	degraded, err := degradedRules([]string{d}, []string{d}, nil)
+	degraded, err := degradedRules(paths, paths, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tiers["degraded"] = degraded
 
 	for tier, rules := range tiers {
-		if len(rules) == 0 {
-			t.Fatalf("%s tier built no rules for an existing path", tier)
+		// One dir rule and one file rule per kind, both kinds per tier.
+		if len(rules) != 4 {
+			t.Fatalf("%s tier built %d rules for a directory and a file in each set, want 4", tier, len(rules))
 		}
 		for _, r := range rules {
 			if !strings.Contains(fmt.Sprintf("%v", r), "ioctl_dev") {
