@@ -55,6 +55,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err := p.RequireExpanded(); err != nil {
 		return enforce.Result{}, err
 	}
+	if err := e.screenRunID(p, opts.RunID); err != nil {
+		return enforce.Result{}, err
+	}
 	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
 	// Landlock-only no-bwrap tier instead. The caller (enforce.Run) only sets this
 	// after admitting the run under --allow-degraded, so this never silently downgrades.

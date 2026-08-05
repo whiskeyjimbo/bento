@@ -108,7 +108,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// One required set for both the admission below and the report overlay further
 	// down: judging admission on one set and reporting on another is how a layer gets
 	// admitted on and then erased from the report.
-	if err := validateRunID(opts.RunID); err != nil {
+	if err := ValidateRunID(opts.RunID); err != nil {
 		return Result{}, err
 	}
 	wanted := requiredLayers(p, opts)
@@ -294,14 +294,17 @@ func (o Options) admit(r Report) error {
 // limit systemd enforces.
 var runIDRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
-// validateRunID screens a caller-supplied run id before it can reach a unit name.
+// ValidateRunID screens a caller-supplied run id before it can reach a unit name.
+// Exported because a backend is an entry point an embedder can call without going
+// through Run, and the id is the one option that reaches an external command's argv:
+// the backend re-screens with this rather than carrying a second copy of the spelling.
 //
 // A Refusal and not a plain error, even though it is settled before anything is probed
 // and so carries an empty Report: it is a mistake in what the caller asked for, which is
 // the category a supervisor must not retry, and a frontend that sorts the two apart -
 // run --json emits "refusal" for one and "failed" for the other - would otherwise file a
 // misspelled id under the runs that failed for reasons out of the caller's hands.
-func validateRunID(id string) error {
+func ValidateRunID(id string) error {
 	if id == "" || runIDRe.MatchString(id) {
 		return nil
 	}
