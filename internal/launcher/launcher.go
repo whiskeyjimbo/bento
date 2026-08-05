@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -311,14 +310,14 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// the observation complete. Fatal on error - a manifest that cannot be trusted to be
 	// complete is worse than a failed profile.
 	//
-	// Off amd64 this is where profiling stops entirely: BlockIoUring pulls in the
-	// foreign-arch guard, which has no implementation there, and the same completeness
-	// argument that makes the ring block mandatory makes running without the guard
-	// unacceptable. That is a refusal of the whole feature on those hosts, so it says so
-	// in those terms rather than surfacing the guard's own wording, which describes a
-	// fence for a run the user asked to observe.
+	// The wording stays neutral about the architecture. Off amd64 BlockIoUring refuses
+	// outright (its foreign-arch guard has no implementation there), but a host cannot
+	// reach this: Profile refuses an unsupported architecture before it launches
+	// anything, naming the missing observation backend. So every failure that arrives
+	// here is a native one - a failed install, a partial thread sync - and an
+	// architecture-specific message would misdescribe all of them.
 	if err := seccomp.BlockIoUring(); err != nil {
-		return 0, fmt.Errorf("launcher: profiling is not available on %s: the observer decodes only native syscalls and the compat ABI cannot be fenced off here, so a synthesized manifest could silently omit everything a target reached through it: %w", runtime.GOARCH, err)
+		return 0, fmt.Errorf("launcher: securing complete observation: %w", err)
 	}
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
