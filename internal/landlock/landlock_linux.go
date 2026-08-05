@@ -160,11 +160,12 @@ func execAllowlistRules(read, write, execAllow []string) ([]ll.Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Not classifyRules: an allowlist entry is a file by definition, and a directory
-	// there would grant execute on everything under it - the blanket this mode exists to
-	// withhold. The caller refuses a non-file entry; routing one to a directory rule here
-	// would quietly honor it instead.
-	e, err := existing(execAllow)
+	// Not classifyRules, and the refusal below rather than a routing choice: an allowlist
+	// entry is one file, and Landlock's rules apply to everything beneath a path, so a
+	// directory here would grant execute on the whole subtree - precisely the blanket this
+	// ruleset exists to withhold. Refused here rather than left to a caller, because there
+	// is no caller: a precondition this function does not enforce is one nothing enforces.
+	e, err := execAllowFiles(execAllow)
 	if err != nil {
 		return nil, err
 	}
@@ -174,11 +175,32 @@ func execAllowlistRules(read, write, execAllow []string) ([]ll.Rule, error) {
 	return rules, nil
 }
 
+// execAllowFiles screens the allowlist down to the regular files that exist, refusing a
+// directory outright.
+//
+// It does not share `existing`, whose skip-if-absent contract belongs to the path grants:
+// there, a missing path buys no confinement to drop and the target simply finds nothing.
+// An absent allowlist ENTRY is a different fact - the mode is narrower than the policy
+// says, and a run that silently permits fewer binaries than were approved is a broken run
+// rather than a safe one - so it is reported instead of skipped. That difference is why
+// the two are not one helper with a flag.
+func execAllowFiles(paths []string) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return nil, fmt.Errorf("landlock: exec allowlist entry %q: %w", p, err)
+		}
+		if fi.IsDir() {
+			return nil, fmt.Errorf("landlock: exec allowlist entry %q is a directory; an entry names one binary, and Landlock would grant execute on everything beneath it", p)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // The rights the exec allowlist's read and write rules grant: exactly what
-// go-landlock's RODirs/ROFiles/RWDirs/RWFiles grant, minus AccessFSExecute. Withholding
-// execute here is how the allowlist stops being a no-op - those helpers all include it,
-// so under the ordinary Restrict every readable file is already executable and an added
-// exec rule would bound nothing.
+// go-landlock's RODirs/ROFiles/RWDirs/RWFiles grant, minus AccessFSExecute.
 //
 // Landlock resolves an access against the rule for the most specific matching path
 // rather than the union along the hierarchy, so a narrow execute rule on one file still
