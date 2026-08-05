@@ -387,3 +387,28 @@ func TestParseObservationsReadsAbsentAnnotations(t *testing.T) {
 		t.Errorf("dropped = %d, want 0: an unquotable annotation loses no access", obs.Dropped)
 	}
 }
+
+// A cpu limit needs its own delegation answer. canCreateScope confirms only memory and
+// pids, and systemd-run accepts a CPUQuota for an undelegated cpu controller without
+// enforcing it, so gating on scope creation alone profiled the target with the manifest's
+// cpu cap silently absent. Run is covered by admission reading LayerLimitsCPU off the
+// probe; Profile produces no Report, so it owes the check directly.
+func TestProfileRefusesACPULimitTheHostCannotEnforce(t *testing.T) {
+	requireSandbox(t)
+	if ok, _ := canCreateScope(); !ok {
+		t.Skip("this host cannot create a transient scope; the scope refusal fires first")
+	}
+	// canCreateScope memoized its own reading above, so this override reaches only the
+	// per-controller cpu check - the undelegated cpu controller is the sole difference.
+	orig := delegatedControllers
+	delegatedControllers = func() (map[string]bool, bool) {
+		return map[string]bool{"memory": true, "pids": true}, true
+	}
+	t.Cleanup(func() { delegatedControllers = orig })
+
+	p := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{CPU: "25%"}}
+	_, err := New().Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "cpu controller is not delegated") {
+		t.Fatalf("profiling must refuse a cpu limit this host cannot enforce; got err=%v", err)
+	}
+}
