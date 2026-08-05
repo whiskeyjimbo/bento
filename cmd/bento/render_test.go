@@ -309,7 +309,7 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeDenialLegend(&b, tc.p, tc.res)
+			writeDenialLegend(&b, tc.p, tc.res, false)
 			out := b.String()
 			if wantAny := tc.wantFS || tc.wantExec != ""; (b.Len() > 0) != wantAny {
 				t.Errorf("legend emitted = %v, want %v (output: %q)", b.Len() > 0, wantAny, out)
@@ -340,6 +340,85 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	}
 }
 
+// The failing run is the one holding an errno string, and the generic hint tells it only
+// that the sandbox denies silently - the mapping withheld. The two print together there,
+// and the lead sentence stops claiming the exit code is unaffected, which that branch
+// disproves.
+func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecNone, Read: []string{"/data"}}
+	res := enforce.Result{ExitCode: 1, Report: r}
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, res, true)
+	out := b.String()
+	if !strings.Contains(out, "Read-only file system") || !strings.Contains(out, "exec: none") {
+		t.Errorf("the branch that most needs the mapping must get it: %q", out)
+	}
+	if strings.Contains(out, "does not change its exit code") {
+		t.Errorf("the run exited non-zero, so that lead is false here: %q", out)
+	}
+
+	// A signal death is explained by its own notice, which names the cap or the filter
+	// that killed the run; the mapping under it offers four more causes to consider.
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{Signal: 9, Report: r}, false)
+	if b.Len() > 0 {
+		t.Errorf("a signal notice already explained this run: %q", b.String())
+	}
+}
+
+// EPERM on an execve is bento's own verdict as much as EROFS is, so a summary that counts
+// only paths leaves the reader hunting a field that is not the one that refused them.
+func TestProfileHintNamesTheExecMode(t *testing.T) {
+	report := func(exec enforce.State) enforce.Report {
+		var r enforce.Report
+		r.Add(enforce.LayerExec, exec, "")
+		return r
+	}
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		res  enforce.Result
+		want string
+	}{
+		{"a blocked exec is a grant withheld", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none"},
+		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none"},
+		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, "exec: none-strict"},
+		{"subprocesses are allowed, so nothing was withheld", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{ExitCode: 1, Report: report(enforce.Enforced)}, ""},
+		{"a block that never landed withheld nothing either", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: report(enforce.Unavailable)}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			if !writeProfileHint(&b, tc.p, tc.res) {
+				t.Fatalf("a failing run gets the hint: %q", b.String())
+			}
+			out := b.String()
+			if tc.want == "" {
+				if strings.Contains(out, "exec:") {
+					t.Errorf("hint names an exec block that withheld nothing: %q", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("hint does not name %q, the field that refused a subprocess: %q", tc.want, out)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				if len(line) > textWidth {
+					t.Errorf("line runs past the wrap column (%d): %q", len(line), line)
+				}
+			}
+		})
+	}
+	var b bytes.Buffer
+	if writeProfileHint(&b, &policy.Policy{}, enforce.Result{}) {
+		t.Errorf("a clean run is not the hint's subject: %q", b.String())
+	}
+}
+
 // A shield binds a read-only path inside a write grant, so EROFS arrives from a path the
 // grant plainly covers. Naming only the grants there sends the reader to a manifest line
 // that is correct, which is the misattribution the legend exists to avoid - and bento
@@ -352,7 +431,7 @@ func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
 
 	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
 	var b bytes.Buffer
-	writeDenialLegend(&b, p, readOnly)
+	writeDenialLegend(&b, p, readOnly, false)
 	if !strings.Contains(b.String(), "shielded path inside one") {
 		t.Errorf("a read-only shield engaged, so the write line must admit it: %q", b.String())
 	}
@@ -361,7 +440,7 @@ func TestDenialLegendNamesAShieldInsideAWriteGrant(t *testing.T) {
 	// the line for it would hedge a cause that did not apply.
 	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
 	b.Reset()
-	writeDenialLegend(&b, p, hidden)
+	writeDenialLegend(&b, p, hidden, false)
 	if strings.Contains(b.String(), "shielded path inside one") {
 		t.Errorf("no read-only shield engaged, so the grants stand alone: %q", b.String())
 	}
@@ -382,7 +461,7 @@ func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
 
 	hidden := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
 	var b bytes.Buffer
-	writeDenialLegend(&b, p, hidden)
+	writeDenialLegend(&b, p, hidden, false)
 	out := b.String()
 	if !strings.Contains(out, shapes) {
 		t.Errorf("a hidden shield engaged, so its silence must be named: %q", out)
@@ -396,12 +475,12 @@ func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
 	// nothing about empty directories.
 	readOnly := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "read-only"}}}
 	b.Reset()
-	writeDenialLegend(&b, p, readOnly)
+	writeDenialLegend(&b, p, readOnly, false)
 	if strings.Contains(b.String(), shapes) {
 		t.Errorf("no hidden shield engaged, so the shapes did not apply: %q", b.String())
 	}
 	b.Reset()
-	writeDenialLegend(&b, p, enforce.Result{Report: r})
+	writeDenialLegend(&b, p, enforce.Result{Report: r}, false)
 	if strings.Contains(b.String(), shapes) {
 		t.Errorf("a run that shielded nothing must not name a shield: %q", b.String())
 	}
