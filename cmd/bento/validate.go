@@ -545,6 +545,12 @@ type policyJSON struct {
 	// file. A note beside missing_read_grants and read the same way: runnable stays true
 	// and --strict does not fail on it.
 	FileishWriteGrants []string `json:"fileish_write_grants,omitempty"`
+	// UnshieldableRuntimeDir is XDG_RUNTIME_DIR as this host spells it when no shield can
+	// follow it there, and absent otherwise. The degraded rule set is byte-identical to a
+	// healthy host's - the same two rules, the same count, no refusal - so a gate reading
+	// this envelope has nothing else to tell the two apart, which is the whole reason the
+	// human output says it too.
+	UnshieldableRuntimeDir string `json:"unshieldable_runtime_dir,omitempty"`
 	// Relocatable says whether every path anchors to the manifest's own directory, with
 	// PinnedPaths naming the ones that do not. A pointer because absent is the third
 	// answer, as it is for Runnable: the question is only asked under --relocatable.
@@ -572,6 +578,7 @@ func (o *policyJSON) setRunnable(r runnability) {
 	o.RefusedGrants = r.refusals
 	o.MissingReadGrants = r.missingReads
 	o.FileishWriteGrants = r.fileishWrites
+	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
 }
 
 type limitsJSON struct {
