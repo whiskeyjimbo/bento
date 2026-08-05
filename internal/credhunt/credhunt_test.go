@@ -376,3 +376,47 @@ func TestUnreadableDirectoryIsCounted(t *testing.T) {
 		t.Errorf("unreadable = %d, want 1; a scan that could not look must not read as a clean home", unreadable)
 	}
 }
+
+// A file the sniff cannot open narrows the scan as squarely as a directory it cannot
+// list: the cheap signals still fire, but nothing behind the first byte was ever looked
+// at, so the lead is reported on less than it looks like.
+func TestUnopenableFileIsCounted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	home := t.TempDir()
+	shut := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	if err := os.Chmod(shut, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paths(found); !slices.Equal(got, []string{shut}) {
+		t.Fatalf("findings = %v, want %s on its name alone", got, shut)
+	}
+	if unreadable != 1 {
+		t.Errorf("unreadable = %d, want 1; the content sniff never read this file", unreadable)
+	}
+}
+
+// A name that vanished between the readdir and the stat narrowed nothing - a live home
+// churns - and counting it would report the home's churn rather than the scan's blind
+// spots.
+func TestAVanishedFileIsNotCountedUnreadable(t *testing.T) {
+	home := t.TempDir()
+	dangling := filepath.Join(home, ".netrc")
+	if err := os.Symlink(filepath.Join(home, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 || unreadable != 0 {
+		t.Errorf("Hunt = %v, unreadable %d; a dangling link is neither a finding nor a blind spot", paths(found), unreadable)
+	}
+}
