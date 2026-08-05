@@ -595,6 +595,38 @@ func TestResolveRefusesNilPolicy(t *testing.T) {
 	}
 }
 
+// exec_allow survives the round trip and anchors to the manifest's directory like the
+// other grants. A bare name must NOT take the interpreter's PATH-search branch: an entry
+// resolved on the host at run time would name whichever binary the target's PATH reached,
+// which is what an allowlist exists to pin down.
+func TestExecAllowRoundTripsAndAnchors(t *testing.T) {
+	src := "entrypoint: ./run.sh\ninterpreter: /bin/sh\nexec: allowlist\nexec_allow: [tools/check, /opt/lint]\n"
+	doc, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := doc.Policy.ExecAllow; !reflect.DeepEqual(got, []string{"tools/check", "/opt/lint"}) {
+		t.Fatalf("exec_allow = %q", got)
+	}
+	out, err := Marshal(doc.Policy, doc.Provenance)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	doc2, err := Parse(strings.NewReader(string(out)))
+	if err != nil {
+		t.Fatalf("re-Parse: %v\n%s", err, out)
+	}
+	if doc.Policy.Fingerprint() != doc2.Policy.Fingerprint() {
+		t.Errorf("fingerprint changed across marshal round trip:\n%s", out)
+	}
+	if err := Resolve(doc.Policy, "/work/proj/m.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(doc.Policy.ExecAllow, ","), "/work/proj/tools/check,/opt/lint"; got != want {
+		t.Errorf("exec_allow = %q, want %q", got, want)
+	}
+}
+
 // interpreter_args survives the YAML round trip as a distinct list from args. Folding
 // the two would move an interpreter option behind the entrypoint, where it becomes the
 // script's argv and the run changes.
