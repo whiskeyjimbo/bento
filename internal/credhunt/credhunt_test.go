@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -217,5 +218,31 @@ func TestHuntRefusesAnUnwalkableRoot(t *testing.T) {
 	found, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Errorf("Hunt over a nonexistent home returned %d findings and no error; a clean report over a scan that never happened is the failure this refuses", len(found))
+	}
+}
+
+// A relocated or bind-mounted home reaches Hunt as a symlink - HomeAnchors resolves
+// neither anchor - and the walk Lstats its root, so the scan ends on the first entry and
+// reports the same clean home as a nonexistent one. Refusing must name the target, because
+// the shields are lexical: the operator's fix is to re-anchor on the resolved path, where
+// the walk and the deny-list finally agree.
+func TestHuntRefusesASymlinkedHome(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real-home")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plant(t, real, ".some-tool-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	link := filepath.Join(root, "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	found, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
+	if err == nil {
+		t.Fatalf("Hunt over a symlinked home returned %d findings and no error; the walk never entered it", len(found))
+	}
+	if !strings.Contains(err.Error(), real) {
+		t.Errorf("the refusal must name the path to re-anchor on; got %v", err)
 	}
 }
