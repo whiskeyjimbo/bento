@@ -24,8 +24,11 @@ const MaxDepth = 40
 // exist - including a *dangling* leaf symlink pointing into a not-yet-populated store -
 // it walks the components against a fully-resolved prefix, following each symlink
 // before any later "..", so the result is the target a write through the path would
-// actually reach (not the unmountable symlink, and not the wrong sibling
-// filepath.Join's lexical ".." cleaning would produce).
+// reach if the kernel accepted the path at all (not the unmountable symlink, and not the
+// wrong sibling filepath.Join's lexical ".." cleaning would produce). A path that walks
+// ".." out of a non-directory still resolves here while the kernel refuses it with
+// ENOTDIR, so a caller shielding on the result shields a path nothing can be written
+// through - the safe direction, and the reason this does not re-check each component.
 //
 // A path whose symlinks loop is returned unresolved once the budget runs out: a caller
 // that shields on the result then fails closed, and one that judges a proposal is

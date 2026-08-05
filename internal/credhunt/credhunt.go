@@ -47,8 +47,9 @@ type Finding struct {
 	// Mode is the file's permission bits, so a reader can weigh a 0600 hit against a
 	// world-readable one without re-stat'ing.
 	Mode fs.FileMode
-	// Signals names the shapes that fired, in the order Signal declares them. A single
-	// signal is a lead; several on one file is close to a certainty.
+	// Signals names the shapes that fired, cheap signals first and the content shapes
+	// last, since the sniff runs only once the cheap ones have narrowed the file. A
+	// single signal is a lead; several on one file is close to a certainty.
 	Signals []string
 }
 
