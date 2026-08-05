@@ -840,7 +840,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	// registers: orig_rax is -1 (the marker that suppresses syscall restart) and rax is the
 	// interrupted call's own return value. Nothing is lost by skipping it. Every syscall
 	// recorded at the entry stop was already recorded before these registers appeared, and
-	// no path-existence syscall - the only ones read at the exit stop - can present here,
+	// no path-existence syscall - the only ones decoded at the exit stop - can present here,
 	// because the value is rt_sigreturn's restored context and not their own.
 	//
 	// This must precede the x32 test: -1 has every bit set, so it matches x32SyscallBit and
@@ -871,8 +871,8 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	// This narrows the window rather than closing it. ptrace freezes the stopped THREAD,
 	// not the address space, so a CLONE_VM sibling still runs between this read and the
 	// kernel's copyin after the resume. What is left is a race the sibling has to win
-	// inside that window instead of across the whole syscall, and for the existence
-	// syscalls the success filter discards a planted path outright.
+	// inside that window instead of across the whole syscall, and one a planted path only
+	// converts into a recorded access when the call the kernel then ran also found a file.
 	if atExit {
 		recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
 		return
@@ -955,12 +955,14 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 // branch. Existence and read are the same grant here - making a stat succeed means
 // binding the path into the sandbox - so each is recorded as a plain read.
 //
-// Unlike every other case in this decoder these are recorded only when the call found
-// something. A failed open still needs a grant, because the
-// script meant to open that file; a stat that already returned ENOENT needs none,
-// because enforcement reproduces that exact answer. The filter is what keeps manifests
-// tight: a shell's PATH search misses hundreds of times per command, and recording those
-// probes would bury the paths the run actually needs.
+// Unlike every other case in this decoder these are dropped when the call answered that
+// the path is not there. A failed open still needs a grant, because the script meant to
+// open that file; a stat that already returned ENOENT needs none, because enforcement
+// reproduces that exact answer. The filter is what keeps manifests tight: a shell's PATH
+// search misses hundreds of times per command, and recording those probes would bury the
+// paths the run actually needs. It turns on the errno rather than on failure alone - see
+// recordHeldExistence, where a probe refused on an existing path is still an access. chdir
+// is the one case here that skips the filter, for the reason its own branch below gives.
 //
 // A successful access(W_OK) is recorded as a read, not a write. It reports that a write
 // would be permitted, which a read-only bind makes false - but over-attribution silently
@@ -1014,8 +1016,8 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 		return
 	}
 	// An unreadable pathname is not dropped here: the drop travels with the held entry, so
-	// that a probe the kernel goes on to refuse costs nothing - the same success filter the
-	// recorded path itself gets.
+	// that a probe the kernel goes on to answer "not there" costs nothing - the same filter
+	// the recorded path itself gets.
 	path, ok := readPathAt(pid, dirfd, uintptr(pathReg))
 	held[stopKey(pid, regs)] = heldPath{path: path, readOK: ok}
 }
@@ -1036,11 +1038,11 @@ func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path 
 // the pathname the entry stop resolved, and releases the held entry either way. A held
 // open takes the same exit stop to report what its return value found; see holdOpen.
 //
-// Only a call that SUCCEEDED is recorded. A failed open still needs a grant, because the
-// script meant to open that file; a stat that already returned ENOENT needs none, because
-// enforcement reproduces that exact answer. The filter is what keeps manifests tight: a
-// shell's PATH search misses hundreds of times per command, and recording those probes
-// would bury the paths the run actually needs.
+// Only a call that found the path is recorded. A failed open still needs a grant, because
+// the script meant to open that file; a stat that already returned ENOENT needs none,
+// because enforcement reproduces that exact answer. The filter is what keeps manifests
+// tight: a shell's PATH search misses hundreds of times per command, and recording those
+// probes would bury the paths the run actually needs.
 func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[string]heldPath) {
 	key := stopKey(pid, regs)
 	h, ok := held[key]
@@ -1063,17 +1065,36 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 		}
 		return
 	}
-	if int64(regs.Rax) < 0 {
-		return
+	// A probe that failed for any reason OTHER than the path not being there still names a
+	// file the sandbox has to bind, and the errnos that say "not there" are the same two
+	// the open branch above tests. Everything else is a path that demonstrably exists and
+	// refused the probe on its own terms: access(W_OK) answering EACCES on a file that is
+	// present but not writable, a stat whose EACCES is a search permission missing on a
+	// component that exists, ELOOP on a symlink chain that is very much there, getxattr's
+	// ENODATA (the normal answer for a file carrying no such attribute), or
+	// name_to_handle_at's EOVERFLOW, which is the documented first call of its two-call
+	// protocol. Treating those as absence left the path out of the manifest entirely, and
+	// the enforced run then answers ENOENT where the profiling run answered EACCES - a
+	// different branch in the target, off a manifest that reported no loss.
+	//
+	// EFAULT and ENAMETOOLONG say the kernel could not take the pathname either, so there
+	// is no access to record and none to count: those name no file the run needs.
+	if ret := int64(regs.Rax); ret < 0 {
+		switch syscall.Errno(-ret) {
+		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG:
+			return
+		}
+	} else {
+		// Only a probe that SUCCEEDED settles the question an open's return value settles -
+		// so a file that a stat reached but an open missed is not reported as absent. A
+		// refused probe proves the path is worth granting, not that the final component
+		// resolved: a stat refused for search permission never reached it.
+		openResult(h.path, true)
 	}
 	if !h.readOK {
 		drop()
 		return
 	}
-	// A probe that succeeded found the path, which settles the same question an open's
-	// return value does - so a file that a stat reached but an open missed is not
-	// reported as absent.
-	openResult(h.path, true)
 	record(h.path, false)
 }
 
