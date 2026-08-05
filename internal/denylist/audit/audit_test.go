@@ -547,6 +547,7 @@ func TestParseAppArmor(t *testing.T) {
   audit deny @{HOME}/.config/ w,
   deny @{HOME}/.{,z}log{in,out} mrk,
   audit deny owner @{HOME}/.ssh/{,**} mrwkl,
+  owner deny @{HOME}/.gnupg/{,**} mrwkl,
   audit deny @{run}/user/[0-9]*/keyring** mrwkl,
   deny /etc/shadow r,
   allow @{HOME}/.cache/{,**} rw,
@@ -580,6 +581,11 @@ func TestParseAppArmor(t *testing.T) {
 	// Mode letters carry the class: no r/m/k means writes only.
 	if c := got["/HOME/bin"]; c.Deny != denylist.DenyWrite {
 		t.Errorf("wl modes are DenyWrite; got %v", c.Deny)
+	}
+	// Either qualifier can sit on either side of "deny". Matching only one side silently
+	// dropped the whole rule, so the path read as one upstream does not shield.
+	if _, ok := got["/HOME/.gnupg"]; !ok {
+		t.Errorf("a qualifier preceding deny must not drop the rule; got %v", keysOf(got))
 	}
 	if c := got["/HOME/.ssh"]; c.Deny != denylist.DenyAll {
 		t.Errorf("mrwkl modes hide the content, so DenyAll; got %v", c.Deny)
