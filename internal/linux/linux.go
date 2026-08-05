@@ -535,12 +535,15 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		for i, h := range sb.homes {
 			homes[i] = sb.resolve(h)
 		}
+		if rp == "/" {
+			return nil, fmt.Errorf("deny path %q resolves to the root and cannot be shielded", p)
+		}
 		// The same test denyArgs applies to every resolved rule, raised here so a caller
 		// learns its deny cannot be shielded instead of having it accepted and then
 		// silently dropped - a shield over a home or one of its ancestors would take the
 		// whole grant surface with it, so there is nothing to enforce either way.
 		if !denylist.Shieldable(rp, homes) {
-			return nil, fmt.Errorf("deny path %q resolves to %q, which is the root or a home directory, and cannot be shielded", p, rp)
+			return nil, fmt.Errorf("deny path %q resolves to %q, which is a home directory or contains one, so shielding it would hide everything the policy grants", p, rp)
 		}
 		dir := true
 		if sb.exists(rp) && !sb.isDir(rp) {
