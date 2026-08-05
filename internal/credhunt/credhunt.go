@@ -48,8 +48,9 @@ type Finding struct {
 	// world-readable one without re-stat'ing.
 	Mode fs.FileMode
 	// Signals names the shapes that fired, cheap signals first and the content shapes
-	// last, since the sniff runs only once the cheap ones have narrowed the file. A
-	// single signal is a lead; several on one file is close to a certainty.
+	// last, following the order shapesOf tests them in - the sniff runs after the cheap
+	// ones, either because one of them narrowed the file or because it sits at the home
+	// root. A single signal is a lead; several on one file is close to a certainty.
 	Signals []string
 }
 
