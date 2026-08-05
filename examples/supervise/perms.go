@@ -3,9 +3,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -111,7 +112,7 @@ func listPerms(s *store, out io.Writer) {
 		return
 	}
 	fmt.Fprintln(out, "\nApps:")
-	for _, key := range sortedAppKeys(s.Apps) {
+	for _, key := range sortedKeys(s.Apps) {
 		a := s.Apps[key]
 		interp := ""
 		if a.Interpreter != "" {
@@ -581,8 +582,8 @@ func (s *store) effectivePaths(key, kind string) (allows, denies []string) {
 			}
 		}
 	}
-	sort.Strings(allows)
-	sort.Strings(denies)
+	slices.Sort(allows)
+	slices.Sort(denies)
 	return
 }
 
@@ -635,20 +636,6 @@ func quoteNetKey(k string) string {
 	return strconv.Quote(k)
 }
 
-func sortedKeys(m map[string]decision) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedAppKeys(m map[string]*appPerms) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+func sortedKeys[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
 }

@@ -24,7 +24,7 @@ import (
 // bv2-2wy regression: the clamp order is load-bearing - DropCovered must run LAST,
 // after the broad-write clamp, so a read under a write that gets dropped as too broad
 // is NOT swallowed by that write but surfaces as its own read grant. This fails if
-// DropCovered is reordered ahead of clampBroadWrites (the shape of the original bug).
+// DropCovered is reordered ahead of partitionBroad (the shape of the original bug).
 func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 	p := &policy.Policy{
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
@@ -160,7 +160,7 @@ func TestClampBroadWrites(t *testing.T) {
 		writes = append(writes, home)
 	}
 
-	kept, dropped := clampBroadWrites(writes)
+	kept, dropped := partitionBroad(writes)
 
 	if !slices.Equal(kept, []string{deep}) {
 		t.Fatalf("kept = %v, want just the specific directory %q", kept, deep)
