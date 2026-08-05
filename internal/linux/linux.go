@@ -135,7 +135,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// installs would be claimed on the strength of a host-side probe alone. Set before
 	// compile, which encodes the descriptor into the launch invocation.
 	sb.applied = true
-	appliedReport, dropApplied, err := newAppliedReport()
+	appliedReport, dropApplied, err := newAppliedReport(sb.runDir)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -205,7 +205,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
@@ -217,7 +217,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// target as 128+signal itself. What reaches this branch signaled is the scope
 		// coming down around the run, which is how a cgroup limit ends it.
 		code, signaled, sig := exitStatusOf(ee.ProcessState)
-		setup := parseApplied(appliedReport.Name()).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
+		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
@@ -477,6 +477,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 
 	sb := sandbox{
 		homes:           homes,
+		runDir:          dir,
 		runtimeDir:      denylist.RuntimeDir(),
 		emptyFile:       empty,
 		entrypoint:      entrypoint,

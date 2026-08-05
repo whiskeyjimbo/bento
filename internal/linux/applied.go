@@ -5,7 +5,9 @@ package linux
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -50,10 +52,17 @@ type applied struct {
 }
 
 // newAppliedReport creates the file the in-sandbox stage writes its applied-layer
-// report to, returning it and a cleanup. The caller passes it as the child's first
-// extra file and reads it back by path after the run.
-func newAppliedReport() (*os.File, func(), error) {
-	f, err := os.CreateTemp("", "bento-applied-")
+// report to inside the run's own directory, returning it and a cleanup. The caller
+// passes it as the child's first extra file and reads it back through the returned
+// handle - never by path.
+//
+// dir is the per-run 0700 directory that already holds the shield file and the proxy
+// socket. Shared /tmp was the wrong home for it: between the child exiting and the host
+// re-opening the path, another same-uid host process could unlink the report and
+// substitute one claiming the exec and filesystem layers held, which reconcile would
+// then attest - the "no proof the layer was in place" case this report exists to refuse.
+func newAppliedReport(dir string) (*os.File, func(), error) {
+	f, err := os.OpenFile(filepath.Join(dir, "applied"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("linux: creating the applied-layer report: %w", err)
 	}
@@ -65,12 +74,16 @@ func newAppliedReport() (*os.File, func(), error) {
 // report: the honest outcome is one that claims nothing, since neither can be told from
 // a stage that never wrote. It is not the same as knowing the target did not run -
 // enforce.Run refuses on an absent report and words it accordingly.
-func parseApplied(path string) applied {
-	f, err := os.Open(path)
-	if err != nil {
+//
+// It reads the descriptor the host has held open since before the child started, so
+// what it parses is the file the stage actually wrote to - a substitution at the path
+// cannot reach it. The child inherited a dup of this descriptor and so shares its
+// offset, which its writes left at end-of-file; without the rewind every report would
+// scan as empty and claim nothing.
+func parseApplied(f *os.File) applied {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return applied{}
 	}
-	defer f.Close()
 
 	var a applied
 	s := bufio.NewScanner(f)
@@ -88,8 +101,8 @@ func parseApplied(path string) applied {
 			switch {
 			case key == launcher.AppliedTargetUnreached:
 				a.targetUnreached = true
-				if a.targetErr, err = strconv.Unquote(rest); err != nil {
-					a.targetErr = ""
+				if v, err := strconv.Unquote(rest); err == nil {
+					a.targetErr = v
 				}
 			case line != "":
 				return applied{}
@@ -112,7 +125,9 @@ func parseApplied(path string) applied {
 			if value == launcher.AppliedNo {
 				// Quoted by the writer so a newline in the error cannot forge a record; an
 				// unquotable detail still counts as a failure, just without the reason.
-				if a.landlockErr, err = strconv.Unquote(detail); err != nil {
+				if v, err := strconv.Unquote(detail); err == nil {
+					a.landlockErr = v
+				} else {
 					a.landlockErr = "reason unreadable"
 				}
 			}

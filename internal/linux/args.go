@@ -81,6 +81,10 @@ type sandbox struct {
 	// run report so a layer is claimed only once the child confirms it. Mutually
 	// exclusive with observe: profiling produces an observation, not a report.
 	applied bool
+	// runDir is the per-run 0700 directory holding the run's host-side files: the
+	// empty shield file, the proxy socket, and the applied-layer report. Anything the
+	// host must read back after the run belongs here rather than in shared /tmp.
+	runDir string
 	// exists reports whether a host path exists. Injected so tests can compile
 	// argv against a hypothetical filesystem.
 	exists func(string) bool
