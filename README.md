@@ -520,6 +520,9 @@ make crossbuild # the tree still compiles for darwin and linux/arm64
 make examples   # each examples/*/verify.sh; the root go test does not reach them
 
 make check      # every gate above - the bar before merging
+
+make fuzz       # every Fuzz* target for FUZZTIME each (default 30s); nightly in CI, not
+                # in check, because the run is time-boxed rather than deterministic
 ```
 
 `-race` on `internal/proxy` is a gate, not extra credit: the proxy's

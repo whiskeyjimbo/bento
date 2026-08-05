@@ -46,6 +46,11 @@ BINDIR  ?= $(PREFIX)/bin
 # and is expected to move; the tool version is not.
 GOVULNCHECK_VERSION ?= v1.6.0
 
+# Per-target fuzzing budget. The default is short enough to run on a laptop over all
+# eleven targets; the nightly job passes a much larger one, which is the run that is
+# actually expected to find anything.
+FUZZTIME ?= 30s
+
 # Pinned for the same reason as govulncheck: a linter that drifts turns an
 # unchanged tree red on its own schedule.
 GOLANGCI_LINT_VERSION ?= v2.12.2
@@ -64,7 +69,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test cover race vet crossbuild lint audit examples vuln repro check install clean help
+.PHONY: all build test cover race fuzz vet crossbuild lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -111,6 +116,27 @@ race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
+
+# A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as
+# covered while nothing ever varies an input. -fuzz actually mutates, but the flag takes
+# one target at a time, hence the loop: the target list is discovered from the tree
+# rather than written down, so a new Fuzz function is fuzzed the day it lands.
+#
+# Not in `check`: even the laptop budget costs minutes, and the run is time-boxed rather
+# than deterministic, so a PR gate would be both slow and flaky. It runs nightly instead.
+#
+# Interesting inputs go to the fuzz cache under $GOCACHE, which the nightly job persists;
+# only a crasher is written into the package's testdata/fuzz, and that one is meant to be
+# committed - it is a failing regression test that every later `go test` replays.
+fuzz: ## Fuzz every Fuzz* target for FUZZTIME each (default 30s; not part of check)
+	@printf "$(CYAN)$(BOLD)==> Fuzzing every target for $(FUZZTIME)...$(RESET)\n"
+	@set -e; for pkg in $$(GOWORK=off go list ./...); do \
+		for target in $$(GOWORK=off go test -list='^Fuzz' $$pkg | grep '^Fuzz' || true); do \
+			printf "$(CYAN)--> $$target ($$pkg)$(RESET)\n"; \
+			GOWORK=off go test -run='^$$' -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) $$pkg; \
+		done; \
+	done
+	@printf "$(GREEN)$(BOLD)✓ Fuzzing found no failures.$(RESET)\n"
 
 # Per-package `go test -cover` credits a function only to its own package's tests, so a
 # package exercised entirely from its callers reads 0% and looks untested when it is not
