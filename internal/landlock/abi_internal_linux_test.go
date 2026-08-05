@@ -83,6 +83,85 @@ func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
 	}
 }
 
+// Landlock denies a handled right wherever no rule grants it, so a right this package
+// declares it HANDLES but no rule of the tier grants is a blanket denial of that
+// operation - inside the grants, with nothing in the errno naming the layer. That has now
+// been the bug three times (ioctl_dev, resolve_unix, refer), each found by reading rather
+// than by a test, so this asserts the general invariant instead of the next instance:
+// every right a tier handles is granted by at least ONE of its rules.
+//
+// At least one, not all: read rules deliberately withhold resolve_unix and refer, and
+// forcing every rule to carry every right would demand exactly the escalation those two
+// wrappers exist to avoid.
+//
+// The rules are inspected rather than applied - applying would Landlock the test process
+// irreversibly - so the handled sets are spelled as the bit ranges of the presets the
+// package names, with the tripwire below to catch go-landlock growing a right past them.
+func TestEveryHandledRightIsGrantedBySomeRule(t *testing.T) {
+	// go-landlock names rights 0..16 today, so V8 is (1<<16)-1 and V9 (1<<17)-1. An
+	// unnamed bit prints as "1<<n", so this fires when the library learns a 18th right -
+	// at which point whoever raises handledFS or degradedFS revisits the masks below.
+	if got := ll.AccessFSSet(1 << 17).String(); got != "{1<<17}" {
+		t.Fatalf("go-landlock has grown an access right past resolve_unix (bit 17 prints as %s); recheck the handled masks here and in landlock_linux.go", got)
+	}
+
+	d := t.TempDir()
+	f := filepath.Join(d, "regular")
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{d, f}
+
+	backstop, err := backstopRules(paths, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	degraded, err := degradedRules(paths, paths, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tiers := []struct {
+		name    string
+		handled ll.AccessFSSet
+		rules   []ll.Rule
+	}{
+		{"bwrap backstop", ll.AccessFSSet(1<<16 - 1), backstop}, // handledFS = ll.V8
+		{"degraded", ll.AccessFSSet(1<<17 - 1), degraded},       // degradedFS = ll.V9
+	}
+
+	for _, tier := range tiers {
+		granted := map[string]bool{}
+		for _, r := range tier.rules {
+			for _, name := range rightNames(fmt.Sprintf("%v", r)) {
+				granted[name] = true
+			}
+		}
+		for _, name := range rightNames(tier.handled.String()) {
+			// BestEffort strips refer from the handled set below ABI 2, and withRefer
+			// stops asking for it there in step - so on those kernels it is neither
+			// handled nor granted, and the invariant is not violated by its absence.
+			if name == "refer" && !referSupported() {
+				continue
+			}
+			if !granted[name] {
+				t.Errorf("%s tier handles %q but no rule grants it, so the right is denied everywhere inside the grants", tier.name, name)
+			}
+		}
+	}
+}
+
+// rightNames pulls the access-right names out of a go-landlock AccessFSSet or FSRule
+// rendering, both of which spell the set as "{execute,read_file,...}". The fields are
+// unexported, so the String form is the only view of them from outside the library.
+func rightNames(s string) []string {
+	open := strings.Index(s, "{")
+	closed := strings.Index(s, "}")
+	if open < 0 || closed < open {
+		return nil
+	}
+	return strings.Split(s[open+1:closed], ",")
+}
+
 // Landlock denies a handled right wherever no rule grants it, so a right in the handled
 // set that no rule carries is a blanket denial, not a no-op. ioctl_dev is in both handled
 // sets from ABI 5 and none of go-landlock's RO/RW helpers grant it, which from kernel
