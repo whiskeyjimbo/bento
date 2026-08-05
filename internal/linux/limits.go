@@ -321,6 +321,11 @@ func scopeUnitName(runID string) string { return "bento-run-" + runID + ".scope"
 // this host cannot create one) leaves the supervisor holding a unit name that never
 // comes into existence, learning so only when its kill does nothing to a still-running
 // target. The screen is enforce's so there is one spelling of the id, not two.
+//
+// All three refusals are a *enforce.Refusal, the category a supervisor must not retry:
+// each is a mistake in what the caller asked for, and a frontend that sorts refusals
+// from failures would otherwise file two of them under the runs that failed for reasons
+// out of the caller's hands. The Report is empty because nothing has been probed yet.
 func (e *Enforcer) screenRunID(p *policy.Policy, runID string) error {
 	if runID == "" {
 		return nil
@@ -329,10 +334,10 @@ func (e *Enforcer) screenRunID(p *policy.Policy, runID string) error {
 		return err
 	}
 	if p.Limits.IsZero() {
-		return fmt.Errorf("linux: a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id")
+		return &enforce.Refusal{Reason: "a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id"}
 	}
 	if ok, reason := canCreateScope(); !ok {
-		return fmt.Errorf("linux: a run id asks for a reapable scope, but this host cannot create one, so there would be nothing to reap through: %s", reason)
+		return &enforce.Refusal{Reason: "a run id asks for a reapable scope, but this host cannot create one, so there would be nothing to reap through: " + reason}
 	}
 	return nil
 }
