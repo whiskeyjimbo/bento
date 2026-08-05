@@ -160,8 +160,11 @@ func TestRunEscapesHostileFilenames(t *testing.T) {
 // Shieldable is lexical, so it does not recognize that spelling and emits the rule; the
 // enforcing backend catches it on the resolved path, but credhunt builds its rules
 // straight from denylist and has no resolver. What keeps the report honest here is that
-// the rule cannot lexically enclose a walk root - Shieldable rejects exactly the paths
-// that would, and the walk roots are the anchors it was tested against. Pinned because
+// a relocation rule cannot lexically enclose a walk root - Shieldable rejects exactly the
+// paths that would, and the walk roots are the anchors it was tested against. That guard
+// covers the relocations only, not the base store rules, which are emitted ungated and
+// can equal a sibling anchor; the difference is that such a rule is genuinely enforced,
+// so pruning under it is a true answer rather than this one. Pinned because
 // teaching Index.Covers to resolve would quietly turn that inert rule into a shield over
 // the entire home, and a home reported fully covered is this tool's silent wrong answer.
 func TestRunIsNotBlindedByARelocationSpelledThroughASymlink(t *testing.T) {
