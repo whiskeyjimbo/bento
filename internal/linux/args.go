@@ -96,7 +96,12 @@ type sandbox struct {
 	// read grant is "/". Injected alongside exists so the expansion is testable
 	// against a hypothetical root. It must exclude the mounts baseFlags manages
 	// (/proc, /dev, /tmp) so the host versions do not overmount them.
-	rootDirs func() []string
+	//
+	// It errors rather than returning a short list, for the reason fileIDs does: an
+	// empty expansion is indistinguishable from a root that legitimately has nothing
+	// left to bind, so a swallowed failure turns the policy's broadest grant into a
+	// run that mounted nothing and still reported its shields.
+	rootDirs func() ([]string, error)
 	// resolve returns a path with its symlinks followed, or the path unchanged if
 	// it does not resolve. Shields bind at the resolved path because bwrap cannot
 	// create a mount point at a symlink (it aborts the whole run).
@@ -187,11 +192,22 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		return nil, nil, err
 	}
 
+	// A "/" read grant is expanded into its top-level children twice - once to decide
+	// which granted names still need a symlink, once to bind them - and the two must
+	// be the same set, or an entry appearing between the reads leaves a name bound
+	// that nothing accounted for. Enumerate once here and carry the result.
+	var rootDirs []string
+	if slices.Contains(reads, "/") {
+		if rootDirs, err = sb.rootDirs(); err != nil {
+			return nil, nil, fmt.Errorf("linux: expanding the read grant of %q: %w", "/", err)
+		}
+	}
+
 	// Grants are bound at their resolved targets, so a grant that names a symlink
 	// (~/.bashrc -> /nix/store/...) would leave the granted name itself absent.
 	// Recreate it as a symlink, before the binds: bwrap refuses --symlink onto a
 	// destination that already exists.
-	symlinks, err := grantSymlinks(sb, p, reads, writes)
+	symlinks, err := grantSymlinks(sb, p, reads, writes, rootDirs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,7 +237,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 			// the root's children individually instead, leaving the sandbox root the
 			// writable tmpfs bwrap starts with. The literal "/" is still carried in
 			// reads for deny-list reachability below.
-			for _, top := range sb.rootDirs() {
+			for _, top := range rootDirs {
 				args = append(args, "--ro-bind-try", top, top)
 			}
 			continue
@@ -1509,7 +1525,7 @@ func resolveGrants(sb sandbox, p *policy.Policy) (reads, writes []string, err er
 // an existing destination, and resolves a later bind's destination *through* the
 // link, so `read: /bin` on a usrmerge host (/bin -> usr/bin, and /bin bound by
 // systemMounts) would abort the run rather than being bound as before.
-func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]string, error) {
+func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes, rootDirs []string) ([]string, error) {
 	// Every path whose contents the sandbox already has, so a link is only made
 	// where nothing else creates the name. The bind mounts carry the host's own
 	// entries; --dev and --proc bring entries of their own (/dev/stdout is one of
@@ -1527,7 +1543,7 @@ func grantSymlinks(sb sandbox, p *policy.Policy, reads, writes []string) ([]stri
 		// sandbox. Taking it literally would cover every path there is and skip
 		// every link, including under the empty /tmp that the expansion omits.
 		if r == "/" {
-			filled = append(filled, sb.rootDirs()...)
+			filled = append(filled, rootDirs...)
 			continue
 		}
 		filled = append(filled, r)
@@ -1782,10 +1798,10 @@ func hostResolve(path string) string {
 // hostRootDirs lists the host's top-level entries to bind for a "/" read grant,
 // excluding the mounts baseFlags manages so the host's /proc, /dev, and /tmp
 // never overmount the sandbox's own.
-func hostRootDirs() []string {
+func hostRootDirs() ([]string, error) {
 	entries, err := os.ReadDir("/")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []string
 	for _, e := range entries {
@@ -1794,5 +1810,5 @@ func hostRootDirs() []string {
 		}
 		out = append(out, "/"+e.Name())
 	}
-	return out
+	return out, nil
 }

@@ -13,6 +13,7 @@ package landlock
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
@@ -95,7 +96,17 @@ func Restrict(writable []string) error {
 // Paths that do not exist are skipped, since Landlock cannot add a rule for a
 // missing path. This does not weaken confinement of a not-yet-created write
 // target: the target's parent must itself be writable to create it, and a
-// writable parent is a directory rule that covers the child recursively.
+// writable parent is a directory rule that covers the child recursively. Only
+// ENOENT is skipped: any other stat failure (EACCES on an ancestor, EIO or
+// ESTALE from a network mount, ELOOP, ENOTDIR under a regular-file parent) is a
+// host problem this cannot classify, and dropping the path would over-restrict
+// it - the target then gets EACCES on a path the policy granted, with nothing
+// naming Landlock. Returning the errno instead makes the caller warn with it.
+//
+// The read set here is always "/" (Restrict is the only caller), so the paths
+// that can trip this are the writable ones, where a silent drop buys no
+// confinement at all - bwrap still permits the write - and only breaks the
+// target.
 //
 // A path naming a regular file gets a file rule, not a directory one: the
 // directory rules reject a non-directory with EINVAL, and RestrictPaths applies
@@ -104,8 +115,14 @@ func Restrict(writable []string) error {
 // backstop. The callers happen to pass only directories today, but that invariant
 // lives in another package, and it is this one that has to hold the ruleset together.
 func RestrictTo(read, write []string) error {
-	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
-	rules = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
+	rules, err := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
+	if err != nil {
+		return err
+	}
+	rules, err = classifyRules(rules, write, ll.RWDirs, ll.RWFiles)
+	if err != nil {
+		return err
+	}
 	if err := handledFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying ruleset: %w", err)
 	}
@@ -117,12 +134,18 @@ func RestrictTo(read, write []string) error {
 // rules reject a non-directory with EINVAL and RestrictPaths is all-or-nothing, so
 // misrouting one path discards the whole ruleset. Both Restrict tiers build their
 // rules through here rather than each classifying its own way.
-func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...string) ll.FSRule) []ll.Rule {
+//
+// A path that does not exist is skipped; any other stat failure is returned, since a
+// path this cannot classify is one it would silently over-restrict.
+func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...string) ll.FSRule) ([]ll.Rule, error) {
 	var dirs, files []string
 	for _, p := range paths {
 		fi, err := os.Stat(p)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("landlock: %q: %w", p, err)
 		}
 		if fi.IsDir() {
 			dirs = append(dirs, p)
@@ -136,7 +159,7 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 	if len(files) > 0 {
 		rules = append(rules, fileRule(files...))
 	}
-	return rules
+	return rules, nil
 }
 
 // RestrictDegraded is the PRIMARY filesystem confinement for the no-bwrap degraded
@@ -151,7 +174,10 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // not directory reads, so a read file does not leak its siblings). write paths get
 // read-write. exec paths get read+execute on the individual file, the entrypoint
 // when it is its own compiled-binary interpreter; that right overlaps the read-file
-// right above and is kept explicit. Missing paths are skipped, as in RestrictTo.
+// right above and is kept explicit. Missing paths are skipped, as in RestrictTo, and a
+// path that fails to stat for any other reason is refused there rather than dropped -
+// fatal here, where Landlock is the only filesystem mechanism and a dropped grant is a
+// denial the operator has nothing to attribute.
 //
 // Write paths additionally grant resolve_unix, because degradedFS handles it: with no
 // mount namespace hiding the host's sockets, connect(2) to a pathname AF_UNIX socket is
@@ -192,9 +218,19 @@ func RestrictDegraded(read, write, exec []string) error {
 	if effectiveABI() < 1 {
 		return errUnavailableABI
 	}
-	rules := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
-	rules = classifyRules(rules, write, withResolveUnix(ll.RWDirs), withResolveUnix(ll.RWFiles))
-	if e := existing(exec); len(e) > 0 {
+	rules, err := classifyRules(nil, read, ll.RODirs, ll.ROFiles)
+	if err != nil {
+		return err
+	}
+	rules, err = classifyRules(rules, write, withResolveUnix(ll.RWDirs), withResolveUnix(ll.RWFiles))
+	if err != nil {
+		return err
+	}
+	e, err := existing(exec)
+	if err != nil {
+		return err
+	}
+	if len(e) > 0 {
 		rules = append(rules, ll.PathAccess(ll.AccessFSSet(llsys.AccessFSExecute|llsys.AccessFSReadFile), e...))
 	}
 	if err := degradedFS.BestEffort().RestrictPaths(rules...); err != nil {
@@ -213,14 +249,23 @@ func withResolveUnix(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
 	}
 }
 
-func existing(paths []string) []string {
+// existing drops the paths that do not exist, as classifyRules does, and for the same
+// reason returns any other stat failure rather than dropping it: this set is the
+// entrypoint's own exec rule, so a swallowed EACCES leaves the target unable to execute
+// itself with nothing naming the tier that stopped it.
+func existing(paths []string) ([]string, error) {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			out = append(out, p)
+		_, err := os.Stat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
+		if err != nil {
+			return nil, fmt.Errorf("landlock: %q: %w", p, err)
+		}
+		out = append(out, p)
 	}
-	return out
+	return out, nil
 }
 
 // Available reports whether this kernel exposes the Landlock LSM, so the
