@@ -46,9 +46,9 @@ BINDIR  ?= $(PREFIX)/bin
 # and is expected to move; the tool version is not.
 GOVULNCHECK_VERSION ?= v1.6.0
 
-# Per-target fuzzing budget. The default is short enough to run on a laptop over all
-# eleven targets; the nightly job passes a much larger one, which is the run that is
-# actually expected to find anything.
+# Per-target fuzzing budget. The default is short enough to run on a laptop over every
+# target; the nightly job passes a much larger one, which is the run that is actually
+# expected to find anything.
 FUZZTIME ?= 30s
 
 # Pinned for the same reason as govulncheck: a linter that drifts turns an
@@ -120,7 +120,11 @@ race: ## Run the proxy concurrency tests under the race detector
 # A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as
 # covered while nothing ever varies an input. -fuzz actually mutates, but the flag takes
 # one target at a time, hence the loop: the target list is discovered from the tree
-# rather than written down, so a new Fuzz function is fuzzed the day it lands.
+# rather than written down, so a new Fuzz function is fuzzed the day it lands. The list
+# is captured into a variable rather than piped straight into `for`, because a pipeline
+# reports grep's status and a command substitution in a `for` word reports none at all -
+# either way a package that failed to build would be skipped and the run would still
+# print that it found nothing.
 #
 # Not in `check`: even the laptop budget costs minutes, and the run is time-boxed rather
 # than deterministic, so a PR gate would be both slow and flaky. It runs nightly instead.
@@ -130,8 +134,10 @@ race: ## Run the proxy concurrency tests under the race detector
 # committed - it is a failing regression test that every later `go test` replays.
 fuzz: ## Fuzz every Fuzz* target for FUZZTIME each (default 30s; not part of check)
 	@printf "$(CYAN)$(BOLD)==> Fuzzing every target for $(FUZZTIME)...$(RESET)\n"
-	@set -e; for pkg in $$(GOWORK=off go list ./...); do \
-		for target in $$(GOWORK=off go test -list='^Fuzz' $$pkg | grep '^Fuzz' || true); do \
+	@set -e; pkgs=$$(GOWORK=off go list ./...); \
+	for pkg in $$pkgs; do \
+		listed=$$(GOWORK=off go test -list='^Fuzz' $$pkg); \
+		for target in $$(printf '%s\n' "$$listed" | grep '^Fuzz' || true); do \
 			printf "$(CYAN)--> $$target ($$pkg)$(RESET)\n"; \
 			GOWORK=off go test -run='^$$' -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) $$pkg; \
 		done; \
