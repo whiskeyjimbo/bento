@@ -569,6 +569,14 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".forward",     // a leading "|command" line runs on local mail delivery
 		".inputrc",     // readline init: a macro binding runs a command on a keypress
 
+		// Files a shell rc sources by name, planted by the installer that appended the
+		// source line. The rc itself is write-denied above; the file it reaches for is not
+		// covered by that, and is usually absent on a host that never ran the installer -
+		// the .bash_aliases case, one layer out.
+		".p10k.zsh", // powerlevel10k config, sourced verbatim by the line its wizard writes
+		".fzf.zsh",  // fzf's installer appends `[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh`
+		".fzf.bash", // the bash half of the same
+
 		// Tool configs that name or run a command on a routine action.
 		".caffrc",                // caff/gpg options
 		".config/ncmpcpp/config", // execute_on_song_change runs a shell command
@@ -630,15 +638,31 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// inside the journal from honored to refused, leaving an exact-name opt-in as the
 		// only way for bento-adjacent tooling to read its own records.
 		".local/state/bento",
-		".config/Code",              // VS Code User/settings.json (git.path, interpreter paths) run commands
-		".vscode",                   // extensions/ load on startup
-		".config/mpv",               // scripts/*.lua autoloaded on launch
-		".xmonad",                   // xmonad.hs is compiled and executed
-		".config/xmonad",            // XDG location for xmonad.hs (0.17+)
-		".oh-my-zsh",                // framework: plugins/ and themes/ are sourced on shell start
-		".antigen",                  // zsh antigen-managed plugins, sourced on shell start
-		".zfunc",                    // autoloaded zsh functions (planting one hijacks a command)
-		".zsh.d",                    // sourced zsh config fragments
+		".config/Code",   // VS Code User/settings.json (git.path, interpreter paths) run commands
+		".vscode",        // extensions/ load on startup
+		".config/mpv",    // scripts/*.lua autoloaded on launch
+		".xmonad",        // xmonad.hs is compiled and executed
+		".config/xmonad", // XDG location for xmonad.hs (0.17+)
+		".oh-my-zsh",     // framework: plugins/ and themes/ are sourced on shell start
+		".antigen",       // zsh antigen-managed plugins, sourced on shell start
+		".zfunc",         // autoloaded zsh functions (planting one hijacks a command)
+		".zsh.d",         // sourced zsh config fragments
+		// The rest of the zsh framework and plugin-manager roots, the same class as
+		// .oh-my-zsh: every file under them is sourced on shell start, and which files
+		// exist is decided by the plugin list, so the tree is the only expressible shield.
+		".zprezto",
+		".zplug",
+		".zinit",
+		".zi", // zinit's newer default root
+		".local/share/zinit",
+		// tmux's plugin manager: .tmux.conf is write-denied above, but the line it runs is
+		// `run ~/.tmux/plugins/tpm/tpm`, and every plugin tpm loads lives beside it.
+		".tmux/plugins",
+		// The conventional ZDOTDIR, shielded unconditionally beside .config/fish and
+		// .config/nushell. The ZDOTDIR relocation block below cannot cover it: the variable
+		// is set in a zsh startup file, so it exists only inside zsh and bento launched from
+		// any other parent sees it unset while ~/.config/zsh/.zshrc still runs at next login.
+		".config/zsh",
 		".config/nsxiv/exec",        // nsxiv key-handler scripts run on keypress
 		".config/pkcs11",            // pkcs11 module configs load shared objects (code)
 		".local/share/applications", // .desktop entries whose Exec= runs on launch
@@ -710,6 +734,43 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// AppImages and other portable binaries launched by name from the file manager or
 		// a desktop entry; firejail write-protects this for the same reason.
 		"Applications",
+
+		// The same class from the toolchains firejail does not carry, so the ratchet
+		// cannot surface them: each is a directory an installer or distro puts on $PATH,
+		// where a planted file runs on the host under a bare command name the user already
+		// types.
+		//
+		// Only the bin/shim directories are named, not the version manager's whole tree the
+		// way .nvm and .rustup are shielded. The install prefix under one of these holds the
+		// interpreter a policy may legitimately run (write: ~/.pyenv over a versions/ tree is
+		// a supported shape, see the Linux backend's interpreter re-bind), and a DenyWrite
+		// shield has no opt-in - taking the tree would refuse that grant outright.
+		//
+		// Not expressible as concrete paths, so left as a residual: sdkman's
+		// ~/.sdkman/candidates/*/current/bin and opam's non-default switches, both of which
+		// carry a name chosen at install time.
+		"go/bin", // GOBIN's default, and `go install` puts every user-installed tool here
+		".pyenv/bin",
+		".pyenv/shims",
+		".rbenv/bin",
+		".rbenv/shims",
+		".asdf/bin",
+		".asdf/shims",
+		".opam/default/bin",           // the switch every non-project opam install lands in
+		".ghcup/bin",                  // haskell toolchain shims
+		".volta/bin",                  // volta's node/npm shims
+		".bun/bin",                    // the rest of ~/.bun is an install cache
+		".local/share/mise/shims",     //
+		".krew/bin",                   // kubectl plugins, resolved as `kubectl <name>`
+		".dotnet/tools",               // dotnet global tools
+		".config/composer/vendor/bin", // composer global package binaries
+		".foundry/bin",                //
+		".pub-cache/bin",              // dart/flutter global activate
+		".mix/escripts",               // elixir escripts
+		".local/share/pnpm",           // pnpm's global bindir
+		".local/share/gem/ruby/bin",   // the modern per-user gem bindir (.gem is shielded above)
+		".yarn/bin",                   // yarn global add
+		".config/yarn/global/node_modules/.bin",
 
 		// Gradle runs every .gradle script in init.d before each build, so a planted file
 		// executes on the next build with the developer's privileges. The credential file
