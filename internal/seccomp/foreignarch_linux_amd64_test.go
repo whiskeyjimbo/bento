@@ -3,10 +3,8 @@
 package seccomp
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,39 +17,11 @@ import (
 )
 
 // runForeignArchHelper runs one of the helpers below in a child (the filters are
-// process-wide and permanent) and reports how it died: the signal if it was killed,
-// or 0 if it exited on its own. It skips the calling test on a kernel with no ia32
-// entry point, where `int 0x80` raises SIGSEGV and reaches no filter at all.
-//
-// That skip reads the child's OUTPUT, not its wait status, because the fault lands
-// inside Go code: the runtime catches SIGSEGV, prints a fatal-error dump and exits 2
-// UNSIGNALED, so a wait-status check for SIGSEGV never fires and the test would fail
-// on every such host instead of skipping. A seccomp kill is not interceptable that
-// way - SECCOMP_RET_KILL_PROCESS is not deliverable - so SIGSYS still arrives as a
-// signal.
-//
-// The guard case is the one re-exec child in this package whose coverage is
-// structurally unrecoverable: SECCOMP_RET_KILL_PROCESS is not deliverable, so the
-// child dies without running testing's teardown and never writes its counters.
+// process-wide and permanent) and reports how it died. The shared harness carries the
+// wait-status reading and the no-ia32-entry-point skip.
 func runForeignArchHelper(t *testing.T, which string) (syscall.Signal, string) {
 	t.Helper()
-	cmd := helperCommand(t, "TestForeignArchHelper", "BENTO_TEST_FOREIGN_ARCH="+which)
-	out, err := cmd.CombinedOutput()
-	if strings.Contains(string(out), "signal SIGSEGV") {
-		t.Skip("kernel has no ia32 compat entry point (CONFIG_IA32_EMULATION off or ia32_emulation=0), so no foreign-arch syscall can be issued")
-	}
-	if err == nil {
-		return 0, string(out)
-	}
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("%s helper: %v\n%s", which, err, out)
-	}
-	ws, ok := ee.Sys().(syscall.WaitStatus)
-	if !ok || !ws.Signaled() {
-		t.Fatalf("%s helper exited %d rather than dying on a signal:\n%s", which, ee.ExitCode(), out)
-	}
-	return ws.Signal(), string(out)
+	return runKilledHelper(t, "TestForeignArchHelper", "BENTO_TEST_FOREIGN_ARCH="+which)
 }
 
 // The library-backed filters (BlockIoUring, BlockExec, BlockProcessReach) match

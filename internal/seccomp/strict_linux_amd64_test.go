@@ -3,16 +3,16 @@
 package seccomp
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/whiskeyjimbo/bento/internal/i386"
 )
 
 // x32SyscallTag is __X32_SYSCALL_BIT, spelled out here rather than taken from the
@@ -27,8 +27,10 @@ const x32SyscallTag = 0x40000000
 // launcher's tests replace with a fake. A wrong jump offset or a wrong struct offset in
 // it fails OPEN, silently, while `exec: none-strict` still reports enforced.
 //
-// This drives every branch through a re-exec'd child, because the filter is process-wide
-// and permanent. The x32 branch kills, so it gets its own child below.
+// This drives the filter's errno branches through a re-exec'd child, because the filter
+// is process-wide and permanent. The two branches that KILL rather than return - a
+// foreign audit arch and an x32-tagged syscall - cannot report from inside the child, so
+// they get their own children below.
 func TestStrictFilterBlocksProcessCreation(t *testing.T) {
 	if !Supported() {
 		t.Skip("seccomp not supported on this kernel")
@@ -79,6 +81,10 @@ func TestStrictFilterBlocksProcessCreationHelper(t *testing.T) {
 		fmt.Println("CONTROL_CLONE_PROCESS", errno)
 		os.Exit(3)
 	}
+	// EINVAL, not ENOSYS: this asserts the kernel HAS clone3 (5.3+). Without it the
+	// forced-ENOSYS branch below would be indistinguishable from the kernel's own answer
+	// and the assertion would be vacuous, so a kernel that lacks it fails here loudly
+	// rather than passing for the wrong reason.
 	if errno := clone3Errno(); errno != unix.EINVAL {
 		fmt.Println("CONTROL_CLONE3", errno)
 		os.Exit(3)
@@ -125,9 +131,9 @@ func TestStrictFilterBlocksProcessCreationHelper(t *testing.T) {
 // tag branch, and if it regressed the fallthrough is a bogus getpid rather than a real
 // exec attempt.
 //
-// Like the foreign-arch guard this asserts SIGSYS, which a kill-thread and a kill-process
-// verdict both produce in a single-threaded child; TestKillProcessActionIsAvailable
-// covers the scope separately.
+// Like the foreign-arch guard this asserts SIGSYS without pinning the kill's SCOPE:
+// on every kernel from 4.14 the verdict is SECCOMP_RET_KILL_PROCESS, and
+// TestKillProcessActionIsAvailable is what checks the host is on that side of the line.
 func TestStrictFilterKillsX32Syscalls(t *testing.T) {
 	if !Supported() {
 		t.Skip("seccomp not supported on this kernel")
@@ -135,28 +141,51 @@ func TestStrictFilterKillsX32Syscalls(t *testing.T) {
 	if !StrictExecSupported() {
 		t.Skip("no none-strict filter on this architecture")
 	}
-	cmd := helperCommand(t, "TestStrictFilterKillsX32SyscallsHelper", "BENTO_TEST_STRICT_X32=1")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("the helper survived an x32-tagged syscall under the none-strict filter:\n%s", out)
-	}
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("x32 helper: %v\n%s", err, out)
-	}
-	ws, ok := ee.Sys().(syscall.WaitStatus)
-	if !ok || !ws.Signaled() {
-		t.Fatalf("x32 helper exited %d rather than dying on a signal:\n%s", ee.ExitCode(), out)
-	}
-	if sig := ws.Signal(); sig != syscall.SIGSYS {
+	sig, out := runKilledHelper(t, "TestStrictFilterKillsX32SyscallsHelper", "BENTO_TEST_STRICT_X32=1")
+	if sig != syscall.SIGSYS {
 		t.Fatalf("an x32-tagged syscall under the none-strict filter died on %v, want SIGSYS:\n%s", sig, out)
 	}
 }
 
+// The filter's first branch checks the audit arch and kills anything that is not amd64,
+// which is what stops a syscall issued through the i386 compat ABI from missing every
+// equality check below it and reaching the trailing allow - the same bypass
+// blockForeignArch closes for the library-backed filters. This filter carries its own
+// guard rather than borrowing that one, so the foreign-arch tests do not cover it.
+//
+// The control lives in TestForeignArchBypassExistsWithoutTheGuard: it shows the same
+// `int 0x80` surviving a filter without an arch guard, so the death here is the guard
+// and not the instruction.
+func TestStrictFilterKillsForeignArchSyscall(t *testing.T) {
+	if !Supported() {
+		t.Skip("seccomp not supported on this kernel")
+	}
+	if !StrictExecSupported() {
+		t.Skip("no none-strict filter on this architecture")
+	}
+	sig, out := runKilledHelper(t, "TestStrictFilterKillsForeignArchSyscallHelper", "BENTO_TEST_STRICT_ARCH=1")
+	if sig != syscall.SIGSYS {
+		t.Fatalf("an i386 syscall under the none-strict filter died on %v, want SIGSYS from the arch check:\n%s", sig, out)
+	}
+}
+
+// TestStrictFilterKillsForeignArchSyscallHelper is the child half: it installs the filter
+// and issues one i386 getpid, which must not return.
+func TestStrictFilterKillsForeignArchSyscallHelper(t *testing.T) {
+	if os.Getenv("BENTO_TEST_STRICT_ARCH") != "1" {
+		t.Skip("child helper for TestStrictFilterKillsForeignArchSyscall")
+	}
+	if err := BlockExecStrict(); err != nil {
+		fmt.Println("BLOCKEXECSTRICT_ERR", err)
+		os.Exit(3)
+	}
+	i386.Getpid()
+	fmt.Println("ARCH_SURVIVED")
+	os.Exit(4)
+}
+
 // TestStrictFilterKillsX32SyscallsHelper is the child half: it installs the filter and
-// issues one x32-tagged syscall, which must not return. Its coverage counters are
-// structurally unrecoverable - SECCOMP_RET_KILL_PROCESS is not deliverable, so testing's
-// teardown never runs - the same as the foreign-arch guard helper.
+// issues one x32-tagged syscall, which must not return.
 func TestStrictFilterKillsX32SyscallsHelper(t *testing.T) {
 	if os.Getenv("BENTO_TEST_STRICT_X32") != "1" {
 		t.Skip("child helper for TestStrictFilterKillsX32Syscalls")
