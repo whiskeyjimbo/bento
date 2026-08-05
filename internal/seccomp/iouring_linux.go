@@ -23,8 +23,10 @@ import (
 // amd64 and refuses to decode any other ABI, so a tracee issuing i386 syscalls - a
 // 32-bit helper, or int 0x80 from a 64-bit process - has every one of those accesses
 // dropped rather than recorded. Nothing is fabricated, but the manifest is missing them,
-// and it becomes enforcement policy on the next run. Killing the process is what turns
-// that silent gap into a refused run: seccomp keys on the syscall ABI rather than the
+// and it becomes enforcement policy on the next run. Killing is what turns that silent
+// gap into a refused run - below kernel 4.14 it kills only the offending thread (see
+// seccompRetKillProcess), which still refuses the syscall but may leave the profile to
+// finish short a thread: seccomp keys on the syscall ABI rather than the
 // code segment, so it catches the int 0x80 case a register check would miss, and a
 // profile that cannot be trusted must not complete. It also closes i386 io_uring_setup,
 // which is 425 there too.
