@@ -1211,6 +1211,11 @@ func TestHomeShieldClassification(t *testing.T) {
 		"/home/u/.mozilla":          HoldsPrivateData,
 		"/home/u/.local/state/nvim": HoldsHistory,
 		"/home/u/.config/autostart": HoldsPersistence,
+		"/home/u/.bash_history":     HoldsHistory,
+		"/home/u/.viminfo":          HoldsHistory,
+		"/home/u/.xinitrc":          HoldsPersistence,
+		"/home/u/postponed":         HoldsPrivateData,
+		"/home/u/.zuluCrypt-socket": HoldsServices,
 	} {
 		if got := byPath[path]; got.Holds != want {
 			t.Errorf("%s: Holds = %v (%q), want %v", path, got.Holds, got.Holds.Noun(), want)
@@ -1218,5 +1223,33 @@ func TestHomeShieldClassification(t *testing.T) {
 	}
 	if got := Runtime("/tmp/rt", "/home/u")[0]; got.Holds != HoldsServices {
 		t.Errorf("%s: Holds = %v, want HoldsServices", got.Path, got.Holds)
+	}
+}
+
+// A store's classification is a property of the store, not of how it was reached: a
+// relocation env var moves where the rule points and must not change what bento says is
+// behind it. Exporting LESSHISTFILE used to turn the same history file from a credential
+// store into a history store.
+func TestRelocationKeepsTheSameClassification(t *testing.T) {
+	for _, tc := range []struct{ env, def, relocated string }{
+		{"LESSHISTFILE", "/home/u/.lesshst", "/srv/lesshst"},
+		{"MYSQL_HISTFILE", "/home/u/.mysql_history", "/srv/mysql_history"},
+		{"NPM_CONFIG_USERCONFIG", "/home/u/.npmrc", "/srv/npmrc"},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv(tc.env, tc.relocated)
+			var def, moved Rule
+			for _, r := range Home("/home/u") {
+				switch r.Path {
+				case tc.def:
+					def = r
+				case tc.relocated:
+					moved = r
+				}
+			}
+			if def.Holds != moved.Holds {
+				t.Errorf("%s: default %q holds %v, relocated %q holds %v", tc.env, tc.def, def.Holds, tc.relocated, moved.Holds)
+			}
+		})
 	}
 }
