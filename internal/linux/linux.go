@@ -396,7 +396,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 	}
 	// Writes never carry the read opt-in, so no host directory is created under a
 	// shield the policy merely reads.
-	if err := checkNotShielded(sb, writes, nil); err != nil {
+	if err := checkWriteNotShielded(sb, writes); err != nil {
 		return err
 	}
 	// Refuse a grant above a credential shield before creating any directory, so a

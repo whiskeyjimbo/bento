@@ -27,11 +27,23 @@ func WriteIsFile(grant string) error {
 	return fmt.Errorf("write grant %q is a file; grant its parent directory instead", grant)
 }
 
-// InsideShield refuses a grant at or inside a fully-shielded location (a DenyAll
+// InsideShield refuses a READ grant at or inside a fully-shielded location (a DenyAll
 // deny-list directory such as ~/.ssh). The shield wins over the grant, so honoring it
-// would leave the author believing a path is available when it is not.
+// would leave the author believing a path is available when it is not. The remedy it
+// offers is the read opt-in, which only a read can take - a write of the same path gets
+// WriteInsideShield.
 func InsideShield(grant, shield string) error {
 	return fmt.Errorf("grant %q is inside the always-shielded path %q and cannot be honored; a read: grant of %q itself opts in (exposing it read-only, with a warning) - or remove this grant", grant, shield, shield)
+}
+
+// WriteInsideShield refuses a WRITE grant at or inside a fully-shielded location. It is
+// InsideShield's counterpart and exists because that sentence's remedy is a read: grant,
+// which a write grant cannot use: the opt-in is read-only by construction - it takes the
+// policy's reads alone - and extending it to writes would grant exactly the plant the
+// deny-list holds these paths for. Offering it here would send the author around a
+// refusal loop with no exit, adding a read: line that leaves the write refused.
+func WriteInsideShield(grant, shield string) error {
+	return fmt.Errorf("write grant %q is inside the always-shielded path %q and cannot be honored; there is no opt-in for a write, because it would grant the credential plant the shield exists to stop - remove this grant, or write somewhere outside %q", grant, shield, shield)
 }
 
 // InsideCallerShield refuses a grant at or inside a deny path the embedding program

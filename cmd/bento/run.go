@@ -463,9 +463,12 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			shortfall == nil && len(res.GuardBlocked) == 0 && !denied && !gateDenied && !untunneled {
 			// Before the hint, not after: profiling reproduces the same wrong path, so a
 			// reader who has this cause in hand should not be sent around that loop first.
-			writeSandboxHomeMiss(stderr, p, env, res)
-			writeSandboxPathMiss(stderr, p, env, res)
-			hinted = writeProfileHint(stderr, p, res)
+			// Either one names the cause, which is why the legend below does not follow
+			// them: profiling still finds the paths, but a reader holding "command not
+			// found" and the search path that lost it needs no list of other shapes.
+			missed := writeSandboxHomeMiss(stderr, p, env, res)
+			missed = writeSandboxPathMiss(stderr, p, env, res) || missed
+			hinted = writeProfileHint(stderr, p, res) && !missed
 		}
 		// Outside the chain above, which explains failures: this covers the run that
 		// reported none, and the one the chain left with the generic hint - which says

@@ -368,6 +368,54 @@ func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
 	if b.Len() > 0 {
 		t.Errorf("a signal notice already explained this run: %q", b.String())
 	}
+
+	// The layer gate still decides whether there is a mapping at all, and it sits above
+	// the lead: a tier that can produce none of these errnos must not print the sentence
+	// that introduces them and then stop.
+	var degraded enforce.Report
+	degraded.Add(enforce.LayerFilesystem, enforce.Degraded, "")
+	degraded.Add(enforce.LayerExec, enforce.Unavailable, "")
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{ExitCode: 1, Report: degraded}, true)
+	if b.Len() > 0 {
+		t.Errorf("no layer can produce these errnos, so there is nothing to introduce: %q", b.String())
+	}
+}
+
+// The two halves are wired through writeRunResult, so the order and the gating are
+// asserted where a reader meets them rather than on the legend alone: the generic hint
+// first, its shapes under it. A PATH miss is the counter-case - it names the cause, and
+// the shapes below it would offer a reader holding "command not found" four more.
+func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+
+	var out, errOut bytes.Buffer
+	p := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}}
+	_ = writeRunResult(&out, &errOut, false, p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
+	got := errOut.String()
+	hint := strings.Index(got, "denies silently")
+	shapes := strings.Index(got, "Read-only file system")
+	if hint < 0 || shapes < 0 {
+		t.Fatalf("a failing run gets both the hint and the shapes; got:\n%s", got)
+	}
+	if shapes < hint {
+		t.Errorf("the shapes explain the hint's own sentence, so they follow it; got:\n%s", got)
+	}
+
+	// 127 under a shell with no PATH grant: the miss note names the search path that lost
+	// the command, and nothing may stack a second reading onto it.
+	errOut.Reset()
+	shell := &policy.Policy{Entrypoint: "/work/t.sh", Interpreter: "/bin/sh", Read: []string{"/data"}}
+	_ = writeRunResult(&out, &errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
+	got = errOut.String()
+	if !strings.Contains(got, "PATH is not passed through") {
+		t.Fatalf("the PATH miss must still be explained; got:\n%s", got)
+	}
+	if strings.Contains(got, "Read-only file system") {
+		t.Errorf("the cause is already named, so the shapes must not follow it; got:\n%s", got)
+	}
 }
 
 // EPERM on an execve is bento's own verdict as much as EROFS is, so a summary that counts

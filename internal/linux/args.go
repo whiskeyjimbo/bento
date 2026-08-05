@@ -1074,11 +1074,12 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	}
 	optInShields := optInTargets(explicitShieldOptIns(sb, p.Read))
 	// Only reads carry the opt-in: a write grant under a shield the policy also reads
-	// must stay refused, so it is checked against no opt-ins at all.
-	if err := checkNotShielded(sb, reads, optInShields); err != nil {
+	// must stay refused, so it is checked against no opt-ins at all - and refused in a
+	// sentence that does not offer the read's remedy.
+	if err := checkReadNotShielded(sb, reads, optInShields); err != nil {
 		return err
 	}
-	if err := checkNotShielded(sb, writes, nil); err != nil {
+	if err := checkWriteNotShielded(sb, writes); err != nil {
 		return err
 	}
 	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
@@ -1106,7 +1107,20 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 // and common (read: ~ with ~/.ssh shielded inside it); a WRITE grant that contains
 // one is refused separately by checkWriteNotAboveShield, since it would make the
 // shield's parent writable.
-func checkNotShielded(sb sandbox, grants, optInShields []string) error {
+// checkReadNotShielded and checkWriteNotShielded are the two kinds the check comes in.
+// They share every rule and differ only in the sentence they refuse with, because the
+// read opt-in InsideShield names is read-only by construction (see explicitShieldOptIns)
+// - naming it to the author of a write grant instructs them to add a line that will not
+// lift their refusal.
+func checkReadNotShielded(sb sandbox, reads, optInShields []string) error {
+	return checkNotShielded(sb, reads, optInShields, grantrefusal.InsideShield)
+}
+
+func checkWriteNotShielded(sb sandbox, writes []string) error {
+	return checkNotShielded(sb, writes, nil, grantrefusal.WriteInsideShield)
+}
+
+func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(grant, shield string) error) error {
 	rules := alwaysShields(sb)
 	for _, g := range grants {
 		for _, r := range rules {
@@ -1142,7 +1156,7 @@ func checkNotShielded(sb sandbox, grants, optInShields []string) error {
 				if callerDenied(sb, rp) {
 					return grantrefusal.InsideCallerShield(g, r.Path)
 				}
-				return grantrefusal.InsideShield(g, r.Path)
+				return refuse(g, r.Path)
 			}
 		}
 	}

@@ -541,6 +541,33 @@ func TestWriteGrantOfShieldIsRefused(t *testing.T) {
 	}
 }
 
+// The refusal a write grant gets must not send the author to add a read: grant. The
+// opt-in is read-only by construction, so a manifest that follows that advice is refused
+// again for the same reason - a loop with no exit. The read grant's own refusal still
+// offers it, since there it is the remedy.
+func TestWriteGrantRefusalDoesNotOfferTheReadOptIn(t *testing.T) {
+	write := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/.ssh"}}
+	_, _, err := compile(write, enforce.Process{}, testSandbox("/home/u/.ssh"))
+	if err == nil {
+		t.Fatal("a write grant of ~/.ssh must be refused")
+	}
+	if strings.Contains(err.Error(), "opts in") {
+		t.Errorf("the write refusal names a remedy a write cannot take: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no opt-in for a write") {
+		t.Errorf("the write refusal must say why there is no way in: %v", err)
+	}
+
+	read := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u/.ssh/pubkeys"}}
+	_, _, err = compile(read, enforce.Process{}, testSandbox("/home/u/.ssh"))
+	if err == nil {
+		t.Fatal("a read grant inside ~/.ssh must be refused")
+	}
+	if !strings.Contains(err.Error(), "opts in") {
+		t.Errorf("the read refusal must keep offering the opt-in: %v", err)
+	}
+}
+
 // A read opt-in exposes the shield read-only; it must not carry a co-present write
 // grant with it. Reading ~/.gnupg does not make its private-key directory writable.
 func TestReadOptInDoesNotLiftShieldForWrite(t *testing.T) {
