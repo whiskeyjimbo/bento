@@ -90,13 +90,12 @@ func Restrict(writable []string) error {
 }
 
 // errAllowlistUnavailableABI is returned by RestrictExecAllowlist when the effective
-// Landlock ABI is below the usable floor. Unlike the plain backstop, the allowlist is
-// the ONLY thing bounding what the target may spawn - no exec-block filter is installed
-// under that mode - so a kernel that cannot apply it must refuse the run rather than
-// leave every readable binary spawnable.
+// Landlock ABI is below the usable floor. Kept fail-closed for the reason the function's
+// own comment gives: an allowlist that cannot be applied must refuse, never fall back to
+// unrestricted spawn.
 var errAllowlistUnavailableABI = errors.New("landlock: kernel ABI unavailable, refusing to run an exec allowlist that would not be enforced")
 
-// RestrictExecAllowlist is the bwrap tier's ruleset for policy exec: allowlist. It is
+// RestrictExecAllowlist builds and applies the ruleset an exec allowlist would need:
 // Restrict with execute withheld: the whole visible filesystem becomes readable but NOT
 // executable, the writable set stays writable but not executable, and exactly the
 // allowlisted files carry execute.
@@ -105,27 +104,32 @@ var errAllowlistUnavailableABI = errors.New("landlock: kernel ABI unavailable, r
 // different from every other rule this package builds. go-landlock's read helpers
 // (RODirs/ROFiles) include the execute right, so under Restrict every readable file is
 // executable; an allowlist that added a rule without taking that away would grant
-// nothing new and bound nothing. The subtraction is conditional on this mode for the
-// same reason - it changes what a read grant confers, and the other tiers' grants must
-// keep meaning what they have always meant.
+// nothing new and bound nothing. The subtraction lives here rather than in the shared
+// rule builders for the same reason: it changes what a read grant confers, and the other
+// tiers' grants must keep meaning what they have always meant.
 //
-// Unlike RestrictTo this is NOT best-effort. exec: allowlist installs no exec-block
-// seccomp filter, because the target has to be able to execve at all, so this ruleset is
-// the entire mechanism: applying it must succeed or the run must not happen. A caller
-// that warns and proceeds here would be running a target with unrestricted spawn under a
-// report claiming an allowlist.
+// NOTHING IN A POLICY REACHES THIS. There is no exec: allowlist mode, and ADR-0008
+// records why Landlock cannot provide one. This is kept as the executable evidence for
+// that decision: the probe's execallow_loader arm, which runs through here, is what
+// demonstrates the finding rather than asserting it, and a claim about kernel behaviour
+// with nothing to re-run it against is the thing an ADR is worst at holding.
 //
-// Every allowlisted path must be a STATICALLY LINKED executable. This function does not
-// check that - the caller refuses first, where the failure can name the manifest entry -
-// but the ruleset is only sound under it: the kernel executes a dynamic binary's
-// PT_INTERP, so the loader would need execute here too, and a loader that has it will
+// The two facts it demonstrates, both reproduced on ABI 4:
+//
+// A dynamically linked binary cannot be allowlisted. The kernel executes such a binary's
+// PT_INTERP, so the loader would need execute here too - and a loader that has it will
 // execute any readable ELF passed as its argument, including one the target just wrote
 // into its own write grant. That is why no loader path is granted and no attempt is made
-// to discover one.
+// to discover one, and it is why an allowlist entry would have to be statically linked.
 //
-// The residual it does keep: this bounds WHICH binary runs, not what that binary does,
-// and Landlock governs filesystem paths - so a binary reached without one
-// (memfd_create plus execveat) is outside it, as it is outside ExecNone.
+// And that is not enough either: under such a mode no exec-block filter is installed, so
+// the launcher would exec the TARGET through an ordinary exec.Command after this ruleset
+// is in place. The target's own interpreter or entrypoint would need execute under the
+// very ruleset withholding it, which rules out every script run under an interpreter.
+//
+// It is deliberately NOT best-effort, and stays that way: were anything ever to call it,
+// this ruleset would be the entire mechanism rather than a backstop behind bwrap, so
+// applying it must succeed or the run must not happen.
 func RestrictExecAllowlist(writable, execAllow []string) error {
 	if effectiveABI() < 1 {
 		return errAllowlistUnavailableABI

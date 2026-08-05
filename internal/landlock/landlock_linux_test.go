@@ -133,8 +133,10 @@ func TestRestrictConfinesReads(t *testing.T) {
 	})
 }
 
-// The exec allowlist's whole claim is that exactly the allowlisted binaries can be
-// spawned, and every arm here is a way that claim fails quietly.
+// This is the executable evidence for ADR-0008. No policy reaches
+// RestrictExecAllowlist - there is no exec: allowlist mode - so what this test pins is
+// not a shipped guarantee but the kernel behaviour the ADR rests on, kept runnable so
+// the decision can be re-checked rather than re-argued.
 //
 // The allowed and other arms are the claim itself. The read arm is the control that
 // separates "execute was withheld" from "the ruleset denied everything": an allowlist
@@ -145,10 +147,11 @@ func TestRestrictConfinesReads(t *testing.T) {
 // dynamically linked binary is executed through its PT_INTERP, so making one runnable
 // means granting the loader execute - and a loader with execute runs any readable ELF
 // handed to it as an argument, including one the target wrote itself. Asserting the
-// loader is DENIED is what pins this ruleset to the only shape that holds: no loader
-// rule, and therefore statically linked entries only. If this arm ever reports OK, the
-// mode is not an allowlist and the callers that refuse dynamic entries have stopped
-// being the thing that makes it sound.
+// loader is DENIED is the finding: it is what forces statically linked entries, and
+// forcing those is what made the mode too narrow to serve any job class - a script under
+// an interpreter needs a dynamic binary to be executable. If this arm ever reports OK on
+// some future kernel, ADR-0008's first reason has changed and the decision is worth
+// reopening.
 func TestExecAllowlistPermitsOnlyTheAllowlistedBinary(t *testing.T) {
 	if !Available() {
 		t.Skip("Landlock not present on this kernel")
