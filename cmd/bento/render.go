@@ -398,12 +398,13 @@ func shieldGrantPaths(gs []shieldGrant) []string {
 // command seven times slower than it was before it made the comparison at all (4ms to
 // 30ms on a two-grant manifest; 4ms again with this).
 //
-// Keyed on the environment rather than computed once, because that is what the set is
-// derived from and it is fixed only within a run: the tests relocate HOME and the shield
-// variables per case in one process, and a cache that outlived that would answer the
-// second case with the first case's host. On the anchors alone it would miss the dozen
-// variables that relocate individual shields, which is not a stale answer a caller can
-// see coming.
+// Keyed on the environment rather than computed once, because that is where all of the
+// set's moving input comes from and it is fixed only within a run: the tests relocate HOME
+// and the shield variables per case in one process, and a cache that outlived that would
+// answer the second case with the first case's host. On the anchors alone it would miss
+// the dozen variables that relocate individual shields, which is not a stale answer a
+// caller can see coming. The one input the key does not cover is the passwd home
+// HomeAnchors falls back to, which no process can change under itself.
 var shieldCache struct {
 	sync.Mutex
 	key string
