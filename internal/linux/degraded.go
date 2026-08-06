@@ -49,8 +49,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// The degraded tier shares the full tier's grant-safety checks. Without them
 	// --allow-degraded would accept a manifest the full tier hard-refuses - write: ~
 	// above the ~/.ssh shield, read: /proc onto the host process table - and here
-	// there is no mount namespace or deny-list to catch it afterward. Run them before
-	// the MkdirAll below so a to-be-refused grant leaves no host directory artifact.
+	// there is no mount namespace or deny-list to catch it afterward. They and the
+	// alias scan below run before prepareWriteDirs, so a to-be-refused grant leaves no
+	// host directory artifact.
 	if err := checkGrants(sb, p, reads, writes); err != nil {
 		return enforce.Result{}, err
 	}
@@ -59,29 +60,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning
 	// consistent with the full tier's.
 	optIns := explicitShieldOptIns(sb, p.Read)
-	// Write grants are prepared exactly as the bwrap tier prepares them, through the
-	// same function: a missing directory is created so Landlock has a path to grant
-	// (its rules skip a path that does not exist), and a grant naming an existing FILE
-	// is refused rather than accepted. Sharing it is what keeps one manifest from
-	// meaning two things - this tier used to accept a file grant the full tier
-	// refuses, and to MkdirAll a directory on the host at a path the policy meant as a
-	// file. Landlock still cannot carve a shielded subpath out of an allowed tree, so a
-	// read grant containing a credential dir exposes it: the documented cost of this
-	// tier, and why a broad read here is weaker than under bwrap.
-	if err := prepareWriteDirs(p, sb); err != nil {
-		return enforce.Result{}, err
-	}
-
-	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
-	// would carve are discovered), record which always-on shields a bwrap run would have
-	// engaged among the paths THIS tier actually exposes - its Landlock read/write set,
-	// sysReads + reads + writes. The degraded tier applies none of them (no mount
-	// namespace), so they are exposed, not hidden, and the audit says so rather than
-	// reporting an empty shield set for a run that shielded nothing. Scoping to the real
-	// exposure, not the full tier's exposedPaths, keeps the warning tied to what this tier
-	// actually makes readable - which now includes the interpreter prefix added below, so
-	// a credential store inside one IS reported here. That is the honest answer: the full
-	// tier binds a shield over it, and Landlock cannot carve one out of a granted tree.
+	// The paths THIS tier actually exposes - its Landlock read/write set, sysReads +
+	// reads + writes - which both the alias scan and the shield report below run over.
+	// Scoping to the real exposure, not the full tier's exposedPaths, keeps them tied to
+	// what this tier actually makes readable.
 	sysReads, sysWrites := degradedSystemPaths(sb)
 	// An interpreter outside the system paths (pyenv, mise, conda) needs its install
 	// prefix readable or it cannot load its stdlib. The launcher grants the interpreter
@@ -97,17 +79,42 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	}
 
 	visible := concat(sysReads, reads, writes)
-	exposed := exposedShields(sb, visible, writes, optInTargets(optIns))
 
 	// The same refusal the bwrap tier makes before launch, over this tier's own visible
 	// set. Landlock consults an inode's names no more than a bind does, so without it a
 	// hardlink to ~/.ssh/id_ed25519 inside a granted tree is readable here while the
 	// full tier refuses the run - one manifest meaning two things, in the direction
-	// that hands over a credential nobody opted into.
+	// that hands over a credential nobody opted into. It runs over the write grants
+	// before they exist, as the bwrap tier's does: a directory that has just been
+	// created holds no alias, so the verdict is the same either way, and refusing first
+	// is what keeps a refused run from leaving one behind.
 	accepted, err := checkAliasedCredentials(sb, visible, optInPaths(optIns), acceptAliasesUnder)
 	if err != nil {
 		return enforce.Result{}, err
 	}
+
+	// Write grants are prepared exactly as the bwrap tier prepares them, through the
+	// same function: a missing directory is created so Landlock has a path to grant
+	// (its rules skip a path that does not exist), and a grant naming an existing FILE
+	// is refused rather than accepted. Sharing it is what keeps one manifest from
+	// meaning two things - this tier used to accept a file grant the full tier
+	// refuses, and to MkdirAll a directory on the host at a path the policy meant as a
+	// file. Landlock still cannot carve a shielded subpath out of an allowed tree, so a
+	// read grant containing a credential dir exposes it: the documented cost of this
+	// tier, and why a broad read here is weaker than under bwrap.
+	if err := prepareWriteDirs(p, sb); err != nil {
+		return enforce.Result{}, err
+	}
+
+	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
+	// would carve are discovered), record which always-on shields a bwrap run would have
+	// engaged among the exposed paths. The degraded tier applies none of them (no mount
+	// namespace), so they are exposed, not hidden, and the audit says so rather than
+	// reporting an empty shield set for a run that shielded nothing. The set includes the
+	// interpreter prefix, so a credential store inside one IS reported here. That is the
+	// honest answer: the full tier binds a shield over it, and Landlock cannot carve one
+	// out of a granted tree.
+	exposed := exposedShields(sb, visible, writes, optInTargets(optIns))
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
