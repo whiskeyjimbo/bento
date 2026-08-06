@@ -648,8 +648,9 @@ const dropSlots = 2
 //
 // A key outlives its pair whenever the exit stop never reaches the release: a failed
 // register read (which has no registers to key on, and so keys on the zero regs), and a
-// tracee that dies mid-pair. Each collapses its repeats into one drop, and the second
-// cannot repeat at all - the process is gone.
+// tracee that dies mid-pair. The first collapses its repeats into one drop. The second
+// would strand a key on a tid the kernel is free to reuse, where it dedups away a live
+// thread's real loss, so forgetDropsOf sweeps it as the wait status arrives.
 func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs)) {
 	key := func(regs *syscall.PtraceRegs, slot int) string {
 		return fmt.Sprintf("%s\x00%d", stopKey(pid, regs), slot)
@@ -959,9 +960,9 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		// and on ExecAll the launcher installs no exec-block filter at all, so a single
 		// execveat would turn into blanket execve permission for the whole run.
 		res.Execed = true
-		recordExecTarget(pid, atFdCwd, uintptr(regs.Rdi), record, drop)
+		recordExecTarget(pid, atFdCwd, uintptr(regs.Rdi), false, record, drop)
 	case sysExecveat:
-		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), record, drop)
+		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, record, drop)
 	default:
 		inspectMutating(pid, &regs, record, dropSlot)
 		inspectExistence(pid, &regs, recordProbe, drop, held)
@@ -1407,18 +1408,20 @@ const unixPtraceExitKill = 0x00100000
 // is, which also settles the memfd case honestly: its link reads "… (deleted)", resolveAt
 // refuses it, and a drop says the observation is short rather than naming a pseudo-path
 // the sandbox could never bind.
-func recordExecTarget(pid int, dirfd int32, addr uintptr, record func(string, bool), drop func()) {
+func recordExecTarget(pid int, dirfd int32, addr uintptr, emptyPath bool, record func(string, bool), drop func()) {
 	path, ok := readPathAt(pid, dirfd, addr)
 	if !ok {
 		drop()
 		return
 	}
 	if path == "" {
-		// Without a descriptor to fall back on there is no file: execve("") and
-		// execveat(AT_FDCWD, "") name nothing and the kernel answers ENOENT, so this is
-		// not a lost observation to count. Anchoring "." at the descriptor is what turns
-		// it into the file's own path - /proc/<pid>/fd/<n> links straight to it.
-		if dirfd == atFdCwd {
+		// Without AT_EMPTY_PATH there is no file: execve(""), execveat(AT_FDCWD, "")
+		// and execveat(fd, "", 0) all name nothing and the kernel answers ENOENT, so
+		// this is not a lost observation to count. Resolving the descriptor anyway would
+		// record a binary the call never ran. Anchoring "." at the descriptor is what
+		// turns the flagged form into the file's own path - /proc/<pid>/fd/<n> links
+		// straight to it.
+		if !emptyPath || dirfd == atFdCwd {
 			return
 		}
 		if path, ok = resolveAt(pid, dirfd, "."); !ok {
