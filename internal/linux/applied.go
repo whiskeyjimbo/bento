@@ -208,7 +208,7 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 	// Absent - a kernel with no usable Landlock ABI - is not a shortfall only where
 	// something else confines the filesystem. On the degraded tier Landlock IS the
 	// confinement, so absent there means the run had none, exactly like a failure.
-	if a.landlock != launcher.AppliedYes && !(a.landlock == launcher.AppliedAbsent && mountConfined) {
+	if a.landlock != launcher.AppliedYes && (a.landlock != launcher.AppliedAbsent || !mountConfined) {
 		why := a.landlockErr
 		switch {
 		case why != "":
