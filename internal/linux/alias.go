@@ -110,6 +110,30 @@ type aliasScan struct {
 // knows. All three are accepted rather than engineered against, because the actor here
 // already holds the user's privileges and could read the credential directly; the value
 // delivered is naming where an alias is, not blocking someone who needs no alias.
+// checkAliasedCredentials refuses the run when anything it can read holds a second
+// name for a shielded credential's inode, and returns the aliases the caller
+// acknowledged. Both tiers need it: a shield hides a credential's path, and neither a
+// bwrap bind nor a Landlock rule consults an inode's other names, so the alias is
+// reachable under either mechanism unless the run is refused before it starts.
+//
+// visible is what the tier exposes host content at, which is the one thing that
+// differs: the mount namespace's binds under bwrap, the Landlock read/write set
+// without it.
+func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []string) ([]credentialAlias, error) {
+	scan, err := aliasedCredentials(sb, visible, literalOptIns)
+	if err != nil {
+		return nil, err
+	}
+	refuse, accepted, err := splitAcknowledgedAliases(sb, scan, acceptUnder)
+	if err != nil {
+		return nil, err
+	}
+	if len(refuse) > 0 {
+		return nil, aliasRefusal(refuse, scan.credentials)
+	}
+	return accepted, nil
+}
+
 func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, error) {
 	creds, linked, err := credentialFiles(sb, literalOptIns)
 	if err != nil {
