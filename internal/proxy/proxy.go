@@ -218,6 +218,30 @@ func (e *blockedUpstreamError) Error() string {
 	return fmt.Sprintf("refusing egress to non-public address %s", e.addr)
 }
 
+// guardBlockedKey names the per-connection record of whether the guard refused any of
+// this dial's resolved addresses.
+type guardBlockedKey struct{}
+
+// withGuardBlocked gives a dial somewhere to record a guard refusal, because the error
+// alone does not survive: net.Dialer tries each resolved address and returns the FIRST
+// one's error, so for a name resolving to [dead-timeout, 10.0.0.1] the refusal on the
+// second address is discarded and handle would report the connection's own decision for
+// a connection that reached nothing. The refusal itself is unaffected - nothing was
+// dialed either way - but the operator signal that the guard is what stopped it is the
+// only place the distinction survives.
+func withGuardBlocked(ctx context.Context, seen *atomic.Bool) context.Context {
+	return context.WithValue(ctx, guardBlockedKey{}, seen)
+}
+
+// blocked notes the refusal on the dial context and returns it. Atomic because the
+// dialer runs an address per goroutine on a dual-stack name, so two can refuse at once.
+func blocked(ctx context.Context, addr string) *blockedUpstreamError {
+	if seen, ok := ctx.Value(guardBlockedKey{}).(*atomic.Bool); ok {
+		seen.Store(true)
+	}
+	return &blockedUpstreamError{addr: addr}
+}
+
 // guardUpstream rejects connecting to a resolved address that names a
 // host-internal or infrastructure target (loopback, link-local including
 // 169.254.169.254 cloud metadata, private/ULA, CGNAT, unspecified). Since the
@@ -233,7 +257,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if err != nil {
 		// The dialer hands ControlContext a resolved host:port; an address that does
 		// not even split is anomalous, so refuse it rather than fail open.
-		return &blockedUpstreamError{addr: address}
+		return blocked(ctx, address)
 	}
 	// Strip an IPv6 zone id before parsing. net.ParseIP rejects a zoned literal -
 	// "fe80::1%eth0", and the mapped-IPv4 "::ffff:169.254.169.254%eth0" or its
@@ -247,7 +271,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if ip == nil {
 		// A resolved dial target that is not a plain IP cannot be classified, so
 		// refuse it rather than dial an address the guard could not vet.
-		return &blockedUpstreamError{addr: address}
+		return blocked(ctx, address)
 	}
 	switch p.classify(ip) {
 	case ipHostReserved:
@@ -255,14 +279,14 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
 		// reaches the HOST's own services - never a legitimate sandbox egress target,
 		// so no rule may reach them, not even an explicit IP literal.
-		return &blockedUpstreamError{addr: ip.String()}
+		return blocked(ctx, ip.String())
 	case ipPrivate:
 		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only for
 		// the literal grant this connection carries; a permitted hostname resolving
 		// there is the SSRF case and stays blocked. A context with no grant (any
 		// caller but handle) is treated as no grant, so the guard fails closed.
 		if grant := literalGrantOf(ctx); grant == nil || !grant.Equal(ip) {
-			return &blockedUpstreamError{addr: ip.String()}
+			return blocked(ctx, ip.String())
 		}
 	}
 	return nil
@@ -611,6 +635,12 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			// refusal is recorded before the client is told, so a caller that observes
 			// the 503 has already observed the report.
 			p.report(Refused, "", "")
+			// Written on the accept goroutine, so it must not block: a client that never
+			// reads leaves the whole proxy not accepting. The status is ~120 bytes against
+			// a socket buffer that dwarfs it, so this deadline should never fire - it is
+			// what keeps "accept-loop work is non-blocking" an invariant rather than a
+			// property of the current message length.
+			c.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
 			writeStatus(c, "503 Service Unavailable", "bento egress proxy is at its connection limit")
 			c.Close()
 		}
@@ -622,6 +652,9 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 // cut short; a legitimate destination that needs longer than this is already failing.
 const dialTimeout = 15 * time.Second
 
+// statusWriteTimeout bounds the at-capacity refusal written from the accept loop.
+const statusWriteTimeout = 5 * time.Second
+
 // connectTimeout bounds how long a client may take to send its CONNECT request
 // before its handler slot is reclaimed, so a client that connects and sends
 // nothing cannot pin a concurrency slot for the whole run.
@@ -630,8 +663,21 @@ const connectTimeout = 30 * time.Second
 func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	// A panic in a handler must not take down the whole bento process mid-run; the
-	// slot is released by Serve's deferred receive regardless.
-	defer func() { _ = recover() }()
+	// slot is released by Serve's deferred receive regardless. Every other outcome
+	// this handler can reach answers the client with a status line, so a panic answers
+	// with one too rather than a bare close the target reads as a network hiccup - but
+	// only before the tunnel is established, because after the 200 the connection
+	// carries the target's own bytes and a status line spliced into them is corruption.
+	// The decision itself still goes unreported: there is no seam on the Proxy to route
+	// it to, and no Decision that would not lie about what happened.
+	established := false
+	defer func() {
+		if recover() == nil || established {
+			return
+		}
+		client.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
+		writeStatus(client, "502 Bad Gateway", "bento egress proxy could not complete the request")
+	}()
 
 	// A run cancellation (timeout or abort) must unblock this handler at once, not
 	// leave it pinning a slot until readConnect's connectTimeout or the tunnel's
@@ -710,16 +756,21 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// The literal grant is decided here, where the CONNECT target and the rules are
 	// both in scope, and never re-derived downstream: guardUpstream sees only which
 	// private address (if any) this connection may reach.
-	dialCtx := ctx
+	var guardBlocked atomic.Bool
+	dialCtx := withGuardBlocked(ctx, &guardBlocked)
 	if !admittedByGate {
 		if grant := p.literalGrantFor(host, port); grant != nil {
-			dialCtx = withLiteralGrant(ctx, grant)
+			dialCtx = withLiteralGrant(dialCtx, grant)
 		}
 	}
 	upstream, err := p.dial(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
+		// The flag as well as the error: a name with several addresses surfaces only the
+		// first one's failure, so a guard refusal further down the list is in the flag
+		// alone. Read after dial returns, so a late store from an attempt still winding
+		// down can only be missed, never torn.
 		var blocked *blockedUpstreamError
-		if errors.As(err, &blocked) {
+		if errors.As(err, &blocked) || guardBlocked.Load() {
 			// Reported GuardBlocked, but answered exactly as an ordinary dial failure is. A
 			// distinct refusal here told the client that the name resolved into
 			// non-public space, which under a permissive allowlist (`bento profile
@@ -748,6 +799,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
+	established = true
 	// The client half is read through br, not client, because a pipelining client
 	// may have already sent its TLS ClientHello into br's buffer along with the
 	// CONNECT headers; reading the raw conn would drop those bytes and break the
