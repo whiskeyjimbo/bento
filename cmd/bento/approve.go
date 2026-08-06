@@ -301,7 +301,12 @@ func confirmApproval(ctx context.Context, w io.Writer, assumeYes bool) error {
 // the question is whether a human affirmed these permissions, so a typo, an empty line and a
 // closed stream must all mean no.
 func readApprovalAnswer(ctx context.Context, lines <-chan string, w io.Writer) error {
-	line, _ := askLine(ctx, lines, w, "\nApprove these permissions? [y/N] > ")
+	line, ok := askLine(ctx, lines, w, "\nApprove these permissions? [y/N] > ")
+	if !ok && ctx.Err() != nil {
+		// Nothing is stamped either way, but a Ctrl-C answered with "edit the manifest"
+		// advises a reviewer who did not decline anything.
+		return fmt.Errorf("not approved: %w", ctx.Err())
+	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return nil
