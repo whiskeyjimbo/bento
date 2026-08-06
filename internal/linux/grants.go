@@ -157,14 +157,6 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	return nil
 }
 
-// checkWriteNotAboveShield refuses a write grant that contains a DenyAll home
-// shield (a credential directory such as ~/.ssh). Such a grant binds the shield's
-// parent read-write, so a run could create the shield on the host where it did not
-// exist (leaving an empty, wrong-permission directory that breaks ssh/gpg), or
-// delete and replace a symlinked one - because bwrap cannot mount a shield over a
-// symlink and so protects only its target, not the name in the granted directory.
-// Read grants are not restricted: they cannot write the parent, and shielding a
-// broad read grant is the deny-list's normal use.
 // checkWorkspaceShieldNotRedirected refuses a write grant whose per-workspace shield
 // (a git hooks/config path, an editor-task file) is redirected by a symlinked
 // directory component so the emitted shield lands somewhere other than the literal
@@ -208,6 +200,14 @@ func checkWriteNotRoot(writes []string) error {
 	return nil
 }
 
+// checkWriteNotAboveShield refuses a write grant that contains a DenyAll home
+// shield (a credential directory such as ~/.ssh). Such a grant binds the shield's
+// parent read-write, so a run could create the shield on the host where it did not
+// exist (leaving an empty, wrong-permission directory that breaks ssh/gpg), or
+// delete and replace a symlinked one - because bwrap cannot mount a shield over a
+// symlink and so protects only its target, not the name in the granted directory.
+// Read grants are not restricted: they cannot write the parent, and shielding a
+// broad read grant is the deny-list's normal use.
 func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 	set := shields(sb)
 	for _, w := range writes {
