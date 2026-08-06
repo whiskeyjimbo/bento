@@ -16,6 +16,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -1484,5 +1485,31 @@ func TestClampShieldMatchesSymlinkedStoreTarget(t *testing.T) {
 	}
 	if len(dropped) != 1 || dropped[0].Holds != denylist.HoldsCredentials {
 		t.Errorf("the drop must name what the store holds so the warning is specific; got %+v", dropped)
+	}
+}
+
+// The same symlinked shield, but pointing at a store the host has not created yet - a
+// dotfiles tree checked out lazily, or a nix profile link before its first activation.
+// EvalSymlinks fails outright on that, which left the clamp shielding only the literal
+// path while the gate and the backend (both pathresolve-backed) shielded the target, so
+// the proposal kept a write the run then hard-refused.
+func TestClampWriteShieldMatchesDanglingShieldTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store := filepath.Join(t.TempDir(), "dotfiles", "bin")
+	if err := os.MkdirAll(filepath.Join(home, ".local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(home, ".local", "bin")); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+
+	grant := filepath.Join(pathresolve.Existing(store), "mytool")
+	_, kept, _, dropped := clampShieldedGrants(nil, []string{grant})
+	if slices.Contains(kept, grant) {
+		t.Errorf("a write at a dangling shield's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
+	}
+	if len(dropped) == 0 {
+		t.Errorf("the write must be reported as write-shielded so the user is told why; dropped=%v", dropped)
 	}
 }
