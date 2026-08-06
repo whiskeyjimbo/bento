@@ -296,7 +296,11 @@ func ShieldedReadProblems(reads []string) ([]string, error) {
 	var problems []string
 	for _, g := range reads {
 		if r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil); v != shield.Honored {
-			problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
+			refuse := grantrefusal.InsideShield
+			if v == shield.FoldedShield {
+				refuse = grantrefusal.FoldedShield
+			}
+			problems = append(problems, refuse(g, r.Path).Error())
 		}
 	}
 	return problems, nil

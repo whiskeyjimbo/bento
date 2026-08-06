@@ -533,3 +533,39 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		cleanupOK()
 	}
 }
+
+// A shield is one byte-exact bind, so on a case-insensitive mount a read grant of the
+// home tree reaches the credential store under a second spelling, beside the shield. The
+// run must refuse that grant rather than emit a shield that does not contain what it
+// names. The mount's behaviour is injected through the identity seam, because two
+// spellings created on the test host's own filesystem would be two different files.
+func TestHomeGrantRefusedWhereTheMountFoldsCase(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa")
+	// Identity is the lowercased path: every spelling of one name is one inode, which is
+	// what a folding mount does.
+	inos := map[string]uint64{}
+	folding := func(p string) (fileID, bool) {
+		lower := strings.ToLower(p)
+		if !strings.HasPrefix(lower, "/home/u/.ssh") {
+			return fileID{}, false
+		}
+		if _, ok := inos[lower]; !ok {
+			inos[lower] = uint64(len(inos) + 1)
+		}
+		return fileID{ino: inos[lower]}, true
+	}
+	p := &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}
+
+	if _, _, err := compile(p, enforce.Process{}, sb); err != nil {
+		t.Fatalf("a home grant on a case-sensitive mount is honored: %v", err)
+	}
+
+	sb.statID = folding
+	_, _, err := compile(p, enforce.Process{}, sb)
+	if err == nil {
+		t.Fatal("a home grant must be refused where the mount folds case: the shield does not contain the store")
+	}
+	if !strings.Contains(err.Error(), "case-insensitive") || !strings.Contains(err.Error(), "/home/u/.ssh") {
+		t.Errorf("the refusal must name the folding mount and the shield; got %v", err)
+	}
+}

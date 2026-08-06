@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"path/filepath"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -35,6 +37,11 @@ const (
 	// AboveShield means a write that CONTAINS a fully-shielded path, which would make the
 	// shield's own name replaceable in a directory the run can write.
 	AboveShield
+	// FoldedShield means a grant CONTAINS a fully-shielded path whose directory folds
+	// case, so the byte-exact bind that shields it leaves the same file reachable under
+	// another spelling. Unlike AboveShield it applies to reads as much as writes, because
+	// what leaks is the content, not the name.
+	FoldedShield
 )
 
 // Kind is the grant's kind. The two are not symmetric - the read opt-in has no write
@@ -88,6 +95,15 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 			return a.Rule, InsideShield
 		}
 	}
+	// Checked for both kinds and before the write-only verdicts, because a case-folding
+	// mount defeats a shield for a plain read - the grant that reaches the second
+	// spelling need not be able to write anything.
+	for _, a := range s.applied {
+		if a.Rule.Deny == denylist.DenyAll && policy.CoversResolved(grant, a.Resolved) && s.foldsCase(a.Resolved) {
+			return a.Rule, FoldedShield
+		}
+	}
+
 	if kind == Read {
 		return denylist.Rule{}, Honored
 	}
@@ -121,6 +137,31 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		}
 	}
 	return denylist.Rule{}, Honored
+}
+
+// foldsCase reports whether the directory holding path reaches path's content under a
+// different spelling of its name - a case-insensitive mount (vfat, exfat, ciopfs) or a
+// directory carrying ext4's casefold attribute. A shield is one byte-exact bind, so where
+// this is true the store stays readable beside the shield under any other spelling.
+//
+// The flipped spelling is a DETECTOR, not an enumeration: a folding directory reaches the
+// same inode under every mixture of cases, so there is no set of extra binds that would
+// contain it. That is why the caller's only move is to refuse the grant.
+//
+// A name with no letters cannot be respelled, and a shield that does not exist holds
+// nothing to reach, so both answer false without a syscall.
+func (s Set) foldsCase(path string) bool {
+	base := filepath.Base(path)
+	flipped := strings.Map(func(r rune) rune {
+		if unicode.IsUpper(r) {
+			return unicode.ToLower(r)
+		}
+		return unicode.ToUpper(r)
+	}, base)
+	if flipped == base {
+		return false
+	}
+	return s.fs.SameFile(path, filepath.Join(filepath.Dir(path), flipped))
 }
 
 // callerDenied reports whether a caller-supplied deny covers a resolved host path. Both
