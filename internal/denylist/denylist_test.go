@@ -194,6 +194,8 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.Xdefaults",           // xrdb resources read at login
 		"/home/u/.bash_completion",     // sourced by the distro bash.bashrc for every interactive shell
 		"/home/u/.selected_editor",     // sensible-editor sources it and runs $SELECTED_EDITOR
+		"/home/u/.fzf.zsh",             // sourced by the line fzf's installer appends to the rc
+		"/home/u/.p10k.zsh",            // sourced verbatim by the powerlevel10k line in .zshrc
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -223,6 +225,16 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.xmonad",                                  // xmonad.hs compiled+run
 		"/home/u/.local/lib",                               // user libraries imported at runtime
 		"/home/u/.local/share/bash-completion/completions", // sourced on the first tab-complete of that command
+		"/home/u/.config/zsh",                              // the conventional ZDOTDIR, shielded without the (non-exported) variable
+		"/home/u/.zprezto",                                 // zsh framework, the .oh-my-zsh class
+		"/home/u/.zinit",                                   // zsh plugin manager
+		"/home/u/.tmux/plugins",                            // what the write-denied .tmux.conf actually runs
+		// $PATH-resident directories: a planted file runs under a bare command name.
+		"/home/u/go/bin",
+		"/home/u/.pyenv/shims",
+		"/home/u/.asdf/shims",
+		"/home/u/.local/share/mise/shims",
+		"/home/u/.local/share/pnpm",
 	}
 	for _, p := range wantDenyWriteDir {
 		r, ok := byPath[p]
