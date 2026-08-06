@@ -722,6 +722,15 @@ func homeShields(sb sandbox) []denylist.Rule {
 // set - a divergence would either leak a host artifact or leave a path unshielded.
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	rules := alwaysShields(sb)
+	// Only the home credential shields are expanded. The runtime rules cover service
+	// directories whose entries are symlinks into shared read-only system content (a
+	// user systemd unit into /nix/store or /usr/lib/systemd), which holds no secret and
+	// is not the run's to hide.
+	for _, r := range homeShields(sb) {
+		if r.Deny == denylist.DenyAll && r.Dir {
+			rules = append(rules, shieldedLinks(sb, r, r.Path, 0)...)
+		}
+	}
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
@@ -733,6 +742,38 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		}
 	}
 	return rules
+}
+
+// shieldedLinks covers the credentials a store keeps as symlinks into a dotfile farm
+// (stow, chezmoi, yadm): ~/.ssh is a real directory holding id_rsa -> ~/dotfiles/ssh/id_rsa.
+// The shield binds over ~/.ssh, and inside the sandbox the link dangles - but the target
+// is covered by no rule at all and is read in full under a grant of ~. A symlinked store
+// as a WHOLE (~/.netrc -> ~/dotfiles/netrc) has always been chased, because shieldTarget
+// resolves a rule's own path; only a link INSIDE a directory rule was missed.
+//
+// The rule is emitted on the link, not on the target, so it resolves through that same
+// shieldTarget - which is what keeps a link to "/" or onto a home anchor from shielding
+// the whole grant. Descent is over real subdirectories only, so a planted link cannot
+// take the walk out of the store or loop it; depth bounds a deep farm as a backstop.
+func shieldedLinks(sb sandbox, r denylist.Rule, dir string, depth int) []denylist.Rule {
+	if depth > maxGitdirDepth || !sb.isDir(dir) {
+		return nil
+	}
+	names, links, ok := sb.listDir(dir)
+	if !ok {
+		// Nothing to enumerate and nothing exposed either: the whole directory is
+		// hidden by the DenyAll shield this is expanding.
+		return nil
+	}
+	var out []denylist.Rule
+	for _, name := range links {
+		p := filepath.Join(dir, name)
+		out = append(out, denylist.Rule{Path: p, Deny: denylist.DenyAll, Dir: sb.isDir(p), Holds: r.Holds, Source: r.Source})
+	}
+	for _, name := range names {
+		out = append(out, shieldedLinks(sb, r, filepath.Join(dir, name), depth+1)...)
+	}
+	return out
 }
 
 // workspaceShields is the code-execution surface of the checkout a write grant lands

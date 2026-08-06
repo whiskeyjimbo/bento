@@ -5,6 +5,7 @@ package linux
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -94,4 +95,53 @@ func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 			t.Fatal("a write grant whose real .git is a symlink escaping the grant must be refused")
 		}
 	})
+}
+
+// A dotfile farm (stow, chezmoi, yadm) keeps ~/.ssh as a real directory whose entries
+// are symlinks into ~/dotfiles. The shield binds over ~/.ssh, so the link dangles inside
+// the sandbox - but the target it names is covered by no rule and is read in full under
+// a grant of the home. A whole store symlinked at its own path (~/.netrc) was always
+// chased; this is the same store one level down.
+func TestSymlinkedCredentialInsideADirectoryShieldIsShielded(t *testing.T) {
+	home := t.TempDir()
+	canon, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "dotfiles", "ssh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(canon, "dotfiles", "ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(key, filepath.Join(canon, ".ssh", "id_rsa")); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(canon, "run.py")
+	if err := os.WriteFile(entry, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := sandbox{
+		homes:      []string{canon},
+		emptyFile:  "/dev/null",
+		bentoPath:  "/dev/null",
+		entrypoint: entry,
+		exists:     hostExists,
+		isDir:      hostIsDir,
+		listDir:    hostListDir,
+		resolve:    hostResolve,
+		rootDirs:   func() ([]string, error) { return nil, nil },
+	}
+	args, _, err := compile(&policy.Policy{Entrypoint: entry, Read: []string{canon}}, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatalf("a read grant over a home with a symlinked credential must not be refused: %v", err)
+	}
+	if !slices.Contains(args, key) {
+		t.Errorf("the argv shields %v but not %q - the real key is readable under the grant", args, key)
+	}
 }
