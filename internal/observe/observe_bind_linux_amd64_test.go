@@ -8,7 +8,7 @@ import (
 )
 
 // bind(2) on an AF_UNIX pathname socket creates a socket file, a directory write the
-// manifest must grant or enforcement fails the run closed (bv2-5u3). Only pathname
+// manifest must grant or enforcement fails the run closed. Only pathname
 // sockets make a filesystem entry: abstract sockets, unnamed/autobind addresses, and
 // other families create nothing and must not be recorded.
 func TestUnixSockaddrPath(t *testing.T) {

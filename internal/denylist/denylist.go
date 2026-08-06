@@ -805,7 +805,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// planted file runs on the host under a name the user already types.
 		//
 		// These are whole trees, matching firejail, and the cost is real: a DenyWrite
-		// shield has no opt-out (the yz3.2 opt-in covers DenyAll shields only, see
+		// shield has no opt-out (the read opt-in covers DenyAll shields only, see
 		// shieldNeeded), so `rustup update`, `nvm install`, `npm i -g`, `gem install
 		// --user-install` and `cargo install` cannot run in-sandbox at all - a policy
 		// granting write here is refused outright by checkWriteNotUnderReadOnlyShield

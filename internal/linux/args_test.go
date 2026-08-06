@@ -487,7 +487,7 @@ func hasShield(shields []enforce.ShieldApplied, path, kind string) bool {
 	return false
 }
 
-// yz3.2: a grant that names a credential shield EXACTLY is a deliberate opt-in. It is
+// A grant that names a credential shield EXACTLY is a deliberate opt-in. It is
 // honored rather than refused (compileOrFail would fail on a refusal), and the shield is
 // skipped so the grant binds the real content instead of being overmounted empty.
 func TestExplicitShieldGrantIsHonored(t *testing.T) {
@@ -617,7 +617,7 @@ func TestReadOptInDoesNotLiftSymlinkedShieldForWrite(t *testing.T) {
 
 // The opt-in covers only the built-in credential shields, never a caller's extraDeny (a
 // supervising embedder's own control store). Granting an extraDeny path by name must NOT
-// lift its shield; the grant stays refused, as before yz3.2.
+// lift its shield; the grant stays refused, as it did before the opt-in existed.
 func TestExtraDenyIsNotOptInable(t *testing.T) {
 	sb := testSandbox("/home/u/proj/store")
 	sb.extraDeny = []denylist.Rule{{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true}}
@@ -662,7 +662,7 @@ func TestCallerDenyNotLiftedByBuiltinOptIn(t *testing.T) {
 	}
 }
 
-// yz3.2 must NOT widen the broad-grant carve: read: ~ without an explicit ~/.ssh grant
+// The opt-in must NOT widen the broad-grant carve: read: ~ without an explicit ~/.ssh grant
 // still shields ~/.ssh. This is the regression guard that the opt-in skip did not leak
 // into enclosing grants.
 func TestBroadGrantWithoutOptInStillShields(t *testing.T) {

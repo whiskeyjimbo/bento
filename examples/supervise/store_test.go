@@ -201,7 +201,7 @@ func TestApproveRemembersAcrossRuns(t *testing.T) {
 // a symlinked config home that fallback compares two spellings of the same directory
 // and finds no overlap, so on run one a grant of the store's own directory sailed past
 // both checks and a permissions.json planted in that window was trusted forever.
-// loadStore creating the directory is what closes it (bv2-yb1n).
+// loadStore creating the directory is what closes it.
 func TestLoadStoreCreatesDirSoShieldsResolve(t *testing.T) {
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "config")
@@ -241,7 +241,7 @@ func TestLoadStoreCreatesDirSoShieldsResolve(t *testing.T) {
 // The merge re-read used to swallow both the read and the parse error and then write
 // this run's delta ALONE - so an unreadable store was silently replaced by an empty
 // one and every remembered deny was destroyed. loadStore treats the same bytes as
-// fatal; the write path has to agree (bv2-96ud).
+// fatal; the write path has to agree.
 func TestSaveRefusesToMergeOntoAnUnreadableStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -320,7 +320,7 @@ func TestSaveRefusesToMergeOntoAnUnreadableStore(t *testing.T) {
 }
 
 // A store written by a newer build is refused rather than reinterpreted: applying a
-// deny under the wrong semantics is the failure that matters (bv2-brc0 item 6).
+// deny under the wrong semantics is the failure that matters.
 func TestLoadStoreRefusesANewerVersion(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -346,7 +346,7 @@ func TestLoadStoreRefusesANewerVersion(t *testing.T) {
 
 // A FIFO at permissions.json blocks in ReadFile before anything is prompted, so the
 // tool hangs instead of failing. appKey already refuses a non-regular entrypoint for
-// this reason; the store files get the same treatment (bv2-brc0 item 3).
+// this reason; the store files get the same treatment.
 func TestLoadStoreRefusesANonRegularStoreFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -364,7 +364,7 @@ func TestLoadStoreRefusesANonRegularStoreFile(t *testing.T) {
 
 // MkdirAll is a no-op on an existing directory, so a store dir created under a
 // permissive umask kept its mode forever - and anyone who could write there could
-// plant an allow the next run applies without prompting (bv2-brc0 item 2).
+// plant an allow the next run applies without prompting.
 func TestWriteTightensAPermissiveStoreDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -388,7 +388,7 @@ func TestWriteTightensAPermissiveStoreDir(t *testing.T) {
 }
 
 // The write is atomic AND durable, and leaves no temporary file behind - a stale
-// store that comes back after power loss silently reverts a deny (bv2-brc0 item 1).
+// store that comes back after power loss silently reverts a deny.
 func TestSaveLeavesNoTempFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -417,8 +417,7 @@ func TestSaveLeavesNoTempFile(t *testing.T) {
 // A hand-edited or truncated store can carry an app entry decoded as null. Every read
 // path treats an entry as a record and dereferences it, so before loadStore dropped
 // them a single `"apps": {"sha256:...": null}` panicked the tool on startup - including
-// `perms list` and `perms reset`, the two commands a human reaches for to fix it
-// (bv2-fnk2).
+// `perms list` and `perms reset`, the two commands a human reaches for to fix it.
 func TestLoadStoreDropsNullAppEntries(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -469,7 +468,7 @@ func TestLoadStoreDropsNullAppEntries(t *testing.T) {
 // filepath.Rel errors on that pair - which CoversResolved reads as "not under". A
 // remembered grant spelled relatively (a manifest's read path, seeded by `perms
 // import`; nothing validates it as absolute) therefore reported false and reached the
-// store it names (bv2-tr2u). The working directory is the anchor this pins, which is
+// store it names. The working directory is the anchor this pins, which is
 // the right one for the enforced run (it executes in the supervise process) and the
 // WRONG one for an exported manifest - which is why export refuses a relative grant
 // outright rather than trusting this predicate to judge it.

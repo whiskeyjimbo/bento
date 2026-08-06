@@ -250,7 +250,7 @@ func TestParseRejectsOversizeInput(t *testing.T) {
 }
 
 // A manifest is a single policy document; a second YAML document must be rejected,
-// not silently ignored (bv2-6f7).
+// not silently ignored.
 func TestParseRejectsMultipleDocuments(t *testing.T) {
 	src := "entrypoint: ./x\nexec: none\n---\nentrypoint: ./y\nexec: all\n"
 	if _, err := Parse(strings.NewReader(src)); err == nil {

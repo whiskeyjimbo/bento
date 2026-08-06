@@ -9,7 +9,7 @@ import (
 )
 
 // The launcher must not execveat the target until the bridge signals it is
-// non-dumpable and listening (bv2-a6t): startBridge blocks on awaitBridgeReady, and
+// non-dumpable and listening: startBridge blocks on awaitBridgeReady, and
 // a bridge that dies before signaling must make it fail closed (refuse the run),
 // never proceed to run the target against an attackable or absent bridge.
 func TestAwaitBridgeReady(t *testing.T) {

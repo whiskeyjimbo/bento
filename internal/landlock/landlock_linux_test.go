@@ -137,8 +137,8 @@ func TestRestrictConfinesReads(t *testing.T) {
 
 // This is the executable evidence for withholding an exec allowlist. No policy reaches
 // RestrictExecAllowlist - there is no exec: allowlist mode - so what this test pins is
-// not a shipped guarantee but the kernel behaviour the ADR rests on, kept runnable so
-// the decision can be re-checked rather than re-argued.
+// not a shipped guarantee but the kernel behaviour that decision rests on, kept runnable
+// so it can be re-checked rather than re-argued.
 //
 // The allowed and other arms are the claim itself. The read arm is the control that
 // separates "execute was withheld" from "the ruleset denied everything": an allowlist

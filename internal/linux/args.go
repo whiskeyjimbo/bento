@@ -1434,7 +1434,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 }
 
 // explicitShieldOptIns finds the built-in DenyAll shields the policy opts into by
-// READING them - the caveat-emptor escape yz3.2 adds (a program that legitimately reads
+// READING them - the caveat-emptor escape (a program that legitimately reads
 // ~/.ssh, exposed read-only with a warning). Deliberate scope:
 //
 //   - Read grants only. A WRITE grant to a credential store is the key-planting threat

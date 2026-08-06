@@ -43,7 +43,7 @@ func TestSynthesizeDropsInterpreterTree(t *testing.T) {
 	}
 }
 
-// bv2-pdq5: a scratch directory from `mktemp -d`, a CI workspace, an AI agent's working
+// a scratch directory from `mktemp -d`, a CI workspace, an AI agent's working
 // tree - all of them live under /tmp and hold real host files the script cannot see
 // unless the manifest grants them. Only the sandbox's own tmpfs entries are scratch;
 // dropping the rest drafted a manifest whose script died on FileNotFoundError with

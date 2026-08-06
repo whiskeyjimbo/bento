@@ -494,7 +494,7 @@ func TestGateRemembersPerHost(t *testing.T) {
 // Every failure return from the supervised run happens after the approval prompts,
 // where the human has already answered. Those answers used to be discarded: only the
 // success path reached save(), so a failed enforced run threw away every deny and
-// standing block the trial recorded (bv2-q5qm).
+// standing block the trial recorded.
 func TestPersistDecisionsSavesOnAFailedRun(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
