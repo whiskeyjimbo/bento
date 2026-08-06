@@ -1532,10 +1532,6 @@ func RelocationVars() []string {
 	return append(append(out, startupFileEnvs...), loneEnvs...)
 }
 
-// The tool-specific variables that move a whole credential directory off its default path.
-// Shared between the rule that follows the shield there and the alias scan that anchors on
-// it: a store the two disagree about is one that is hidden but whose second readable name
-// nothing looks for.
 // The tool-specific variables that relocate a DIRECTORY whose sensitive content is one
 // named file inside it, so dirEnvs' whole-tree DenyAll cannot express them: the target
 // also holds content an in-sandbox run legitimately reads. Not in AliasAnchors either -
@@ -1551,6 +1547,10 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	{"CURL_HOME", "", ".curlrc"},
 }
 
+// The tool-specific variables that move a whole credential directory off its default path.
+// Shared between the rule that follows the shield there and the alias scan that anchors on
+// it: a store the two disagree about is one that is hidden but whose second readable name
+// nothing looks for.
 var dirEnvs = []struct{ env, def string }{
 	{"GNUPGHOME", ".gnupg"},
 	{"PASSWORD_STORE_DIR", ".password-store"},

@@ -566,6 +566,17 @@ func TestHomeShieldsRelocatedDirectoryCredentialFiles(t *testing.T) {
 			t.Errorf("the whole directory %q is shielded; only the credential file inside it should be", p)
 		}
 	}
+
+	// A value restating the default adds nothing: the file is already shielded by name,
+	// and a second rule at the same path stamped with a variable would tell an operator
+	// the variable moved a shield that never moved.
+	t.Setenv("DBT_PROFILES_DIR", "/home/u/.dbt")
+	t.Setenv("CURL_HOME", "/home/u")
+	for _, r := range allRules("/home/u") {
+		if r.Source == "DBT_PROFILES_DIR" || r.Source == "CURL_HOME" {
+			t.Errorf("a restatement of the default produced a relocated rule at %q stamped $%s", r.Path, r.Source)
+		}
+	}
 }
 
 // HGRCPATH REPLACES mercurial's config search path, so every entry is a file hg reads
@@ -1605,6 +1616,7 @@ func TestRelocationKeepsTheSameClassification(t *testing.T) {
 		{"LESSHISTFILE", "/home/u/.lesshst", "/srv/lesshst"},
 		{"MYSQL_HISTFILE", "/home/u/.mysql_history", "/srv/mysql_history"},
 		{"NPM_CONFIG_USERCONFIG", "/home/u/.npmrc", "/srv/npmrc"},
+		{"HGRCPATH", "/home/u/.hgrc", "/srv/hgrc"},
 	} {
 		t.Run(tc.env, func(t *testing.T) {
 			t.Setenv(tc.env, tc.relocated)
