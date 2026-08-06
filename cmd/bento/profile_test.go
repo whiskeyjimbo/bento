@@ -1513,3 +1513,23 @@ func TestClampWriteShieldMatchesDanglingShieldTarget(t *testing.T) {
 		t.Errorf("the write must be reported as write-shielded so the user is told why; dropped=%v", dropped)
 	}
 }
+
+// A home reached through a symlink whose target does not exist yet - a container image
+// that mounts the account later, or a home-manager profile before its first activation -
+// is still the profiler's OWN home, and a grant under it must not be reported as
+// belonging to somebody else's account. EvalSymlinks fails outright on that and made the
+// anchor unrecognizable; the shields and the clamp both resolve it the way a write
+// through it would land, and this has to agree with them or the reviewer is warned about
+// their own credential store.
+func TestForeignHomeShieldsResolvesDanglingAnchor(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink("/home/ghostuser", link); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+	t.Setenv("HOME", link)
+
+	own := "/home/ghostuser/.ssh"
+	if warned := foreignHomeShields([]string{own}); len(warned) != 0 {
+		t.Errorf("%q is the profiler's own home reached through a dangling link and must not be warned about as foreign; got %v", own, warned)
+	}
+}

@@ -736,3 +736,19 @@ func TestSynthesizeKeepsOwnHomeWritesOnAnOstreeLayout(t *testing.T) {
 		t.Errorf("write = %v, want none - the container exemption must not reopen /var itself", p.Write)
 	}
 }
+
+// The same dangling-anchor shape as the foreign-home warning in cmd/bento: a home reached
+// through a symlink whose target does not exist yet is the profiler's own account, not a
+// foreign one. Resolving it with EvalSymlinks failed and called the account somebody
+// else's, which proposes the whole tree as a foreign home in the reviewer's report.
+func TestIsForeignHomeTreeResolvesDanglingAnchor(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink("/home/ghostuser", link); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+	t.Setenv("HOME", link)
+
+	if isForeignHomeTree("/home/ghostuser") {
+		t.Error("a home reached through a dangling symlink is still the profiler's own account, not a foreign one")
+	}
+}
