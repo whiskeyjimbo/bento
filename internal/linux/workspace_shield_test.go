@@ -12,6 +12,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -199,7 +200,7 @@ func farmHome(tb testing.TB, n int) (home, key string) {
 // The memo's whole claim is that it changes nothing a caller can see. Unlike the
 // workspace one it has no key, so the check that matters is that repeated calls keep
 // answering what the uncached walk answers.
-func TestCredentialLinkCacheIsTransparent(t *testing.T) {
+func TestShieldCacheIsTransparent(t *testing.T) {
 	canon, _ := farmHome(t, 4)
 	sb := sandbox{
 		homes:     []string{canon},
@@ -210,35 +211,41 @@ func TestCredentialLinkCacheIsTransparent(t *testing.T) {
 		resolve:   hostResolve,
 	}
 	cached := sb
-	cached.credentialLinkCache = &credentialLinkMemo{}
+	cached.shieldCache = &shieldMemo{}
 	for range 3 {
-		want, got := alwaysShields(sb), alwaysShields(cached)
+		want, got := shields(sb).Rules(), shields(cached).Rules()
 		if !slices.Equal(want, got) {
 			t.Fatalf("cached shields differ from the uncached walk\n got %v\nwant %v", got, want)
 		}
 	}
 
-	// The memo is unkeyed, so what would break it is a second consumer whose input is
-	// not the built-in set: it would get the built-in answer back with nothing to say
-	// so. The opt-in machinery is that second consumer - a derived shield it cannot see
-	// is one a policy can only be refused over - so it has to reach the same rules the
-	// shields do, on a warm memo as much as a cold one.
-	derived := credentialLinkShields(cached)
-	if len(derived) == 0 {
-		t.Fatal("the farm produced no derived shield, so the rest of this proves nothing")
-	}
-	for _, r := range derived {
-		if !slices.ContainsFunc(explicitShieldOptIns(cached, []string{r.Path}), func(o shieldOptIn) bool { return o.path == r.Path }) {
-			t.Errorf("the derived shield at %q cannot be opted into, so a read grant naming it is only refusable", r.Path)
+	// The memo is unkeyed, so what would break it is a consumer whose input is not the
+	// built-in set: it would get the built-in answer back with nothing to say so. The
+	// opt-in machinery is that consumer - a derived shield it cannot see is one a policy
+	// can only be refused over - so every fully-shielded rule has to be reachable by
+	// name, on a warm memo as much as a cold one.
+	var derived int
+	for _, r := range shields(cached).Builtin() {
+		if r.Deny != denylist.DenyAll {
+			continue
+		}
+		derived++
+		if !slices.ContainsFunc(explicitShieldOptIns(cached, []string{r.Path}), func(o shield.OptIn) bool { return o.Path == r.Path }) {
+			t.Errorf("the shield at %q cannot be opted into, so a read grant naming it is only refusable", r.Path)
 		}
 	}
+	if derived == 0 {
+		t.Fatal("the farm produced no shield at all, so the rest of this proves nothing")
+	}
 
-	// A caller deny is not part of the expansion's input and must not be swallowed by a
-	// warm memo either.
-	withDeny := cached
+	// The caller's denies ARE part of the memoized set, which is why newSandbox allocates
+	// the memo only once they are final. A sandbox that takes its denies first carries
+	// them into every question the set answers.
+	withDeny := sb
 	withDeny.extraDeny = []denylist.Rule{{Path: "/srv/state", Deny: denylist.DenyAll, Dir: true}}
-	if !slices.ContainsFunc(alwaysShields(withDeny), func(r denylist.Rule) bool { return r.Path == "/srv/state" }) {
-		t.Error("a caller deny is missing from the shields once the memo is warm")
+	withDeny.shieldCache = &shieldMemo{}
+	if !slices.ContainsFunc(shields(withDeny).Rules(), func(r denylist.Rule) bool { return r.Path == "/srv/state" }) {
+		t.Error("a caller deny is missing from the assembled shields")
 	}
 }
 
@@ -272,7 +279,7 @@ func TestSymlinkedCredentialTargetIsAnAliasScanRoot(t *testing.T) {
 	}
 }
 
-// BenchmarkCredentialLinkWalk measures one compile's worth of alwaysShields calls over a
+// BenchmarkCredentialLinkWalk measures one compile's worth of shield-set assemblies over a
 // home with a populated credential store. The walk is isDir/listDir/resolve per entry and
 // the call count is fixed by the callers, so the memo is the whole difference.
 func BenchmarkCredentialLinkWalk(b *testing.B) {
@@ -291,10 +298,10 @@ func BenchmarkCredentialLinkWalk(b *testing.B) {
 			if memo {
 				// Fresh per iteration: the memo is a one-run cache, so carrying it across
 				// iterations would measure a hit rate no run ever sees.
-				sb.credentialLinkCache = &credentialLinkMemo{}
+				sb.shieldCache = &shieldMemo{}
 			}
 			for range 10 {
-				alwaysShields(sb)
+				shields(sb)
 			}
 		}
 	}

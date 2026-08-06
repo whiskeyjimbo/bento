@@ -29,6 +29,9 @@ type Set struct {
 	// this, so a rule the enforcer drops can never refuse a grant and blame a shield that
 	// was never there.
 	applied []Applied
+	// rules is the whole assembled set before the drops, which is what the enforcer emits
+	// mounts from and what the alias scan walks for credential roots.
+	rules []denylist.Rule
 	// builtin is the same set BEFORE the drops and before the caller's own denies: what a
 	// read may opt into. Kept separately because the two questions have different answers
 	// - an opt-in names a rule by the path the deny-list built, while a refusal is decided
@@ -83,18 +86,37 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// an expanded link both cover a grant, the refusal names the caller's own path and
 	// says the shield has no opt-in, rather than naming a dotfile the caller never
 	// mentioned.
-	all := append(slices.Clone(base), extraDeny...)
-	for _, r := range append(all, links...) {
-		if rp, ok := s.target(r.Path); ok {
-			s.applied = append(s.applied, Applied{Rule: r, Resolved: rp})
-		}
-	}
+	s.rules = append(append(slices.Clone(base), extraDeny...), links...)
+	s.applied = s.Mount(s.rules)
 	return s
 }
 
-// Applied is the set as the enforcer mounts it, for the callers that have to emit or
+// Shields is the set as the enforcer mounts it, for the callers that have to emit or
 // clean up the same shields they refuse grants over.
 func (s Set) Shields() []Applied { return s.applied }
+
+// Rules is the whole assembled set before the drops: the built-ins, the caller's denies,
+// and the symlink expansion, in the order the enforcer applies them.
+func (s Set) Rules() []denylist.Rule { return s.rules }
+
+// Builtin is the assembled rules before the drops and before the caller's own denies:
+// what a read may opt into, and what a report naming relocated shields describes.
+func (s Set) Builtin() []denylist.Rule { return s.builtin }
+
+// Mount resolves a rule list the same way the assembled set was resolved, dropping the
+// rules that would mount nowhere. It exists for the one caller that shields more than the
+// always-on set - the enforcer, which adds a workspace's own execution surface per write
+// grant - so the rules it really mounts and the rules it refuses grants over cannot be
+// resolved by two different pieces of code.
+func (s Set) Mount(rules []denylist.Rule) []Applied {
+	var out []Applied
+	for _, r := range rules {
+		if rp, ok := s.target(r.Path); ok {
+			out = append(out, Applied{Rule: r, Resolved: rp})
+		}
+	}
+	return out
+}
 
 // target resolves a deny-list path to where its shield would mount and reports whether it
 // is applied at all. Two resolutions leave nothing to shield:

@@ -682,18 +682,18 @@ func TestBroadGrantWithoutOptInStillShields(t *testing.T) {
 func TestDenyAllShieldMatchesRealKind(t *testing.T) {
 	// Declared dir, real file: bind the empty file, not tmpfs.
 	sbFile := testSandbox("/home/u/.cert") // a childless leaf is a file in the fake fs
-	if got := shield(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll, Dir: true}, sbFile); !slices.Equal(got, []string{"--ro-bind", sbFile.emptyFile, "/home/u/.cert"}) {
+	if got := shieldMount(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll, Dir: true}, sbFile); !slices.Equal(got, []string{"--ro-bind", sbFile.emptyFile, "/home/u/.cert"}) {
 		t.Errorf("declared-dir DenyAll on a real file must bind the empty file; got %v", got)
 	}
 	// Declared file, real dir: tmpfs, not a file bound over a directory.
 	sbDir := testSandbox("/home/u/.cert", "/home/u/.cert/client.pem")
-	if got := shield(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll}, sbDir); !slices.Equal(got, []string{"--tmpfs", "/home/u/.cert"}) {
+	if got := shieldMount(denylist.Rule{Path: "/home/u/.cert", Deny: denylist.DenyAll}, sbDir); !slices.Equal(got, []string{"--tmpfs", "/home/u/.cert"}) {
 		t.Errorf("declared-file DenyAll on a real dir must tmpfs; got %v", got)
 	}
 	// Absent: fall back to the declared kind. An absent credential file stays an empty
 	// read-only file rather than becoming a tmpfs directory a reader would choke on.
 	sbAbsent := testSandbox()
-	if got := shield(denylist.Rule{Path: "/home/u/.netrc", Deny: denylist.DenyAll}, sbAbsent); !slices.Equal(got, []string{"--ro-bind", sbAbsent.emptyFile, "/home/u/.netrc"}) {
+	if got := shieldMount(denylist.Rule{Path: "/home/u/.netrc", Deny: denylist.DenyAll}, sbAbsent); !slices.Equal(got, []string{"--ro-bind", sbAbsent.emptyFile, "/home/u/.netrc"}) {
 		t.Errorf("absent declared-file DenyAll must bind the empty file; got %v", got)
 	}
 }
@@ -791,7 +791,7 @@ func TestDenyAllChildEmittedAfterExposedDenyWriteParent(t *testing.T) {
 	}
 }
 
-// The carve must key on the real filesystem kind, not the declared Rule.Dir: shield()
+// The carve must key on the real filesystem kind, not the declared Rule.Dir: shieldMount()
 // ro-binds by what is on disk, so a file-declared DenyWrite rule pointed at a directory
 // (an env relocation such as GIT_CONFIG_GLOBAL=~/.local) still binds the whole tree
 // read-only and would re-expose a DenyAll store nested inside it. Here the gh token dir

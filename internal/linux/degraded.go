@@ -14,6 +14,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -120,7 +121,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// interpreter prefix, so a credential store inside one IS reported here. That is the
 	// honest answer: the full tier binds a shield over it, and Landlock cannot carve one
 	// out of a granted tree.
-	exposed := exposedShields(sb, visible, writes, optInTargets(optIns))
+	exposed := exposedShields(sb, visible, writes, shield.Targets(optIns))
 
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
