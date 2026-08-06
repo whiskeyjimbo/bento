@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -586,5 +587,123 @@ func TestParseAppliedAcceptsStrictAndRejectsAnExtraLine(t *testing.T) {
 				t.Errorf("the exec-filter value must survive; got %+v", a)
 			}
 		})
+	}
+}
+
+// The exec record is a diagnostic, and the first driver of the design that added it is
+// that nothing about its presence, absence or failure may change what is enforced. The
+// parser's tamper stance is what makes that hard: a line it does not recognize discards
+// the WHOLE report, which reconcile then reads as three Unavailable layers. So a record
+// line that will not decode has to drop that one exec and nothing else - otherwise a
+// garbled diagnostic silently downgrades the attestation of a run that was fully fenced.
+func TestGarbledExecRecordDoesNotTouchTheLayerVerdicts(t *testing.T) {
+	clean := "exec-filter none\nlandlock yes\nAPPLIED\n"
+	record := "exec-recorder yes\n" +
+		`exec-ran 41 "/usr/bin/true" "/bin/true"` + "\n" +
+		"exec-ran this-is-not-a-pid\n" +
+		`exec-ran 42 "/usr/bin/echo" "/bin/echo\x00hi"` + "\n" +
+		"EXEC-RECORD\n"
+
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte(clean+record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatal("a garbled exec record discarded the whole report; the layers above the marker are not the record's to touch")
+	}
+	if a.landlock != launcher.AppliedYes || a.execFilter != launcher.AppliedExecNone {
+		t.Errorf("the layer records did not survive the record section: %+v", a)
+	}
+	// The undecodable line is dropped, and the section is reported as untrustworthy
+	// rather than as a run that simply exec'd twice.
+	if len(a.execRuns) != 2 {
+		t.Errorf("execRuns = %+v, want the two decodable records", a.execRuns)
+	}
+	if a.execRecordComplete {
+		t.Error("a record that lost a line was reported as whole")
+	}
+
+	var r enforce.Report
+	r.Set(enforce.LayerExec, enforce.Enforced, "")
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+	if got := a.reconcile(&r, false, false, true, 0); got != enforce.SetupAttested {
+		t.Errorf("setup state = %v, want SetupAttested; the record decided the run", got)
+	}
+	if st := r.StateOf(enforce.LayerFilesystem); st != enforce.Enforced {
+		t.Errorf("filesystem layer = %v; a garbled diagnostic downgraded an enforced layer", st)
+	}
+}
+
+// The record round-trips what the stage wrote, including the two shapes a naive split
+// would break: an argument holding a space, and the NUL-joined argv itself. A run that
+// asked for no record writes no section at all, which is distinct from a section saying
+// nothing was watching.
+func TestParseExecRecordRoundTrip(t *testing.T) {
+	for name, tc := range map[string]struct {
+		section  string
+		recorder string
+		runs     []execRun
+		complete bool
+	}{
+		"no section at all": {"", "", nil, false},
+		"nothing was watching": {
+			"exec-recorder absent \"the exec block replaces the launcher with the target\"\nEXEC-RECORD\n",
+			launcher.AppliedAbsent, nil, true,
+		},
+		"an argument holding a space": {
+			"exec-recorder yes\n" + `exec-ran 7 "/usr/bin/cc" "cc\x00-DMSG=hello there\x00a.c"` + "\nEXEC-RECORD\n",
+			launcher.AppliedYes,
+			[]execRun{{Pid: 7, Exe: "/usr/bin/cc", Argv: []string{"cc", "-DMSG=hello there", "a.c"}}},
+			true,
+		},
+		"the seeded target, which no stop reported": {
+			"exec-recorder yes\n" + `exec-ran 0 "/bin/sh" "/bin/sh\x00-c\x00true"` + "\nEXEC-RECORD\n",
+			launcher.AppliedYes,
+			[]execRun{{Pid: 0, Exe: "/bin/sh", Argv: []string{"/bin/sh", "-c", "true"}}},
+			true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\n"+tc.section), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a := parseApplied(openReport(t, path))
+			if !a.complete {
+				t.Fatal("the layer report did not survive its own record section")
+			}
+			if a.execRecorder != tc.recorder {
+				t.Errorf("execRecorder = %q, want %q", a.execRecorder, tc.recorder)
+			}
+			if a.execRecordComplete != tc.complete {
+				t.Errorf("execRecordComplete = %v, want %v", a.execRecordComplete, tc.complete)
+			}
+			if !reflect.DeepEqual(a.execRuns, tc.runs) {
+				t.Errorf("execRuns = %+v, want %+v", a.execRuns, tc.runs)
+			}
+		})
+	}
+}
+
+// A record that never reached its marker is what a tracer dying mid-run leaves: the
+// recorder deliberately runs without PTRACE_O_EXITKILL, so the record ends where it
+// ended. It must read as truncated rather than as a run that stopped exec'ing.
+func TestUnmarkedExecRecordReadsAsTruncated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder yes\n" +
+		`exec-ran 9 "/usr/bin/true" "/bin/true"` + "\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatal("a truncated record section discarded the layer report")
+	}
+	if a.execRecordComplete {
+		t.Error("a record with no marker of its own was read as whole")
+	}
+	if len(a.execRuns) != 1 {
+		t.Errorf("the records written before the truncation were lost: %+v", a.execRuns)
 	}
 }

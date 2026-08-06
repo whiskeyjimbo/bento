@@ -146,7 +146,7 @@ func TestRunTargetKeepsTheRecordOffARunThatHappened(t *testing.T) {
 		if err := a.write(); err != nil {
 			return err
 		}
-		_, runErr := runTarget(false, []string{"/bin/true"}, nil, a)
+		_, runErr := runTarget(false, []string{"/bin/true"}, nil, a, nil)
 		return runErr
 	})
 	if err == nil {

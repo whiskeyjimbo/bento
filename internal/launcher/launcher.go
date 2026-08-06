@@ -54,6 +54,15 @@ type Config struct {
 	// the execve-only block, which the report surfaces as a degraded exec-strict
 	// layer. Only meaningful when Block is set.
 	StrictBlock bool
+	// RecordExec records the tree of execs the run performed, through the applied
+	// report's second section. It is off unless asked for, and that is not caution about
+	// the mechanism: a tracee has exactly one tracer, so with the recorder on nothing
+	// inside the sandbox can ptrace anything - strace, gdb, rr and a harness attaching to
+	// its own child all meet EPERM they do not meet otherwise. That lands squarely on the
+	// exec: all toolchain runs the record is for, so a run that did not ask for one must
+	// be the run it is today. Only the bwrap tier under exec: all can have it; every
+	// other mode reports the recorder absent rather than empty.
+	RecordExec bool
 	// Writable are the policy's resolved write-grant paths. Landlock confines
 	// writes to these (plus runtime scratch) as a second layer behind bwrap.
 	Writable []string
@@ -224,7 +233,15 @@ func Run(cfg Config) (int, error) {
 		return 0, err
 	}
 
-	return runTarget(cfg.Block, cfg.Target, env, applied)
+	var rec *execRecorder
+	if cfg.RecordExec {
+		// Seeded with the target itself: its exec retires before the tracer can set its
+		// options - the child comes up stopped AT it - so no event will name it. The
+		// launcher knows it by construction rather than leaving the record short. Its pid
+		// is left zero, which is what marks the one entry no stop reported.
+		rec = &execRecorder{runs: []execRun{{exe: cfg.Target[0], argv: cfg.Target}}}
+	}
+	return runTarget(cfg.Block, cfg.Target, env, applied, rec)
 }
 
 // applyLayers installs the exec-block filter and the Landlock backstop for one run,
@@ -276,12 +293,27 @@ func applyLayers(cfg Config, applied *appliedReport) error {
 // leaves the report claiming layers for a target that never ran: everything the
 // dispatch can refuse - a nonexistent entrypoint, a relative argv[0], a target that
 // could not be started - is a run whose confinement confined nothing.
-func runTarget(block bool, target, env []string, applied *appliedReport) (int, error) {
+// rec is the exec recorder when the run asked for one, and nil when it did not - a run
+// that did not ask takes exactly the path it takes today.
+func runTarget(block bool, target, env []string, applied *appliedReport, rec *execRecorder) (int, error) {
 	dispatch := func() (int, error) {
 		if block {
+			if rec != nil {
+				// The exec block execveats the target over this process, so there is no
+				// supervisor left to be the tracer. The mode also has nothing to record by
+				// design, which is why this is absent rather than a failure - and it is
+				// recorded before the dispatch because after it this process is the target.
+				rec.unavailable = errors.New("the exec block replaces the launcher with the target, leaving no supervisor to trace")
+				if err := applied.writeExecRecord(rec); err != nil {
+					fmt.Fprintf(os.Stderr, "[bento] warning: %v\n", err)
+				}
+			}
 			// execveat replaces this process with the target under the filters, so this
 			// returns only if the transition itself fails.
 			return 0, seccomp.Exec(target, env)
+		}
+		if rec != nil {
+			return superviseTraced(target, env, rec)
 		}
 		return superviseTarget(target, env)
 	}
@@ -290,6 +322,15 @@ func runTarget(block bool, target, env []string, applied *appliedReport) (int, e
 	if err != nil && !errors.As(err, &ran) {
 		if reportErr := applied.targetUnreached(err); reportErr != nil {
 			return 0, errors.Join(err, reportErr)
+		}
+		return code, err
+	}
+	// The target ran, so the record is the one thing left to report. A failure to write it
+	// warns rather than replacing the target's own outcome: the fences were attested by
+	// the first marker long before this, and a diagnostic may not decide the run.
+	if !block && rec != nil {
+		if reportErr := applied.writeExecRecord(rec); reportErr != nil {
+			fmt.Fprintf(os.Stderr, "[bento] warning: %v\n", reportErr)
 		}
 	}
 	return code, err
@@ -828,21 +869,9 @@ func proxyEnv() []string {
 // and is reaped there instead; the degraded tier's own leaked-process cleanup is
 // the process-group sweep, not this loop.
 func superviseTarget(target, env []string) (int, error) {
-	// exec.Command does a $PATH lookup when target[0] has no slash, resolving against
-	// the target's own (policy-supplied) PATH - a different binary than intended. The
-	// Block path (seccomp.Exec via execveat) resolves a relative argv[0] against the
-	// working directory rather than a PATH, so it is the milder failure, but it is a
-	// failure too; both paths refuse one, which is what keeps the exec modes from
-	// diverging on the same target.
-	if len(target) == 0 || !filepath.IsAbs(target[0]) {
-		return 0, fmt.Errorf("launcher: target command must be an absolute path, got %q", target)
-	}
-	cmd := exec.Command(target[0], target[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = env
-
-	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("launcher: starting target: %w", err)
+	cmd, err := startTarget(target, env, false)
+	if err != nil {
+		return 0, err
 	}
 	// Past Start the target is running, so a failure below is no longer "the target was
 	// never reached" - reapUntil can fail with the target still executing (Wait4 returns
@@ -852,6 +881,33 @@ func superviseTarget(target, env []string) (int, error) {
 		return 0, errTargetRan{err}
 	}
 	return code, nil
+}
+
+// startTarget starts the target for either supervise path. It is shared so the two
+// cannot diverge on the argv[0] rule below, which is a refusal rather than a detail:
+// exec.Command does a $PATH lookup when target[0] has no slash, resolving against the
+// target's own (policy-supplied) PATH - a different binary than intended. The Block path
+// (seccomp.Exec via execveat) resolves a relative argv[0] against the working directory
+// rather than a PATH, so it is the milder failure, but it is a failure too; every path
+// refuses one, which is what keeps the exec modes from diverging on the same target.
+//
+// traced has the child call PTRACE_TRACEME before its exec, so it comes up stopped with
+// this process as its tracer. A host that refuses the attach fails Start rather than any
+// later call, which is what lets the recorder degrade to an untraced run.
+func startTarget(target, env []string, traced bool) (*exec.Cmd, error) {
+	if len(target) == 0 || !filepath.IsAbs(target[0]) {
+		return nil, fmt.Errorf("launcher: target command must be an absolute path, got %q", target)
+	}
+	cmd := exec.Command(target[0], target[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = env
+	if traced {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("launcher: starting target: %w", err)
+	}
+	return cmd, nil
 }
 
 // reapUntil reaps every child that exits until the target does, then returns the
