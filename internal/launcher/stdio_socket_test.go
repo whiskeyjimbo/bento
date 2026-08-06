@@ -189,6 +189,58 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
+	// The ordinary redirection cases, and the reason the kinds are an allowlist rather
+	// than a blanket refusal of everything unrecognised.
+	t.Run("a pipe is allowed", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close()
+		if err := refuseNetworkFD(int(r.Fd())); err != nil {
+			t.Errorf("a pipe on stdio was refused; `bento run | less` has one: %v", err)
+		}
+	})
+
+	// An anon-inode descriptor reports no file type at all, so the switch's old default
+	// waved it through. A pidfd is the dangerous member: pidfd_getfd() against a host
+	// process is a descriptor-stealing channel no fence bento installs revokes.
+	t.Run("an anonymous-inode descriptor is refused", func(t *testing.T) {
+		pidfd, err := unix.PidfdOpen(os.Getpid(), 0)
+		if err != nil {
+			t.Skipf("no pidfd available: %v", err)
+		}
+		defer unix.Close(pidfd)
+		efd, err := unix.Eventfd(0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(efd)
+		for name, fd := range map[string]int{"a pidfd": pidfd, "an eventfd": efd} {
+			err := refuseNetworkFD(fd)
+			if err == nil {
+				t.Fatalf("%s on stdio was accepted", name)
+			}
+			if !strings.Contains(err.Error(), "cannot classify") {
+				t.Errorf("wrong refusal for %s: %v", name, err)
+			}
+		}
+	})
+
+	// The other half of that rule: a memfd is a regular file on tmpfs, reaches nothing
+	// outside the sandbox, and must not be caught by the anon-inode refusal.
+	t.Run("a memfd is allowed", func(t *testing.T) {
+		fd, err := unix.MemfdCreate("stdio", 0)
+		if err != nil {
+			t.Skipf("no memfd available: %v", err)
+		}
+		defer unix.Close(fd)
+		if err := refuseNetworkFD(fd); err != nil {
+			t.Errorf("a memfd on stdio was refused: %v", err)
+		}
+	})
+
 	t.Run("a closed descriptor is allowed", func(t *testing.T) {
 		// Nothing was inherited there, so the target sees the same EBADF the check does.
 		if err := refuseNetworkFD(9999); err != nil {
