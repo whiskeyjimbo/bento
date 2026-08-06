@@ -157,7 +157,10 @@ type Process struct {
 	// egress block filters socket(2), and Landlock governs paths - so the target
 	// gets an unfiltered channel past the manifest's allowlist. The socket-activation
 	// pattern (a server handing a per-connection handler its accepted conn as stdio)
-	// is doing that deliberately, and this is how it says so. It is deliberately not
+	// is doing that deliberately, and this is how it says so - which is also why it
+	// permits only AF_INET and AF_INET6. An embedder passing a TCP connection is not
+	// thereby permitting an inherited netlink or packet socket, and it permits nothing
+	// that is not a socket at all. It is deliberately not
 	// a manifest field and not a CLI flag: a downloaded manifest or a copied command
 	// line must never be able to re-open the channel, so only a Go caller that passed
 	// the socket in the first place can permit it. The degraded (no-bwrap) tier
