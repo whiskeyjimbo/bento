@@ -367,7 +367,7 @@ func TestCredentialFilesSkipsGitObjectStore(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked, credErr := credentialFiles(sb, nil)
+	files, _, linked, credErr := credentialFiles(sb, nil)
 	if credErr != nil {
 		t.Fatal(credErr)
 	}
@@ -464,7 +464,7 @@ func TestCredentialFilesDoesNotAnchorOnBulkStores(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked, credErr := credentialFiles(sb, nil)
+	files, _, linked, credErr := credentialFiles(sb, nil)
 	if credErr != nil {
 		t.Fatal(credErr)
 	}
@@ -657,7 +657,7 @@ func TestCredentialFilesReachesAnchorsNestedInABulkStore(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked, credErr := credentialFiles(sb, nil)
+	files, _, linked, credErr := credentialFiles(sb, nil)
 	if credErr != nil {
 		t.Fatal(credErr)
 	}
@@ -785,7 +785,7 @@ func TestCredentialFilesAnchorsRelocatedStores(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, linked, credErr := credentialFiles(sb, nil)
+	files, _, linked, credErr := credentialFiles(sb, nil)
 	if credErr != nil {
 		t.Fatal(credErr)
 	}
@@ -838,7 +838,7 @@ func TestEveryDeclaredAnchorIsReached(t *testing.T) {
 	sb.resolve = func(p string) string { return p }
 	sb.fileIDs = hostFileIDs
 
-	files, _, credErr := credentialFiles(sb, nil)
+	files, _, _, credErr := credentialFiles(sb, nil)
 	if credErr != nil {
 		t.Fatal(credErr)
 	}
@@ -1292,5 +1292,18 @@ func TestCheckAliasedCredentialsScansTheExecPaths(t *testing.T) {
 				t.Fatalf("a %s hardlinked to a credential must refuse the run; got %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// A host whose credential stores are still empty shields them all the same, and the
+// acknowledgement flag outlives the run that suggested it: validating it against the files
+// found today would accept "--accept-alias $HOME" until the first ssh-keygen and keep
+// accepting it afterwards.
+func TestCheckAliasedCredentialsJudgesAnOffSwitchOnAnEmptyHost(t *testing.T) {
+	sb := aliasSandbox(nil, nil)
+
+	_, err := checkAliasedCredentials(sb, nil, nil, []string{"/home/u"})
+	if err == nil || !strings.Contains(err.Error(), "would accept every alias") {
+		t.Fatalf("a tree holding an empty credential store is still an off-switch; got %v", err)
 	}
 }

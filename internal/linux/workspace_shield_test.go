@@ -263,7 +263,7 @@ func TestSymlinkedCredentialTargetIsAnAliasScanRoot(t *testing.T) {
 	if err := os.Link(key, alias); err != nil {
 		t.Skipf("hard link unsupported here: %v", err)
 	}
-	files, _, err := credentialFiles(sb, nil)
+	files, _, _, err := credentialFiles(sb, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -73,13 +73,20 @@ type credentialAlias struct {
 // accepts "--accept-alias $HOME" on any run whose aliases happen to sit elsewhere, and
 // accepts anything at all on a run that found nothing.
 //
-// credentials is the anchor set credentialFiles built, so it inherits both of that
-// function's narrowings, and both are in the safe direction. A store the policy opted
-// back in is absent because its shield never engages - there is nothing for a wide
-// acknowledgement to switch off - and the opt-in is re-judged every run, so the tree
-// stops being acceptable the moment the opt-in goes away. A non-anchor bulk store is
-// absent because the scan never reports an alias of one either, so no acknowledgement
-// can accept something the scan would have refused.
+// credentials is the anchor set itself - the shielded stores the scan walks - not the
+// files found behind them. The distinction is the acknowledgement's whole point: an
+// anchor that is empty today holds a key tomorrow, and a flag pasted into a command line
+// outlives the run that suggested it, so judging against today's files would accept
+// "--accept-alias $HOME" on a host that has not run ssh-keygen yet and keep accepting it
+// afterwards. Anchors exist whether or not anything is behind them, so the verdict on a
+// tree does not depend on the state of the stores inside it.
+//
+// It inherits credentialFiles' narrowings, both in the safe direction. A store the policy
+// opted back in is absent because its shield never engages - there is nothing for a wide
+// acknowledgement to switch off - and the opt-in is re-judged every run, so the tree stops
+// being acceptable the moment the opt-in goes away. A non-anchor bulk store is absent
+// because the scan never reports an alias of one either, so no acknowledgement can accept
+// something the scan would have refused.
 type aliasScan struct {
 	found       []credentialAlias
 	credentials []string
@@ -93,11 +100,14 @@ type aliasScan struct {
 //
 // visible is what the tier exposes host content at, which is the one thing that
 // differs: the mount namespace's binds under bwrap, the Landlock read/write set
-// without it. The exec paths are added here rather than by either caller because they
-// are the same on both tiers and neither tier's visible set contains them - bwrap
-// ro-binds the entrypoint and interpreter as individual files outside any granted tree,
-// and the launcher grants them as Landlock exec paths. `ln ~/.ssh/id_ed25519 ./run.sh`
-// is exposed either way, and the target reads it as its own program text.
+// without it. The exec paths are added here rather than by either caller because they are
+// the same on both tiers and the entrypoint is in neither tier's visible set: bwrap
+// ro-binds it as an individual file outside any granted tree, and the launcher grants it
+// as a Landlock exec path. `ln ~/.ssh/id_ed25519 ./run.sh` is exposed either way, and the
+// target reads it as its own program text. The interpreter comes along because it is the
+// same class of grant and costs a single-file walk root that the tree scan dedupes; it is
+// usually inside a scanned tree already, since both tiers derive their read set from
+// interpreterReadPath.
 func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []string) ([]credentialAlias, error) {
 	visible = append(append([]string{}, visible...), sb.entrypoint)
 	if sb.interpreter != "" {
@@ -143,29 +153,28 @@ func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []s
 // already holds the user's privileges and could read the credential directly; the value
 // delivered is naming where an alias is, not blocking someone who needs no alias.
 func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, error) {
-	creds, linked, err := credentialFiles(sb, literalOptIns)
+	creds, anchors, linked, err := credentialFiles(sb, literalOptIns)
 	if err != nil {
 		return aliasScan{}, err
 	}
+	slices.Sort(anchors)
+	// An anchor with nothing behind it still counts as a shielded store for the
+	// acknowledgement guard, so the anchors travel out even when there is no file to
+	// compare identities against.
 	if len(creds) == 0 {
-		return aliasScan{}, nil
+		return aliasScan{credentials: anchors}, nil
 	}
 
 	want := make(map[fileID]string, len(creds))
 	shielded := make(map[string]bool, len(creds))
-	credentials := make([]string, 0, len(creds))
 	for _, c := range creds {
 		// Two credentials that are already hardlinks of each other share an identity;
 		// the shallower path names the pair predictably.
 		if prev, dup := want[c.id]; !dup || c.path < prev {
 			want[c.id] = c.path
 		}
-		if !shielded[c.path] {
-			shielded[c.path] = true
-			credentials = append(credentials, c.path)
-		}
+		shielded[c.path] = true
 	}
-	slices.Sort(credentials)
 
 	resolved := make([]string, 0, len(trees))
 	for _, t := range trees {
@@ -213,7 +222,7 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	})
 	// Overlapping grants (read: ~ alongside read: ~/project) walk the same file twice,
 	// and a bind inside a walked tree is found by both mechanisms; report each once.
-	return aliasScan{found: slices.Compact(out), credentials: credentials}, nil
+	return aliasScan{found: slices.Compact(out), credentials: anchors}, nil
 }
 
 // splitAcknowledgedAliases divides found aliases into the ones that still refuse the run
@@ -236,12 +245,13 @@ func splitAcknowledgedAliases(sb sandbox, scan aliasScan, acceptUnder []string) 
 		// specific aliases and this would accept all of them, so silently narrowing it
 		// would be answering a different question than the one they asked.
 		//
-		// Judged before the empty-scan shortcut below, and against every credential the
-		// host shields rather than the ones this run aliased. Both matter: the flag is
-		// pasted into a command line that outlives the run that suggested it, so an
-		// acknowledgement validated only against today's aliases silently accepts every
-		// one planted under it tomorrow - and one validated on a run that found nothing
-		// was never judged at all.
+		// Judged before the empty-scan shortcut below, and against every store the host
+		// shields rather than the ones this run aliased or the files behind them. All of
+		// it matters for one reason: the flag is pasted into a command line that outlives
+		// the run that suggested it, so an acknowledgement validated only against today's
+		// aliases silently accepts every one planted under it tomorrow, one validated on a
+		// run that found nothing was never judged at all, and one validated against an
+		// empty ~/.ssh stops being valid the moment ssh-keygen runs.
 		if err := checkAcknowledgementScope(t, scan.credentials); err != nil {
 			return nil, nil, err
 		}
@@ -269,11 +279,12 @@ func checkAcknowledgementScope(tree string, credentials []string) error {
 }
 
 // overbroadAcknowledgement reports whether a tree is too wide to acknowledge: the
-// filesystem root, or a tree holding one of the shielded credentials itself. A backup root
-// passes - it contains second names for credentials, not the credentials.
+// filesystem root, or a tree holding one of the shielded credential stores itself. A
+// backup root passes - it contains second names for credentials, not the stores.
 //
-// credentials is the host's whole shielded set, not the subset this run aliased, so the
-// verdict on a given tree is the same on every run.
+// credentials is the host's whole shielded anchor set, not the subset this run aliased and
+// not the files behind them, so the verdict on a given tree is the same on every run and
+// on a host whose stores are still empty.
 func overbroadAcknowledgement(tree string, credentials []string) bool {
 	if tree == "/" || tree == "." || tree == "" {
 		return true
@@ -439,7 +450,10 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 }
 
 // credentialFiles returns the identified files behind this host's hidden home
-// credential shields, and whether any of them carries an extra hardlink.
+// credential shields, the anchor paths they were found under, and whether any of them
+// carries an extra hardlink. The anchors travel out because they answer a question the
+// files cannot: what this host shields, as opposed to what happens to sit behind it
+// today. See aliasScan.credentials.
 //
 // The set is built from the deny-list itself, not from the shields a run engaged: a
 // credential no grant reached still has its content reachable through an alias that a
@@ -468,7 +482,7 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 // shield never engages, so there is no shield for an alias to defeat. literalOptIns are
 // the LITERAL deny-list paths explicitShieldOptIns matched, not the resolved ones it
 // also carries: this resolves them itself, alongside the anchors it resolves anyway.
-func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, linked bool, err error) {
+func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile, anchors []string, linked bool, err error) {
 	// The deny-list paths are resolved before comparing, exactly as denyArgs resolves them
 	// to bind them: on a host where a store sits behind a symlink an unresolved path
 	// matches nothing and the whole scan silently no-ops.
@@ -502,19 +516,20 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 			continue
 		}
 		seen[path] = true
+		anchors = append(anchors, path)
 		// A symlinked credential's target is not chased. A store that deduplicates
 		// identical files by hardlinking them (Nix) gives every linked dotfile an extra
 		// link by design, and following the link would make that the normal case.
 		ids, err := sb.fileIDs(path)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		for _, f := range ids {
 			files = append(files, f)
 			linked = linked || f.links > 1
 		}
 	}
-	return files, linked, nil
+	return files, anchors, linked, nil
 }
 
 // hostFileIDs returns the identity of every regular file at or under path. A file path
