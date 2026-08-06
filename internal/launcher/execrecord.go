@@ -82,9 +82,17 @@ func superviseTraced(target, env []string, rec *execRecorder) (int, error) {
 	root := cmd.Process.Pid
 
 	// Past Start the target exists, so nothing below may report it as never reached.
-	// attachFailed carries that: the options could not be set, so the tracee is let go
-	// and the run is supervised the ordinary way.
-	if err := attachRecorder(root); err != nil {
+	code, done, err := attachRecorder(root)
+	if done {
+		// The target died before it ever stopped for the tracer - killed between the fork
+		// and its own exec, which is the OOM or external-SIGKILL shape. The wait above
+		// reaped it, so its status is the run's outcome and there is nothing left to trace.
+		// superviseTarget reports exactly this code, and the recorder may not turn it into
+		// a failed run.
+		rec.failed = err
+		return code, nil
+	}
+	if err != nil {
 		rec.failed = err
 		// Detaching resumes the tracee, which is still stopped at its own initial exec, and
 		// leaves this process its plain parent. Reaping is then reapChildren's again.
@@ -101,7 +109,7 @@ func superviseTraced(target, env []string, rec *execRecorder) (int, error) {
 		return code, nil
 	}
 
-	code, err := traceExecs(root, rec)
+	code, err = traceExecs(root, rec)
 	if err != nil {
 		return 0, errTargetRan{err}
 	}
@@ -116,17 +124,22 @@ func superviseTraced(target, env []string, rec *execRecorder) (int, error) {
 // an abandoned tracee is a leak with nothing left to reap it; here the point is the
 // target. A tracer that dies detaches instead and the record ends where it ended, which
 // is what the record section's own marker exists to make legible.
-func attachRecorder(root int) error {
+// done reports that the target ended instead of stopping, in which case code is its
+// outcome and the caller has nothing left to trace or detach.
+func attachRecorder(root int) (code int, done bool, err error) {
 	var ws syscall.WaitStatus
 	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
-		return fmt.Errorf("launcher: waiting for the target's initial stop: %w", err)
+		return 0, false, fmt.Errorf("launcher: waiting for the target's initial stop: %w", err)
+	}
+	if ws.Exited() || ws.Signaled() {
+		return waitExitCode(ws), true, fmt.Errorf("launcher: the target ended before the exec recorder could attach")
 	}
 	const opts = syscall.PTRACE_O_TRACEEXEC |
 		syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEFORK | syscall.PTRACE_O_TRACEVFORK
 	if err := syscall.PtraceSetOptions(root, opts); err != nil {
-		return fmt.Errorf("launcher: installing the exec recorder: %w", err)
+		return 0, false, fmt.Errorf("launcher: installing the exec recorder: %w", err)
 	}
-	return nil
+	return 0, false, nil
 }
 
 // traceExecs is the wait loop. It resumes the stopped root, records an exec at each

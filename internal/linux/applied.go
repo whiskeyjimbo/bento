@@ -71,6 +71,10 @@ type execRun struct {
 	Pid  int
 	Exe  string
 	Argv []string
+	// ArgvTruncated is whether the stage cut this argv to keep the record readable. It
+	// travels rather than being dropped because an argv missing its tail that does not
+	// say so is a record that lies about what ran.
+	ArgvTruncated bool
 }
 
 // newAppliedReport creates the file the in-sandbox stage writes its applied-layer
@@ -149,6 +153,14 @@ func parseApplied(f *os.File) applied {
 				}
 			case line == launcher.AppliedExecRecordMarker:
 				a.execRecordComplete = !garbled
+			case a.execRecorder != "":
+				// Inside the record section, an unrecognized line is the section's problem
+				// and not the report's. The stage writes it in one call after the run, so a
+				// short write - a full run directory, the launcher killed mid-write - can end
+				// a line inside its own key, and "exec-ra" would otherwise hit the tampering
+				// stance below and void an attestation the first marker already made. Same
+				// rule as the undecodable record above, one token earlier.
+				garbled = true
 			case line != "":
 				return applied{}
 			}
@@ -187,7 +199,21 @@ func parseApplied(f *os.File) applied {
 		}
 	}
 	if err := s.Err(); err != nil {
-		return applied{}
+		// A scan that failed BEFORE the marker read nothing that can be relied on, so it
+		// claims nothing, exactly like an absent report.
+		//
+		// After the marker it is only the diagnostic that was lost, and retracting the
+		// layer facts here would be the exec record deciding what is enforced - the one
+		// thing it may never do. The failure is reachable from the record alone and on
+		// the very workload the record is for: bufio.Scanner refuses a line over 64KB,
+		// and a link or compile step's NUL-joined argv can clear that. The writer caps
+		// each record to keep it from arriving, and this is the second half of that -
+		// what the scan did read stays read, and the section is reported as truncated,
+		// which is what it is.
+		if !a.complete {
+			return applied{}
+		}
+		a.execRecordComplete = false
 	}
 	return a
 }
@@ -216,19 +242,34 @@ func parseExecRun(rest string) (execRun, bool) {
 	if err != nil {
 		return execRun{}, false
 	}
-	argvQ, ok := strings.CutPrefix(quoted[len(exeQ):], " ")
+	tail, ok := strings.CutPrefix(quoted[len(exeQ):], " ")
 	if !ok {
+		return execRun{}, false
+	}
+	argvQ, err := strconv.QuotedPrefix(tail)
+	if err != nil {
 		return execRun{}, false
 	}
 	joined, err := strconv.Unquote(argvQ)
 	if err != nil {
 		return execRun{}, false
 	}
+	// The writer caps a long argv and says so in this last field. Nothing else may follow:
+	// an unrecognized trailer is a record the stage did not write, and this is the one
+	// place in the section that reads free-form-length input.
+	var argvTruncated bool
+	switch tail[len(argvQ):] {
+	case "":
+	case " " + launcher.AppliedExecArgvTruncated:
+		argvTruncated = true
+	default:
+		return execRun{}, false
+	}
 	var argv []string
 	if joined != "" {
 		argv = strings.Split(joined, "\x00")
 	}
-	return execRun{Pid: pid, Exe: exe, Argv: argv}, true
+	return execRun{Pid: pid, Exe: exe, Argv: argv, ArgvTruncated: argvTruncated}, true
 }
 
 // execRecord renders what the stage reported about the run's execs. asked is whether the
@@ -254,7 +295,7 @@ func (a applied) execRecord(asked bool) *enforce.ExecRecord {
 		}
 	}
 	for _, r := range a.execRuns {
-		rec.Runs = append(rec.Runs, enforce.ExecRun{Pid: r.Pid, Exe: r.Exe, Argv: r.Argv})
+		rec.Runs = append(rec.Runs, enforce.ExecRun{Pid: r.Pid, Exe: r.Exe, Argv: r.Argv, ArgvTruncated: r.ArgvTruncated})
 	}
 	return rec
 }

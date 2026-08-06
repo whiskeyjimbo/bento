@@ -304,6 +304,11 @@ func runTarget(block bool, target, env []string, applied *appliedReport, rec *ex
 				// design, which is why this is absent rather than a failure - and it is
 				// recorded before the dispatch because after it this process is the target.
 				rec.unavailable = errors.New("the exec block replaces the launcher with the target, leaving no supervisor to trace")
+				// The seed goes with it. Nothing here has run yet - the execveat below may
+				// still fail and leave the target unreached - so carrying the seeded entry
+				// into a section written beforehand would report an exec that never
+				// happened, which is the record lying about what ran.
+				rec.runs = nil
 				if err := applied.writeExecRecord(rec); err != nil {
 					fmt.Fprintf(os.Stderr, "[bento] warning: %v\n", err)
 				}

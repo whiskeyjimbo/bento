@@ -60,6 +60,20 @@ const (
 	// word, so an argument containing a space cannot split into two.
 	AppliedExecRan = "exec-ran"
 
+	// AppliedExecArgvTruncated is the optional last field of an exec-ran record, saying
+	// the argv above it was cut. Marked rather than quietly shortened: an argv that is
+	// missing its tail and does not say so is a record that lies about what ran, and one
+	// that can lie is worse than none.
+	AppliedExecArgvTruncated = "argv-truncated"
+
+	// maxRecordedArgv caps the NUL-joined argv of one record. The reader scans the report
+	// a line at a time and refuses one it cannot buffer, so an uncapped argv is not a long
+	// line but a LOST section - and %q expands each NUL separator to four bytes, so the
+	// wire form outgrows the argv it came from. A link or compile step's command line
+	// reaches this length in normal use, which is the workload the record exists for; the
+	// cap keeps the rest of the record readable at the price of one marked entry.
+	maxRecordedArgv = 4096
+
 	// AppliedExecRecordMarker terminates the exec-record section, and it is why the
 	// section can be trusted to be whole. The recorder deliberately runs without
 	// PTRACE_O_EXITKILL, so a tracer that dies detaches and the record ends where it
@@ -172,7 +186,12 @@ func (a *appliedReport) writeExecRecord(rec *execRecorder) error {
 	// Quoted for the reason record quotes its detail: an image path or an argument may
 	// contain a newline, and an unquoted one would forge a record.
 	for _, r := range rec.runs {
-		fmt.Fprintf(&b, "%s %d %q %q\n", AppliedExecRan, r.pid, r.exe, strings.Join(r.argv, "\x00"))
+		argv, truncated := cappedArgv(r.argv)
+		fmt.Fprintf(&b, "%s %d %q %q", AppliedExecRan, r.pid, r.exe, argv)
+		if truncated {
+			fmt.Fprintf(&b, " %s", AppliedExecArgvTruncated)
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString(AppliedExecRecordMarker + "\n")
 	if _, err := a.f.Write([]byte(b.String())); err != nil {
@@ -182,6 +201,28 @@ func (a *appliedReport) writeExecRecord(rec *execRecorder) error {
 		return fmt.Errorf("launcher: writing the exec record: %w", err)
 	}
 	return nil
+}
+
+// cappedArgv renders one record's argv, cut to maxRecordedArgv. It cuts on the argument
+// boundary rather than mid-argument, so what is reported is a prefix of the real argv
+// and never a mangled last word - a half-written path in a record reads as a path that
+// was passed.
+func cappedArgv(argv []string) (string, bool) {
+	var b strings.Builder
+	for i, a := range argv {
+		if i > 0 {
+			if b.Len()+1+len(a) > maxRecordedArgv {
+				return b.String(), true
+			}
+			b.WriteString("\x00")
+		} else if len(a) > maxRecordedArgv {
+			// A single argument over the cap has no boundary to cut on, so the entry keeps
+			// its image and reports no argv at all rather than a prefix of one argument.
+			return "", true
+		}
+		b.WriteString(a)
+	}
+	return b.String(), false
 }
 
 // targetUnreached appends the record saying the layers above the marker were applied
