@@ -67,6 +67,16 @@ type RunOptions struct {
 	// built-in deny-list. See Options.DenyPaths for what the guarantee covers.
 	DenyPaths []string
 
+	// RecordExec asks the backend to record the tree of execs the run performs, returned
+	// in Result.ExecRecord. It is off by default, and not out of caution about the
+	// mechanism: recording takes the ability to ptrace away from everything inside the
+	// sandbox, so strace, gdb, rr and a test harness attaching to its own child stop
+	// working under it. That lands on exactly the toolchain runs the record is for, which
+	// is why a run that did not ask for one is byte-for-byte the run it would otherwise
+	// be. Asking on a run that cannot have one is not an error: Result.ExecRecord comes
+	// back saying nothing was watching and why.
+	RecordExec bool
+
 	// AcceptAliasesUnder are host trees whose credential aliases the caller has
 	// acknowledged. A shield hides a credential's path, not the content behind it, so a
 	// second name for one inside a tree the run can read is normally a refusal. Naming a
@@ -250,6 +260,40 @@ func (s SetupState) String() string {
 
 // Result is the outcome of a Run: the target's exit code and the report of what
 // the sandbox actually enforced around it.
+// ExecRun is one exec an enforced run performed: the image the kernel actually ran and
+// the argv it ran with. Exe is resolved - a PATH search and a symlinked interpreter are
+// already followed - because it is read back from the kernel rather than from what the
+// target asked for. Pid is zero for the target itself, the one entry no observation
+// reported: its exec retires before the recorder can be installed, so it is known by
+// construction rather than seen.
+type ExecRun struct {
+	Pid  int
+	Exe  string
+	Argv []string
+}
+
+// ExecRecord is what a run that asked to record its execs got back.
+//
+// Only what RAN is here, never what was attempted: a denied exec produces no entry, so
+// this does not answer "what did the sandbox stop", only "what did the sandbox run".
+type ExecRecord struct {
+	// Watched is whether anything was recording. When false, Reason says why - a mode
+	// that structurally cannot have a recorder (the degraded tier's own ptrace block,
+	// or an exec: none run, which replaces the launcher with the target and leaves no
+	// supervisor), or a host that refused the attach (Yama ptrace_scope 2 and 3 both do).
+	// Distinguishing this from an empty record is the point: "no execs happened" and
+	// "nothing was watching" are different answers.
+	Watched bool
+	Reason  string
+	// Complete is whether the record reached its own end marker. The recorder is
+	// deliberately not allowed to kill the run it observes, so a recorder that died
+	// leaves a record that ends where it ended - and a partial record that read as whole
+	// would be worse than none, because it would read as complete.
+	Complete bool
+	// Runs is every exec observed, in the order observed, led by the target itself.
+	Runs []ExecRun
+}
+
 type Result struct {
 	ExitCode int
 	// Signaled reports that the run ended on a signal rather than an exit code, and
@@ -294,6 +338,11 @@ type Result struct {
 	// It lives on Result rather than in Report because Report is overlaid after the
 	// backend returns; see SetupState for what the states do and do not attest.
 	Setup SetupState
+	// ExecRecord is the tree of execs the run performed, when RunOptions.RecordExec
+	// asked for one; nil when it did not. It is a diagnostic and nothing else: its
+	// presence, absence and failure all leave the Report and Setup exactly as they would
+	// have been, so a frontend must never read a shortfall out of it.
+	ExecRecord *ExecRecord
 	// EgressConnections is how many outbound connections reached the egress proxy
 	// during the run, including any the proxy turned away at its concurrency limit
 	// before reading their request. A count of zero on a run that could egress (the

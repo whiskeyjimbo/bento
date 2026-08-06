@@ -707,3 +707,117 @@ func TestUnmarkedExecRecordReadsAsTruncated(t *testing.T) {
 		t.Errorf("the records written before the truncation were lost: %+v", a.execRuns)
 	}
 }
+
+// The end-to-end pin for the exec record: a real confined run under exec: all, with the
+// launcher writing the section and this host parsing it back. It is what keeps the
+// writer and the parser from drifting - every other test here hands the parser bytes it
+// wrote itself.
+func TestExecRecordOfARealRun(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tree.sh")
+	if err := os.WriteFile(script, []byte("/bin/true\n/bin/echo recorded\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out},
+		enforce.RunOptions{RecordExec: true})
+	if err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, out.String())
+	}
+	if res.ExecRecord == nil {
+		t.Fatal("a run that asked for an exec record got none")
+	}
+	if !res.ExecRecord.Watched {
+		t.Skipf("this host refused the attach (%s); yama ptrace_scope 2 and 3 both do", res.ExecRecord.Reason)
+	}
+	if !res.ExecRecord.Complete {
+		t.Error("the record did not reach its own marker, so it reads as truncated")
+	}
+	// The record's claim is that the target cannot hide an exec: the script's two
+	// commands are grandchildren of the launcher and are recorded like anything else.
+	var images []string
+	for _, r := range res.ExecRecord.Runs {
+		images = append(images, r.Exe)
+	}
+	for _, want := range []string{"true", "echo"} {
+		if !containsSuffix(images, want) {
+			t.Errorf("the record is missing the %s exec: %q", want, images)
+		}
+	}
+	// The diagnostic may not touch the attestation.
+	if res.Setup != enforce.SetupAttested {
+		t.Errorf("setup state = %v on a recorded run; the record changed what was attested", res.Setup)
+	}
+	if st := res.Report.StateOf(enforce.LayerFilesystem); st != enforce.Enforced {
+		t.Errorf("filesystem layer = %v on a recorded run: %v", st, res.Report.Degradations())
+	}
+}
+
+// A run that did not ask gets no record at all, and must be the run it would otherwise
+// have been - the recorder is what takes ptrace away from everything in the sandbox, so
+// "off means off" is the property that keeps it from changing unrelated runs.
+func TestUnaskedRunHasNoExecRecord(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "quiet.sh")
+	if err := os.WriteFile(script, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	var out bytes.Buffer
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, out.String())
+	}
+	if res.ExecRecord != nil {
+		t.Errorf("a run that asked for no record got one: %+v", res.ExecRecord)
+	}
+}
+
+// exec: none replaces the launcher with the target, so there is no supervisor left to
+// trace. Asking there is not an error and does not produce an empty record - it comes
+// back saying nothing was watching, which is the distinction the section exists to make.
+func TestExecNoneReportsTheRecorderAbsent(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "blocked.sh")
+	if err := os.WriteFile(script, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecNone}
+
+	var out bytes.Buffer
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stdout: &out, Stderr: &out},
+		enforce.RunOptions{RecordExec: true})
+	if err != nil {
+		t.Fatalf("Run: %v (output: %s)", err, out.String())
+	}
+	if res.ExecRecord == nil {
+		t.Fatal("a run that asked for an exec record got none at all")
+	}
+	if res.ExecRecord.Watched {
+		t.Error("exec: none reported a recorder, but the block leaves no supervisor to be one")
+	}
+	if res.ExecRecord.Reason == "" {
+		t.Error("nothing was watching and the report did not say why")
+	}
+	if res.Setup != enforce.SetupAttested {
+		t.Errorf("setup state = %v; asking for an unavailable record changed what was attested", res.Setup)
+	}
+}
+
+func containsSuffix(paths []string, suffix string) bool {
+	for _, p := range paths {
+		if strings.HasSuffix(p, "/"+suffix) {
+			return true
+		}
+	}
+	return false
+}
