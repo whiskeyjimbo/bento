@@ -288,30 +288,32 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		res      enforce.Result
 		wantExec string // the exec: line, or "" if it must not appear
 		wantFS   bool   // both filesystem lines, which share the mount namespace
+		wantNet  bool   // the degraded tier's seccomp egress line
 	}{
-		{"a clean run under a blocking manifest still says so", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
-		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true},
-		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none-strict", true},
-		{"write grants alone are worth decoding", &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}, enforce.Result{Report: execEnforced()}, "", true},
+		{"a clean run under a blocking manifest still says so", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true, false},
+		{"the zero exec mode is none", &policy.Policy{}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none", true, false},
+		{"none-strict names itself", &policy.Policy{Exec: policy.ExecNoneStrict}, enforce.Result{ExitCode: 0, Report: execEnforced()}, "exec: none-strict", true, false},
+		{"write grants alone are worth decoding", &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}, enforce.Result{Report: execEnforced()}, "", true, false},
 		// No write grant leaves the whole tree read-only, so EROFS is not merely possible
 		// there, it is certain for any write the script attempts.
-		{"no write grant is the most restricted, not the least", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", true},
-		{"a block that never landed names no exec field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", true},
+		{"no write grant is the most restricted, not the least", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: execEnforced()}, "", true, false},
+		{"a block that never landed names no exec field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", true, false},
 		// Each line answers for its own layer, so a tier that cannot produce EROFS drops
 		// the write line and keeps the exec one.
-		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS()}, "exec: none", false},
-		{"neither layer in force says nothing at all", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false},
+		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS()}, "exec: none", false, true},
+		{"the degraded tier still fences egress, and says only that", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false, true},
+		{"neither layer in force says nothing at all", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Unavailable, enforce.Unavailable)}, "", false, false},
 		// The hints that explain a failure have already spoken by here, and the legend's
 		// own subject is the run that reported nothing.
-		{"a failing run is somebody else's to explain", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: execEnforced()}, "", false},
-		{"a signal death is not a clean exit", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Signal: 9, Report: execEnforced()}, "", false},
+		{"a failing run is somebody else's to explain", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{ExitCode: 1, Report: execEnforced()}, "", false, false},
+		{"a signal death is not a clean exit", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Signal: 9, Report: execEnforced()}, "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
 			writeDenialLegend(&b, tc.p, tc.res, false)
 			out := b.String()
-			if wantAny := tc.wantFS || tc.wantExec != ""; (b.Len() > 0) != wantAny {
+			if wantAny := tc.wantFS || tc.wantExec != "" || tc.wantNet; (b.Len() > 0) != wantAny {
 				t.Errorf("legend emitted = %v, want %v (output: %q)", b.Len() > 0, wantAny, out)
 			}
 			// The whole point is the mapping from the errno string the script printed to
@@ -327,13 +329,18 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 			if tc.wantFS && !strings.Contains(out, "identical to truly absent") {
 				t.Errorf("the read line must not read as a diagnosis: %q", out)
 			}
+			// Both EPERM lines share an errno string, so each is matched on the noun that
+			// tells them apart - a command versus a socket.
+			if gotNet := strings.Contains(out, "on a socket or connection"); gotNet != tc.wantNet {
+				t.Errorf("seccomp egress errno mapped = %v, want %v: %q", gotNet, tc.wantNet, out)
+			}
 			if tc.wantExec == "" {
-				if strings.Contains(out, "Operation not permitted") {
+				if strings.Contains(out, "on a command") {
 					t.Errorf("legend names an exec block that is not in force: %q", out)
 				}
 				return
 			}
-			if !strings.Contains(out, "Operation not permitted") || !strings.Contains(out, tc.wantExec) {
+			if !strings.Contains(out, "on a command") || !strings.Contains(out, tc.wantExec) {
 				t.Errorf("legend does not map the exec errno to %q: %q", tc.wantExec, out)
 			}
 		})
@@ -366,11 +373,14 @@ func TestDenialLegendNamesAnEmptyNetworkField(t *testing.T) {
 	}
 
 	// The Landlock-only tier fences egress with a seccomp filter instead of a netns, so it
-	// answers EPERM on socket() and these two shapes are not the ones a reader will hold.
+	// names the same field off a different errno - EPERM on socket(), not ENETUNREACH.
 	b.Reset()
 	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded)}, false)
-	if strings.Contains(b.String(), line) {
-		t.Errorf("legend claims a denial no layer here produces: %q", b.String())
+	if strings.Contains(b.String(), "Network is unreachable") {
+		t.Errorf("legend claims a shape no layer here produces: %q", b.String())
+	}
+	if !strings.Contains(b.String(), line) || !strings.Contains(b.String(), "on a socket or connection") {
+		t.Errorf("the tier denies egress too, and the reader gets no mapping for it: %q", b.String())
 	}
 }
 
@@ -407,7 +417,7 @@ func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
 	// the lead: a tier that can produce none of these errnos must not print the sentence
 	// that introduces them and then stop.
 	var degraded enforce.Report
-	degraded.Add(enforce.LayerFilesystem, enforce.Degraded, "")
+	degraded.Add(enforce.LayerFilesystem, enforce.Unavailable, "")
 	degraded.Add(enforce.LayerExec, enforce.Unavailable, "")
 	b.Reset()
 	writeDenialLegend(&b, p, enforce.Result{ExitCode: 1, Report: degraded}, true)
