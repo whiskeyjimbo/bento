@@ -60,6 +60,21 @@ import (
 // it have to agree on the set, and they are compiled for different platforms.
 var ManagedMounts = []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"}
 
+// IsProcessPath reports whether a resolved path is a per-process procfs directory or
+// something inside one (/proc/<pid>/...). /proc itself and its system-wide files
+// (/proc/cpuinfo) are not: those bind fine, and /proc whole is a ManagedMounts refusal.
+//
+// Here for the reason ManagedMounts is: the run and the CI gate that predicts it both
+// refuse this shape, and they are compiled for different platforms.
+func IsProcessPath(path string) bool {
+	rel, err := filepath.Rel("/proc", path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	first, _, _ := strings.Cut(rel, "/")
+	return first != "" && strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
 // Deny is how completely a rule shields its path.
 type Deny int
 
