@@ -80,6 +80,11 @@ type sandbox struct {
 	// run report so a layer is claimed only once the child confirms it. Mutually
 	// exclusive with observe: profiling produces an observation, not a report.
 	applied bool
+	// recordExec signals that the run asked for a record of the execs it performs, which
+	// the launcher writes into the applied report's second section. It rides the applied
+	// report rather than a descriptor of its own: that channel is already the enforced
+	// run's report, and there is nothing for a second one to separate.
+	recordExec bool
 	// runDir is the per-run 0700 directory holding the run's host-side files: the
 	// empty shield file, the proxy socket, and the applied-layer report. Anything the
 	// host must read back after the run belongs here rather than in shared /tmp.
@@ -404,7 +409,13 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		ObserveFD:         observeFD,
 		AppliedFD:         appliedFD,
 		AllowNetworkStdio: proc.AllowNetworkStdio,
-		Target:            command(p, sb),
+		// Passed on whatever the exec mode, though only exec: all can honour it: the block
+		// execveats the target over the launcher, leaving no supervisor to be the tracer.
+		// Withholding the flag there would leave the host with no section to read and no
+		// way to tell a mode that cannot be recorded from a stage that never reported;
+		// the launcher writes the recorder absent with its own reason instead.
+		RecordExec: sb.recordExec,
+		Target:     command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)
 	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(appliedShields), nil

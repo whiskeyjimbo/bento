@@ -231,6 +231,34 @@ func parseExecRun(rest string) (execRun, bool) {
 	return execRun{Pid: pid, Exe: exe, Argv: argv}, true
 }
 
+// execRecord renders what the stage reported about the run's execs. asked is whether the
+// run wanted a record at all; without it there is nothing to report and nil says so.
+//
+// A run that asked and got no section back is a stage that never wrote one - the same
+// absence the missing marker covers - and it is reported as nothing having watched
+// rather than as an empty record, which would read as a run that exec'd nothing.
+func (a applied) execRecord(asked bool) *enforce.ExecRecord {
+	if !asked {
+		return nil
+	}
+	rec := &enforce.ExecRecord{Complete: a.execRecordComplete}
+	switch a.execRecorder {
+	case launcher.AppliedYes:
+		rec.Watched = true
+	case "":
+		rec.Reason = "the sandboxed launcher reported nothing about the exec recorder"
+	default:
+		rec.Reason = a.execRecorderErr
+		if rec.Reason == "" {
+			rec.Reason = fmt.Sprintf("the sandbox reported the exec recorder %q without a reason", a.execRecorder)
+		}
+	}
+	for _, r := range a.execRuns {
+		rec.Runs = append(rec.Runs, enforce.ExecRun{Pid: r.Pid, Exe: r.Exe, Argv: r.Argv})
+	}
+	return rec
+}
+
 // reconcile overlays what the sandboxed stage reported onto the host's probe-derived
 // report, so a layer is only claimed once the child confirms it applied.
 //
