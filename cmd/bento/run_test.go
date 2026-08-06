@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -896,5 +898,35 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("hint missing %q; got:\n%s", want, errOut.String())
 		}
+	}
+}
+
+// The terminal object is the last one on the stream even when a stream pump is still
+// live behind it - the degraded tier sets WaitDelay, so Wait can return while a leaked
+// descendant still holds the target's stdout pipe.
+func TestEventStreamDropsOutputAfterTheTerminalObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stream := newEventStream(&stdout)
+	out := stream.output("stdout")
+
+	fmt.Fprint(out, "before")
+	_ = writeRunResult(&stdout, &stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, stream, nil)
+	fmt.Fprint(out, "straggler")
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stream has %d objects, want 2 (the chunk and the verdict):\n%s", len(lines), stdout.String())
+	}
+	var last struct {
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &last); err != nil {
+		t.Fatal(err)
+	}
+	if last.Event != "verdict" {
+		t.Errorf("last object is %q, want the verdict", last.Event)
+	}
+	if strings.Contains(stdout.String(), base64.StdEncoding.EncodeToString([]byte("straggler"))) {
+		t.Errorf("output written after the verdict landed on the stream:\n%s", stdout.String())
 	}
 }
