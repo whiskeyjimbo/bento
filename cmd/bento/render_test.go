@@ -1415,6 +1415,11 @@ func TestShieldSummaryGroupsAGroupRelocation(t *testing.T) {
 func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZDOTDIR", "")
+	// HOME moves to a temp dir, so an XDG base inherited from the real environment points
+	// outside it and reads as a relocation; clear them to get the ordinary host back.
+	for _, env := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(env, "")
+	}
 	// The shape that is genuinely ordinary: Runtime leaves a runtime dir under /run to the
 	// /run shield and stamps no source, so it is not a relocation and must not print.
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
