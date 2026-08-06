@@ -170,7 +170,9 @@ func TestUnreadableComponentResolvesToNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
 
-	path := filepath.Join(closed, "link", "..", "secret")
+	// Built raw: filepath.Join would clean the ".." away lexically, which is precisely
+	// the pop this checks does not happen against an unread component.
+	path := closed + "/link/../secret"
 	if got := Existing(path); got != path {
 		t.Errorf("Existing(%q) = %q, want the path unresolved - whether %q is a symlink could not be read", path, got, filepath.Join(closed, "link"))
 	}
