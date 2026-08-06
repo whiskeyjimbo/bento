@@ -60,6 +60,41 @@ func TestExecImageChainReportsAnUnresolvableShebang(t *testing.T) {
 	}
 }
 
+// The three ways the walk can fail to see what the kernel will. Each must count as a
+// dropped observation, because the manifest is short either way and only this says so.
+// A path that is simply not there is the one case that is not a loss: the exec answers
+// ENOENT too, so there is no image to record.
+func TestExecImageReportsWhatItCouldNotSee(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, body []byte, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, body, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// The kernel execs a binary it can read but the observer cannot; reporting that
+	// complete puts the loader back out of the manifest with nothing to say it is missing.
+	unreadable := write("exec-only", []byte("#!/bin/sh\n"), 0o111)
+	if os.Geteuid() == 0 {
+		t.Log("running as root, so the unreadable case cannot be provoked")
+	} else if _, ok := execImage(unreadable); ok {
+		t.Error("an unreadable exec target reported complete")
+	}
+
+	// A shebang line longer than the kernel's own buffer: the exec fails ENOEXEC, and
+	// the truncated first field would name a file nothing ever opened.
+	long := write("long.sh", append([]byte("#!/"), make([]byte, 512)...), 0o755)
+	if _, ok := execImage(long); ok {
+		t.Error("a shebang with no line ending reported complete")
+	}
+
+	if _, ok := execImage(filepath.Join(dir, "absent")); !ok {
+		t.Error("a path that is not there was counted as a lost observation; the exec fails the same way")
+	}
+}
+
 // A #! chain is walked, not resolved once: the kernel opens the interpreter, then the
 // interpreter's own loader. A static binary ends the walk with nothing to add.
 func TestExecImageChainWalksToTheLoader(t *testing.T) {
