@@ -40,11 +40,16 @@ var autoExecNames = []string{
 }
 
 // The directories under a write grant whose every entry auto-executes, so no fixed name
-// reaches them. Listed one level deep: both hold flat files by convention, and a
-// recursive walk of a grant is what this deliberately is not.
+// reaches them. Each is listed one level deep, and a subdirectory that holds more of the
+// same is named in its own right rather than walked - a recursive walk of a grant is what
+// this deliberately is not.
+//
+// Residual: .github/actions/<name>/action.yml is a local composite action a workflow
+// runs, and the name in the middle is chosen per repo, so no concrete path reaches it.
 var autoExecDirs = []string{
 	".github/workflows", // runs on the CI host at the next push
 	".husky",            // an in-tree hook runner core.hooksPath points at
+	".husky/_",          // husky v9 keeps the wrapper the hooks source in here
 }
 
 // autoExecState is one snapshot of those files: absolute path to a size-and-mtime stamp,
