@@ -508,7 +508,9 @@ func networkStdioRefusals() []error {
 // raw frames on the host's wire - through the check written to stop exactly that.
 //
 // The file KINDS are an allowlist for the same reason, and only a regular file and a
-// pipe pass unconditionally. An anonymous-inode descriptor - pidfd, eventfd, epoll,
+// pipe pass - the pipe unconditionally, the regular file subject to refuseNamespaceFD,
+// because S_IFREG is the one kind whose type bits are honest and still not enough.
+// An anonymous-inode descriptor - pidfd, eventfd, epoll,
 // timerfd, io_uring - carries no type bits at all (S_IFMT is 0), so a switch that
 // defaulted to permitting handed a pidfd on 0/1/2 straight through, and pidfd_getfd()
 // against a host process steals descriptors past every fence bento installs. Naming the
@@ -552,8 +554,12 @@ func refuseNetworkFD(fd int) error {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d could not be examined: %w", fd, err)
 	}
 	switch st.Mode & unix.S_IFMT {
-	case unix.S_IFREG, unix.S_IFIFO:
-		// A file or a pipe on stdio is the ordinary case - redirection and `bento run | less`.
+	case unix.S_IFREG:
+		// A file on stdio is the ordinary case - redirection - but the type bits alone do
+		// not settle it, so this one kind is narrowed by the filesystem underneath it.
+		return refuseNamespaceFD(fd)
+	case unix.S_IFIFO:
+		// `bento run | less`.
 		return nil
 	case unix.S_IFSOCK:
 		// Classified below: only the socket case is opt-in-able.
@@ -579,6 +585,46 @@ func refuseNetworkFD(fd int) error {
 	}
 	if domain != unix.AF_UNIX {
 		return fmt.Errorf("launcher: refusing to run - %w", &networkStdio{fd: fd, domain: domain})
+	}
+	return nil
+}
+
+// refuseNamespaceFD refuses a regular-file descriptor that is really a namespace handle.
+// /proc/self/ns/net and its siblings open on nsfs, whose inodes carry S_IFREG, so the
+// kind allowlist above sees an ordinary redirected file and waves one through. The type
+// bits are not lying - there is nothing to fix in the S_IFMT switch - which is why this
+// is a second question asked of the same descriptor rather than another case in it.
+//
+// Keying on the filesystem instead of the namespace type is not the denylist the
+// families and kinds above refuse to be. Those are small enumerable sets, so an
+// allowlist can be complete and a denylist provably cannot; filesystem magics are
+// neither, so an allowlist of them would refuse the next filesystem anyone redirects
+// stdout onto. nsfs is named because it is the filesystem whose S_IFREG inodes are not
+// byte streams at all, and one magic covers every namespace type - net, mnt, pid, user -
+// since they share it.
+//
+// What it buys depends on the run. A target under the bwrap tier cannot use the
+// descriptor to escape: setns(2) against the host's network namespace wants
+// CAP_SYS_ADMIN in the user namespace that OWNS it, which is the initial one, and a
+// full capability set in a nested user namespace the target owns is not that - measured
+// EPERM under bwrap even after unshare -Ur. The degraded tier builds no user namespace,
+// so a run started by root is inside the owning namespace and the setns succeeds
+// outright, putting the target back in the host's network, mount or pid namespace -
+// the whole fence. Nothing refuses a root run, so that is a reachable configuration and
+// this refusal is what closes it.
+//
+// Under every other run it is the smaller thing the rest of this check already refuses:
+// an nsfs descriptor names the host's namespaces by inode through /proc/self/fd and
+// answers NS_GET_USERNS/NS_GET_PARENT, and it pins them alive. Refusing costs nothing
+// either way, since a namespace handle is not a byte stream and no legitimate parent
+// passes one as stdio.
+func refuseNamespaceFD(fd int) error {
+	var sf unix.Statfs_t
+	if err := unix.Fstatfs(fd, &sf); err != nil {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a regular file whose filesystem could not be identified: %w", fd, err)
+	}
+	if sf.Type == unix.NSFS_MAGIC {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited namespace handle; setns through it reaches the host namespaces the sandbox exists to leave", fd)
 	}
 	return nil
 }

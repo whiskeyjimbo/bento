@@ -241,6 +241,25 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
+	// nsfs inodes are S_IFREG, so a namespace handle inherited on stdio is
+	// indistinguishable from a redirected file by type bits alone. One magic covers every
+	// namespace type; net is the one whose escape - setns back into the host's network -
+	// the sandbox exists to prevent.
+	t.Run("a namespace handle is refused", func(t *testing.T) {
+		f, err := os.Open("/proc/self/ns/net")
+		if err != nil {
+			t.Skipf("no namespace handle available: %v", err)
+		}
+		defer f.Close()
+		err = refuseNetworkFD(int(f.Fd()))
+		if err == nil {
+			t.Fatal("an inherited namespace handle on stdio was accepted")
+		}
+		if !strings.Contains(err.Error(), "namespace handle") {
+			t.Errorf("wrong refusal for a namespace handle: %v", err)
+		}
+	})
+
 	t.Run("a closed descriptor is allowed", func(t *testing.T) {
 		// Nothing was inherited there, so the target sees the same EBADF the check does.
 		if err := refuseNetworkFD(9999); err != nil {
