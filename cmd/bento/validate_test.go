@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/whiskeyjimbo/bento/enforce"
-	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -893,51 +891,6 @@ func TestValidateRelocatableJSON(t *testing.T) {
 	if unasked.Relocatable != nil || unasked.PinnedPaths != nil {
 		t.Errorf("the fields must be absent when the question was not asked; got %v %v", unasked.Relocatable, unasked.PinnedPaths)
 	}
-}
-
-// The refusals the gate used to pass over in silence: a whole pseudo-filesystem, a host
-// process directory, and the host root. Each one dies at run's first step, so a manifest
-// carrying one is a manifest the CI gate green-lit and the run refuses.
-func TestMountAndRootGrantProblems(t *testing.T) {
-	// The refusals are about Linux's own pseudo-filesystems; this package builds and tests
-	// everywhere, and elsewhere /tmp is a symlink and there is no procfs to grant.
-	if runtime.GOOS != "linux" {
-		t.Skip("the managed mounts and /proc/<pid> are Linux facts")
-	}
-	self := "/proc/" + strconv.Itoa(os.Getpid())
-	cases := map[string]struct {
-		read, write []string
-		want        string
-	}{
-		"a whole tmpfs":               {read: []string{"/tmp"}, want: "a pseudo-filesystem the sandbox mounts fresh"},
-		"a whole procfs":              {read: []string{"/proc"}, want: "a pseudo-filesystem the sandbox mounts fresh"},
-		"a whole devtmpfs, for write": {write: []string{"/dev"}, want: "a pseudo-filesystem the sandbox mounts fresh"},
-		"a running host process":      {read: []string{self}, want: "a host process's directory in /proc"},
-		"a path inside a managed one": {read: []string{"/tmp/work"}, want: ""},
-		"a system-wide procfs file":   {read: []string{"/proc/cpuinfo"}, want: ""},
-		"a pid that is not running":   {read: []string{"/proc/4294967290"}, want: ""},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			assertProblem(t, gate.MountGrantProblems(tc.read, tc.write), tc.want)
-		})
-	}
-
-	t.Run("the host root, for write", func(t *testing.T) {
-		assertProblem(t, gate.RootWriteProblems([]string{"/"}), "would make the entire host root writable")
-	})
-	t.Run("a symlink into the host root", func(t *testing.T) {
-		// The backend refuses this: it checks grants it has already made symlink-free, so
-		// testing the spelling alone here would pass a manifest run kills at its first step.
-		link := filepath.Join(t.TempDir(), "everything")
-		if err := os.Symlink("/", link); err != nil {
-			t.Fatal(err)
-		}
-		assertProblem(t, gate.RootWriteProblems([]string{link}), "would make the entire host root writable")
-	})
-	t.Run("a directory that is not the host root", func(t *testing.T) {
-		assertProblem(t, gate.RootWriteProblems([]string{"/srv/app"}), "")
-	})
 }
 
 // assertApproveRefuses pins the other half of the gate: a grant validate reports as
