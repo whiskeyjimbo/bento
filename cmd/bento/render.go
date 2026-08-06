@@ -1323,6 +1323,37 @@ func writeMissingReadNotes(w io.Writer, missing []string) {
 	}
 }
 
+// unshieldableRuntimeDir is the raw XDG_RUNTIME_DIR when the run's own anchors cannot
+// carry a shield to it, for the surfaces that say so before a script starts.
+//
+// The doctor paragraph is where an operator goes looking for this, but nobody runs doctor
+// before every run, and the degraded outcome is byte-identical to an ordinary host's
+// everywhere else: the same two rules, the same count, no refusal. So run and validate say
+// it too, at the altitude they say their other host-shaped notes.
+func unshieldableRuntimeDir() string {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		// No anchor to test against, which is already a refusal on every path that shields
+		// anything. Saying nothing here leaves that error to the surface that has it.
+		return ""
+	}
+	return denylist.UnshieldableRuntimeDir(anchors)
+}
+
+// writeRuntimeDirNote says on the way in what doctor says when asked: this host's runtime
+// directory - the container auth.json, the gpg-agent socket, the dbus and wayland sockets -
+// is outside every shield, so a broad grant hands it out.
+func writeRuntimeDirNote(w io.Writer) {
+	rd := unshieldableRuntimeDir()
+	if rd == "" {
+		return
+	}
+	fmt.Fprintf(w, "[bento] note: XDG_RUNTIME_DIR is %s, which no shield can follow (it is relative, or\n", strconv.Quote(rd))
+	fmt.Fprintln(w, "[bento] at or above a home anchor), so only /run and /var/run are shielded. A grant")
+	fmt.Fprintln(w, "[bento] reaching that directory hands out the sockets and tokens it holds. Point it")
+	fmt.Fprintln(w, "[bento] at an absolute path outside the home to shield it.")
+}
+
 // writeGuardBlockedWarning names the destinations the allowlist permitted but the
 // egress guard refused to dial, because the name resolved somewhere the sandbox must
 // not reach. The script saw only "could not reach", deliberately - telling it apart
@@ -1547,18 +1578,10 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")
 		fmt.Fprintf(w, "  them too, which is what a caller-chosen $HOME cannot move.\n")
 	}
-	// The runtime shield follows XDG_RUNTIME_DIR wherever it points, because a host that
-	// relocates it keeps the same contents there - the container auth.json, the gpg-agent
-	// socket, the dbus and wayland sockets. When the variable names a home or an ancestor
-	// of one, the shield would hide the whole grant surface, so it is dropped and only
-	// /run and /var/run remain. That leaves the real runtime directory readable under a
-	// broad grant, and the rule count alone reads exactly like an ordinary host's, so this
-	// is the only place an operator can learn it. Not a refusal: XDG_RUNTIME_DIR=$HOME is
-	// normal on the minimal containers bento is meant to run in.
-	if rd := denylist.RuntimeDir(); rd != "" && !denylist.Shieldable(rd, anchors) {
-		fmt.Fprintf(w, "  XDG_RUNTIME_DIR is %s, at or above an anchor, so only /run and /var/run are\n", strconv.Quote(rd))
-		fmt.Fprintf(w, "  shielded there - a grant reaching that directory hands out whatever sockets and\n")
-		fmt.Fprintf(w, "  tokens it holds. Point it at a directory outside the home to shield it.\n")
+	if rd := denylist.UnshieldableRuntimeDir(anchors); rd != "" {
+		fmt.Fprintf(w, "  XDG_RUNTIME_DIR is %s, which no shield can follow, so only /run and /var/run\n", strconv.Quote(rd))
+		fmt.Fprintf(w, "  are shielded - a grant reaching that directory hands out whatever sockets and\n")
+		fmt.Fprintf(w, "  tokens it holds. Point it at an absolute path outside the home to shield it.\n")
 	}
 	writeNestedAnchors(w, anchors)
 	writeRelocatedShields(w)

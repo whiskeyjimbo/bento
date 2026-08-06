@@ -391,6 +391,15 @@ func writeRunnability(w io.Writer, r runnability) {
 		fmt.Fprintf(w, "        Fine if the script creates it, or if the manifest is meant for another\n")
 		fmt.Fprintf(w, "        machine; otherwise it is a typo that will read as a permission bug.\n")
 	}
+	// A property of the host rather than of the manifest, said here because the grants
+	// above are what a reader is weighing and this is the one thing about the shields that
+	// a run's own output cannot show: the degraded rule set is identical to a healthy one.
+	if rd := unshieldableRuntimeDir(); rd != "" {
+		fmt.Fprintf(w, "  note: XDG_RUNTIME_DIR is %q on this host, which no shield can follow (it is\n", rd)
+		fmt.Fprintf(w, "        relative, or at or above a home anchor), so only /run and /var/run are\n")
+		fmt.Fprintf(w, "        shielded. A grant reaching that directory hands out the sockets and\n")
+		fmt.Fprintf(w, "        tokens it holds - point it at an absolute path outside the home.\n")
+	}
 }
 
 // strictRunnableError is the strict verdict on runnability, shared by the human and

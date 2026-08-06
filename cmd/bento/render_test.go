@@ -857,6 +857,35 @@ func TestWriteMissingReadNotes(t *testing.T) {
 	}
 }
 
+// A runtime directory outside every shield leaves the same two rules and the same count
+// as a healthy host, so nothing in a run's own output distinguishes it. The note is what
+// run and validate say instead - including for a RELATIVE value, where there is no
+// resolved path to report and the degraded branch is reached without the variable being
+// unset.
+func TestWriteRuntimeDirNote(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var b bytes.Buffer
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	writeRuntimeDirNote(&b)
+	if b.Len() != 0 {
+		t.Errorf("a shieldable runtime dir must print nothing; got %q", b.String())
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", "run/user/1000")
+	writeRuntimeDirNote(&b)
+	if out := b.String(); !strings.Contains(out, "run/user/1000") || !strings.Contains(out, "XDG_RUNTIME_DIR") {
+		t.Errorf("a relative runtime dir must be named in the note; got %q", out)
+	}
+
+	b.Reset()
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	writeRuntimeDirNote(&b)
+	if b.Len() != 0 {
+		t.Errorf("an unset runtime dir shields nothing and must say nothing; got %q", b.String())
+	}
+}
+
 // yz3.2: the warning names each opted-in credential path loudly, and stays silent when
 // the policy opted into none (the common run).
 func TestWriteShieldedGrantWarning(t *testing.T) {
@@ -993,7 +1022,7 @@ func TestWriteShieldAnchorsReportsAnUnshieldableRuntimeDir(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	b.Reset()
 	writeShieldAnchors(&b)
-	if out := b.String(); strings.Contains(out, "at or above an anchor") {
+	if out := b.String(); strings.Contains(out, "no shield can follow") {
 		t.Errorf("a shieldable runtime dir must not draw the unshieldable caveat; got %q", out)
 	}
 }
