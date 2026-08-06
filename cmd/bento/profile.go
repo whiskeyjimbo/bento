@@ -21,6 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -1715,82 +1716,36 @@ func isShell(interpreter string) bool {
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
 // shield goes.
 func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string, dropped []shieldGrant, writeShielded []string) {
-	// The same anchors the enforcer shields on, so the proposal is clamped against the
-	// shields the run will actually apply - a filter keyed on $HOME alone would skip a
-	// store the run then hides, and draft a manifest that dies at the shield refusal.
-	// The error means no anchor at all - not merely an unusable $HOME, which drops to the
-	// passwd home - so there are no shields to clamp against and the run this proposal
-	// feeds would be refused anyway.
-	anchors, err := denylist.HomeAnchors()
+	// The same set the enforcer applies and the gate predicts, so the proposal is clamped
+	// against the shields the run will actually raise. The error means no anchor at all -
+	// not merely an unusable $HOME, which drops to the passwd home - so there are no
+	// shields to clamp against and the run this proposal feeds would be refused anyway.
+	set, err := shieldSet()
 	if err != nil {
 		return reads, writes, nil, nil
 	}
-	// Each anchor is shielded in both its configured and its symlink-resolved form. A
-	// symlinked home (Fedora Silverblue's /home -> /var/home) means an observed
-	// credential path can arrive resolved (/var/home/u/.ssh, anchored at a resolved cwd)
-	// while $HOME is the unresolved /home/u, or the reverse; shielding against both
-	// forms drops the grant either way. It only ever adds matches, so a grant is never
-	// wrongly kept. Resolved through pathresolve, not EvalSymlinks, because the gate and
-	// the backend both answer this question that way: a not-yet-existing or dangling
-	// anchor resolves to where a write through it would land instead of failing, and an
-	// anchor that fails to resolve at all comes back raw.
-	homes := slices.Clone(anchors)
-	for _, h := range anchors {
-		if resolved := pathresolve.Existing(h); !slices.Contains(homes, resolved) {
-			homes = append(homes, resolved)
-		}
-	}
-	seenShield := map[string]bool{}
-	var shields []shieldGrant
-	addShields := func(rules []denylist.Rule) {
-		for _, r := range rules {
-			if r.Deny != denylist.DenyAll {
-				continue
-			}
-			// Both spellings, for the reason clampWriteShieldedGrants resolves its own
-			// rules: the observer records resolved paths and the enforcer compares
-			// against the shield's resolved path, so a symlinked store (~/.gnupg into a
-			// dotfiles checkout, which stow and home-manager both produce) is observed at
-			// its target. Matching the literal alone keeps that grant in the proposal and
-			// lets the run hard-refuse it - and the refusal's only remedy is a read of the
-			// whole store, so the proposal would steer the reviewer to a BROADER grant
-			// than the program needed. The drop is reported against the grant, so the
-			// extra entry only ever adds a match.
-			for _, p := range []string{r.Path, pathresolve.Existing(r.Path)} {
-				if !seenShield[p] {
-					seenShield[p] = true
-					shields = append(shields, shieldGrant{Path: p, Holds: r.Holds})
-				}
-			}
-		}
-	}
-	var home []denylist.Rule
-	for _, h := range homes {
-		home = append(home, denylist.Home(h)...)
-	}
-	addShields(home)
-	// Once over the whole anchor set, matching the backend's alwaysShields.
-	addShields(denylist.Relocated(home, homes))
-	// The runtime shields land at /run on an ordinary host, where the proposal never
-	// reaches them (isSystemPath drops /run outright). They are here for the host that
-	// parks XDG_RUNTIME_DIR under /tmp, which the proposal DOES reach: that directory
-	// holds the gpg-agent, dbus, and wayland sockets and the podman auth.json, and a
-	// grant naming one is refused at run time - so proposing it drafts a manifest that
-	// cannot be approved into a working run.
-	addShields(denylist.Runtime(denylist.RuntimeDir(), homes...))
-	// The shield's own classification travels with the drop: the warning names what the
-	// path holds, and a grant inside a shield is described by the shield it fell into.
-	inShield := func(g string) (denylist.Holds, bool) {
-		for _, s := range shields {
-			if g == s.Path || policy.CoversResolved(s.Path, g) {
-				return s.Holds, true
+	// Two departures from what the run does, both deliberate and both in the direction of
+	// a narrower proposal. A read that names a shield exactly is honored at run time as a
+	// warned opt-in, and is still withheld here: an opt-in is a line a reviewer adds by
+	// hand after reading the warning, not one a draft manifest arrives holding. And the
+	// grant is judged where it LANDS as well as where it is spelled, because the observer
+	// records resolved paths while the manifest may name the link.
+	//
+	// Asked as a READ even for the write grants, which is what leaves the above-shield
+	// refusal to clampWriteShieldedGrants' own reasoning rather than dropping every grant
+	// that encloses a shield.
+	drop := func(g string) (denylist.Holds, bool) {
+		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+			r, v := set.Contains(spelling, shield.Read, nil, nil)
+			if v != shield.Honored {
+				return r.Holds, true
 			}
 		}
 		return denylist.HoldsUnknown, false
 	}
 	filter := func(grants []string) (kept []string) {
 		for _, g := range grants {
-			if holds, ok := inShield(g); ok {
+			if holds, ok := drop(g); ok {
 				dropped = append(dropped, shieldGrant{Path: g, Holds: holds})
 			} else {
 				kept = append(kept, g)
@@ -1799,7 +1754,7 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 		return kept
 	}
 	keptReads = filter(reads)
-	keptWrites, writeShielded = clampWriteShieldedGrants(homes, filter(writes))
+	keptWrites, writeShielded = clampWriteShieldedGrants(set, filter(writes))
 	return keptReads, keptWrites, dropped, writeShielded
 }
 
@@ -1811,40 +1766,16 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 //
 // Unlike clampShieldedGrants this is not merely a proposal-quality filter - it is what
 // keeps the profiler's output and the enforcer's refusal from disagreeing.
-func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
-	seen := map[string]bool{}
-	var shields []string
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			shields = append(shields, p)
-		}
-	}
-	var home []denylist.Rule
-	for _, h := range homes {
-		home = append(home, denylist.Home(h)...)
-	}
-	// The relocated rules carry DenyWrite entries of their own (ZDOTDIR's startup group,
-	// GIT_CONFIG_GLOBAL), which the enforced run refuses a write over just the same.
-	for _, rules := range [][]denylist.Rule{home, denylist.Relocated(home, homes)} {
-		for _, r := range rules {
-			if r.Deny != denylist.DenyWrite {
-				continue
-			}
-			add(r.Path)
-			// The enforcer compares against the shield's RESOLVED path, and the observer
-			// records resolved paths, so a symlinked shield (~/.local/bin or ~/.bashrc
-			// pointing into a dotfiles repo or the nix store, which home-manager and stow
-			// both produce) is observed at its target. Matching only the literal path
-			// would keep that write in the proposal and let compile refuse it - the
-			// disagreement this clamp exists to prevent.
-			add(pathresolve.Existing(r.Path))
-		}
-	}
+//
+// A grant that merely CONTAINS a shield is kept, which the run refuses: the enforced run
+// re-shields the interior, and dropping every enclosing grant would take the ordinary
+// "write: the project directory" proposal with it. foreignHomeShields reports the case
+// where that reasoning does not hold.
+func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []string) {
 	for _, g := range writes {
 		shielded := false
-		for _, s := range shields {
-			if g == s || policy.CoversResolved(s, g) {
+		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+			if _, v := set.Contains(spelling, shield.Write, nil, nil); v == shield.UnderWriteShield {
 				shielded = true
 				break
 			}
