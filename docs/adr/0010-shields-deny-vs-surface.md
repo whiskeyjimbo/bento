@@ -52,6 +52,13 @@ allow check entirely, and that is covered only because `.config/direnv` is
 write-denied at `denylist.go:684`. Without this rule a category-1 shield looks
 bounded and is not.
 
+The rule is demanding enough that the worked example does not yet satisfy it:
+`DIRENV_CONFIG` relocates the config directory holding that `[whitelist]`, and it
+is not in `dirEnvs` (`denylist.go:1444`). `homeLocations` covers the
+`XDG_CONFIG_HOME` move; the tool-specific variable is the gap. So a category-1
+shield is three things, not two - the record, the config that bypasses it, and
+every variable that relocates either. Filed separately.
+
 **2. Deny the surface, where there is no record and the agent never legitimately
 edits it.** `.git/hooks`, `.git/config`, `.git/config.worktree`, `.vscode`,
 `.idea`. This is what `denylist.Workspace` and `gitDirShields` already are.
@@ -67,21 +74,32 @@ on: a gap in a report is a missed hint, a gap in a fence is a silent hole.
 
 ## Audit Result
 
-Running the b28a tool list against category 1 first, which was the point of doing
+Running the toolchain list against category 1 first, which was the point of doing
 this before writing any new rules:
 
-* **pre-commit** - the entry point is `.git/hooks/pre-commit`, already shielded by
-  `denylist.Workspace`. `.pre-commit-config.yaml` cannot execute without a writable
-  hook. No new rule. (One genuine gap found beside it: `~/.cache/pre-commit` holds
-  cloned hook repos that the host executes at the next commit, and it is not
-  shielded. Category 2, home-anchored, filed separately.)
-* **husky** - `core.hooksPath` lives in `.git/config`, shielded, so a run cannot
-  newly redirect hooks. An already-installed `.husky/pre-commit` is a tracked
-  in-tree project file: category 3, and the same residual `gitDirShields` already
-  documents.
-* **npm/yarn/pnpm** - `ignore-scripts=false` is the default, so a workspace
-  `.npmrc` grants nothing that is not already on. `~/.npmrc` is `DenyAll` for its
-  tokens. `package.json` lifecycle scripts are category 3.
+* **pre-commit** - no approval record. The installed `.git/hooks/pre-commit` is
+  shielded by `denylist.Workspace`, but that hook only execs `pre-commit hook-impl`,
+  which reads `.pre-commit-config.yaml` **at commit time**. On the ordinary host
+  where the developer already installed the hook, an agent adding a `repo: local`
+  entry with an arbitrary `entry:` runs on the host at the next commit having
+  written no hook at all. `.pre-commit-config.yaml` is the `package.json` shape
+  exactly: category 3. (Separate gap beside it: `~/.cache/pre-commit` holds cloned
+  hook repos the host executes at the next commit, and is not shielded. Category 2,
+  home-anchored, filed separately.)
+* **husky** - `core.hooksPath` is read from `.git/config` *and* from per-worktree
+  `config.worktree` and submodule gitdir configs, all of which are now shielded
+  unconditionally, so a run cannot newly redirect hooks. An already-installed
+  `.husky/pre-commit` is a tracked in-tree project file: category 3, and the same
+  residual `gitDirShields` already documents.
+* **npm/yarn/pnpm** - no approval record, and `ignore-scripts` is beside the point:
+  the execution surfaces here are not only lifecycle scripts. `.pnpmfile.cjs` is
+  executed by pnpm on every install and `ignore-scripts` does not disable it;
+  `yarn-path` (classic `.yarnrc`) and `yarnPath` (`.yarnrc.yml`) name an in-tree
+  binary yarn execs on *any* invocation - and `~/.yarnrc` is shielded
+  (`denylist.go:607`) while the workspace one is not; a workspace `.npmrc`
+  `registry=` redirect routes execution through a dependency's install script.
+  `~/.npmrc` is `DenyAll` for its tokens. All category 3 (agents edit these), with
+  the workspace `.yarnrc`/`.pnpmfile.cjs` asymmetry filed separately.
 * **cargo** - `~/.cargo/config.toml` is already denied (`denylist.go:594`). A
   workspace `.cargo/config.toml` (`runner`, `rustflags`, `[target]` linker) has no
   approval record and is the one plausible new category-2 entry. `build.rs` is
@@ -91,16 +109,28 @@ this before writing any new rules:
 * **eslint/prettier** - flat config and plugin resolution out of `node_modules` by
   design. Category 3, both.
 * **direnv** - category 1, already covered.
+* **go** - no record. `~/.config/go/env` is not shielded, and `go env -w
+  GOFLAGS=-toolexec=...` makes every subsequent host `go build` exec an arbitrary
+  binary. Category 2, home-anchored, filed separately.
+* **maven/gradle** - no record. `.mvn/extensions.xml`, `.mvn/jvm.config` and the
+  wrapper's `distributionUrl` all execute on the next `./mvnw` or `./gradlew` with
+  no script involved. Category 3.
 
-So category 1 is exhausted at two entries: direnv's allow record and bento's own
-journal. No other tool in the list keeps a host-side approval record to shield.
-Category 2 gains at most one workspace entry and one home entry. Everything else
-is category 3.
+Category 1 is small, but "exhausted at two entries" would be too strong. Four are
+known: direnv's allow record, bento's own journal, VS Code's workspace trust store
+(which gates `.vscode/tasks.json` auto-run and is covered incidentally by the
+`.config/Code` write-deny at `denylist.go:705`), and mise's trust record for
+in-tree `mise.toml` - the direnv shape exactly, and the one that is *not* covered,
+since only `.local/share/mise/shims` is shielded (`denylist.go:860`). The useful
+claim is the weaker one: **no tool audited keeps an unshielded
+approval record except mise**, and category 1 does not scale with the ecosystem
+the way the per-tool surface list would.
 
 That is the direct answer to "this feels like it just adds stuff all the time":
 the deny list grows only where no authorization record exists and the agent never
-legitimately edits the surface, and both of those are now nearly exhausted. The
-growth moves to the report, where being incomplete is cheap.
+legitimately edits the surface. Category 2 gains a handful of entries (workspace
+`.cargo/config.toml`, `~/.cache/pre-commit`, `~/.config/go/env`) and category 1
+one (mise). Everything else moves to the report, where being incomplete is cheap.
 
 ## Considered and Rejected
 
@@ -116,9 +146,17 @@ enough to hang a fence on.
 
 ## Consequences
 
-* b28a is not a port of the git pattern and is now small: one workspace
-  `.cargo/config.toml` rule, one `~/.cache/pre-commit` rule, and the rest routed to
-  the report.
+* The expansion work is not a port of the git pattern: a handful of rules (workspace
+  `.cargo/config.toml`, `~/.cache/pre-commit`, `~/.config/go/env`, mise's trust
+  record) rather than a per-tool surface list, with the rest routed to the report.
+* Applying the criterion to the existing rules found one hole and closed it here:
+  `gitDirShields` gated `config.worktree` on the file already existing, while
+  emitting `config` and `hooks` unconditionally and while `denylist.Workspace`
+  shields the top-level `config.worktree` unconditionally. The reasoning for the
+  gate - that an absent `config.worktree` is inert because the run cannot enable
+  `extensions.worktreeConfig` - does not hold on a repo that already has it on,
+  where a planted `config.worktree` with `core.hooksPath` redirects the next commit
+  in that worktree. Now emitted unconditionally, like its siblings.
 * The category-3 report is a new mechanism. `internal/observe` is ptrace-based and
   profiler-only, so an enforcing run has no post-run change detection today. Filed
   separately; it does not block the category-1 and category-2 work.
