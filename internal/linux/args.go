@@ -1541,11 +1541,6 @@ func isProcessPath(path string) bool {
 	return strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
-// underAny reports whether a resolved path sits inside one of the given directories.
-func underAny(path string, dirs []string) bool {
-	return slices.ContainsFunc(dirs, func(d string) bool { return policy.CoversResolved(d, path) })
-}
-
 // reachable reports whether a grant could expose path - either because a grant
 // contains it, or because it contains a grant.
 func reachable(path string, grants []string) bool {
