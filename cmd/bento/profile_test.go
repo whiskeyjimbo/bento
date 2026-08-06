@@ -1440,7 +1440,7 @@ func TestConfirmNetworkExfil(t *testing.T) {
 	} {
 		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
 			var buf strings.Builder
-			err := confirmNetworkExfil(strings.NewReader(tc.answer), &buf)
+			err := confirmNetworkExfil(t.Context(), ttyLines(strings.NewReader(tc.answer)), &buf)
 			if proceeded := err == nil; proceeded != tc.proceeds {
 				t.Errorf("answer %q proceeded = %v, want %v (err %v)", tc.answer, proceeded, tc.proceeds, err)
 			}

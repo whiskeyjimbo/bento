@@ -188,8 +188,9 @@ func newProfileCmd() *cobra.Command {
 				cfg.targetStdin = nil // the human answers prompts on the tty; the target gets no interactive stdin
 				tty, closeTTY := openTTY()
 				defer closeTTY()
+				answers := ttyLines(tty)
 				if allowNetwork {
-					if err := confirmNetworkExfil(tty, os.Stderr); err != nil {
+					if err := confirmNetworkExfil(cmd.Context(), answers, os.Stderr); err != nil {
 						return refuse(err)
 					}
 				}
@@ -209,7 +210,7 @@ func newProfileCmd() *cobra.Command {
 					status.flagged = mergeNotes(status.flagged, s.flagged)
 					return p, err
 				}
-				proposed, stop, err = converge(base, seed, round, newGrantPrompter(tty, os.Stderr), foreignShielded, os.Stderr)
+				proposed, stop, err = converge(base, seed, round, newGrantPrompter(cmd.Context(), answers, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
 				// one default-deny pass and write, plus at most the one retry below. A
@@ -1468,8 +1469,7 @@ const (
 // newGrantPrompter reads one single-line answer per call from in, mapping it to a
 // grant choice. EOF returns grantQuit so a closed input ends the loop rather than
 // erroring or looping forever.
-func newGrantPrompter(in io.Reader, out io.Writer) func(kind, path string) (grantChoice, error) {
-	r := bufio.NewReader(in)
+func newGrantPrompter(ctx context.Context, lines <-chan string, out io.Writer) func(kind, path string) (grantChoice, error) {
 	return func(kind, path string) (grantChoice, error) {
 		// exec carries no path, so it is named by what it permits rather than left with
 		// a dangling argument.
@@ -1477,9 +1477,14 @@ func newGrantPrompter(in io.Reader, out io.Writer) func(kind, path string) (gran
 		if path == "" {
 			what = kind + " (let the target spawn subprocesses)"
 		}
-		fmt.Fprintf(out, "[bento]   grant %s? [y]es / [n]o / [a]ll / [q]uit > ", what)
-		line, err := r.ReadString('\n')
-		if err != nil && line == "" {
+		line, ok := askLine(ctx, lines, out, fmt.Sprintf("[bento]   grant %s? [y]es / [n]o / [a]ll / [q]uit > ", what))
+		if !ok {
+			// Cancelled, not answered: quit would write the proposal as a session the user
+			// ended deliberately, where a Ctrl-C must leave no manifest behind - which is
+			// what the non-interactive path does with the same cancellation.
+			if err := ctx.Err(); err != nil {
+				return grantNo, err
+			}
 			return grantQuit, nil
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
@@ -1498,11 +1503,13 @@ func newGrantPrompter(in io.Reader, out io.Writer) func(kind, path string) (gran
 // confirmNetworkExfil warns that --allow-network forwards egress while real granted
 // content is mounted - a compromised target could exfiltrate the credentials being
 // granted - and refuses the run unless the user confirms.
-func confirmNetworkExfil(in io.Reader, out io.Writer) error {
+func confirmNetworkExfil(ctx context.Context, lines <-chan string, out io.Writer) error {
 	fmt.Fprintln(out, "[bento] WARNING: --allow-network forwards the target's egress WHILE the content you grant is")
 	fmt.Fprintln(out, "[bento] mounted with real data. A compromised target could exfiltrate those credentials.")
-	fmt.Fprint(out, "[bento] Continue with network forwarding? [y/N] > ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	line, ok := askLine(ctx, lines, out, "[bento] Continue with network forwarding? [y/N] > ")
+	if !ok && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return nil
@@ -1522,6 +1529,49 @@ func interactiveStdin() bool {
 // separate from the target's own stdin, and a cleanup to release it. It falls back to
 // os.Stdin where /dev/tty is unavailable; the cleanup is a no-op there, because closing
 // that reader would close the process's stdin rather than a handle this opened.
+// ttyLines reads the terminal a line at a time on its own goroutine, so a prompt can
+// give up on an answer that is not coming. A read of /dev/tty is not interruptible and
+// the CLI's SIGINT handler is released after the first Ctrl-C, so a prompt parked in
+// Read would sit there looking like bento ignored it until a second Ctrl-C killed the
+// process. One channel serves every prompt of a session: a second reader over the same
+// terminal would hold a line the first had already buffered past.
+//
+// The goroutine leaks when the session ends with the reader still blocked, which is
+// fine - there is one per run and the process is on its way out.
+func ttyLines(in io.Reader) <-chan string {
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		r := bufio.NewReader(in)
+		for {
+			// A final line with no trailing newline is still an answer; only an empty read
+			// ends the stream.
+			line, err := r.ReadString('\n')
+			if line != "" {
+				lines <- line
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return lines
+}
+
+// askLine prints a prompt and waits for one answer, reporting false when none can come:
+// the terminal closed, or the run was cancelled - which the caller tells apart by
+// ctx.Err(), because the two mean different things for what gets written.
+func askLine(ctx context.Context, lines <-chan string, out io.Writer, prompt string) (string, bool) {
+	fmt.Fprint(out, prompt)
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(out)
+		return "", false
+	case line, ok := <-lines:
+		return line, ok
+	}
+}
+
 func openTTY() (io.Reader, func()) {
 	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
 		return f, func() { f.Close() }
