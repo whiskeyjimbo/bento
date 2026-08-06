@@ -1098,11 +1098,18 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// the enforced run then answers ENOENT where the profiling run answered EACCES - a
 	// different branch in the target, off a manifest that reported no loss.
 	//
-	// EFAULT and ENAMETOOLONG say the kernel could not take the pathname either, so there
-	// is no access to record and none to count: those name no file the run needs.
+	// The rest of the skip set is the answers the kernel gives without looking at the path
+	// at all, which say nothing either way and so must not widen the manifest. EFAULT and
+	// ENAMETOOLONG mean the pathname itself never got taken. ENOSYS is a seccomp policy
+	// (or a kernel too old) refusing the call before it runs, which is exactly how glibc
+	// probes faccessat2 before falling back - and the fallback call gets a real answer of
+	// its own. EBADF is a dirfd that names nothing, so no path was resolved against it;
+	// an absolute pathname ignores the dirfd and cannot answer EBADF, so skipping it
+	// hides no real file.
 	if ret := int64(regs.Rax); ret < 0 {
 		switch syscall.Errno(-ret) {
-		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG:
+		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG,
+			syscall.ENOSYS, syscall.EBADF:
 			return
 		}
 	} else {
