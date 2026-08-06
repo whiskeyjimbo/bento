@@ -2,9 +2,15 @@ package observe
 
 import (
 	"debug/elf"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // execImageChain names the files the KERNEL opens on the tracee's behalf when it execs
@@ -18,7 +24,7 @@ import (
 // The chain is walked rather than resolved once because the kernel walks it: a script
 // names /bin/sh, whose own exec then wants /lib64/ld-linux-x86-64.so.2. It ends at the
 // loader, which is statically linked and names no interpreter of its own; the depth bound
-// is a backstop against a #! cycle, which the kernel refuses at 4 anyway.
+// is a backstop against a #! cycle, and matches what the kernel itself will run.
 //
 // This is deliberately NOT profile.GuessInterpreter. That answers "which interpreter
 // should bento invoke", and for `#!/usr/bin/env python3` it answers python3 - correct for
@@ -31,7 +37,9 @@ import (
 // directory, which this does not track). The caller counts that as a dropped observation,
 // because an incomplete manifest that says so beats one that reads as complete.
 func execImageChain(path string) (paths []string, complete bool) {
-	for range 4 {
+	// Six: the kernel's BINPRM_MAX_RECURSION allows four nested scripts, and the binary
+	// they reach plus its loader are two more opens.
+	for range 6 {
 		next, ok := execImage(path)
 		if !ok {
 			return paths, false
@@ -48,20 +56,35 @@ func execImageChain(path string) (paths []string, complete bool) {
 }
 
 // execImage names the one file the kernel opens to run path, or "" when path is its own
-// image - a static binary, or anything unreadable, which is an exec that fails rather
-// than an observation lost.
+// image - a static binary, or a path the exec will fail on too.
+//
+// Only ENOENT and ENOTDIR mean the latter: the exec answers the same and there is nothing
+// to record. Every other error means the observer could not see what the kernel will,
+// which is a lost observation and not a file that is not needed. EACCES is the case that
+// matters - the kernel execs a mode-0111 binary the observer cannot read - and reporting
+// it complete would put the loader back out of the manifest with Dropped at 0, which is
+// the failure this file exists to stop.
 func execImage(path string) (string, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", true
+		return "", errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 	}
 	defer f.Close()
 
+	// One short read is enough for either decision: the kernel reads the shebang out of a
+	// buffer of this size itself, and an ELF's program headers are found through the header
+	// this leaves to debug/elf.
 	var buf [256]byte
-	n, _ := f.Read(buf[:])
+	n, _ := io.ReadFull(f, buf[:])
 	head := string(buf[:n])
 	if interp, ok := strings.CutPrefix(head, "#!"); ok {
-		line, _, _ := strings.Cut(interp, "\n")
+		line, _, found := strings.Cut(interp, "\n")
+		if !found {
+			// The kernel refuses a shebang whose line does not end inside its own buffer
+			// (ENOEXEC), and a truncated one here would name a path it never opened - so
+			// this is unreadable rather than absent.
+			return "", false
+		}
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			return "", true
@@ -75,11 +98,18 @@ func execImage(path string) (string, bool) {
 	}
 	e, err := elf.NewFile(f)
 	if err != nil {
+		// Not an ELF the observer can parse, and not a script: nothing names an image.
 		return "", true
 	}
 	for _, p := range e.Progs {
 		if p.Type != elf.PT_INTERP {
 			continue
+		}
+		// PT_INTERP holds a pathname, and Filesz comes straight out of the file - an ELF
+		// the profiled target execs is not trusted input, and an unbounded make() here
+		// would let one kill the observer rather than be recorded by it.
+		if p.Filesz > unix.PathMax {
+			return "", false
 		}
 		name := make([]byte, p.Filesz)
 		if _, err := p.ReadAt(name, 0); err != nil {
