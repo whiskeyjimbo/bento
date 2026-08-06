@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -51,7 +53,7 @@ func noRisky(string) bool { return false }
 func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 	// One prompt per new path: config in round 1, data in round 2. Round 3 sees both
 	// granted and nothing new, so it converges without prompting.
-	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\n")), io.Discard)
 	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
@@ -77,7 +79,7 @@ func TestConvergeDeclineNeverMountsOrReveals(t *testing.T) {
 	// mounts the declined config, so the branching target never reveals dataPath and the
 	// "y" is never consumed. A broken converge that mounts a declined path would reveal
 	// dataPath, prompt it, and the "y" would accept it, failing the assertions below.
-	prompt := newGrantPrompter(strings.NewReader("n\ny\n"), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("n\ny\n")), io.Discard)
 	final, _, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
@@ -120,7 +122,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 // the downstream path behind an unaccepted config is not revealed.
 func TestConvergeQuitKeepsAcceptedSoFar(t *testing.T) {
 	// A round-1 prompt: quit before accepting anything.
-	prompt := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("q\n")), io.Discard)
 	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
@@ -160,13 +162,34 @@ func TestGrantPrompterParsing(t *testing.T) {
 		"": grantQuit, // EOF with no line
 	}
 	for in, want := range cases {
-		got, err := newGrantPrompter(strings.NewReader(in), io.Discard)("read", "/p")
+		got, err := newGrantPrompter(t.Context(), ttyLines(strings.NewReader(in)), io.Discard)("read", "/p")
 		if err != nil {
 			t.Errorf("%q: unexpected error %v", in, err)
 		}
 		if got != want {
 			t.Errorf("answer %q -> %v, want %v", in, got, want)
 		}
+	}
+}
+
+// Ctrl-C at a prompt ends the session with the cancellation, not with the [q]uit
+// answer: quit writes the proposal the session reached, and a cancelled run must leave
+// no manifest behind - the same thing the non-interactive path does. A nil channel is
+// the prompt parked on a terminal nobody is typing at, which is where a Ctrl-C finds it.
+func TestPromptsReportCancellationRatherThanQuit(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var parked chan string
+
+	got, err := newGrantPrompter(ctx, parked, io.Discard)("read", "/p")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled grant prompt returned (%v, %v), want a context.Canceled error", got, err)
+	}
+	if got == grantQuit {
+		t.Error("a cancelled prompt answered quit, which writes the manifest")
+	}
+	if err := confirmNetworkExfil(ctx, parked, io.Discard); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled exfil confirmation returned %v, want a context.Canceled error", err)
 	}
 }
 
@@ -397,7 +420,7 @@ func TestConvergeExecNeedsConsent(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			prompt := newGrantPrompter(strings.NewReader(tc.answers), io.Discard)
+			prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader(tc.answers)), io.Discard)
 			final, _, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
 			if err != nil {
 				t.Fatalf("converge: %v", err)
@@ -415,7 +438,7 @@ func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
 	seed := &policy.Policy{Read: []string{cfgPath}, Exec: policy.ExecAll}
 	// An empty prompt input returns grantQuit on EOF, so any prompt at all would end
 	// the loop before it converged - the tripwire that exec was not re-asked.
-	prompt := newGrantPrompter(strings.NewReader(""), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("")), io.Discard)
 	final, _, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
@@ -454,12 +477,12 @@ func TestMergeExecRespectsTheSessionAnswer(t *testing.T) {
 // from a session the user never finished rather than let `profile && approve` stamp it.
 // A quit and a hit round cap are both "not converged".
 func TestConvergeReportsWhyItStopped(t *testing.T) {
-	prompt := newGrantPrompter(strings.NewReader("y\ny\ny\n"), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\ny\n")), io.Discard)
 	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard); err != nil || stop != convergeDone {
 		t.Errorf("a converged session: stop = %v, err = %v; want convergeDone", stop, err)
 	}
 
-	quitting := newGrantPrompter(strings.NewReader("q\n"), io.Discard)
+	quitting := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("q\n")), io.Discard)
 	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, quitting, noRisky, io.Discard); err != nil || stop != convergeQuit {
 		t.Errorf("a quit session: stop = %v, err = %v; want convergeQuit", stop, err)
 	}
@@ -512,7 +535,7 @@ func TestConvergeRunsEveryRoundUnderTheBasesInvocation(t *testing.T) {
 		ran = append(ran, *d)
 		return branchingRound(d)
 	}
-	prompt := newGrantPrompter(strings.NewReader("y\ny\n"), io.Discard)
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\n")), io.Discard)
 	if _, _, err := converge(base, nil, capturing, prompt, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
