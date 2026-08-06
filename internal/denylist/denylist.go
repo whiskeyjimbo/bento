@@ -19,6 +19,17 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
+// ManagedMounts are the pseudo-filesystems the sandbox mounts fresh for every run: a
+// hardened procfs, a minimal devtmpfs, and a tmpfs, plus the fresh tmpfs (/dev/shm) and
+// devpts (/dev/pts) that bwrap's --dev sets up implicitly underneath /dev. A grant
+// naming one of these whole would --ro-bind the host's version over the sandbox's (bwrap
+// applies mounts in argv order, last wins), re-exposing host /proc/<pid>/environ, the
+// full host device set, or other processes' shared-memory or temp files.
+//
+// Data rather than a backend detail because both the run and the CI gate that predicts
+// it have to agree on the set, and they are compiled for different platforms.
+var ManagedMounts = []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"}
+
 // Deny is how completely a rule shields its path.
 type Deny int
 

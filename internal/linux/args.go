@@ -420,17 +420,6 @@ func execBlockFlags(execMode policy.ExecMode, seccompOK bool) (block, strict boo
 // or Landlock will deny a write bwrap permits.
 var sandboxWritableMounts = []string{"/tmp", "/dev", "/proc"}
 
-// baseFlagsPseudoFS are the pseudo-filesystems baseFlags mounts fresh for every
-// sandbox: a hardened procfs, a minimal devtmpfs, and a tmpfs, plus the fresh
-// tmpfs (/dev/shm) and devpts (/dev/pts) that bwrap's --dev sets up implicitly
-// underneath /dev. A grant naming one of these whole would --ro-bind the host's
-// version over the sandbox's (bwrap applies mounts in argv order, last wins),
-// re-exposing host /proc/<pid>/environ, the full host device set, or other
-// processes' shared-memory or temp files. hostRootDirs excludes the top-level
-// entries from a read:/ expansion for exactly this reason; a direct grant of any
-// is refused by checkGrantNotManagedMount.
-var baseFlagsPseudoFS = []string{"/proc", "/dev", "/dev/shm", "/dev/pts", "/tmp"}
-
 // namespaceFlags are the namespace unshares and the capability-bounding-set drop that
 // the real run (baseFlags) and the pre-run probe (canUnshare) MUST exercise identically.
 // A host that permits some of these but rejects one - most plausibly --unshare-cgroup on
@@ -1594,7 +1583,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 // write with nothing above it.
 func checkWriteNotRoot(writes []string) error {
 	if slices.Contains(writes, "/") {
-		return fmt.Errorf("write grant \"/\" would make the entire host root writable; grant a specific directory")
+		return grantrefusal.WriteIsRoot()
 	}
 	return nil
 }
@@ -1659,7 +1648,7 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 			return err
 		}
 		if isProcessPath(real) && sb.exists(real) {
-			return fmt.Errorf("grant %q resolves to %q, a host process's directory in /proc; the sandbox has a pid namespace and a /proc of its own, where that pid is a different process or none at all; remove the grant - /proc is always mounted", g, real)
+			return grantrefusal.GrantIsProcess(g, real)
 		}
 	}
 	return nil
@@ -1678,9 +1667,9 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 		if err != nil {
 			return err
 		}
-		for _, m := range baseFlagsPseudoFS {
+		for _, m := range denylist.ManagedMounts {
 			if real == m {
-				return fmt.Errorf("grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", g, real, m, m)
+				return grantrefusal.GrantIsManagedMount(g, real, m)
 			}
 		}
 	}
@@ -2064,7 +2053,7 @@ func hostRootDirs() ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if slices.Contains(baseFlagsPseudoFS, "/"+e.Name()) {
+		if slices.Contains(denylist.ManagedMounts, "/"+e.Name()) {
 			continue
 		}
 		out = append(out, "/"+e.Name())
