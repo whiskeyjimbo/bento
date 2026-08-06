@@ -930,6 +930,13 @@ func Home(home string) []Rule {
 		// a supported shape, see the Linux backend's interpreter re-bind), and a DenyWrite
 		// shield has no opt-in - taking the tree would refuse that grant outright.
 		//
+		// Sparing the prefix keeps the interpreter re-bind working; it does not make
+		// installing in-sandbox clean. A shimming manager writes the shim on every install,
+		// so it meets the shield: against mise 2026.7.18, `mise install` lands the artifact
+		// under installs/ and a later `mise x` works, but it prints `Permission denied (os
+		// error 13)` and exits 1, and `mise reshim` fails outright. Same trade as .nvm and
+		// .rustup, arrived at from the other direction - run the installs outside bento.
+		//
 		// Not expressible as concrete paths, so left as a residual: sdkman's
 		// ~/.sdkman/candidates/*/current/bin and opam's non-default switches, both of which
 		// carry a name chosen at install time.
@@ -1716,6 +1723,8 @@ var dirFileEnvs = []struct{ env, def, file string }{
 // sub is the shielded subdirectory of the relocated base, empty where the base is the
 // shielded directory itself. Only MISE_DATA_DIR needs it: the data tree carries the
 // interpreter installs a policy may legitimately write, and only shims/ is shielded.
+// Sparing the installs does not make `mise install` succeed in-sandbox - see the shim
+// directories above - and following the relocation widens who meets that.
 var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// direnv.toml's [whitelist] skips the allow check the ~/.local/share/direnv/allow
 	// shield rests on, so relocating the config directory disarms both.
