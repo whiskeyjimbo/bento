@@ -20,8 +20,9 @@
 package shield
 
 import (
-	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"os"
+
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 )
 
 // FS is the host as the shield logic needs to see it. Narrow by construction: a seam wide
