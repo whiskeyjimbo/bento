@@ -108,8 +108,9 @@ func Check(resolved *policy.Policy) Runnability {
 // error: a run there is refused for that same reason, so failing here would only rename
 // it. Callers that need to distinguish the two ask ShieldSet, which reports the error.
 func Refusals(resolved *policy.Policy) []string {
-	shieldedReads, _ := ShieldedReadProblems(resolved.Read)
-	shieldedWrites, _ := ShieldedWriteProblems(resolved.Write)
+	set, _ := ShieldSet()
+	shieldedReads := ShieldedReadProblems(set, resolved.Read)
+	shieldedWrites := ShieldedWriteProblems(set, resolved.Write)
 	problems := append(shieldedReads, shieldedWrites...)
 	problems = append(problems, LoopedGrantProblems(resolved.Read, resolved.Write)...)
 	problems = append(problems, FileWriteGrantProblems(resolved.Write)...)
@@ -259,6 +260,11 @@ func ShieldSet() (shield.Set, error) {
 // passes over in silence, leaving the refusal to land at the run's first step on a
 // manifest the CI gate green-lit.
 //
+// The set is the caller's, from ShieldSet - which is where the one error either of these
+// could raise stays, asked once by a caller that already needs it for the rest of its
+// answer. A zero set refuses nothing, which is what a host with no anchors deserves: a run
+// there is refused for that same reason.
+//
 // Between them they ask shield.Set.Contains, the same question the run asks, so the three
 // refusals arrive in the order and the wording a run would have printed - a grant that
 // trips more than one (a write naming a shield exactly is both inside it and above it) is
@@ -287,11 +293,7 @@ func ShieldSet() (shield.Set, error) {
 // all: those shields are derived per write grant from the checkout under it, which is
 // state the gate would have to walk the grant to reconstruct, and the refusal is about a
 // symlink on this host rather than anything the manifest says.
-func ShieldedReadProblems(reads []string) ([]string, error) {
-	set, err := ShieldSet()
-	if err != nil {
-		return nil, err
-	}
+func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
 	for _, g := range reads {
@@ -303,14 +305,10 @@ func ShieldedReadProblems(reads []string) ([]string, error) {
 			problems = append(problems, refuse(g, r.Path).Error())
 		}
 	}
-	return problems, nil
+	return problems
 }
 
-func ShieldedWriteProblems(writes []string) ([]string, error) {
-	set, err := ShieldSet()
-	if err != nil {
-		return nil, err
-	}
+func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 	var problems []string
 	for _, g := range writes {
 		// Skipped for the reason the backend skips it: a write of "/" is refused by
@@ -323,7 +321,7 @@ func ShieldedWriteProblems(writes []string) ([]string, error) {
 			problems = append(problems, p)
 		}
 	}
-	return problems, nil
+	return problems
 }
 
 // MissingReads returns the already-resolved read grants naming nothing on this
@@ -390,6 +388,12 @@ func writeShieldProblem(set shield.Set, g string) (string, bool) {
 		return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
 	case shield.FoldedShield:
 		return grantrefusal.FoldedShield(g, r.Path).Error(), true
+	case shield.Honored:
+		return "", false
 	}
-	return "", false
+	// Only Honored means no problem. A verdict added to shield and not named above is a
+	// refusal the run raises, and reporting none green-lights a manifest that dies at its
+	// first step - so it is reported in the nearest sentence instead, which can be wrong
+	// about the remedy where silence would be wrong about the outcome.
+	return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
 }

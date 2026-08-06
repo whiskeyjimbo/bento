@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/gate"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 )
 
@@ -26,15 +28,16 @@ import (
 func gateVerdict(t *testing.T, c shieldcorpus.Case, home string) shieldcorpus.Verdict {
 	t.Helper()
 	g := c.Path(home)
+	// The set is assembled here rather than taken from gate.ShieldSet so the case's mount
+	// reaches the gate at all: folding is a property of the filesystem seam, and ShieldSet
+	// builds the real host's. Everything else about it is what ShieldSet would have built,
+	// off the same anchors the corpus home gives it.
+	set := shield.Assemble(shieldcorpus.FS(c), []string{home}, denylist.RuntimeDir(), nil)
 	var problems []string
-	var err error
 	if c.Write {
-		problems, err = gate.ShieldedWriteProblems([]string{g})
+		problems = gate.ShieldedWriteProblems(set, []string{g})
 	} else {
-		problems, err = gate.ShieldedReadProblems([]string{g})
-	}
-	if err != nil {
-		t.Fatal(err)
+		problems = gate.ShieldedReadProblems(set, []string{g})
 	}
 	if len(problems) == 0 {
 		return shieldcorpus.Honored
@@ -44,6 +47,8 @@ func gateVerdict(t *testing.T, c shieldcorpus.Case, home string) shieldcorpus.Ve
 		return shieldcorpus.InsideShield
 	case strings.Contains(p, "is at or inside the write-shielded path"):
 		return shieldcorpus.UnderWriteShield
+	case strings.Contains(p, "on a case-insensitive filesystem"):
+		return shieldcorpus.FoldedShield
 	case strings.Contains(p, "contains the always-shielded path"):
 		return shieldcorpus.AboveShield
 	default:
@@ -59,7 +64,6 @@ func TestShieldCorpusGateVerdicts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("HOME", home)
 			if got := gateVerdict(t, c, home); got != c.Verdict {
 				t.Errorf("%s\nthe run says %s, the gate says %s\nshape: %s", c.Path(home), c.Verdict, got, c.Why)
 			}

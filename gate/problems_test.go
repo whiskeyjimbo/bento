@@ -9,7 +9,20 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/gate"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 )
+
+// hostShieldSet is the set the gate builds for the run being validated, off the $HOME the
+// case relocated. Asked per assertion rather than once per test, because ShieldSet keys
+// its memo on the environment and a case that moves HOME after it must get the new one.
+func hostShieldSet(t *testing.T) shield.Set {
+	t.Helper()
+	set, err := gate.ShieldSet()
+	if err != nil {
+		t.Fatalf("gate.ShieldSet: %v", err)
+	}
+	return set
+}
 
 // The gate's refusals, asserted against the gate rather than through the CLI that prints
 // them. They were written where they were first read - beside validate's and the report's
@@ -39,11 +52,7 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 	}
 	for name, tc := range reads {
 		t.Run("read: "+name, func(t *testing.T) {
-			got, err := gate.ShieldedReadProblems([]string{tc.grant})
-			if err != nil {
-				t.Fatalf("gate.ShieldedReadProblems: %v", err)
-			}
-			assertProblem(t, got, tc.want)
+			assertProblem(t, gate.ShieldedReadProblems(hostShieldSet(t), []string{tc.grant}), tc.want)
 		})
 	}
 
@@ -59,11 +68,7 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 	}
 	for name, tc := range writes {
 		t.Run("write: "+name, func(t *testing.T) {
-			got, err := gate.ShieldedWriteProblems([]string{tc.grant})
-			if err != nil {
-				t.Fatalf("gate.ShieldedWriteProblems: %v", err)
-			}
-			assertProblem(t, got, tc.want)
+			assertProblem(t, gate.ShieldedWriteProblems(hostShieldSet(t), []string{tc.grant}), tc.want)
 		})
 	}
 }
@@ -106,18 +111,10 @@ func TestShieldedGrantProblemsFollowTheGrantsSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := gate.ShieldedWriteProblems([]string{escaping})
-	if err != nil {
-		t.Fatalf("gate.ShieldedWriteProblems: %v", err)
-	}
-	if len(got) != 0 {
+	if got := gate.ShieldedWriteProblems(hostShieldSet(t), []string{escaping}); len(got) != 0 {
 		t.Errorf("a grant whose link leaves the shield is honored by the run; got %v", got)
 	}
-	got, err = gate.ShieldedWriteProblems([]string{entering})
-	if err != nil {
-		t.Fatalf("gate.ShieldedWriteProblems: %v", err)
-	}
-	assertProblem(t, got, "is inside the always-shielded path")
+	assertProblem(t, gate.ShieldedWriteProblems(hostShieldSet(t), []string{entering}), "is inside the always-shielded path")
 }
 
 // The refusals the gate used to pass over in silence: a whole pseudo-filesystem, a host
