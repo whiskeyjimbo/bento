@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/whiskeyjimbo/bento/internal/shield"
 )
 
 // Verdict is what the backend does with a grant.
@@ -37,6 +40,10 @@ const (
 	// AboveShield means a write that CONTAINS a DenyAll shield, refused by
 	// grantrefusal.WriteAboveShield.
 	AboveShield
+	// FoldedShield means a grant that CONTAINS a DenyAll shield whose directory folds
+	// case, refused by grantrefusal.FoldedShield for either kind. It is the one verdict
+	// no layout on disk produces (see Case.Folding).
+	FoldedShield
 )
 
 func (v Verdict) String() string {
@@ -49,6 +56,8 @@ func (v Verdict) String() string {
 		return "under a DenyWrite shield"
 	case AboveShield:
 		return "above a DenyAll shield"
+	case FoldedShield:
+		return "above a DenyAll shield on a case-folding mount"
 	}
 	return fmt.Sprintf("Verdict(%d)", int(v))
 }
@@ -76,6 +85,15 @@ type Case struct {
 	// enforced run re-shields the interior, and dropping every enclosing grant would gut
 	// the ordinary "read: ~" proposal.
 	ClampKeeps bool
+	// Folding judges the case against a host whose mount folds case. It is the one host
+	// property Build cannot stage - creating two spellings under a temp directory on ext4
+	// makes two genuinely different files - so each site injects it through its own
+	// filesystem seam, all of them off FoldedPath so they cannot fold differently.
+	//
+	// Per case rather than per run, for ShieldOntoHome's reason: a folding mount changes
+	// the verdict of every grant in the layout, so leaving it on throughout would let one
+	// divergence mask the rest.
+	Folding bool
 	// ShieldOntoHome adds a shield rule whose symlink lands on the home anchor itself.
 	// Only the case testing that shape gets it: a rule resolving onto the home covers
 	// every other grant in the layout, so leaving it in place for all of them would let
@@ -158,6 +176,64 @@ var Cases = []Case{
 		Verdict:    AboveShield,
 		ClampKeeps: true,
 	},
+	{
+		Name:    "read containing a shield on a case-folding mount",
+		Why:     "a read of the home is the ordinary honored case; where the mount folds, ~/.SSH reaches the store beside the one byte-exact bind that shields it, so the same grant has to be refused instead - and for a READ, where nothing needs to be writable for the content to leak",
+		Grant:   ".",
+		Folding: true,
+		Verdict: FoldedShield,
+	},
+	{
+		Name:    "write containing a shield on a case-folding mount",
+		Why:     "the same grant as the write-above case, on a folding mount: the folding refusal is checked before the write-only verdicts and wins, because no narrower shield fixes it while re-shielding the interior would have covered the above-shield one",
+		Grant:   ".",
+		Write:   true,
+		Folding: true,
+		Verdict: FoldedShield,
+	},
+}
+
+// FS is the host the case is judged against: the real filesystem, with identity answered
+// the way the case's mount answers it. The two sites that pass a shield.FS take it from
+// here rather than building shield.Host() themselves; the backend, whose seams are its
+// own, folds the same way off FoldedPath.
+func FS(c Case) shield.FS {
+	fs := shield.Host()
+	if c.Folding {
+		fs.SameFile = func(a, b string) bool { return sameFolded(a, b) }
+	}
+	return fs
+}
+
+// sameFolded is host identity on a folding mount: two spellings reach one file when they
+// fold onto the same entry. A name with nothing behind it still reaches nothing, which is
+// what keeps a shield that does not exist from being reported as folding.
+func sameFolded(a, b string) bool {
+	a, b = FoldedPath(a), FoldedPath(b)
+	if a != b {
+		return false
+	}
+	_, err := os.Lstat(a)
+	return err == nil
+}
+
+// FoldedPath is the file a case-folding mount reaches for path: the entry beside it whose
+// name matches ignoring case, or path itself where there is none. It is the corpus's
+// definition of the mount property Build cannot stage, so the three sites' seams - a
+// shield.FS.SameFile for two of them, the backend's identity seam for the third - agree
+// on which names collide without each emulating folding on its own.
+func FoldedPath(path string) string {
+	dir, base := filepath.Split(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return path
+	}
+	for _, e := range entries {
+		if strings.EqualFold(e.Name(), base) {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	return path
 }
 
 // Build populates dir as the home the case is judged against and returns it. One layout

@@ -21,7 +21,7 @@ func TestCorpusVerdicts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), nil)
+			set := shield.Assemble(shieldcorpus.FS(c), []string{home}, denylist.RuntimeDir(), nil)
 			g := c.Path(home)
 
 			kind, optIns := shield.Write, []string(nil)
@@ -51,6 +51,8 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 		return shield.UnderWriteShield
 	case shieldcorpus.AboveShield:
 		return shield.AboveShield
+	case shieldcorpus.FoldedShield:
+		return shield.FoldedShield
 	}
 	return shield.Honored
 }

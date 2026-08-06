@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -28,7 +29,7 @@ func TestShieldCorpusBackendVerdicts(t *testing.T) {
 			// set memoizes on an UNKEYED field (shieldCache), so a reused
 			// sandbox would answer the second case with the first case's rules and say
 			// nothing about it.
-			sb := corpusSandbox(home)
+			sb := corpusSandbox(home, c)
 			got := corpusVerdict(t, sb, c)
 			if got != c.Verdict {
 				t.Errorf("%s\nwant %s, got %s\nshape: %s", c.Path(home), c.Verdict, got, c.Why)
@@ -43,7 +44,14 @@ func TestShieldCorpusBackendVerdicts(t *testing.T) {
 // set: the developer's real ~/.ssh would otherwise contribute shields no case describes.
 // The other two sites reach the same layout by setting HOME, which is where their
 // anchors come from.
-func corpusSandbox(home string) sandbox {
+// The case's mount reaches the backend through statID alone: shields() builds the shield
+// package's SameFile from it, so folding the path the identity is taken of is the whole of
+// what a case-folding mount does to a shield check.
+func corpusSandbox(home string, c shieldcorpus.Case) sandbox {
+	statID := hostStatIDOK
+	if c.Folding {
+		statID = func(path string) (fileID, bool) { return hostStatIDOK(shieldcorpus.FoldedPath(path)) }
+	}
 	return sandbox{
 		homes:      []string{home},
 		runtimeDir: denylist.RuntimeDir(),
@@ -51,7 +59,7 @@ func corpusSandbox(home string) sandbox {
 		isDir:      hostIsDir,
 		resolve:    hostResolve,
 		listDir:    hostListDir,
-		statID:     hostStatIDOK,
+		statID:     statID,
 		// Allocated per sandbox for the reason newSandbox allocates them: the value is
 		// copied at every call, so a nil map here would be a memo no caller shares.
 		workspaceShieldCache: map[string][]denylist.Rule{},
@@ -72,13 +80,13 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 			t.Errorf("%s is meant to be an opt-in read but the backend found no shield to opt into", g)
 		}
 		if err := checkReadNotShielded(sb, []string{g}, optIns); err != nil {
-			return shieldcorpus.InsideShield
+			return shieldedRefusal(err)
 		}
 		return shieldcorpus.Honored
 	}
 	writes := []string{g}
 	if err := checkWriteNotShielded(sb, writes); err != nil {
-		return shieldcorpus.InsideShield
+		return shieldedRefusal(err)
 	}
 	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
 		return shieldcorpus.UnderWriteShield
@@ -87,4 +95,15 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 		return shieldcorpus.AboveShield
 	}
 	return shieldcorpus.Honored
+}
+
+// shieldedRefusal splits the one check that raises two of the corpus's verdicts. The
+// folding refusal comes back from checkNotShielded beside the inside-a-shield one, so the
+// sentence is what tells them apart - and it has to, since it is the only verdict the
+// three sites cannot reach through a layout on disk.
+func shieldedRefusal(err error) shieldcorpus.Verdict {
+	if strings.Contains(err.Error(), "case-insensitive") {
+		return shieldcorpus.FoldedShield
+	}
+	return shieldcorpus.InsideShield
 }

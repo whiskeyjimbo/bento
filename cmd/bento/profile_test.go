@@ -15,12 +15,26 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
+
+// hostShieldSet is the set clampProposal would clamp against on this host, off the $HOME
+// the case relocated. Asked per call rather than once, because gate.ShieldSet keys its
+// memo on the environment and a case that moves HOME after it must get the new one.
+func hostShieldSet(t *testing.T) shield.Set {
+	t.Helper()
+	set, err := gate.ShieldSet()
+	if err != nil {
+		t.Fatalf("gate.ShieldSet: %v", err)
+	}
+	return set
+}
 
 // The clamp order is load-bearing - DropCovered must run LAST,
 // after the broad-write clamp, so a read under a write that gets dropped as too broad
@@ -298,7 +312,7 @@ func TestClampShieldedGrantsResolvesSymlinkedHome(t *testing.T) {
 
 	resolvedSSH := filepath.Join(real, ".ssh", "id_rsa") // observed via the resolved home
 	linkSSH := filepath.Join(link, ".ssh", "id_rsa")     // observed via $HOME as configured
-	_, _, shielded, _ := clampShieldedGrants([]string{resolvedSSH, linkSSH}, nil)
+	_, _, shielded, _ := clampShieldedGrants(hostShieldSet(t), []string{resolvedSSH, linkSSH}, nil)
 	dropped := shieldGrantPaths(shielded)
 	for _, p := range []string{resolvedSSH, linkSSH} {
 		if !slices.Contains(dropped, p) {
@@ -314,7 +328,7 @@ func TestClampShieldedGrantsCarriesWhatTheShieldHolds(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	hist := filepath.Join(home, ".local", "state", "nvim", "shada")
-	_, _, shielded, _ := clampShieldedGrants([]string{hist}, nil)
+	_, _, shielded, _ := clampShieldedGrants(hostShieldSet(t), []string{hist}, nil)
 	if len(shielded) != 1 || shielded[0].Holds != denylist.HoldsHistory {
 		t.Errorf("%q is a history store and must be withheld as one; got %+v", hist, shielded)
 	}
@@ -345,7 +359,7 @@ func TestClampShieldedGrantsClampsThePasswdHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	ssh := filepath.Join(u.HomeDir, ".ssh", "id_rsa")
-	_, _, shielded, _ := clampShieldedGrants([]string{ssh}, nil)
+	_, _, shielded, _ := clampShieldedGrants(hostShieldSet(t), []string{ssh}, nil)
 	if dropped := shieldGrantPaths(shielded); !slices.Contains(dropped, ssh) {
 		t.Errorf("%q is inside the passwd home's ~/.ssh shield and must be dropped; dropped=%v", ssh, dropped)
 	}
@@ -437,7 +451,7 @@ func TestClampShieldedGrants(t *testing.T) {
 	reads := []string{ssh, sshDir, netrc, home, ordinary, underHome}
 	writes := []string{home + "/.gnupg/x", ordinary}
 
-	keptR, keptW, shielded, _ := clampShieldedGrants(reads, writes)
+	keptR, keptW, shielded, _ := clampShieldedGrants(hostShieldSet(t), reads, writes)
 	dropped := shieldGrantPaths(shielded)
 
 	// A grant AT or INSIDE a shield is dropped, whether the shield is a directory
@@ -477,7 +491,7 @@ func TestClampDropsWritesUnderWriteShieldButKeepsReads(t *testing.T) {
 	reads := []string{pathBin, bashrc}
 	writes := []string{pathBin, installed, bashrc, ordinary}
 
-	keptR, keptW, _, writeShielded := clampShieldedGrants(reads, writes)
+	keptR, keptW, _, writeShielded := clampShieldedGrants(hostShieldSet(t), reads, writes)
 
 	for _, w := range []string{pathBin, installed, bashrc} {
 		if !slices.Contains(writeShielded, w) {
@@ -525,7 +539,7 @@ func TestClampWriteShieldMatchesSymlinkedShieldTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, kept, _, dropped := clampShieldedGrants(nil, []string{filepath.Join(resolvedStore, "mytool")})
+	_, kept, _, dropped := clampShieldedGrants(hostShieldSet(t), nil, []string{filepath.Join(resolvedStore, "mytool")})
 	if slices.Contains(kept, filepath.Join(resolvedStore, "mytool")) {
 		t.Errorf("a write observed at the symlinked shield's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
 	}
@@ -1479,7 +1493,7 @@ func TestClampShieldMatchesSymlinkedStoreTarget(t *testing.T) {
 	}
 
 	grant := filepath.Join(resolvedStore, "pubring.kbx")
-	kept, _, dropped, _ := clampShieldedGrants([]string{grant}, nil)
+	kept, _, dropped, _ := clampShieldedGrants(hostShieldSet(t), []string{grant}, nil)
 	if slices.Contains(kept, grant) {
 		t.Errorf("a read observed at the symlinked store's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
 	}
@@ -1505,7 +1519,7 @@ func TestClampWriteShieldMatchesDanglingShieldTarget(t *testing.T) {
 	}
 
 	grant := filepath.Join(pathresolve.Existing(store), "mytool")
-	_, kept, _, dropped := clampShieldedGrants(nil, []string{grant})
+	_, kept, _, dropped := clampShieldedGrants(hostShieldSet(t), nil, []string{grant})
 	if slices.Contains(kept, grant) {
 		t.Errorf("a write at a dangling shield's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
 	}
