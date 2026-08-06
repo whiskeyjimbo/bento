@@ -28,6 +28,7 @@
 package credhunt
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
@@ -346,7 +348,7 @@ func contentShapes(path string, maxSize int64) ([]string, bool) {
 	head, _ := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
 
 	var signals []string
-	for line := range strings.SplitSeq(string(head), "\n") {
+	for line := range strings.SplitSeq(decodeUTF16(head), "\n") {
 		if !slices.Contains(signals, SignalPEM) && strings.HasPrefix(strings.TrimSpace(line), "-----BEGIN ") && strings.Contains(line, "PRIVATE KEY") {
 			signals = append(signals, SignalPEM)
 		}
@@ -358,6 +360,35 @@ func contentShapes(path string, maxSize int64) ([]string, bool) {
 		}
 	}
 	return signals, true
+}
+
+// decodeUTF16 converts a BOM-marked UTF-16 head to UTF-8, and returns anything else
+// unchanged. Every shape this sniffs is matched against raw bytes, so a credential in
+// UTF-16 - what PowerShell's Out-File writes by default, and what a Windows tool leaves
+// behind in a WSL home - carries a NUL between every character and matches nothing. The
+// BOM is what makes the conversion safe to attempt: guessing at an unmarked file would
+// mangle ordinary content into shapes it does not have.
+//
+// A trailing odd byte is dropped, since a truncated final unit decodes to nothing either
+// way - the read is bounded by maxSize and lands mid-character routinely.
+func decodeUTF16(head []byte) string {
+	if len(head) < 2 {
+		return string(head)
+	}
+	var order binary.ByteOrder
+	switch {
+	case head[0] == 0xFF && head[1] == 0xFE:
+		order = binary.LittleEndian
+	case head[0] == 0xFE && head[1] == 0xFF:
+		order = binary.BigEndian
+	default:
+		return string(head)
+	}
+	units := make([]uint16, 0, len(head)/2-1)
+	for i := 2; i+1 < len(head); i += 2 {
+		units = append(units, order.Uint16(head[i:]))
+	}
+	return string(utf16.Decode(units))
 }
 
 // tokenAssignment reports whether a line assigns a long opaque value to a secret-named

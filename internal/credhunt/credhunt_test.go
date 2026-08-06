@@ -420,3 +420,28 @@ func TestAVanishedFileIsNotCountedUnreadable(t *testing.T) {
 		t.Errorf("Hunt = %v, unreadable %d; a dangling link is neither a finding nor a blind spot", paths(found), unreadable)
 	}
 }
+
+// Every shape is matched against raw bytes, so a UTF-16 credential carries a NUL between
+// every character and trips nothing - and a 0644 file at the home root has no cheap
+// signal to fall back on. PowerShell's Out-File writes exactly this, and its leavings
+// turn up in a WSL home.
+func TestHuntSniffsAUTF16File(t *testing.T) {
+	home := t.TempDir()
+	body := "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n"
+	var le, be []byte
+	le = append(le, 0xFF, 0xFE)
+	be = append(be, 0xFE, 0xFF)
+	for _, r := range body {
+		le = append(le, byte(r), 0x00)
+		be = append(be, 0x00, byte(r))
+	}
+	lePath := plant(t, home, ".env", 0o644, string(le))
+	bePath := plant(t, home, ".env.be", 0o644, string(be))
+
+	got := paths(hunt(t, home))
+	for _, want := range []string{lePath, bePath} {
+		if !slices.Contains(got, want) {
+			t.Errorf("a UTF-16 credential at the home root must still sniff as one; got %v", got)
+		}
+	}
+}
