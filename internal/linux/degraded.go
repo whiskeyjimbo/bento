@@ -102,6 +102,12 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// file. Landlock still cannot carve a shielded subpath out of an allowed tree, so a
 	// read grant containing a credential dir exposes it: the documented cost of this
 	// tier, and why a broad read here is weaker than under bwrap.
+	// The tier with no mount namespace and no shields at all is the one where knowing
+	// which auto-executing file a run changed matters most, so the snapshot is taken here
+	// too rather than only on the bwrap path - and after prepareWriteDirs, matching the
+	// full tier, so a directory created for a grant is in the baseline rather than reading
+	// as a change the target made.
+	autoExecBefore := snapshotAutoExec(writes)
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return enforce.Result{}, err
 	}
@@ -214,7 +220,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// already ran to completion - Wait gave up on a leaked descendant holding the pipes,
 	// and a cancel arriving inside that 2s window does not unmake the exit code below.
 	if err != nil && ctx.Err() != nil && !errors.Is(err, exec.ErrWaitDelay) {
-		return enforce.Result{Report: report}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		// Carried out through the cancel for the reason the full tier's is: a target killed
+		// partway is the run least likely to be looked at and most likely to have left an
+		// auto-executing file behind.
+		return enforce.Result{Report: report, ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(writes))}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
 	case cmd.ProcessState == nil:
@@ -225,7 +234,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(writes))}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}

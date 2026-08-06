@@ -439,6 +439,9 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			Shields         []shieldJSON   `json:"shields,omitempty"`
 			Exposed         []shieldJSON   `json:"exposed,omitempty"`
 			AcceptedAliases []aliasJSON    `json:"accepted_aliases,omitempty"`
+			// The auto-executing files the run changed, for a consumer that gates a merge
+			// on review rather than reading the stderr notice.
+			ChangedAutoExec []string `json:"changed_auto_exec,omitempty"`
 			Report          reportJSON     `json:"report"`
 			// StrictShortfall says the run was admitted under --strict but a guarantee it
 			// required lapsed while the target ran, so exit_code below is the code of a run
@@ -451,13 +454,17 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), toReportJSON(res.Report), shortfall != nil, missingReads})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, toReportJSON(res.Report), shortfall != nil, missingReads})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
 		writeShieldedGrantWarning(stderr, res)
 		writeExposedWarning(stderr, res)
 		writeDegradations(stderr, res.Report)
+		// After the shield block and before the network half: it belongs with what the
+		// run touched on the host, and it is a place to review rather than a failure to
+		// explain, so it must not sit among the lines diagnosing a nonzero exit.
+		writeChangedAutoExecNotice(stderr, res)
 		// Before the bypass hint: each is a connection that DID reach the proxy, so it
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
