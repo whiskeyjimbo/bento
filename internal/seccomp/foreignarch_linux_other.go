@@ -13,6 +13,8 @@ import "fmt"
 // stayed open, so this refuses instead: the guard is amd64-only, as the
 // strict/egress ones already are, and an unenforceable block fails loud rather
 // than quietly.
+func foreignArchSupported() bool { return false }
+
 func blockForeignArch() error {
 	return fmt.Errorf("seccomp: the foreign-arch guard is not implemented for this architecture, so the syscall filters it protects cannot be enforced")
 }

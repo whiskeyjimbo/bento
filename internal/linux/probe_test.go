@@ -186,7 +186,7 @@ func TestExecLayers(t *testing.T) {
 	}{
 		{"seccomp and strict filter", true, true, enforce.Enforced, enforce.Enforced, ""},
 		{"seccomp, no strict filter", true, false, enforce.Enforced, enforce.Unavailable, "not implemented for this architecture"},
-		{"no seccomp", false, true, enforce.Unavailable, enforce.Unavailable, "does not support seccomp BPF"},
+		{"no seccomp", false, true, enforce.Unavailable, enforce.Unavailable, "cannot install the exec-block filter"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,7 +250,7 @@ func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
 		},
 		{
 			"no seccomp", func(t *testing.T) { swap(t, &seccompSupported, false) },
-			enforce.LayerExec, enforce.Unavailable, "does not support seccomp BPF",
+			enforce.LayerExec, enforce.Unavailable, "cannot install the exec-block filter",
 		},
 		{
 			"no strict exec filter", func(t *testing.T) { swap(t, &seccompStrictExecSupported, false) },
