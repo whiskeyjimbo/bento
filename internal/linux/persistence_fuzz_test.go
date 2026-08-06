@@ -131,6 +131,7 @@ func persistenceSandbox(root string) sandbox {
 		isDir:     hostIsDir,
 		listDir:   hostListDir,
 		resolve:   hostResolve,
+		statID:    hostStatIDOK,
 	}
 }
 
