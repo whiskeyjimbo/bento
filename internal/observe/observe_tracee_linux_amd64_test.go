@@ -45,6 +45,7 @@ import (
 //	killedprobes SIGKILLs a probeforever child mid-probe and outlives its whole drain.
 //	probeforever N threads probe a path in a loop and never stop; started by the two above.
 //	enosysprobe N faccessat2 probes of an existing path, under a filter answering ENOSYS.
+//	fexecve   spawns via execveat(fd, "", AT_EMPTY_PATH), where the fd names the binary.
 //	refusedprobe N getxattr probes refused with ENODATA on a path that exists.
 //	widelen    connect(2) to a unix socket with the high half of addrlen set.
 func TestObserveTraceeHelper(t *testing.T) {
@@ -320,6 +321,40 @@ func TestObserveTraceeHelper(t *testing.T) {
 				os.Exit(13)
 			}
 		}
+	case "fexecve":
+		// execveat(fd, "", ..., AT_EMPTY_PATH) - the shape fexecve(3) and every memfd or
+		// O_PATH exec route takes. The descriptor names the binary and the pathname
+		// argument names nothing, so a decoder that only reads the pathname records the
+		// spawn as touching no file at all.
+		//
+		// The descriptor is opened through a symlink so the assertion is decisive: the
+		// openat the decoder does see records the LINK's path, and only resolving the
+		// descriptor yields the real target.
+		fd, err := syscall.Open(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), execLinkName), syscall.O_RDONLY, 0)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_OPEN_ERR", err)
+			os.Exit(16)
+		}
+		argv, err := syscall.SlicePtrFromStrings([]string{traceeExecTarget})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_ARGV_ERR", err)
+			os.Exit(16)
+		}
+		envp, err := syscall.SlicePtrFromStrings([]string{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_ENVP_ERR", err)
+			os.Exit(16)
+		}
+		empty, err := syscall.BytePtrFromString("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(16)
+		}
+		_, _, errno := syscall.Syscall6(unix.SYS_EXECVEAT, uintptr(fd),
+			uintptr(unsafe.Pointer(empty)), uintptr(unsafe.Pointer(&argv[0])),
+			uintptr(unsafe.Pointer(&envp[0])), unix.AT_EMPTY_PATH, 0)
+		fmt.Fprintln(os.Stderr, "TRACEE_FEXECVE_ERR", errno)
+		os.Exit(16)
 	case "refusedprobe":
 		// A path-existence syscall refused on a path that EXISTS. getxattr answers ENODATA
 		// for a file carrying no such attribute, which is the ordinary answer rather than
@@ -592,6 +627,10 @@ func plantPathTracee(dir string, n int) {
 // traceeExecTarget is what the exec modes spawn: absolute, so no PATH search
 // stats it first, and present on every host this package builds for.
 const traceeExecTarget = "/bin/true"
+
+// execLinkName is the symlink the fexecve tracee opens its exec target through, so that
+// the only route to the real target's path is resolving the descriptor.
+const execLinkName = "exec-target-link"
 
 func threadFile(dir string, i int) string {
 	return filepath.Join(dir, fmt.Sprintf("thread-%d", i))
@@ -1086,7 +1125,7 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS})] = heldPath{path: "/etc/passwd", readOK: true}
 			}
 
-			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held); lost != tc.wantLost {
+			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held, map[string]bool{}); lost != tc.wantLost {
 				t.Errorf("lost = %d, want %d - a pathname held by a thread that can never stop again is an observation no exit stop will ever resolve", lost, tc.wantLost)
 			}
 			if got := tracees[tc.old]; got != tc.wantKept {
@@ -1127,8 +1166,15 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	tracees := map[int]bool{tid: true}
 	lastOp := map[int]byte{tid: unix.PTRACE_SYSCALL_INFO_ENTRY}
 	held := map[string]heldPath{stopKey(tid, &regs): {path: "/etc/shadow", readOK: true}}
+	// The dead thread's in-flight drop key, left behind by a pair whose exit stop never
+	// reached its release. It was already counted; what it must not do is dedup away the
+	// NEXT thread's drop at the same call site.
+	drops := map[string]bool{}
+	var counted int
+	count, _ := dropOnce(drops, tid, &counted)
+	count(&regs, 0)
 
-	if lost := forgetExitedTid(tid, tracees, lastOp, held); lost != 1 {
+	if lost := forgetExitedTid(tid, tracees, lastOp, held, drops); lost != 1 {
 		t.Errorf("lost = %d, want 1 - the probe's exit stop can never arrive, so whether it succeeded is unknowable", lost)
 	}
 	if tracees[tid] {
@@ -1144,6 +1190,11 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	recordHeldExistence(tid, &regs, func(path string, _ bool) { recorded = append(recorded, path) }, func(string, bool) {}, func() {}, held)
 	if len(recorded) != 0 {
 		t.Errorf("recorded %q for a tid the kernel reused; a pathname left held is one the next thread's exit stop will claim", recorded)
+	}
+	counted = 0
+	count(&regs, 0)
+	if counted != 1 {
+		t.Errorf("the reused tid's lost access counted %d, want 1 - a drop key the dead thread left in flight dedups it away, and Dropped is the one channel that tells the user the manifest is short", counted)
 	}
 }
 
@@ -1231,6 +1282,29 @@ func TestTraceDoesNotCountARealENOSYSProbeAsALostAccess(t *testing.T) {
 	res := traceHelper(t, "enosysprobe", dir, probes)
 	if res.Dropped != 0 {
 		t.Errorf("Dropped = %d after %d probes that lost nothing; want 0", res.Dropped, probes)
+	}
+}
+
+// An exec whose target is named by a descriptor rather than a pathname must still reach the
+// manifest. execveat(fd, "", AT_EMPTY_PATH) is how fexecve(3) and every memfd or O_PATH exec
+// route spawns; the pathname argument is empty, and recording nothing for it left the
+// spawned binary out of the manifest AND out of Dropped, so the enforced run fails closed on
+// a file the profiling run reported as never touched. Naming nothing IS right for the stat
+// family's AT_EMPTY_PATH, which is why the empty-path skip was shared with them at all.
+func TestTraceRecordsAnAtEmptyPathExecTarget(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink(traceeExecTarget, filepath.Join(dir, execLinkName)); err != nil {
+		t.Fatal(err)
+	}
+	// A descriptor readlinks to the canonical path, which on a usr-merged host is not the
+	// one the fixture named.
+	want, err := filepath.EvalSymlinks(traceeExecTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := traceHelper(t, "fexecve", dir, 1)
+	if !slices.ContainsFunc(res.Accesses, func(a Access) bool { return a.Path == want }) {
+		t.Errorf("spawned %s through execveat(fd, \"\", AT_EMPTY_PATH) and it is absent from the recorded accesses: %v", want, res.Accesses)
 	}
 }
 

@@ -350,7 +350,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		case ws.Exited() || ws.Signaled():
 			// A subprocess ended and is reaped; forget it so the guard does not wait on a
 			// freed pid, and nothing to resume.
-			res.Dropped += forgetExitedTid(wpid, tracees, lastOp, held)
+			res.Dropped += forgetExitedTid(wpid, tracees, lastOp, held, drops)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones, unless it came through a
@@ -384,7 +384,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// execed image is going with it.
 			case syscall.PTRACE_EVENT_EXEC:
 				if old, err := syscall.PtraceGetEventMsg(wpid); err == nil {
-					res.Dropped += forgetRetiredTid(wpid, int(old), tracees, lastOp, held)
+					res.Dropped += forgetRetiredTid(wpid, int(old), tracees, lastOp, held, drops)
 				}
 			}
 
@@ -710,12 +710,14 @@ func stopKey(pid int, regs *syscall.PtraceRegs) string {
 // syscall stops alternate, so every pair the execer opened closed before its execve entry stop,
 // and there should be nothing left to release. It is swept rather than assumed empty because
 // the cost of being wrong is an uncounted access, which is what Dropped exists to prevent.
-func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
+func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool) int {
 	if old == wpid {
 		return 0
 	}
 	delete(tracees, old)
 	delete(lastOp, old)
+	forgetDropsOf(drops, old)
+	forgetDropsOf(drops, wpid)
 	return releaseHeldOf(held, old) + releaseHeldOf(held, wpid)
 }
 
@@ -734,10 +736,28 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // recordHeldExistence records the dead thread's pathname gated on the live call's return
 // value - a path the run never touched, in the manifest the user consents to. Dropping it here
 // is what keeps that key from ever being reachable by another thread.
-func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath) int {
+func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool) int {
 	delete(tracees, wpid)
 	delete(lastOp, wpid)
+	forgetDropsOf(drops, wpid)
 	return releaseHeldOf(held, wpid)
+}
+
+// forgetDropsOf clears the in-flight drop keys a vanished tid left behind. It reports no
+// loss and must not: every one of these keys was counted the moment the drop happened, and
+// what a stale key costs is the NEXT count, not this one. dropOnce keys on the tid, so a
+// pair whose exit stop never reached its release - inspect returning early on an
+// unreadable stop, or nativeSyscall failing there - leaves a key the kernel can hand to a
+// new tracee along with the tid. The next thread's drop at the same call site then dedups
+// against a dead thread's and is never counted, which is the undercount this channel
+// exists to prevent. The sibling of releaseHeldOf, and keyed the same way.
+func forgetDropsOf(drops map[string]bool, pid int) {
+	prefix := fmt.Sprintf("%d\x00", pid)
+	for key := range drops {
+		if strings.HasPrefix(key, prefix) {
+			delete(drops, key)
+		}
+	}
 }
 
 // releaseHeldOf drops every pathname a vanished tid was still holding and reports how many
@@ -1377,10 +1397,34 @@ const unixPtraceExitKill = 0x00100000
 // read and execute it, so it is an access like any other - and a spawn by absolute path
 // (os/exec with a full path, or a bare syscall.Exec) reaches the kernel without the PATH
 // search whose stats would otherwise have recorded it incidentally.
+// An empty pathname is execveat's AT_EMPTY_PATH form, where the descriptor names the
+// binary and nothing else does - fexecve(3) and every memfd or O_PATH exec route reaches
+// the kernel this way. Recording nothing there left the spawned binary out of the manifest
+// AND out of Dropped, so the enforced run fails closed on a file the profiling run said
+// was never touched. The elsewhere-correct "an empty path names no file" rule (see the
+// AT_EMPTY_PATH note in inspectExistence, where naming nothing is right) does not hold for
+// an exec. The descriptor is resolved through /proc exactly as a relative path's anchor
+// is, which also settles the memfd case honestly: its link reads "… (deleted)", resolveAt
+// refuses it, and a drop says the observation is short rather than naming a pseudo-path
+// the sandbox could never bind.
 func recordExecTarget(pid int, dirfd int32, addr uintptr, record func(string, bool), drop func()) {
-	if path, ok := readPathAt(pid, dirfd, addr); ok {
-		record(path, false)
+	path, ok := readPathAt(pid, dirfd, addr)
+	if !ok {
+		drop()
 		return
 	}
-	drop()
+	if path == "" {
+		// Without a descriptor to fall back on there is no file: execve("") and
+		// execveat(AT_FDCWD, "") name nothing and the kernel answers ENOENT, so this is
+		// not a lost observation to count. Anchoring "." at the descriptor is what turns
+		// it into the file's own path - /proc/<pid>/fd/<n> links straight to it.
+		if dirfd == atFdCwd {
+			return
+		}
+		if path, ok = resolveAt(pid, dirfd, "."); !ok {
+			drop()
+			return
+		}
+	}
+	record(path, false)
 }
