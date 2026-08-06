@@ -94,6 +94,13 @@ can lie. A record that can lie is worse than no record.
 confirms the filter is live in the tracee), Landlock is unaffected, and ptrace grants the
 tracer nothing the parent did not already have over its own child.
 
+The one place tracing does change kernel behavior is a setuid or setgid exec, which the
+kernel degrades to an ordinary one while the process is traced. That cannot matter here:
+every filter bento installs sets `PR_SET_NO_NEW_PRIVS` first, which already degrades a
+setuid exec for the whole run, so the recorder removes nothing that was still there. It is
+worth stating rather than leaving for a reader to raise, because a mechanism that quietly
+weakened a privilege transition would fail this ADR's first driver.
+
 ### Where it does not apply
 
 **The degraded tier cannot have it.** `internal/launcher/degraded.go:176` installs
@@ -107,9 +114,13 @@ tier reports no exec record and says so.
 `runTarget` calls `seccomp.Exec`, which execveats the target over the launcher - there is no
 supervisor left to be the tracer. That mode has nothing to record by design.
 
-**Yama `ptrace_scope` 3 disables ptrace outright.** Tracing one's own child is permitted at
-scope 0 and 1, and scope 2 restricts attaching to CAP_SYS_PTRACE but leaves a parent's
-`PTRACE_TRACEME` child intact; scope 3 refuses everything. A host at scope 3 gets no record.
+**Yama `ptrace_scope` 2 already forbids it, not only 3.** Tracing one's own child is
+permitted at scope 0 and 1 - the tracee is a descendant, which is exactly what scope 1
+restricts to. Scope 2 requires `CAP_SYS_PTRACE` "either with `PTRACE_ATTACH` or through
+children calling `PTRACE_TRACEME`", and `TRACEME` is the route here: `exec.Command` with
+`SysProcAttr{Ptrace: true}` has the child call it before its exec. Scope 3 refuses
+everything. So both hardened scopes yield a failed attach, which is reported rather than
+fatal - the record is a diagnostic, and a host that will not permit it still gets its run.
 
 ### Why the full observer was rejected
 
