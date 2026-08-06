@@ -413,6 +413,17 @@ func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
 		t.Errorf("a signal notice already explained this run: %q", b.String())
 	}
 
+	// The degraded tier is the thinnest legend there is - one line, no filesystem half -
+	// so it is where the hint branch would most easily be left introducing nothing.
+	var landlockOnly enforce.Report
+	landlockOnly.Add(enforce.LayerFilesystem, enforce.Degraded, "")
+	landlockOnly.Add(enforce.LayerExec, enforce.Unavailable, "")
+	b.Reset()
+	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecAll}, enforce.Result{ExitCode: 1, Report: landlockOnly}, true)
+	if out := b.String(); !strings.Contains(out, "if that message was a denial") || !strings.Contains(out, "on a socket or connection") {
+		t.Errorf("the one shape this tier produces must arrive with its lead: %q", out)
+	}
+
 	// The layer gate still decides whether there is a mapping at all, and it sits above
 	// the lead: a tier that can produce none of these errnos must not print the sentence
 	// that introduces them and then stop.
