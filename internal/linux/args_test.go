@@ -46,11 +46,10 @@ func testSandbox(existing ...string) sandbox {
 		// entries (a segment with something under it), matching hostListDir which
 		// excludes files and symlinks. ok is true when p is a directory (has any entry
 		// under it); the fake has no unreadable directories. A bare leaf entry directly
-		// under p is a file.
-		listDir: func(p string) ([]string, bool) {
+		// under p is a file. The fake filesystem has no symlinks, so links is always nil.
+		listDir: func(p string) (names, links []string, ok bool) {
 			prefix := p + "/"
 			seen := map[string]bool{}
-			var names []string
 			isDir := false
 			for e := range set {
 				if !strings.HasPrefix(e, prefix) {
@@ -67,7 +66,7 @@ func testSandbox(existing ...string) sandbox {
 					names = append(names, name)
 				}
 			}
-			return names, isDir
+			return names, nil, isDir
 		},
 		// The fake filesystem has no aliased credentials by default; the alias-scan
 		// tests override these seams to plant one.
@@ -1146,7 +1145,9 @@ func TestGitDirShieldsPlantedConfigDoesNotMaskSiblings(t *testing.T) {
 
 // A prior run can plant a symlink under .git/modules pointing outside the tree; the
 // unconditional walk must not follow it (which would traverse the whole target and
-// emit shields for paths outside the checkout, or loop). listDir excludes symlinks.
+// emit shields for paths outside the checkout, or loop). The link itself still gets a
+// rule, so checkWorkspaceShieldNotRedirected has something to refuse: dropping the name
+// entirely left the planted gitdir covered by nothing at all.
 func TestGitDirShieldsDoesNotFollowSymlinkedChild(t *testing.T) {
 	root := t.TempDir()
 	// A real gitdir OUTSIDE .git/modules, that a planted symlink points at.
@@ -1168,10 +1169,22 @@ func TestGitDirShieldsDoesNotFollowSymlinkedChild(t *testing.T) {
 		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
+	link := filepath.Join(modules, "escape")
+	covered := false
 	for _, r := range gitDirShields(sb, root) {
-		if strings.HasPrefix(r.Path, outside) || strings.Contains(r.Path, "escape") {
+		if strings.HasPrefix(r.Path, outside) {
 			t.Errorf("the walk followed a symlink out of .git/modules and emitted %q", r.Path)
 		}
+		if r.Path == link {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Errorf("the planted link %q must carry a rule, or the redirect check never sees it", link)
+	}
+	// And that rule is what turns the plant into a refusal.
+	if err := checkWorkspaceShieldNotRedirected(sb, []string{root}); err == nil {
+		t.Error("a symlinked entry under .git/modules redirects a shield and must be refused")
 	}
 }
 

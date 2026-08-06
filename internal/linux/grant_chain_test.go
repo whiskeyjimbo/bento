@@ -160,3 +160,32 @@ func TestGrantSymlinksSkipsChainAlreadyMounted(t *testing.T) {
 		t.Fatalf("grantSymlinks = %q, want none: every hop is already inside a bound grant", args)
 	}
 }
+
+// missingHop treated every os.Readlink failure as "filled and not a symlink" and
+// returned "", silently dropping the --symlink and leaving the granted name absent in
+// the sandbox with nothing reporting why. Only EINVAL means "not a symlink"; every other
+// errno says nothing about whether the name needs recreating, so it propagates.
+func TestMissingHopReadlinkErrorIsNotSwallowed(t *testing.T) {
+	root := t.TempDir()
+	// A component past NAME_MAX: readlink fails with ENAMETOOLONG, which is neither a
+	// missing name nor a settled "not a symlink".
+	abs := filepath.Join(root, strings.Repeat("n", 300))
+
+	sb := sandbox{resolve: hostResolve}
+	hop, err := missingHop(sb, abs, filepath.Join(root, "target"), []string{root})
+	if err == nil {
+		t.Fatalf("a readlink error other than EINVAL must propagate, not resolve to no hop; got hop=%q", hop)
+	}
+	if !strings.Contains(err.Error(), abs) {
+		t.Errorf("the error must name the path it could not read; got %v", err)
+	}
+
+	// A real name that is simply not a symlink still settles as no hop.
+	plain := filepath.Join(root, "plain")
+	if err := os.WriteFile(plain, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hop, err := missingHop(sb, plain, filepath.Join(root, "target"), []string{root}); err != nil || hop != "" {
+		t.Errorf("a filled non-symlink must settle as no hop; got hop=%q err=%v", hop, err)
+	}
+}
