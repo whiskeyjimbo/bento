@@ -3,6 +3,7 @@
 package observe
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,10 +85,19 @@ func TestExecImageReportsWhatItCouldNotSee(t *testing.T) {
 	}
 
 	// A shebang line longer than the kernel's own buffer: the exec fails ENOEXEC, and
-	// the truncated first field would name a file nothing ever opened.
-	long := write("long.sh", append([]byte("#!/"), make([]byte, 512)...), 0o755)
+	// the truncated first field would name a file nothing ever opened. The filler is
+	// printable because a NUL ends the line for binfmt_script exactly as a newline does,
+	// which would make this pass without testing anything.
+	long := write("long.sh", append([]byte("#!/"), bytes.Repeat([]byte("a"), 512)...), 0o755)
 	if _, ok := execImage(long); ok {
 		t.Error("a shebang with no line ending reported complete")
+	}
+
+	// The same read, ending honestly: a script whose last line has no newline is ordinary,
+	// and the kernel ends the line on its zero-padded buffer.
+	short := write("noeol.sh", []byte("#!/bin/sh"), 0o755)
+	if got, ok := execImage(short); !ok || got != "/bin/sh" {
+		t.Errorf("a script with no trailing newline = %q %v, want /bin/sh true", got, ok)
 	}
 
 	if _, ok := execImage(filepath.Join(dir, "absent")); !ok {
