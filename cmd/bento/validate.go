@@ -392,9 +392,9 @@ func rootWriteProblems(write []string) []string {
 // `read: /tmp` is a line an author writes without thinking - and both refuse a run at its
 // first step, so a gate that passes over them green-lights a manifest that cannot run.
 //
-// The set of managed mounts is shared data (denylist.ManagedMounts) rather than mirrored:
-// the backend and the gate are compiled for different platforms, so a list restated here
-// would drift the moment either moved.
+// Both the managed-mount set and the per-process predicate are shared (denylist) rather
+// than mirrored: the backend and the gate are compiled for different platforms, so either
+// restated here would drift the moment the other moved.
 //
 // Existence is asked of the process case for the reason the backend asks it: a grant on a
 // pid that is not running says nothing about the sandbox's procfs, and refusing it here
@@ -412,25 +412,13 @@ func mountGrantProblems(read, write []string) []string {
 			problems = append(problems, grantrefusal.GrantIsManagedMount(g, lands, denylist.ManagedMounts[i]).Error())
 			continue
 		}
-		if isProcessGrant(lands) {
+		if denylist.IsProcessPath(lands) {
 			if _, err := os.Stat(lands); err == nil {
 				problems = append(problems, grantrefusal.GrantIsProcess(g, lands).Error())
 			}
 		}
 	}
 	return problems
-}
-
-// isProcessGrant reports whether a resolved path is a per-process procfs directory or
-// something inside one. /proc itself and its system-wide files (/proc/cpuinfo) are not:
-// those bind fine, and /proc whole is the managed-mount refusal above.
-func isProcessGrant(path string) bool {
-	rel, err := filepath.Rel("/proc", path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return false
-	}
-	first, _, _ := strings.Cut(rel, "/")
-	return first != "" && strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 // writeRunnability prints the host's verdict in the same shape as the approval line
