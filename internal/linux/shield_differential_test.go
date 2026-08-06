@@ -42,8 +42,9 @@ func TestShieldCorpusBackendVerdicts(t *testing.T) {
 // wires for a run, anchored on the corpus home alone. Anchoring on the corpus home
 // rather than denylist.HomeAnchors() is what makes the case's own layout the whole rule
 // set: the developer's real ~/.ssh would otherwise contribute shields no case describes.
-// The other two sites reach the same layout by setting HOME, which is where their
-// anchors come from.
+// The other two sites anchor on it directly for the same reason, which is what leaves
+// gate.ShieldSet's own anchor walk to the tests that own it.
+//
 // The case's mount reaches the backend through statID alone: shields() builds the shield
 // package's SameFile from it, so folding the path the identity is taken of is the whole of
 // what a case-folding mount does to a shield check.
