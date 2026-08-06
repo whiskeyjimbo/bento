@@ -88,15 +88,30 @@ func runProbe(t *testing.T, p *policy.Policy, bin, network, target string) strin
 	return out.String()
 }
 
+// requireHostReaches skips unless the host itself, with no sandbox, reaches target.
+// Without this a routeless or egress-firewalled host answers ENETUNREACH with or
+// without the namespace, so the assertions below would pass whether or not the fence
+// exists - the same errno from a missing default route as from the fence.
+func requireHostReaches(t *testing.T, bin, network, target string) {
+	t.Helper()
+	out, err := exec.Command(bin, network, target).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the probe unsandboxed: %v (output: %s)", err, out)
+	}
+	if !strings.Contains(string(out), "REACHED") {
+		skipMissingDep(t, "the host cannot reach %s unsandboxed, so a fence assertion would be vacuous: %s", target, strings.TrimSpace(string(out)))
+	}
+}
+
 // A policy with no network rules denies all egress. A static binary must not be
 // able to reach an external host - this is the exact case v1 leaked on.
 func TestStaticBinaryCannotReachExternalHost(t *testing.T) {
 	requireSandbox(t)
 	bin := buildStaticProbe(t)
 
-	// A routable public address. We assert it is NOT reachable; the test needs no
-	// working internet, because the point is that the namespace blocks the attempt
-	// before it leaves the host.
+	// A routable public address, checked reachable off-sandbox first so BLOCKED below
+	// can only mean the namespace refused it.
+	requireHostReaches(t, bin, "tcp", "1.1.1.1:443")
 	out := runProbe(t, &policy.Policy{}, bin, "tcp", "1.1.1.1:443")
 	if !strings.Contains(out, "BLOCKED") {
 		t.Fatalf("a static binary reached an external host from a no-network sandbox: %q", out)
@@ -135,6 +150,7 @@ func TestStaticBinaryCannotReachExternalHostOverUDP(t *testing.T) {
 	requireSandbox(t)
 	bin := buildStaticProbe(t)
 
+	requireHostReaches(t, bin, "udp", "1.1.1.1:443")
 	out := runProbe(t, &policy.Policy{}, bin, "udp", "1.1.1.1:443")
 	if !strings.Contains(out, "BLOCKED") {
 		t.Fatalf("a static binary sent a datagram to an external host from a no-network sandbox: %q", out)
