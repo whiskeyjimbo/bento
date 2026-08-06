@@ -207,10 +207,16 @@ func (e *eventStream) emit(v any) {
 // after the grace period, and a consumer that has already read the outcome cannot use it.
 // A truncation the drop causes is not reported the way a write error is, because the last
 // chunk can arrive after failed() has been read.
+//
+// The write and the seal are one critical section, not emit followed by a seal: a pump
+// that took the lock between the two would land its chunk after the terminal object,
+// which is the ordering this exists to prevent.
 func (e *eventStream) emitTerminal(v any) {
-	e.emit(v)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.err == nil && !e.sealed {
+		e.err = e.enc.Encode(v)
+	}
 	e.sealed = true
 }
 
