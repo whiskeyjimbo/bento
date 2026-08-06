@@ -516,6 +516,23 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		cleanup()
 		return sandbox{}, noop, err
 	}
+
+	// compile re-binds the entrypoint and the interpreter read-only AFTER the
+	// deny-list, so either one can carry a caller-denied file into the sandbox
+	// whatever the shields say - and the run reports nothing lifted, because no
+	// shield was. Harmless in the CLI frame, where the operator typed the entrypoint,
+	// but Options.DenyPaths exists for the embedder frame (a supervisor profiling
+	// untrusted code with its own control store shielded), where the manifest is the
+	// untrusted input. Refuse here, where both are already resolved.
+	for _, e := range []struct{ kind, path string }{
+		{"entrypoint", sb.entrypoint},
+		{"interpreter", sb.interpreter},
+	} {
+		if e.path != "" && callerDenied(sb, e.path) {
+			cleanup()
+			return sandbox{}, noop, fmt.Errorf("linux: %s %q is inside a caller-denied path, which the sandbox may not expose", e.kind, e.path)
+		}
+	}
 	return sb, cleanup, nil
 }
 

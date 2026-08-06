@@ -453,3 +453,83 @@ func TestADefaultShieldIsNotCreditedToAVariable(t *testing.T) {
 		})
 	}
 }
+
+// A relocation env var whose target symlinks onto a home (GNUPGHOME=$HOME/gnupg-link
+// with gnupg-link -> /home/u) passes denylist's lexical Shieldable, so a rule is
+// emitted; denyArgs then resolves it, fails Shieldable and drops it rather than
+// shielding the whole home. The grant checks must drop it too, or every run on that
+// host is hard-refused over a shield that was never applied - and the refusal names
+// an unrelated dotfile as the cause.
+func TestShieldResolvingOntoAHomeDoesNotRefuseGrants(t *testing.T) {
+	sb := testSandbox("/home/u", "/home/u/proj/main.py")
+	sb.resolve = func(p string) string {
+		if p == "/home/u/gnupg-link" {
+			return "/home/u"
+		}
+		return p
+	}
+	sb.extraDeny = []denylist.Rule{
+		{Path: "/home/u/gnupg-link", Deny: denylist.DenyAll, Dir: true, Source: "GNUPGHOME"},
+		{Path: "/home/u/bin-link", Deny: denylist.DenyWrite, Dir: true},
+	}
+
+	// The unshieldable rule is dropped, so nothing under the home is refused over it.
+	if _, applied := denyArgs(sb, []string{"/home/u/proj"}, []string{"/home/u/proj"}, nil); len(applied) > 0 {
+		for _, r := range applied {
+			if r.Path == "/home/u" {
+				t.Errorf("denyArgs must not shield a whole home; applied %+v", applied)
+			}
+		}
+	}
+	sb.resolve = func(p string) string {
+		if p == "/home/u/gnupg-link" || p == "/home/u/bin-link" {
+			return "/home/u"
+		}
+		return p
+	}
+	for name, err := range map[string]error{
+		"read":  checkReadNotShielded(sb, []string{"/home/u/proj"}, nil),
+		"write": checkWriteNotShielded(sb, []string{"/home/u/proj"}),
+		"under": checkWriteNotUnderReadOnlyShield(sb, []string{"/home/u/proj"}),
+		"above": checkWriteNotAboveShield(sb, []string{"/home/u/proj"}),
+	} {
+		if err != nil {
+			t.Errorf("%s grant refused over a shield denyArgs never applied: %v", name, err)
+		}
+	}
+}
+
+// compile re-binds the entrypoint and the interpreter read-only after the deny-list,
+// and bwrap is last-wins, so a manifest naming a caller-denied file as its entrypoint
+// (with interpreter: cat) would read that file out with the audit record showing no
+// shield lifted at all. Options.DenyPaths is the embedder's shield against untrusted
+// code, so the manifest must not be able to name its way past it.
+func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "permissions.json")
+	if err := os.WriteFile(store, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: store, Interpreter: "cat"}
+
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store})
+	if err == nil {
+		cleanup()
+		t.Fatal("an entrypoint inside a caller deny must be refused")
+	}
+	if !strings.Contains(err.Error(), "caller-denied") {
+		t.Errorf("the refusal must name the caller deny; got %v", err)
+	}
+
+	// An entrypoint outside the deny path is untouched.
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ok := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
+	if _, cleanupOK, err := newSandbox(ok, "bento-placeholder", false, []string{store}); err != nil {
+		t.Errorf("an entrypoint outside the caller deny must be accepted: %v", err)
+	} else {
+		cleanupOK()
+	}
+}
