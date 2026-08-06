@@ -705,6 +705,23 @@ func TestObserverPanicDoesNotDropTheConnection(t *testing.T) {
 	}
 }
 
+// A panic before the tunnel is established answers the client with a status line, like
+// every other outcome the handler can reach. Left bare, the connection just closes and
+// the target reads a proxy fault as a network hiccup and retries into it.
+func TestPanicBeforeTheTunnelAnswersWithAStatus(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithDialer(func(context.Context, string, string) (net.Conn, error) { panic("dialer blew up") }))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "502") {
+		t.Errorf("status = %q, want 502 after a panic in the handler", status)
+	}
+}
+
 // A listener that stops accepting on its own kills the egress fence for the rest of
 // the run, so Serve must hand that error back rather than return as if the run had
 // ended it. Only a caller-cancelled Serve returns nil.
@@ -1066,6 +1083,36 @@ func TestGuardRefusalIsIndistinguishableFromDialFailure(t *testing.T) {
 	}
 	if d, _ := decisions.Load("public.example.com"); d != Allowed {
 		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Allowed)
+	}
+}
+
+// A name resolving to several addresses keeps the guard's signal even though the error
+// it returns belongs to another address. net.Dialer tries each in turn and returns the
+// FIRST one's error, so for [dead-timeout, 10.0.0.1] the blockedUpstreamError raised on
+// the second address never reaches handle - and the operator would be told the
+// connection was allowed, for a connection that reached nothing.
+func TestGuardBlockSurvivesAnotherAddressesError(t *testing.T) {
+	var p *Proxy
+	var decision Decision
+	done := make(chan struct{})
+	p = New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(d Decision, _, _ string) { decision = d; close(done) }),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// The dialer's own shape: every address is guarded, the first one's error wins.
+			first := &net.OpError{Op: "dial", Net: network, Addr: fakeAddr("192.0.2.1:443"), Err: errors.New("i/o timeout")}
+			_ = p.guardUpstream(ctx, network, "192.0.2.1:443", nil)
+			_ = p.guardUpstream(ctx, network, "10.0.0.1:443", nil)
+			return nil, first
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	connect(t, c, "twofaced.example.com:443")
+	<-done
+	if decision != GuardBlocked {
+		t.Errorf("observer reported %q, want %q - the guard refused an address and only the report says so", decision, GuardBlocked)
 	}
 }
 
