@@ -1724,7 +1724,7 @@ var dirFileEnvs = []struct{ env, def, file string }{
 // shielded directory itself. Only MISE_DATA_DIR needs it: the data tree carries the
 // interpreter installs a policy may legitimately write, and only shims/ is shielded.
 // Sparing the installs does not make `mise install` succeed in-sandbox - see the shim
-// directories above - and following the relocation widens who meets that.
+// directories above - and following the relocation widens who hits the shim shield.
 var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// direnv.toml's [whitelist] skips the allow check the ~/.local/share/direnv/allow
 	// shield rests on, so relocating the config directory disarms both.
