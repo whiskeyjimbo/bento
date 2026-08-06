@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 )
 
@@ -28,9 +29,9 @@ func gateVerdict(t *testing.T, c shieldcorpus.Case, home string) shieldcorpus.Ve
 	var problems []string
 	var err error
 	if c.Write {
-		problems, err = shieldedWriteProblems([]string{g})
+		problems, err = gate.ShieldedWriteProblems([]string{g})
 	} else {
-		problems, err = shieldedReadProblems([]string{g})
+		problems, err = gate.ShieldedReadProblems([]string{g})
 	}
 	if err != nil {
 		t.Fatal(err)
