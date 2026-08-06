@@ -93,8 +93,16 @@ type aliasScan struct {
 //
 // visible is what the tier exposes host content at, which is the one thing that
 // differs: the mount namespace's binds under bwrap, the Landlock read/write set
-// without it.
+// without it. The exec paths are added here rather than by either caller because they
+// are the same on both tiers and neither tier's visible set contains them - bwrap
+// ro-binds the entrypoint and interpreter as individual files outside any granted tree,
+// and the launcher grants them as Landlock exec paths. `ln ~/.ssh/id_ed25519 ./run.sh`
+// is exposed either way, and the target reads it as its own program text.
 func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []string) ([]credentialAlias, error) {
+	visible = append(append([]string{}, visible...), sb.entrypoint)
+	if sb.interpreter != "" {
+		visible = append(visible, sb.interpreter)
+	}
 	scan, err := aliasedCredentials(sb, visible, literalOptIns)
 	if err != nil {
 		return nil, err
