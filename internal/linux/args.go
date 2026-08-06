@@ -139,7 +139,9 @@ type sandbox struct {
 	mountpoints func(devs []uint64) ([]mountPoint, error)
 	// statID returns a single host path's content identity. Injected beside the walking
 	// seams: the mount scan compares a credential's ancestor directories against what a
-	// mount is attached to, which is one stat per directory, not a walk.
+	// mount is attached to, which is one stat per directory, not a walk. Required on any
+	// sandbox whose grants are checked - the shield set asks it whether the mount holding
+	// a store folds case, and a sandbox without it cannot answer.
 	statID func(string) (fileID, bool)
 	// workspaceShieldCache memoizes workspaceShields per checkout root for one run.
 	// Every consumer derives the same rules from the same tree - shieldRules, reached
