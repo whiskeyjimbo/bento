@@ -277,6 +277,20 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		missed[path] = true
 	}
 
+	// The root's own execve retired before the loop attached - the child comes up stopped
+	// AT it - so no syscall stop names it, and the images the kernel opened for it are
+	// missing for the same reason a descendant's were. The binary itself is the entrypoint
+	// the caller already knows about; its #! interpreter and its loader are not, and a
+	// script run this way profiled without the shell that ran it. cmd.Path is argv[0] after
+	// the PATH search, which is the file the kernel actually opened.
+	rootImages, rootComplete := execImageChain(cmd.Path)
+	for _, image := range rootImages {
+		record(image, false)
+	}
+	if !rootComplete {
+		res.Dropped++
+	}
+
 	if err := syscall.PtraceSyscall(root, 0); err != nil {
 		return Result{}, fmt.Errorf("observe: resume: %w", err)
 	}
@@ -1401,8 +1415,9 @@ func boolKey(b bool) string {
 // PTRACE_O_EXITKILL is not exported by the syscall package on all versions.
 const unixPtraceExitKill = 0x00100000
 
-// recordExecTarget records the binary a spawn syscall names. The sandbox must be able to
-// read and execute it, so it is an access like any other - and a spawn by absolute path
+// recordExecTarget records the binary a spawn syscall names, and the images the kernel
+// then opens for it without a syscall - see execImageChain. The sandbox must be able to
+// read and execute all of them, so each is an access like any other - and a spawn by absolute path
 // (os/exec with a full path, or a bare syscall.Exec) reaches the kernel without the PATH
 // search whose stats would otherwise have recorded it incidentally.
 // An empty pathname is execveat's AT_EMPTY_PATH form, where the descriptor names the
@@ -1437,4 +1452,11 @@ func recordExecTarget(pid int, dirfd int32, addr uintptr, emptyPath bool, record
 		}
 	}
 	record(path, false)
+	images, complete := execImageChain(path)
+	for _, image := range images {
+		record(image, false)
+	}
+	if !complete {
+		drop()
+	}
 }
