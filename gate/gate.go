@@ -388,6 +388,8 @@ func writeShieldProblem(set shield.Set, g string) (string, bool) {
 		return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
 	case shield.AboveShield:
 		return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
+	case shield.FoldedShield:
+		return grantrefusal.FoldedShield(g, r.Path).Error(), true
 	}
 	return "", false
 }

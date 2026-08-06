@@ -61,6 +61,7 @@ func TestWorkspaceShieldRealFilesystem(t *testing.T) {
 			isDir:      hostIsDir,
 			listDir:    hostListDir,
 			resolve:    hostResolve,
+			statID:     hostStatIDOK,
 			rootDirs:   func() ([]string, error) { return nil, nil },
 		}
 	}
@@ -138,6 +139,7 @@ func TestSymlinkedCredentialInsideADirectoryShieldIsShielded(t *testing.T) {
 		isDir:      hostIsDir,
 		listDir:    hostListDir,
 		resolve:    hostResolve,
+		statID:     hostStatIDOK,
 		rootDirs:   func() ([]string, error) { return nil, nil },
 	}
 	args, _, err := compile(&policy.Policy{Entrypoint: entry, Read: []string{canon}}, enforce.Process{}, sb)
