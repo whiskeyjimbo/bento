@@ -48,11 +48,34 @@ const (
 	// failure distinguishable from a target that itself exits 125.
 	AppliedMarker = "APPLIED"
 
-	// AppliedTargetUnreached is the one record that may follow the marker: the layers
-	// above it were applied, but the target they were applied for never ran. Setup
-	// completing and the target running are different facts, and the marker can only
-	// attest the first - see appliedReport.targetUnreached for why nothing but a failed
-	// run can write this.
+	// AppliedExecRecorder says whether the exec recorder was watching this run:
+	// AppliedYes, AppliedNo with the failure as its detail, or AppliedAbsent for a mode
+	// that cannot have one at all. It is what makes "no execs happened" distinguishable
+	// from "nothing was watching", and it cannot ride the first section - that is written
+	// before the target is reached, and the attach has not been tried by then.
+	AppliedExecRecorder = "exec-recorder"
+
+	// AppliedExecRan carries one observed exec: the pid, the image the kernel ran, and
+	// the argv, both quoted. The argv is one NUL-joined field rather than a record per
+	// word, so an argument containing a space cannot split into two.
+	AppliedExecRan = "exec-ran"
+
+	// AppliedExecRecordMarker terminates the exec-record section, and it is why the
+	// section can be trusted to be whole. The recorder deliberately runs without
+	// PTRACE_O_EXITKILL, so a tracer that dies detaches and the record ends where it
+	// ended; without a marker of its own a truncated record would read as a run that
+	// simply stopped exec'ing, which is the silently-incomplete record that is worse
+	// than none.
+	AppliedExecRecordMarker = "EXEC-RECORD"
+
+	// AppliedTargetUnreached says the layers above the marker were applied but the target
+	// they were applied for never ran. Setup completing and the target running are
+	// different facts, and the marker can only attest the first - see
+	// appliedReport.targetUnreached for why nothing but a failed run can write this.
+	//
+	// It and the exec-record section are the two things that may follow the marker, and
+	// they are mutually exclusive by construction: a target that was never reached ran no
+	// execs to record, and targetUnreached closes the report.
 	AppliedTargetUnreached = "target-unreached"
 )
 
@@ -118,6 +141,45 @@ func (a *appliedReport) write() error {
 	a.b.WriteString(AppliedMarker + "\n")
 	if _, err := a.f.Write([]byte(a.b.String())); err != nil {
 		return fmt.Errorf("launcher: writing the applied-layer report: %w", err)
+	}
+	return nil
+}
+
+// writeExecRecord appends the exec-record section: whether the recorder was watching,
+// every exec it saw, and the section's own marker. A nil recorder means the run did not
+// ask for a record, and nothing is written at all - the host then has no section to read
+// rather than an empty one claiming nothing ran.
+//
+// This is a SECOND write phase, after the first marker, and that is the point. The first
+// write fires before the target is reached and the invariant that a report reaching its
+// marker proves the fences held depends on it; exec records only exist once the target
+// has run. Folding them into the first write would trade a fail-closed proof for a
+// diagnostic, so the record gets its own section and its own marker instead, and the
+// first write, the first marker and their meaning are untouched.
+func (a *appliedReport) writeExecRecord(rec *execRecorder) error {
+	if a.f == nil || rec == nil {
+		return nil
+	}
+	var b strings.Builder
+	switch {
+	case rec.unavailable != nil:
+		fmt.Fprintf(&b, "%s %s %q\n", AppliedExecRecorder, AppliedAbsent, rec.unavailable.Error())
+	case rec.failed != nil:
+		fmt.Fprintf(&b, "%s %s %q\n", AppliedExecRecorder, AppliedNo, rec.failed.Error())
+	default:
+		fmt.Fprintf(&b, "%s %s\n", AppliedExecRecorder, AppliedYes)
+	}
+	// Quoted for the reason record quotes its detail: an image path or an argument may
+	// contain a newline, and an unquoted one would forge a record.
+	for _, r := range rec.runs {
+		fmt.Fprintf(&b, "%s %d %q %q\n", AppliedExecRan, r.pid, r.exe, strings.Join(r.argv, "\x00"))
+	}
+	b.WriteString(AppliedExecRecordMarker + "\n")
+	if _, err := a.f.Write([]byte(b.String())); err != nil {
+		// Loud but not fatal to the run: the target has already finished under fences the
+		// first marker already attested, and losing a diagnostic may not change what the
+		// run reports. An unmarked section is what the host reads as truncated.
+		return fmt.Errorf("launcher: writing the exec record: %w", err)
 	}
 	return nil
 }

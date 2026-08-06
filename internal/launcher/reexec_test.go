@@ -27,6 +27,11 @@ func TestLaunchCodecRoundTrip(t *testing.T) {
 			Writable:         []string{"/tmp", "/dev", "/proc", "/w/out"},
 			Target:           []string{"/bin/sh", "/w/run.sh", "-x"},
 		},
+		"exec all with the exec recorder": {
+			Block:      false,
+			RecordExec: true,
+			Target:     []string{"/usr/bin/make", "-j4"},
+		},
 		"exec all keeps target flags after --": {
 			Block:  false,
 			Target: []string{"/bin/echo", "--not-a-launch-flag", "-n"},

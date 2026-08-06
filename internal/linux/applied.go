@@ -49,6 +49,28 @@ type applied struct {
 	// never reached the target; targetErr is what stopped it, when it could be read.
 	targetUnreached bool
 	targetErr       string
+	// execRecorder is what the stage reported about the exec recorder:
+	// launcher.AppliedYes/No/Absent, or "" when the run did not ask for a record at all
+	// and the stage wrote no exec-record section. execRecorderErr is why it was not
+	// watching, when it was not and the reason could be read.
+	execRecorder    string
+	execRecorderErr string
+	// execRuns is what the recorder saw, in the order it saw them, seeded with the target
+	// itself. execRecordComplete is whether the section reached its own marker: the
+	// recorder runs without PTRACE_O_EXITKILL by design, so a tracer that died leaves a
+	// record that ends where it ended, and a truncated record must read as truncated
+	// rather than as a run that stopped exec'ing.
+	execRuns           []execRun
+	execRecordComplete bool
+}
+
+// execRun is one exec the in-sandbox recorder observed. Pid is zero for the seeded
+// target itself, the one entry no ptrace stop reported - its exec retires before the
+// recorder's options are set.
+type execRun struct {
+	Pid  int
+	Exe  string
+	Argv []string
 }
 
 // newAppliedReport creates the file the in-sandbox stage writes its applied-layer
@@ -86,24 +108,47 @@ func parseApplied(f *os.File) applied {
 	}
 
 	var a applied
+	// Set by an exec-ran line that would not decode. It is kept apart from the marker
+	// rather than clearing execRecordComplete in place, because the marker arrives after
+	// the records and would otherwise overwrite the fact that one was lost.
+	var garbled bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
 		key, rest, _ := strings.Cut(line, " ")
 		value, detail, _ := strings.Cut(rest, " ")
 		if a.complete {
-			// One record may legitimately follow the marker: the stage saying the layers
-			// above it were applied but the target never ran. Accepting it is safe because
-			// it can only ever WORSEN the report - the same monotonicity the rest of
-			// reconcile rests on - so it cannot be used to claim a layer. Anything else did
-			// not come from the stage's writes, so the report is treated as tampered, the
-			// same stance parseObservations takes.
+			// Two things may legitimately follow the marker: the stage saying the layers
+			// above it were applied but the target never ran, and the exec-record section.
+			// Accepting the first is safe because it can only ever WORSEN the report - the
+			// same monotonicity the rest of reconcile rests on - so it cannot be used to
+			// claim a layer. Anything else did not come from the stage's writes, so the
+			// report is treated as tampered, the same stance parseObservations takes.
 			switch {
 			case key == launcher.AppliedTargetUnreached:
 				a.targetUnreached = true
 				if v, err := strconv.Unquote(rest); err == nil {
 					a.targetErr = v
 				}
+			case key == launcher.AppliedExecRecorder:
+				a.execRecorder = value
+				if v, err := strconv.Unquote(detail); err == nil {
+					a.execRecorderErr = v
+				}
+			case key == launcher.AppliedExecRan:
+				// A line that will not decode drops that one exec and nothing else. The
+				// record is a diagnostic and the layer verdicts above the marker are not
+				// its to touch: discarding the whole report here would turn a garbled
+				// diagnostic into three Unavailable layers, which is the record's presence
+				// deciding what is enforced - the one thing it must never do. The section's
+				// marker is what still reports the record as untrustworthy.
+				if r, ok := parseExecRun(rest); ok {
+					a.execRuns = append(a.execRuns, r)
+				} else {
+					garbled = true
+				}
+			case line == launcher.AppliedExecRecordMarker:
+				a.execRecordComplete = !garbled
 			case line != "":
 				return applied{}
 			}
@@ -145,6 +190,45 @@ func parseApplied(f *os.File) applied {
 		return applied{}
 	}
 	return a
+}
+
+// parseExecRun decodes one exec-ran record: the pid, the quoted image, and the quoted
+// NUL-joined argv. The argv travels as a single quoted field rather than a record per
+// word so an argument containing a space cannot split into two, and quoting is what
+// stops a newline in either from forging a record.
+func parseExecRun(rest string) (execRun, bool) {
+	pidStr, quoted, ok := strings.Cut(rest, " ")
+	if !ok {
+		return execRun{}, false
+	}
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return execRun{}, false
+	}
+	// The two quoted fields are peeled by their quoting rather than split on the space
+	// between them: an image path or an argument may contain one, and a Cut would take
+	// the first space inside the image for the separator.
+	exeQ, err := strconv.QuotedPrefix(quoted)
+	if err != nil {
+		return execRun{}, false
+	}
+	exe, err := strconv.Unquote(exeQ)
+	if err != nil {
+		return execRun{}, false
+	}
+	argvQ, ok := strings.CutPrefix(quoted[len(exeQ):], " ")
+	if !ok {
+		return execRun{}, false
+	}
+	joined, err := strconv.Unquote(argvQ)
+	if err != nil {
+		return execRun{}, false
+	}
+	var argv []string
+	if joined != "" {
+		argv = strings.Split(joined, "\x00")
+	}
+	return execRun{Pid: pid, Exe: exe, Argv: argv}, true
 }
 
 // reconcile overlays what the sandboxed stage reported onto the host's probe-derived
