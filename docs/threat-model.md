@@ -196,6 +196,17 @@ unconnected sockets (`getpeername`) or to a trusted peer credential is possible 
 unbuilt. A parent that hands bento a privileged unix socket on stdio hands the target
 that socket; that is the parent's decision, and bento does not detect it.
 
+The same property is not socket-specific, so the check screens the descriptor's kind
+too. A directory on stdio is recursive read of a host tree - `openat` resolves from
+the inode it names, outside every mount the sandbox built - and a device node like
+`/dev/kvm` or `/dev/net/tun` is a host channel of the kind the socket rule exists for.
+Both are refused, and neither is waivable by the socket-activation opt-in. Character
+devices the sandbox's own `/dev` already provides (`null`, `zero`, `full`, `random`,
+`urandom`, terminals) pass, because holding one open grants nothing the target could
+not open by path. A host terminal on stdio remains a residual of running
+interactively: it is the user's own tty, and refusing it would refuse every
+interactive run.
+
 ### 4.5 Watching without reading
 
 The ptrace observer pulls the path argument of an attempted open straight from

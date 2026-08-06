@@ -100,6 +100,65 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
+	// The reproduction the socket-only check waved through: openat(dirfd, "secret")
+	// resolves from the inode, so the target reads a host tree the mount namespace
+	// never covers.
+	t.Run("a directory is refused", func(t *testing.T) {
+		f, err := os.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		err = refuseNetworkFD(int(f.Fd()))
+		if err == nil {
+			t.Fatal("an inherited directory on stdio was accepted; openat through it leaves the sandbox")
+		}
+		if !strings.Contains(err.Error(), "inherited directory") {
+			t.Errorf("wrong refusal for a directory: %v", err)
+		}
+	})
+
+	// A device the sandbox's own /dev provides grants nothing the target could not get
+	// by path, and refusing the class outright would refuse every interactive run.
+	t.Run("a terminal is allowed", func(t *testing.T) {
+		pty, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+		if err != nil {
+			t.Skipf("no pty available: %v", err)
+		}
+		defer pty.Close()
+		if err := refuseNetworkFD(int(pty.Fd())); err != nil {
+			t.Errorf("a terminal on stdio was refused: %v", err)
+		}
+		f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err := refuseNetworkFD(int(f.Fd())); err != nil {
+			t.Errorf("/dev/null on stdio was refused: %v", err)
+		}
+	})
+
+	// /dev/kvm and /dev/net/tun are host channels of the exact kind the check exists
+	// for, and neither is a socket. They need privileges the test may not have, so the
+	// rule is exercised through the classifier on the device numbers themselves.
+	t.Run("a device absent from the sandbox is refused", func(t *testing.T) {
+		for _, d := range []struct {
+			name         string
+			major, minor uint32
+		}{
+			{"/dev/kvm", 10, 232},
+			{"/dev/net/tun", 10, 200},
+			{"/dev/mem", 1, 1},
+			{"/dev/port", 1, 4},
+			{"a raw disk", 8, 0},
+		} {
+			if sandboxDevice(unix.Mkdev(d.major, d.minor)) {
+				t.Errorf("%s (%d:%d) passed as a device the sandbox provides", d.name, d.major, d.minor)
+			}
+		}
+	})
+
 	t.Run("a closed descriptor is allowed", func(t *testing.T) {
 		// Nothing was inherited there, so the target sees the same EBADF the check does.
 		if err := refuseNetworkFD(9999); err != nil {
