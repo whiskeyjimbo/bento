@@ -676,26 +676,37 @@ func interpreterPrefix(interp string) string {
 // one place and miss another; appliedShields carries that invariant for the grant
 // checks, which need the rules as denyArgs will really mount them.
 func alwaysShields(sb sandbox) []denylist.Rule {
-	builtin := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
-	rules := append(slices.Clone(builtin), sb.extraDeny...)
+	rules := append(builtinShields(sb), sb.extraDeny...)
 	// Expanded here rather than in shieldRules so the grant checks see these shields:
 	// a rule only denyArgs knows about is one a policy can name and be silently
 	// overmounted on, which is the asymmetry this function's contract exists to prevent.
 	// Expanded over the built-ins only, the same set explicitShieldOptIns expands, so a
 	// shield derived here is always one a policy can opt into.
-	return append(rules, credentialLinkShields(sb, builtin)...)
+	return append(rules, credentialLinkShields(sb)...)
 }
 
-// credentialLinkShields is the symlinked-credential expansion of a rule set, hoisted so
-// the opt-in machinery expands the same way the shields do: a shield a policy cannot opt
-// into is one it can only be refused over.
-func credentialLinkShields(sb sandbox, rules []denylist.Rule) []denylist.Rule {
+// builtinShields is the deny-list before a caller's own denies and before the symlink
+// expansion: the home credential rules and the host's runtime state. It is the input
+// credentialLinkShields expands, and the two consumers of that expansion have to build it
+// identically or the memo below would hand one of them the other's answer.
+func builtinShields(sb sandbox) []denylist.Rule {
+	return append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
+}
+
+// credentialLinkShields is the symlinked-credential expansion of the built-in shields,
+// hoisted out of denyArgs so the opt-in machinery expands the same way the shields do: a
+// shield a policy cannot opt into is one it can only be refused over.
+//
+// It derives its own input rather than taking one, which is what lets the memo be
+// unkeyed: a caller that could pass a different rule set would get the built-in answer
+// back from a warm memo with nothing to say so.
+func credentialLinkShields(sb sandbox) []denylist.Rule {
 	if m := sb.credentialLinkCache; m != nil && m.done {
 		return m.rules
 	}
 	homes := resolvedHomes(sb)
 	var out []denylist.Rule
-	for _, r := range rules {
+	for _, r := range builtinShields(sb) {
 		if r.Deny != denylist.DenyAll || !r.Dir {
 			continue
 		}
@@ -1532,8 +1543,7 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 // literalReads are the policy's own absolute, un-symlink-resolved read paths. Sorted by
 // literal path, which is the order the reported opt-ins keep.
 func explicitShieldOptIns(sb sandbox, literalReads []string) []shieldOptIn {
-	builtin := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
-	builtin = append(builtin, credentialLinkShields(sb, builtin)...)
+	builtin := append(builtinShields(sb), credentialLinkShields(sb)...)
 	var out []shieldOptIn
 	for _, r := range builtin {
 		if r.Deny != denylist.DenyAll {

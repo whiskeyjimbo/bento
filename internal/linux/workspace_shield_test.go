@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -215,6 +216,29 @@ func TestCredentialLinkCacheIsTransparent(t *testing.T) {
 		if !slices.Equal(want, got) {
 			t.Fatalf("cached shields differ from the uncached walk\n got %v\nwant %v", got, want)
 		}
+	}
+
+	// The memo is unkeyed, so what would break it is a second consumer whose input is
+	// not the built-in set: it would get the built-in answer back with nothing to say
+	// so. The opt-in machinery is that second consumer - a derived shield it cannot see
+	// is one a policy can only be refused over - so it has to reach the same rules the
+	// shields do, on a warm memo as much as a cold one.
+	derived := credentialLinkShields(cached)
+	if len(derived) == 0 {
+		t.Fatal("the farm produced no derived shield, so the rest of this proves nothing")
+	}
+	for _, r := range derived {
+		if !slices.ContainsFunc(explicitShieldOptIns(cached, []string{r.Path}), func(o shieldOptIn) bool { return o.path == r.Path }) {
+			t.Errorf("the derived shield at %q cannot be opted into, so a read grant naming it is only refusable", r.Path)
+		}
+	}
+
+	// A caller deny is not part of the expansion's input and must not be swallowed by a
+	// warm memo either.
+	withDeny := cached
+	withDeny.extraDeny = []denylist.Rule{{Path: "/srv/state", Deny: denylist.DenyAll, Dir: true}}
+	if !slices.ContainsFunc(alwaysShields(withDeny), func(r denylist.Rule) bool { return r.Path == "/srv/state" }) {
+		t.Error("a caller deny is missing from the shields once the memo is warm")
 	}
 }
 
