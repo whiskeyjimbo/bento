@@ -102,7 +102,12 @@ func measureScope() (scopeVerdict, bool) {
 	// undelegated are one.
 	ctrls, known := delegatedControllers()
 	if ok, reason := hostControllersDelegated(ctrls, known); !ok {
-		return scopeVerdict{reason: reason}, known
+		// A layout the delegated set can never be read from is a permanent fact about the
+		// host, not the transient non-answer a busy user manager gives, so it is cached
+		// like any other definitive verdict. Otherwise every canCreateScope call - three
+		// on one run, five across a bwrap-plus-profile invocation - re-ran the scope probe
+		// on exactly the host class this fail-closed path exists for.
+		return scopeVerdict{reason: reason}, known || !unifiedCgroupReadable()
 	}
 	return scopeVerdict{ok: true}, true
 }
@@ -208,7 +213,41 @@ const cpuUndelegatedReason = "the cpu controller is not delegated to your system
 // Only a reading that answered is cached (see cacheProbe): known==false means the
 // probe scope could not be created or read at all, which a busy or restarting user
 // manager causes transiently.
-var delegatedControllers = cacheProbe(measureDelegatedControllers)
+var delegatedControllers = func() (map[string]bool, bool) {
+	// Screened first so the host class that can never answer stops paying for a scope
+	// per call: cacheProbe deliberately does not memoize a non-answer, and here the
+	// non-answer is permanent.
+	if !unifiedCgroupReadable() {
+		return nil, false
+	}
+	return cachedDelegatedControllers()
+}
+
+var cachedDelegatedControllers = cacheProbe(measureDelegatedControllers)
+
+// unifiedCgroupReadable reports whether readControllers below could reach a scope's
+// cgroup.controllers at all. It answers the two structural failures that snippet has -
+// no unified ("0::") line in /proc/self/cgroup on a cgroup-v1-only host, and a v2
+// hierarchy mounted somewhere other than /sys/fs/cgroup on a legacy-hybrid one - from
+// the host, before any scope is created. Both are permanent facts about the layout, so
+// a run does not re-measure them; keep this and readControllers in step.
+var unifiedCgroupReadable = sync.OnceValue(func() bool {
+	b, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return false
+	}
+	unified := false
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if strings.HasPrefix(line, "0::") {
+			unified = true
+		}
+	}
+	if !unified {
+		return false
+	}
+	_, err = os.Stat("/sys/fs/cgroup/cgroup.controllers")
+	return err == nil
+})
 
 // measureDelegatedControllers creates a throwaway scope that REQUESTS every
 // controller's limit and reads that scope's own cgroup.controllers, so it measures

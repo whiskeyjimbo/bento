@@ -355,3 +355,26 @@ func TestWrapWithLimitsLeavesTheScopeUnnamedWithoutARunID(t *testing.T) {
 		t.Errorf("no run id should leave systemd to generate the name; got %q", joined)
 	}
 }
+
+// A host whose cgroup layout the delegation read can never reach is a permanent
+// non-answer, and measureScope must cache it. Left uncached, canCreateScope re-created
+// a real transient scope on every call - three times on one run, and it is called from
+// Probe, screenRunID, Run, the degraded path and Profile - on exactly the containerized
+// or hybrid-cgroup host class the fail-closed path exists for.
+func TestScopeVerdictCachesAStructurallyUnreadableLayout(t *testing.T) {
+	if ok, _ := canCreateScope(); !ok {
+		t.Skip("no usable systemd scope on this host; measureScope cannot reach the delegation read")
+	}
+	origCtrls, origLayout := delegatedControllers, unifiedCgroupReadable
+	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	defer func() { delegatedControllers, unifiedCgroupReadable = origCtrls, origLayout }()
+
+	unifiedCgroupReadable = func() bool { return false }
+	if _, answered := measureScope(); !answered {
+		t.Error("measureScope did not answer on a structurally unreadable layout; the verdict is not cached and every call re-spawns a scope")
+	}
+	unifiedCgroupReadable = func() bool { return true }
+	if _, answered := measureScope(); answered {
+		t.Error("measureScope answered on a readable layout whose delegation read failed; a transient failure must not be cached")
+	}
+}
