@@ -8,24 +8,16 @@ import (
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 )
 
-// folding returns the host FS with SameFile answering the way a case-insensitive mount
-// does: two names that differ only in case reach one file. The behaviour cannot be staged
-// on a real ext4 temp directory - creating both spellings there makes two genuinely
-// different files - so the mount's property is injected rather than built.
+// folding is the host FS with identity answered the way a case-insensitive mount answers
+// it. Taken from the corpus rather than built here, even though these cases are not corpus
+// cases: a second definition of the mount property would let this package and the
+// differential harness fold differently, which is the class of divergence the corpus
+// exists to close.
 func folding(on bool) shield.FS {
-	fs := shield.Host()
-	fs.SameFile = func(a, b string) bool {
-		// Existence is part of the behaviour, not a detail: a folding mount reaches one
-		// file under two spellings, and a name with no file behind it reaches nothing.
-		if !on || !strings.EqualFold(a, b) {
-			return false
-		}
-		_, err := os.Lstat(a)
-		return err == nil
-	}
-	return fs
+	return shieldcorpus.FS(shieldcorpus.Case{Folding: on})
 }
 
 // A read grant of the home tree is the ordinary, honored case: ~/.ssh sits inside it and
