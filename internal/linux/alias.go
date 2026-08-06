@@ -530,9 +530,17 @@ func hostFileIDs(path string) ([]identifiedFile, error) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if f, ok := identify(p, d); ok {
-			out = append(out, f)
+		// Same rule as the walk error above, and for the same reason: a file that is no
+		// longer there is not one this failed to read, but anything else would under-count
+		// the links the whole granted-tree walk is gated on.
+		f, err := identify(p, d)
+		if err != nil {
+			if nothingBehind(err) {
+				return nil
+			}
+			return fmt.Errorf("identifying the credential %s: %w", p, err)
 		}
+		out = append(out, f)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("linux: %w", err)
@@ -581,7 +589,10 @@ func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, e
 			return fmt.Errorf("reading %s to scan for credential aliases: %w", p, err)
 		}
 		if d.IsDir() {
-			if f, ok := identify(p, d); ok && !devs[f.id.dev] && p != root {
+			// An unidentified directory is descended into rather than pruned: the prune is
+			// an assertion that nothing below can hold a wanted inode, and a failed stat
+			// asserts nothing. Walking it costs time; skipping it would lose the aliases.
+			if f, err := identify(p, d); err == nil && !devs[f.id.dev] && p != root {
 				return fs.SkipDir
 			}
 			return nil
@@ -589,9 +600,15 @@ func hostAliasesUnder(root string, want map[fileID]string) ([]credentialAlias, e
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		f, ok := identify(p, d)
-		if !ok {
-			return nil
+		f, err := identify(p, d)
+		if err != nil {
+			// The walk error above's rule, applied to the second lstat: a name that is
+			// gone or a file this uid cannot stat is no leak, anything else is a
+			// could-not-look reported as clean.
+			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
+				return nil
+			}
+			return fmt.Errorf("identifying %s while scanning for credential aliases: %w", p, err)
 		}
 		if cred, hit := want[f.id]; hit {
 			out = append(out, credentialAlias{Path: p, Credential: cred})
@@ -613,16 +630,22 @@ func nothingBehind(err error) bool {
 		errors.Is(err, syscall.ELOOP)
 }
 
-func identify(path string, d fs.DirEntry) (identifiedFile, bool) {
+// identify returns a walk entry's content identity. d.Info is a second lstat for an entry
+// WalkDir read from a directory listing, so it fails on its own account - after a readdir
+// that succeeded, with WalkDir's own error parameter nil. A store rewritten mid-scan (an
+// `aws sso login`, an `ssh-keygen`, a `pass` re-encrypt) is enough. Each caller decides
+// what that means for it, because the answers differ: see hostFileIDs and
+// hostAliasesUnder.
+func identify(path string, d fs.DirEntry) (identifiedFile, error) {
 	fi, err := d.Info()
 	if err != nil {
-		return identifiedFile{}, false
+		return identifiedFile{}, err
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return identifiedFile{}, false
+		return identifiedFile{}, fmt.Errorf("stat of %s carries no unix identity", path)
 	}
-	return identifiedFile{path: path, id: fileID{dev: uint64(st.Dev), ino: st.Ino}, links: uint64(st.Nlink)}, true
+	return identifiedFile{path: path, id: fileID{dev: uint64(st.Dev), ino: st.Ino}, links: uint64(st.Nlink)}, nil
 }
 
 // hostMountpoints reads where the host's filesystems are attached, with the identity of
