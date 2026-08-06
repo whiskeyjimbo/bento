@@ -2027,3 +2027,29 @@ func TestGitDirShieldsCoversASymlinkedWalkRoot(t *testing.T) {
 		})
 	}
 }
+
+// A workspace-local cargo home (CARGO_HOME=<repo>/.cargo, routine in CI) keeps the
+// registry and git checkouts under .cargo, so the plant shields there are named as files.
+// Taking the directory instead would refuse a grant of the registry outright - a DenyWrite
+// shield has no opt-in - and, where .cargo does not exist yet, tmpfs the downloads and lose
+// them at teardown with the build still exiting zero.
+func TestWorkspaceCargoRegistryStaysWritable(t *testing.T) {
+	sb := testSandbox("/work/.git/config", "/work/.cargo/registry/cache/x")
+	writes := []string{"/work/.cargo/registry"}
+	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
+		t.Errorf("a workspace cargo registry must stay grantable: %v", err)
+	}
+
+	shielded := make(map[string]bool)
+	for _, r := range shieldRules(sb, []string{"/work"}) {
+		shielded[r.Path] = true
+	}
+	for _, p := range []string{"/work/.cargo/config.toml", "/work/.cargo/config"} {
+		if !shielded[p] {
+			t.Errorf("%s must be shielded whether or not it exists: a plant creates it", p)
+		}
+	}
+	if shielded["/work/.cargo"] {
+		t.Error("the workspace .cargo directory must not be shielded whole")
+	}
+}
