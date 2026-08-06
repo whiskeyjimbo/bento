@@ -594,6 +594,9 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".cargo/config.toml",   // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
 		".cargo/config",        // legacy (pre-1.39) cargo config filename, still read
 		".cargo/env",           // shell script rustup makes .profile source; runs on next shell
+		// `go env -w GOFLAGS=-toolexec=...` writes this file, and every later host `go
+		// build` then execs the named binary. No script and no approval record in between.
+		".config/go/env",
 		".vimrc",               // sourced when vim opens a file
 		".exrc",                // vim also sources this (ex/vi rc) on startup
 		".gvimrc",              // gvim rc, sourced on gvim startup
@@ -1261,6 +1264,16 @@ func Workspace(dir string) []Rule {
 		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
 		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
 		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
+		// config{,.toml} here names a rustc-wrapper, linker or target runner the host
+		// execs on the developer's next cargo command - the ~/.cargo/config.toml case one
+		// level in, and the one toolchain surface with no approval record that an agent
+		// has no ordinary reason to write. Taken as a directory because the legacy
+		// extensionless filename is read too and an absent one is still plantable.
+		//
+		// Residual: cargo searches every ancestor of the CWD, so a config under a nested
+		// crate (crates/foo/.cargo/) is read when the developer runs cargo from there and
+		// is not covered by a shield anchored at the checkout.
+		{Path: join(".cargo"), Deny: DenyWrite, Dir: true},
 	}
 }
 
@@ -1392,6 +1405,7 @@ var startupDefaultEnvs = []struct{ env, def string }{
 	{"SCREENRC", ".screenrc"},
 	{"PSQLRC", ".psqlrc"},
 	{"R_PROFILE_USER", ".Rprofile"},
+	{"GOENV", ".config/go/env"},
 }
 
 // The variables read by name rather than from a table above: each relocates a group or
