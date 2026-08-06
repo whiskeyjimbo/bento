@@ -493,7 +493,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		fileIDs:         hostFileIDs,
 		aliasesUnder:    hostAliasesUnder,
 		mountpoints:     hostMountpoints,
-		statID:          hostStatID,
+		statID:          hostStatIDOK,
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
