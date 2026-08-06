@@ -41,7 +41,9 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	//
 	// Asked as a READ even for the write grants, which is what leaves the above-shield
 	// refusal to clampWriteShieldedGrants' own reasoning rather than dropping every grant
-	// that encloses a shield.
+	// that encloses a shield. The one enclosing verdict a read does earn is the
+	// case-folding one, and dropping on it is right: the run refuses that grant outright,
+	// for either kind.
 	drop := func(g string) (denylist.Holds, bool) {
 		for _, spelling := range []string{g, pathresolve.Existing(g)} {
 			r, v := set.Contains(spelling, shield.Read, nil, nil)

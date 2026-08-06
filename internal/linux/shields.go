@@ -65,6 +65,23 @@ func shields(sb sandbox) shield.Set {
 		IsDir:   sb.isDir,
 		Resolve: sb.resolve,
 		ListDir: sb.listDir,
+		// Built from the alias scan's identity seam rather than a second one: both ask
+		// whether two names reach one file, and a fake that disagrees with itself between
+		// them would let the scan and the shield check tell different stories about the
+		// same host.
+		SameFile: func(a, b string) bool {
+			if sb.statID == nil {
+				// The hypothetical filesystems the compiler's tests inject have no mount
+				// behaviour to model, and no two of their names are one file.
+				return false
+			}
+			ida, ok := sb.statID(a)
+			if !ok {
+				return false
+			}
+			idb, ok := sb.statID(b)
+			return ok && ida == idb
+		},
 	}, sb.homes, sb.runtimeDir, sb.extraDeny)
 	if m := sb.shieldCache; m != nil {
 		m.done, m.set = true, set

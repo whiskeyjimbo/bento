@@ -71,6 +71,15 @@ func WriteAboveShield(grant, shield string) error {
 	return fmt.Errorf("write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", grant, shield)
 }
 
+// FoldedShield refuses a grant containing a shielded path whose directory folds case, so
+// the shield's single byte-exact bind leaves the same file readable under another
+// spelling. It offers no opt-in and no narrower grant of the shield itself, because a
+// folding directory reaches one inode under every spelling there is: nothing bento can
+// bind contains it, and only a grant that stops short of the directory does.
+func FoldedShield(grant, shield string) error {
+	return fmt.Errorf("grant %q contains the always-shielded path %q on a case-insensitive filesystem, where a second spelling of that name reaches the same file past the shield; no set of shields can cover every spelling - grant a directory that does not contain %q, or move it to a case-sensitive filesystem", grant, shield, shield)
+}
+
 // WriteIsRoot refuses a write grant of the host root, which would defeat the sandbox
 // outright. Unlike a read grant, "/" is never expanded for writes.
 func WriteIsRoot() error {
