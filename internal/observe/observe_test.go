@@ -624,7 +624,7 @@ func TestTraceDeliversSignalToHandler(t *testing.T) {
 	}
 }
 
-// The profiler must record the path-modifying syscalls (bv2-n73): a target that
+// The profiler must record the path-modifying syscalls: a target that
 // saves via atomic write-temp-then-rename, truncates, mkdir/unlinks, or symlinks
 // needs write access to the affected directories, and the old profiler saw none of
 // it. Drives the real ptrace observer over a target doing each and asserts the
@@ -703,7 +703,7 @@ libc.syscall(280, -100, (d+'/m_utime').encode(), 0, 0)       # utimensat: dirfd/
 
 // openat2 with RESOLVE_IN_ROOT resolves an absolute path relative to the dirfd, not
 // the real root, so the profiler must record it anchored at the dirfd - recording
-// the bare "/etc/hosts" would name a host path the run never opened (bv2-2yi).
+// the bare "/etc/hosts" would name a host path the run never opened.
 func TestTraceOpenat2ResolveInRoot(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {

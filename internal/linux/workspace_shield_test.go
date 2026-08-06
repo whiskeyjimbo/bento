@@ -16,7 +16,7 @@ import (
 // A write grant whose per-workspace shield is redirected by a symlinked directory
 // component must be refused: the shield would bind at the resolved path while the
 // tooling opens the literal name, and the symlink - inside the writable grant - lets
-// the target plant a real hook/task that runs on the host (bv2-1z8). Both an escape
+// the target plant a real hook/task that runs on the host. Both an escape
 // out of the grant and a redirect within it leave the literal name unshielded.
 func TestWorkspaceShieldRedirectRefused(t *testing.T) {
 	for name, target := range map[string]string{

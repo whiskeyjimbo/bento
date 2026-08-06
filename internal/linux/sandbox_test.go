@@ -316,7 +316,7 @@ func TestProfileHomeIsEmptyOverlay(t *testing.T) {
 // actually read at enforce time, as long as the same HOME is carried through both
 // phases (env consistency - the recorded path is the literal $HOME expansion). A
 // non-shielded path is used deliberately: a deny-list shield cannot be granted until
-// the checkNotShielded softening (bv2-yz3.2).
+// the checkNotShielded softening.
 func TestProfileThenEnforceHomePathRoundTrip(t *testing.T) {
 	requireSandbox(t)
 
@@ -637,7 +637,7 @@ func TestSymlinkDenyTargetOutsideGrantsNotExposed(t *testing.T) {
 	}
 }
 
-// yz3.2 end-to-end: an explicit grant of ~/.ssh is a deliberate opt-in - the program
+// The read opt-in end-to-end: an explicit grant of ~/.ssh is deliberate - the program
 // reads the real key through it (the shield is skipped, not overmounted empty), and Run
 // reports the opt-in in ShieldedGrants so a frontend can warn. Exercises the whole path:
 // checkNotShielded allows it, denyArgs skips the shield, the content binds, the run
@@ -677,7 +677,7 @@ func TestRunHonorsExplicitShieldGrant(t *testing.T) {
 	}
 }
 
-// yz3.2 regression (the write-opt-in hole): granting WRITE to a shield by its literal
+// The write-opt-in hole: granting WRITE to a shield by its literal
 // name, when that name is a symlink to a real store, must be refused - not honored as an
 // opt-in - or a run could plant keys in the real ~/.ssh. checkWriteNotAboveShield's
 // literal-vs-resolved compare misses this, so scoping the opt-in to read grants is the

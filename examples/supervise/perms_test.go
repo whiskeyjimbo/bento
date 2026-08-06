@@ -207,7 +207,7 @@ func TestListQuotesAttackerStrings(t *testing.T) {
 // concurrent run had recorded since this command loaded. A deny has no conflict with
 // the merge - the merge is deny-preferring - so folding gets the operator's rule AND
 // keeps the concurrent block. An explicit `global allow` still overwrites, or the
-// deny-preference would override the allow the operator just typed (bv2-brc0 item 5).
+// deny-preference would override the allow the operator just typed.
 func TestPermsGlobalDenyFoldsButAllowOverwrites(t *testing.T) {
 	cases := map[string]struct {
 		verb      string

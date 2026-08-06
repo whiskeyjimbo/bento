@@ -314,7 +314,8 @@ func noteDeadBridge(r *enforce.Report, died bool) {
 // Report.Set replaces unconditionally, and these two run after reconcile, so a network
 // layer already judged Unavailable would be softened to Degraded by an error path - a
 // report reading better because something else went wrong. Every other Set in the backend
-// writes Unavailable, the most severe state, so the asymmetry only exists here.
+// writes either Unavailable or a state overlaying a probe that reported Enforced, so
+// these two are the only ones that could land on an already-worse layer.
 func worsenNetwork(r *enforce.Report, state enforce.State, reason string) {
 	if state <= r.StateOf(enforce.LayerNetwork) {
 		return

@@ -21,7 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/profile"
 )
 
-// bv2-2wy regression: the clamp order is load-bearing - DropCovered must run LAST,
+// The clamp order is load-bearing - DropCovered must run LAST,
 // after the broad-write clamp, so a read under a write that gets dropped as too broad
 // is NOT swallowed by that write but surfaces as its own read grant. This fails if
 // DropCovered is reordered ahead of partitionBroad (the shape of the original bug).
@@ -50,7 +50,7 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 // A broad READ grant (~, /, or a top-level dir) must be dropped from the proposal and
 // surfaced, symmetric to the broad-write clamp. Without this, a script that lists its
 // home or the root produces read: ~ / read: /, which - once approved - binds the whole
-// tree minus only the enumerated shields, re-opening the fail-open bv2-yz3.1 closed. The
+// tree minus only the enumerated shields, re-opening a fail-open the clamp closed. The
 // specific sub-paths the script read must still survive as their own grants.
 func TestClampProposalDropsBroadReads(t *testing.T) {
 	home, _ := os.UserHomeDir()
@@ -176,7 +176,7 @@ func TestPartitionBroad(t *testing.T) {
 }
 
 // The profiling policy must be default-deny: never Read:["/"], which is the
-// fail-open trial bv2-yz3.1 removed. Only the script's own directory is granted; a
+// fail-open trial that was removed. Only the script's own directory is granted; a
 // grant of "/" would re-expose every credential the deny-list does not enumerate.
 func TestDiscoveryPolicyIsDefaultDeny(t *testing.T) {
 	p := discoveryPolicy("/home/u/tool/run.sh", "sh", nil, []string{"--flag"})
