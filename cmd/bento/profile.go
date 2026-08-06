@@ -20,6 +20,7 @@ import (
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -1729,10 +1730,13 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	// credential path can arrive resolved (/var/home/u/.ssh, anchored at a resolved cwd)
 	// while $HOME is the unresolved /home/u, or the reverse; shielding against both
 	// forms drops the grant either way. It only ever adds matches, so a grant is never
-	// wrongly kept. A home that does not resolve (nonexistent) falls back to raw.
+	// wrongly kept. Resolved through pathresolve, not EvalSymlinks, because the gate and
+	// the backend both answer this question that way: a not-yet-existing or dangling
+	// anchor resolves to where a write through it would land instead of failing, and an
+	// anchor that fails to resolve at all comes back raw.
 	homes := slices.Clone(anchors)
 	for _, h := range anchors {
-		if resolved, err := filepath.EvalSymlinks(h); err == nil && !slices.Contains(homes, resolved) {
+		if resolved := pathresolve.Existing(h); !slices.Contains(homes, resolved) {
 			homes = append(homes, resolved)
 		}
 	}
@@ -1752,8 +1756,8 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 			// whole store, so the proposal would steer the reviewer to a BROADER grant
 			// than the program needed. The drop is reported against the grant, so the
 			// extra entry only ever adds a match.
-			for _, p := range []string{r.Path, resolvedOrEmpty(r.Path)} {
-				if p != "" && !seenShield[p] {
+			for _, p := range []string{r.Path, pathresolve.Existing(r.Path)} {
+				if !seenShield[p] {
 					seenShield[p] = true
 					shields = append(shields, shieldGrant{Path: p, Holds: r.Holds})
 				}
@@ -1799,16 +1803,6 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	return keptReads, keptWrites, dropped, writeShielded
 }
 
-// resolvedOrEmpty is a shield path with the host's symlinks followed, or "" where it
-// does not resolve (an absent store, which is shielded but has no second spelling).
-func resolvedOrEmpty(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return ""
-	}
-	return resolved
-}
-
 // clampWriteShieldedGrants drops write grants at or inside a DenyWrite home shield
 // (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). checkWriteNotUnderReadOnlyShield
 // hard-refuses these at run time and there is no opt-in, so proposing one would hand the
@@ -1844,7 +1838,7 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 			// both produce) is observed at its target. Matching only the literal path
 			// would keep that write in the proposal and let compile refuse it - the
 			// disagreement this clamp exists to prevent.
-			add(resolvedOrEmpty(r.Path))
+			add(pathresolve.Existing(r.Path))
 		}
 	}
 	for _, g := range writes {
