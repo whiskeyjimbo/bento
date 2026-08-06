@@ -708,13 +708,25 @@ func identify(path string, d fs.DirEntry) (identifiedFile, error) {
 // which matters because os.Lstat on a dead hard-mounted NFS export blocks forever, and
 // hanging before launch over a filesystem holding no credential would be a worse failure
 // than the one this scan prevents. It is a filter on the mounts, not on the paths: a
-// wanted mount nested inside an unwanted one is still stat'd, and reaching it traverses
-// the filesystem it hangs under (`mount --bind ~/.ssh /mnt/nfs/x` is enough). Filtering
-// that out by ancestry is not available - a home on its own device sits under a rootfs on
-// another exactly the same way, and dropping it would lose bind detection on every
-// ordinary host. A device the kernel reports under a
+// wanted mount nested inside an unwanted one is still stat'd, because a home on its own
+// device sits under a rootfs on another exactly the same way and dropping it by ancestry
+// would lose bind detection on every ordinary host. The one ancestry that IS screened is
+// a network filesystem, below. A device the kernel reports under a
 // number that does not match the credential's st_dev (some btrfs anonymous devices) is a
 // miss, not a misattribution.
+//
+// A wanted mount reached through a network filesystem is refused rather than stat'd. The
+// device filter is on the MOUNT, not on the path used to reach it, so a bind of ~/.ssh
+// onto an NFS export carries the home's device and passes it - and the lstat then
+// traverses the export, which blocks forever on a dead hard mount. mountinfo names each
+// mount's parent and its fstype, so the ancestor chain answers that from the lines already
+// being parsed, with no extra syscall and nothing to cancel. An ordinary host has no
+// network ancestor anywhere, so bind detection is untouched.
+//
+// Refusing is what the seam contract leaves available: dropping the mount would return the
+// short list this must never produce, and the mount is exactly the shape the scan exists
+// to catch. Naming it is also more use than the hang it replaces - the remedy is the
+// user's, either unmounting the export or dropping the bind.
 //
 // A mount table that cannot be read or cannot be parsed to the end is an error, not an
 // empty result. A partial list is the dangerous shape precisely because it reads as a
@@ -728,9 +740,12 @@ func hostMountpoints(devs []uint64) ([]mountPoint, error) {
 	}
 	defer f.Close()
 
-	paths, err := mountinfoPaths(f, devs)
+	paths, behindNetwork, err := mountinfoPaths(f, devs)
 	if err != nil {
 		return nil, err
+	}
+	if len(behindNetwork) > 0 {
+		return nil, fmt.Errorf("%s is reached through a network filesystem, which cannot be stat'd without risking a hang on a dead mount; unmount the export or remove the bind", strings.Join(behindNetwork, ", "))
 	}
 
 	var out []mountPoint
@@ -754,15 +769,22 @@ func hostMountpoints(devs []uint64) ([]mountPoint, error) {
 }
 
 // mountinfoPaths returns the mountpoints in a mountinfo stream that sit on one of the
-// given devices. Splitting the parse from the stat is what makes the device filter
-// testable, and the filter is the whole reason nothing outside it is ever touched.
-func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
+// given devices, split into the ones safe to stat and the ones sitting under a network
+// filesystem. Splitting the parse from the stat is what makes the device filter testable,
+// and the filter is the whole reason nothing outside it is ever touched.
+//
+// The whole table is read before the ancestor chain is walked, because mountinfo is not
+// ordered parent-before-child: a mount moved after its parent was mounted appears wherever
+// the kernel's list puts it, and screening as the lines arrive would miss the ancestor
+// that had not been read yet.
+func mountinfoPaths(r io.Reader, devs []uint64) (paths, behindNetwork []string, err error) {
 	wanted := make(map[string]bool, len(devs))
 	for _, d := range devs {
 		wanted[fmt.Sprintf("%d:%d", unix.Major(d), unix.Minor(d))] = true
 	}
 
-	var out []string
+	var order []string
+	byID := map[string]mountEntry{}
 	scan := bufio.NewScanner(r)
 	// A mountinfo line carries a path plus the filesystem's options, and an overlayfs
 	// lowerdir= list runs well past the 64 KiB default - on which the scan would stop
@@ -771,18 +793,78 @@ func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
-		if len(fields) < 5 || !wanted[fields[2]] {
+		if len(fields) < 5 {
 			continue
 		}
-		out = append(out, unescapeMount(fields[4]))
+		e := mountEntry{parent: fields[1], path: unescapeMount(fields[4]), want: wanted[fields[2]]}
+		// The optional-fields run between the options and the "-" separator, so the fstype
+		// is found by the separator rather than by index. A line without one is malformed;
+		// treating it as non-network matches how it was read before the screen existed.
+		if sep := slices.Index(fields, "-"); sep >= 0 && sep+1 < len(fields) {
+			e.network = networkFstypes[fields[sep+1]]
+		}
+		if _, dup := byID[fields[0]]; !dup {
+			order = append(order, fields[0])
+		}
+		byID[fields[0]] = e
 	}
 	// A scan that stopped early leaves out mountpoints, and a caller that treats the
 	// short list as the whole picture would miss an alias for a shielded path. Report
 	// it rather than return the prefix, so the caller decides instead of guessing.
 	if err := scan.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+
+	for _, id := range order {
+		e := byID[id]
+		if !e.want {
+			continue
+		}
+		if networkAncestor(byID, id) {
+			behindNetwork = append(behindNetwork, e.path)
+			continue
+		}
+		paths = append(paths, e.path)
+	}
+	return paths, behindNetwork, nil
+}
+
+// mountEntry is one parsed mountinfo line, reduced to what the network screen needs.
+type mountEntry struct {
+	parent  string
+	path    string
+	network bool
+	want    bool
+}
+
+// networkFstypes are the filesystems whose server can go away with the mount still
+// attached, so a path traversal through one blocks in the kernel with nothing to cancel.
+// A local filesystem cannot do that, and fuse mounts at large are not on the list: gvfs
+// and the desktop automounters are everywhere and screening them out would refuse ordinary
+// hosts, so only the fuse transports that really are a network client are named.
+var networkFstypes = map[string]bool{
+	"nfs": true, "nfs4": true, "cifs": true, "smb3": true, "ceph": true,
+	"9p": true, "afs": true, "lustre": true, "glusterfs": true,
+	"fuse.sshfs": true, "fuse.davfs": true, "fuse.s3fs": true,
+}
+
+// networkAncestor reports whether a mount or anything it hangs under is a network
+// filesystem. The root's parent is itself in some namespaces and a moved mount can name a
+// parent that is not in the table at all, so the walk stops on both rather than assuming
+// the chain terminates.
+func networkAncestor(byID map[string]mountEntry, id string) bool {
+	for seen := map[string]bool{}; !seen[id]; {
+		seen[id] = true
+		e, ok := byID[id]
+		if !ok {
+			return false
+		}
+		if e.network {
+			return true
+		}
+		id = e.parent
+	}
+	return false
 }
 
 // hostStatID returns a single path's content identity, without following a final symlink -
