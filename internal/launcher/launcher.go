@@ -507,6 +507,16 @@ func networkStdioRefusals() []error {
 // every wire family. Enumerating AF_INET and AF_INET6 would let an AF_PACKET descriptor -
 // raw frames on the host's wire - through the check written to stop exactly that.
 //
+// The file KINDS are an allowlist for the same reason, and only a regular file and a
+// pipe pass unconditionally. An anonymous-inode descriptor - pidfd, eventfd, epoll,
+// timerfd, io_uring - carries no type bits at all (S_IFMT is 0), so a switch that
+// defaulted to permitting handed a pidfd on 0/1/2 straight through, and pidfd_getfd()
+// against a host process steals descriptors past every fence bento installs. Naming the
+// dangerous anon types by their /proc/self/fd readlink would be the denylist again;
+// refusing the class costs nothing, since none of them is a byte stream a target could
+// use as stdio anyway. A memfd is unaffected - it is S_IFREG on tmpfs, not an anon inode,
+// and reaches nothing outside.
+//
 // This allowlist is NOT egressFilter's, though it once borrowed its shape, and the
 // difference is why AF_NETLINK passes there and is refused here. That filter governs
 // socket CREATION inside the sandbox's own namespaces, where a new netlink socket binds
@@ -542,6 +552,9 @@ func refuseNetworkFD(fd int) error {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d could not be examined: %w", fd, err)
 	}
 	switch st.Mode & unix.S_IFMT {
+	case unix.S_IFREG, unix.S_IFIFO:
+		// A file or a pipe on stdio is the ordinary case - redirection and `bento run | less`.
+		return nil
 	case unix.S_IFSOCK:
 		// Classified below: only the socket case is opt-in-able.
 	case unix.S_IFDIR:
@@ -558,7 +571,7 @@ func refuseNetworkFD(fd int) error {
 		}
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited character device (%d:%d) that is neither a terminal nor one the sandbox's own /dev provides", fd, unix.Major(st.Rdev), unix.Minor(st.Rdev))
 	default:
-		return nil
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is of a kind this check cannot classify (mode %#o); nothing the sandbox installs revokes what an already-open descriptor carries", fd, st.Mode)
 	}
 	domain, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
 	if err != nil {
