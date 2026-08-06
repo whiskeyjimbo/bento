@@ -114,11 +114,11 @@ var errAllowlistUnavailableABI = errors.New("landlock: kernel ABI unavailable, r
 // rule builders for the same reason: it changes what a read grant confers, and the other
 // tiers' grants must keep meaning what they have always meant.
 //
-// NOTHING IN A POLICY REACHES THIS. There is no exec: allowlist mode, and ADR-0008
-// records why Landlock cannot provide one. This is kept as the executable evidence for
-// that decision: the probe's execallow_loader arm, which runs through here, is what
-// demonstrates the finding rather than asserting it, and a claim about kernel behaviour
-// with nothing to re-run it against is the thing an ADR is worst at holding.
+// NOTHING IN A POLICY REACHES THIS. There is no exec: allowlist mode, because Landlock
+// cannot provide one. This is kept as the executable evidence for that decision: the
+// probe's execallow_loader arm, which runs through here, is what demonstrates the finding
+// rather than asserting it, and a claim about kernel behaviour with nothing to re-run it
+// against is the thing a written record is worst at holding.
 //
 // The two facts it demonstrates, both reproduced on ABI 4:
 //
@@ -362,6 +362,13 @@ func classifyRules(rules []ll.Rule, paths []string, dirRule, fileRule func(...st
 // close it: the unhandled right leaves every other ioctl on every device node the target
 // can open unrestricted, and with no mount namespace that is the host's whole /dev, which
 // is why the report names it rather than treating it as covered.
+//
+// One more thing changes what is actually installed, and it is a property of the BUILD
+// rather than of the host: below ABI 8 and with cgo enabled, go-landlock silently appends
+// a read_dir grant on /proc/<pid>/task (its bug39 workaround, build-tagged
+// "linux && cgo && !landlocktsync"). The shipped binary is built with cgo off and so does
+// not carry it, but `make race` needs CGO_ENABLED=1 - so the ruleset the race detector
+// exercises on such a kernel is not the one that ships.
 func RestrictDegraded(read, write, exec []string) error {
 	// BestEffort silently restricts nothing when it detects ABI 0 (an empty ruleset
 	// returns success), which for this tier - where Landlock is the only filesystem

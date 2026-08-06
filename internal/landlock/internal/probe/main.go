@@ -61,7 +61,8 @@
 // Usage: probe execallow <write-dir> <allowed-binary> <other-binary> <loader>
 // Applies RestrictExecAllowlist - the whole tree readable but not executable, with
 // execute granted on allowed-binary alone. No policy uses that ruleset; this mode is the
-// evidence behind ADR-0008. Prints "execallow_allowed=OK|DENIED
+// evidence behind the decision to withhold an exec allowlist. Prints
+// "execallow_allowed=OK|DENIED
 // execallow_other=... execallow_loader=... execallow_read=...". allowed-binary must be
 // statically linked, which is the mode's own precondition: a dynamic one cannot run
 // without the loader, and the loader arm here is what shows why granting the loader

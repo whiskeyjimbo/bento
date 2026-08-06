@@ -369,7 +369,7 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	}
 
 	// Surface any always-shielded store the policy explicitly opted back into the sandbox
-	// (yz3.2) for the frontend to warn about, named by its literal deny-list path and by
+	// for the frontend to warn about, named by its literal deny-list path and by
 	// what it holds. The shields still protect every path not opted into.
 	optIns := explicitShieldOptIns(sb, p.Read)
 
