@@ -1455,3 +1455,34 @@ func TestConfirmNetworkExfil(t *testing.T) {
 		})
 	}
 }
+
+// The DenyAll clamp must match a symlinked store by its TARGET too, for the reason its
+// DenyWrite sibling does: a ~/.gnupg symlinked into a dotfiles checkout is observed at
+// the target, and checkReadNotShielded resolves the rule before comparing. Keeping the
+// grant drafts a manifest bento hard-refuses, and the only remedy that refusal offers -
+// a read of the shielding directory itself - exposes the whole store, so the proposal
+// would steer the reviewer to a broader grant than the program ever needed.
+func TestClampShieldMatchesSymlinkedStoreTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store := filepath.Join(t.TempDir(), "dotfiles", "gnupg")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(home, ".gnupg")); err != nil {
+		t.Skipf("cannot symlink on this filesystem: %v", err)
+	}
+	resolvedStore, err := filepath.EvalSymlinks(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	grant := filepath.Join(resolvedStore, "pubring.kbx")
+	kept, _, dropped, _ := clampShieldedGrants([]string{grant}, nil)
+	if slices.Contains(kept, grant) {
+		t.Errorf("a read observed at the symlinked store's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
+	}
+	if len(dropped) != 1 || dropped[0].Holds != denylist.HoldsCredentials {
+		t.Errorf("the drop must name what the store holds so the warning is specific; got %+v", dropped)
+	}
+}
