@@ -414,15 +414,15 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		byPath[r.Path] = r
 	}
 	for path, want := range map[string]string{
-		"/elsewhere/direnv":               "DIRENV_CONFIG",
-		"/elsewhere/mise-state":           "MISE_STATE_DIR",
-		"/elsewhere/mise-config":          "MISE_CONFIG_DIR",
-		"/elsewhere/mise-data/shims":      "MISE_DATA_DIR",
-		"/home/u/.config/direnv":          "",
-		"/home/u/.local/state/mise":       "",
-		"/home/u/.config/mise":            "",
-		"/home/u/.cache/pre-commit":       "",
-		"/home/u/.local/share/mise/shims": "",
+		"/elsewhere/direnv":                         "DIRENV_CONFIG",
+		"/elsewhere/mise-state/trusted-configs":     "MISE_STATE_DIR",
+		"/elsewhere/mise-config":                    "MISE_CONFIG_DIR",
+		"/elsewhere/mise-data/shims":                "MISE_DATA_DIR",
+		"/home/u/.config/direnv":                    "",
+		"/home/u/.local/state/mise/trusted-configs": "",
+		"/home/u/.config/mise":                      "",
+		"/home/u/.cache/pre-commit":                 "",
+		"/home/u/.local/share/mise/shims":           "",
 	} {
 		r, ok := byPath[path]
 		if !ok {
@@ -436,12 +436,29 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 			t.Errorf("shield at %q credits %q, want %q", path, r.Source, want)
 		}
 	}
-	// MISE_DATA_DIR shields only the shims, not the interpreter installs beside them.
-	if r, ok := byPath["/elsewhere/mise-data"]; ok {
-		t.Errorf("the relocated mise data tree must stay writable, got %+v", r)
+	// Each variable relocates a base whose shielded part is narrower than the base
+	// itself: mise writes tracked-configs and its interpreter installs beside the record
+	// and the shims on every ordinary invocation, and a DenyWrite shield has no opt-out.
+	for _, p := range []string{"/elsewhere/mise-data", "/elsewhere/mise-state", "/home/u/.local/state/mise"} {
+		if r, ok := byPath[p]; ok {
+			t.Errorf("%s must stay writable, got %+v", p, r)
+		}
 	}
 	if _, ok := byPath["relcache"]; ok {
 		t.Error("a relative PRE_COMMIT_HOME must not produce a shield")
+	}
+}
+
+// /dev/null is how a user disables a config, and the degraded tier enforces a DenyWrite
+// on it for real: every "> /dev/null" inside the sandbox then fails. addWriteShield drops
+// it centrally so no call site has to remember, and the write-shielded directory loop is
+// a call site.
+func TestHomeSkipsAWriteOnlyDirRelocatedToDevNull(t *testing.T) {
+	t.Setenv("DIRENV_CONFIG", "/dev/null")
+	for _, r := range allRules("/home/u") {
+		if r.Path == "/dev/null" {
+			t.Errorf("DIRENV_CONFIG=/dev/null produced a shield: %+v", r)
+		}
 	}
 }
 
@@ -1300,8 +1317,10 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		// approve writes it - so a sandboxed run must not be able to author one.
 		"/home/u/.local/state/bento",
 		// mise's per-host trust record, and the settings that bypass it. Denying both is
-		// what makes every in-tree mise.toml inert without enumerating one of them.
-		"/home/u/.local/state/mise",
+		// what makes every in-tree mise.toml inert without enumerating one of them. The
+		// record only, not the state tree: tracked-configs beside it is written by
+		// ordinary use and grants no trust.
+		"/home/u/.local/state/mise/trusted-configs",
 		"/home/u/.config/mise",
 		// The hook repos pre-commit clones and the host executes at the next commit; the
 		// .git/hooks entry point Workspace shields only execs what lives here.
