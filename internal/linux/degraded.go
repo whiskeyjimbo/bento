@@ -201,6 +201,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 
 	err = cmd.Run()
 	_ = killProcessGroup(cmd.Process)
+	// See the same guard in Run: a cancel kills the launcher group and the exit status
+	// left behind is indistinguishable from the policy's limits ending the target.
+	if err != nil && ctx.Err() != nil {
+		return enforce.Result{Report: report}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+	}
 	switch {
 	case cmd.ProcessState == nil:
 		// The launcher never started or exec failed - a genuine setup failure.
