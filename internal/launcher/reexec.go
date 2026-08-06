@@ -44,6 +44,9 @@ func EncodeLaunch(cfg Config) []string {
 	if cfg.AllowNetworkStdio {
 		args = append(args, "--allow-network-stdio")
 	}
+	if cfg.RecordExec {
+		args = append(args, "--record-exec")
+	}
 	for _, w := range cfg.Writable {
 		args = append(args, "--rw", w)
 	}
@@ -69,6 +72,7 @@ func DecodeLaunch(args []string) (Config, error) {
 		livenessFD int
 		writable   stringList
 		netStdio   bool
+		recordExec bool
 	)
 	fs.StringVar(&execMode, "exec", "none", "")
 	fs.StringVar(&socket, "socket", "", "")
@@ -77,6 +81,7 @@ func DecodeLaunch(args []string) (Config, error) {
 	fs.IntVar(&appliedFD, "applied-fd", 0, "")
 	fs.Var(&writable, "rw", "")
 	fs.BoolVar(&netStdio, "allow-network-stdio", false, "")
+	fs.BoolVar(&recordExec, "record-exec", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, fmt.Errorf("launcher: parsing launch invocation: %w", err)
 	}
@@ -93,6 +98,7 @@ func DecodeLaunch(args []string) (Config, error) {
 		ObserveFD:         observeFD,
 		AppliedFD:         appliedFD,
 		AllowNetworkStdio: netStdio,
+		RecordExec:        recordExec,
 		Target:            fs.Args(),
 	}, nil
 }

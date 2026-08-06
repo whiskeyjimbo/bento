@@ -202,7 +202,13 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 		return 0, err
 	}
 
-	return runTarget(cfg.Block, cfg.Target, env, applied)
+	// Never a recorder here, and no wire flag to ask for one: this tier installs
+	// seccomp.BlockProcessReach above, which denies ptrace process-wide and before the
+	// dispatch, so the launcher's own attach would be refused by its own filter. That
+	// filter is load-bearing - with no pid namespace the target shares the host's process
+	// table - and is not loosened for a diagnostic. The host knows which tier it ran and
+	// reports the recorder absent from there rather than asking the stage to say so.
+	return runTarget(cfg.Block, cfg.Target, env, applied, nil)
 }
 
 // EncodeLaunchDegraded renders the direct-child launch invocation for cfg. The
