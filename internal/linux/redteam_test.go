@@ -25,7 +25,7 @@ import (
 // TestTraversalCannotEscapeGrantToSibling), each with a positive control.
 
 // Default-deny's keystone at enforce time: granting one path under home must not drag
-// in an ungranted sibling. The inversion (bv2-yz3) rests on a forgotten path failing
+// in an ungranted sibling. The inversion rests on a forgotten path failing
 // closed - absent - rather than leaking, so a narrow grant beside a secret must leave
 // the secret unreachable. The positive control grants the whole home and reads the
 // same secret, proving it is real and reachable and that the narrow grant - not a

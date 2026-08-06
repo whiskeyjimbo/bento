@@ -9,7 +9,7 @@ import (
 
 // openat2 with RESOLVE_IN_ROOT treats the dirfd as the root, so an absolute path is
 // re-rooted there and a ".." climbing above it is clamped - recording the bare path
-// would name a host file the run never opened (bv2-2yi). RESOLVE_BENEATH instead
+// would name a host file the run never opened. RESOLVE_BENEATH instead
 // rejects an absolute path outright (EXDEV), so it must not be anchored as if it
 // resolved. The earlier TrimPrefix collapsed neither the extra leading slash nor the
 // "..", leaking the real host path.

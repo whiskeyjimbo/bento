@@ -309,7 +309,7 @@ func TestRuntimeShieldsHostSockets(t *testing.T) {
 }
 
 // A relocated XDG base moves credential/config stores out from under ~/.config,
-// so the shields must cover the XDG location too (bv2-3qg).
+// so the shields must cover the XDG location too.
 func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/home/u/cfg")
 	t.Setenv("XDG_DATA_HOME", "/home/u/data")
@@ -344,7 +344,7 @@ func TestHomeIgnoresRelativeXDGBase(t *testing.T) {
 
 // A tool-specific env var (GNUPGHOME etc.) moves a whole credential store off its default
 // path; the shield must follow to the absolute target while the default stays shielded.
-// A relative value is ignored, like a relative XDG base (bv2-ovj).
+// A relative value is ignored, like a relative XDG base.
 func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	t.Setenv("GNUPGHOME", "/secrets/gnupg")
 	t.Setenv("DOCKER_CONFIG", "/secrets/docker")

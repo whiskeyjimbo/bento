@@ -100,6 +100,9 @@ func Run(cfg Config) (int, error) {
 	// overwriting each other. They are mutually exclusive by design - profiling produces
 	// an observation, not an enforcement report - and this is where that is checked
 	// rather than only stated.
+	if cfg.ObserveFD > 0 && cfg.AppliedFD > 0 {
+		return 0, fmt.Errorf("launcher: cannot both profile and report applied layers: descriptors %d and %d", cfg.ObserveFD, cfg.AppliedFD)
+	}
 	// The same absolute check RunDegraded makes, for the same reason: cfg.Writable arrives
 	// from argv and names the Landlock ruleset, so a relative path confines the target to a
 	// tree the policy never granted. The bwrap mount namespace bounds the damage here, but
@@ -109,9 +112,6 @@ func Run(cfg Config) (int, error) {
 		if !filepath.IsAbs(p) {
 			return 0, fmt.Errorf("launcher: confinement paths must be absolute, got %q", p)
 		}
-	}
-	if cfg.ObserveFD > 0 && cfg.AppliedFD > 0 {
-		return 0, fmt.Errorf("launcher: cannot both profile and report applied layers: descriptors %d and %d", cfg.ObserveFD, cfg.AppliedFD)
 	}
 	// The bridge's liveness pipe is a descriptor from the same launch invocation, and
 	// startBridge closes its copy once the bridge has it. Pointed at the report

@@ -907,7 +907,7 @@ func TestWriteRuntimeDirNote(t *testing.T) {
 	}
 }
 
-// yz3.2: the warning names each opted-in credential path loudly, and stays silent when
+// The warning names each opted-in credential path loudly, and stays silent when
 // the policy opted into none (the common run).
 func TestWriteShieldedGrantWarning(t *testing.T) {
 	var b bytes.Buffer

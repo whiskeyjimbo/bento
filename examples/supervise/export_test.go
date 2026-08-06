@@ -217,7 +217,7 @@ func TestImportKeepsDenyAndSkipsWildcards(t *testing.T) {
 // Export is the one place a store decision leaves the wrapper's shielding: the
 // exported manifest runs under plain `bento run`, with no approve() refusal and no
 // enforced-run backstop behind it. A remembered allow covering the permission store
-// therefore has to be refused here too, or it graduates into a real grant (bv2-yc8g).
+// therefore has to be refused here too, or it graduates into a real grant.
 func TestExportRefusesGrantCoveringTheStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -251,7 +251,7 @@ func TestExportRefusesGrantCoveringTheStore(t *testing.T) {
 // resolves a manifest's relative path against the manifest's directory. Exporting one
 // would therefore ship a grant that means something other than what the store shield
 // judged - a path missing the store from the export cwd can reach it from beside the
-// manifest. Export refuses rather than pick an anchor (found reviewing bv2-yc8g).
+// manifest. Export refuses rather than pick an anchor.
 func TestExportRefusesRelativeGrant(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

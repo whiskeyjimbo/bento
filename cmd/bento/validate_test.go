@@ -20,7 +20,7 @@ import (
 )
 
 // validate must surface resource limits in both the human summary and --json, so a
-// reviewer (and CI) can see the memory/cpu/pids ceilings before approving (bv2-cyz).
+// reviewer (and CI) can see the memory/cpu/pids ceilings before approving.
 func TestValidateShowsLimits(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M", CPU: "50%", PIDs: 64}}
 
