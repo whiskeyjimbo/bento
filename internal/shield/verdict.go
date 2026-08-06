@@ -98,8 +98,16 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 	// Checked for both kinds and before the write-only verdicts, because a case-folding
 	// mount defeats a shield for a plain read - the grant that reaches the second
 	// spelling need not be able to write anything.
+	//
+	// An opted-into shield is passed over, as in the loop above. The opt-in already binds
+	// that store's real content read-only, so a second spelling reaching the same content
+	// exposes nothing the author did not ask for, and refusing here would withdraw the one
+	// escape the other refusals point them at.
 	for _, a := range s.applied {
-		if a.Rule.Deny == denylist.DenyAll && policy.CoversResolved(grant, a.Resolved) && s.foldsCase(a.Resolved) {
+		if a.Rule.Deny != denylist.DenyAll || slices.Contains(optIns, a.Resolved) {
+			continue
+		}
+		if policy.CoversResolved(grant, a.Resolved) && s.foldsCase(a.Resolved) {
 			return a.Rule, FoldedShield
 		}
 	}

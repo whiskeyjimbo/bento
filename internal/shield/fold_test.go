@@ -17,7 +17,13 @@ import (
 func folding(on bool) shield.FS {
 	fs := shield.Host()
 	fs.SameFile = func(a, b string) bool {
-		return on && strings.EqualFold(a, b)
+		// Existence is part of the behaviour, not a detail: a folding mount reaches one
+		// file under two spellings, and a name with no file behind it reaches nothing.
+		if !on || !strings.EqualFold(a, b) {
+			return false
+		}
+		_, err := os.Lstat(a)
+		return err == nil
 	}
 	return fs
 }
@@ -65,5 +71,31 @@ func TestGrantInsideAShieldKeepsItsOwnRefusalWhenTheMountFoldsCase(t *testing.T)
 
 	if _, got := set.Contains(filepath.Join(home, ".ssh", "id_rsa"), shield.Read, nil, nil); got != shield.InsideShield {
 		t.Errorf("got %v, want InsideShield", got)
+	}
+}
+
+// The read opt-in survives a folding mount. It is the escape the other shield refusals
+// point their reader at, and it binds the store's real content read-only - so a second
+// spelling reaching that same content exposes nothing the author did not already ask for.
+// Refusing it here would leave the folding refusal telling them to use a remedy it had
+// just taken away.
+func TestTheReadOptInSurvivesAFoldingMount(t *testing.T) {
+	home := t.TempDir()
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+	optIns := shield.Targets(set.OptIns([]string{ssh}))
+	if len(optIns) == 0 {
+		t.Fatal("a read naming the shield exactly must find a shield to opt into")
+	}
+
+	if _, got := set.Contains(ssh, shield.Read, optIns, nil); got != shield.Honored {
+		t.Errorf("got %v, want Honored", got)
+	}
+	// The grant that CONTAINS the opted-into shield is honored for the same reason.
+	if _, got := set.Contains(home, shield.Read, optIns, nil); got != shield.Honored {
+		t.Errorf("a home grant with ~/.ssh opted in: got %v, want Honored", got)
 	}
 }
