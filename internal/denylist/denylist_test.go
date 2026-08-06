@@ -449,15 +449,56 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	}
 }
 
-// /dev/null is how a user disables a config, and the degraded tier enforces a DenyWrite
-// on it for real: every "> /dev/null" inside the sandbox then fails. addWriteShield drops
-// it centrally so no call site has to remember, and the write-shielded directory loop is
-// a call site.
-func TestHomeSkipsAWriteOnlyDirRelocatedToDevNull(t *testing.T) {
-	t.Setenv("DIRENV_CONFIG", "/dev/null")
+// The three guards the happy path never reaches, because a relocation onto a fresh
+// directory outside every anchor satisfies all of them. Each drops a rule for its own
+// reason, and dropping the wrong one is silent: a DenyWrite inside a hidden tree survives
+// a read opt-in on that tree and hands the run a zero-byte answer, and a restatement of
+// the default credits a variable for a shield bento would have applied anyway.
+func TestHomeDropsWriteOnlyDirRelocationsTheGuardsCatch(t *testing.T) {
+	t.Setenv("MISE_CONFIG_DIR", "/home/u/.config/mise") // isDefault: a restatement
+	t.Setenv("MISE_STATE_DIR", "/home/u/.ssh")          // covered: inside a DenyAll tree
+	t.Setenv("DIRENV_CONFIG", "/home/u")                // shieldable: the anchor itself
+	t.Setenv("PRE_COMMIT_HOME", "/dev/null")            // the disable-this-config idiom
+
 	for _, r := range allRules("/home/u") {
-		if r.Path == "/dev/null" {
-			t.Errorf("DIRENV_CONFIG=/dev/null produced a shield: %+v", r)
+		switch r.Source {
+		case "MISE_CONFIG_DIR", "MISE_STATE_DIR", "DIRENV_CONFIG", "PRE_COMMIT_HOME":
+			t.Errorf("%s produced a shield the guards should have dropped: %+v", r.Source, r)
+		}
+		if r.Path == "/dev/null" || r.Path == "/home/u" {
+			t.Errorf("a relocation landed on %q: %+v", r.Path, r)
+		}
+	}
+}
+
+// mise reads these three with no trust check at all, so a host that points one at a
+// dotfile repo has the shield on the trust record buying nothing. They are files, not
+// directories, which is why they sit in startupDefaultEnvs rather than beside the state
+// and config dirs.
+func TestHomeShieldsRelocatedMiseConfigFiles(t *testing.T) {
+	t.Setenv("MISE_GLOBAL_CONFIG_FILE", "/dotfiles/mise-global.toml")
+	t.Setenv("MISE_SYSTEM_CONFIG_FILE", "/dotfiles/mise-system.toml")
+	t.Setenv("MISE_ENV_FILE", "/dotfiles/mise.env")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	for path, want := range map[string]string{
+		"/dotfiles/mise-global.toml": "MISE_GLOBAL_CONFIG_FILE",
+		"/dotfiles/mise-system.toml": "MISE_SYSTEM_CONFIG_FILE",
+		"/dotfiles/mise.env":         "MISE_ENV_FILE",
+	} {
+		r, ok := byPath[path]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", path)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("%s must be a DenyWrite file shield, got %+v", path, r)
+		}
+		if r.Source != want {
+			t.Errorf("shield at %q credits %q, want %q", path, r.Source, want)
 		}
 	}
 }
