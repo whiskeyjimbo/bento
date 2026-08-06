@@ -175,6 +175,12 @@ loop:
 // granted so far rather than what the target needs.
 type convergeStop int
 
+const (
+	convergeDone      convergeStop = iota // a round surfaced nothing new
+	convergeQuit                          // the user quit mid-session
+	convergeMaxRounds                     // the round cap was hit without converging
+)
+
 // foreignShielded reports whether granting path would expose a credential or
 // persistence store in a home directory the enforced run will not re-shield - the
 // foreign-home case clampShieldedGrants cannot drop (it clamps only the profiler's own

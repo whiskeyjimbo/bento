@@ -11,6 +11,13 @@ import (
 
 type grantChoice int
 
+const (
+	grantNo   grantChoice = iota // n / blank / unrecognized: decline, do not mount
+	grantYes                     // y: mount this path next round
+	grantAll                     // a: accept this and every remaining path this session
+	grantQuit                    // q / EOF: stop the loop, keep what was accepted so far
+)
+
 // newGrantPrompter reads one single-line answer per call from in, mapping it to a
 // grant choice. EOF returns grantQuit so a closed input ends the loop rather than
 // erroring or looping forever.

@@ -1198,19 +1198,6 @@ func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged [
 	return withheld, flagged
 }
 
-const (
-	convergeDone      convergeStop = iota // a round surfaced nothing new
-	convergeQuit                          // the user quit mid-session
-	convergeMaxRounds                     // the round cap was hit without converging
-)
-
-const (
-	grantNo   grantChoice = iota // n / blank / unrecognized: decline, do not mount
-	grantYes                     // y: mount this path next round
-	grantAll                     // a: accept this and every remaining path this session
-	grantQuit                    // q / EOF: stop the loop, keep what was accepted so far
-)
-
 // discoveryPolicy is the policy a profiling run executes under. It is default-deny,
 // the same as a real run: nothing under $HOME is mounted, so the target probes its
 // real credential paths and the observer records them without the content ever being
