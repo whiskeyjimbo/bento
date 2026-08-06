@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -44,32 +45,43 @@ func TestInterruptedRunLeavesNoShieldArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var stderr strings.Builder
 	cmd := exec.Command(bin, "run", "--allow-unapproved", manifest)
 	cmd.Dir = project
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// Waited on here rather than after the signal, so the poll below can tell a run that
+	// never reached the sandbox - a refusal, a manifest the schema stopped accepting -
+	// from one that is still coming up. Without it that failure polls for the full
+	// deadline against a dead process and skips, leaving the test green and vacuous.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	// The sandbox has to be up before the signal means anything: too early and the
 	// shield mount point does not exist yet, so the test would pass without exercising
 	// the cleanup at all.
 	hooks := filepath.Join(project, ".git", "hooks")
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.After(15 * time.Second)
 	for {
 		if _, err := os.Stat(hooks); err == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case err := <-exited:
+			t.Fatalf("bento exited before the sandbox was up (%v); stderr:\n%s", err, stderr.String())
+		case <-deadline:
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			t.Skip("bwrap never created the .git/hooks shield mount point on this host")
+			<-exited
+			t.Skipf("bwrap never created the .git/hooks shield mount point on this host; stderr:\n%s", stderr.String())
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 
 	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Wait(); err == nil {
+	if err := <-exited; err == nil {
 		t.Error("an interrupted run exited 0; the abort must not read as a clean run")
 	}
 	if _, err := os.Stat(hooks); err == nil {
