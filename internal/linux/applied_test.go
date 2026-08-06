@@ -560,3 +560,31 @@ func mustDup(t *testing.T, f *os.File) int {
 	}
 	return fd
 }
+
+// The strict exec filter is a VALUE of the exec-filter record, not a record of its own -
+// so the tamper stance below, which discards a report holding any line the stage does not
+// write, must not fire on an ordinary strict run.
+func TestParseAppliedAcceptsStrictAndRejectsAnExtraLine(t *testing.T) {
+	for name, tc := range map[string]struct {
+		report string
+		want   bool
+	}{
+		"a strict-filter run":          {"exec-filter strict\nlandlock yes\nAPPLIED\n", true},
+		"a basic-filter run":           {"exec-filter basic\nlandlock yes\nAPPLIED\n", true},
+		"a line the stage never wrote": {"exec-filter strict\nstrict yes\nlandlock yes\nAPPLIED\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte(tc.report), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a := parseApplied(openReport(t, path))
+			if a.complete != tc.want {
+				t.Errorf("complete = %v, want %v (%+v)", a.complete, tc.want, a)
+			}
+			if tc.want && a.execFilter == "" {
+				t.Errorf("the exec-filter value must survive; got %+v", a)
+			}
+		})
+	}
+}
