@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/denylist/audit"
 )
 
@@ -106,6 +107,19 @@ func main() {
 // is asserted without the network. A refusal from collect is the answer on its own - the
 // audit never ran, so there is no diff to report.
 func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
+	// denylist.Home reads a couple of dozen relocation variables, so the rule set it
+	// returns for the fixed home above is the DEVELOPER's, not a canonical one: a shell
+	// carrying GNUPGHOME, CARGO_HOME or XDG_CONFIG_HOME adds rules CI does not have, any
+	// of which can cover an upstream candidate and report a real gap as covered. The audit
+	// is a comparison of two lists and only means something when its own list is the same
+	// everywhere, which is the invariant Home and Runtime both document and this is what
+	// makes it hold.
+	for _, v := range denylist.RelocationVars() {
+		if err := os.Unsetenv(v); err != nil {
+			fmt.Fprintf(stderr, "denylist-audit: could not clear $%s, so the rule set is this host's: %v\n", v, err)
+			return exitContentRefused
+		}
+	}
 	sources, status := collect(fetch, stderr)
 	if status != 0 {
 		return status

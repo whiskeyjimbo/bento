@@ -242,6 +242,30 @@ func RuntimeDir() string {
 	return filepath.Clean(dir)
 }
 
+// UnshieldableRuntimeDir returns XDG_RUNTIME_DIR as the environment spells it when the
+// variable is set but no shield can follow it there, and "" otherwise - including when it
+// is unset, where there is nothing to shield and nothing to say.
+//
+// Two values reach that state and RuntimeDir cannot tell them apart from an unset one,
+// because it answers with a path and both of these have none to give: a RELATIVE value
+// (hand-rolled container entrypoints write these), which an absolute bind cannot cover,
+// and a value at or above a home anchor, where the rule would hide the whole grant
+// surface. Either way the run keeps only /run and /var/run, and the rule count alone reads
+// exactly like an ordinary host's - so the caller that reports it needs the raw spelling
+// and needs to know the variable was set at all.
+//
+// Not a refusal: XDG_RUNTIME_DIR=$HOME is normal on the minimal containers bento runs in.
+func UnshieldableRuntimeDir(homes []string) string {
+	raw := os.Getenv("XDG_RUNTIME_DIR")
+	if raw == "" {
+		return ""
+	}
+	if dir := RuntimeDir(); dir == "" || !Shieldable(dir, homes) {
+		return raw
+	}
+	return ""
+}
+
 // Shieldable reports whether a relocation target can carry a deny rule at all, given the
 // run's home anchors.
 //
@@ -410,12 +434,12 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".config/hg/hgrc",
 		".ansible/galaxy_token",      // the token only: the collections cache beside it is what an in-sandbox ansible reads
 		".curlrc",                    // --user user:pass lives here and curl reads it by default
+		".config/curlrc",             // the XDG spelling curl has read since 7.73
 		".wgetrc",                    // password= lives here, same
 		".ansible.cfg",               // galaxy_token, plus the library/roles_path/vault_password_file exec knobs
 		".config/pypoetry/auth.toml", // registry tokens when no keyring is available
 		".bunfig.toml",               // [install] registry token, the .npmrc/.yarnrc.yml case
 		".dbt/profiles.yml",          // warehouse passwords, the .pgpass class
-		".subversion/config",         // names diff-cmd/editor-cmd helper binaries (.subversion/auth is a dir shield)
 
 		// The ICE session-manager cookie is the same capability for the session-management
 		// channel (a client authenticating with it can drive session restart/shutdown and
@@ -576,6 +600,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".psqlrc",              // \! runs a shell command when psql starts
 		".Rprofile",            // R sources it at startup (.Renviron holds the secrets and is DenyAll above)
 		".mcp.json",
+		// Subversion's config names diff-cmd/editor-cmd helper binaries. It carries no
+		// secret of its own - those are under the .subversion/auth shield - so it is
+		// readable and plant-denied rather than hidden, the .gitconfig treatment.
+		".subversion/config",
 
 		// Additional shell startup files: read when the matching shell starts or a login
 		// session opens; a planted or modified line runs on the host next time.
@@ -669,9 +697,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".config/VSCodium",
 		".vscode-server", // Remote's extension host, with its own data/Machine/settings.json
 		".vscode-oss",
+		".vscode-insiders", // the home-level extension tree of the Insiders build
 		// JetBrains IDEs: options/*.xml declares external tools and run configurations, both
-		// command lines the IDE runs on the host. Workspace already shields the per-repo
-		// .idea for the same reason, so the global half being absent was an inconsistency.
+		// command lines the IDE runs on the host - the global half of what Workspace shields
+		// per repo as .idea.
 		// The password safe writes a c.kdbx under the same tree when no native keyring is
 		// available; it sits behind a per-product-version directory name, so it cannot be
 		// named as a concrete DenyAll path and stays readable under this write shield.
@@ -919,22 +948,6 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// Only KUBECONFIG is a search list. The rest name one file, and a path may legally
 	// contain a colon, so splitting them would shield two halves of a name and leave the
 	// real file exposed.
-	fileEnvs := []struct {
-		env, store string
-		list       bool
-	}{
-		{env: "KUBECONFIG", store: ".kube", list: true},
-		{env: "AWS_SHARED_CREDENTIALS_FILE", store: ".aws"},
-		{env: "AWS_CONFIG_FILE", store: ".aws"},
-		// The service-account JSON private key, the canonical GCP credential. The directory
-		// beside it (CLOUDSDK_CONFIG) is already followed above, so the file pointer being
-		// absent was an inconsistency.
-		{env: "GOOGLE_APPLICATION_CREDENTIALS", store: ".config/gcloud"},
-		{env: "AWS_WEB_IDENTITY_TOKEN_FILE", store: ".aws"},
-		// podman/skopeo/buildah's registry auth.json. Its primary default is under
-		// XDG_RUNTIME_DIR, which Runtime shields; this is the pointer that moves it out.
-		{env: "REGISTRY_AUTH_FILE", store: ".config/containers"},
-	}
 	underStore := func(p, store string) bool {
 		for _, h := range anchors {
 			s := filepath.Join(h, store)
@@ -978,32 +991,17 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// R_ENVIRON_USER moves ~/.Renviron (plaintext API keys/DB passwords) - both credential
 	// configs, hidden for the same reason as the histories. A value equal to the named
 	// default is already covered and dropped; relative values cannot be bound.
-	fileDenyAllEnvs := []struct {
-		env, def string
-		holds    Holds
-	}{
-		{"HISTFILE", "", HoldsHistory},
-		{"NPM_CONFIG_USERCONFIG", ".npmrc", HoldsCredentials},
-		{"R_ENVIRON_USER", ".Renviron", HoldsCredentials},
-		{"LESSHISTFILE", ".lesshst", HoldsHistory},
-		{"MYSQL_HISTFILE", ".mysql_history", HoldsHistory},
-		{"PSQL_HISTORY", ".psql_history", HoldsHistory},
-		{"SQLITE_HISTORY", ".sqlite_history", HoldsHistory},
-		{"REDISCLI_HISTFILE", ".rediscli_history", HoldsHistory},
-		{"NODE_REPL_HISTORY", ".node_repl_history", HoldsHistory},
-		// Both name a single config file whose default is shielded above and whose content
-		// is a credential (a Terraform Cloud token, a galaxy_token) beside an exec knob
-		// (ANSIBLE_CONFIG's library/roles_path/vault_password_file).
-		{"TF_CLI_CONFIG_FILE", ".terraformrc", HoldsCredentials},
-		{"ANSIBLE_CONFIG", ".ansible.cfg", HoldsCredentials},
-	}
 	for _, fe := range fileDenyAllEnvs {
 		v := os.Getenv(fe.env)
 		if !filepath.IsAbs(v) {
 			continue
 		}
 		c := filepath.Clean(v)
-		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || !shieldable(c) {
+		// underDenyAll for the reason the fileEnvs loop above tests it: the def compare
+		// only catches the DEFAULT spelling, so a target inside an already-hidden tree
+		// (a relocated store, or plain ~/.ssh) would get an interior rule that survives an
+		// opt-in on that tree and hands back a zero-byte file.
+		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || underDenyAll(c, rules) || !shieldable(c) {
 			continue
 		}
 		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds, Source: fe.env})
@@ -1041,7 +1039,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// the block above. BASH_ENV is sourced by every non-interactive bash (why sudo strips
 	// it); ENV by interactive POSIX sh/ksh/mksh/dash, and it is how ~/.kshrc / ~/.mkshrc
 	// get designated. Both name a file with no default path to compare against.
-	for _, env := range []string{"BASH_ENV", "ENV"} {
+	for _, env := range startupFileEnvs {
 		if v := os.Getenv(env); filepath.IsAbs(v) {
 			addWriteShield(filepath.Clean(v), env)
 		}
@@ -1054,13 +1052,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// R_ENVIRON_USER is not here: .Renviron holds plaintext secrets, so its relocation is a
 	// DenyAll target in the fileDenyAllEnvs block above (which also neutralizes the same
 	// R_PROFILE_USER exec knob).
-	for _, de := range []struct{ env, def string }{
-		{"INPUTRC", ".inputrc"},
-		{"PYTHONSTARTUP", ".pythonrc.py"},
-		{"SCREENRC", ".screenrc"},
-		{"PSQLRC", ".psqlrc"},
-		{"R_PROFILE_USER", ".Rprofile"},
-	} {
+	for _, de := range startupDefaultEnvs {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
 			if c := filepath.Clean(v); c != join(de.def) {
 				addWriteShield(c, de.env)
@@ -1323,6 +1315,103 @@ func AliasAnchors(homes ...string) []string {
 		}
 	}
 	return out
+}
+
+var fileEnvs = []struct {
+	env, store string
+	list       bool
+}{
+	{env: "KUBECONFIG", store: ".kube", list: true},
+	{env: "AWS_SHARED_CREDENTIALS_FILE", store: ".aws"},
+	{env: "AWS_CONFIG_FILE", store: ".aws"},
+	// The service-account JSON private key, the canonical GCP credential. It is always
+	// an absolute path and has no default filename, so the variable is the only thing
+	// that names it.
+	{env: "GOOGLE_APPLICATION_CREDENTIALS", store: ".config/gcloud"},
+	{env: "AWS_WEB_IDENTITY_TOKEN_FILE", store: ".aws"},
+	// podman/skopeo/buildah's registry auth.json. Its primary default is under
+	// XDG_RUNTIME_DIR, which Runtime shields; this is the pointer that moves it out.
+	{env: "REGISTRY_AUTH_FILE", store: ".config/containers"},
+}
+
+var fileDenyAllEnvs = []struct {
+	env, def string
+	holds    Holds
+}{
+	{"HISTFILE", "", HoldsHistory},
+	{"NPM_CONFIG_USERCONFIG", ".npmrc", HoldsCredentials},
+	{"R_ENVIRON_USER", ".Renviron", HoldsCredentials},
+	{"LESSHISTFILE", ".lesshst", HoldsHistory},
+	{"MYSQL_HISTFILE", ".mysql_history", HoldsHistory},
+	{"PSQL_HISTORY", ".psql_history", HoldsHistory},
+	{"SQLITE_HISTORY", ".sqlite_history", HoldsHistory},
+	{"REDISCLI_HISTFILE", ".rediscli_history", HoldsHistory},
+	{"NODE_REPL_HISTORY", ".node_repl_history", HoldsHistory},
+	// Both name a single config file whose default is shielded above and whose content
+	// is a credential (a Terraform Cloud token, a galaxy_token) beside an exec knob
+	// (ANSIBLE_CONFIG's library/roles_path/vault_password_file).
+	{"TF_CLI_CONFIG_FILE", ".terraformrc", HoldsCredentials},
+	{"PGPASSFILE", ".pgpass", HoldsCredentials},
+	{"WGETRC", ".wgetrc", HoldsCredentials},
+	{"ANSIBLE_CONFIG", ".ansible.cfg", HoldsCredentials},
+}
+
+// The single startup files a variable designates with no default path to compare against.
+// BASH_ENV is sourced by every non-interactive bash (why sudo strips it); ENV by
+// interactive POSIX sh/ksh/mksh/dash, and it is how ~/.kshrc / ~/.mkshrc get designated.
+var startupFileEnvs = []string{"BASH_ENV", "ENV"}
+
+// The variables that each relocate one startup/config file the host RUNS, whose
+// conventional default is shielded by name.
+var startupDefaultEnvs = []struct{ env, def string }{
+	{"INPUTRC", ".inputrc"},
+	{"PYTHONSTARTUP", ".pythonrc.py"},
+	{"SCREENRC", ".screenrc"},
+	{"PSQLRC", ".psqlrc"},
+	{"R_PROFILE_USER", ".Rprofile"},
+}
+
+// The variables read by name rather than from a table above: each relocates a group or
+// carries an idiom the table shape cannot express.
+var loneEnvs = []string{
+	"ZDOTDIR",
+	"GIT_CONFIG_GLOBAL",
+	"PIP_CONFIG_FILE",
+	"MAILCAPS",
+	"CARGO_HOME",
+	"XDG_RUNTIME_DIR",
+}
+
+// RelocationVars returns every environment variable the rule set reads, so a caller that
+// must not have its answer depend on the ambient environment can clear them.
+//
+// The completeness audit is that caller: it builds this rule set for a fixed home and
+// diffs it against an upstream corpus, so a GNUPGHOME or an XDG_CONFIG_HOME in the
+// developer's shell adds a rule CI does not have, which can cover an upstream candidate
+// and turn a real gap green. Home and Runtime document that invariant already; nothing
+// but this makes it reachable, because the reads are spread over a dozen tables.
+//
+// Assembled from those tables rather than restated, so a variable added to one is covered
+// here by construction. The by-name group is the residue that no table holds, and
+// TestRelocationVarsNamesEveryEnvRead reads this file to prove it is complete.
+func RelocationVars() []string {
+	out := make([]string, 0, 48)
+	for _, b := range xdgBases {
+		out = append(out, b.env)
+	}
+	for _, e := range dirEnvs {
+		out = append(out, e.env)
+	}
+	for _, e := range fileEnvs {
+		out = append(out, e.env)
+	}
+	for _, e := range fileDenyAllEnvs {
+		out = append(out, e.env)
+	}
+	for _, e := range startupDefaultEnvs {
+		out = append(out, e.env)
+	}
+	return append(append(out, startupFileEnvs...), loneEnvs...)
 }
 
 // The tool-specific variables that move a whole credential directory off its default path.

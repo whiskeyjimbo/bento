@@ -108,6 +108,7 @@ func newRunCmd() *cobra.Command {
 			writeMissingReadNotes(os.Stderr, missingReads)
 			writeFileishWriteNotes(os.Stderr, fileishWriteGrants(p.Write))
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
+			writeRuntimeDirNote(os.Stderr)
 
 			e, err := backend.New()
 			if err != nil {
