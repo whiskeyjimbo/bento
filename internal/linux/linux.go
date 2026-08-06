@@ -208,6 +208,15 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	bridgeDied := bridgeReportedDeath(bridgeLiveness)
 
+	// A cancelled ctx SIGKILLs the target, and the exit status that produces is
+	// byte-identical to the policy's own memory cap killing it (137, signal 9) under a
+	// full Enforced report - the opposite meaning. Only consulted where the command
+	// failed: a target that exited on its own just before the cancel landed did run to
+	// completion, and a late cancel does not unmake that.
+	if runErr != nil && ctx.Err() != nil {
+		return enforce.Result{Report: report}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+	}
+
 	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
