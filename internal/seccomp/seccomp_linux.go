@@ -188,5 +188,10 @@ func Exec(argv, envp []string) error {
 	runtime.KeepAlive(pathPtr)
 	runtime.KeepAlive(argvPtr)
 	runtime.KeepAlive(envpPtr)
+	// Only reached on failure - a successful execveat replaced this image - but the errno is
+	// tested rather than assumed, so this cannot report "errno 0" if that ever stops holding.
+	if errno == 0 {
+		return fmt.Errorf("seccomp: execveat %q returned without replacing the process", argv[0])
+	}
 	return fmt.Errorf("seccomp: execveat %q: %w", argv[0], errno)
 }
