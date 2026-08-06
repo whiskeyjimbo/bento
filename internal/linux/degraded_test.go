@@ -601,7 +601,11 @@ func TestRunDegradedRefusesAnAliasedCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{project}}
+	// A write grant for a directory that does not exist yet: the refusal must leave the
+	// host as it found it, the way the bwrap tier does, so the scan has to run before
+	// the grant is prepared.
+	out := filepath.Join(project, "out")
+	p := &policy.Policy{Entrypoint: entrypoint, Interpreter: "/bin/sh", Read: []string{project}, Write: []string{out}}
 	proc := enforce.Process{Env: map[string]string{"HOME": home}}
 
 	_, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, proc, "", nil)
@@ -612,5 +616,8 @@ func TestRunDegradedRefusesAnAliasedCredential(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q must name %q", err, want)
 		}
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Errorf("the refused run left %s behind on the host", out)
 	}
 }
