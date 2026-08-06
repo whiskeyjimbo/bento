@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -138,7 +139,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 
 	reads := []string{g}
 	optIns := explicitShieldOptIns(sb, reads)
-	optInLit, optInRes := optInPaths(optIns), optInTargets(optIns)
+	optInLit, optInRes := optInPaths(optIns), shield.Targets(optIns)
 
 	// Coupling 1: the opt-in set matches independent ground truth. resolve is
 	// identity here, so literal and resolved are equal and both must be exactly [g]

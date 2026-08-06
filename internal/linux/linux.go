@@ -26,6 +26,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -343,14 +344,14 @@ type preflighted struct {
 	// optIns are the shields the policy opted back into the sandbox: the literal
 	// deny-list names for the frontend's warning, and the resolved ones the shield
 	// bookkeeping compares against.
-	optIns  []shieldOptIn
+	optIns  []shield.OptIn
 	aliases []credentialAlias
 }
 
 // createdShields names the shield mount points bwrap will create on the host for this
 // run, so the caller can remove them afterwards.
 func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
-	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, optInTargets(pf.optIns))
+	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, shield.Targets(pf.optIns))
 }
 
 // preflightGrants decides everything that can refuse a run and then prepares the host
@@ -519,7 +520,6 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		// Allocated here, not lazily: the sandbox is passed by value, so a map created
 		// on first use would live in one copy and every other call site would miss it.
 		workspaceShieldCache: map[string][]denylist.Rule{},
-		credentialLinkCache:  &credentialLinkMemo{},
 	}
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
@@ -542,6 +542,10 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		cleanup()
 		return sandbox{}, noop, err
 	}
+	// Allocated only now, after the caller's denies are final. The memo holds the whole
+	// assembled set, denies included, so warming it any earlier would hand every later
+	// question a set the caller's shields never reached - and it would do it silently.
+	sb.shieldCache = &shieldMemo{}
 
 	// compile re-binds the entrypoint and the interpreter read-only AFTER the
 	// deny-list, so either one can carry a caller-denied file into the sandbox

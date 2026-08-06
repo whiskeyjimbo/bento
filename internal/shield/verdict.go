@@ -54,13 +54,24 @@ const (
 // one (a write naming a shield exactly is both inside it and above it) is refused in the
 // sentence the run would have printed rather than whichever rule happened to sort first.
 //
+// A write grant of "/" must be refused by the caller BEFORE it gets here. This reports
+// AboveShield for it - every shield on the host is under it - and names whichever one
+// sorts first, which is a true statement about a dotfile and a useless one about a grant
+// that would hand over the whole filesystem.
+//
 // optIns are the resolved targets of the shields a READ opts into, from OptIns below;
-// pass nil for a write, which is what keeps the opt-in read-only. workspace are the
-// shields derived from the write grants themselves - a checkout's git hooks and editor
-// task files - which are a runtime input rather than part of the assembled set, because
-// they depend on the grants being judged. They are consulted in the INSIDE direction
-// only: a self-derived shield sits strictly under its own grant, so refusing a grant that
-// contains one would refuse every project write there is.
+// pass nil for a write, which is what keeps the opt-in read-only.
+//
+// workspace are the shields derived from the write grants themselves - a checkout's git
+// hooks and editor task files - a runtime input rather than part of the assembled set,
+// because they depend on the grants being judged. Two things about them are load-bearing.
+// They are consulted in the INSIDE direction only: a self-derived shield sits strictly
+// under its own grant, so refusing a grant that contains one would refuse every project
+// write there is. And the caller must pass the union derived from EVERY write grant,
+// derived without gating on the grant being an existing directory - the gate belongs on
+// what is mounted, not on what is judged, because gating here admits a grant while its
+// directory is still absent, lets the run create it, and refuses on the next pass with
+// the artifact already on the host.
 func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []denylist.Rule) (denylist.Rule, Verdict) {
 	for _, a := range s.applied {
 		if a.Rule.Deny != denylist.DenyAll {

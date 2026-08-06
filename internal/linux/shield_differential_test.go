@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 )
 
@@ -24,7 +25,7 @@ func TestShieldCorpusBackendVerdicts(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A fresh sandbox per case, not one hoisted out of the loop: the symlink
-			// expansion memoizes on an UNKEYED field (credentialLinkCache), so a reused
+			// set memoizes on an UNKEYED field (shieldCache), so a reused
 			// sandbox would answer the second case with the first case's rules and say
 			// nothing about it.
 			sb := corpusSandbox(home)
@@ -53,7 +54,7 @@ func corpusSandbox(home string) sandbox {
 		// Allocated per sandbox for the reason newSandbox allocates them: the value is
 		// copied at every call, so a nil map here would be a memo no caller shares.
 		workspaceShieldCache: map[string][]denylist.Rule{},
-		credentialLinkCache:  &credentialLinkMemo{},
+		shieldCache:          &shieldMemo{},
 	}
 }
 
@@ -65,7 +66,7 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 	t.Helper()
 	g := c.Path(sb.homes[0])
 	if !c.Write {
-		optIns := optInTargets(explicitShieldOptIns(sb, []string{g}))
+		optIns := shield.Targets(explicitShieldOptIns(sb, []string{g}))
 		if c.OptInRead && len(optIns) == 0 {
 			t.Errorf("%s is meant to be an opt-in read but the backend found no shield to opt into", g)
 		}

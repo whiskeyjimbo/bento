@@ -507,7 +507,7 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 	for _, a := range denylist.AliasAnchors(sb.homes...) {
 		roots = append(roots, sb.resolve(a))
 	}
-	for _, r := range alwaysShields(sb) {
+	for _, r := range shields(sb).Rules() {
 		if r.Deny == denylist.DenyAll && !r.Dir {
 			roots = append(roots, sb.resolve(r.Path))
 		}

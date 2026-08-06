@@ -18,6 +18,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -162,17 +163,16 @@ type sandbox struct {
 	// by value: a map made lazily would live in one copy and be invisible to every other
 	// call site. A test literal leaves it nil, where the walk simply runs each time.
 	workspaceShieldCache map[string][]denylist.Rule
-	// credentialLinkCache memoizes the symlinked-credential expansion for one run.
-	// credentialLinkShields walks every DenyAll credential/history/persistence store on the
-	// host - isDir/listDir/resolve per entry - and alwaysShields is reached roughly ten
-	// times per compile: shieldRules from both denyArgs and createdShields, appliedShields
-	// from each grant check with checkGrants running twice, plus the alias scan, the
-	// degraded tier and the launch path. Bounded trees, but ten enumerations of them on a
-	// cold cache or an NFS home is launch latency for nothing.
+	// shieldCache memoizes the run's assembled shield set. Assembling it walks every
+	// DenyAll credential/history/persistence store on the host - isDir/listDir/resolve per
+	// entry - and the set is reached roughly ten times per compile: the mount emission from
+	// both denyArgs and createdShields, each grant check with checkGrants running twice,
+	// plus the alias scan, the degraded tier and the launch path. Bounded trees, but ten
+	// enumerations of them on a cold cache or an NFS home is launch latency for nothing.
 	//
-	// Unkeyed, unlike workspaceShieldCache: the input is the built-in rule set, which is
-	// derived from sb.homes and sb.runtimeDir alone and is therefore identical on every
-	// call. What makes it sound for the whole run is that the walk descends only inside
+	// Unkeyed, unlike workspaceShieldCache: the input is sb.homes, sb.runtimeDir and
+	// sb.extraDeny, which do not change within a run. What makes it sound for the whole
+	// run is that the walk descends only inside
 	// DenyAll stores, where a write grant is refused outright - so prepareWriteDirs' mid-run
 	// mkdir of the granted write directories cannot reach one, let alone plant a symlink in
 	// it. Single-goroutine: shields are derived before the sandbox starts.
@@ -180,15 +180,16 @@ type sandbox struct {
 	// A pointer allocated at construction rather than a value, because the sandbox is passed
 	// by value: a memo written into one copy would be invisible to every other call site. A
 	// test literal leaves it nil, where the walk simply runs each time.
-	credentialLinkCache *credentialLinkMemo
+	shieldCache *shieldMemo
 }
 
-// credentialLinkMemo is one run's symlinked-credential expansion. done is carried apart
-// from the rules because the ordinary host keeps no dotfile farm at all: an empty result
-// is the answer, not a miss, and without the flag that host would re-walk every time.
-type credentialLinkMemo struct {
-	done  bool
-	rules []denylist.Rule
+// shieldMemo is one run's assembled shield set. done is carried apart from the set
+// because assembling it walks the credential stores on disk and the ordinary host keeps
+// no dotfile farm at all: an empty expansion is the answer, not a miss, and without the
+// flag that host would re-walk on every question.
+type shieldMemo struct {
+	done bool
+	set  shield.Set
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -317,7 +318,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	// would otherwise leave the running code writable. Each covers one explicitly
 	// named, executable file and adds no write anywhere, so what they can expose past
 	// a DenyAll shield is exactly the program the user pointed bento at.
-	optIns := optInTargets(explicitShieldOptIns(sb, p.Read))
+	optIns := shield.Targets(explicitShieldOptIns(sb, p.Read))
 	deny, appliedShields := denyArgs(sb, exposedPaths(sb, reads, writes), writes, optIns)
 	args = append(args, deny...)
 
@@ -669,127 +670,28 @@ func interpreterPrefix(interp string) string {
 	return dir
 }
 
-// alwaysShields is the deny-list every run applies regardless of grants: the
-// built-in home credential/config shields, the host's runtime state (its service
-// sockets), plus any caller-supplied extra denies. Everything that enforces or
-// checks the always-on shields derives from this, so a caller deny can never reach
-// one place and miss another; appliedShields carries that invariant for the grant
-// checks, which need the rules as denyArgs will really mount them.
-func alwaysShields(sb sandbox) []denylist.Rule {
-	rules := append(builtinShields(sb), sb.extraDeny...)
-	// Expanded here rather than in shieldRules so the grant checks see these shields:
-	// a rule only denyArgs knows about is one a policy can name and be silently
-	// overmounted on, which is the asymmetry this function's contract exists to prevent.
-	// Expanded over the built-ins only, the same set explicitShieldOptIns expands, so a
-	// shield derived here is always one a policy can opt into.
-	return append(rules, credentialLinkShields(sb)...)
-}
-
-// builtinShields is the deny-list before a caller's own denies and before the symlink
-// expansion: the home credential rules and the host's runtime state. It is the input
-// credentialLinkShields expands, and the two consumers of that expansion have to build it
-// identically or the memo below would hand one of them the other's answer.
-func builtinShields(sb sandbox) []denylist.Rule {
-	return append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
-}
-
-// credentialLinkShields is the symlinked-credential expansion of the built-in shields,
-// hoisted out of denyArgs so the opt-in machinery expands the same way the shields do: a
-// shield a policy cannot opt into is one it can only be refused over.
+// shields is the run's assembled shield set: the built-in credential and runtime rules,
+// the caller's own denies, the symlinked-credential expansion, and the drops - all of it
+// from internal/shield, which is where the validate gate and the profiler clamp get the
+// same answer. Everything that enforces or checks a shield derives from this, so a caller
+// deny can never reach one place and miss another.
 //
-// It derives its own input rather than taking one, which is what lets the memo be
-// unkeyed: a caller that could pass a different rule set would get the built-in answer
-// back from a warm memo with nothing to say so.
-func credentialLinkShields(sb sandbox) []denylist.Rule {
-	if m := sb.credentialLinkCache; m != nil && m.done {
-		return m.rules
+// The sandbox's seams are handed over as the shield package's own FS, not as the sandbox
+// itself: that is what keeps the compiler's fake-filesystem tests working against shared
+// code, and what keeps a backend type out of a package cmd/bento has to import.
+func shields(sb sandbox) shield.Set {
+	if m := sb.shieldCache; m != nil && m.done {
+		return m.set
 	}
-	homes := resolvedHomes(sb)
-	var out []denylist.Rule
-	for _, r := range builtinShields(sb) {
-		if r.Deny != denylist.DenyAll || !r.Dir {
-			continue
-		}
-		switch r.Holds {
-		case denylist.HoldsCredentials, denylist.HoldsHistory, denylist.HoldsPersistence:
-			out = append(out, shieldedLinks(sb, r, homes, r.Path, 0)...)
-		}
+	set := shield.Assemble(shield.FS{
+		IsDir:   sb.isDir,
+		Resolve: sb.resolve,
+		ListDir: sb.listDir,
+	}, sb.homes, sb.runtimeDir, sb.extraDeny)
+	if m := sb.shieldCache; m != nil {
+		m.done, m.set = true, set
 	}
-	if m := sb.credentialLinkCache; m != nil {
-		m.done, m.rules = true, out
-	}
-	return out
-}
-
-// appliedShield is a deny-list rule paired with the path its shield actually mounts
-// at. The rule is kept whole because a refusal names the path the deny-list built
-// (~/.gnupg), not the target the host's symlinks lead to.
-type appliedShield struct {
-	rule     denylist.Rule
-	resolved string
-}
-
-// appliedShields returns the always-on shields as denyArgs will really apply them:
-// resolved, with the rules denyArgs drops removed. Every grant check derives its
-// always-on set from this, so a refusal can never be raised over a shield that was never
-// mounted, and a drop condition added to denyArgs cannot land on one check and miss the
-// siblings. The grant-derived workspace shields are not here; the one check that consults
-// them (checkWriteNotUnderReadOnlyShield) adds them itself, since they depend on writes.
-func appliedShields(sb sandbox) []appliedShield {
-	homes := resolvedHomes(sb)
-	var out []appliedShield
-	for _, r := range alwaysShields(sb) {
-		if rp, ok := shieldTarget(sb, r.Path, homes); ok {
-			out = append(out, appliedShield{rule: r, resolved: rp})
-		}
-	}
-	return out
-}
-
-// shieldTarget resolves a deny-list path to where its shield would mount and reports
-// whether denyArgs applies it at all. Two resolutions leave nothing to shield:
-//
-//   - the root, which a deny dotfile symlinked to "/" reaches: tmpfs or binding over
-//     it would swallow the whole sandbox root;
-//   - a path that moved onto a home or an ancestor of one, where the shield would hide
-//     everything the policy granted rather than one store. Only where resolution MOVED
-//     it: denylist.Shieldable already guarded what it chose to emit and deliberately
-//     exempts a store that IS an anchor ($HOME=/home/u/.aws beside a passwd home of
-//     /home/u), which a blanket test here would silently unshield.
-//
-// homes are the run's anchors already resolved, hoisted by the caller because every
-// caller tests many rules against one set.
-func shieldTarget(sb sandbox, literal string, homes []string) (string, bool) {
-	rp := sb.resolve(literal)
-	if rp == "/" {
-		return "", false
-	}
-	if rp != literal && !denylist.Shieldable(rp, homes) {
-		return "", false
-	}
-	return rp, true
-}
-
-// resolvedHomes is the run's home anchors as the host's symlinks leave them, the form
-// shieldTarget compares a moved shield against.
-func resolvedHomes(sb sandbox) []string {
-	homes := make([]string, len(sb.homes))
-	for i, h := range sb.homes {
-		homes[i] = sb.resolve(h)
-	}
-	return homes
-}
-
-// homeShields is the credential deny-list anchored on every home the run knows about.
-func homeShields(sb sandbox) []denylist.Rule {
-	var rules []denylist.Rule
-	for _, h := range sb.homes {
-		rules = append(rules, denylist.Home(h)...)
-	}
-	// Once over the whole anchor set, not once per anchor: an env relocation names one
-	// absolute path, so a per-anchor call would emit it twice and stamp the copies with
-	// whichever anchor's Source came out first.
-	return append(rules, denylist.Relocated(rules, sb.homes)...)
+	return set
 }
 
 // shieldRules is the full deny-list for a run: the mandatory Home shields plus,
@@ -798,7 +700,7 @@ func homeShields(sb sandbox) []denylist.Rule {
 // keeps denyArgs and createdShields enforcing and cleaning up the exact same
 // set - a divergence would either leak a host artifact or leave a path unshielded.
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
-	rules := alwaysShields(sb)
+	rules := shields(sb).Rules()
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
@@ -810,74 +712,6 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		}
 	}
 	return rules
-}
-
-// shieldedLinks covers the credentials a credential store keeps as symlinks into a dotfile farm
-// (stow, chezmoi, yadm): ~/.ssh is a real directory holding id_rsa -> ~/dotfiles/ssh/id_rsa.
-// The shield binds over ~/.ssh, and inside the sandbox the link dangles - but the target
-// is covered by no rule at all and is read in full under a grant of ~. A symlinked store
-// as a WHOLE (~/.netrc -> ~/dotfiles/netrc) has always been chased, because shieldTarget
-// resolves a rule's own path; only a link INSIDE a directory rule was missed.
-//
-// The rule is emitted on the TARGET, through the same shieldTarget the shields resolve
-// with - which is what keeps a link to "/" or onto a home anchor from shielding the whole
-// grant. Naming the target rather than the link is what makes the opt-in reachable: a
-// grant is resolved before it is compared, so a rule left on the link path refuses the
-// grant that names it and then recommends that same grant as the remedy. Descent is over
-// real subdirectories only, so a planted link cannot
-// take the walk out of the store or loop it; depth bounds a deep farm as a backstop.
-//
-// The private-data stores are the one group not walked: a browser profile or a mail
-// store is hundreds of thousands of files to enumerate on every launch, which is the same
-// reason the alias scan does not anchor on them. The rest are small and are all real farm
-// targets - a stowed ~/.config/i3 or ~/.config/systemd is as ordinary as a stowed ~/.ssh.
-// A .git inside a store (~/.password-store is one by design) is skipped for the reason
-// hostFileIDs skips it: content-addressed blobs, no credential names.
-//
-// Opting into the STORE (read: ~/.ssh) lifts the store's own shield but not these, since
-// each is a rule at its own path: the store then reads inside the sandbox as a set of
-// dangling links. That is the conservative answer and it is silent, which on a farm host
-// is a surprise - the remedy is to name the target, which is honored and warns.
-func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, depth int) []denylist.Rule {
-	if depth > maxGitdirDepth || !sb.isDir(dir) {
-		return nil
-	}
-	if filepath.Base(dir) == ".git" {
-		return nil
-	}
-	names, links, ok := sb.listDir(dir)
-	if !ok {
-		// Nothing to enumerate and nothing exposed either: the whole directory is
-		// hidden by the DenyAll shield this is expanding.
-		return nil
-	}
-	var out []denylist.Rule
-	for _, name := range links {
-		p := filepath.Join(dir, name)
-		rp, ok := shieldTarget(sb, p, homes)
-		if !ok || rp == p || !underAny(rp, homes) {
-			// A target outside every home is not a dotfile farm. Stow, chezmoi and yadm
-			// all keep theirs in the home by construction, while a link out of a store to
-			// somewhere else is as often an ordinary file that a grant already names -
-			// and shielding one of those refuses a policy that has nothing to do with a
-			// credential. The residual is a farm kept outside the home (/opt/dotfiles),
-			// which stays unshielded.
-			//
-			// Deliberate, not pending: dropping the restriction shields whatever a
-			// credential store happens to link to, and "a credential store links to it" is
-			// not evidence a path holds a credential - a chain hop through ~/.ssh to a
-			// granted temp file is the ordinary counterexample. The discriminators that
-			// would separate the two either read the policy's grants, which alwaysShields
-			// must not do, or guess at farm layout. Name the target in a read grant to
-			// reach it; it is shielded at its own path and warns.
-			continue
-		}
-		out = append(out, denylist.Rule{Path: rp, Deny: denylist.DenyAll, Dir: sb.isDir(rp), Holds: r.Holds, Source: r.Source})
-	}
-	for _, name := range names {
-		out = append(out, shieldedLinks(sb, r, homes, filepath.Join(dir, name), depth+1)...)
-	}
-	return out
 }
 
 // workspaceShields is the code-execution surface of the checkout a write grant lands
@@ -1069,9 +903,8 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// (never at a symlink, which aborts the run). Two rules that resolve to the same
 	// real path (/var/run and /run on a merged host) collapse to one; only the
 	// identical rule is dropped, so a path shielded two different ways keeps both.
-	// shieldTarget carries the drops, shared with the grant checks so neither side can
-	// refuse over a shield the other never applied.
-	homes := resolvedHomes(sb)
+	// Mount carries the drops, shared with the grant checks so neither side can refuse
+	// over a shield the other never applied.
 	// Keyed on what the shield actually does and not on the whole rule: two rules can
 	// name one resolved path and differ only in fields that describe it to a reader
 	// (which store it holds, which env var put it there). Those produce byte-identical
@@ -1084,12 +917,9 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	}
 	seen := map[shieldKey]int{}
 	resolved := make([]denylist.Rule, 0, len(rules))
-	for _, r := range rules {
-		rp, ok := shieldTarget(sb, r.Path, homes)
-		if !ok {
-			continue
-		}
-		r.Path = rp
+	for _, a := range shields(sb).Mount(rules) {
+		r := a.Rule
+		r.Path = a.Resolved
 		k := shieldKey{r.Path, r.Deny, r.Dir}
 		if i, ok := seen[k]; ok {
 			// One path can be both a default store under one anchor and a relocation
@@ -1110,7 +940,7 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// child that landed earlier, or was never emitted because no grant reached it
 	// directly. Collect the DenyWrite rules whose shield actually ro-binds a real
 	// directory subtree, so a DenyAll descendant of one is shielded even when only the
-	// parent is granted. The test is the real kind, not the declared r.Dir: shield()
+	// parent is granted. The test is the real kind, not the declared r.Dir: shieldMount()
 	// binds by what is on disk, so a file-declared rule pointed at a directory (an env
 	// relocation like GIT_CONFIG_GLOBAL) still ro-binds the whole tree. An absent path
 	// becomes an empty tmpfs and a real file has no subtree, so both expose nothing.
@@ -1161,7 +991,7 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 			if !needed {
 				continue
 			}
-			args = append(args, shield(r, sb)...)
+			args = append(args, shieldMount(r, sb)...)
 			applied = append(applied, r)
 		}
 	}
@@ -1189,15 +1019,10 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 // already existing, and this returns only nonexistent paths, so bwrap never creates a
 // mount point for them and there is nothing to clean up.
 func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []string) {
-	rules := shieldRules(sb, writes)
-	homes := resolvedHomes(sb)
 	seen := map[string]bool{}
-	for _, r := range rules {
-		rp, ok := shieldTarget(sb, r.Path, homes)
-		if !ok {
-			continue
-		}
-		r.Path = rp
+	for _, a := range shields(sb).Mount(shieldRules(sb, writes)) {
+		r := a.Rule
+		r.Path = a.Resolved
 		if !shieldNeeded(r, sb, grants, writes, optIns) || sb.exists(r.Path) {
 			continue
 		}
@@ -1312,7 +1137,7 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) 
 // real target: reads follow the symlink to it, and the bind makes it read-only.
 // (Replacing the symlink itself under a broad home write grant is not preventable
 // this way, but that grant is discouraged and the profiler no longer proposes it.)
-func shield(r denylist.Rule, sb sandbox) []string {
+func shieldMount(r denylist.Rule, sb sandbox) []string {
 	switch {
 	case r.Deny == denylist.DenyAll:
 		// A tmpfs hides a directory's contents and absorbs new files; a file cannot take
@@ -1360,7 +1185,7 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	if err := checkWriteNotRoot(writes); err != nil {
 		return err
 	}
-	optInShields := optInTargets(explicitShieldOptIns(sb, p.Read))
+	optInShields := shield.Targets(explicitShieldOptIns(sb, p.Read))
 	// Only reads carry the opt-in: a write grant under a shield the policy also reads
 	// must stay refused, so it is checked against no opt-ins at all - and refused in a
 	// sentence that does not offer the read's remedy.
@@ -1398,11 +1223,11 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 // - naming it to the author of a write grant instructs them to add a line that will not
 // lift their refusal.
 func checkReadNotShielded(sb sandbox, reads, optInShields []string) error {
-	return checkNotShielded(sb, reads, optInShields, grantrefusal.InsideShield)
+	return checkNotShielded(sb, shield.Read, reads, optInShields, grantrefusal.InsideShield)
 }
 
 func checkWriteNotShielded(sb sandbox, writes []string) error {
-	return checkNotShielded(sb, writes, nil, grantrefusal.WriteInsideShield)
+	return checkNotShielded(sb, shield.Write, writes, nil, grantrefusal.WriteInsideShield)
 }
 
 // checkNotShielded rejects a grant that falls inside a fully-shielded location
@@ -1415,38 +1240,18 @@ func checkWriteNotShielded(sb sandbox, writes []string) error {
 //
 // refuse is the sentence the grant's kind is refused in; the two wrappers above are the
 // only callers, so a third kind cannot arrive without choosing one.
-func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(grant, shield string) error) error {
-	// The shields as denyArgs applies them: resolved, so a grant naming a symlinked
-	// shield's real target (write: /data/keys with ~/.ssh -> /data/keys) is caught
-	// rather than silently honored, and with denyArgs' drops carried, so a rule it
-	// never mounts cannot refuse a run and blame an unrelated dotfile for it.
-	shields := appliedShields(sb)
+func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []string, refuse func(grant, shield string) error) error {
+	set := shields(sb)
 	for _, g := range grants {
-		for _, s := range shields {
-			r, rp := s.rule, s.resolved
-			if r.Deny != denylist.DenyAll {
-				continue
-			}
-			// A READ grant that names the shielded path itself is a deliberate, warned
-			// opt-in (a program that legitimately reads ~/.ssh, no source change): honor it
-			// - denyArgs skips the shield so the real content binds read-only, and Run
-			// warns. optInShields carries the built-in shields whose LITERAL deny-list path
-			// a READ named (see explicitShieldOptIns); a write grant, or a read of a
-			// symlink's resolved target, is NOT an opt-in and stays refused, so the shield
-			// cannot be written through or side-stepped by spelling out where it points. A
-			// grant strictly inside a shield is likewise refused - a shield entry cannot be
-			// partly lifted - so opting one file in means naming the shielding directory
-			// and taking its siblings with it. Only a directory entry has an inside; where
-			// the entry is a file (~/.netrc) the exact match is the only way in either way.
-			if policy.CoversResolved(rp, g) && !slices.Contains(optInShields, rp) {
-				// Which sentence depends on whose shield it is: the opt-in InsideShield
-				// offers exists only for the built-ins, so pointing a caller-denied grant at
-				// it would name an escape that is not there.
-				if callerDenied(sb, rp) {
-					return grantrefusal.InsideCallerShield(g, r.Path)
-				}
-				return refuse(g, r.Path)
-			}
+		r, v := set.Contains(g, kind, optInShields, nil)
+		switch v {
+		case shield.InsideCallerShield:
+			// Which sentence depends on whose shield it is: the opt-in InsideShield offers
+			// exists only for the built-ins, so pointing a caller-denied grant at it would
+			// name an escape that is not there.
+			return grantrefusal.InsideCallerShield(g, r.Path)
+		case shield.InsideShield:
+			return refuse(g, r.Path)
 		}
 	}
 	return nil
@@ -1489,25 +1294,19 @@ func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(gra
 // manifest reports the grant as honored - the same silent-neutering this refusal exists
 // for.
 func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
-	shields := appliedShields(sb)
 	// No isDir gate, unlike shieldRules. There the gate keeps a shield off a grant that
 	// is a plain file; here the grant is only ever the thing being TESTED, and gating it
 	// would admit "write: <repo>/.git/hooks" while the directory is still absent, let
 	// prepareWriteDirs create it, and refuse on the second pass with the artifact already
 	// on the host. checkoutRoot walks up regardless of what the grant itself is.
+	var workspace []denylist.Rule
 	for _, w := range writes {
-		for _, r := range workspaceShields(sb, w) {
-			shields = append(shields, appliedShield{rule: r, resolved: sb.resolve(r.Path)})
-		}
+		workspace = append(workspace, workspaceShields(sb, w)...)
 	}
+	set := shields(sb)
 	for _, g := range writes {
-		for _, s := range shields {
-			if s.rule.Deny != denylist.DenyWrite {
-				continue
-			}
-			if policy.CoversResolved(s.resolved, g) {
-				return grantrefusal.WriteUnderReadOnlyShield(g, s.rule.Path)
-			}
+		if r, v := set.Contains(g, shield.Write, nil, workspace); v == shield.UnderWriteShield {
+			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path)
 		}
 	}
 	return nil
@@ -1542,23 +1341,8 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 //
 // literalReads are the policy's own absolute, un-symlink-resolved read paths. Sorted by
 // literal path, which is the order the reported opt-ins keep.
-func explicitShieldOptIns(sb sandbox, literalReads []string) []shieldOptIn {
-	builtin := append(builtinShields(sb), credentialLinkShields(sb)...)
-	var out []shieldOptIn
-	for _, r := range builtin {
-		if r.Deny != denylist.DenyAll {
-			continue
-		}
-		if slices.Contains(literalReads, r.Path) {
-			onHost := sb.resolve(r.Path)
-			if callerDenied(sb, onHost) {
-				continue
-			}
-			out = append(out, shieldOptIn{path: r.Path, onHost: onHost, holds: r.Holds})
-		}
-	}
-	slices.SortFunc(out, func(a, b shieldOptIn) int { return cmp.Compare(a.path, b.path) })
-	return out
+func explicitShieldOptIns(sb sandbox, literalReads []string) []shield.OptIn {
+	return shields(sb).OptIns(literalReads)
 }
 
 // callerDenied reports whether a caller-supplied deny covers a resolved host path. Both
@@ -1574,29 +1358,10 @@ func callerDenied(sb sandbox, onHost string) bool {
 	return false
 }
 
-// shieldOptIn is one such shield: the grant's literal spelling, the store it binds (which
-// checkNotShielded and denyArgs key off, since grants and shields are compared resolved),
-// and what the lifted shield was hiding. The three travel together because a caller
-// pairing separate slices by index reports one grant as reaching another's target the
-// moment a symlink puts a store somewhere that sorts elsewhere.
-type shieldOptIn struct {
-	path   string
-	onHost string
-	holds  denylist.Holds
-}
-
-func optInPaths(optIns []shieldOptIn) []string {
+func optInPaths(optIns []shield.OptIn) []string {
 	out := make([]string, 0, len(optIns))
 	for _, o := range optIns {
-		out = append(out, o.path)
-	}
-	return out
-}
-
-func optInTargets(optIns []shieldOptIn) []string {
-	out := make([]string, 0, len(optIns))
-	for _, o := range optIns {
-		out = append(out, o.onHost)
+		out = append(out, o.Path)
 	}
 	return out
 }
@@ -1605,12 +1370,12 @@ func optInTargets(optIns []shieldOptIn) []string {
 // grant reached somewhere other than its own name; the resolution is the compile-time one
 // the binds themselves use, so the report names what was exposed rather than what the
 // path points at once the target has exited.
-func reportedOptIns(optIns []shieldOptIn) []enforce.ShieldedGrant {
+func reportedOptIns(optIns []shield.OptIn) []enforce.ShieldedGrant {
 	var out []enforce.ShieldedGrant
 	for _, o := range optIns {
-		g := enforce.ShieldedGrant{Path: o.path, Holds: o.holds.Code()}
-		if o.onHost != o.path {
-			g.OnHost = o.onHost
+		g := enforce.ShieldedGrant{Path: o.Path, Holds: o.Holds.Code()}
+		if o.OnHost != o.Path {
+			g.OnHost = o.OnHost
 		}
 		out = append(out, g)
 	}
@@ -1669,35 +1434,13 @@ func checkWriteNotRoot(writes []string) error {
 }
 
 func checkWriteNotAboveShield(sb sandbox, writes []string) error {
-	// Only the shields denyArgs really mounts: a rule it drops protects nothing, so
-	// refusing a grant that sits above it would blame a shield that never existed.
-	// The comparison below stays on the literal path - see the loc comment.
-	shields := appliedShields(sb)
+	set := shields(sb)
 	for _, w := range writes {
 		if w == "/" {
 			continue // rejected with a clearer message by checkWriteNotRoot
 		}
-		for _, s := range shields {
-			r := s.rule
-			if r.Deny != denylist.DenyAll {
-				continue
-			}
-			// The tamperable entry is the shield's name in the granted directory, so
-			// compare its location - parent resolved so it shares the grant's namespace,
-			// own name kept literal - rather than its symlink target, which lies outside
-			// the grant.
-			loc := filepath.Join(sb.resolve(filepath.Dir(r.Path)), filepath.Base(r.Path))
-			// The resolved location alone misses the case where it is the SHIELD that
-			// moves out of the grant: with a symlinked home (/home/u -> /data/u), loc is
-			// /data/u/.ssh while the grant is /home, so the containment is only visible in
-			// the unresolved namespace. The grant still holds the home symlink, and a run
-			// that can replace it points home at a directory it controls and plants a real
-			// .ssh there - the exact key-planting this check exists to stop. Refusing on
-			// either namespace costs nothing: a shield with no symlink above it resolves to
-			// itself, so the two tests coincide everywhere else.
-			if policy.CoversResolved(w, loc) || policy.CoversResolved(w, r.Path) {
-				return grantrefusal.WriteAboveShield(w, r.Path)
-			}
+		if r, v := set.Contains(w, shield.Write, nil, nil); v == shield.AboveShield {
+			return grantrefusal.WriteAboveShield(w, r.Path)
 		}
 	}
 	return nil
