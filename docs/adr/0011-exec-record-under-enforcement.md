@@ -49,7 +49,12 @@ mode where model-generated code runs.
 ## Decision Outcome
 
 Chosen option: **exec-only ptrace on the `exec: all` supervise path, reported through the
-applied-report channel as a second, separately marked section.**
+applied-report channel as a second, separately marked section, and off unless the run asks
+for it.**
+
+Opt-in is not caution about the mechanism; it is forced by the one thing tracing does take
+away from the target - see "What the recorder costs the target" below. A run that did not
+ask for a record is byte-for-byte the run it is today.
 
 ### The mechanism, verified
 
@@ -101,6 +106,23 @@ setuid exec for the whole run, so the recorder removes nothing that was still th
 worth stating rather than leaving for a reader to raise, because a mechanism that quietly
 weakened a privilege transition would fail this ADR's first driver.
 
+### What the recorder costs the target
+
+A tracee has exactly one tracer, and `TRACECLONE` gives every process in the run one before
+it executes an instruction. That is the property that makes the record complete, and it has
+a price: nothing inside the sandbox can ptrace anything any more. `strace`, `gdb`, a test
+harness that attaches to its own child, `rr`, a crash handler that reads its sibling's
+state - all get EPERM or EBUSY that they do not get today, because the bwrap tier does not
+otherwise filter ptrace (`BlockProcessReach` is degraded-tier only, and `BlockExec` denies
+only `execve`).
+
+This is the one way the record's presence changes what the target can do, and it lands
+squarely on the `exec: all` toolchain case the feature is for - a debugger is a plausible
+member of the toolchain the job was granted. It is why the recorder is opt-in rather than
+on by default. The alternative - accept the change and document it - was rejected because a
+run that is subtly different when observed is the thing observability is supposed to avoid,
+and the flag costs one field.
+
 ### Where it does not apply
 
 **The degraded tier cannot have it.** `internal/launcher/degraded.go:176` installs
@@ -119,8 +141,15 @@ permitted at scope 0 and 1 - the tracee is a descendant, which is exactly what s
 restricts to. Scope 2 requires `CAP_SYS_PTRACE` "either with `PTRACE_ATTACH` or through
 children calling `PTRACE_TRACEME`", and `TRACEME` is the route here: `exec.Command` with
 `SysProcAttr{Ptrace: true}` has the child call it before its exec. Scope 3 refuses
-everything. So both hardened scopes yield a failed attach, which is reported rather than
-fatal - the record is a diagnostic, and a host that will not permit it still gets its run.
+everything.
+
+The capability is not available to fall back on, and the reason is worth stating so it is
+not reasoned away later: `yama_ptrace_traceme` checks the capability against the child's
+user namespace, and bento's launcher is inside one bwrap created - but `namespaceFlags`
+passes `--cap-drop ALL` (`internal/linux/args.go`), deliberately, so the bounding set inside
+that namespace is empty. Both hardened scopes therefore yield a failed attach, which is
+reported rather than fatal: the record is a diagnostic, and a host that will not permit it
+still gets its run.
 
 ### Why the full observer was rejected
 
@@ -177,6 +206,23 @@ from one that produced none because nothing was watching, which is the same dist
   exists in `internal/observe`; the implementation should factor the stop loop rather than
   write a second one, and the exec-only mode is a smaller loop than the decoder's, not a
   larger one.
+* **No `PTRACE_O_EXITKILL`, unlike the observer.** The spike set it, and it must not survive
+  into the implementation: it makes a bug in the wait loop SIGKILL the entire enforced run,
+  which is a diagnostic killing a run that would otherwise have succeeded - the first
+  driver, exactly inverted. `observe.Trace` sets it for the opposite reason (a profiling run
+  IS the trace, so an abandoned tracee is a leak with nothing left to reap it), and that
+  reasoning does not carry over to a run whose point is the target. A tracer that dies
+  detaches instead, the tracees continue, and the record ends where it ended - which is why
+  the record's own section needs a marker of its own, so a truncated one is legible as
+  truncated rather than as a run that stopped exec'ing.
+* The wait loop inherits `ptrace(2)`'s multithreaded-exec quirk: an `execve` by a non-leader
+  thread reports `PTRACE_EVENT_EXEC` under the thread-group leader's pid and the non-leader's
+  pid disappears with no exit event. `internal/observe` already handles this
+  (`forgetRetiredTid`), which is another reason to factor its loop rather than write a
+  second one that has to rediscover it.
+* Only what ran is recorded, not what was attempted: a denied exec produces no event. That
+  is a different question - the exit-126 heuristic `ADR-0006` named - and this does not
+  answer it.
 * The root exec is not recorded - it retires before the tracer sets its options, the same
   structural gap `internal/observe/execimage_linux_amd64.go` documents. The launcher knows
   the target by construction, so the record is seeded with it rather than left short.
