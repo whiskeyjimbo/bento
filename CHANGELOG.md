@@ -62,8 +62,45 @@ commits that built it - none of them were ever in a release.
   grant naming one of the new write-denied trees is refused rather than honored,
   which is the cost: `go install`, `pyenv install` and the like do not run
   in-sandbox.
+- **mise's trust record, the settings that bypass it, and pre-commit's hook cache
+  are write-denied.** mise gates an in-tree `mise.toml` behind a per-host trust
+  record, the direnv shape - so denying the record covers every workspace config
+  at once, including ones this run never saw. Only the shims directory was
+  shielded before, so a run under a home write grant could author its own trust
+  and have the config execute at the developer's next `mise` call. The settings
+  that skip the record (`trusted_config_paths`, `yes`) and the three variables
+  naming a config mise reads with no trust check at all
+  (`MISE_GLOBAL_CONFIG_FILE`, `MISE_SYSTEM_CONFIG_FILE`, `MISE_ENV_FILE`) are
+  denied with it, or the shield would look bounded and not be. Beside them,
+  `~/.cache/pre-commit` holds the hook repositories the host executes at the next
+  commit: the `.git/hooks` entry point was shielded but the code it runs from was
+  not. The boundary moved inward. Two costs: `pre-commit install-hooks` cannot
+  populate its cache in-sandbox, and a workspace `mise.toml` nobody has trusted
+  yet cannot be trusted from inside one - exporting `MISE_TRUSTED_CONFIG_PATHS`
+  for the run itself is the way through, and it grants nothing on the host.
+- **A tool-specific variable relocating a write-shielded directory takes the
+  shield with it.** `DIRENV_CONFIG`, `PRE_COMMIT_HOME` and the `MISE_*`
+  directories each move a shielded tree off its default, and the relocation
+  machinery could only follow a hidden directory or a single file - so on a host
+  setting one, the shield sat at a path the tool no longer reads. `DIRENV_CONFIG`
+  was the sharpest case: `direnv.toml`'s `[whitelist]` skips the allow check
+  entirely, so relocating it disarmed the allow-record shield beside it. The
+  boundary moved inward, on hosts that set one of these.
 
 ### What a Run Tells You
+
+- **A run reports the auto-executing files it changed.** A `package.json`'s
+  install scripts, a `conftest.py`, a `build.rs`, an `eslint.config.js`, a
+  `.pre-commit-config.yaml`, a `.github/workflows` entry: each runs on the host
+  later without anyone reading it, and each is a file an agent doing ordinary
+  work must be able to edit, so none can be denied. Nothing reported them before,
+  which left the guarantee - that nothing a run wrote executes before someone
+  could look at it - resting on a reviewer knowing to look. Now the run names
+  them, on stderr and as `changed_auto_exec` in the JSON verdict. The boundary did
+  not move: this denies nothing and refuses nothing. Two things it does not
+  claim: the names are a fixed list checked at the root of each write grant, so a
+  nested `package.json` in a monorepo is not covered, and the comparison is size
+  and mtime rather than content.
 
 - **`run` and `validate` say when this host's runtime directory is outside every
   shield.** `XDG_RUNTIME_DIR` holds the container `auth.json`, the gpg-agent
