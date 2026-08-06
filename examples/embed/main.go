@@ -314,6 +314,15 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, a := range res.AcceptedAliases {
 		fmt.Fprintf(w, "embed: WARNING: %q was readable as a second name for the shielded credential %q\n", a.Path, a.Credential)
 	}
+	// ChangedAutoExec: the files under a write grant that run on the host later without
+	// being read first, and that this run changed. bento deliberately does not shield
+	// these - an agent editing dependencies has to be able to write a package.json - so
+	// the guarantee is only that nothing it wrote executes before someone could look.
+	// Dropping this line is how a planted postinstall script reaches the next build with
+	// nothing having pointed at it.
+	for _, f := range res.ChangedAutoExec {
+		fmt.Fprintf(w, "embed: review %q before the next build: it runs on the host without being read\n", f)
+	}
 	// Exposed: what a full run would have shielded but this tier could not (the degraded,
 	// no-mount-namespace tier). The mirror image of Shields, and the same contract as
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.

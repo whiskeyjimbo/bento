@@ -37,6 +37,9 @@ func populatedResult() enforce.Result {
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
 		Exposed:        []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
+		// Host-enumerated under a directory the script could write, so a filename it chose
+		// reaches the summary.
+		ChangedAutoExec: []string{"/repo/\x1b[2Kpackage.json"},
 	}
 }
 
@@ -65,6 +68,8 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrants OnHost, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted
 		"read-only on a host that can shield",        // Exposed
+		`"/repo/\x1b[2Kpackage.json"`,                // ChangedAutoExec, quoted
+		"run on the host later without being read",   // ChangedAutoExec
 		"no connection through the egress proxy",     // EgressConnections read as a bypass
 	} {
 		if !strings.Contains(got, want) {
@@ -108,7 +113,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
-		"Setup": true, "Signaled": true, "Signal": true,
+		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

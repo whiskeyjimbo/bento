@@ -441,8 +441,8 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			AcceptedAliases []aliasJSON    `json:"accepted_aliases,omitempty"`
 			// The auto-executing files the run changed, for a consumer that gates a merge
 			// on review rather than reading the stderr notice.
-			ChangedAutoExec []string `json:"changed_auto_exec,omitempty"`
-			Report          reportJSON     `json:"report"`
+			ChangedAutoExec []string   `json:"changed_auto_exec,omitempty"`
+			Report          reportJSON `json:"report"`
 			// StrictShortfall says the run was admitted under --strict but a guarantee it
 			// required lapsed while the target ran, so exit_code below is the code of a run
 			// whose posture did not hold. Without it a machine consumer reading the envelope
