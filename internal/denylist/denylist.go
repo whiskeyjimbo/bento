@@ -1267,13 +1267,21 @@ func Workspace(dir string) []Rule {
 		// config{,.toml} here names a rustc-wrapper, linker or target runner the host
 		// execs on the developer's next cargo command - the ~/.cargo/config.toml case one
 		// level in, and the one toolchain surface with no approval record that an agent
-		// has no ordinary reason to write. Taken as a directory because the legacy
-		// extensionless filename is read too and an absent one is still plantable.
+		// has no ordinary reason to write. Both filenames, since the legacy extensionless
+		// one is still read, and shielded whether or not they exist yet, because an absent
+		// one is exactly what a plant creates.
+		//
+		// Named as files rather than taking the .cargo directory, matching how the
+		// CARGO_HOME relocation is shielded: a workspace-local cargo home
+		// (CARGO_HOME=<repo>/.cargo, routine in CI) keeps its registry and git checkouts
+		// under here, and a directory shield would EROFS an ordinary build - or, where the
+		// directory does not exist yet, tmpfs the downloads and lose them silently.
 		//
 		// Residual: cargo searches every ancestor of the CWD, so a config under a nested
 		// crate (crates/foo/.cargo/) is read when the developer runs cargo from there and
 		// is not covered by a shield anchored at the checkout.
-		{Path: join(".cargo"), Deny: DenyWrite, Dir: true},
+		{Path: join(".cargo/config.toml"), Deny: DenyWrite},
+		{Path: join(".cargo/config"), Deny: DenyWrite},
 	}
 }
 
