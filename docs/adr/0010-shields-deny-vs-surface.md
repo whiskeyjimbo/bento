@@ -52,12 +52,13 @@ allow check entirely, and that is covered only because `.config/direnv` is
 write-denied at `denylist.go:684`. Without this rule a category-1 shield looks
 bounded and is not.
 
-The rule is demanding enough that the worked example does not yet satisfy it:
-`DIRENV_CONFIG` relocates the config directory holding that `[whitelist]`, and it
-is not in `dirEnvs` (`denylist.go:1444`). `homeLocations` covers the
-`XDG_CONFIG_HOME` move; the tool-specific variable is the gap. So a category-1
+The rule is demanding enough that the worked example did not satisfy it when this
+was written: `DIRENV_CONFIG` relocates the config directory holding that
+`[whitelist]`, and it was absent from `dirEnvs`. `homeLocations` covers the
+`XDG_CONFIG_HOME` move; the tool-specific variable was the gap. So a category-1
 shield is three things, not two - the record, the config that bypasses it, and
-every variable that relocates either. Filed separately.
+every variable that relocates either. `DIRENV_CONFIG` is now in `dirEnvs`, which
+is what makes direnv a complete worked example rather than an illustrative one.
 
 **2. Deny the surface, where there is no record and the agent never legitimately
 edits it.** `.git/hooks`, `.git/config`, `.git/config.worktree`, `.vscode`,
