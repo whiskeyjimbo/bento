@@ -455,6 +455,12 @@ func resolvedShieldRules() ([]shieldRule, error) {
 	}
 	resolved := make([]shieldRule, 0, len(rules))
 	for _, r := range rules {
+		// A rule whose path resolves to "/" is dropped here rather than at each comparison,
+		// as the backend drops it in shieldTarget: it would otherwise enclose every grant on
+		// the host and refuse them all, blaming whichever dotfile the rule happens to name.
+		if pathresolve.Existing(r.Path) == "/" {
+			continue
+		}
 		resolved = append(resolved, shieldRule{
 			Rule:  r,
 			lands: pathresolve.Existing(r.Path),
@@ -472,7 +478,8 @@ func resolvedShieldRules() ([]shieldRule, error) {
 // pass over in silence, leaving the refusal to land at run's first step on a manifest the
 // CI gate green-lit.
 //
-// Between them they mirror the three backend checks, in the order checkGrants runs them,
+// Between them they mirror three of the backend's shield checks, in the order checkGrants
+// runs them,
 // so a grant that trips more than one (a write naming a shield exactly is both inside it
 // and above it) is reported in the sentence the run would have printed:
 //
@@ -495,8 +502,16 @@ func resolvedShieldRules() ([]shieldRule, error) {
 // here while the run honors it if the grants do. The refusal still quotes both as the
 // manifest and the deny-list spell them, which is what each reader is looking at.
 //
-// One narrowing remains against the backend, in the direction that only misses a refusal:
-// the rule set omits extraDeny (see builtinShieldRules).
+// The rest of checkGrants is mirrored elsewhere in the gate: checkWriteNotRoot by
+// rootWriteProblems, checkGrantNotProcess and checkGrantNotManagedMount by
+// mountGrantProblems, checkGrantNotLooped by loopedGrantProblems.
+//
+// Two narrowings remain against the backend, both in the direction that only misses a
+// refusal. The rule set omits extraDeny (see builtinShieldRules). And
+// checkWorkspaceShieldNotRedirected is not mirrored at all: its shields are derived per
+// write grant from the checkout under it, which is state the gate would have to walk the
+// grant to reconstruct, and the refusal it raises is about a symlink on this host rather
+// than anything the manifest says.
 func shieldedReadProblems(reads []string) ([]string, error) {
 	rules, err := resolvedShieldRules()
 	if err != nil {
@@ -556,9 +571,7 @@ func writeShieldProblem(rules []shieldRule, g string) (string, bool) {
 		}
 	}
 	for _, r := range rules {
-		// A rule resolving to "/" is skipped as the backend skips it: it would swallow every
-		// write grant and blame an unrelated dotfile for it.
-		if r.Deny == denylist.DenyWrite && r.lands != "/" && policy.CoversResolved(r.lands, lands) {
+		if r.Deny == denylist.DenyWrite && policy.CoversResolved(r.lands, lands) {
 			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
 		}
 	}

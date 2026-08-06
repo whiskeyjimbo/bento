@@ -14,7 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -308,6 +310,8 @@ func checkRunnable(resolved *policy.Policy) runnability {
 	r.refusals = append(r.refusals, append(shieldedReads, shieldedWrites...)...)
 	r.refusals = append(r.refusals, loopedGrantProblems(resolved.Read, resolved.Write)...)
 	r.refusals = append(r.refusals, fileWriteGrantProblems(resolved.Write)...)
+	r.refusals = append(r.refusals, rootWriteProblems(resolved.Write)...)
+	r.refusals = append(r.refusals, mountGrantProblems(resolved.Read, resolved.Write)...)
 	r.fileishWrites = fileishWriteGrants(resolved.Write)
 	r.missingReads = missingReadGrants(resolved.Read)
 	return r
@@ -353,6 +357,64 @@ func fileWriteGrantProblems(write []string) []string {
 		}
 	}
 	return problems
+}
+
+// rootWriteProblems reports a write grant of the host root. The shield mirrors skip "/"
+// the way the backend's shield checks do - because checkWriteNotRoot has already refused
+// it in a sentence naming the whole filesystem rather than whichever dotfile sorts first
+// - so without this the gate passes the one grant that defeats the sandbox outright.
+func rootWriteProblems(write []string) []string {
+	if slices.Contains(write, "/") {
+		return []string{grantrefusal.WriteIsRoot().Error()}
+	}
+	return nil
+}
+
+// mountGrantProblems reports the grants that land on a host process's /proc/<pid>
+// directory or on a pseudo-filesystem the sandbox mounts fresh, mirroring
+// checkGrantNotProcess and checkGrantNotManagedMount. Neither is an exotic grant -
+// `read: /tmp` is a line an author writes without thinking - and both refuse a run at its
+// first step, so a gate that passes over them green-lights a manifest that cannot run.
+//
+// The set of managed mounts is shared data (denylist.ManagedMounts) rather than mirrored:
+// the backend and the gate are compiled for different platforms, so a list restated here
+// would drift the moment either moved.
+//
+// Existence is asked of the process case for the reason the backend asks it: a grant on a
+// pid that is not running says nothing about the sandbox's procfs, and refusing it here
+// would be a refusal the run does not make.
+func mountGrantProblems(read, write []string) []string {
+	var problems []string
+	seen := map[string]bool{}
+	for _, g := range slices.Concat(read, write) {
+		if seen[g] {
+			continue
+		}
+		seen[g] = true
+		lands := pathresolve.Existing(filepath.Clean(g))
+		if i := slices.Index(denylist.ManagedMounts, lands); i >= 0 {
+			problems = append(problems, grantrefusal.GrantIsManagedMount(g, lands, denylist.ManagedMounts[i]).Error())
+			continue
+		}
+		if isProcessGrant(lands) {
+			if _, err := os.Stat(lands); err == nil {
+				problems = append(problems, grantrefusal.GrantIsProcess(g, lands).Error())
+			}
+		}
+	}
+	return problems
+}
+
+// isProcessGrant reports whether a resolved path is a per-process procfs directory or
+// something inside one. /proc itself and its system-wide files (/proc/cpuinfo) are not:
+// those bind fine, and /proc whole is the managed-mount refusal above.
+func isProcessGrant(path string) bool {
+	rel, err := filepath.Rel("/proc", path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	first, _, _ := strings.Cut(rel, "/")
+	return first != "" && strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 // writeRunnability prints the host's verdict in the same shape as the approval line
@@ -695,11 +757,12 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	// shieldErr carries, and the footer below reports it once in words rather than twice
 	// as an empty list.
 	readRefusals, _ := shieldedReadProblems(resolvedRead)
-	writeGrantRefusals(w, readRefusals, loopedGrantProblems(resolvedRead, nil))
+	writeGrantRefusals(w, readRefusals, loopedGrantProblems(resolvedRead, nil), mountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
 	writeRefusals, _ := shieldedWriteProblems(resolvedWrite)
-	writeGrantRefusals(w, writeRefusals, loopedGrantProblems(nil, resolvedWrite), fileWriteGrantProblems(resolvedWrite))
+	writeGrantRefusals(w, writeRefusals, loopedGrantProblems(nil, resolvedWrite), fileWriteGrantProblems(resolvedWrite),
+		mountGrantProblems(nil, resolvedWrite), rootWriteProblems(resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 
