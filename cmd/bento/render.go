@@ -2,10 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,30 +11,16 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"text/tabwriter"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
-	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
-	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
-
-// The JSON shapes below are the machine-readable contract for agents and CI.
-// They are defined here, in the frontend, so the core stays free of wire-format
-// concerns - and they use explicit strings rather than the core's enum values, so
-// reordering a Go constant can never silently change the contract.
-//
-// Every path field below is a Go string encoded as JSON, so a path carrying bytes that
-// are not valid UTF-8 arrives with those bytes replaced by U+FFFD and no longer names an
-// openable file. A consumer that must open what it reads has to treat a path field as a
-// display name on such a host; nothing here re-encodes them, because no credential store
-// bento shields has a non-UTF-8 name in practice and a base64 sibling on every path field
-// would cost every consumer to serve none of them.
 
 type layerJSON struct {
 	Layer  string `json:"layer"`
@@ -346,7 +330,7 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
 func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
-	set, err := shieldSet()
+	set, err := gate.ShieldSet()
 	if err != nil {
 		return nil, err
 	}
@@ -384,133 +368,6 @@ func shieldGrantPaths(gs []shieldGrant) []string {
 		out = append(out, g.Path)
 	}
 	return out
-}
-
-// shieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
-// same rules, the same symlink expansion and the same drops, from internal/shield - the
-// package the backend answers with too, so the gate cannot predict a refusal the run does
-// not raise or miss one it does. It stops one rule short of a run's own set, the
-// caller-supplied denies an embedder passes in, which no manifest can be checked against
-// from here; that narrowing only ever misses a refusal.
-//
-// Memoized for the process. The set walks the credential stores on disk and validate asks
-// for it five times over one manifest; resolving inside the comparison loops made the
-// command seven times slower than it was before it made the comparison at all (4ms to
-// 30ms on a two-grant manifest; 4ms again with this).
-//
-// Keyed on the environment rather than computed once, because that is where all of the
-// set's moving input comes from and it is fixed only within a run: the tests relocate HOME
-// and the shield variables per case in one process, and a cache that outlived that would
-// answer the second case with the first case's host. On the anchors alone it would miss
-// the dozen variables that relocate individual shields, which is not a stale answer a
-// caller can see coming. The one input the key does not cover is the passwd home
-// HomeAnchors falls back to, which no process can change under itself.
-var shieldCache struct {
-	sync.Mutex
-	key string
-	set shield.Set
-}
-
-func shieldSet() (shield.Set, error) {
-	anchors, err := denylist.HomeAnchors()
-	if err != nil {
-		return shield.Set{}, err
-	}
-	runtimeDir := denylist.RuntimeDir()
-	key := strings.Join(os.Environ(), "\x00")
-	shieldCache.Lock()
-	defer shieldCache.Unlock()
-	if shieldCache.key != key {
-		shieldCache.key, shieldCache.set = key, shield.Assemble(shield.Host(), anchors, runtimeDir, nil)
-	}
-	return shieldCache.set, nil
-}
-
-// shieldedReadProblems and shieldedWriteProblems report the grants the run's shield checks
-// refuse, in the words they refuse them with. They are the counterpart to
-// explicitShieldGrants: that one names the read grants a run honors as a warned opt-in,
-// these name the grants a run will not honor at all - which validate and approve otherwise
-// pass over in silence, leaving the refusal to land at run's first step on a manifest the
-// CI gate green-lit.
-//
-// Between them they ask shield.Set.Contains, the same question the run asks, so the three
-// refusals arrive in the order and the wording a run would have printed - a grant that
-// trips more than one (a write naming a shield exactly is both inside it and above it) is
-// reported the way the run reports it:
-//
-//   - a grant at or inside a DenyAll shield. A read naming one exactly is the deliberate
-//     opt-in explicitShieldGrants reports instead; a write of the same path is not, which
-//     is the asymmetry this exists to say out loud, and why the two kinds are refused in
-//     different sentences with only one offering the opt-in as a remedy.
-//   - a write at or inside a DenyWrite shield, which has no opt-in at all.
-//   - a write containing a DenyAll shield.
-//
-// The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes,
-// and they are symlink-resolved before the comparison because the run compares grants
-// resolveGrants has already made symlink-free. The refusal still quotes the grant as the
-// manifest spells it and the shield as the deny-list does, which is what each reader is
-// looking at.
-//
-// The rest of checkGrants is answered elsewhere in the gate: the root write by
-// rootWriteProblems, the process and managed-mount grants by mountGrantProblems, the
-// looped grant by loopedGrantProblems.
-//
-// Two narrowings remain against a run, both in the direction that only misses a refusal.
-// The set omits the caller-supplied denies an embedder passes in, which no manifest can be
-// checked against from here. And the redirected-workspace-shield refusal is not raised at
-// all: those shields are derived per write grant from the checkout under it, which is
-// state the gate would have to walk the grant to reconstruct, and the refusal is about a
-// symlink on this host rather than anything the manifest says.
-func shieldedReadProblems(reads []string) ([]string, error) {
-	set, err := shieldSet()
-	if err != nil {
-		return nil, err
-	}
-	optIns := shield.Targets(set.OptIns(reads))
-	var problems []string
-	for _, g := range reads {
-		if r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil); v != shield.Honored {
-			problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
-		}
-	}
-	return problems, nil
-}
-
-func shieldedWriteProblems(writes []string) ([]string, error) {
-	set, err := shieldSet()
-	if err != nil {
-		return nil, err
-	}
-	var problems []string
-	for _, g := range writes {
-		// Skipped for the reason the backend skips it: a write of "/" is refused by
-		// checkWriteNotRoot first, in a sentence that names the whole filesystem rather
-		// than whichever dotfile happens to sort first.
-		if g == "/" {
-			continue
-		}
-		if p, ok := writeShieldProblem(set, g); ok {
-			problems = append(problems, p)
-		}
-	}
-	return problems, nil
-}
-
-// writeShieldProblem reports the refusal a write grant trips, or ok false where it trips
-// none. The workspace shields are not passed: they are derived per write grant from the
-// checkout under it, which is state the gate would have to walk the grant to reconstruct,
-// so that one refusal stays unmirrored - in the direction that only misses one.
-func writeShieldProblem(set shield.Set, g string) (string, bool) {
-	r, v := set.Contains(pathresolve.Existing(g), shield.Write, nil, nil)
-	switch v {
-	case shield.InsideShield, shield.InsideCallerShield:
-		return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
-	case shield.UnderWriteShield:
-		return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
-	case shield.AboveShield:
-		return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
-	}
-	return "", false
 }
 
 // writeShieldSummary prints one concise line confirming the boundary engaged: how many
@@ -1186,55 +1043,6 @@ func writeBlockedHostNotes(w io.Writer, p *policy.Policy, blockedHosts []string)
 	}
 }
 
-// missingReadGrants returns the already-resolved read grants naming nothing on this
-// host, in the order they were declared. Only a path that is absent is worth reporting:
-// a grant bento cannot stat for any other reason - a directory above it the invoker
-// cannot traverse - says nothing about whether the sandbox will reach it, since the
-// sandbox binds it as a different user's view of the tree.
-//
-// Read grants only. A write grant that names nothing is created by the backend, so its
-// absence before the run is not a miss.
-func missingReadGrants(read []string) []string {
-	var missing []string
-	for _, g := range read {
-		if _, err := os.Stat(g); errors.Is(err, fs.ErrNotExist) {
-			missing = append(missing, g)
-		}
-	}
-	return missing
-}
-
-// fileishWriteGrants returns the already-resolved write grants naming nothing on this
-// host whose last element is spelled like a file. Write grants name directories, so the
-// backend creates one - and a grant meant as a file leaves `out.json/` on the host while
-// the file the script wanted lands inside it, where no later grant names it.
-//
-// A guess about a naming convention, so every caller reports it as a note and none as a
-// verdict: --strict must not fail on it. A versioned directory (`python3.11`, `conf.d`)
-// reads as file-ish here and is knowingly accepted noise - the alternative is a list of
-// extensions that is wrong the first time someone writes to a directory nobody thought
-// of. A name with no extension at all (`Makefile`) is missed for the same reason.
-//
-// Write grants only. A read grant naming nothing is missingReadGrants' answer, and it is
-// a different one: nothing is created for it.
-func fileishWriteGrants(write []string) []string {
-	var fileish []string
-	for _, g := range write {
-		if _, err := os.Stat(filepath.Clean(g)); !errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an
-		// ordinary directory name and not a signal of anything. A trailing slash is
-		// stripped by Base, so a grant that spells the directory out stays flagged: the
-		// backend treats the two spellings identically, and so does the mistake.
-		base := filepath.Base(g)
-		if ext := filepath.Ext(base); ext != "" && ext != base {
-			fileish = append(fileish, g)
-		}
-	}
-	return fileish
-}
-
 // writeFileishWriteNotes says on the way in what validate says while the reader is
 // looking at the manifest, and for the same reason writeMissingReadNotes does: an
 // approved manifest is not re-validated, so a grant that was file-ish when it was
@@ -1595,7 +1403,7 @@ func writeNestedAnchors(w io.Writer, anchors []string) {
 // naming: it is set on nearly every host, but Runtime stamps it only where it points
 // somewhere other than /run, which is a real relocation and not an ordinary host.
 func writeRelocatedShields(w io.Writer) {
-	set, err := shieldSet()
+	set, err := gate.ShieldSet()
 	if err != nil {
 		return
 	}

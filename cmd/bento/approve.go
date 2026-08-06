@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -162,7 +163,7 @@ func requireHonorableGrants(resolved *policy.Policy) error {
 	}
 	// A host that could not anchor the shields yields no problems rather than an error,
 	// which is the degradation described above.
-	problems := grantRefusals(resolved)
+	problems := gate.Refusals(resolved)
 	if len(problems) == 0 {
 		return nil
 	}

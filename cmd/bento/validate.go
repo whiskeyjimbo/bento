@@ -1,22 +1,16 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"github.com/whiskeyjimbo/bento/internal/denylist"
-	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
-	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
@@ -61,7 +55,7 @@ func newValidateCmd() *cobra.Command {
 			}
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
 			resolved := resolvedGrants(doc.Policy, args[0])
-			run := checkRunnable(resolved)
+			run := gate.Check(resolved)
 			pinned := pinnedPaths(doc.Policy)
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
@@ -246,181 +240,6 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 	}
 }
 
-// runnability is what this host makes of the program a manifest names. validate used to
-// answer only "does this parse, and is it approved", so a moved entrypoint or a typo'd
-// interpreter passed the gate and failed at run's first step - the CI case, where the
-// manifest is checked on one machine and the failure lands on another.
-//
-// It is a property of the host, not of the manifest, so it is reported beside the
-// approval rather than folded into it: an unrunnable manifest here may be exactly right
-// where it is meant to run.
-type runnability struct {
-	// problems are the reasons this host cannot START what the manifest names - a moved
-	// entrypoint, an interpreter off PATH. Worded as run words them, since that is the
-	// message the reader will meet if they ignore this one.
-	problems []string
-	// refusals are the grants run will not honor: a shielded path, a symlink loop, a write
-	// grant that already exists as a file. Separate from problems because they are a
-	// different failure - nothing here is unstartable, and reporting them as "this host
-	// cannot start what the manifest names" sends the reader hunting an entrypoint that is
-	// fine. Both still refuse a run, so both fail --strict.
-	refusals []string
-	// fileishWrites are write grants that name nothing on this host and are spelled like
-	// a file. Not a problem, because nothing here can know: run creates the directory and
-	// the script may well have meant one. Silence is still wrong - write grants name
-	// directories, so a grant meant as a file leaves a host directory called
-	// `output.json` and the file the script wanted never appears.
-	fileishWrites []string
-	// missingReads are read grants naming nothing on this host. Not a problem: a grant
-	// may name a path the script creates, or one that exists only on the target machine.
-	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
-	// that is the failure run's own epilogue warns is hard to diagnose.
-	missingReads []string
-	// unresolved marks a host that could not answer at all, which resolvedGrants reports
-	// as a nil policy. Reported as unknown rather than as a pass: the summary's footer
-	// already says a run here is refused for the same reason.
-	unresolved bool
-}
-
-// checkRunnable asks the resolved policy - the one naming host paths - what run would
-// find. Passing the manifest's own spelling would stat a relative entrypoint against
-// whatever directory validate was invoked from, and resolving the manifest's policy in
-// place would make every approved manifest read as stale (see resolvedGrants).
-func checkRunnable(resolved *policy.Policy) runnability {
-	if resolved == nil {
-		return runnability{unresolved: true}
-	}
-	var r runnability
-	if _, err := os.Stat(resolved.Entrypoint); err != nil {
-		r.problems = append(r.problems, fmt.Sprintf("entrypoint %q: %v", resolved.Entrypoint, err))
-	}
-	// An empty interpreter means the entrypoint runs itself: a compiled binary. LookPath
-	// covers both spellings the backend accepts - a bare name searched on PATH, and a
-	// path checked where it points.
-	if resolved.Interpreter != "" {
-		if _, err := exec.LookPath(resolved.Interpreter); err != nil {
-			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
-		}
-	}
-	r.refusals = grantRefusals(resolved)
-	r.fileishWrites = fileishWriteGrants(resolved.Write)
-	r.missingReads = missingReadGrants(resolved.Read)
-	return r
-}
-
-// grantRefusals is every grant this host will not honor, in the words run refuses them
-// with: the whole of the backend's checkGrants that the gate can answer from here. One
-// function because both readers of it - validate's verdict and approve's refusal to stamp
-// - have to agree on the set, and a check added to only one of them is how a manifest
-// gets stamped for a permission that does not exist.
-//
-// A host that cannot work out where the shields anchor yields no problems rather than an
-// error: the summary's footer already reports that gap in words, and a run there is
-// refused for the same reason, so failing --strict on it would only rename it.
-func grantRefusals(resolved *policy.Policy) []string {
-	shieldedReads, _ := shieldedReadProblems(resolved.Read)
-	shieldedWrites, _ := shieldedWriteProblems(resolved.Write)
-	problems := append(shieldedReads, shieldedWrites...)
-	problems = append(problems, loopedGrantProblems(resolved.Read, resolved.Write)...)
-	problems = append(problems, fileWriteGrantProblems(resolved.Write)...)
-	problems = append(problems, rootWriteProblems(resolved.Write)...)
-	return append(problems, mountGrantProblems(resolved.Read, resolved.Write)...)
-}
-
-// loopedGrantProblems reports the grants whose symlinks loop, read and write alike, since
-// the backend refuses either kind on the same fact and in the same sentence.
-//
-// ELOOP is the one stat error that decides anything here. It is the answer the backend
-// itself acts on (internal/linux checkGrantNotLooped matches ELOOP and nothing else), so
-// parity holds on every other error too: a grant bento cannot stat because a directory
-// above it is unreadable says nothing about what run will find, since the sandbox sees
-// that tree as a different user.
-func loopedGrantProblems(read, write []string) []string {
-	var problems []string
-	seen := map[string]bool{}
-	// One host fact, said once: the same path may be granted for reading and for writing,
-	// and the backend refuses on the first of them it reaches.
-	for _, g := range slices.Concat(read, write) {
-		if seen[g] {
-			continue
-		}
-		seen[g] = true
-		if _, err := os.Stat(filepath.Clean(g)); errors.Is(err, syscall.ELOOP) {
-			problems = append(problems, grantrefusal.Looped(g).Error())
-		}
-	}
-	return problems
-}
-
-// fileWriteGrantProblems reports the write grants that already exist as something other
-// than a directory, in the words the backend refuses them with - the case validate exists
-// to catch before run's first step.
-//
-// Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
-// otherwise be neither a problem nor a note - while run resolves the trailing slash away
-// and refuses it as the file it is.
-func fileWriteGrantProblems(write []string) []string {
-	var problems []string
-	for _, g := range write {
-		if fi, err := os.Stat(filepath.Clean(g)); err == nil && !fi.IsDir() {
-			problems = append(problems, grantrefusal.WriteIsFile(g).Error())
-		}
-	}
-	return problems
-}
-
-// rootWriteProblems reports a write grant of the host root. The shield mirrors skip "/"
-// the way the backend's shield checks do - because checkWriteNotRoot has already refused
-// it in a sentence naming the whole filesystem rather than whichever dotfile sorts first
-// - so without this the gate passes the one grant that defeats the sandbox outright.
-//
-// Asked of where the grant LANDS, as the backend asks it: checkWriteNotRoot runs on grants
-// resolveGrants has already made symlink-free, so a write naming a link into "/" is refused
-// there, and testing the spelling alone here would let that one through.
-func rootWriteProblems(write []string) []string {
-	for _, g := range write {
-		if g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/" {
-			return []string{grantrefusal.WriteIsRoot().Error()}
-		}
-	}
-	return nil
-}
-
-// mountGrantProblems reports the grants that land on a host process's /proc/<pid>
-// directory or on a pseudo-filesystem the sandbox mounts fresh, mirroring
-// checkGrantNotProcess and checkGrantNotManagedMount. Neither is an exotic grant -
-// `read: /tmp` is a line an author writes without thinking - and both refuse a run at its
-// first step, so a gate that passes over them green-lights a manifest that cannot run.
-//
-// Both the managed-mount set and the per-process predicate are shared (denylist) rather
-// than mirrored: the backend and the gate are compiled for different platforms, so either
-// restated here would drift the moment the other moved.
-//
-// Existence is asked of the process case for the reason the backend asks it: a grant on a
-// pid that is not running says nothing about the sandbox's procfs, and refusing it here
-// would be a refusal the run does not make.
-func mountGrantProblems(read, write []string) []string {
-	var problems []string
-	seen := map[string]bool{}
-	for _, g := range slices.Concat(read, write) {
-		if seen[g] {
-			continue
-		}
-		seen[g] = true
-		lands := pathresolve.Existing(filepath.Clean(g))
-		if i := slices.Index(denylist.ManagedMounts, lands); i >= 0 {
-			problems = append(problems, grantrefusal.GrantIsManagedMount(g, lands, denylist.ManagedMounts[i]).Error())
-			continue
-		}
-		if denylist.IsProcessPath(lands) {
-			if _, err := os.Stat(lands); err == nil {
-				problems = append(problems, grantrefusal.GrantIsProcess(g, lands).Error())
-			}
-		}
-	}
-	return problems
-}
-
 // writeRunnability prints the host's verdict in the same shape as the approval line
 // below it, and lists the notes that are not a verdict at all.
 //
@@ -429,29 +248,29 @@ func mountGrantProblems(read, write []string) []string {
 // forty words; it is already printed beside the grant it refuses, which is where a reader
 // scanning the permissions needs it, and printing it again nine lines later taught nothing
 // the count does not.
-func writeRunnability(w io.Writer, r runnability) {
+func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
-	case r.unresolved:
+	case r.Unresolved:
 		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not resolve the manifest's paths\n")
-	case len(r.problems) > 0:
+	case len(r.Problems) > 0:
 		fmt.Fprintf(w, "\nrunnable:     NO - this host cannot start what the manifest names\n")
-		for _, p := range r.problems {
+		for _, p := range r.Problems {
 			fmt.Fprintf(w, "              %s\n", p)
 		}
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
 	}
-	if len(r.refusals) > 0 {
+	if len(r.Refusals) > 0 {
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
-	for _, g := range r.fileishWrites {
+	for _, g := range r.FileishWrites {
 		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
 		fmt.Fprintf(w, "        directories: %q.\n", g)
 		fmt.Fprintf(w, "        run creates a directory under that name, so the script's own write to\n")
 		fmt.Fprintf(w, "        that path fails with \"is a directory\". Grant the parent directory\n")
 		fmt.Fprintf(w, "        instead, unless a directory is what was meant.\n")
 	}
-	for _, g := range r.missingReads {
+	for _, g := range r.MissingReads {
 		fmt.Fprintf(w, "  note: this read grant names nothing on this host, so it grants nothing and\n")
 		fmt.Fprintf(w, "        the sandbox denies that path without saying why: %q.\n", g)
 		fmt.Fprintf(w, "        Fine if the script creates it, or if the manifest is meant for another\n")
@@ -468,12 +287,12 @@ func writeRunnability(w io.Writer, r runnability) {
 	}
 }
 
-// strictRunnableError is the strict verdict on runnability, shared by the human and
+// strictRunnableError is the strict verdict on gate.Runnability, shared by the human and
 // --json paths for the same reason strictApprovalError is. A host that could not resolve
 // the paths does not fail: the manifest was not shown to be wrong, and validate's other
 // answers already degrade rather than refuse there.
-func strictRunnableError(r runnability, strict bool) error {
-	blocking := slices.Concat(r.problems, r.refusals)
+func strictRunnableError(r gate.Runnability, strict bool) error {
+	blocking := slices.Concat(r.Problems, r.Refusals)
 	if !strict || len(blocking) == 0 {
 		return nil
 	}
@@ -515,7 +334,7 @@ func pinnedPaths(p *policy.Policy) []string {
 	return pinned
 }
 
-// writeRelocatable prints the verdict in the same shape as the runnability block above
+// writeRelocatable prints the verdict in the same shape as the gate.Runnability block above
 // it. It is printed only when it was asked for: a manifest written for one machine is
 // not wrong, so an unasked-for line here would read as a defect in every such manifest.
 func writeRelocatable(w io.Writer, pinned []string) {
@@ -634,16 +453,16 @@ func (o *policyJSON) setRelocatable(pinned []string) {
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent
 // where the host could not answer.
-func (o *policyJSON) setRunnable(r runnability) {
-	if r.unresolved {
+func (o *policyJSON) setRunnable(r gate.Runnability) {
+	if r.Unresolved {
 		return
 	}
-	ok := len(r.problems) == 0
+	ok := len(r.Problems) == 0
 	o.Runnable = &ok
-	o.RunnableProblems = r.problems
-	o.RefusedGrants = r.refusals
-	o.MissingReadGrants = r.missingReads
-	o.FileishWriteGrants = r.fileishWrites
+	o.RunnableProblems = r.Problems
+	o.RefusedGrants = r.Refusals
+	o.MissingReadGrants = r.MissingReads
+	o.FileishWriteGrants = r.FileishWrites
 	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
 }
 
@@ -760,13 +579,13 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	// The error is dropped on both: it is the same failure to anchor the shields that
 	// shieldErr carries, and the footer below reports it once in words rather than twice
 	// as an empty list.
-	readRefusals, _ := shieldedReadProblems(resolvedRead)
-	writeGrantRefusals(w, readRefusals, loopedGrantProblems(resolvedRead, nil), mountGrantProblems(resolvedRead, nil))
+	readRefusals, _ := gate.ShieldedReadProblems(resolvedRead)
+	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
-	writeRefusals, _ := shieldedWriteProblems(resolvedWrite)
-	writeGrantRefusals(w, writeRefusals, loopedGrantProblems(nil, resolvedWrite), fileWriteGrantProblems(resolvedWrite),
-		mountGrantProblems(nil, resolvedWrite), rootWriteProblems(resolvedWrite))
+	writeRefusals, _ := gate.ShieldedWriteProblems(resolvedWrite)
+	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
+		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 

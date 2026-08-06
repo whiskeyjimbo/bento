@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
@@ -27,7 +28,7 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	// against the shields the run will actually raise. The error means no anchor at all -
 	// not merely an unusable $HOME, which drops to the passwd home - so there are no
 	// shields to clamp against and the run this proposal feeds would be refused anyway.
-	set, err := shieldSet()
+	set, err := gate.ShieldSet()
 	if err != nil {
 		return reads, writes, nil, nil
 	}

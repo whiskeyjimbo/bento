@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -863,12 +864,12 @@ func TestWriteMissingReadNotes(t *testing.T) {
 
 	p := &policy.Policy{Read: []string{present}, Write: []string{filepath.Join(dir, "out")}}
 	var b bytes.Buffer
-	writeMissingReadNotes(&b, missingReadGrants(p.Read))
+	writeMissingReadNotes(&b, gate.MissingReads(p.Read))
 	if b.Len() != 0 {
 		t.Errorf("a grant that exists and a write grant yet to be created must print nothing; got %q", b.String())
 	}
 
-	writeMissingReadNotes(&b, missingReadGrants([]string{present, gone}))
+	writeMissingReadNotes(&b, gate.MissingReads([]string{present, gone}))
 	out := b.String()
 	if !strings.Contains(out, gone) {
 		t.Errorf("the note must name the missing grant %q; got %q", gone, out)
@@ -1319,9 +1320,9 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 	}
 	for name, tc := range reads {
 		t.Run("read: "+name, func(t *testing.T) {
-			got, err := shieldedReadProblems([]string{tc.grant})
+			got, err := gate.ShieldedReadProblems([]string{tc.grant})
 			if err != nil {
-				t.Fatalf("shieldedReadProblems: %v", err)
+				t.Fatalf("gate.ShieldedReadProblems: %v", err)
 			}
 			assertProblem(t, got, tc.want)
 		})
@@ -1339,9 +1340,9 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 	}
 	for name, tc := range writes {
 		t.Run("write: "+name, func(t *testing.T) {
-			got, err := shieldedWriteProblems([]string{tc.grant})
+			got, err := gate.ShieldedWriteProblems([]string{tc.grant})
 			if err != nil {
-				t.Fatalf("shieldedWriteProblems: %v", err)
+				t.Fatalf("gate.ShieldedWriteProblems: %v", err)
 			}
 			assertProblem(t, got, tc.want)
 		})
@@ -1386,16 +1387,16 @@ func TestShieldedGrantProblemsFollowTheGrantsSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := shieldedWriteProblems([]string{escaping})
+	got, err := gate.ShieldedWriteProblems([]string{escaping})
 	if err != nil {
-		t.Fatalf("shieldedWriteProblems: %v", err)
+		t.Fatalf("gate.ShieldedWriteProblems: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("a grant whose link leaves the shield is honored by the run; got %v", got)
 	}
-	got, err = shieldedWriteProblems([]string{entering})
+	got, err = gate.ShieldedWriteProblems([]string{entering})
 	if err != nil {
-		t.Fatalf("shieldedWriteProblems: %v", err)
+		t.Fatalf("gate.ShieldedWriteProblems: %v", err)
 	}
 	assertProblem(t, got, "is inside the always-shielded path")
 }
