@@ -191,6 +191,22 @@ var Cases = []Case{
 		Folding: true,
 		Verdict: FoldedShield,
 	},
+	{
+		Name:      "read naming a shield's own path on a case-folding mount",
+		Why:       "the opt-in survives the folding refusal: it binds the store's real content read-only, so a second spelling reaching that same content exposes nothing the author did not ask for - and refusing here would leave the folding sentence pointing its reader at a remedy it had just taken away",
+		Grant:     ".ssh",
+		Folding:   true,
+		OptInRead: true,
+		Verdict:   Honored,
+	},
+	{
+		Name:    "write naming a shield's own path on a case-folding mount",
+		Why:     "the collision between the two DenyAll checks: a grant AT a shield is both inside it and above it, so on a folding mount both refusals fit and the inside one has to win - it is the one whose read counterpart offers the opt-in, and answering with the folding sentence would tell the author no spelling can be granted when naming the shield is exactly what they did",
+		Grant:   ".ssh",
+		Write:   true,
+		Folding: true,
+		Verdict: InsideShield,
+	},
 }
 
 // FS is the host the case is judged against: the real filesystem, with identity answered
@@ -222,6 +238,11 @@ func sameFolded(a, b string) bool {
 // definition of the mount property Build cannot stage, so the three sites' seams - a
 // shield.FS.SameFile for two of them, the backend's identity seam for the third - agree
 // on which names collide without each emulating folding on its own.
+//
+// Only the last component is respelled, where a real folding mount folds every one. That
+// is the collision the shield logic asks about - it flips a shield's own base name and
+// nothing above it - so a caller comparing paths that differ higher up would need more
+// than this.
 func FoldedPath(path string) string {
 	dir, base := filepath.Split(path)
 	entries, err := os.ReadDir(dir)
