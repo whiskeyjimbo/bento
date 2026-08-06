@@ -102,6 +102,20 @@ func TestClassifyRulesSeparatesMissingFromUnstattable(t *testing.T) {
 	}
 }
 
+// A Landlock rule's rights reach every file beneath the path, so an exec rule built from
+// a directory grants execute on the whole tree under it - the blanket execAllowFiles
+// refuses by name. degradedRules builds its exec rule from existing(), so the refusal has
+// to be there too, or the degraded tier grants what the enforced tier will not.
+func TestExistingRefusesADirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := existing([]string{dir}); err == nil {
+		t.Error("a directory in the exec set must be refused; Landlock would grant execute on everything beneath it")
+	}
+	if _, err := degradedRules(nil, nil, []string{dir}); err == nil {
+		t.Error("degradedRules must refuse a directory in the exec set, not build a blanket execute rule from it")
+	}
+}
+
 // The degraded tier's sole filesystem guarantee is Landlock, so it must refuse rather
 // than run unconfined when the effective ABI is unavailable. Only the refusal branch is
 // exercised here: applying a real ruleset would irreversibly Landlock the test process
@@ -187,7 +201,9 @@ func TestEveryHandledRightIsGrantedBySomeRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	degraded, err := degradedRules(paths, paths, paths)
+	// Exec takes the regular file alone: the set is the entrypoint and its interpreter,
+	// and a directory in it is refused (see TestExistingRefusesADirectory).
+	degraded, err := degradedRules(paths, paths, []string{f})
 	if err != nil {
 		t.Fatal(err)
 	}

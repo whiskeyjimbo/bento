@@ -2,15 +2,22 @@
 
 package landlock
 
+import "errors"
+
 // Restrict is a no-op off Linux; there is no Landlock backstop to apply.
 func Restrict(writable []string) error { return nil }
 
 // RestrictTo is a no-op off Linux.
 func RestrictTo(read, write []string) error { return nil }
 
-// RestrictDegraded is a no-op off Linux; the degraded tier is Linux-only and the
-// caller gates on Available before relying on it.
-func RestrictDegraded(read, write, exec []string) error { return nil }
+// RestrictDegraded refuses off Linux rather than returning a nil no-op like the two
+// above. Landlock is the degraded tier's ONLY filesystem confinement, so a nil here
+// would report the primary fence applied while restricting nothing. The tier is
+// Linux-only and its launcher is linux-tagged, so nothing reaches this - but a
+// fail-open stub is the wrong thing to leave for whoever does.
+func RestrictDegraded(read, write, exec []string) error {
+	return errors.New("landlock: the degraded tier has no filesystem confinement off Linux")
+}
 
 // Available reports false: Landlock is Linux-only.
 func Available() bool { return false }
