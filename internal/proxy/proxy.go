@@ -927,8 +927,13 @@ func absoluteURITarget(target string) (host, port string, ok bool) {
 
 // canonicalPort reports whether s spells a port exactly as the dialer will
 // resolve it: decimal digits, no leading zero, within the 16-bit range.
+//
+// Zero is refused with the non-canonical spellings rather than left to the dial: it is the
+// kernel's pick-one sentinel, not a destination, so a rule matching it reports an allowed
+// destination that reached nothing - and in profiling mode seeds ":0" into a proposed
+// manifest, where it means something different again.
 func canonicalPort(s string) bool {
-	if s == "" || len(s) > 5 || (len(s) > 1 && s[0] == '0') {
+	if s == "" || s == "0" || len(s) > 5 || (len(s) > 1 && s[0] == '0') {
 		return false
 	}
 	n := 0

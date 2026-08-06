@@ -651,7 +651,11 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".iscreenrc",               // iscreen rc
 		".reportbugrc",             // Debian reportbug config
 		".config/user-dirs.locale", // locale for xdg user-dirs (write-protected against redirection)
-		".Xdefaults",               // xrdb resources read at login
+		// .Xdefaults only, though .Xresources is the same xrdb resource format: upstream
+		// blacklists that one and merely write-protects this one, and the audit ratchet
+		// holds bento to it. So a read: grant on .Xresources is refused where the same grant
+		// on .Xdefaults is honored, which is upstream's distinction rather than a slip here.
+		".Xdefaults",
 		// Public finger(1) info files: not secrets and not executed, so left readable, but
 		// write-protected so a broad home write grant cannot tamper with published info.
 		".plan",
@@ -1024,13 +1028,20 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// file git reads instead of ~/.gitconfig. Follow the shield to the relocation so
 	// a write grant there cannot plant a file the host runs on the next shell or git
 	// call. A relative value is dropped (an absolute bind cannot cover it), as is the
-	// default location (already shielded) and git's /dev/null "no config" idiom.
+	// default location (already shielded); git's /dev/null "no config" idiom is dropped by
+	// addWriteShield along with every other source's.
 	//
 	// A relocation landing at or under a DenyAll rule is skipped: the DenyAll rule
 	// already hides the whole subtree, so a DenyWrite there grants nothing further and
 	// only adds a redundant rule for a backend to enforce and a reader to reconcile.
+	//
+	// /dev/null is skipped for every source rather than at the call sites that remembered
+	// to: INPUTRC=/dev/null and MAILCAPS=/dev/null are documented ways to disable a config,
+	// and there is nothing to plant in a device node. The rule is inert under bwrap, where
+	// a ro-bind does not deny writes to one, but the Landlock-only degraded tier enforces
+	// it - and every "> /dev/null" inside the sandbox then fails.
 	addWriteShield := func(p, source string) {
-		if !underDenyAll(p, rules) && shieldable(p) {
+		if p != "/dev/null" && !underDenyAll(p, rules) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
@@ -1042,7 +1053,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		}
 	}
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
-		if c := filepath.Clean(gc); c != join(".gitconfig") && c != "/dev/null" {
+		if c := filepath.Clean(gc); c != join(".gitconfig") {
 			addWriteShield(c, "GIT_CONFIG_GLOBAL")
 		}
 	}
