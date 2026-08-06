@@ -291,6 +291,71 @@ func TestDegradedSweepsLeakedProcessGroup(t *testing.T) {
 	}
 }
 
+// A target that ran to completion keeps its result even when the run was cancelled, as
+// long as the cancel landed in the WaitDelay window: Wait gave up on a descendant still
+// holding the pipes, which does not unmake an exit status the target already had.
+// Reporting "cancelled before the target finished" there is the same false report the
+// cancelled-context guard exists to prevent, inverted - and it is invisible without
+// this, because every ordinary cancelled run still reports correctly.
+//
+// Two things make the window: the descendant must escape the process group (setsid),
+// since one left inside it is killed by the ctx-cancel sweep, which closes the pipes and
+// lets Wait return normally; and the target must exit 0, because exec returns
+// ErrWaitDelay only in place of a nil error - a nonzero exit comes back as its own
+// ExitError and never reaches this branch.
+func TestDegradedKeepsTheResultWhenCancelLandsInTheWaitDelay(t *testing.T) {
+	requireDegraded(t)
+	setsidBin, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid not available")
+	}
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not available")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	// Exit at once, leaving a detached descendant holding stdout past cmd.WaitDelay. The
+	// marker is the last thing before the exit, so the test cancels on the target's own
+	// progress rather than on a wall clock a slow host would outrun.
+	done := filepath.Join(dir, "done")
+	if err := os.WriteFile(script, []byte(`"$SETSID" "$SLEEP" 5 & echo ran; : > "$DONE"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Write: []string{dir}, Exec: policy.ExecAll}
+	var out strings.Builder
+	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SETSID": setsidBin, "SLEEP": sleepBin, "DONE": done}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(done); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// The marker says the script is done, not that the launcher has exited, and a
+		// cancel that lands while it is still alive kills it and produces a real
+		// cancellation instead of the window under test. Well inside the 2s WaitDelay,
+		// which only starts once the launcher is gone.
+		time.Sleep(400 * time.Millisecond)
+		cancel() // Wait is now parked on the descendant's pipe
+	}()
+
+	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p, proc, "", nil)
+	if err != nil {
+		t.Fatalf("a cancel inside the WaitDelay window discarded a finished target's result: %v\noutput:\n%s", err, out.String())
+	}
+	if res.ExitCode != 0 || !strings.Contains(out.String(), "ran") {
+		t.Errorf("exit code = %d, output %q - want the finished target's own 0 and its output", res.ExitCode, out.String())
+	}
+}
+
 // The degraded tier must apply the same grant-safety checks as the full tier: a write
 // grant that contains the ~/.ssh credential shield is refused, not silently accepted.
 // Without a mount namespace or deny-list here, accepting it would hand the whole home -
