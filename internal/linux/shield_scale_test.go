@@ -88,8 +88,14 @@ func BenchmarkWorkspaceShieldWalk(b *testing.B) {
 			}
 			shieldRules(sb, writes)
 			shieldRules(sb, writes)
-			checkWorkspaceShieldNotRedirected(sb, writes)
-			checkWriteNotUnderReadOnlyShield(sb, writes)
+			// A refusal here means the benchmark is timing a path the real caller
+			// would never reach.
+			if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+				b.Fatal(err)
+			}
+			if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 	b.Run("nomemo", func(b *testing.B) { run(b, false) })
