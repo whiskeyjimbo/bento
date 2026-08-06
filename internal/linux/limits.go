@@ -226,11 +226,19 @@ var delegatedControllers = func() (map[string]bool, bool) {
 var cachedDelegatedControllers = cacheProbe(measureDelegatedControllers)
 
 // unifiedCgroupReadable reports whether readControllers below could reach a scope's
-// cgroup.controllers at all. It answers the two structural failures that snippet has -
-// no unified ("0::") line in /proc/self/cgroup on a cgroup-v1-only host, and a v2
-// hierarchy mounted somewhere other than /sys/fs/cgroup on a legacy-hybrid one - from
-// the host, before any scope is created. Both are permanent facts about the layout, so
-// a run does not re-measure them; keep this and readControllers in step.
+// cgroup.controllers at all. It answers, from the host and before any scope is created,
+// the two structural failures that snippet has which are visible without one: no unified
+// ("0::") line in /proc/self/cgroup on a cgroup-v1-only host, and a v2 hierarchy mounted
+// somewhere other than /sys/fs/cgroup on a legacy-hybrid one. Both are permanent facts
+// about the layout, so a run does not re-measure them; keep this and readControllers in
+// step.
+//
+// It is deliberately a subset, not a mirror: a cgroup-namespaced container whose root
+// cgroup.controllers is readable but whose scope subtree is not mounted also fails
+// readControllers permanently, and cannot be told apart from the transient case without
+// creating the scope. That host keeps re-probing, which is the fail-safe direction - it
+// costs a scope per call, where the alternative would cache a busy manager's silence as
+// a fact about the host.
 var unifiedCgroupReadable = sync.OnceValue(func() bool {
 	b, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
