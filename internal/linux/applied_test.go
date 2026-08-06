@@ -452,6 +452,22 @@ func TestNoteDeadListenerDegradesTheNetworkLayer(t *testing.T) {
 	}
 }
 
+// The note only ever worsens the layer. It runs after reconcile, so a network layer the
+// child already reported unavailable must not be softened to degraded by the listener
+// dying too - a report reading better because a second thing went wrong.
+func TestNoteDeadListenerNeverUpgradesTheNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerNetwork, enforce.Unavailable, "the child installed no netns")
+	noteDeadListener(&r, errors.New("accept: bad file descriptor"))
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Unavailable {
+		t.Errorf("StateOf(network) = %v, want unavailable to stand", got)
+	}
+	noteDeadBridge(&r, true)
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Unavailable {
+		t.Errorf("StateOf(network) = %v after the bridge note, want unavailable to stand", got)
+	}
+}
+
 // reconcile is the one place that decides how far the stage got, so the SetupState it
 // returns must track the same three cases the layer verdicts above are drawn from: a
 // stage that never reported, one that applied its layers but never reached the target,

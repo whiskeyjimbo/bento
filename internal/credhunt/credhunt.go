@@ -160,6 +160,15 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 	// CPU time. See denylist.Index for why that is a different access pattern rather than
 	// a different definition of coverage.
 	shields := denylist.NewIndex(opts.Rules)
+	// Cleaned for the reason Home is: the prune below compares against a WalkDir path,
+	// which is always clean, so a store spelled with a trailing separator or a ".." segment
+	// would never match. This is an exported field with no stated spelling contract, and
+	// the failure of a missed prune is a flood of findings rather than an error - the
+	// unreadable report the field exists to prevent.
+	stores := make([]string, len(opts.MachineStores))
+	for i, p := range opts.MachineStores {
+		stores[i] = filepath.Clean(p)
+	}
 	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
@@ -224,7 +233,7 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 				pruned++
 				return fs.SkipDir
 			}
-			if slices.Contains(opts.MachineStores, path) {
+			if slices.Contains(stores, path) {
 				pruned++
 				return fs.SkipDir
 			}

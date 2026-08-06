@@ -250,7 +250,7 @@ func noteDeadListener(r *enforce.Report, err error) {
 	if err == nil {
 		return
 	}
-	r.Set(enforce.LayerNetwork, enforce.Degraded,
+	worsenNetwork(r, enforce.Degraded,
 		fmt.Sprintf("the egress proxy stopped accepting mid-run (%v); declared egress was refused for the remainder", err))
 }
 
@@ -306,8 +306,20 @@ func noteDeadBridge(r *enforce.Report, died bool) {
 	if !died {
 		return
 	}
-	r.Set(enforce.LayerNetwork, enforce.Degraded,
+	worsenNetwork(r, enforce.Degraded,
 		"the in-sandbox egress bridge stopped serving mid-run; declared egress was unreachable for part of the run")
+}
+
+// worsenNetwork records a mid-run egress failure without letting it UPGRADE the layer.
+// Report.Set replaces unconditionally, and these two run after reconcile, so a network
+// layer already judged Unavailable would be softened to Degraded by an error path - a
+// report reading better because something else went wrong. Every other Set in the backend
+// writes Unavailable, the most severe state, so the asymmetry only exists here.
+func worsenNetwork(r *enforce.Report, state enforce.State, reason string) {
+	if state <= r.StateOf(enforce.LayerNetwork) {
+		return
+	}
+	r.Set(enforce.LayerNetwork, state, reason)
 }
 
 func isExitError(err error) bool {

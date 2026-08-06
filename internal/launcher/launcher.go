@@ -100,6 +100,16 @@ func Run(cfg Config) (int, error) {
 	// overwriting each other. They are mutually exclusive by design - profiling produces
 	// an observation, not an enforcement report - and this is where that is checked
 	// rather than only stated.
+	// The same absolute check RunDegraded makes, for the same reason: cfg.Writable arrives
+	// from argv and names the Landlock ruleset, so a relative path confines the target to a
+	// tree the policy never granted. The bwrap mount namespace bounds the damage here, but
+	// applying the backstop is the one fail-open branch in this function - it warns and
+	// proceeds - so a bad --rw would silently weaken it rather than be refused.
+	for _, p := range cfg.Writable {
+		if !filepath.IsAbs(p) {
+			return 0, fmt.Errorf("launcher: confinement paths must be absolute, got %q", p)
+		}
+	}
 	if cfg.ObserveFD > 0 && cfg.AppliedFD > 0 {
 		return 0, fmt.Errorf("launcher: cannot both profile and report applied layers: descriptors %d and %d", cfg.ObserveFD, cfg.AppliedFD)
 	}
