@@ -72,12 +72,19 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// The symlink expansion is derived from the built-ins alone, and it is the built-ins
 	// a read can opt into, so the two sets are the same set. A shield a policy cannot name
 	// is one it can only be refused over, with no remedy in the sentence.
-	s.builtin = append(base, s.credentialLinks(base)...)
+	links := s.credentialLinks(base)
+	s.builtin = append(slices.Clone(base), links...)
 
 	for _, r := range extraDeny {
 		s.extraDeny = append(s.extraDeny, fs.Resolve(r.Path))
 	}
-	for _, r := range append(append([]denylist.Rule{}, s.builtin...), extraDeny...) {
+	// Caller denies sit between the built-ins and the expansion, which is the order the
+	// enforcer assembles them in. It decides blame, not outcome: where a caller deny and
+	// an expanded link both cover a grant, the refusal names the caller's own path and
+	// says the shield has no opt-in, rather than naming a dotfile the caller never
+	// mentioned.
+	all := append(slices.Clone(base), extraDeny...)
+	for _, r := range append(all, links...) {
 		if rp, ok := s.target(r.Path); ok {
 			s.applied = append(s.applied, Applied{Rule: r, Resolved: rp})
 		}
