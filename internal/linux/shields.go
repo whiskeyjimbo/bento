@@ -70,11 +70,6 @@ func shields(sb sandbox) shield.Set {
 		// them would let the scan and the shield check tell different stories about the
 		// same host.
 		SameFile: func(a, b string) bool {
-			if sb.statID == nil {
-				// The hypothetical filesystems the compiler's tests inject have no mount
-				// behaviour to model, and no two of their names are one file.
-				return false
-			}
 			ida, ok := sb.statID(a)
 			if !ok {
 				return false
