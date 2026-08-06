@@ -30,6 +30,13 @@ func argvMounts(args []string) []argvMount {
 	var out []argvMount
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--":
+			// Everything past the separator is the launcher's own argv and then the
+			// target's. Those are not bwrap flags, and a target argument spelled
+			// "--tmpfs" would otherwise be read as a mount.
+			return out
+		case "--setenv":
+			i += 2 // a value spelled like a flag is a value, not a mount
 		case "--bind", "--bind-try", "--ro-bind", "--ro-bind-try", "--symlink":
 			if i+2 < len(args) {
 				out = append(out, argvMount{i, args[i+2]})
@@ -112,39 +119,43 @@ func TestShieldsWinTheArgvOrder(t *testing.T) {
 		name string
 		p    *policy.Policy
 		sb   func() sandbox
+		proc enforce.Process
 	}{
-		{"home read grant", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, func() sandbox { return home() }},
-		{"root read grant", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}, func() sandbox { return home() }},
-		{"exec all", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}, Exec: policy.ExecAll}, func() sandbox { return home() }},
+		{"home read grant", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, func() sandbox { return home() }, enforce.Process{}},
+		{"root read grant", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/"}}, func() sandbox { return home() }, enforce.Process{}},
+		{"exec all", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}, Exec: policy.ExecAll}, func() sandbox { return home() }, enforce.Process{}},
 		{"write grant under home", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}, Write: []string{"/home/u/proj"}}, func() sandbox {
 			return home("/home/u/proj/src")
-		}},
+		}, enforce.Process{}},
 		{"interpreter under home", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, func() sandbox {
 			sb := home("/home/u/bin/python")
 			sb.interpreter = "/home/u/bin/python"
 			return sb
-		}},
+		}, enforce.Process{}},
 		{"entrypoint inside a shield", &policy.Policy{Entrypoint: "/home/u/.ssh/id_rsa", Read: []string{"/home/u"}}, func() sandbox {
 			sb := home()
 			sb.entrypoint = "/home/u/.ssh/id_rsa"
 			return sb
-		}},
+		}, enforce.Process{}},
 		{"profiling run", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, func() sandbox {
 			sb := home()
 			sb.observe = true
 			return sb
-		}},
+		}, enforce.Process{Env: map[string]string{"HOME": "/home/u"}}},
 		{"launcher with egress", &policy.Policy{Entrypoint: "/work/run.py", Read: []string{"/home/u"}}, func() sandbox {
 			sb := home()
 			sb.bentoPath, sb.proxySocket = "/usr/bin/bento", "/run/bento/proxy.sock"
 			return sb
-		}},
+		}, enforce.Process{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sb := tc.sb()
-			args, applied, err := compile(tc.p, enforce.Process{}, sb)
+			args, applied, err := compile(tc.p, tc.proc, sb)
 			if err != nil {
 				t.Fatalf("compile: %v", err)
+			}
+			if sb.observe && !has(args, "--tmpfs", "/home/u") {
+				t.Fatal("the profiling row exists for the $HOME tmpfs; without it the row is the plain home grant again")
 			}
 			assertShieldsWin(t, args, applied, sb)
 		})
@@ -165,5 +176,34 @@ func TestArgvMountsReadsTheDestination(t *testing.T) {
 		if m.dest != want[i] {
 			t.Errorf("mount %d dest = %q, want %q", i, m.dest, want[i])
 		}
+	}
+}
+
+// The deny-list emits DenyWrite before DenyAll so a hidden credential lands after the
+// readable tree bind that contains it - the shape the coding-agent rules turn on, where
+// ~/.claude is read-only and ~/.claude/.credentials.json is hidden inside it. Asserted on
+// denyArgs rather than through compile, because the only grant that engages a DenyWrite
+// directory shield is a write reaching it, and checkGrants refuses every one of those:
+// the argv property the deny-list relies on outlives the refusal that hides it here.
+func TestHiddenCredentialLandsAfterTheReadableTreeThatHoldsIt(t *testing.T) {
+	tree, secret := "/home/u/.claude", "/home/u/.claude/.credentials.json"
+	sb := testSandbox(tree, secret, "/home/u/.claude/settings.json")
+	args, applied := denyArgs(sb, []string{"/home/u"}, []string{tree}, nil)
+
+	mounts := argvMounts(args)
+	at := func(dest string) int {
+		last := -1
+		for _, m := range mounts {
+			if m.dest == dest {
+				last = m.i
+			}
+		}
+		return last
+	}
+	if !hasShield(shieldsApplied(applied), tree, "read-only") || !hasShield(shieldsApplied(applied), secret, "hidden") {
+		t.Fatalf("expected a read-only %s holding a hidden %s; got %v", tree, secret, shieldsApplied(applied))
+	}
+	if at(secret) < at(tree) {
+		t.Errorf("the hidden credential is bound at argv %d, before the readable tree at %d, so the tree re-exposes it", at(secret), at(tree))
 	}
 }
