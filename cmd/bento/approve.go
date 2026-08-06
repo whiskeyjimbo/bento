@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -91,7 +91,7 @@ func newApproveCmd() *cobra.Command {
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, trust.realPath, doc, approval)
-			if err := confirmApproval(os.Stdout, assumeYes); err != nil {
+			if err := confirmApproval(cmd.Context(), os.Stdout, assumeYes); err != nil {
 				return err
 			}
 
@@ -279,7 +279,7 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 // of anyone. --yes still stamps without asking, which is what a script should say, and
 // makes the unreviewed stamp deliberate rather than a side effect of where stdin points.
 // examples/supervise gates its own prompts on stdin the same way.
-func confirmApproval(w io.Writer, assumeYes bool) error {
+func confirmApproval(ctx context.Context, w io.Writer, assumeYes bool) error {
 	if assumeYes {
 		return nil
 	}
@@ -291,17 +291,17 @@ func confirmApproval(w io.Writer, assumeYes bool) error {
 	// has no reason to hold.
 	tty, closeTTY := openTTY()
 	defer closeTTY()
-	return readApprovalAnswer(tty, w)
+	return readApprovalAnswer(ctx, ttyLines(tty), w)
 }
 
-// readApprovalAnswer prompts and reads the verdict, taking the reader as confirmNetworkExfil
-// does - in the same argument order - rather than opening the terminal itself, which is what
-// lets the answer handling be exercised without one. Anything but an explicit yes declines:
+// readApprovalAnswer prompts and reads the verdict, taking the line channel as
+// confirmNetworkExfil does - in the same argument order - rather than opening the
+// terminal itself, which is what lets the answer handling be exercised without one.
+// Anything but an explicit yes declines:
 // the question is whether a human affirmed these permissions, so a typo, an empty line and a
 // closed stream must all mean no.
-func readApprovalAnswer(in io.Reader, w io.Writer) error {
-	fmt.Fprint(w, "\nApprove these permissions? [y/N] > ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
+func readApprovalAnswer(ctx context.Context, lines <-chan string, w io.Writer) error {
+	line, _ := askLine(ctx, lines, w, "\nApprove these permissions? [y/N] > ")
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return nil

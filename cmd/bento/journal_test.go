@@ -509,7 +509,7 @@ func TestReadApprovalAnswer(t *testing.T) {
 	} {
 		t.Run(strconv.Quote(tc.answer), func(t *testing.T) {
 			var buf strings.Builder
-			err := readApprovalAnswer(strings.NewReader(tc.answer), &buf)
+			err := readApprovalAnswer(t.Context(), ttyLines(strings.NewReader(tc.answer)), &buf)
 			if approved := err == nil; approved != tc.approves {
 				t.Errorf("answer %q approved = %v, want %v (err %v)", tc.answer, approved, tc.approves, err)
 			}
