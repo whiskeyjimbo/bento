@@ -1093,6 +1093,34 @@ func TestWriteAcceptedAliasWarning(t *testing.T) {
 	}
 }
 
+// The auto-executing files are the surfaces bento deliberately does not shield, so the
+// notice is the whole of what keeps a change to one from being silent. A path a prior run
+// chose is quoted for the reason the alias and grant blocks quote theirs: a filename
+// holding a newline would otherwise print as a line of its own inside the block.
+func TestWriteChangedAutoExecNoticeNamesAndQuotesEachFile(t *testing.T) {
+	var b bytes.Buffer
+	writeChangedAutoExecNotice(&b, enforce.Result{ChangedAutoExec: []string{
+		"/repo/package.json",
+		"/repo/.github/workflows/ci\nfake.yml",
+	}})
+	for _, want := range []string{"/repo/package.json", `"/repo/.github/workflows/ci\nfake.yml"`} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("the notice must mention %q; got:\n%s", want, b.String())
+		}
+	}
+	// A WARNING is for a boundary that gave way. Editing a package.json is ordinary, and
+	// crying wolf over it is what makes the real warnings above stop being read.
+	if strings.Contains(b.String(), "WARNING") {
+		t.Errorf("changing an auto-executing file is expected work, not a warning; got:\n%s", b.String())
+	}
+
+	var empty bytes.Buffer
+	writeChangedAutoExecNotice(&empty, enforce.Result{})
+	if empty.Len() != 0 {
+		t.Errorf("a run that changed none of them must print nothing; got %q", empty.String())
+	}
+}
+
 // The degraded filesystem tier skips the credential-alias scan entirely, which is the
 // widest thing --allow-degraded gives up - and it was readable only from the help text of
 // --accept-alias, the flag such a run did not pass. The disclosure keys on the probed

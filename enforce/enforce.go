@@ -418,6 +418,26 @@ type Result struct {
 	// ShieldedGrants). Sorted by path, empty for the full tier and for a degraded run
 	// whose grants reached no shield.
 	Exposed []ShieldApplied
+	// ChangedAutoExec names the files under a write grant that auto-execute on the host
+	// later and that this run created, modified or removed - a package.json's install
+	// scripts, a conftest.py, a .github/workflows entry. These are the surfaces the
+	// shields deliberately do not deny, because an agent doing ordinary work must be able
+	// to edit them, so the guarantee here is weaker than a shield's by design: nothing
+	// the sandbox wrote executes without someone having had the chance to look at it, and
+	// this is what tells a reviewer where to look. Sorted. A cancelled run carries it too,
+	// because a target killed partway is the one most likely to have left something
+	// behind; empty is not evidence the target changed none, since a run that failed
+	// before the target started reports empty as well.
+	//
+	// Two blind spots, both deliberate, and both the reason a gap here is a missed hint
+	// rather than a hole. The names are a fixed list checked at the root of each write
+	// grant, so a nested package.json in a monorepo is not covered. And the comparison is
+	// size and mtime, not content: a rewrite that keeps both - the same length with the
+	// timestamp restored - is invisible to it.
+	//
+	// Path can carry bytes a prior run chose (a workflow filename), so a consumer
+	// rendering it to a terminal must quote it.
+	ChangedAutoExec []string
 }
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path

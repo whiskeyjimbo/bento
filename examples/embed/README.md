@@ -227,6 +227,7 @@ all of it, or ship a frontend silent about the rest.
 | `ShieldedGrants`        | `shielded_grants`, each with `holds` and, where the path bound differs from the spelling that granted it, `on_host` |
 | `AcceptedAliases`       | `accepted_aliases`                             |
 | `Exposed`               | `exposed`                                      |
+| `ChangedAutoExec`       | `changed_auto_exec`, the auto-executing files the run changed |
 | `EgressConnections`     | `egress_connections`                           |
 | `Denied`, `GuardBlocked` | `egress_denied` and `guard_blocked`, naming what the count does not |
 | `GateAdmitted`          | *nothing* - see below                          |
