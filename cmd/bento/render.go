@@ -22,6 +22,18 @@ import (
 	"github.com/whiskeyjimbo/bento/profile"
 )
 
+// The JSON shapes below are the machine-readable contract for agents and CI.
+// They are defined here, in the frontend, so the core stays free of wire-format
+// concerns - and they use explicit strings rather than the core's enum values, so
+// reordering a Go constant can never silently change the contract.
+//
+// Every path field below is a Go string encoded as JSON, so a path carrying bytes that
+// are not valid UTF-8 arrives with those bytes replaced by U+FFFD and no longer names an
+// openable file. A consumer that must open what it reads has to treat a path field as a
+// display name on such a host; nothing here re-encodes them, because no credential store
+// bento shields has a non-UTF-8 name in practice and a base64 sibling on every path field
+// would cost every consumer to serve none of them.
+
 type layerJSON struct {
 	Layer  string `json:"layer"`
 	Tier   string `json:"tier"`

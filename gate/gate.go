@@ -3,8 +3,7 @@
 //
 // It is the question `bento validate` asks, reachable as a library: an embedder can put
 // the same verdict in front of a manifest it is about to run, and get it in the words the
-// run would have refused with. Before this was a package the logic lived in the CLI's
-// main, so the only way to pre-validate was to shell out to the binary.
+// run would have refused with, rather than meeting them at the run's first step.
 //
 // The verdict is a property of the HOST, not of the manifest. A policy this host refuses
 // may be exactly right where it is meant to run, which is why nothing here returns a
@@ -13,8 +12,9 @@
 // It answers as much of the backend's checkGrants as can be answered without a sandbox,
 // and the narrowings are all in the direction of missing a refusal rather than inventing
 // one - a gate that refuses what a run accepts is worse than one that passes something
-// the run then stops. Grants must already be resolved to host paths; see the CLI's
-// resolvedGrants for what that means for a manifest's own spelling.
+// the run then stops. Grants must already be resolved to host paths: a manifest's own
+// relative spelling anchors to the manifest, which is the caller's to resolve before
+// asking, since only the caller knows where the manifest came from.
 package gate
 
 import (
@@ -36,46 +36,46 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
-// Runnability is what this host makes of the program a manifest names. validate used to
-// answer only "does this parse, and is it approved", so a moved entrypoint or a typo'd
-// interpreter passed the gate and failed at run's first step - the CI case, where the
-// manifest is checked on one machine and the failure lands on another.
+// Runnability is what this host makes of the program a manifest names. Parsing and
+// approval do not answer it: a moved entrypoint or a typo'd interpreter passes both and
+// fails at the run's first step - the CI case, where the manifest is checked on one
+// machine and the failure lands on another.
 //
 // It is a property of the host, not of the manifest, so it is reported beside the
 // approval rather than folded into it: an unrunnable manifest here may be exactly right
 // where it is meant to run.
 type Runnability struct {
-	// problems are the reasons this host cannot START what the manifest names - a moved
+	// Problems are the reasons this host cannot START what the manifest names - a moved
 	// entrypoint, an interpreter off PATH. Worded as run words them, since that is the
 	// message the reader will meet if they ignore this one.
 	Problems []string
-	// refusals are the grants run will not honor: a shielded path, a symlink loop, a write
-	// grant that already exists as a file. Separate from problems because they are a
+	// Refusals are the grants run will not honor: a shielded path, a symlink loop, a write
+	// grant that already exists as a file. Separate from Problems because they are a
 	// different failure - nothing here is unstartable, and reporting them as "this host
 	// cannot start what the manifest names" sends the reader hunting an entrypoint that is
-	// fine. Both still refuse a run, so both fail --strict.
+	// fine. Both still refuse a run, so a strict caller fails on either.
 	Refusals []string
-	// fileishWrites are write grants that name nothing on this host and are spelled like
+	// FileishWrites are write grants that name nothing on this host and are spelled like
 	// a file. Not a problem, because nothing here can know: run creates the directory and
 	// the script may well have meant one. Silence is still wrong - write grants name
 	// directories, so a grant meant as a file leaves a host directory called
 	// `output.json` and the file the script wanted never appears.
 	FileishWrites []string
-	// missingReads are read grants naming nothing on this host. Not a problem: a grant
+	// MissingReads are read grants naming nothing on this host. Not a problem: a grant
 	// may name a path the script creates, or one that exists only on the target machine.
 	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
 	// that is the failure run's own epilogue warns is hard to diagnose.
 	MissingReads []string
-	// unresolved marks a host that could not answer at all, which resolvedGrants reports
-	// as a nil policy. Reported as unknown rather than as a pass: the summary's footer
-	// already says a run here is refused for the same reason.
+	// Unresolved marks a host that could not answer at all, which the caller signals by
+	// passing a nil policy. Reported as unknown rather than as a pass: a host that cannot
+	// resolve the grants refuses the run for that same reason.
 	Unresolved bool
 }
 
-// Check asks the resolved policy - the one naming host paths - what run would
-// find. Passing the manifest's own spelling would stat a relative entrypoint against
-// whatever directory validate was invoked from, and resolving the manifest's policy in
-// place would make every approved manifest read as stale (see resolvedGrants).
+// Check asks the resolved policy - the one naming host paths - what run would find.
+// Passing the manifest's own spelling instead would stat a relative entrypoint against
+// whatever directory the caller happened to run from. Resolve into a copy: resolving an
+// approved manifest's policy in place makes it read as stale against its own stamp.
 func Check(resolved *policy.Policy) Runnability {
 	if resolved == nil {
 		return Runnability{Unresolved: true}
@@ -100,13 +100,13 @@ func Check(resolved *policy.Policy) Runnability {
 
 // Refusals is every grant this host will not honor, in the words run refuses them
 // with: the whole of the backend's checkGrants that the gate can answer from here. One
-// function because both readers of it - validate's verdict and approve's refusal to stamp
-// - have to agree on the set, and a check added to only one of them is how a manifest
-// gets stamped for a permission that does not exist.
+// function because every reader of it - a validate verdict, a refusal to stamp an
+// approval, an embedder's preflight - has to agree on the set, and a check added to only
+// one of them is how a manifest gets stamped for a permission that does not exist.
 //
 // A host that cannot work out where the shields anchor yields no problems rather than an
-// error: the summary's footer already reports that gap in words, and a run there is
-// refused for the same reason, so failing --strict on it would only rename it.
+// error: a run there is refused for that same reason, so failing here would only rename
+// it. Callers that need to distinguish the two ask ShieldSet, which reports the error.
 func Refusals(resolved *policy.Policy) []string {
 	shieldedReads, _ := ShieldedReadProblems(resolved.Read)
 	shieldedWrites, _ := ShieldedWriteProblems(resolved.Write)
@@ -211,6 +211,13 @@ func MountGrantProblems(read, write []string) []string {
 	return problems
 }
 
+// shieldCache holds the memoized set described on ShieldSet.
+var shieldCache struct {
+	sync.Mutex
+	key string
+	set shield.Set
+}
+
 // ShieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
 // same rules, the same symlink expansion and the same drops, from internal/shield - the
 // package the backend answers with too, so the gate cannot predict a refusal the run does
@@ -230,12 +237,6 @@ func MountGrantProblems(read, write []string) []string {
 // the dozen variables that relocate individual shields, which is not a stale answer a
 // caller can see coming. The one input the key does not cover is the passwd home
 // HomeAnchors falls back to, which no process can change under itself.
-var shieldCache struct {
-	sync.Mutex
-	key string
-	set shield.Set
-}
-
 func ShieldSet() (shield.Set, error) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
@@ -252,11 +253,11 @@ func ShieldSet() (shield.Set, error) {
 }
 
 // ShieldedReadProblems and ShieldedWriteProblems report the grants the run's shield checks
-// refuse, in the words they refuse them with. They are the counterpart to
-// explicitShieldGrants: that one names the read grants a run honors as a warned opt-in,
-// these name the grants a run will not honor at all - which validate and approve otherwise
-// pass over in silence, leaving the refusal to land at run's first step on a manifest the
-// CI gate green-lit.
+// refuse, in the words they refuse them with. They are the counterpart to the shield
+// opt-ins (shield.Set.OptIns): those name the read grants a run honors as a warned
+// exception, these name the grants a run will not honor at all - which a caller otherwise
+// passes over in silence, leaving the refusal to land at the run's first step on a
+// manifest the CI gate green-lit.
 //
 // Between them they ask shield.Set.Contains, the same question the run asks, so the three
 // refusals arrive in the order and the wording a run would have printed - a grant that
@@ -264,15 +265,15 @@ func ShieldSet() (shield.Set, error) {
 // reported the way the run reports it:
 //
 //   - a grant at or inside a DenyAll shield. A read naming one exactly is the deliberate
-//     opt-in explicitShieldGrants reports instead; a write of the same path is not, which
+//     opt-in shield.Set.OptIns reports instead; a write of the same path is not, which
 //     is the asymmetry this exists to say out loud, and why the two kinds are refused in
 //     different sentences with only one offering the opt-in as a remedy.
 //   - a write at or inside a DenyWrite shield, which has no opt-in at all.
 //   - a write containing a DenyAll shield.
 //
-// The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes,
-// and they are symlink-resolved before the comparison because the run compares grants
-// resolveGrants has already made symlink-free. The refusal still quotes the grant as the
+// The grants are the policy's resolved ones, and they are symlink-resolved before the
+// comparison because the run compares grants its own resolution has already made
+// symlink-free. The refusal still quotes the grant as the
 // manifest spells it and the shield as the deny-list does, which is what each reader is
 // looking at.
 //
@@ -345,7 +346,7 @@ func MissingReads(read []string) []string {
 // the file the script wanted lands inside it, where no later grant names it.
 //
 // A guess about a naming convention, so every caller reports it as a note and none as a
-// verdict: --strict must not fail on it. A versioned directory (`python3.11`, `conf.d`)
+// verdict: a strict caller must not fail on it. A versioned directory (`python3.11`, `conf.d`)
 // reads as file-ish here and is knowingly accepted noise - the alternative is a list of
 // extensions that is wrong the first time someone writes to a directory nobody thought
 // of. A name with no extension at all (`Makefile`) is missed for the same reason.
