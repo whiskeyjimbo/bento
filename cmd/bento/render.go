@@ -455,15 +455,18 @@ func resolvedShieldRules() ([]shieldRule, error) {
 	}
 	resolved := make([]shieldRule, 0, len(rules))
 	for _, r := range rules {
-		// A rule whose path resolves to "/" is dropped here rather than at each comparison,
-		// as the backend drops it in shieldTarget: it would otherwise enclose every grant on
-		// the host and refuse them all, blaming whichever dotfile the rule happens to name.
-		if pathresolve.Existing(r.Path) == "/" {
+		lands := pathresolve.Existing(r.Path)
+		// A rule landing on "/" is dropped here rather than at each comparison, as the
+		// backend's shieldTarget drops it: it would otherwise enclose every grant on the
+		// host and refuse them all, blaming whichever dotfile the rule happens to name.
+		// shieldTarget's other drop - a resolved path outside every home - is not mirrored,
+		// which only misses a refusal.
+		if lands == "/" {
 			continue
 		}
 		resolved = append(resolved, shieldRule{
 			Rule:  r,
-			lands: pathresolve.Existing(r.Path),
+			lands: lands,
 			loc:   filepath.Join(pathresolve.Existing(filepath.Dir(r.Path)), filepath.Base(r.Path)),
 		})
 	}
