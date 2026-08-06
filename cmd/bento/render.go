@@ -21,6 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
@@ -350,19 +351,14 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
 func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
-	rules, err := resolvedShieldRules()
+	set, err := shieldSet()
 	if err != nil {
 		return nil, err
 	}
 	var out []shieldGrant
-	seen := map[string]bool{}
-	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && slices.Contains(reads, r.Path) && !seen[r.Path] {
-			seen[r.Path] = true
-			out = append(out, shieldGrant{Path: r.Path, Holds: r.Holds})
-		}
+	for _, o := range set.OptIns(reads) {
+		out = append(out, shieldGrant{Path: o.Path, Holds: o.Holds})
 	}
-	slices.SortFunc(out, func(a, b shieldGrant) int { return strings.Compare(a.Path, b.Path) })
 	return out, nil
 }
 
@@ -395,83 +391,43 @@ func shieldGrantPaths(gs []shieldGrant) []string {
 	return out
 }
 
-// builtinShieldRules is the always-on deny-list the backend builds for every run, as far
-// as the CLI can build it: the same home and runtime lists from the same anchors
-// (alwaysShields, homeShields). It stops one rule short of the backend's set - the
-// caller-supplied extraDeny an embedder passes in, which no manifest can be checked
-// against from here - so what it answers is a subset of what a run refuses, never more.
-func builtinShieldRules() ([]denylist.Rule, error) {
-	anchors, err := denylist.HomeAnchors()
-	if err != nil {
-		return nil, err
-	}
-	var rules []denylist.Rule
-	for _, h := range anchors {
-		rules = append(rules, denylist.Home(h)...)
-	}
-	// Once over the whole anchor set, matching homeShields.
-	rules = append(rules, denylist.Relocated(rules, anchors)...)
-	return append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...), nil
-}
-
-// shieldRule is a built-in rule with the two spellings the grant checks compare it by
-// already worked out: where the shield itself lands, and where its own name sits in the
-// directory holding it (the entry a write above it could replace - see writeShieldProblem).
-type shieldRule struct {
-	denylist.Rule
-	lands string
-	loc   string
-}
-
-// resolvedShieldRules is builtinShieldRules with every path resolved, memoized for the
-// process. The deny-list runs to several hundred rules per home, each resolution is real
-// syscalls, and validate asks for the set five times over one manifest - resolving inside
-// the comparison loops made the command seven times slower than it was before it made the
-// comparison at all (4ms to 30ms on a two-grant manifest; 4ms again with this).
+// shieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
+// same rules, the same symlink expansion and the same drops, from internal/shield - the
+// package the backend answers with too, so the gate cannot predict a refusal the run does
+// not raise or miss one it does. It stops one rule short of a run's own set, the
+// caller-supplied denies an embedder passes in, which no manifest can be checked against
+// from here; that narrowing only ever misses a refusal.
 //
-// Keyed on the anchors rather than computed once, because the environment they come from is
-// fixed only within a run: the tests relocate HOME per case in one process, and a cache
-// that outlived that would answer the second case with the first case's home.
-var resolvedShields struct {
+// Memoized for the process. The set walks the credential stores on disk and validate asks
+// for it five times over one manifest; resolving inside the comparison loops made the
+// command seven times slower than it was before it made the comparison at all (4ms to
+// 30ms on a two-grant manifest; 4ms again with this).
+//
+// Keyed on the environment rather than computed once, because that is what the set is
+// derived from and it is fixed only within a run: the tests relocate HOME and the shield
+// variables per case in one process, and a cache that outlived that would answer the
+// second case with the first case's host. On the anchors alone it would miss the dozen
+// variables that relocate individual shields, which is not a stale answer a caller can
+// see coming.
+var shieldCache struct {
 	sync.Mutex
-	key   string
-	rules []shieldRule
+	key string
+	set shield.Set
 }
 
-func resolvedShieldRules() ([]shieldRule, error) {
+func shieldSet() (shield.Set, error) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
-		return nil, err
+		return shield.Set{}, err
 	}
-	key := strings.Join(append(slices.Clone(anchors), denylist.RuntimeDir()), "\x00")
-	resolvedShields.Lock()
-	defer resolvedShields.Unlock()
-	if resolvedShields.key == key {
-		return resolvedShields.rules, nil
+	runtimeDir := denylist.RuntimeDir()
+	key := strings.Join(os.Environ(), "\x00")
+	shieldCache.Lock()
+	defer shieldCache.Unlock()
+	if shieldCache.key != key {
+		shieldCache.key, shieldCache.set = key, shield.Assemble(shield.Host(), anchors, runtimeDir, nil)
 	}
-	rules, err := builtinShieldRules()
-	if err != nil {
-		return nil, err
-	}
-	resolved := make([]shieldRule, 0, len(rules))
-	for _, r := range rules {
-		lands := pathresolve.Existing(r.Path)
-		// A rule landing on "/" is dropped here rather than at each comparison, as the
-		// backend's shieldTarget drops it: it would otherwise enclose every grant on the
-		// host and refuse them all, blaming whichever dotfile the rule happens to name.
-		// shieldTarget's other drop - a resolved path outside every home - is not mirrored,
-		// which only misses a refusal.
-		if lands == "/" {
-			continue
-		}
-		resolved = append(resolved, shieldRule{
-			Rule:  r,
-			lands: lands,
-			loc:   filepath.Join(pathresolve.Existing(filepath.Dir(r.Path)), filepath.Base(r.Path)),
-		})
-	}
-	resolvedShields.key, resolvedShields.rules = key, resolved
-	return resolved, nil
+	return shieldCache.set, nil
 }
 
 // shieldedReadProblems and shieldedWriteProblems report the grants the run's shield checks
@@ -516,36 +472,22 @@ func resolvedShieldRules() ([]shieldRule, error) {
 // grant to reconstruct, and the refusal it raises is about a symlink on this host rather
 // than anything the manifest says.
 func shieldedReadProblems(reads []string) ([]string, error) {
-	rules, err := resolvedShieldRules()
+	set, err := shieldSet()
 	if err != nil {
 		return nil, err
 	}
-	grants, err := explicitShieldGrants(reads)
-	if err != nil {
-		return nil, err
-	}
-	optIns := shieldGrantPaths(grants)
+	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
 	for _, g := range reads {
-		// The opt-in is tested on the spelling, not on where it lands: the backend honors a
-		// read that names the deny-list path literally, and treats a read of the same store
-		// reached through a link as the side-step it refuses.
-		if slices.Contains(optIns, g) {
-			continue
-		}
-		lands := pathresolve.Existing(g)
-		for _, r := range rules {
-			if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
-				problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
-				break
-			}
+		if r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil); v != shield.Honored {
+			problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
 		}
 	}
 	return problems, nil
 }
 
 func shieldedWriteProblems(writes []string) ([]string, error) {
-	rules, err := resolvedShieldRules()
+	set, err := shieldSet()
 	if err != nil {
 		return nil, err
 	}
@@ -557,39 +499,26 @@ func shieldedWriteProblems(writes []string) ([]string, error) {
 		if g == "/" {
 			continue
 		}
-		if p, ok := writeShieldProblem(rules, g); ok {
+		if p, ok := writeShieldProblem(set, g); ok {
 			problems = append(problems, p)
 		}
 	}
 	return problems, nil
 }
 
-// writeShieldProblem reports the first of the three refusals a write grant trips, or ok
-// false where it trips none.
-func writeShieldProblem(rules []shieldRule, g string) (string, bool) {
-	lands := pathresolve.Existing(g)
-	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && policy.CoversResolved(r.lands, lands) {
-			return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
-		}
-	}
-	for _, r := range rules {
-		if r.Deny == denylist.DenyWrite && policy.CoversResolved(r.lands, lands) {
-			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
-		}
-	}
-	for _, r := range rules {
-		if r.Deny != denylist.DenyAll {
-			continue
-		}
-		// The shield's own name in the granted directory is the tamperable entry, so the
-		// parent resolves and the name stays literal - the backend's own comparison, and for
-		// its reason: the link the grant would expose is the one it can replace. Asked of the
-		// unresolved spelling too, since where it is the shield that moves out of the grant
-		// (a symlinked home) the containment is visible in no other namespace.
-		if policy.CoversResolved(lands, r.loc) || policy.CoversResolved(g, r.Path) {
-			return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
-		}
+// writeShieldProblem reports the refusal a write grant trips, or ok false where it trips
+// none. The workspace shields are not passed: they are derived per write grant from the
+// checkout under it, which is state the gate would have to walk the grant to reconstruct,
+// so that one refusal stays unmirrored - in the direction that only misses one.
+func writeShieldProblem(set shield.Set, g string) (string, bool) {
+	r, v := set.Contains(pathresolve.Existing(g), shield.Write, nil, nil)
+	switch v {
+	case shield.InsideShield, shield.InsideCallerShield:
+		return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
+	case shield.UnderWriteShield:
+		return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
+	case shield.AboveShield:
+		return grantrefusal.WriteAboveShield(g, r.Path).Error(), true
 	}
 	return "", false
 }
@@ -1676,12 +1605,12 @@ func writeNestedAnchors(w io.Writer, anchors []string) {
 // naming: it is set on nearly every host, but Runtime stamps it only where it points
 // somewhere other than /run, which is a real relocation and not an ordinary host.
 func writeRelocatedShields(w io.Writer) {
-	rules, err := builtinShieldRules()
+	set, err := shieldSet()
 	if err != nil {
 		return
 	}
 	paths := map[string][]string{}
-	for _, r := range rules {
+	for _, r := range set.Builtin() {
 		if r.Source == "" {
 			continue
 		}
