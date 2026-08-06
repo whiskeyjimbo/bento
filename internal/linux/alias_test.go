@@ -733,6 +733,7 @@ func TestRealBindAliasIsFound(t *testing.T) {
 	key := filepath.Join(home, ".ssh", "id_rsa")
 
 	sb := sandbox{homes: []string{home}, resolve: hostResolve, fileIDs: hostFileIDs,
+		isDir: hostIsDir, listDir: hostListDir,
 		aliasesUnder: hostAliasesUnder, mountpoints: hostMountpoints, statID: hostStatIDOK}
 	t.Log(reached)
 
