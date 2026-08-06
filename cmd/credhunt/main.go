@@ -112,10 +112,12 @@ func main() {
 // home that could not be walked, where zero findings would read as a clean home, is an
 // error.
 func run(stdout, stderr io.Writer, homes []string) int {
-	rules := denylist.Runtime(denylist.RuntimeDir(), homes...)
+	var home []denylist.Rule
 	for _, h := range homes {
-		rules = append(rules, denylist.Home(h, homes...)...)
+		home = append(home, denylist.Home(h)...)
 	}
+	rules := append(home, denylist.Relocated(home, homes)...)
+	rules = append(rules, denylist.Runtime(denylist.RuntimeDir(), homes...)...)
 
 	for _, h := range homes {
 		fmt.Fprintf(stdout, "scanning %q against %d shields\n", h, len(rules))

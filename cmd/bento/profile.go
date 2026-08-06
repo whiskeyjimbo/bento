@@ -1705,9 +1705,13 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 			}
 		}
 	}
+	var home []denylist.Rule
 	for _, h := range homes {
-		addShields(denylist.Home(h, homes...))
+		home = append(home, denylist.Home(h)...)
 	}
+	addShields(home)
+	// Once over the whole anchor set, matching the backend's alwaysShields.
+	addShields(denylist.Relocated(home, homes))
 	// The runtime shields land at /run on an ordinary host, where the proposal never
 	// reaches them (isSystemPath drops /run outright). They are here for the host that
 	// parks XDG_RUNTIME_DIR under /tmp, which the proposal DOES reach: that directory
@@ -1767,8 +1771,14 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 			shields = append(shields, p)
 		}
 	}
+	var home []denylist.Rule
 	for _, h := range homes {
-		for _, r := range denylist.Home(h, homes...) {
+		home = append(home, denylist.Home(h)...)
+	}
+	// The relocated rules carry DenyWrite entries of their own (ZDOTDIR's startup group,
+	// GIT_CONFIG_GLOBAL), which the enforced run refuses a write over just the same.
+	for _, rules := range [][]denylist.Rule{home, denylist.Relocated(home, homes)} {
+		for _, r := range rules {
 			if r.Deny != denylist.DenyWrite {
 				continue
 			}
@@ -1807,7 +1817,7 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // dropped: a home-shaped heuristic strong enough to drop on would also gut legitimate
 // cross-home data grants (/home/u/project/data), so the reviewer decides.
 //
-// The match against denylist.Home(root, homes...) tests containment in EITHER direction: a grant
+// The match against denylist.Home(root) tests containment in EITHER direction: a grant
 // at or under a shield (write: ~/.ssh/id_rsa), and - the case that matters most - a grant
 // that ENCLOSES a shield (write: ~, which Synthesize produces by collapsing a file write
 // to its directory, sweeping in ~/.ssh). For the profiler's own home clampShieldedGrants
@@ -1817,19 +1827,11 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 // path (~/.config/systemd/user) is unshielded at run time just like a DenyAll credential.
 // A data path enclosing no shield still stays quiet.
 //
-// The run's own anchors are passed to Home even though the root is foreign. They do not
-// place shields - the root does that - they only tell Home which env-relocated stores are
-// already covered by an anchor's own pass, which is the same question the enforcer asks.
-// Keyed on the foreign root alone, a KUBECONFIG under the profiler's ~/.kube produces an
-// interior file rule here that the enforced run does not carry, and the warning names a
-// shield the run has no such rule for.
-//
-// Raw anchors, unlike the symlink-augmented set the clamps above match grants against:
-// this argument decides which rules exist, and the enforcer builds its own from raw
-// HomeAnchors (see the Linux backend's homeShields). Adding a resolved anchor here would
-// let Home's swallow guard drop an env relocation the run does emit - a relocation to an
-// ancestor of the resolved home is shieldable for the enforcer and not for this pass -
-// and the warning would go quiet on a shield the run really carries.
+// Only the root-anchored rules, never denylist.Relocated: an env relocation names one
+// absolute path that belongs to the RUN, so the enforced run shields it wherever it lands
+// - including under a foreign home - and a warning built from it would name a shield the
+// run does carry. What this function looks for is the opposite, a shield the run has no
+// rule for because it anchors on a different home.
 func foreignHomeShields(grants []string) []string {
 	// Every anchor the run shields on counts as "own", not just $HOME: under sudo -H the
 	// two disagree, and treating the passwd home as foreign would warn about a store the
@@ -1849,7 +1851,7 @@ func foreignHomeShields(grants []string) []string {
 		if !ok || selves[root] || seen[g] {
 			continue
 		}
-		for _, r := range denylist.Home(root, anchors...) {
+		for _, r := range denylist.Home(root) {
 			if g == r.Path || policy.CoversResolved(r.Path, g) || policy.CoversResolved(g, r.Path) {
 				seen[g] = true
 				out = append(out, g)

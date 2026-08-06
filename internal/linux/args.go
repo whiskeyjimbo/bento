@@ -740,11 +740,12 @@ func resolvedHomes(sb sandbox) []string {
 func homeShields(sb sandbox) []denylist.Rule {
 	var rules []denylist.Rule
 	for _, h := range sb.homes {
-		// Every anchor is passed to every call: a relocation env var pointing at one
-		// home must not produce a rule that swallows another.
-		rules = append(rules, denylist.Home(h, sb.homes...)...)
+		rules = append(rules, denylist.Home(h)...)
 	}
-	return rules
+	// Once over the whole anchor set, not once per anchor: an env relocation names one
+	// absolute path, so a per-anchor call would emit it twice and stamp the copies with
+	// whichever anchor's Source came out first.
+	return append(rules, denylist.Relocated(rules, sb.homes)...)
 }
 
 // shieldRules is the full deny-list for a run: the mandatory Home shields plus,
