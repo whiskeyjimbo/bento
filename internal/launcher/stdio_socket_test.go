@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -118,17 +119,19 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
-	// A device the sandbox's own /dev provides grants nothing the target could not get
-	// by path, and refusing the class outright would refuse every interactive run.
+	// The interactive case the device rule exists for: refusing it would refuse every
+	// run a human types. The pty SLAVE is what a shell actually puts on 0/1/2, so the
+	// test opens one rather than settling for the ptmx multiplexer.
 	t.Run("a terminal is allowed", func(t *testing.T) {
-		pty, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-		if err != nil {
-			t.Skipf("no pty available: %v", err)
+		slave := ptySlave(t)
+		if err := refuseNetworkFD(int(slave.Fd())); err != nil {
+			t.Errorf("a terminal on stdio was refused; every interactive run has one: %v", err)
 		}
-		defer pty.Close()
-		if err := refuseNetworkFD(int(pty.Fd())); err != nil {
-			t.Errorf("a terminal on stdio was refused: %v", err)
-		}
+	})
+
+	// The other half of the rule, on the opposite rationale: the sandbox's own /dev
+	// provides it, so an inherited one grants nothing openable-by-path did not.
+	t.Run("a device the sandbox provides is allowed", func(t *testing.T) {
 		f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -139,10 +142,35 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
-	// /dev/kvm and /dev/net/tun are host channels of the exact kind the check exists
-	// for, and neither is a socket. They need privileges the test may not have, so the
-	// rule is exercised through the classifier on the device numbers themselves.
-	t.Run("a device absent from the sandbox is refused", func(t *testing.T) {
+	// /dev/mem shares major 1 with the harmless nodes and is a direct physical-memory
+	// channel, so the minors are enumerated rather than the major allowed wholesale.
+	// It is also openable only by root, which is the case this check is written for -
+	// a parent with more rights than the target handing a descriptor down.
+	t.Run("a memory device is refused", func(t *testing.T) {
+		f, err := os.OpenFile("/dev/mem", os.O_RDONLY, 0)
+		if err != nil {
+			t.Skipf("no /dev/mem available: %v", err)
+		}
+		defer f.Close()
+		err = refuseNetworkFD(int(f.Fd()))
+		if err == nil {
+			t.Fatal("an inherited /dev/mem on stdio was accepted")
+		}
+		if !strings.Contains(err.Error(), "character device") {
+			t.Errorf("wrong refusal for /dev/mem: %v", err)
+		}
+	})
+
+	// /dev/kvm and /dev/net/tun are host channels of the exact kind this check exists
+	// for, and neither is a socket. Opening either needs privileges or modules the test
+	// host may lack, so the classifier is exercised on the device numbers directly -
+	// with a descriptor that is not a terminal, which is the other half of the rule.
+	t.Run("a device the sandbox does not offer is refused", func(t *testing.T) {
+		notATTY, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer notATTY.Close()
 		for _, d := range []struct {
 			name         string
 			major, minor uint32
@@ -150,11 +178,13 @@ func TestRefuseNetworkFD(t *testing.T) {
 			{"/dev/kvm", 10, 232},
 			{"/dev/net/tun", 10, 200},
 			{"/dev/mem", 1, 1},
+			{"/dev/kmem", 1, 2},
 			{"/dev/port", 1, 4},
-			{"a raw disk", 8, 0},
+			{"an idle host serial port", 4, 64},
+			{"a host virtual console", 4, 1},
 		} {
-			if sandboxDevice(unix.Mkdev(d.major, d.minor)) {
-				t.Errorf("%s (%d:%d) passed as a device the sandbox provides", d.name, d.major, d.minor)
+			if permittedStdioDevice(int(notATTY.Fd()), unix.Mkdev(d.major, d.minor)) {
+				t.Errorf("%s (%d:%d) passed as a permitted stdio device", d.name, d.major, d.minor)
 			}
 		}
 	})
@@ -204,6 +234,32 @@ func TestNetworkStdioRefusalsReportsEveryDescriptor(t *testing.T) {
 	if got := len(networkStdioRefusals()); got != 2 {
 		t.Errorf("refusals = %d, want 2: a socket on fd 0 must not hide what fd 1 carries", got)
 	}
+}
+
+// ptySlave opens a pty pair and hands back the slave - the end a shell puts on the
+// target's standard streams, and a device number (136-143) the sandbox's own devpts
+// does not carry, so it is the terminal rule that has to permit it and not the
+// provided-device one.
+func ptySlave(t *testing.T) *os.File {
+	t.Helper()
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pty available: %v", err)
+	}
+	t.Cleanup(func() { master.Close() })
+	if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatalf("unlocking the pty: %v", err)
+	}
+	n, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Fatalf("naming the pty slave: %v", err)
+	}
+	slave, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatalf("opening the pty slave: %v", err)
+	}
+	t.Cleanup(func() { slave.Close() })
+	return slave
 }
 
 func rawFile(t *testing.T, ln interface{ File() (*os.File, error) }) *os.File {

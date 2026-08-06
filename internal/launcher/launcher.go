@@ -437,11 +437,12 @@ func runObserve(cfg Config, env []string) (int, error) {
 
 // firstInheritableFD is the lowest descriptor dropInheritedFDs marks close-on-exec.
 // 0/1/2 are the target's stdio and are always kept, so whatever they carry reaches the
-// target untouched - see refuseNetworkStdio for the one thing they must not carry.
+// target untouched - see refuseNetworkStdio for what they must not carry.
 const firstInheritableFD = 3
 
-// refuseNetworkStdio refuses the run when fd 0, 1, or 2 is an inherited socket that
-// could reach a network.
+// refuseNetworkStdio refuses the run when fd 0, 1, or 2 carries reach the sandbox does
+// not grant: an inherited socket that could reach a network, a directory, or a device
+// node that is neither a terminal nor one the sandbox's own /dev provides.
 //
 // Every other inherited descriptor is dropped by dropInheritedFDs; stdio is kept
 // unconditionally because it is the target's own standard streams. No fence bento
@@ -485,9 +486,9 @@ func networkStdioRefusals() []error {
 	return errs
 }
 
-// refuseNetworkFD refuses one descriptor that carries reach the sandbox does not grant:
-// a socket of a family able to reach a network, a directory, or a device node absent
-// from the sandbox's own /dev. The property is the same for all three - no fence bento
+// refuseNetworkFD applies that check to one descriptor: a socket of a family able to
+// reach a network, a directory, and a device node the sandbox does not otherwise offer
+// are all refused. The property is the same for all three - no fence bento
 // installs revokes what an already-open descriptor carries - and it is not
 // socket-specific, which is what the socket-only version of this check missed.
 //
@@ -542,10 +543,10 @@ func refuseNetworkFD(fd int) error {
 	case unix.S_IFBLK:
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited block device; nothing the sandbox installs revokes raw access to it", fd)
 	case unix.S_IFCHR:
-		if sandboxDevice(st.Rdev) {
+		if permittedStdioDevice(fd, st.Rdev) {
 			return nil
 		}
-		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited character device (%d:%d) the sandbox's own /dev does not provide", fd, unix.Major(st.Rdev), unix.Minor(st.Rdev))
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited character device (%d:%d) that is neither a terminal nor one the sandbox's own /dev provides", fd, unix.Major(st.Rdev), unix.Minor(st.Rdev))
 	default:
 		return nil
 	}
@@ -559,33 +560,37 @@ func refuseNetworkFD(fd int) error {
 	return nil
 }
 
-// sandboxDevice reports whether a character device inherited on stdio is one the
-// sandbox's own /dev already provides, so holding it open grants nothing the target
-// could not get by path anyway. That is the whole test: an inherited descriptor is a
-// finding only when it reaches something the namespace does not.
+// permittedStdioDevice reports whether a character device inherited on stdio may be
+// kept. Two things qualify, for two different reasons.
 //
-// The set is bwrap's --dev tmpfs (args.go's pseudoFSFlags) - null, zero, full, random,
-// urandom, the tty devices, and the fresh devpts it mounts over /dev/pts. Terminals are
-// the reason this is not a blanket refusal: every interactive `bento run` has a pty on
-// 0/1/2. What a host pty still permits (TIOCSTI-style injection into the user's own
-// terminal) is a residual of running interactively at all, not something this layer can
-// take away.
+// A terminal qualifies because refusing it would refuse every interactive run: the
+// user's own tty is on 0/1/2 whenever a human types the command. What one still permits
+// (TIOCSTI-style injection back into that terminal) is a residual of running
+// interactively at all, not something this layer can take away. The test is whether the
+// descriptor answers TCGETS rather than a table of device numbers, because a terminal is
+// not one major: a pty is 136-143, the console is 5:0/5:1, and a VM or board serial
+// console is 229 (hvc), 204 (ttyAMA), 188 (ttyUSB) or 4 (ttyS). Enumerating majors got
+// this wrong in both directions - it passed idle host serial ports and host virtual
+// consoles that no one is sitting at, and refused `bento run` on the very consoles that
+// are somebody's terminal.
 //
-// Major 1 is enumerated by minor rather than allowed wholesale: /dev/mem (1:1),
-// /dev/kmem (1:2) and /dev/port (1:4) share it with the harmless nodes and are direct
-// physical-memory channels. Everything else - /dev/kvm, /dev/net/tun, a raw disk - is
-// absent from the sandbox's /dev and refused.
-func sandboxDevice(rdev uint64) bool {
-	major, minor := unix.Major(rdev), unix.Minor(rdev)
-	switch major {
-	case 1: // mem: null, zero, full, random, urandom
-		return minor == 3 || minor == 5 || minor == 7 || minor == 8 || minor == 9
-	case 4, 5: // tty, console, ptmx
-		return true
-	case 136, 137, 138, 139, 140, 141, 142, 143: // devpts slaves
-		return true
+// The memory devices qualify on the other rationale: the sandbox's own /dev (bwrap's
+// --dev tmpfs, see args.go's pseudoFSFlags) provides them, so an inherited one grants
+// nothing the target could not open by path. They are enumerated by minor rather than by
+// major because /dev/mem (1:1), /dev/kmem (1:2) and /dev/port (1:4) share major 1 with
+// them and are direct physical-memory channels.
+//
+// Everything else - /dev/kvm, /dev/net/tun, a raw disk - is neither, and refused.
+func permittedStdioDevice(fd int, rdev uint64) bool {
+	if unix.Major(rdev) == 1 { // mem: null, zero, full, random, urandom
+		switch unix.Minor(rdev) {
+		case 3, 5, 7, 8, 9:
+			return true
+		}
+		return false
 	}
-	return false
+	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	return err == nil
 }
 
 // networkStdio is the one refusal above that an embedder can opt out of, so it is
