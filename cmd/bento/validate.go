@@ -302,19 +302,29 @@ func checkRunnable(resolved *policy.Policy) runnability {
 			r.problems = append(r.problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
-	// A host that cannot work out where the shields anchor yields no problems rather than
-	// an error: the summary's footer already reports that gap in words, and a run there is
-	// refused for the same reason, so failing --strict on it would only rename it.
-	shieldedReads, _ := shieldedReadProblems(resolved.Read)
-	shieldedWrites, _ := shieldedWriteProblems(resolved.Write)
-	r.refusals = append(r.refusals, append(shieldedReads, shieldedWrites...)...)
-	r.refusals = append(r.refusals, loopedGrantProblems(resolved.Read, resolved.Write)...)
-	r.refusals = append(r.refusals, fileWriteGrantProblems(resolved.Write)...)
-	r.refusals = append(r.refusals, rootWriteProblems(resolved.Write)...)
-	r.refusals = append(r.refusals, mountGrantProblems(resolved.Read, resolved.Write)...)
+	r.refusals = grantRefusals(resolved)
 	r.fileishWrites = fileishWriteGrants(resolved.Write)
 	r.missingReads = missingReadGrants(resolved.Read)
 	return r
+}
+
+// grantRefusals is every grant this host will not honor, in the words run refuses them
+// with: the whole of the backend's checkGrants that the gate can answer from here. One
+// function because both readers of it - validate's verdict and approve's refusal to stamp
+// - have to agree on the set, and a check added to only one of them is how a manifest
+// gets stamped for a permission that does not exist.
+//
+// A host that cannot work out where the shields anchor yields no problems rather than an
+// error: the summary's footer already reports that gap in words, and a run there is
+// refused for the same reason, so failing --strict on it would only rename it.
+func grantRefusals(resolved *policy.Policy) []string {
+	shieldedReads, _ := shieldedReadProblems(resolved.Read)
+	shieldedWrites, _ := shieldedWriteProblems(resolved.Write)
+	problems := append(shieldedReads, shieldedWrites...)
+	problems = append(problems, loopedGrantProblems(resolved.Read, resolved.Write)...)
+	problems = append(problems, fileWriteGrantProblems(resolved.Write)...)
+	problems = append(problems, rootWriteProblems(resolved.Write)...)
+	return append(problems, mountGrantProblems(resolved.Read, resolved.Write)...)
 }
 
 // loopedGrantProblems reports the grants whose symlinks loop, read and write alike, since

@@ -531,9 +531,7 @@ func TestValidateStrictFailsOnAWriteGrantThatIsAFile(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: "./x", Write: []string{target}}
 	path := writeManifest(t, p, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
-		t.Fatalf("approve: %v", err)
-	}
+	assertApproveRefuses(t, path)
 
 	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
 	if err == nil {
@@ -677,9 +675,7 @@ func TestValidateRefusesAWriteGrantNamingAFileWithATrailingSlash(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: "./x", Write: []string{target + "/"}}
 	path := writeManifest(t, p, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
-		t.Fatalf("approve: %v", err)
-	}
+	assertApproveRefuses(t, path)
 
 	out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
 	if err == nil {
@@ -710,9 +706,7 @@ func TestValidateStrictFailsOnALoopingGrantOfEitherKind(t *testing.T) {
 				p.Write = []string{loop}
 			}
 			path := writeManifest(t, p, manifest.Provenance{})
-			if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
-				t.Fatalf("approve: %v", err)
-			}
+			assertApproveRefuses(t, path)
 
 			out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path)
 			if err == nil {
@@ -928,4 +922,19 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 	t.Run("a directory that is not the host root", func(t *testing.T) {
 		assertProblem(t, rootWriteProblems([]string{"/srv/app"}), "")
 	})
+}
+
+// assertApproveRefuses pins the other half of the gate: a grant validate reports as
+// refused must not be stampable either, or the CI gate reads an approval over a permission
+// the run does not grant. The two verdicts come from one set (grantRefusals) so that they
+// cannot drift, and this is what would catch it if they did.
+func assertApproveRefuses(t *testing.T, path string) {
+	t.Helper()
+	out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	if err == nil {
+		t.Fatalf("approve must refuse a grant run refuses; got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "stamp a permission that does not exist") {
+		t.Errorf("approve must refuse in the honorable-grants words; got %v", err)
+	}
 }
