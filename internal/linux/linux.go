@@ -79,7 +79,20 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
-		return e.runDegraded(ctx, p, proc, opts.RunID, opts.AcceptAliasesUnder)
+		res, err := e.runDegraded(ctx, p, proc, opts.RunID, opts.AcceptAliasesUnder)
+		// Unlike the gate and the deny paths above, asking for an exec record here is not
+		// a refusal: the record is a diagnostic, and refusing a run because a diagnostic
+		// is unavailable would let it decide what runs. This tier installs a seccomp
+		// filter denying ptrace process-wide before the target is dispatched, so the
+		// launcher's own attach would be refused by its own filter - and that filter is
+		// load-bearing, since with no pid namespace the target shares the host's process
+		// table. Reported as nothing having watched, which is what it is.
+		if err == nil && opts.RecordExec {
+			res.ExecRecord = &enforce.ExecRecord{
+				Reason: "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
+			}
+		}
+		return res, err
 	}
 
 	report := e.Probe(ctx)
@@ -140,6 +153,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// installs would be claimed on the strength of a host-side probe alone. Set before
 	// compile, which encodes the descriptor into the launch invocation.
 	sb.applied = true
+	sb.recordExec = opts.RecordExec
 	appliedReport, dropApplied, err := newAppliedReport(sb.runDir)
 	if err != nil {
 		return enforce.Result{}, err
@@ -228,10 +242,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
-		setup := parseApplied(appliedReport).reconcile(&report, blockWanted, strictWanted, true, 0)
+		a := parseApplied(appliedReport)
+		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -240,10 +255,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// target as 128+signal itself. What reaches this branch signaled is the scope
 		// coming down around the run, which is how a cgroup limit ends it.
 		code, signaled, sig := exitStatusOf(ee.ProcessState)
-		setup := parseApplied(appliedReport).reconcile(&report, blockWanted, strictWanted, true, code)
+		a := parseApplied(appliedReport)
+		setup := a.reconcile(&report, blockWanted, strictWanted, true, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
