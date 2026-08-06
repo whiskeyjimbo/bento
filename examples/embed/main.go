@@ -1,6 +1,7 @@
 // Command embed hosts bento's enforcement backend in-process, using only bento's
-// public packages - backend, enforce, manifest - and nothing under internal/. It
-// takes a manifest path, runs the script it describes under the sandbox, prints
+// public packages - backend, enforce, manifest, gate - and nothing under internal/. It
+// takes a manifest path, pre-validates it against this host, runs the script it
+// describes under the sandbox, prints
 // every honesty field the structured Result carries - what the host could not
 // enforce, what the gate let out, and every credential path the run exposed or
 // could not shield - and passes the target's exit code through.
@@ -32,6 +33,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -111,6 +113,15 @@ func run(manifestPath string) int {
 	if err := manifest.Resolve(p, manifestPath); err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
+	}
+
+	// What this host will refuse about the policy, asked before anything is built. The
+	// refusals land at the run's first step otherwise, which on a machine other than the
+	// one the manifest was written on is where they are hardest to read. Reported rather
+	// than fatal, for the reason validate needs --strict to fail: a grant this host
+	// refuses may be fine on the host the manifest is meant for.
+	for _, r := range gate.Check(p).Refusals {
+		fmt.Fprintf(os.Stderr, "embed: note: %s\n", r)
 	}
 
 	// The policy names which env vars may pass through; resolving those names

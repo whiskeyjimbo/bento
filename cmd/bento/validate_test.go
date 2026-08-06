@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -843,7 +844,7 @@ func TestValidateRelocatable(t *testing.T) {
 
 // The verdict is opt-in: a manifest written for one machine is not wrong, so without the
 // flag an absolute grant must neither print a line nor fail - including under --strict,
-// whose gate is about approval and runnability.
+// whose gate is about approval and gate.Runnability.
 func TestValidateRelocatableIsOptIn(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/corpus"}}
 	path := writeManifest(t, p, manifest.Provenance{})
@@ -918,12 +919,12 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			assertProblem(t, mountGrantProblems(tc.read, tc.write), tc.want)
+			assertProblem(t, gate.MountGrantProblems(tc.read, tc.write), tc.want)
 		})
 	}
 
 	t.Run("the host root, for write", func(t *testing.T) {
-		assertProblem(t, rootWriteProblems([]string{"/"}), "would make the entire host root writable")
+		assertProblem(t, gate.RootWriteProblems([]string{"/"}), "would make the entire host root writable")
 	})
 	t.Run("a symlink into the host root", func(t *testing.T) {
 		// The backend refuses this: it checks grants it has already made symlink-free, so
@@ -932,16 +933,16 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 		if err := os.Symlink("/", link); err != nil {
 			t.Fatal(err)
 		}
-		assertProblem(t, rootWriteProblems([]string{link}), "would make the entire host root writable")
+		assertProblem(t, gate.RootWriteProblems([]string{link}), "would make the entire host root writable")
 	})
 	t.Run("a directory that is not the host root", func(t *testing.T) {
-		assertProblem(t, rootWriteProblems([]string{"/srv/app"}), "")
+		assertProblem(t, gate.RootWriteProblems([]string{"/srv/app"}), "")
 	})
 }
 
 // assertApproveRefuses pins the other half of the gate: a grant validate reports as
 // refused must not be stampable either, or the CI gate reads an approval over a permission
-// the run does not grant. The two verdicts come from one set (grantRefusals) so that they
+// the run does not grant. The two verdicts come from one set (gate.Refusals) so that they
 // cannot drift, and this is what would catch it if they did.
 func assertApproveRefuses(t *testing.T, path string) {
 	t.Helper()

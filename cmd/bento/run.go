@@ -13,6 +13,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -104,9 +105,9 @@ func newRunCmd() *cobra.Command {
 			// what --json reports is the same verdict the note above gave: a grant the
 			// script itself then created was still missing when the run started. The
 			// file-ish write note beside it stays on stderr - see writeFileishWriteNotes.
-			missingReads := missingReadGrants(p.Read)
+			missingReads := gate.MissingReads(p.Read)
 			writeMissingReadNotes(os.Stderr, missingReads)
-			writeFileishWriteNotes(os.Stderr, fileishWriteGrants(p.Write))
+			writeFileishWriteNotes(os.Stderr, gate.FileishWrites(p.Write))
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
 			writeRuntimeDirNote(os.Stderr)
 
