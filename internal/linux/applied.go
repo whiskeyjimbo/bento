@@ -131,6 +131,14 @@ func parseApplied(f *os.File) applied {
 					a.landlockErr = "reason unreadable"
 				}
 			}
+		default:
+			// The same stance the post-marker switch takes, and the one this function's
+			// docstring promises: a line the stage does not write did not come from the
+			// stage, so the report is not the stage's. Skipping it silently would let a
+			// report be padded with content of someone else's choosing and still be read.
+			if line != "" {
+				return applied{}
+			}
 		}
 	}
 	if err := s.Err(); err != nil {
