@@ -30,7 +30,7 @@ func plant(t *testing.T, home, rel string, mode os.FileMode, content string) str
 
 func hunt(t *testing.T, home string) []Finding {
 	t.Helper()
-	found, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHuntSniffsPastAVeryLongLine(t *testing.T) {
 	long := plant(t, home, ".longline.conf", 0o600,
 		"# "+strings.Repeat("y", 100<<10)+"\napi_token = 0123456789abcdefghijklmnop\n")
 
-	found, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
+	found, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestHuntAcceptsAnUncleanHome(t *testing.T) {
 	home := t.TempDir()
 	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
 
-	found, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestMachineStoresArePrunedAndCounted(t *testing.T) {
 	plant(t, home, ".cache/pkg/some-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 	kept := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 
-	found, pruned, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{cache}, MaxFileSize: 64 << 10})
+	found, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{cache}, MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestDenyWriteIsNotCoverage(t *testing.T) {
 // continues, but the root is worth refusing over.
 func TestHuntRefusesAnUnwalkableRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-home")
-	found, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
+	found, _, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Errorf("Hunt over a nonexistent home returned %d findings and no error; a clean report over a scan that never happened is the failure this refuses", len(found))
 	}
@@ -342,11 +342,37 @@ func TestHuntRefusesASymlinkedHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
+	found, _, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Fatalf("Hunt over a symlinked home returned %d findings and no error; the walk never entered it", len(found))
 	}
 	if !strings.Contains(err.Error(), real) {
 		t.Errorf("the refusal must name the path to re-anchor on; got %v", err)
+	}
+}
+
+// A directory the scan cannot list narrows it exactly as a prune does - it reports zero
+// findings under a subtree it never saw - so it has to be counted for the same reason.
+func TestUnreadableDirectoryIsCounted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 directory")
+	}
+	home := t.TempDir()
+	plant(t, home, "closed/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	closed := filepath.Join(home, "closed")
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(closed, 0o700) })
+
+	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("findings = %v, want none - the subtree is unreadable", paths(found))
+	}
+	if unreadable != 1 {
+		t.Errorf("unreadable = %d, want 1; a scan that could not look must not read as a clean home", unreadable)
 	}
 }

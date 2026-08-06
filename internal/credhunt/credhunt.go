@@ -140,10 +140,12 @@ type Options struct {
 // A file it cannot stat or read is skipped rather than failing the walk. That is the one
 // place this tool swallows an error on purpose: it runs over a live home where an
 // unreadable socket, a dangling link or a root-owned file is ordinary, and aborting the
-// hunt on the first of them would report nothing at all.
-func Hunt(opts Options) ([]Finding, int, error) {
+// hunt on the first of them would report nothing at all. It is counted, for the reason a
+// prune is: a subtree the scan could not look into reports zero findings, which reads
+// exactly like a clean one unless the operator is told the scan narrowed.
+func Hunt(opts Options) ([]Finding, int, int, error) {
 	var out []Finding
-	pruned := 0
+	pruned, unreadable := 0, 0
 	// Cleaned once, and every comparison below is against this rather than the caller's
 	// spelling. The walk asks whether an entry IS the root and whether its parent is, and
 	// filepath.Dir hands back a cleaned path: a root spelled with a trailing separator
@@ -163,6 +165,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 			if path == home {
 				return err
 			}
+			unreadable++
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -226,21 +229,30 @@ func Hunt(opts Options) ([]Finding, int, error) {
 		}
 		// A file that vanished between the walk and the stat cannot be shape-tested; see
 		// the function doc for why a live home makes that ordinary rather than fatal.
-		if info, statErr := d.Info(); statErr == nil {
-			if signals := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home); len(signals) > 0 {
-				out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
-			}
+		info, statErr := d.Info()
+		if statErr != nil {
+			unreadable++
+			return nil
+		}
+		signals, opened := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home)
+		if !opened {
+			unreadable++
+		}
+		if len(signals) > 0 {
+			out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, pruned, nil
+	return out, pruned, unreadable, nil
 }
 
-// shapesOf returns the signals a file trips, or nil when it looks like nothing.
+// shapesOf returns the signals a file trips, or nil when it looks like nothing, plus
+// whether the content sniff got to read the file: a sniff that could not open it is a
+// narrowing of the scan the operator has to be told about, not an absence of signals.
 //
 // The content sniff runs for a file that already tripped a name or mode signal, and for
 // any file sitting directly at the home root. Reading every file in a home to look for a
@@ -251,7 +263,7 @@ func Hunt(opts Options) ([]Finding, int, error) {
 // ~/.env holding an AWS_SECRET_ACCESS_KEY trips no name token, no suffix, no editor
 // leaving and no mode, so nothing but its contents can reach it. The extra reads are the
 // few dozen files at the root rather than the thousands under it.
-func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []string {
+func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) ([]string, bool) {
 	var signals []string
 	name := strings.ToLower(info.Name())
 
@@ -273,8 +285,11 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []s
 	// holds a credential. A real ~/.claude.json carries an oauth token in its first few KB
 	// behind ~96 KB of project history, and the shell and editor histories that accumulate
 	// an exported token are larger still. The bound belongs on what contentShapes reads.
+	opened := true
 	if (len(signals) > 0 || atHomeRoot) && info.Size() > 0 {
-		signals = append(signals, contentShapes(path, maxSize)...)
+		var content []string
+		content, opened = contentShapes(path, maxSize)
+		signals = append(signals, content...)
 	}
 	// A private mode on its own is a weak prior, not a shape: measured on a developer
 	// home it fires on 64319 files, essentially all of them package-cache artifacts that
@@ -283,17 +298,19 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) []s
 	// cannot carry a finding alone. The content sniff still runs for a mode-only file, so
 	// an unnamed 0600 file with a key inside surfaces on its contents.
 	if len(signals) == 1 && signals[0] == SignalPrivateMode {
-		return nil
+		return nil, opened
 	}
-	return signals
+	return signals, opened
 }
 
-// contentShapes reports the secret shapes a file's first bytes carry. It returns nothing
-// for a file it cannot open, which on a live home is ordinary rather than exceptional.
-func contentShapes(path string, maxSize int64) []string {
+// contentShapes reports the secret shapes a file's first bytes carry, and whether it
+// opened the file at all. It returns nothing for a file it cannot open, which on a live
+// home is ordinary rather than exceptional - but reported, so a subtree of files the scan
+// could not read does not look like a subtree of clean ones.
+func contentShapes(path string, maxSize int64) ([]string, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer f.Close()
 
@@ -320,7 +337,7 @@ func contentShapes(path string, maxSize int64) []string {
 			break
 		}
 	}
-	return signals
+	return signals, true
 }
 
 // tokenAssignment reports whether a line assigns a long opaque value to a secret-named
