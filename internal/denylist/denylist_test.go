@@ -203,6 +203,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.selected_editor",     // sensible-editor sources it and runs $SELECTED_EDITOR
 		"/home/u/.fzf.zsh",             // sourced by the line fzf's installer appends to the rc
 		"/home/u/.p10k.zsh",            // sourced verbatim by the powerlevel10k line in .zshrc
+		"/home/u/.subversion/config",   // names diff-cmd/editor-cmd; the secrets are under .subversion/auth
 	}
 	for _, p := range wantDenyWriteFile {
 		r, ok := byPath[p]
@@ -1005,11 +1006,12 @@ func TestUnshieldableRuntimeDir(t *testing.T) {
 // name there re-opens exactly the hole it closes: a rule CI does not have, covering an
 // upstream candidate, turning a real gap green.
 //
-// The table-driven reads are covered by construction. This reads the source for the reads
-// that are NOT - os.Getenv with a literal name - which is the only kind that can be added
-// without touching a table.
+// The table-driven reads are covered by construction. This reads the package's source for
+// the reads that are NOT - a literal variable name - which is the only kind that can be
+// added without touching a table. Every non-test file, not just this one: a rule that
+// grew a second home would take its env read with it.
 func TestRelocationVarsNamesEveryEnvRead(t *testing.T) {
-	src, err := os.ReadFile("denylist.go")
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,10 +1019,27 @@ func TestRelocationVarsNamesEveryEnvRead(t *testing.T) {
 	for _, v := range RelocationVars() {
 		named[v] = true
 	}
-	for _, m := range regexp.MustCompile(`os\.Getenv\("([A-Z0-9_]+)"\)`).FindAllStringSubmatch(string(src), -1) {
-		if !named[m[1]] {
-			t.Errorf("denylist.go reads $%s but RelocationVars does not name it, so the audit cannot clear it", m[1])
+	read := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("([A-Z0-9_]+)"\)`)
+	scanned := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
 		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range read.FindAllStringSubmatch(string(src), -1) {
+			scanned++
+			if !named[m[1]] {
+				t.Errorf("%s reads $%s but RelocationVars does not name it, so the audit cannot clear it", f, m[1])
+			}
+		}
+	}
+	// Without this the scan passes by finding nothing, which is what a renamed file or a
+	// broken pattern looks like.
+	if scanned == 0 {
+		t.Error("the scan matched no environment read at all, so it proves nothing")
 	}
 }
 

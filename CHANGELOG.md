@@ -73,8 +73,9 @@ commits that built it - none of them were ever in a release.
   Only `doctor` said so, and nobody runs `doctor` before every run. A relative
   value said it nowhere at all: it was indistinguishable from the variable being
   unset, which shields nothing and correctly says nothing. Both now draw a note
-  before the script starts and beside validate's grants. Output only; what is
-  shielded did not change.
+  before the script starts and beside validate's grants, and `validate --json`
+  carries it as `unshieldable_runtime_dir` so a gate reads the same answer.
+  Output only; what is shielded did not change.
 - **The denial legend reaches the failing run, and names `exec:` among the
   grants.** The mapping from an errno string to the manifest field that produced
   it printed only after a clean exit - so the run where the reader was holding

@@ -568,6 +568,36 @@ func TestValidateStrictFailsOnAWriteGrantThatIsAFile(t *testing.T) {
 	}
 }
 
+// A gate reading the envelope has nothing else to tell a host with no runtime shield from
+// a healthy one: the rule set, the count and the exit code are all identical. So the note
+// the human output carries is a field too, and it is absent on an ordinary host rather
+// than empty-stringed.
+func TestValidateJSONCarriesAnUnshieldableRuntimeDir(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+
+	t.Setenv("XDG_RUNTIME_DIR", "run/user/1000")
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+	if got.UnshieldableRuntimeDir != "run/user/1000" {
+		t.Errorf("unshieldable_runtime_dir = %q, want the raw relative value", got.UnshieldableRuntimeDir)
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	out, err = runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if strings.Contains(out, "unshieldable_runtime_dir") {
+		t.Errorf("a shieldable runtime dir must leave the field absent; got:\n%s", out)
+	}
+}
+
 // A write grant naming nothing yet cannot be refused - run creates it, and a directory may
 // be exactly what was meant. But run creates a DIRECTORY, so a grant spelled like a file
 // silently produces `out.json/` on the host and the script's file never appears. A note,
