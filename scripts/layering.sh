@@ -1,0 +1,113 @@
+#!/bin/sh
+# Checks the two architectural boundaries this codebase claims, mechanically, because an
+# invariant asserted only in prose is one nobody notices breaking. docs/architecture.md
+# says kernel enforcement is confined to the platform backend, and ADR-0012 says one
+# package answers shield containment; neither survives a refactor on its own.
+#
+# 1. KERNEL ENFORCEMENT IS CONFINED. The packages that speak to the kernel's isolation
+#    primitives - seccomp filters, Landlock rulesets, the in-sandbox launcher, the ptrace
+#    observer - are importable only by the platform backend and by each other. This is
+#    the import-level claim, which is the true one: raw syscalls for terminal control and
+#    stat are used elsewhere and legitimately (see the note in docs/architecture.md).
+#
+# 2. ONE PACKAGE ASSEMBLES THE SHIELD RULE SET. internal/shield owns turning the deny-list
+#    into the shields a run applies, so the enforcer, the validate gate and the profiler
+#    clamp cannot answer "is this grant shielded" three different ways again - which is
+#    exactly what they did before ADR-0012. Reading the deny-list as DATA is a different
+#    thing and stays open: the credential hunt and the upstream parity audit both do it,
+#    and neither decides what a run shields.
+#
+# Both checks carry an explicit exception list rather than a pattern loose enough to admit
+# them. An exception is printed on every run: one that stops being needed should be
+# noticed, and one that is about to be copied should be read first.
+#
+# Exit codes: 0 clean, 1 a boundary was crossed, 2 the check could not run.
+set -u
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+cd "$repo" || exit 2
+
+status=0
+
+# The kernel isolation primitives, and who may reach them. internal/linux is the platform
+# backend the enforce.Enforcer seam leads to; internal/launcher is the process that runs
+# inside the sandbox and applies the filters; the landlock probe is that package's own
+# capability test; backend dispatches the launcher's re-exec, which is how the in-sandbox
+# process is entered at all.
+kernel_pkgs='internal/seccomp
+internal/landlock
+internal/launcher
+internal/observe'
+
+kernel_importers='github.com/whiskeyjimbo/bento/internal/linux
+github.com/whiskeyjimbo/bento/internal/launcher
+github.com/whiskeyjimbo/bento/internal/landlock/internal/probe
+github.com/whiskeyjimbo/bento/backend'
+
+# Test imports count. A test that reaches a filter package from outside the backend is a
+# dependency the next non-test caller will copy, and it compiles in CI either way.
+imports=$(GOWORK=off go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}' ./...) || {
+	echo "layering: go list failed" >&2
+	exit 2
+}
+
+pattern=$(echo "$kernel_pkgs" | tr '\n' '|' | sed 's/|$//')
+offenders=$(echo "$imports" | awk -v pat="($pattern)\$" '{
+	for (i = 2; i <= NF; i++) {
+		if ($i ~ pat) print $1 " imports " $i
+	}
+}' | sort -u | while read -r line; do
+	pkg=${line%% *}
+	if ! echo "$kernel_importers" | grep -qxF "$pkg"; then
+		echo "$line"
+	fi
+done)
+
+if [ -n "$offenders" ]; then
+	echo "layering: kernel enforcement is meant to stay inside the platform backend, but:" >&2
+	echo "$offenders" | sed 's/^/  /' >&2
+	echo "  If this is deliberate, add the package to kernel_importers in $0 and say why." >&2
+	status=1
+fi
+
+# The deny-list constructors that turn rules into a run's shield set. Assembling these is
+# internal/shield's job; the exceptions below read the same rules as data.
+assemblers='denylist\.Home\(|denylist\.Relocated\(|denylist\.Runtime\('
+
+shield_assemblers='internal/shield
+internal/denylist/audit
+internal/credhunt
+cmd/credhunt
+cmd/bento'
+
+# cmd/bento is the exception that should not outlive the epic: foreignHomeShields still
+# builds its own rules for a home OTHER than the profiler's, to report grants reaching it.
+# That is a different question from what a run shields - the run shields only the home it
+# executes as - so it is not a fourth answer to this one, but it is the last place outside
+# internal/shield that builds rules at all. Tracked as bv2-pj8x.8.
+found=$(grep -rEln --include='*.go' "$assemblers" . 2>/dev/null | while read -r f; do
+	# Comments naming a constructor are prose, not assembly.
+	if grep -E "$assemblers" "$f" | grep -qvE '^[[:space:]]*(//|\*)'; then
+		dir=$(dirname "$f")
+		echo "${dir#./}"
+	fi
+done | sort -u)
+
+extra=$(echo "$found" | while read -r dir; do
+	[ -n "$dir" ] || continue
+	if ! echo "$shield_assemblers" | grep -qxF "$dir"; then
+		echo "$dir"
+	fi
+done)
+
+if [ -n "$extra" ]; then
+	echo "layering: only internal/shield assembles the shields a run applies, but rules are built in:" >&2
+	echo "$extra" | sed 's/^/  /' >&2
+	echo "  Route it through internal/shield, or add it to shield_assemblers in $0 with the reason it reads rules as data." >&2
+	status=1
+fi
+
+echo "layering: kernel enforcement confined to $(echo "$kernel_importers" | wc -l | tr -d ' ') packages; shield assembly in internal/shield, read as data by:"
+echo "$shield_assemblers" | grep -vx 'internal/shield' | sed 's/^/  /'
+
+exit $status
