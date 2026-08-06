@@ -79,10 +79,12 @@ func execImage(path string) (string, bool) {
 	head := string(buf[:n])
 	if interp, ok := strings.CutPrefix(head, "#!"); ok {
 		line, _, found := strings.Cut(interp, "\n")
-		if !found {
-			// The kernel refuses a shebang whose line does not end inside its own buffer
-			// (ENOEXEC), and a truncated one here would name a path it never opened - so
-			// this is unreadable rather than absent.
+		if !found && n == len(buf) {
+			// The line ran past the buffer, so what is here is a truncated path the kernel
+			// never opened - unreadable rather than absent. The kernel refuses this outright
+			// (its own buffer is no larger), but only the full-buffer case is that: a file
+			// that simply ends without a trailing newline is an ordinary script, which
+			// binfmt_script accepts because it ends the line on the NUL padding.
 			return "", false
 		}
 		fields := strings.Fields(line)
