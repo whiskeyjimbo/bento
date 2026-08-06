@@ -28,6 +28,7 @@
 package credhunt
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -142,7 +143,10 @@ type Options struct {
 // unreadable socket, a dangling link or a root-owned file is ordinary, and aborting the
 // hunt on the first of them would report nothing at all. It is counted, for the reason a
 // prune is: a subtree the scan could not look into reports zero findings, which reads
-// exactly like a clean one unless the operator is told the scan narrowed.
+// exactly like a clean one unless the operator is told the scan narrowed. A name that is
+// simply gone is not counted - a file deleted between the readdir and the stat, ordinary
+// on a live home, narrowed nothing and inflating the count with those would make it the
+// churn of the home rather than what the scan could not see.
 func Hunt(opts Options) ([]Finding, int, int, error) {
 	var out []Finding
 	pruned, unreadable := 0, 0
@@ -158,6 +162,9 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 	shields := denylist.NewIndex(opts.Rules)
 	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				unreadable++
+			}
 			// The root is the exception to the skip-and-continue rule below: a home that
 			// cannot be walked yields zero findings, which reads as a clean home. That is
 			// the silent wrong answer this tool exists to avoid, so it is the one error
@@ -165,7 +172,6 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 			if path == home {
 				return err
 			}
-			unreadable++
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -231,7 +237,9 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 		// the function doc for why a live home makes that ordinary rather than fatal.
 		info, statErr := d.Info()
 		if statErr != nil {
-			unreadable++
+			if !errors.Is(statErr, fs.ErrNotExist) {
+				unreadable++
+			}
 			return nil
 		}
 		signals, opened := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home)
