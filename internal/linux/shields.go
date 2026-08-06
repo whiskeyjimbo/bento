@@ -503,7 +503,7 @@ func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) 
 	return writable
 }
 
-// shield returns the bwrap arguments that enforce one deny rule.
+// shieldMount returns the bwrap arguments that enforce one deny rule.
 //
 // Both branches cover paths that do not exist yet, which is what closes the
 // "plant a new credential file or shell profile under a broad write grant" hole:
