@@ -530,6 +530,61 @@ func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
 	}
 }
 
+// The GCP/podman/AWS file pointers name ONE file, so a colon in the path is part of the
+// name: splitting on it would shield two halves and leave the real file exposed. Only
+// KUBECONFIG is a search list.
+func TestHomeShieldsSingleFileRelocationsWhole(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/a:b/sa.json")
+	t.Setenv("REGISTRY_AUTH_FILE", "/secrets/auth.json")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/secrets/token")
+	t.Setenv("TF_CLI_CONFIG_FILE", "/secrets/terraformrc")
+	t.Setenv("ANSIBLE_CONFIG", "/secrets/ansible.cfg")
+
+	byRule := map[string]Rule{}
+	for _, r := range Home("/home/u") {
+		byRule[r.Path] = r
+	}
+	for _, p := range []string{
+		"/secrets/a:b/sa.json",
+		"/secrets/auth.json",
+		"/secrets/token",
+		"/secrets/terraformrc",
+		"/secrets/ansible.cfg",
+	} {
+		r, ok := byRule[p]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Dir || r.Holds != HoldsCredentials {
+			t.Errorf("shield at %q must be a DenyAll credential file rule, got %+v", p, r)
+		}
+	}
+	if _, ok := byRule["/secrets/a"]; ok {
+		t.Error("a single-file pointer must not be split on the colon in its path")
+	}
+}
+
+// The store a file pointer is measured against is itself relocatable. With the directory
+// followed to /secrets/gcloud, a credential file INSIDE it must not get its own interior
+// rule: that rule survives a `read: /secrets/gcloud` opt-in and hands back a zero-byte
+// file, the same failure the default-store check prevents at the unrelocated path.
+func TestHomeSkipsFileRelocationInsideARelocatedStore(t *testing.T) {
+	t.Setenv("CLOUDSDK_CONFIG", "/secrets/gcloud")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/gcloud/sa.json")
+
+	byPath := map[string]bool{}
+	for _, r := range Home("/home/u") {
+		byPath[r.Path] = true
+	}
+	if !byPath["/secrets/gcloud"] {
+		t.Fatal("the relocated gcloud store must still be shielded")
+	}
+	if byPath["/secrets/gcloud/sa.json"] {
+		t.Error("a file pointer inside the relocated store must not add an interior rule")
+	}
+}
+
 // ZDOTDIR relocates zsh's startup files off $HOME, and GIT_CONFIG_GLOBAL points git
 // at a different global config file. The persistence shields (DenyWrite: readable,
 // not plantable) must follow, or a write grant over the relocated path could plant a
@@ -879,6 +934,28 @@ func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 	for _, a := range AliasAnchors(home) {
 		if !covered(a) {
 			t.Errorf("alias anchor %q is not covered by any DenyAll directory rule in Home() - renamed or misspelled?", a)
+		}
+	}
+}
+
+// A store moved out of the home by its tool's own variable is shielded, but until it also
+// anchors the scan a second readable name for those keys is undetectable. A target at or
+// above a home anchor is skipped: the scan would walk the whole home for aliases of it.
+func TestAliasAnchorsFollowRelocatedStores(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/srv/keys")
+	t.Setenv("PASSWORD_STORE_DIR", "/srv/pass")
+	t.Setenv("DOCKER_CONFIG", "relative/docker")
+	t.Setenv("AZURE_CONFIG_DIR", "/home/u")
+
+	anchors := AliasAnchors("/home/u", "/home/other")
+	for _, want := range []string{"/srv/keys", "/srv/pass", "/home/u/.ssh", "/home/other/.ssh"} {
+		if !slices.Contains(anchors, want) {
+			t.Errorf("%q must anchor the alias scan; got %v", want, anchors)
+		}
+	}
+	for _, unwanted := range []string{"relative/docker", "/home/u"} {
+		if slices.Contains(anchors, unwanted) {
+			t.Errorf("%q must not anchor the alias scan", unwanted)
 		}
 	}
 }
