@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 )
 
@@ -25,15 +27,18 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("HOME", home)
 			g := c.Path(home)
+			// Assembled here rather than taken from gate.ShieldSet so the case's mount
+			// reaches the clamp: folding is a property of the filesystem seam, and
+			// ShieldSet builds the real host's. The anchors are the corpus home either way.
+			set := shield.Assemble(shieldcorpus.FS(c), []string{home}, denylist.RuntimeDir(), nil)
 			var reads, writes []string
 			if c.Write {
 				writes = []string{g}
 			} else {
 				reads = []string{g}
 			}
-			keptReads, keptWrites, dropped, writeShielded := clampShieldedGrants(reads, writes)
+			keptReads, keptWrites, dropped, writeShielded := clampShieldedGrants(set, reads, writes)
 
 			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) && !c.ClampKeeps
 			kept := append(append([]string{}, keptReads...), keptWrites...)

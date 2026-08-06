@@ -23,15 +23,10 @@ import (
 // quality filter, not a security check. A grant that merely CONTAINS a shield (read: ~
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
 // shield goes.
-func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string, dropped []shieldGrant, writeShielded []string) {
-	// The same set the enforcer applies and the gate predicts, so the proposal is clamped
-	// against the shields the run will actually raise. The error means no anchor at all -
-	// not merely an unusable $HOME, which drops to the passwd home - so there are no
-	// shields to clamp against and the run this proposal feeds would be refused anyway.
-	set, err := gate.ShieldSet()
-	if err != nil {
-		return reads, writes, nil, nil
-	}
+//
+// The set is the caller's, the same one the enforcer applies and the gate predicts, so the
+// proposal is clamped against the shields the run will actually raise.
+func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, keptWrites []string, dropped []shieldGrant, writeShielded []string) {
 	// Two departures from what the run does, both deliberate and both in the direction of
 	// a narrower proposal. A read that names a shield exactly is honored at run time as a
 	// warned opt-in, and is still withheld here: an opt-in is a line a reviewer adds by
@@ -180,7 +175,12 @@ func homeRoot(path string) (string, bool) {
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
 // the shielded, over-broad read, and over-broad write paths to warn about.
 func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, broadReads, broadWrites []string) {
-	p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(p.Read, p.Write)
+	// A set the host cannot anchor at all - not merely an unusable $HOME, which drops to
+	// the passwd home - leaves the proposal unclamped: there are no shields to clamp
+	// against, and the run this proposal feeds would be refused for that same reason.
+	if set, err := gate.ShieldSet(); err == nil {
+		p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(set, p.Read, p.Write)
+	}
 	p.Write, broadWrites = partitionBroad(p.Write)
 	p.Read, broadReads = partitionBroad(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)

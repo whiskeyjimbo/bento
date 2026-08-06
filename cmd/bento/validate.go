@@ -576,14 +576,15 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "        deliberate read-only exception rather than refusing, so the script can\n")
 		fmt.Fprintf(w, "        %s. Remove the grant unless the script needs it.\n", g.Holds.Exposure())
 	}
-	// The error is dropped on both: it is the same failure to anchor the shields that
-	// shieldErr carries, and the footer below reports it once in words rather than twice
-	// as an empty list.
-	readRefusals, _ := gate.ShieldedReadProblems(resolvedRead)
+	// The error is dropped: it is the same failure to anchor the shields that shieldErr
+	// carries, and the footer below reports it once in words rather than twice as an empty
+	// list - which is what the zero set yields.
+	shieldSet, _ := gate.ShieldSet()
+	readRefusals := gate.ShieldedReadProblems(shieldSet, resolvedRead)
 	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
-	writeRefusals, _ := gate.ShieldedWriteProblems(resolvedWrite)
+	writeRefusals := gate.ShieldedWriteProblems(shieldSet, resolvedWrite)
 	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
 		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
