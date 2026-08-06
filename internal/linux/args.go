@@ -1470,7 +1470,7 @@ func checkGrantNotProcess(sb sandbox, p *policy.Policy) error {
 		if err != nil {
 			return err
 		}
-		if isProcessPath(real) && sb.exists(real) {
+		if denylist.IsProcessPath(real) && sb.exists(real) {
 			return grantrefusal.GrantIsProcess(g, real)
 		}
 	}
@@ -1524,21 +1524,6 @@ func checkGrantNotLooped(p *policy.Policy) error {
 		}
 	}
 	return nil
-}
-
-// isProcessPath reports whether path is a per-process procfs directory or
-// something inside one (/proc/<pid>/...). /proc itself and its system-wide files
-// (/proc/cpuinfo) are not: those bind fine.
-func isProcessPath(path string) bool {
-	rel, err := filepath.Rel("/proc", path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return false
-	}
-	first, _, _ := strings.Cut(rel, "/")
-	if first == "" {
-		return false
-	}
-	return strings.IndexFunc(first, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 // reachable reports whether a grant could expose path - either because a grant
