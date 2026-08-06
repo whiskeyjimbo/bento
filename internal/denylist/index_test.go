@@ -8,7 +8,7 @@ import (
 
 // auditRules is the rule set both the hunt and the audit build.
 func auditRules() []Rule {
-	rules := append(Home("/home/u"), Runtime("/run/user/1000", "/home/u")...)
+	rules := append(allRules("/home/u"), Runtime("/run/user/1000", "/home/u")...)
 	return append(rules, Workspace("/home/u/proj")...)
 }
 
