@@ -8,7 +8,9 @@ Bento runs a program on Linux under manifest-declared permissions, denying anyth
 
 Three commitments shape the layout that follows:
 1. **Machine-owned manifests.** Permissions are proposed via profiling, reviewed by humans, and stamped with cryptographic approval fingerprints. This is what `manifest`, `policy`, and `profile` exist to serve.
-2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why the kernel is touched only inside `internal/linux`, reached through the `enforce.Enforcer` interface.
+2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why kernel *enforcement* is confined to `internal/linux`, reached through the `enforce.Enforcer` interface.
+
+   The confined thing is the kernel's isolation primitives - seccomp filters, Landlock rulesets, the in-sandbox launcher, the ptrace observer - which only the platform backend and each other may import. Raw syscalls in the ordinary sense are not confined and should not be: `cmd/bento` reads terminal state and signal constants, resolves grants with `stat`/`openat`, and fingerprints manifests with xattrs; `internal/proxy` and `internal/pathresolve` classify errnos. None of those decide what a run is allowed to do, which is the property the boundary exists to protect. `make layering` checks the import-level claim on every platform the tree builds for, so it fails when the boundary moves rather than when someone rereads this paragraph.
 3. **No silent degradation.** Host kernel capabilities are reported in explicit tiers rather than fallen back through, which is why tier reporting sits in `enforce` alongside the enforcer interface rather than inside the platform backend (`internal/linux`).
 
 ---
