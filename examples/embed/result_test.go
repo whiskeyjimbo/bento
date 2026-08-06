@@ -38,6 +38,9 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
 		Exposed:        []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
+		// Host-enumerated under a directory the target could write, so a filename it chose
+		// reaches the report.
+		ChangedAutoExec: []string{"/repo/\x1b[2Kpackage.json"},
 	}
 	return res, &policy.Policy{Network: []policy.NetworkRule{{Host: "ok.example", Port: "443"}}}
 }
@@ -67,6 +70,8 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		`on this host that path is "/home/u/real\x1b[2K/.ssh"`, // ShieldedGrants OnHost, quoted
 		"second name for the shielded credential",              // AcceptedAliases
 		"read-only",                              // Exposed
+		`"/repo/\x1b[2Kpackage.json"`,            // ChangedAutoExec, quoted
+		"before the next build",                  // ChangedAutoExec
 		"no connection through the egress proxy", // EgressConnections read as a bypass
 	} {
 		if !strings.Contains(got, want) {
@@ -131,7 +136,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
-		"Setup": true, "Signaled": true, "Signal": true,
+		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

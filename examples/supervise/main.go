@@ -391,6 +391,17 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s %s\n", t.bold(strconv.Quote(a.Path)), t.dim("aliases"), t.bold(strconv.Quote(a.Credential)))
 		}
 	}
+	// The auto-executing files the run changed. bento does not shield these on purpose -
+	// a script doing dependency work has to be able to write a package.json - so the only
+	// guarantee is that nothing it wrote runs before someone could look, and this is the
+	// line that says where. The human just approved a run; leaving it out lets a planted
+	// postinstall script read as part of what they approved.
+	if len(res.ChangedAutoExec) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("the script changed these files, which run on the host later without being read:"))
+		for _, f := range res.ChangedAutoExec {
+			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(f)))
+		}
+	}
 	// The mirror of Shields, populated only by the tier that has no mount namespace and
 	// so applies no shields at all. Same contract as the grants above: bento does not
 	// refuse, so staying quiet is what would hide the exposure.
