@@ -191,6 +191,12 @@ func TestPromptsReportCancellationRatherThanQuit(t *testing.T) {
 	if err := confirmNetworkExfil(ctx, parked, io.Discard); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled exfil confirmation returned %v, want a context.Canceled error", err)
 	}
+	// approve stamps nothing on a cancel either way, but its decline text tells the
+	// reviewer to go edit the manifest, which is advice for a refusal and not for a
+	// Ctrl-C.
+	if err := readApprovalAnswer(ctx, parked, io.Discard); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled approval prompt returned %v, want a context.Canceled error", err)
+	}
 }
 
 // [a]ll must NOT silently accept a foreign-home-shielded path (a credential store the

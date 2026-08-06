@@ -341,15 +341,24 @@ func TestDegradedKeepsTheResultWhenCancelLandsInTheWaitDelay(t *testing.T) {
 		}
 		// The marker says the script is done, not that the launcher has exited, and a
 		// cancel that lands while it is still alive kills it and produces a real
-		// cancellation instead of the window under test. Well inside the 2s WaitDelay,
-		// which only starts once the launcher is gone.
-		time.Sleep(400 * time.Millisecond)
+		// cancellation instead of the window under test. Only landing early can go wrong
+		// - the WaitDelay runs from the launcher's exit, so the remaining second of it is
+		// slack - which is why the grace is generous rather than tight.
+		time.Sleep(time.Second)
 		cancel() // Wait is now parked on the descendant's pipe
 	}()
 
+	start := time.Now()
 	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p, proc, "", nil)
 	if err != nil {
 		t.Fatalf("a cancel inside the WaitDelay window discarded a finished target's result: %v\noutput:\n%s", err, out.String())
+	}
+	// Without this the test passes vacuously if the descendant ever stops escaping the
+	// group: the sweep would close the pipes at the cancel, Wait would return nil, and
+	// the guard would keep the result without the excluded branch being reached at all.
+	// Only the real window takes the full WaitDelay to return.
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Fatalf("the run returned after %v, so Wait never waited out the 2s WaitDelay - the descendant did not hold the pipes and this asserts nothing", elapsed)
 	}
 	if res.ExitCode != 0 || !strings.Contains(out.String(), "ran") {
 		t.Errorf("exit code = %d, output %q - want the finished target's own 0 and its output", res.ExitCode, out.String())
