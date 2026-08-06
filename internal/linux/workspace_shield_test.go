@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -162,4 +163,117 @@ func TestSymlinkedCredentialInsideADirectoryShieldIsShielded(t *testing.T) {
 	if len(applied) != 1 || applied[0].Path != filepath.Join(canon, ".ssh") {
 		t.Errorf("applied shields = %v, want only the store itself", applied)
 	}
+}
+
+// farmHome builds the ordinary dotfile-farm shape: ~/.ssh a real directory whose id_rsa
+// links into ~/dotfiles, plus n unrelated entries in the store so the walk has real work.
+// It returns the canonical home and the key's target path.
+func farmHome(tb testing.TB, n int) (home, key string) {
+	root := tb.TempDir()
+	canon, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, "dotfiles", "ssh"), 0o755); err != nil {
+		tb.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(canon, ".ssh"), 0o700); err != nil {
+		tb.Fatal(err)
+	}
+	key = filepath.Join(canon, "dotfiles", "ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("k"), 0o600); err != nil {
+		tb.Fatal(err)
+	}
+	if err := os.Symlink(key, filepath.Join(canon, ".ssh", "id_rsa")); err != nil {
+		tb.Fatal(err)
+	}
+	for i := range n {
+		if err := os.WriteFile(filepath.Join(canon, ".ssh", fmt.Sprintf("known_hosts.%d", i)), []byte("h"), 0o600); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	return canon, key
+}
+
+// The memo's whole claim is that it changes nothing a caller can see. Unlike the
+// workspace one it has no key, so the check that matters is that repeated calls keep
+// answering what the uncached walk answers.
+func TestCredentialLinkCacheIsTransparent(t *testing.T) {
+	canon, _ := farmHome(t, 4)
+	sb := sandbox{
+		homes:     []string{canon},
+		emptyFile: "/dev/null",
+		exists:    hostExists,
+		isDir:     hostIsDir,
+		listDir:   hostListDir,
+		resolve:   hostResolve,
+	}
+	cached := sb
+	cached.credentialLinkCache = &credentialLinkMemo{}
+	for range 3 {
+		want, got := alwaysShields(sb), alwaysShields(cached)
+		if !slices.Equal(want, got) {
+			t.Fatalf("cached shields differ from the uncached walk\n got %v\nwant %v", got, want)
+		}
+	}
+}
+
+// The derived link-target rules are DenyAll FILE rules, so credentialFiles picks them up
+// as alias-scan roots alongside the deny-list's own hidden files. That is what the scan is
+// for - the farm copy IS the credential, and a second readable name for it defeats the
+// shield exactly as one for ~/.ssh/id_rsa would - but it fell out of where the expansion
+// was hoisted to rather than being chosen, so it is pinned here.
+func TestSymlinkedCredentialTargetIsAnAliasScanRoot(t *testing.T) {
+	canon, key := farmHome(t, 0)
+	sb := sandbox{
+		homes:     []string{canon},
+		emptyFile: "/dev/null",
+		exists:    hostExists,
+		isDir:     hostIsDir,
+		listDir:   hostListDir,
+		resolve:   hostResolve,
+		fileIDs:   hostFileIDs,
+	}
+	// A second readable name for the farm copy, outside every store.
+	alias := filepath.Join(canon, "copy_of_key")
+	if err := os.Link(key, alias); err != nil {
+		t.Skipf("hard link unsupported here: %v", err)
+	}
+	files, _, err := credentialFiles(sb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(files, func(f identifiedFile) bool { return f.path == key }) {
+		t.Errorf("the symlinked credential's target %q is not an alias-scan root: %v", key, files)
+	}
+}
+
+// BenchmarkCredentialLinkWalk measures one compile's worth of alwaysShields calls over a
+// home with a populated credential store. The walk is isDir/listDir/resolve per entry and
+// the call count is fixed by the callers, so the memo is the whole difference.
+func BenchmarkCredentialLinkWalk(b *testing.B) {
+	canon, _ := farmHome(b, 64)
+	sb := sandbox{
+		homes:     []string{canon},
+		emptyFile: "/dev/null",
+		exists:    hostExists,
+		isDir:     hostIsDir,
+		listDir:   hostListDir,
+		resolve:   hostResolve,
+	}
+	run := func(b *testing.B, memo bool) {
+		for b.Loop() {
+			sb := sb
+			if memo {
+				// Fresh per iteration: the memo is a one-run cache, so carrying it across
+				// iterations would measure a hit rate no run ever sees.
+				sb.credentialLinkCache = &credentialLinkMemo{}
+			}
+			for range 10 {
+				alwaysShields(sb)
+			}
+		}
+	}
+	b.Run("nomemo", func(b *testing.B) { run(b, false) })
+	b.Run("memo", func(b *testing.B) { run(b, true) })
 }
