@@ -105,10 +105,11 @@ func TestWriteSummaryQuotesPathsFromTheHost(t *testing.T) {
 // without printing it also passes here - TestWriteSummarySurfacesEveryHonestyField is
 // what catches that, since a field named but unprinted fails its output assertions.
 func TestWriteSummarySurfacesEveryField(t *testing.T) {
-	// The two fields writeSummary does not warn about, and why.
+	// The fields writeSummary does not warn about, and why.
 	notWarnings := map[string]string{
-		"ExitCode": "the script's own code, returned by run() rather than reported",
-		"Report":   "warned about through Degradations(), which is the part that fell short",
+		"ExitCode":   "the script's own code, returned by run() rather than reported",
+		"Report":     "warned about through Degradations(), which is the part that fell short",
+		"ExecRecord": "a diagnostic, not an honesty surface: nil unless the run sets RunOptions.RecordExec, which this example never does, and its own contract is that nothing in it is a shortfall",
 	}
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
