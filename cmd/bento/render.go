@@ -861,7 +861,15 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// but with a seccomp filter that answers EPERM on socket() rather than a netns, so
 	// these errnos are not the shapes it produces and this stays silent there.
 	netDenied := len(p.Network) == 0 && mountNSConfines
-	if !mountNSConfines && execMode == "" {
+	// The Landlock-only tier denies egress just as completely, but through a seccomp
+	// filter answering EPERM on socket(), so it needs its own line - the exec line below
+	// reads "on a command" and does not cover a refused socket. Degraded on this layer IS
+	// that tier, and it only stands up where the seccomp egress filter does
+	// (filesystemLayer). A manifest with network rules cannot reach this tier at all: the
+	// egress stack it would need reports Unavailable without a netns and the run refuses,
+	// so a degraded run always denies all egress.
+	netDeniedSeccomp := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Degraded
+	if !mountNSConfines && !netDeniedSeccomp && execMode == "" {
 		return
 	}
 	// One sentence carrying both halves the reader needs: bento is not the one reporting
@@ -895,6 +903,9 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	}
 	if netDenied {
 		fmt.Fprintln(w, "[bento]   \"Network is unreachable\", or a name that will not resolve - this manifest grants no network: rules")
+	}
+	if netDeniedSeccomp {
+		fmt.Fprintln(w, "[bento]   \"Operation not permitted\" on a socket or connection - this manifest grants no network: rules")
 	}
 	if execMode != "" {
 		fmt.Fprintf(w, "[bento]   \"Operation not permitted\" on a command - exec: %s\n", execMode)
