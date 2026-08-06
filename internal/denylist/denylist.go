@@ -320,12 +320,12 @@ func Shieldable(p string, homes []string) bool {
 // entries below are the stores that are genuinely one file, whose parent holds
 // unrelated content the tool needs - there is no directory to take.
 //
-// alsoHomes are the run's other home anchors, when it has more than one (a caller
-// whose $HOME disagrees with the passwd entry). Home is called once per anchor, so
-// the swallowing guard below would otherwise only ever see the anchor it was called
-// for and let an env relocation swallow a sibling anchor's whole tree.
-func Home(home string, alsoHomes ...string) []Rule {
-	join := func(p string) string { return filepath.Join(home, p) }
+// These are anchor-relative and nothing else: a run with two home anchors calls this
+// once per anchor and gets two sets of paths, which is the point. The rules an
+// environment variable relocates to an ABSOLUTE path belong to the run rather than to
+// an anchor, so they come from Relocated, which a caller runs once over the whole
+// anchor set.
+func Home(home string) []Rule {
 
 	dirGroups := []struct {
 		holds Holds
@@ -590,10 +590,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".pam_environment",
 		// Tool configs that define a command run on a common host action.
 		".gitconfig",
-		".config/git/config",   // XDG location git reads the same as ~/.gitconfig
-		".cargo/config.toml",   // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
-		".cargo/config",        // legacy (pre-1.39) cargo config filename, still read
-		".cargo/env",           // shell script rustup makes .profile source; runs on next shell
+		".config/git/config", // XDG location git reads the same as ~/.gitconfig
+		".cargo/config.toml", // cargo build/run honors build.rustc-wrapper, target runners, [target] linker
+		".cargo/config",      // legacy (pre-1.39) cargo config filename, still read
+		".cargo/env",         // shell script rustup makes .profile source; runs on next shell
 		// `go env -w GOFLAGS=-toolexec=...` writes this file, and every later host `go
 		// build` then execs the named binary. No script and no approval record in between.
 		".config/go/env",
@@ -925,8 +925,40 @@ func Home(home string, alsoHomes ...string) []Rule {
 		emit(d, Rule{Deny: DenyWrite, Dir: true})
 	}
 
-	anchors := append([]string{home}, alsoHomes...)
+	return rules
+}
+
+// Relocated returns the rules an environment variable moves off a default location, for
+// the run's whole set of home anchors at once.
+//
+// They are not anchor-relative: a variable names one absolute path, so emitting them
+// inside Home - which runs once per anchor - produced the same rule twice on a two-anchor
+// host and stamped the second copy with whichever anchor's Source lost the race. Every
+// default a target is compared against is therefore tested under EVERY anchor, which is
+// also what keeps a relocation onto a sibling anchor's default store from being reported
+// as a relocation at all.
+//
+// defaults are the anchor-relative rules for the same anchors (Home over each), needed
+// because a relocation landing under a rule that already hides the subtree must be
+// dropped rather than emitted - see underDenyAll.
+func Relocated(defaults []Rule, anchors []string) []Rule {
+	var rules []Rule
+	// Both halves: the defaults, and what this pass has already emitted. The blocks below
+	// are ordered so a DenyAll target lands before any DenyWrite that would sit under it.
+	covered := func(p string) bool { return underDenyAll(p, defaults) || underDenyAll(p, rules) }
 	shieldable := func(p string) bool { return Shieldable(p, anchors) }
+	// isDefault reports whether an absolute target is just a restatement of the
+	// home-relative default, at any of the run's anchors. Keyed on one anchor it would
+	// call a sibling anchor's own default store a relocation, and the Source stamp would
+	// then tell an operator a variable put a shield where the anchor list already had one.
+	isDefault := func(p, rel string) bool {
+		for _, h := range anchors {
+			if p == filepath.Join(h, rel) {
+				return true
+			}
+		}
+		return false
+	}
 
 	// A tool-specific env var can move a whole credential directory off its default
 	// path, the same way an XDG base does. When one is set to an absolute location that
@@ -938,8 +970,25 @@ func Home(home string, alsoHomes ...string) []Rule {
 		if base == "" || !filepath.IsAbs(base) {
 			continue
 		}
-		if c := filepath.Clean(base); c != join(de.def) && shieldable(c) {
+		if c := filepath.Clean(base); !isDefault(c, de.def) && shieldable(c) {
 			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
+		}
+	}
+
+	// The variables that relocate a DIRECTORY but whose sensitive content is one named
+	// file inside it. dirEnvs' whole-tree DenyAll is the wrong shape for these: the
+	// directory also holds content the tool legitimately reads in-sandbox (dbt's project
+	// config beside profiles.yml), and for CURL_HOME the directory is a home. So the file
+	// is shielded on its own and the directory is left alone.
+	for _, de := range dirFileEnvs {
+		base := os.Getenv(de.env)
+		if !filepath.IsAbs(base) {
+			continue
+		}
+		if c := filepath.Clean(base); !isDefault(c, de.def) {
+			if p := filepath.Join(c, de.file); !covered(p) && shieldable(p) {
+				rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: de.env})
+			}
 		}
 	}
 
@@ -955,13 +1004,11 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// interior file rule would blank the file out from under a `read: ~/.kube` opt-in that
 	// matches only the directory.
 	//
-	// The store is tested under EVERY anchor, not just the one this call is for. Home runs
-	// once per anchor, so a KUBECONFIG under anchor A's ~/.kube is recognized as covered on
-	// A's pass but - keyed on the current anchor alone - would land as an interior file rule
-	// on B's, which no `read: ~/.kube` opt-in matches. That rule survives the opt-in and the
-	// user gets a zero-byte kubeconfig: a silent wrong answer rather than a refusal. The
-	// sibling anchor's own pass emits the directory shield that covers the path, so dropping
-	// it here loses no coverage.
+	// The store is tested under EVERY anchor. Keyed on one alone, a KUBECONFIG under a
+	// SIBLING anchor's ~/.kube would land as an interior file rule that no `read: ~/.kube`
+	// opt-in matches: it survives the opt-in and the user gets a zero-byte kubeconfig, a
+	// silent wrong answer rather than a refusal. That anchor's own Home pass emits the
+	// directory shield covering the path, so dropping it here loses no coverage.
 	//
 	// Only KUBECONFIG is a search list. The rest name one file, and a path may legally
 	// contain a colon, so splitting them would shield two halves of a name and leave the
@@ -992,7 +1039,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 			// anchor, cannot see. An interior file rule there is the same silent wrong answer
 			// the store check exists to prevent: it survives a `read:` opt-in on the directory
 			// and hands back a zero-byte file.
-			if underStore(p, fe.store) || underDenyAll(p, rules) || !shieldable(p) {
+			if underStore(p, fe.store) || covered(p) || !shieldable(p) {
 				continue
 			}
 			rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: fe.env})
@@ -1019,10 +1066,32 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// only catches the DEFAULT spelling, so a target inside an already-hidden tree
 		// (a relocated store, or plain ~/.ssh) would get an interior rule that survives an
 		// opt-in on that tree and hands back a zero-byte file.
-		if c == "/dev/null" || (fe.def != "" && c == join(fe.def)) || underDenyAll(c, rules) || !shieldable(c) {
+		if c == "/dev/null" || (fe.def != "" && isDefault(c, fe.def)) || covered(c) || !shieldable(c) {
 			continue
 		}
 		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds, Source: fe.env})
+	}
+
+	// HGRCPATH REPLACES mercurial's config search path with a colon-separated list, so
+	// every entry is a file hg reads instead of ~/.hgrc - and [auth] there holds plaintext
+	// passwords while [hooks]/[extensions] name host commands. Hidden, matching the two
+	// defaults. The colon-split shape is MAILCAPS', which is why it is a block rather than
+	// a fileDenyAllEnvs row: there is no single default to compare against, and both
+	// spellings hg would otherwise read are already DenyAll, so covered() drops a
+	// restatement of either.
+	//
+	// Residual: an entry may name a DIRECTORY, where hg reads every *.rc inside it. The
+	// rule is emitted as a file either way, because this package is path arithmetic with
+	// no host reads - so a directory entry gets an empty file bound over it and hg finds
+	// no config there. Degraded rather than exposed, and the same direction every other
+	// mis-shaped relocation fails in.
+	for _, p := range filepath.SplitList(os.Getenv("HGRCPATH")) {
+		if !filepath.IsAbs(p) {
+			continue
+		}
+		if c := filepath.Clean(p); !covered(c) && shieldable(c) {
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: HoldsCredentials, Source: "HGRCPATH"})
+		}
 	}
 
 	// A startup file relocated by an env var is a persistence-planting target the
@@ -1044,11 +1113,11 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// a ro-bind does not deny writes to one, but the Landlock-only degraded tier enforces
 	// it - and every "> /dev/null" inside the sandbox then fails.
 	addWriteShield := func(p, source string) {
-		if p != "/dev/null" && !underDenyAll(p, rules) && shieldable(p) {
+		if p != "/dev/null" && !covered(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
-	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && filepath.Clean(zdotdir) != home {
+	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && !isDefault(filepath.Clean(zdotdir), "") {
 		// .zshrc.local is sourced by the widely-copied grml zshrc from ${ZDOTDIR:-$HOME},
 		// so it relocates with the rest of the group (the default is shielded above).
 		for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
@@ -1056,7 +1125,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		}
 	}
 	if gc := os.Getenv("GIT_CONFIG_GLOBAL"); filepath.IsAbs(gc) {
-		if c := filepath.Clean(gc); c != join(".gitconfig") {
+		if c := filepath.Clean(gc); !isDefault(c, ".gitconfig") {
 			addWriteShield(c, "GIT_CONFIG_GLOBAL")
 		}
 	}
@@ -1079,7 +1148,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// R_PROFILE_USER exec knob).
 	for _, de := range startupDefaultEnvs {
 		if v := os.Getenv(de.env); filepath.IsAbs(v) {
-			if c := filepath.Clean(v); c != join(de.def) {
+			if c := filepath.Clean(v); !isDefault(c, de.def) {
 				addWriteShield(c, de.env)
 			}
 		}
@@ -1089,7 +1158,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// conventional defaults, both shielded above. A value equal to either is already covered
 	// and dropped; a relative value cannot be bound.
 	if v := os.Getenv("PIP_CONFIG_FILE"); filepath.IsAbs(v) {
-		if c := filepath.Clean(v); c != join(".config/pip/pip.conf") && c != join(".pip/pip.conf") {
+		if c := filepath.Clean(v); !isDefault(c, ".config/pip/pip.conf") && !isDefault(c, ".pip/pip.conf") {
 			addWriteShield(c, "PIP_CONFIG_FILE")
 		}
 	}
@@ -1103,7 +1172,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 		if !filepath.IsAbs(p) {
 			continue
 		}
-		if c := filepath.Clean(p); c != join(".mailcap") {
+		if c := filepath.Clean(p); !isDefault(c, ".mailcap") {
 			addWriteShield(c, "MAILCAPS")
 		}
 	}
@@ -1116,7 +1185,7 @@ func Home(home string, alsoHomes ...string) []Rule {
 	// addWriteShield's collision guard sees them; a write grant over the relocated dir is
 	// refused upstream for containing the credential shields, as for the default ~/.cargo.
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
-		if c := filepath.Clean(base); c != join(".cargo") {
+		if c := filepath.Clean(base); !isDefault(c, ".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
 				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
 			}
@@ -1424,6 +1493,7 @@ var loneEnvs = []string{
 	"PIP_CONFIG_FILE",
 	"MAILCAPS",
 	"CARGO_HOME",
+	"HGRCPATH",
 	"XDG_RUNTIME_DIR",
 }
 
@@ -1447,6 +1517,9 @@ func RelocationVars() []string {
 	for _, e := range dirEnvs {
 		out = append(out, e.env)
 	}
+	for _, e := range dirFileEnvs {
+		out = append(out, e.env)
+	}
 	for _, e := range fileEnvs {
 		out = append(out, e.env)
 	}
@@ -1463,6 +1536,21 @@ func RelocationVars() []string {
 // Shared between the rule that follows the shield there and the alias scan that anchors on
 // it: a store the two disagree about is one that is hidden but whose second readable name
 // nothing looks for.
+// The tool-specific variables that relocate a DIRECTORY whose sensitive content is one
+// named file inside it, so dirEnvs' whole-tree DenyAll cannot express them: the target
+// also holds content an in-sandbox run legitimately reads. Not in AliasAnchors either -
+// the anchor set is stores whose files identify a credential, and these targets are
+// mostly not that.
+var dirFileEnvs = []struct{ env, def, file string }{
+	// dbt's profiles.yml holds the warehouse passwords; the directory beside it carries
+	// the project config dbt also reads.
+	{"DBT_PROFILES_DIR", ".dbt", "profiles.yml"},
+	// curl reads $CURL_HOME/.curlrc ahead of ~/.curlrc, and --user user:pass lives in it.
+	// The variable names a home directory, so the default to compare against is the anchor
+	// itself and the empty def gets there via filepath.Join.
+	{"CURL_HOME", "", ".curlrc"},
+}
+
 var dirEnvs = []struct{ env, def string }{
 	{"GNUPGHOME", ".gnupg"},
 	{"PASSWORD_STORE_DIR", ".password-store"},

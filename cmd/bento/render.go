@@ -407,10 +407,10 @@ func builtinShieldRules() ([]denylist.Rule, error) {
 	}
 	var rules []denylist.Rule
 	for _, h := range anchors {
-		// Every anchor is passed to every call, matching homeShields: a relocation env
-		// var pointing at one home must not produce a rule that swallows another.
-		rules = append(rules, denylist.Home(h, anchors...)...)
+		rules = append(rules, denylist.Home(h)...)
 	}
+	// Once over the whole anchor set, matching homeShields.
+	rules = append(rules, denylist.Relocated(rules, anchors)...)
 	return append(rules, denylist.Runtime(denylist.RuntimeDir(), anchors...)...), nil
 }
 
@@ -1662,8 +1662,10 @@ func writeRelocatedShields(w io.Writer) {
 		if r.Source == "" {
 			continue
 		}
-		// Every anchor is passed to every Home call, so a relocation is re-derived once
-		// per anchor and would otherwise be counted as many times.
+		// An XDG base relocates entry by entry inside Home, which runs once per anchor, so
+		// a two-anchor host derives the same absolute path twice and would otherwise
+		// report it as two shields. (The tool-specific relocations come from Relocated,
+		// which already runs once over the whole anchor set.)
 		if !slices.Contains(paths[r.Source], r.Path) {
 			paths[r.Source] = append(paths[r.Source], r.Path)
 		}

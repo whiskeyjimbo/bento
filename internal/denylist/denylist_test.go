@@ -11,11 +11,24 @@ import (
 	"testing"
 )
 
+// allRules is the rule set a run really carries: the anchor-relative rules for every
+// anchor the run has, plus the relocations, which are emitted once over the whole set
+// rather than once per anchor. Every consumer assembles the two halves this way (see the
+// Linux backend's homeShields), so a test that called Home alone would be testing half a
+// rule set.
+func allRules(anchors ...string) []Rule {
+	var home []Rule
+	for _, h := range anchors {
+		home = append(home, Home(h)...)
+	}
+	return append(home, Relocated(home, anchors)...)
+}
+
 // The deny-list is a security invariant: dropping an entry silently re-exposes a
 // credential store. This guards the high-value stores that are easy to forget -
 // OS keyrings and browser profiles hold saved passwords and session tokens.
 func TestHomeShieldsSecretStores(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
 	for _, r := range rules {
 		byPath[r.Path] = r
@@ -315,7 +328,7 @@ func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/home/u/data")
 	t.Setenv("XDG_STATE_HOME", "/home/u/state")
 	byPath := map[string]bool{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = true
 	}
 	// Shielded at BOTH the default and the relocated XDG location.
@@ -335,7 +348,7 @@ func TestHomeShieldsXDGRelocatedStores(t *testing.T) {
 // coverage, so the base is dropped and only the (absolute) default location is shielded.
 func TestHomeIgnoresRelativeXDGBase(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relcfg")
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative XDG base leaked a non-absolute shield path %q", r.Path)
 		}
@@ -354,7 +367,7 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	t.Setenv("PASSWORD_STORE_DIR", "relpass") // relative: must not shield
 
 	byPath := map[string]bool{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative relocation env leaked a non-absolute shield path %q", r.Path)
 		}
@@ -397,7 +410,7 @@ func TestHomeRecordsWhichVariableRelocatedAShield(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/secrets/xdg")      // whole-base expansion
 
 	bySource := map[string]string{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		bySource[r.Path] = r.Source
 	}
 	for path, want := range map[string]string{
@@ -446,7 +459,7 @@ func TestRuntimeRecordsTheRelocatingVariable(t *testing.T) {
 // audit compares against firejail's. The store's own default stays shielded, and the
 // rest of the deny-list must survive intact.
 func TestHomeIgnoresRelocationsThatSwallowTheHome(t *testing.T) {
-	baseline := len(Home("/home/u"))
+	baseline := len(allRules("/home/u"))
 
 	for _, tc := range []struct{ env, value string }{
 		{"GNUPGHOME", "/home/u"},  // the home itself
@@ -458,7 +471,7 @@ func TestHomeIgnoresRelocationsThatSwallowTheHome(t *testing.T) {
 	} {
 		t.Run(tc.env+"="+tc.value, func(t *testing.T) {
 			t.Setenv(tc.env, tc.value)
-			rules := Home("/home/u")
+			rules := allRules("/home/u")
 			for _, r := range rules {
 				if r.Path == "/" || r.Path == "/home" || r.Path == "/home/u" {
 					t.Fatalf("%s=%s produced a shield at %q, which hides the whole home", tc.env, tc.value, r.Path)
@@ -482,10 +495,104 @@ func TestHomeIgnoresRelocationsThatSwallowTheHome(t *testing.T) {
 func TestHomeIgnoresRelocationsThatSwallowAnotherHome(t *testing.T) {
 	t.Setenv("GNUPGHOME", "/home/other")
 
-	for _, r := range Home("/home/u", "/home/u", "/home/other") {
+	for _, r := range allRules("/home/u", "/home/other") {
 		if r.Path == "/home/other" {
 			t.Fatalf("GNUPGHOME produced a shield at %q, which hides the whole of the other home anchor", r.Path)
 		}
+	}
+}
+
+// A relocation names ONE absolute path, so a two-anchor run must emit it once. Emitted
+// per anchor it lands twice, which inflates the shield count an operator reads and hands
+// bwrap a duplicate bind for every relocated store.
+func TestRelocatedEmitsOneRulePerVariableAcrossAnchors(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/srv/keys")
+	t.Setenv("HISTFILE", "/srv/hist")
+	t.Setenv("ZDOTDIR", "/srv/zsh")
+
+	counts := map[string]int{}
+	for _, r := range allRules("/home/a", "/home/b") {
+		if r.Source != "" {
+			counts[r.Path]++
+		}
+	}
+	for _, p := range []string{"/srv/keys", "/srv/hist", "/srv/zsh/.zshrc"} {
+		if counts[p] != 1 {
+			t.Errorf("shield at %q emitted %d times, want 1", p, counts[p])
+		}
+	}
+}
+
+// A relocation onto a SIBLING anchor's default store is not a relocation: that anchor's
+// own pass already shields it. Keyed on the calling anchor the same path came out twice,
+// once stamped with the variable - and writeRelocatedShields then tells the operator
+// GNUPGHOME moved a shield to what is really an ordinary anchor default.
+func TestRelocationOntoASiblingAnchorDefaultIsNotStampedWithASource(t *testing.T) {
+	t.Setenv("GNUPGHOME", "/home/b/.gnupg")
+	t.Setenv("CARGO_HOME", "/home/b/.cargo")
+	t.Setenv("INPUTRC", "/home/b/.inputrc")
+
+	for _, r := range allRules("/home/a", "/home/b") {
+		if r.Source != "" && strings.HasPrefix(r.Path, "/home/b/") {
+			t.Errorf("rule at %q is stamped $%s, but it is anchor /home/b's own default store", r.Path, r.Source)
+		}
+	}
+}
+
+// DBT_PROFILES_DIR and CURL_HOME relocate a DIRECTORY whose secret is one named file in
+// it. The directory holds content the tool also reads (dbt's project config, and for
+// CURL_HOME a whole home), so only the file is shielded - a whole-tree DenyAll here would
+// blind an in-sandbox run for no gain.
+func TestHomeShieldsRelocatedDirectoryCredentialFiles(t *testing.T) {
+	t.Setenv("DBT_PROFILES_DIR", "/srv/dbt")
+	t.Setenv("CURL_HOME", "/srv/curl")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{"/srv/dbt/profiles.yml", "/srv/curl/.curlrc"} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Dir {
+			t.Errorf("shield at %q is %+v, want a DenyAll file rule", p, r)
+		}
+	}
+	for _, p := range []string{"/srv/dbt", "/srv/curl"} {
+		if _, ok := byPath[p]; ok {
+			t.Errorf("the whole directory %q is shielded; only the credential file inside it should be", p)
+		}
+	}
+}
+
+// HGRCPATH REPLACES mercurial's config search path, so every entry is a file hg reads
+// instead of ~/.hgrc - [auth] passwords and [hooks] command lines both. A restatement of
+// either shielded default is dropped, as are relative entries.
+func TestHomeShieldsRelocatedHgrcPath(t *testing.T) {
+	t.Setenv("HGRCPATH", "/home/u/.hgrc:/srv/hg/one.rc:relhg:/srv/hg/two.rc")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		if !filepath.IsAbs(r.Path) {
+			t.Errorf("relative HGRCPATH entry leaked a non-absolute shield path %q", r.Path)
+		}
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{"/srv/hg/one.rc", "/srv/hg/two.rc"} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", p)
+			continue
+		}
+		if r.Deny != DenyAll || r.Source != "HGRCPATH" {
+			t.Errorf("shield at %q is %+v, want a DenyAll stamped HGRCPATH", p, r)
+		}
+	}
+	if r := byPath["/home/u/.hgrc"]; r.Source != "" {
+		t.Errorf("the default ~/.hgrc is stamped $%s; it is already shielded by name", r.Source)
 	}
 }
 
@@ -501,7 +608,7 @@ func TestHomeShieldsRelocatedCredentialFiles(t *testing.T) {
 
 	byPath := map[string]bool{}
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative file relocation leaked a non-absolute shield path %q", r.Path)
 		}
@@ -543,7 +650,7 @@ func TestHomeShieldsSingleFileRelocationsWhole(t *testing.T) {
 	t.Setenv("ANSIBLE_CONFIG", "/secrets/ansible.cfg")
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byRule[r.Path] = r
 	}
 	for _, p := range []string{
@@ -576,7 +683,7 @@ func TestHomeSkipsFileRelocationInsideARelocatedStore(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/gcloud/sa.json")
 
 	byPath := map[string]bool{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = true
 	}
 	if !byPath["/secrets/gcloud"] {
@@ -595,7 +702,7 @@ func TestHomeSkipsFileDenyAllRelocationUnderAHiddenTree(t *testing.T) {
 	t.Setenv("HISTFILE", "/home/u/.gnupg/hist")
 
 	byPath := map[string]bool{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = true
 	}
 	for _, p := range []string{"/home/u/.ssh/pgpass", "/home/u/.gnupg/hist"} {
@@ -614,7 +721,7 @@ func TestHomeShieldsRelocatedStartupFiles(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/cfg/gitconfig")
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byRule[r.Path] = r
 	}
 	// Every zsh startup file relocates as a group under ZDOTDIR.
@@ -649,7 +756,7 @@ func TestHomeShieldsRelocatedStartupFiles(t *testing.T) {
 func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
 	t.Setenv("ZDOTDIR", "/home/u")             // the default: block skipped, no relocated rules
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null") // disables global config; nothing to plant
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if r.Path == "/dev/null" {
 			t.Errorf("unexpected shield at %q for a non-plantable relocation", r.Path)
 		}
@@ -659,7 +766,7 @@ func TestHomeStartupRelocationIgnoresNonPlantable(t *testing.T) {
 	}
 	// A relative ZDOTDIR cannot be bound and must be dropped.
 	t.Setenv("ZDOTDIR", "relzsh")
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative ZDOTDIR leaked a non-absolute shield path %q", r.Path)
 		}
@@ -674,14 +781,14 @@ func TestHomeStartupRelocationSkipsDenyAllCollision(t *testing.T) {
 	t.Setenv("ZDOTDIR", "/home/u/.ssh")                   // under a DenyAll dir
 	t.Setenv("PIP_CONFIG_FILE", "/home/u/.netrc")         // a colon-free single-file follow
 	t.Setenv("MAILCAPS", "/home/u/.ssh/x:/home/u/.netrc") // each colon entry must also route through the collision guard
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if r.Deny == DenyWrite && (r.Path == "/home/u/.netrc" || strings.HasPrefix(r.Path, "/home/u/.ssh/")) {
 			t.Errorf("DenyWrite shield at %q collides with a DenyAll rule and would expose it", r.Path)
 		}
 	}
 	// The DenyAll shields themselves must still be present.
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byRule[r.Path] = r
 	}
 	if r := byRule["/home/u/.netrc"]; r.Deny != DenyAll {
@@ -706,7 +813,7 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	t.Setenv("R_PROFILE_USER", "/cfg/rprofile")
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
 		}
@@ -734,7 +841,7 @@ func TestHomeShieldsRelocatedStartupEnvFiles(t *testing.T) {
 	t.Setenv("INPUTRC", "/home/u/.inputrc")
 	t.Setenv("BASH_ENV", "relenv")
 	count := 0
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative BASH_ENV leaked a non-absolute shield path %q", r.Path)
 		}
@@ -757,7 +864,7 @@ func TestHomeShieldsRelocatedPipAndMailcapConfigs(t *testing.T) {
 	t.Setenv("MAILCAPS", "/cfg/a.mailcap:/cfg/b.mailcap")
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
 		}
@@ -779,7 +886,7 @@ func TestHomeShieldsRelocatedPipAndMailcapConfigs(t *testing.T) {
 	t.Setenv("PIP_CONFIG_FILE", "/home/u/.pip/pip.conf")
 	t.Setenv("MAILCAPS", "/home/u/.mailcap:rel.mailcap:/cfg/c.mailcap")
 	pipCount, mailcapCount, cCount := 0, 0, 0
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative MAILCAPS entry leaked a non-absolute shield path %q", r.Path)
 		}
@@ -819,7 +926,7 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	t.Setenv("R_ENVIRON_USER", "/secrets/renviron") // .Renviron holds plaintext secrets, so its relocation is a DenyAll target, not DenyWrite
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relocation env leaked a non-absolute shield path %q", r.Path)
 		}
@@ -849,7 +956,7 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 	t.Setenv("HISTFILE", "/dev/null")
 	t.Setenv("NPM_CONFIG_USERCONFIG", "/home/u/.npmrc")
 	npmCount := 0
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if r.Path == "/dev/null" {
 			t.Error("HISTFILE=/dev/null must not add a shield")
 		}
@@ -861,7 +968,7 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 		t.Errorf("NPM_CONFIG_USERCONFIG=default must not add a second ~/.npmrc rule, got %d", npmCount)
 	}
 	t.Setenv("HISTFILE", "relhist")
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative HISTFILE leaked a non-absolute shield path %q", r.Path)
 		}
@@ -876,7 +983,7 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 	t.Setenv("CARGO_HOME", "/cfg/cargo")
 
 	byRule := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("CARGO_HOME relocation leaked a non-absolute shield path %q", r.Path)
 		}
@@ -901,7 +1008,7 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 
 	// A relative value adds nothing; the default location is already covered and dropped.
 	t.Setenv("CARGO_HOME", "relcargo")
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !filepath.IsAbs(r.Path) {
 			t.Errorf("relative CARGO_HOME leaked a non-absolute shield path %q", r.Path)
 		}
@@ -912,11 +1019,11 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 	// asserting the shield list rather than the relocation logic this test is about.
 	os.Unsetenv("CARGO_HOME")
 	baseline := map[string]bool{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		baseline[r.Path] = true
 	}
 	t.Setenv("CARGO_HOME", "/home/u/.cargo")
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if !baseline[r.Path] {
 			t.Errorf("CARGO_HOME=default must not add extra rules, saw %q", r.Path)
 		}
@@ -935,7 +1042,7 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 	const home = "/home/u"
 	var hidden []string
-	for _, r := range Home(home) {
+	for _, r := range allRules(home) {
 		if r.Deny == DenyAll && r.Dir {
 			hidden = append(hidden, r.Path)
 		}
@@ -953,7 +1060,7 @@ func TestAliasAnchorsAreAllHiddenDirRules(t *testing.T) {
 	}
 	for _, a := range AliasAnchors(home) {
 		if !covered(a) {
-			t.Errorf("alias anchor %q is not covered by any DenyAll directory rule in Home() - renamed or misspelled?", a)
+			t.Errorf("alias anchor %q is not covered by any DenyAll directory rule in Home()/Relocated() - renamed or misspelled?", a)
 		}
 	}
 }
@@ -1054,7 +1161,7 @@ func TestHomeIsEnvironmentFreeWithRelocationVarsCleared(t *testing.T) {
 	for _, v := range RelocationVars() {
 		t.Setenv(v, "")
 	}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		if r.Source != "" {
 			t.Errorf("rule %q carries source $%s with every relocation variable cleared", r.Path, r.Source)
 		}
@@ -1070,7 +1177,7 @@ func TestHomeIsEnvironmentFreeWithRelocationVarsCleared(t *testing.T) {
 // makes the omission an internal inconsistency rather than a scope choice. Guarding
 // them here is what stops the next edit from quietly dropping one again.
 func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
 	for _, r := range rules {
 		byPath[r.Path] = r
@@ -1157,7 +1264,7 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 // before DenyAll for exactly that reason, so the agent trees below are a live instance
 // of the pattern: the tree is readable, the token inside it is not.
 func TestHomeHidesCredentialsInsideWriteShieldedAgentTrees(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	for _, tc := range []struct{ tree, secret string }{
 		{"/home/u/.claude", "/home/u/.claude/.credentials.json"},
 		{"/home/u/.codex", "/home/u/.codex/auth.json"},
@@ -1186,7 +1293,7 @@ func TestHomeHidesCredentialsInsideWriteShieldedAgentTrees(t *testing.T) {
 // scope because no classifier token matched them. Each store below holds an account
 // password, a private key, or cracked plaintext - not message content, which stays out.
 func TestHomeShieldsTierTwoCredentialStores(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
 	for _, r := range rules {
 		byPath[r.Path] = r
@@ -1225,7 +1332,7 @@ func TestHomeShieldsTierTwoCredentialStores(t *testing.T) {
 // apart by the audit's component-token classifier - any token matching .config/Nextcloud
 // also matches ~/Nextcloud - which is why these are shielded by name and given no token.
 func TestHomeShieldsCloudSyncConfigButNotDocuments(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
 	for _, r := range rules {
 		byPath[r.Path] = r
@@ -1251,7 +1358,7 @@ func TestHomeShieldsCloudSyncConfigButNotDocuments(t *testing.T) {
 // bare command name that resolves to it. Write-denied rather than hidden, since a build
 // legitimately reads and executes from its own toolchain.
 func TestHomeWriteShieldsPathBinaryDirs(t *testing.T) {
-	rules := Home("/home/u")
+	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
 	for _, r := range rules {
 		byPath[r.Path] = r
@@ -1365,14 +1472,14 @@ func TestHomeAnchorsDeduplicates(t *testing.T) {
 // kubeconfig instead of a refusal. The store is the store under every anchor.
 func TestFileRelocationInsideAnySiblingAnchorStoreIsNotShieldedByFile(t *testing.T) {
 	t.Setenv("KUBECONFIG", "/home/a/.kube/config")
-	for _, r := range Home("/home/b", "/home/a", "/home/b") {
+	for _, r := range allRules("/home/a", "/home/b") {
 		if r.Path == "/home/a/.kube/config" {
 			t.Errorf("the sibling anchor's pass emitted an interior file rule on %s; the anchor's own directory shield covers it, and this rule survives a read grant on the directory", r.Path)
 		}
 	}
 	// The directory shield the drop relies on has to actually be there.
 	var covered bool
-	for _, r := range Home("/home/a", "/home/a", "/home/b") {
+	for _, r := range allRules("/home/a", "/home/b") {
 		if r.Path == "/home/a/.kube" && r.Deny == DenyAll && r.Dir {
 			covered = true
 		}
@@ -1383,7 +1490,7 @@ func TestFileRelocationInsideAnySiblingAnchorStoreIsNotShieldedByFile(t *testing
 	// A target outside every anchor's store still gets its own rule - the drop is
 	// containment, not a blanket exemption for relocated files.
 	t.Setenv("KUBECONFIG", "/srv/kubeconfig")
-	if !slices.ContainsFunc(Home("/home/b", "/home/a", "/home/b"), func(r Rule) bool {
+	if !slices.ContainsFunc(allRules("/home/a", "/home/b"), func(r Rule) bool {
 		return r.Path == "/srv/kubeconfig" && r.Deny == DenyAll
 	}) {
 		t.Error("a relocation outside every anchor's store must still be shielded")
@@ -1424,7 +1531,7 @@ func TestRuntimeFollowsRelocatedRuntimeDir(t *testing.T) {
 func TestApprovalJournalIsShieldedUnderARelocatedStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/home/u/state")
 	byPath := make(map[string]Rule)
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = r
 	}
 	for _, p := range []string{"/home/u/.local/state/bento", "/home/u/state/bento"} {
@@ -1450,7 +1557,7 @@ func TestDenyAllRulesAreClassified(t *testing.T) {
 	t.Setenv("KUBECONFIG", "/srv/kube.yaml")
 	t.Setenv("HISTFILE", "/srv/history")
 	t.Setenv("CARGO_HOME", "/srv/cargo")
-	rules := slices.Concat(Home("/home/u"), Runtime("/tmp/rt", "/home/u"))
+	rules := slices.Concat(allRules("/home/u"), Runtime("/tmp/rt", "/home/u"))
 	for _, r := range rules {
 		if r.Deny == DenyAll && r.Holds == HoldsUnknown {
 			t.Errorf("%q is hidden but unclassified; add it to a list dirGroups names", r.Path)
@@ -1463,7 +1570,7 @@ func TestDenyAllRulesAreClassified(t *testing.T) {
 // that motivated it are pinned.
 func TestHomeShieldClassification(t *testing.T) {
 	byPath := map[string]Rule{}
-	for _, r := range Home("/home/u") {
+	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = r
 	}
 	for path, want := range map[string]Holds{
@@ -1502,7 +1609,7 @@ func TestRelocationKeepsTheSameClassification(t *testing.T) {
 		t.Run(tc.env, func(t *testing.T) {
 			t.Setenv(tc.env, tc.relocated)
 			var def, moved Rule
-			for _, r := range Home("/home/u") {
+			for _, r := range allRules("/home/u") {
 				switch r.Path {
 				case tc.def:
 					def = r
