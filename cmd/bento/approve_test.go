@@ -370,7 +370,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 func TestConfirmApprovalNeedsAnAnswerOrTheFlag(t *testing.T) {
 	t.Run("--yes", func(t *testing.T) {
 		var buf strings.Builder
-		if err := confirmApproval(&buf, true); err != nil {
+		if err := confirmApproval(t.Context(), &buf, true); err != nil {
 			t.Errorf("confirmApproval must proceed; got %v", err)
 		}
 		if buf.String() != "" {
@@ -394,7 +394,7 @@ func TestConfirmApprovalNeedsAnAnswerOrTheFlag(t *testing.T) {
 		defer func() { os.Stdin = saved }()
 
 		var buf strings.Builder
-		err = confirmApproval(&buf, false)
+		err = confirmApproval(t.Context(), &buf, false)
 		if err == nil {
 			t.Fatal("a stdin nobody can answer on must refuse rather than stamp")
 		}

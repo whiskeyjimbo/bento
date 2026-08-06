@@ -1529,6 +1529,13 @@ func interactiveStdin() bool {
 // separate from the target's own stdin, and a cleanup to release it. It falls back to
 // os.Stdin where /dev/tty is unavailable; the cleanup is a no-op there, because closing
 // that reader would close the process's stdin rather than a handle this opened.
+func openTTY() (io.Reader, func()) {
+	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
+		return f, func() { f.Close() }
+	}
+	return os.Stdin, func() {}
+}
+
 // ttyLines reads the terminal a line at a time on its own goroutine, so a prompt can
 // give up on an answer that is not coming. A read of /dev/tty is not interruptible and
 // the CLI's SIGINT handler is released after the first Ctrl-C, so a prompt parked in
@@ -1568,15 +1575,13 @@ func askLine(ctx context.Context, lines <-chan string, out io.Writer, prompt str
 		fmt.Fprintln(out)
 		return "", false
 	case line, ok := <-lines:
+		// Both were ready: a Ctrl-C landing on the same keystroke as the answer must not
+		// let the session proceed, or a cancelled run still writes a manifest.
+		if ctx.Err() != nil {
+			return "", false
+		}
 		return line, ok
 	}
-}
-
-func openTTY() (io.Reader, func()) {
-	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
-		return f, func() { f.Close() }
-	}
-	return os.Stdin, func() {}
 }
 
 // sortedBoolKeys returns the set's keys sorted, so a manifest's grant order is stable.
