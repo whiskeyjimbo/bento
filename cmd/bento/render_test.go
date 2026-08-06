@@ -1284,7 +1284,7 @@ func TestShieldedGrantProblemsMirrorTheRunsRefusals(t *testing.T) {
 	}{
 		"the shield itself, which no write opts into": {inHome(".ssh"), "no opt-in for a write"},
 		"a path inside a shield":                      {inHome(".ssh/sub"), "is inside the always-shielded path"},
-		"a write-shielded startup file":               {inHome(".bashrc"), "is at or inside the always-write-shielded path"},
+		"a write-shielded startup file":               {inHome(".bashrc"), "is at or inside the write-shielded path"},
 		"a grant containing a shield":                 {home, "contains the always-shielded path"},
 		"a grant nowhere near a shield":               {"/srv/app", ""},
 	}
