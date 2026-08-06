@@ -148,8 +148,8 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 // same inode under every mixture of cases, so there is no set of extra binds that would
 // contain it. That is why the caller's only move is to refuse the grant.
 //
-// A name with no letters cannot be respelled, and a shield that does not exist holds
-// nothing to reach, so both answer false without a syscall.
+// A name with no letters cannot be respelled, so it answers false without a syscall. A
+// shield that does not exist costs one and answers false too: it holds nothing to reach.
 func (s Set) foldsCase(path string) bool {
 	base := filepath.Base(path)
 	flipped := strings.Map(func(r rune) rune {
