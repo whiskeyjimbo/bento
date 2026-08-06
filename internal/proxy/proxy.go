@@ -512,8 +512,9 @@ const (
 
 // recoverableAccept reports whether an Accept error is a transient condition the listener
 // survives. ENFILE and EMFILE are fd exhaustion - system-wide or this process's - which
-// processes outside bento cause and which clears on its own; ECONNABORTED is a client
-// that went away between SYN and accept. net.ErrClosed is deliberately excluded: the
+// processes outside bento cause and which clears on its own; ENOMEM and ENOBUFS are the
+// socket-buffer memory limit, the same host condition by another name; ECONNABORTED is a
+// client that went away between SYN and accept. net.ErrClosed is deliberately excluded: the
 // closer goroutine uses exactly that to end the run, so retrying it would spin through
 // teardown. Errors are matched by errno rather than through net.Error.Temporary, which is
 // deprecated and reports true for cases (a deadline) this must not retry blindly.
@@ -523,7 +524,9 @@ func recoverableAccept(err error) bool {
 	}
 	return errors.Is(err, syscall.ECONNABORTED) ||
 		errors.Is(err, syscall.EMFILE) ||
-		errors.Is(err, syscall.ENFILE)
+		errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOMEM) ||
+		errors.Is(err, syscall.ENOBUFS)
 }
 
 // Serve accepts connections on l and enforces the allowlist on each until ctx is
