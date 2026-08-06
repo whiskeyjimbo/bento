@@ -1,6 +1,6 @@
 # [ADR-0011] Exec-only ptrace records what an enforced run ran
 
-* **Status:** Accepted, unimplemented
+* **Status:** Accepted
 * **Date:** 2026-08-06
 * **Authors:** whiskeyjimbo
 
@@ -206,6 +206,18 @@ from one that produced none because nothing was watching, which is the same dist
   exists in `internal/observe`; the implementation should factor the stop loop rather than
   write a second one, and the exec-only mode is a smaller loop than the decoder's, not a
   larger one.
+
+  **The implementation did not factor it, deliberately.** Measured against the built loop,
+  what `internal/observe` and `internal/launcher/execrecord.go` share is knowledge, not
+  code: the event message carries the tid an `execve` retired, every signal but `SIGTRAP`
+  is forwarded, a child is tracked at the fork event rather than at its own first stop.
+  Everything else in the observer's loop is the decoder's - `nativeSyscall`, `inspect`,
+  `dropOnce`, the `held`/`lastOp`/`drops` maps, and the drop accounting that makes up most
+  of `forgetRetiredTid`, which collapses here to a single `delete`. Parameterizing a
+  1462-line profiler for a second caller that wants none of that would have coupled the
+  enforced path to the profiling one to avoid duplicating roughly forty lines. The three
+  shared facts are stated in comments at the exec-only loop instead, which is what the
+  concern behind this bullet - not rediscovering the quirks - actually asked for.
 * **No `PTRACE_O_EXITKILL`, unlike the observer.** The spike set it, and it must not survive
   into the implementation: it makes a bug in the wait loop SIGKILL the entire enforced run,
   which is a diagnostic killing a run that would otherwise have succeeded - the first
