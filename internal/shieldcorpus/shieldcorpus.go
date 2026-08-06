@@ -91,7 +91,7 @@ func (c Case) Path(home string) string { return filepath.Join(home, c.Grant) }
 var Cases = []Case{
 	{
 		Name:    "write to a symlinked credential entry's target",
-		Why:     "stow and chezmoi make ~/.ssh/known_hosts a link into a dotfiles tree; the backend expands the link into a shield of its own (credentialLinkShields) so the store cannot be written by naming where it points",
+		Why:     "stow and chezmoi make ~/.ssh/known_hosts a link into a dotfiles tree; the run expands the link into a shield of its own so the store cannot be written by naming where it points",
 		Grant:   "farm/ssh/known_hosts",
 		Write:   true,
 		Verdict: InsideShield,

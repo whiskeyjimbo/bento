@@ -47,8 +47,8 @@ type sandbox struct {
 	runtimeDir string
 	// extraDeny are caller-supplied shields applied on top of the built-in deny-list
 	// (a supervising embedder shielding its own state during a profiling trial; see
-	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads
-	// the run's shields goes through alwaysShields, so these reach all of them.
+	// ProfileOptions.DenyPaths). Empty for an ordinary run. Every place that reads the
+	// run's shields goes through the one assembled set, so these reach all of them.
 	extraDeny []denylist.Rule
 	// emptyFile is a real, empty, read-only file on the host. Binding it over a
 	// path shields that path even when the path does not exist yet: bwrap creates
