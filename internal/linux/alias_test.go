@@ -1265,3 +1265,32 @@ func TestHostStatIDSeparatesAbsenceFromFailure(t *testing.T) {
 		t.Errorf("hostStatID under an untraversable parent = %v, want a permission error", err)
 	}
 }
+
+// The entrypoint and interpreter are bound as individual FILES on the bwrap tier and
+// granted as Landlock exec paths on the degraded one, so neither tier's visible set
+// contains them - and a hardlink named as the entrypoint is read by the target as its
+// own program text.
+func TestCheckAliasedCredentialsScansTheExecPaths(t *testing.T) {
+	key := identifiedFile{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 2}
+	creds := map[string][]identifiedFile{"/home/u/.ssh": {key}}
+	for _, tc := range []struct {
+		name string
+		exec string
+	}{
+		{"entrypoint", "/work/run.py"},
+		{"interpreter", "/opt/py/bin/python3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := aliasSandbox(creds, map[string][]identifiedFile{
+				tc.exec: {{path: tc.exec, id: key.id, links: 2}},
+			})
+			if tc.name == "interpreter" {
+				sb.interpreter = tc.exec
+			}
+			_, err := checkAliasedCredentials(sb, nil, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.exec) {
+				t.Fatalf("a %s hardlinked to a credential must refuse the run; got %v", tc.name, err)
+			}
+		})
+	}
+}
