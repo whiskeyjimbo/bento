@@ -821,3 +821,118 @@ func containsSuffix(paths []string, suffix string) bool {
 	}
 	return false
 }
+
+// The failure mode the cap and the post-marker scan tolerance exist for. bufio.Scanner
+// refuses a line it cannot buffer, and turning that into an absent report would set every
+// layer Unavailable and refuse a fully fenced run - the exec record deciding what is
+// enforced, on exactly the long-command-line workload the record is for. Once the marker
+// is in hand the proof is in hand, and only the diagnostic can still be lost.
+func TestAnUnreadableExecRecordLineKeepsTheAttestation(t *testing.T) {
+	huge := strings.Repeat("a", 100_000)
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder yes\n" +
+		`exec-ran 7 "/usr/bin/cc" "` + huge + `"` + "\nEXEC-RECORD\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatal("one unreadable record line discarded the whole report")
+	}
+	if a.landlock != launcher.AppliedYes {
+		t.Errorf("the layer records did not survive: %+v", a)
+	}
+	if a.execRecordComplete {
+		t.Error("a record whose scan died was reported as whole")
+	}
+
+	var r enforce.Report
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+	if got := a.reconcile(&r, false, false, true, 0); got != enforce.SetupAttested {
+		t.Errorf("setup state = %v, want SetupAttested; an unreadable diagnostic refused the run", got)
+	}
+	if st := r.StateOf(enforce.LayerFilesystem); st != enforce.Enforced {
+		t.Errorf("filesystem layer = %v; an unreadable diagnostic downgraded an enforced layer", st)
+	}
+}
+
+// A report whose scan fails BEFORE the marker read nothing that can be relied on, so it
+// must still claim nothing - the tolerance above is scoped to the diagnostic, not
+// extended to the layer facts.
+func TestAnUnreadableLineBeforeTheMarkerStillClaimsNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock " + strings.Repeat("y", 100_000) + "\nAPPLIED\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a := parseApplied(openReport(t, path)); a.complete || a.execFilter != "" {
+		t.Errorf("a report the host could not scan was read as claiming something: %+v", a)
+	}
+}
+
+// A capped argv says so, and the flag reaches the caller: an argv missing its tail that
+// did not report the cut would be a record that lies about what ran.
+func TestTruncatedArgvIsReportedAsTruncated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder yes\n" +
+		`exec-ran 7 "/usr/bin/cc" "cc\x00-c" ` + launcher.AppliedExecArgvTruncated + "\n" +
+		`exec-ran 8 "/bin/true" "true"` + "\nEXEC-RECORD\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.execRecordComplete {
+		t.Fatal("a record carrying a marked truncation was read as broken")
+	}
+	rec := a.execRecord(true)
+	if len(rec.Runs) != 2 {
+		t.Fatalf("runs = %+v, want both records", rec.Runs)
+	}
+	if !rec.Runs[0].ArgvTruncated {
+		t.Error("a cut argv reached the caller claiming to be whole")
+	}
+	if rec.Runs[1].ArgvTruncated {
+		t.Error("an untouched argv was reported as cut")
+	}
+	// The trailer is a fixed word, not free text: anything else is a line the stage did
+	// not write, and the record is the one section that reads variable-length input.
+	if _, ok := parseExecRun(`9 "/bin/true" "true" something-else`); ok {
+		t.Error("an unrecognized trailer was accepted on an exec-ran record")
+	}
+}
+
+// The stage writes the record section in one call after the run, so a short write - a
+// full run directory, the launcher killed mid-write - can end a line inside its own key.
+// "exec-ra" is not a record the stage writes, but treating it as tampering would void an
+// attestation the first marker already made, which is the diagnostic deciding what is
+// enforced.
+func TestATornRecordLineDoesNotVoidTheAttestation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder yes\n" +
+		`exec-ran 7 "/usr/bin/cc" "cc"` + "\nexec-ra"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatal("a record line torn inside its key discarded the whole report")
+	}
+	if a.execRecordComplete {
+		t.Error("a torn record section was reported as whole")
+	}
+	var r enforce.Report
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+	if got := a.reconcile(&r, false, false, true, 0); got != enforce.SetupAttested {
+		t.Errorf("setup state = %v, want SetupAttested", got)
+	}
+
+	// The tolerance is scoped to the record section: an unknown line after the marker but
+	// BEFORE any exec-recorder line is still the tampering it always was.
+	other := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(other, []byte("exec-filter none\nlandlock yes\nAPPLIED\nnot-a-record yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := parseApplied(openReport(t, other)); b.complete {
+		t.Error("a line the stage never writes was accepted after the marker")
+	}
+}

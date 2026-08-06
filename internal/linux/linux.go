@@ -89,7 +89,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// table. Reported as nothing having watched, which is what it is.
 		if err == nil && opts.RecordExec {
 			res.ExecRecord = &enforce.ExecRecord{
-				Reason: "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
+				// Complete, like the other mode that structurally cannot be watched: there
+				// was no record to truncate, and the two must not disagree on a field a
+				// frontend reads as "trust what is here".
+				Complete: true,
+				Reason:   "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
 			}
 		}
 		return res, err
