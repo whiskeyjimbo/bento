@@ -118,9 +118,9 @@ func parseApplied(f *os.File) applied {
 			// The value is kept whatever it is, including one this host does not recognize:
 			// reconcile judges it against what was asked for rather than reading a failure
 			// reason, so a record whose reason is empty or unreadable cannot pass as success.
-			// Absent - a kernel with no usable Landlock ABI - is the one non-"yes" value that
-			// is not a shortfall: the probe already reports that this host has no backstop
-			// and that bwrap alone confines.
+			// Absent - a kernel with no usable Landlock ABI - is the one non-"yes" value
+			// that reconcile can forgive, and only on the bwrap tier, where the probe
+			// already reports that this host has no backstop and that bwrap alone confines.
 			a.landlock = value
 			if value == launcher.AppliedNo {
 				// Quoted by the writer so a newline in the error cannot forge a record; an
@@ -205,9 +205,16 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 	// failure, a value this host does not recognize, or no Landlock record at all - is a
 	// run without it. Keying on the failure REASON instead read a report whose reason was
 	// empty, and one that never mentioned the layer, as success.
-	if a.landlock != launcher.AppliedYes && a.landlock != launcher.AppliedAbsent {
+	// Absent - a kernel with no usable Landlock ABI - is not a shortfall only where
+	// something else confines the filesystem. On the degraded tier Landlock IS the
+	// confinement, so absent there means the run had none, exactly like a failure.
+	if a.landlock != launcher.AppliedYes && !(a.landlock == launcher.AppliedAbsent && mountConfined) {
 		why := a.landlockErr
-		if why == "" {
+		switch {
+		case why != "":
+		case a.landlock == launcher.AppliedAbsent:
+			why = "this kernel has no usable Landlock ABI"
+		default:
 			why = fmt.Sprintf("the sandbox reported no Landlock outcome, %q", a.landlock)
 		}
 		// How far this drops depends on what stands behind Landlock. On the bwrap tier the

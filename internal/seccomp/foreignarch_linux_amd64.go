@@ -28,6 +28,8 @@ import (
 // Installed via SYS_SECCOMP with a checked r1 (matching strictFilter/egressFilter),
 // so a partial TSYNC thread-sync is treated as a failed install rather than a
 // silent no-op.
+func foreignArchSupported() bool { return true }
+
 func blockForeignArch() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)

@@ -151,14 +151,47 @@ func TestDegradedRunReportRestsOnWhatTheChildApplied(t *testing.T) {
 // tests above cover the two outcomes a real host reaches; these cover the ones that
 // need an architecture or a kernel this host may not have (the strict-filter
 // fallback, a failing Landlock backstop) plus the tampered report.
+// A stand-in for the accurate explanation the probe writes, so a case can assert
+// reconcile left it alone rather than replacing it with a worse one.
+const probeReason = "this host cannot do it, and here is the actionable reason"
+
+// The report exposes only StateOf; a reason assertion needs the layer itself.
+func reasonOf(r enforce.Report, layer enforce.Layer) string {
+	for _, l := range r.Layers {
+		if l.Layer == layer {
+			return l.Reason
+		}
+	}
+	return ""
+}
+
 func TestAppliedReconcile(t *testing.T) {
 	cases := []struct {
 		name         string
 		report       string
 		blockWanted  bool
 		strictWanted bool
+		unconfined   bool // no mount namespace behind Landlock: the degraded tier
 		want         map[enforce.Layer]enforce.State
+		wantReason   map[enforce.Layer]string
 	}{
+		{
+			// The probe, not reconcile, is what knows why: on a seccomp-less host
+			// execBlockFlags returns block=false, so the launcher's honest "none" is what
+			// was asked for and the probe's reason must survive intact.
+			name:       "no filter asked for keeps the probe's reason for the exec layer",
+			report:     launcher.AppliedExecFilter + " " + launcher.AppliedExecNone + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
+			want:       map[enforce.Layer]enforce.State{enforce.LayerExec: enforce.Enforced},
+			wantReason: map[enforce.Layer]string{enforce.LayerExec: probeReason},
+		},
+		{
+			// Landlock is the only filesystem confinement on the degraded tier, so a
+			// kernel without it leaves the run unconfined rather than merely unbacked.
+			name:       "a kernel without Landlock leaves the degraded tier unconfined",
+			report:     launcher.AppliedExecFilter + " " + launcher.AppliedExecStrict + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedAbsent + "\n" + launcher.AppliedMarker + "\n",
+			unconfined: true,
+			want:       map[enforce.Layer]enforce.State{enforce.LayerFilesystem: enforce.Unavailable},
+		},
 		{
 			name:        "a complete report naming no filter where the policy asked for one claims neither exec layer",
 			report:      launcher.AppliedExecFilter + " " + launcher.AppliedExecNone + "\n" + launcher.AppliedLandlock + " " + launcher.AppliedYes + "\n" + launcher.AppliedMarker + "\n",
@@ -254,13 +287,18 @@ func TestAppliedReconcile(t *testing.T) {
 			// came from the child's report and not from the probe.
 			r := enforce.Report{}
 			for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
-				r.Add(l, enforce.Enforced, "")
+				r.Add(l, enforce.Enforced, probeReason)
 			}
-			parseApplied(openReport(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, true, 125)
+			parseApplied(openReport(t, path)).reconcile(&r, tc.blockWanted, tc.strictWanted, !tc.unconfined, 125)
 
 			for layer, want := range tc.want {
 				if got := r.StateOf(layer); got != want {
 					t.Errorf("%s = %v, want %v (report %q)", layer, got, want, tc.report)
+				}
+			}
+			for layer, want := range tc.wantReason {
+				if got := reasonOf(r, layer); got != want {
+					t.Errorf("%s reason = %q, want %q", layer, got, want)
 				}
 			}
 			// The network layer is bwrap's, not the child's: nothing the child reports may

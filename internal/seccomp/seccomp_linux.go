@@ -22,8 +22,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Supported reports whether this kernel supports seccomp BPF filters.
-func Supported() bool { return seccomp.Supported() }
+// Supported reports whether this build can install this package's syscall filters
+// on this kernel. Every Block* here installs the foreign-arch guard first and fails
+// when it cannot, so the guard's availability is part of the answer: without this
+// term a probe on a non-amd64 build reports the exec layer present, admission passes,
+// and the launcher then refuses to run for a filter it was never able to install.
+func Supported() bool { return seccomp.Supported() && foreignArchSupported() }
 
 // installPolicy assembles p and attaches it to this process and all of its threads,
 // under no-new-privs so the filter survives the coming execveat.

@@ -145,6 +145,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
+	// The same call compile makes, so reconcile judges the report against the filter
+	// the launcher was actually asked for. Recomputing it from the policy alone would
+	// read a seccomp-less host's honest "none" as a shortfall.
+	blockWanted, strictWanted := execBlockFlags(p.Exec, seccompSupported())
 
 	// When the policy sets limits and this host can enforce them, run bwrap inside
 	// a transient systemd scope carrying the limits. When it cannot, the run has
@@ -207,7 +211,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	switch err := runErr; {
 	case err == nil:
 		serveErr := stopProxy()
-		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, true, 0)
+		setup := parseApplied(appliedReport).reconcile(&report, blockWanted, strictWanted, true, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
@@ -219,7 +223,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// target as 128+signal itself. What reaches this branch signaled is the scope
 		// coming down around the run, which is how a cgroup limit ends it.
 		code, signaled, sig := exitStatusOf(ee.ProcessState)
-		setup := parseApplied(appliedReport).reconcile(&report, p.Exec != policy.ExecAll, p.Exec == policy.ExecNoneStrict, true, code)
+		setup := parseApplied(appliedReport).reconcile(&report, blockWanted, strictWanted, true, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted)}, nil
