@@ -27,12 +27,15 @@ const (
 	// this filter fences. It is not fully contained, though - the degraded tier shares
 	// the host network namespace, and an abstract-namespace socket (leading-NUL address)
 	// is scoped to that netns, not the filesystem, so a target can connect to a host
-	// service's abstract socket (X11, D-Bus, systemd-resolved) that Landlock, which only
-	// governs pathname sockets, does not cover. Blocking it wholesale would break the
-	// local IPC ordinary programs rely on (syslog, nscd, session D-Bus), and classic BPF
-	// cannot tell abstract from pathname at socket(2) - the family is all it sees. So
-	// this is a known residual of the no-netns tier, alongside SCM_RIGHTS fd-passing over
-	// an allowed AF_UNIX socket, not an IP-egress hole.
+	// service's abstract socket (X11, D-Bus, systemd-resolved) that no file grant reaches.
+	// Blocking it here is not the answer: classic BPF cannot tell abstract from pathname
+	// at socket(2) - the family is all it sees - so this filter would have to deny AF_UNIX
+	// wholesale and take the local IPC ordinary programs rely on with it. Landlock can
+	// tell them apart, and the degraded tier's IPC scoping (ABI 6) is what denies the
+	// abstract namespace, leaving syslog's /dev/log, nscd and a unix:path= session bus
+	// (all pathname sockets) working. Below that ABI it stays a residual of the no-netns
+	// tier, alongside SCM_RIGHTS fd-passing over an allowed AF_UNIX socket, and it is not
+	// an IP-egress hole either way.
 	afUnix    = 1
 	afNetlink = 16 // kernel<->user IPC; cannot egress, but runtimes enumerate interfaces with it
 
