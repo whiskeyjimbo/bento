@@ -206,3 +206,58 @@ func TestPersistenceShieldsExhaustive(t *testing.T) {
 		})
 	}
 }
+
+// The workspace shields must anchor at the CHECKOUT, not at whatever the policy spelled.
+// Anchored at the grant, "write: <repo>/.git" put them at <repo>/.git/.git/hooks and left
+// the real hooks dir under a writable bind with no rule, so a planted pre-commit ran on
+// the host at the developer's next commit. checkPersistenceShielded hard-codes
+// writes := []string{root}, so no fuzz case varies the grant's depth.
+func TestWorkspaceShieldsAnchorAtTheCheckoutNotTheGrant(t *testing.T) {
+	root := canonTempDir(t)
+	gitDir := filepath.Join(root, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := persistenceSandbox(root)
+	writes := []string{gitDir}
+	p := &policy.Policy{Entrypoint: filepath.Join(root, "run.sh"), Write: writes}
+	if err := checkGrants(sb, p, nil, writes); err != nil {
+		t.Fatalf("a write grant of the gitdir itself must be admitted: %v", err)
+	}
+
+	args, _ := denyArgs(sb, exposedPaths(sb, nil, writes), writes, nil)
+	dests := shieldDests(args, sb.emptyFile, false)
+	for _, surface := range []string{filepath.Join(gitDir, "hooks"), filepath.Join(gitDir, "config")} {
+		if !coveredBy(surface, dests) {
+			t.Errorf("%q left writable by a grant spelled one directory deeper; shield dests=%v", surface, dests)
+		}
+	}
+}
+
+// A second write grant at or inside a workspace shield the first grant derives was
+// neither refused nor honored: the ro-bind lands after the grant's bind, so every write
+// failed EROFS at runtime with the manifest reporting the grant as honored.
+func TestWriteGrantInsideAWorkspaceShieldRefused(t *testing.T) {
+	root := canonTempDir(t)
+	hooks := filepath.Join(root, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := persistenceSandbox(root)
+	writes := []string{root, hooks}
+	p := &policy.Policy{Entrypoint: filepath.Join(root, "run.sh"), Write: writes}
+	if err := checkGrants(sb, p, nil, writes); err == nil {
+		t.Error("a write grant of a shielded hooks dir must be refused, not silently neutered")
+	}
+
+	// The checkout grant on its own, which derives those shields, stays admitted.
+	only := []string{root}
+	if err := checkGrants(sb, &policy.Policy{Entrypoint: p.Entrypoint, Write: only}, nil, only); err != nil {
+		t.Errorf("a plain checkout write grant must still be accepted: %v", err)
+	}
+}
