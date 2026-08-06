@@ -155,3 +155,23 @@ func TestExistingAbsolutizesAgainstTheWorkingDirectory(t *testing.T) {
 		t.Errorf("Existing(%q) = %q, want %q (the empty grant must not resolve to the root)", "", got, want)
 	}
 }
+
+// A component that cannot be READ is not a component that is not a symlink. Taking it as
+// a real directory would leave a symlink in the resolved prefix, which the lexical ".."
+// below it then pops off - landing somewhere the kernel would not.
+func TestUnreadableComponentResolvesToNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses a 0000 directory, so there is no EACCES to raise")
+	}
+	root := t.TempDir()
+	closed := filepath.Join(root, "closed")
+	if err := os.Mkdir(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+
+	path := filepath.Join(closed, "link", "..", "secret")
+	if got := Existing(path); got != path {
+		t.Errorf("Existing(%q) = %q, want the path unresolved - whether %q is a symlink could not be read", path, got, filepath.Join(closed, "link"))
+	}
+}
