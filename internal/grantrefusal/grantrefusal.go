@@ -4,8 +4,8 @@
 // a write grant that is a file is caught by the argv compiler on one path and by the
 // directory preparation on another, a loop by the grant check on one and by the same
 // preparation on another - and `bento validate` predicts all of them before anything
-// runs - and `bento approve` refuses to stamp what it predicts. That is thirteen call
-// sites for five sentences. Shared here so a reader who meets one
+// runs - and `bento approve` refuses to stamp what it predicts. That is twenty-one call
+// sites for ten sentences. Shared here so a reader who meets one
 // of them in a CI gate and again at run time reads the same sentence, and so a reworded
 // refusal cannot answer half of them.
 //
@@ -69,6 +69,27 @@ func WriteUnderReadOnlyShield(grant, shield string) error {
 // the shield's own name writable in a directory the run can reach.
 func WriteAboveShield(grant, shield string) error {
 	return fmt.Errorf("write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", grant, shield)
+}
+
+// WriteIsRoot refuses a write grant of the host root, which would defeat the sandbox
+// outright. Unlike a read grant, "/" is never expanded for writes.
+func WriteIsRoot() error {
+	return fmt.Errorf("write grant %q would make the entire host root writable; grant a specific directory", "/")
+}
+
+// GrantIsProcess refuses a grant landing in a host process's /proc/<pid> directory. The
+// sandbox has a pid namespace and a procfs of its own, so the pid the grant names is a
+// different process inside it, or none.
+func GrantIsProcess(grant, resolved string) error {
+	return fmt.Errorf("grant %q resolves to %q, a host process's directory in /proc; the sandbox has a pid namespace and a /proc of its own, where that pid is a different process or none at all; remove the grant - /proc is always mounted", grant, resolved)
+}
+
+// GrantIsManagedMount refuses a grant naming, whole, a pseudo-filesystem the sandbox
+// mounts fresh (denylist.ManagedMounts). Bound whole the host's version overmounts the
+// sandbox's hardened one, since the last mount in argv order wins. A specific path
+// inside one still binds fine.
+func GrantIsManagedMount(grant, resolved, mount string) error {
+	return fmt.Errorf("grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", grant, resolved, mount, mount)
 }
 
 // Looped refuses a grant whose symlinks loop. Read and write alike: bwrap's --ro-bind-try
