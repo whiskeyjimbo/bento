@@ -397,6 +397,26 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// not merely read-only as firejail has it - a bento sandbox has no X display to
 		// authenticate to, so there is no legitimate in-sandbox read.
 		".Xauthority",
+		// Credential files various tools read by default, the .netrc class one tool out.
+		// Each is hidden rather than write-denied for the reason .netrc and .npmrc are: the
+		// dominant content is a plaintext secret, and hiding it also neutralizes whatever
+		// command the same file names.
+		".authinfo",     // Emacs auth-source, the documented sibling default of .netrc
+		".authinfo.gpg", // the encrypted spelling; still key material, still no in-sandbox read need
+		// Mercurial's user config at both spellings it reads. [auth] holds plaintext
+		// passwords and [hooks]/[extensions] name host commands; git is otherwise the only
+		// VCS shielded.
+		".hgrc",
+		".config/hg/hgrc",
+		".ansible/galaxy_token",      // the token only: the collections cache beside it is what an in-sandbox ansible reads
+		".curlrc",                    // --user user:pass lives here and curl reads it by default
+		".wgetrc",                    // password= lives here, same
+		".ansible.cfg",               // galaxy_token, plus the library/roles_path/vault_password_file exec knobs
+		".config/pypoetry/auth.toml", // registry tokens when no keyring is available
+		".bunfig.toml",               // [install] registry token, the .npmrc/.yarnrc.yml case
+		".dbt/profiles.yml",          // warehouse passwords, the .pgpass class
+		".subversion/config",         // names diff-cmd/editor-cmd helper binaries (.subversion/auth is a dir shield)
+
 		// The ICE session-manager cookie is the same capability for the session-management
 		// channel (a client authenticating with it can drive session restart/shutdown and
 		// talk to session peers), and a sandbox has no session to join either.
@@ -573,9 +593,10 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// source line. The rc itself is write-denied above; the file it reaches for is not
 		// covered by that, and is usually absent on a host that never ran the installer -
 		// the .bash_aliases case, one layer out.
-		".p10k.zsh", // powerlevel10k config, sourced verbatim by the line its wizard writes
-		".fzf.zsh",  // fzf's installer appends `[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh`
-		".fzf.bash", // the bash half of the same
+		".p10k.zsh",  // powerlevel10k config, sourced verbatim by the line its wizard writes
+		".zpreztorc", // prezto's rc, sourced by the .zshrc its installer links
+		".fzf.zsh",   // fzf's installer appends `[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh`
+		".fzf.bash",  // the bash half of the same
 
 		// Tool configs that name or run a command on a routine action.
 		".caffrc",                // caff/gpg options
@@ -638,8 +659,24 @@ func Home(home string, alsoHomes ...string) []Rule {
 		// inside the journal from honored to refused, leaving an exact-name opt-in as the
 		// only way for bento-adjacent tooling to read its own records.
 		".local/state/bento",
-		".config/Code",   // VS Code User/settings.json (git.path, interpreter paths) run commands
-		".vscode",        // extensions/ load on startup
+		".config/Code", // VS Code User/settings.json (git.path, interpreter paths) run commands
+		".vscode",      // extensions/ load on startup
+		// The sibling spellings of the same editor: each is a separate install with its own
+		// settings.json carrying the same git.path/alternateTools exec knobs, so shielding
+		// only the Microsoft build leaves the fork plantable.
+		".config/Code - Insiders",
+		".config/Cursor",
+		".config/VSCodium",
+		".vscode-server", // Remote's extension host, with its own data/Machine/settings.json
+		".vscode-oss",
+		// JetBrains IDEs: options/*.xml declares external tools and run configurations, both
+		// command lines the IDE runs on the host. Workspace already shields the per-repo
+		// .idea for the same reason, so the global half being absent was an inconsistency.
+		// The password safe writes a c.kdbx under the same tree when no native keyring is
+		// available; it sits behind a per-product-version directory name, so it cannot be
+		// named as a concrete DenyAll path and stays readable under this write shield.
+		".config/JetBrains",
+		".local/share/JetBrains",
 		".config/mpv",    // scripts/*.lua autoloaded on launch
 		".xmonad",        // xmonad.hs is compiled and executed
 		".config/xmonad", // XDG location for xmonad.hs (0.17+)
@@ -653,11 +690,17 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".zprezto",
 		".zplug",
 		".zinit",
-		".zi", // zinit's newer default root
+		".zi", // the z-shell/zi fork, whose default root differs from zinit's below
+		".zgen",
+		".zgenom",
 		".local/share/zinit",
 		// tmux's plugin manager: .tmux.conf is write-denied above, but the line it runs is
 		// `run ~/.tmux/plugins/tpm/tpm`, and every plugin tpm loads lives beside it.
 		".tmux/plugins",
+		// fzf's stub does two things: prepends ~/.fzf/bin to $PATH and sources
+		// ~/.fzf/shell/*.zsh, so shielding the stub alone leaves the same plant one level
+		// down.
+		".fzf",
 		// The conventional ZDOTDIR, shielded unconditionally beside .config/fish and
 		// .config/nushell. The ZDOTDIR relocation block below cannot cover it: the variable
 		// is set in a zsh startup file, so it exists only inside zsh and bento launched from
@@ -666,8 +709,13 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".config/nsxiv/exec",        // nsxiv key-handler scripts run on keypress
 		".config/pkcs11",            // pkcs11 module configs load shared objects (code)
 		".local/share/applications", // .desktop entries whose Exec= runs on launch
-		".config/menus",             // XDG menu definitions pointing at .desktop entries
-		".gnome/apps",               // legacy GNOME menu entries
+		// A .service file here carries an Exec= the session bus activates on demand, which
+		// is .local/share/applications' surface without even a launch to wait for.
+		".local/share/dbus-1/services",
+		// Extension JS is loaded straight into the compositor process at login.
+		".local/share/gnome-shell/extensions",
+		".config/menus", // XDG menu definitions pointing at .desktop entries
+		".gnome/apps",   // legacy GNOME menu entries
 
 		// Read-only in firejail: config/data trees whose entries run or load code on a later
 		// invocation (an editor rc, an imported library, a browser profile), so a planted
@@ -756,20 +804,28 @@ func Home(home string, alsoHomes ...string) []Rule {
 		".rbenv/shims",
 		".asdf/bin",
 		".asdf/shims",
+		".nodenv/bin",
+		".nodenv/shims",
+		".rvm/bin",
+		".rvm/scripts",                // sourced by the line rvm's installer appends to the rc
 		".opam/default/bin",           // the switch every non-project opam install lands in
 		".ghcup/bin",                  // haskell toolchain shims
+		".cabal/bin",                  // cabal install's target, beside it
 		".volta/bin",                  // volta's node/npm shims
 		".bun/bin",                    // the rest of ~/.bun is an install cache
-		".local/share/mise/shims",     //
+		".local/share/mise/shims",     // mise keeps its installs beside the shims
 		".krew/bin",                   // kubectl plugins, resolved as `kubectl <name>`
 		".dotnet/tools",               // dotnet global tools
 		".config/composer/vendor/bin", // composer global package binaries
-		".foundry/bin",                //
+		".composer/vendor/bin",        // the legacy root, which composer prefers when it exists
+		".foundry/bin",                // forge/cast/anvil
 		".pub-cache/bin",              // dart/flutter global activate
 		".mix/escripts",               // elixir escripts
 		".local/share/pnpm",           // pnpm's global bindir
-		".local/share/gem/ruby/bin",   // the modern per-user gem bindir (.gem is shielded above)
-		".yarn/bin",                   // yarn global add
+		// The per-user gem tree, taken whole the way .gem above is: the bindir under it
+		// carries the ruby ABI version in its name, so no concrete path reaches it.
+		".local/share/gem/ruby",
+		".yarn/bin", // yarn global add
 		".config/yarn/global/node_modules/.bin",
 
 		// Gradle runs every .gradle script in init.d before each build, so a planted file
@@ -1281,7 +1337,8 @@ var credentialAnchorDirs = []string{
 	".git-credential-cache",    // git credential-cache helper socket dir
 	".cache/git/credential",    // modern git credential-cache socket location
 
-	".cert", // NetworkManager / 802.1X / VPN client certificates and private keys
+	".cert",             // NetworkManager / 802.1X / VPN client certificates and private keys
+	".config/borg/keys", // borg repository keys (the repo caches beside them stay readable)
 
 	// Crypto containers: headers, config, and wrapped passphrases. The encrypted and
 	// decrypted home trees themselves are bulk and live in the other bucket.
