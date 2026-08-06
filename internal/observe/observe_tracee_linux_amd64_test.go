@@ -616,10 +616,10 @@ func traceHelper(t *testing.T, mode, dir string, n int) Result {
 }
 
 // Concurrent openers must each be attributed their own pathname. The decoder reads the
-// pathname out of tracee memory at the syscall EXIT stop, by which point every sibling
-// thread has been resumed and stopped again in turn, so a decoder that keys the read on
-// anything but the tid that stopped - or that re-reads a buffer a sibling has since
-// reused - reports one thread's file against another's open. Siblings share an address
+// pathname out of tracee memory at the syscall ENTRY stop, and between one thread's entry
+// and its exit every sibling has been resumed and stopped again in turn, so a decoder
+// that keys the read on anything but the tid that stopped - or that re-reads a buffer a
+// sibling has since reused - reports one thread's file against another's open. Siblings share an address
 // space, so reading the memory through the wrong tid is not the failure mode here;
 // reading the wrong tid's registers is, and so is a stale buffer.
 //
