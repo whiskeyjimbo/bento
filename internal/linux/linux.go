@@ -78,7 +78,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
-		return e.runDegraded(ctx, p, proc, opts.RunID)
+		return e.runDegraded(ctx, p, proc, opts.RunID, opts.AcceptAliasesUnder)
 	}
 
 	report := e.Probe(ctx)
@@ -335,13 +335,9 @@ func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
 // readable there too, and a write grant naming a not-yet-existing directory would be a
 // silent no-op that the convergence loop then never converges on.
 //
-// The degraded tier does not, and that is a real gap rather than a clean exemption: it
-// confines with Landlock, which is path-hierarchy based, so an alias inside a granted
-// tree is readable there for exactly the reason it would be past a shield - Landlock
-// never consults an inode's other names. Nor is it reported: the exposure list can only
-// name built-in shield paths that fall in the visible set, and an arbitrary alias path
-// is not one. So --allow-degraded proceeds where the full tier refuses. It is opt-in and
-// already the weaker tier, which is why this is documented rather than fixed here.
+// The degraded tier does not go through here - it has no bwrap binds to derive its
+// exposure from - but it runs the same alias scan over its own Landlock read/write set
+// through checkAliasedCredentials, so one manifest means one thing on both tiers.
 func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) (preflighted, error) {
 	reads, writes, err := resolveGrants(sb, p)
 	if err != nil {
@@ -364,16 +360,9 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	// is bound too and may sit under the home. An explicit opt-in is honored - those
 	// credentials are dropped from the scan - and a caller who acknowledges a tree keeps
 	// the aliases in it, so this refuses only what nobody asked for.
-	scan, err := aliasedCredentials(sb, exposedPaths(sb, reads, writes), optInPaths(optIns))
+	accepted, err := checkAliasedCredentials(sb, exposedPaths(sb, reads, writes), optInPaths(optIns), acceptAliasesUnder)
 	if err != nil {
 		return preflighted{}, err
-	}
-	refuse, accepted, err := splitAcknowledgedAliases(sb, scan, acceptAliasesUnder)
-	if err != nil {
-		return preflighted{}, err
-	}
-	if len(refuse) > 0 {
-		return preflighted{}, aliasRefusal(refuse, scan.credentials)
 	}
 
 	if err := prepareWriteDirs(p, sb); err != nil {

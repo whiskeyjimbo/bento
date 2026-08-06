@@ -108,7 +108,7 @@ func TestRunIDNamesTheScopeOnTheDegradedTier(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = enforcerUsing(testBento(t)).runDegraded(ctx, p, enforce.Process{}, id)
+		_, _ = enforcerUsing(testBento(t)).runDegraded(ctx, p, enforce.Process{}, id, nil)
 	}()
 
 	path := awaitScope(t, unit)
