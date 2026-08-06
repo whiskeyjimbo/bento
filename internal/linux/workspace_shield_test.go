@@ -141,7 +141,9 @@ func TestSymlinkedCredentialInsideADirectoryShieldIsShielded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a read grant over a home with a symlinked credential must not be refused: %v", err)
 	}
-	if !slices.Contains(args, key) {
-		t.Errorf("the argv shields %v but not %q - the real key is readable under the grant", args, key)
+	// The pair, not just the path: a --ro-bind of the key onto itself would also put the
+	// string in the argv while leaving the real key readable.
+	if i := slices.Index(args, key); i < 3 || args[i-2] != "--ro-bind" || args[i-1] != sb.emptyFile {
+		t.Errorf("the argv does not blank %q with the empty file: %v", key, args)
 	}
 }
