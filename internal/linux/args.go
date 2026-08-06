@@ -144,6 +144,18 @@ type sandbox struct {
 	// seams: the mount scan compares a credential's ancestor directories against what a
 	// mount is attached to, which is one stat per directory, not a walk.
 	statID func(string) (fileID, bool)
+	// workspaceShieldCache memoizes workspaceShields per checkout root for one run.
+	// Every consumer derives the same rules from the same tree - shieldRules, reached
+	// by both denyArgs and createdShields, plus checkWriteNotUnderReadOnlyShield and
+	// checkWorkspaceShieldNotRedirected - and checkGrants runs twice, so N write grants
+	// under one checkout re-walk its .git/modules tree up to six times. Sound because
+	// shields are derived at setup, before the sandbox starts, so nothing can change the
+	// tree between calls within a run; single-goroutine for the same reason.
+	//
+	// Allocated at construction rather than on first use because the sandbox is passed
+	// by value: a map made lazily would live in one copy and be invisible to every other
+	// call site. A test literal leaves it nil, where the walk simply runs each time.
+	workspaceShieldCache map[string][]denylist.Rule
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -821,7 +833,14 @@ func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, dept
 // "write: <repo>" and "write: <repo>/build" shapes.
 func workspaceShields(sb sandbox, dir string) []denylist.Rule {
 	root := checkoutRoot(sb, dir)
-	return append(denylist.Workspace(root), gitDirShields(sb, root)...)
+	if rules, ok := sb.workspaceShieldCache[root]; ok {
+		return rules
+	}
+	rules := slices.Clip(append(denylist.Workspace(root), gitDirShields(sb, root)...))
+	if sb.workspaceShieldCache != nil {
+		sb.workspaceShieldCache[root] = rules
+	}
+	return rules
 }
 
 // checkoutRoot walks up from dir to the nearest directory holding a .git, or returns
