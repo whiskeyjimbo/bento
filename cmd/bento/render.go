@@ -1543,6 +1543,29 @@ func writeAcceptedAliasWarning(w io.Writer, res enforce.Result) {
 	}
 }
 
+// writeChangedAutoExecNotice names the auto-executing files the run changed. These are
+// the surfaces bento deliberately does not shield - an agent doing dependency work has to
+// be able to edit a package.json - so the guarantee is that nothing the run wrote runs on
+// the host before someone could look at it, and this is what says where to look.
+//
+// A notice rather than a warning: changing one is ordinary and expected, and every line
+// here is a place to review, not a boundary that gave way. The list is short by
+// construction (a fixed set of names at each grant root), so it is printed whole.
+//
+// The paths are host-enumerated under a directory the run could write, so they are
+// quoted for the reason the alias and grant blocks are: a filename holding a newline
+// would otherwise print as a line of its own inside the block.
+func writeChangedAutoExecNotice(w io.Writer, res enforce.Result) {
+	if len(res.ChangedAutoExec) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] note: the run changed these files, which run on the host later without")
+	fmt.Fprintln(w, "[bento] being read first - review them before the next build, commit or push:")
+	for _, p := range res.ChangedAutoExec {
+		fmt.Fprintf(w, "[bento]   %q\n", p)
+	}
+}
+
 // verifiedPlatform is the one host bento is verified on. Every other platform either has
 // no backend at all or, on another Linux architecture, builds and probes without anything
 // having confirmed the layers mean there what they mean here.
