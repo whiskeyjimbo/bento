@@ -723,11 +723,47 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// force bwrap to create that path inside a file, or pre-create the target as
 		// a directory the script then cannot write as a file.
 		if sb.isDir(w) {
-			rules = append(rules, denylist.Workspace(w)...)
-			rules = append(rules, gitDirShields(sb, w)...)
+			rules = append(rules, workspaceShields(sb, w)...)
 		}
 	}
 	return rules
+}
+
+// workspaceShields is the code-execution surface of the checkout a write grant lands
+// in: the static Workspace rules plus the git directories discovered under it.
+//
+// The anchor is the enclosing CHECKOUT, not the grant. Anchoring at the grant made the
+// shields relative to whatever the policy happened to spell, so a grant one directory
+// deeper walked out from under every one of them: "write: <repo>/.git" put them at
+// <repo>/.git/.git/hooks and left the real hooks dir under a writable bind with no rule
+// at all, and a planted pre-commit then ran on the host at the developer's next commit -
+// the exact persistence these rules exist to stop, reachable by spelling the grant
+// deeper. Anchoring at the checkout also brings "write: <repo>/.vscode" back under a
+// rule, where checkWriteNotUnderReadOnlyShield refuses it.
+//
+// A grant outside any checkout anchors on itself, and shields above a grant are
+// unreachable, so shieldNeeded skips them and the argv is unchanged for the ordinary
+// "write: <repo>" and "write: <repo>/build" shapes.
+func workspaceShields(sb sandbox, dir string) []denylist.Rule {
+	root := checkoutRoot(sb, dir)
+	return append(denylist.Workspace(root), gitDirShields(sb, root)...)
+}
+
+// checkoutRoot walks up from dir to the nearest directory holding a .git, or returns
+// dir where there is none. The walk is by name only - it never reads .git's content -
+// so a decoy planted under a write grant can at most anchor the shields higher, which
+// adds rules rather than removing them.
+func checkoutRoot(sb sandbox, dir string) string {
+	for d := dir; ; {
+		if sb.exists(filepath.Join(d, ".git")) {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return dir
+		}
+		d = parent
+	}
 }
 
 // gitDirShields discovers, under a write-granted checkout dir, the git directories
@@ -1250,11 +1286,24 @@ func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(gra
 // (~/.cargo/registry, ~/.m2, ~/.gradle) are not shielded, so an ordinary build is
 // unaffected.
 //
-// Only the always-on shields are checked, never the workspace ones: those derive from
-// the write grants themselves (.git/hooks and .vscode under a granted checkout), so
-// refusing a grant that contains them would refuse every project write grant.
+// The workspace shields are checked in the INSIDE direction only. They derive from the
+// write grants themselves, so refusing a grant that CONTAINS one would refuse every
+// project write grant - but a self-derived shield sits strictly under its grant, so that
+// direction never matches here and needs no exemption. What does match is a second grant
+// spelled at or inside one ("write: /proj" plus "write: /proj/.git/hooks"), which was
+// previously neither refused nor honored: prepareWriteDirs creates the directory, then
+// denyArgs ro-binds it after the grant's bind, so every write fails EROFS at runtime
+// while the manifest reports the grant as honored - the same silent-neutering this
+// refusal exists for.
 func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	shields := appliedShields(sb)
+	for _, w := range writes {
+		if sb.isDir(w) {
+			for _, r := range workspaceShields(sb, w) {
+				shields = append(shields, appliedShield{rule: r, resolved: sb.resolve(r.Path)})
+			}
+		}
+	}
 	for _, g := range writes {
 		for _, s := range shields {
 			if s.rule.Deny != denylist.DenyWrite {
@@ -1401,8 +1450,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 		if w == "/" || !sb.isDir(w) {
 			continue
 		}
-		rules := append(denylist.Workspace(w), gitDirShields(sb, w)...)
-		for _, r := range rules {
+		for _, r := range workspaceShields(sb, w) {
 			if real := sb.resolve(r.Path); real != r.Path {
 				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink or grant a narrower directory", w, r.Path, real)
 			}
