@@ -641,12 +641,14 @@ func interpreterPrefix(interp string) string {
 // one place and miss another; appliedShields carries that invariant for the grant
 // checks, which need the rules as denyArgs will really mount them.
 func alwaysShields(sb sandbox) []denylist.Rule {
-	rules := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
-	rules = append(rules, sb.extraDeny...)
+	builtin := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
+	rules := append(slices.Clone(builtin), sb.extraDeny...)
 	// Expanded here rather than in shieldRules so the grant checks see these shields:
 	// a rule only denyArgs knows about is one a policy can name and be silently
 	// overmounted on, which is the asymmetry this function's contract exists to prevent.
-	return append(rules, credentialLinkShields(sb, rules)...)
+	// Expanded over the built-ins only, the same set explicitShieldOptIns expands, so a
+	// shield derived here is always one a policy can opt into.
+	return append(rules, credentialLinkShields(sb, builtin)...)
 }
 
 // credentialLinkShields is the symlinked-credential expansion of a rule set, hoisted so
@@ -656,7 +658,11 @@ func credentialLinkShields(sb sandbox, rules []denylist.Rule) []denylist.Rule {
 	homes := resolvedHomes(sb)
 	var out []denylist.Rule
 	for _, r := range rules {
-		if r.Deny == denylist.DenyAll && r.Dir && r.Holds == denylist.HoldsCredentials {
+		if r.Deny != denylist.DenyAll || !r.Dir {
+			continue
+		}
+		switch r.Holds {
+		case denylist.HoldsCredentials, denylist.HoldsHistory, denylist.HoldsPersistence:
 			out = append(out, shieldedLinks(sb, r, homes, r.Path, 0)...)
 		}
 	}
@@ -768,13 +774,17 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 // real subdirectories only, so a planted link cannot
 // take the walk out of the store or loop it; depth bounds a deep farm as a backstop.
 //
-// Only the credential stores are walked. The private-data stores (a browser profile, a
-// mail store) are hundreds of thousands of files that this would enumerate on every
-// launch, which is the same reason the alias scan does not anchor on them - and a .git
-// inside a store (~/.password-store is one by design) is skipped for the reason
+// The private-data stores are the one group not walked: a browser profile or a mail
+// store is hundreds of thousands of files to enumerate on every launch, which is the same
+// reason the alias scan does not anchor on them. The rest are small and are all real farm
+// targets - a stowed ~/.config/i3 or ~/.config/systemd is as ordinary as a stowed ~/.ssh.
+// A .git inside a store (~/.password-store is one by design) is skipped for the reason
 // hostFileIDs skips it: content-addressed blobs, no credential names.
 func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, depth int) []denylist.Rule {
 	if depth > maxGitdirDepth || !sb.isDir(dir) {
+		return nil
+	}
+	if filepath.Base(dir) == ".git" {
 		return nil
 	}
 	names, links, ok := sb.listDir(dir)
@@ -784,9 +794,6 @@ func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, dept
 		return nil
 	}
 	var out []denylist.Rule
-	if filepath.Base(dir) == ".git" {
-		return nil
-	}
 	for _, name := range links {
 		p := filepath.Join(dir, name)
 		rp, ok := shieldTarget(sb, p, homes)
