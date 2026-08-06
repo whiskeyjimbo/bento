@@ -925,8 +925,6 @@ func Home(home string) []Rule {
 		".gradle/init.d",
 	}
 
-	locations := func(entry string) []location { return homeLocations(home, entry) }
-
 	// The same buckets as dirGroups, for the stores that are genuinely one file. Keyed
 	// per group rather than stamped HoldsCredentials wholesale, so that a shell history
 	// reads as a history store here and not just where an env var relocates it.
@@ -947,10 +945,8 @@ func Home(home string) []Rule {
 	}
 	rules := make([]Rule, 0, nFiles+len(writeOnly)+len(writeOnlyDirs))
 	emit := func(entry string, r Rule) {
-		for _, l := range locations(entry) {
-			r.Path, r.Source = l.path, l.source
-			rules = append(rules, r)
-		}
+		r.Path = filepath.Join(home, entry)
+		rules = append(rules, r)
 	}
 	for _, g := range dirGroups {
 		for _, d := range g.dirs {
@@ -1002,6 +998,46 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			}
 		}
 		return false
+	}
+
+	// A relocated XDG base moves a whole class of entries at once, so it is derived from
+	// the defaults rather than from a list of its own: every rule Home placed under an
+	// anchor's .config/ (etc.) is restated at the base's target. Both copies stand - a
+	// tool that honors the variable reads from the target, one that ignores it from the
+	// default.
+	//
+	// The target does not depend on the anchor, so the whole anchor set collapses onto one
+	// rule per entry; seen drops the copies the per-anchor defaults would otherwise
+	// contribute. It runs before the blocks below because those rules were part of
+	// defaults when Home emitted them, and covered() must still see them.
+	seen := map[string]bool{}
+	for _, d := range defaults {
+		for _, h := range anchors {
+			rel, ok := strings.CutPrefix(d.Path, h+string(filepath.Separator))
+			if !ok {
+				continue
+			}
+			for _, b := range xdgBases {
+				sub, ok := strings.CutPrefix(rel, b.prefix)
+				if !ok {
+					continue
+				}
+				// A relative base is invalid per the spec and ignored by conforming tools,
+				// which fall back to the default location - already shielded by Home.
+				base := os.Getenv(b.env)
+				if base == "" || !filepath.IsAbs(base) || isDefault(filepath.Clean(base), b.def) {
+					continue
+				}
+				p := filepath.Join(base, sub)
+				if seen[p] {
+					continue
+				}
+				seen[p] = true
+				r := d
+				r.Path, r.Source = p, b.env
+				rules = append(rules, r)
+			}
+		}
 	}
 
 	// A tool-specific env var can move a whole credential directory off its default
