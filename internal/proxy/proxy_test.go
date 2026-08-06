@@ -141,7 +141,7 @@ func (l *flakyListener) failed() int {
 // CONNECT would meet a dead socket rather than an allowlist decision - the run's egress
 // silently unenforced-by-absence for its whole remaining lifetime.
 func TestServeSurvivesATransientAcceptError(t *testing.T) {
-	for _, errno := range []syscall.Errno{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED} {
+	for _, errno := range []syscall.Errno{syscall.ENFILE, syscall.EMFILE, syscall.ECONNABORTED, syscall.ENOMEM, syscall.ENOBUFS} {
 		dir := t.TempDir()
 		sock := dir + "/proxy.sock"
 		base, err := net.Listen("unix", sock)
