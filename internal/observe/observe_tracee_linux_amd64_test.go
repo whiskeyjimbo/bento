@@ -45,6 +45,7 @@ import (
 //	killedprobes SIGKILLs a probeforever child mid-probe and outlives its whole drain.
 //	probeforever N threads probe a path in a loop and never stop; started by the two above.
 //	enosysprobe N faccessat2 probes of an existing path, under a filter answering ENOSYS.
+//	refusedprobe N getxattr probes refused with ENODATA on a path that exists.
 //	widelen    connect(2) to a unix socket with the high half of addrlen set.
 func TestObserveTraceeHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_OBSERVE_TRACEE")
@@ -317,6 +318,29 @@ func TestObserveTraceeHelper(t *testing.T) {
 				uintptr(unsafe.Pointer(path)), unix.F_OK, 0, 0, 0); errno != syscall.ENOSYS {
 				fmt.Fprintln(os.Stderr, "TRACEE_FACCESSAT2_ERRNO", errno)
 				os.Exit(13)
+			}
+		}
+	case "refusedprobe":
+		// A path-existence syscall refused on a path that EXISTS. getxattr answers ENODATA
+		// for a file carrying no such attribute, which is the ordinary answer rather than
+		// an error, and needs no privilege to provoke - unlike the EACCES and ELOOP shapes
+		// of the same class.
+		path, err := syscall.BytePtrFromString(filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), probeName))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(15)
+		}
+		attr, err := syscall.BytePtrFromString("user.bento-absent")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_ATTR_ERR", err)
+			os.Exit(15)
+		}
+		var buf [1]byte
+		for range n {
+			if _, _, errno := syscall.Syscall6(unix.SYS_GETXATTR, uintptr(unsafe.Pointer(path)),
+				uintptr(unsafe.Pointer(attr)), uintptr(unsafe.Pointer(&buf[0])), 1, 0, 0); errno != syscall.ENODATA {
+				fmt.Fprintln(os.Stderr, "TRACEE_GETXATTR_ERRNO", errno)
+				os.Exit(15)
 			}
 		}
 	case "widelen":
@@ -1131,9 +1155,9 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 // run never touched appearing in it is the failure that matters.
 //
 // plantDecoyName is what makes the assertion airtight rather than statistical: it does not
-// exist, the existence syscalls are recorded only when the call succeeded, and a stat of a
-// path that is not there cannot succeed. There is no legitimate route by which it can be
-// recorded.
+// exist, the existence syscalls are dropped when the call answers ENOENT, and a stat of a
+// path that is not there answers exactly that. There is no legitimate route by which it can
+// be recorded.
 //
 // The real path is asserted present in the same run, because an observer that stopped
 // recording existence syscalls altogether would satisfy the decoy half perfectly.
@@ -1205,6 +1229,29 @@ func TestTraceDoesNotCountARealENOSYSProbeAsALostAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := traceHelper(t, "enosysprobe", dir, probes)
+	if res.Dropped != 0 {
+		t.Errorf("Dropped = %d after %d probes that lost nothing; want 0", res.Dropped, probes)
+	}
+}
+
+// A probe REFUSED on a path that exists must reach the manifest. Only ENOENT and ENOTDIR
+// answer that nothing is there; every other failure is a file the sandbox has to bind, and
+// dropping the path on the bare sign of the return value left it out of the manifest with
+// Dropped reporting no loss at all - so the enforced run answers ENOENT where the profiling
+// run answered ENODATA, and the target takes a different branch. getxattr's ENODATA is the
+// shape that needs no privilege; EACCES, ELOOP and name_to_handle_at's EOVERFLOW are the
+// same class.
+func TestTraceRecordsAProbeRefusedOnAnExistingPath(t *testing.T) {
+	const probes = 4
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, probeName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := traceHelper(t, "refusedprobe", dir, probes)
+	want := filepath.Join(dir, probeName)
+	if !slices.ContainsFunc(res.Accesses, func(a Access) bool { return a.Path == want }) {
+		t.Errorf("no access recorded for %q after %d getxattr probes refused with ENODATA; accesses: %v", want, probes, res.Accesses)
+	}
 	if res.Dropped != 0 {
 		t.Errorf("Dropped = %d after %d probes that lost nothing; want 0", res.Dropped, probes)
 	}
