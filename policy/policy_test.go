@@ -168,6 +168,10 @@ func TestValidateRejects(t *testing.T) {
 		{"memory with surrounding space", func(p *Policy) { p.Limits = Limits{Memory: " 128M "} }, "limits.memory"},
 		{"memory with inner space", func(p *Policy) { p.Limits = Limits{Memory: "128 M"} }, "limits.memory"},
 		{"unparseable memory", func(p *Policy) { p.Limits = Limits{Memory: "lots"} }, "limits.memory"},
+		// systemd applies MemoryMax=0 faithfully and the run is then OOM-killed before the
+		// target starts, reported as a host that could not apply the limits.
+		{"memory zero", func(p *Policy) { p.Limits = Limits{Memory: "0"} }, "is zero"},
+		{"memory zero with a suffix", func(p *Policy) { p.Limits = Limits{Memory: "0M"} }, "is zero"},
 		// An empty grant renders as "read: []" in the validate summary but resolves to
 		// the working directory in the enforcer, so it reads as no grant and is not one.
 		{"empty read grant", func(p *Policy) { p.Read = []string{""} }, "read[0] is empty"},

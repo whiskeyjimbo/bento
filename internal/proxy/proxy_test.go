@@ -375,7 +375,7 @@ func TestUntunneledRequestIsReportedWhileProfiling(t *testing.T) {
 // spelling while guardUpstream sees the resolved one, so the two layers would
 // judge different ports on the same connection.
 func TestReadConnectRejectsNonCanonicalPort(t *testing.T) {
-	for _, target := range []string{"example.com:08080", "example.com:0x1f90", "example.com:", "example.com:65536", "example.com:000443"} {
+	for _, target := range []string{"example.com:08080", "example.com:0x1f90", "example.com:", "example.com:65536", "example.com:000443", "example.com:0"} {
 		client, server := net.Pipe()
 		go func() {
 			fmt.Fprintf(client, "CONNECT %s HTTP/1.1\r\n\r\n", target)

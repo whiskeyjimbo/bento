@@ -624,8 +624,16 @@ func (l Limits) validate() error {
 		}
 	}
 	if l.Memory != "" {
-		if _, err := parseBytes(l.Memory); err != nil {
+		n, err := parseBytes(l.Memory)
+		if err != nil {
 			return fmt.Errorf("policy: limits.memory: %w", err)
+		}
+		// Rejected here for the reason limits.cpu rejects "0%": systemd applies MemoryMax=0
+		// exactly as asked, the preflight's /bin/true is then OOM-killed, and the run fails
+		// saying systemd could not apply the limits - which is untrue and sends the author
+		// looking at their host instead of at this line.
+		if n == 0 {
+			return fmt.Errorf("policy: limits.memory %q is zero; a run needs some memory to start (omit limits.memory for no cap)", l.Memory)
 		}
 	}
 	return nil
