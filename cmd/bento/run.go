@@ -162,16 +162,19 @@ func newRunCmd() *cobra.Command {
 // target runs is the whole point.
 //
 // The lock orders the writes but does not order them against the end of the run, and the
-// terminal object being last is a contract a consumer reads the stream by. That rests on
-// the backends running the target through exec.Cmd.Run with these writers and no
-// WaitDelay set, which makes Wait block until both copy goroutines have finished - so no
-// pump is live by the time the outcome is emitted. Setting WaitDelay there (the usual fix
-// for an orphaned grandchild holding the pipe open) would let a chunk land after the
-// outcome. Nothing but ordering breaks, so the race detector would not see it.
+// terminal object being last is a contract a consumer reads the stream by. A backend that
+// runs the target through exec.Cmd.Run with no WaitDelay set gets that for free - Wait
+// blocks until both copy goroutines have finished, so no pump is live by the time the
+// outcome is emitted. The degraded tier does set WaitDelay (the usual fix for an orphaned
+// grandchild holding the pipe open), which leaves a pump live and would otherwise let a
+// chunk land after the outcome; nothing but ordering breaks there, so the race detector
+// would not see it. So the terminal object seals the stream instead, and the contract
+// holds whatever the backend does.
 type eventStream struct {
-	mu  sync.Mutex
-	enc *json.Encoder
-	err error
+	mu     sync.Mutex
+	enc    *json.Encoder
+	err    error
+	sealed bool
 }
 
 func newEventStream(w io.Writer) *eventStream {
@@ -191,10 +194,24 @@ func newEventStream(w io.Writer) *eventStream {
 func (e *eventStream) emit(v any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.err != nil {
+	if e.err != nil || e.sealed {
 		return
 	}
 	e.err = e.enc.Encode(v)
+}
+
+// emitTerminal writes the object that ends the stream and closes it to everything after,
+// so the terminal-object-last contract holds even where a pump is still live - a
+// descendant the target leaked still holding the pipe when the degraded tier's WaitDelay
+// expired. What that pump writes next is dropped: it arrived after the target exited and
+// after the grace period, and a consumer that has already read the outcome cannot use it.
+// A truncation the drop causes is not reported the way a write error is, because the last
+// chunk can arrive after failed() has been read.
+func (e *eventStream) emitTerminal(v any) {
+	e.emit(v)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sealed = true
 }
 
 // failed reports the first write error the stream hit, if any. Everything after it is
@@ -259,7 +276,7 @@ func refuseStreamJSON(stdout io.Writer, asJSON bool, err error) error {
 		return err
 	}
 	reason, report := refusalDetail(err)
-	newEventStream(stdout).emit(streamRefusalJSON{"refusal", reason, report})
+	newEventStream(stdout).emitTerminal(streamRefusalJSON{"refusal", reason, report})
 	return &exitError{code: bentoFailed}
 }
 
@@ -309,7 +326,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emit(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report)})
+	stream.emitTerminal(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report)})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -351,7 +368,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
-			stream.emit(streamRefusalJSON{"refusal", refusal.Reason, toReportJSON(refusal.Report)})
+			stream.emitTerminal(streamRefusalJSON{"refusal", refusal.Reason, toReportJSON(refusal.Report)})
 			return reportStreamed(stderr, stream, bentoFailed)
 		}
 		// Rendered here rather than returned to main's generic printer: the shortfall
@@ -368,7 +385,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 	}
 
 	if asJSON {
-		stream.emit(struct {
+		stream.emitTerminal(struct {
 			// Event is "verdict", the last object on the stream and the only one that
 			// carries an outcome. See eventStream for the others.
 			Event    string `json:"event"`
