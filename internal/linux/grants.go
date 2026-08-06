@@ -97,6 +97,11 @@ func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []strin
 			return grantrefusal.InsideCallerShield(g, r.Path)
 		case shield.InsideShield:
 			return refuse(g, r.Path)
+		case shield.FoldedShield:
+			// One sentence for both kinds, unlike the two above: the exposure is a read of
+			// the store under another spelling, which a read grant reaches on its own, so
+			// there is no write-specific remedy to word differently.
+			return grantrefusal.FoldedShield(g, r.Path)
 		}
 	}
 	return nil

@@ -41,6 +41,11 @@ type FS struct {
 	// Resolve follows a path's symlinks, including through components that do not exist
 	// yet, and returns the path unchanged where it cannot.
 	Resolve func(string) string
+	// SameFile reports whether two paths name the same host file. It answers one
+	// question the other seams cannot: whether the directory holding a shield folds
+	// case, which decides whether a byte-exact bind is enough to contain it. Neither
+	// path needs to exist; a path that does not is the same file as nothing.
+	SameFile func(a, b string) bool
 	// ListDir returns a directory's immediate children, split into real subdirectories
 	// the scan may descend into and symlinked entries it may not, plus whether it was
 	// read at all. ok false means the directory could not be enumerated, which is not the
@@ -54,10 +59,25 @@ type FS struct {
 // seams instead, which are this same behavior with the fakes its tests inject.
 func Host() FS {
 	return FS{
-		IsDir:   hostIsDir,
-		Resolve: pathresolve.Existing,
-		ListDir: hostListDir,
+		IsDir:    hostIsDir,
+		Resolve:  pathresolve.Existing,
+		ListDir:  hostListDir,
+		SameFile: hostSameFile,
 	}
+}
+
+// hostSameFile compares identity without following a final symlink: the shield binds at
+// the name, so a link and its target are two paths a grant reaches separately, not one.
+func hostSameFile(a, b string) bool {
+	fa, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Lstat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 func hostIsDir(path string) bool {

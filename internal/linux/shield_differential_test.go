@@ -51,6 +51,7 @@ func corpusSandbox(home string) sandbox {
 		isDir:      hostIsDir,
 		resolve:    hostResolve,
 		listDir:    hostListDir,
+		statID:     hostStatIDOK,
 		// Allocated per sandbox for the reason newSandbox allocates them: the value is
 		// copied at every call, so a nil map here would be a memo no caller shares.
 		workspaceShieldCache: map[string][]denylist.Rule{},
