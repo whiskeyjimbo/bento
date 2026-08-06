@@ -2,9 +2,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/whiskeyjimbo/bento/backend"
 )
@@ -52,11 +55,27 @@ func main() {
 	// parsing; a normal invocation falls through and returns here.
 	backend.DispatchReexec()
 
-	// ExecuteC rather than Execute: a usage error is raised against the command the user
-	// was trying to reach, and that command is the only thing that knows how it should
-	// have been called.
+	// Ctrl-C, or a supervisor's SIGTERM, must not default-terminate this process. Every
+	// artifact a run leaves on the host is removed by a deferred call - the run directory
+	// holding the proxy socket, and the mount points bwrap created in the user's own
+	// write-granted tree for paths that did not exist yet - and a default-terminated bento
+	// runs none of them, so every aborted run adds more. Cancelling the command's context
+	// instead kills the sandbox and lets that cleanup happen.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Handling is released the moment the first signal lands, so a second one takes the
+	// default action: cleanup is not instant (the proxy waits for its in-flight handlers)
+	// and the user must not be left with a process that ignores Ctrl-C.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
+	// ExecuteContextC rather than ExecuteContext: a usage error is raised against the
+	// command the user was trying to reach, and that command is the only thing that knows
+	// how it should have been called.
 	root := newRootCmd()
-	cmd, err := root.ExecuteC()
+	cmd, err := root.ExecuteContextC(ctx)
 	if err == nil {
 		return
 	}
