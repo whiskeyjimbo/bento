@@ -162,6 +162,33 @@ type sandbox struct {
 	// by value: a map made lazily would live in one copy and be invisible to every other
 	// call site. A test literal leaves it nil, where the walk simply runs each time.
 	workspaceShieldCache map[string][]denylist.Rule
+	// credentialLinkCache memoizes the symlinked-credential expansion for one run.
+	// credentialLinkShields walks every DenyAll credential/history/persistence store on the
+	// host - isDir/listDir/resolve per entry - and alwaysShields is reached roughly ten
+	// times per compile: shieldRules from both denyArgs and createdShields, appliedShields
+	// from each grant check with checkGrants running twice, plus the alias scan, the
+	// degraded tier and the launch path. Bounded trees, but ten enumerations of them on a
+	// cold cache or an NFS home is launch latency for nothing.
+	//
+	// Unkeyed, unlike workspaceShieldCache: the input is the built-in rule set, which is
+	// derived from sb.homes and sb.runtimeDir alone and is therefore identical on every
+	// call. What makes it sound for the whole run is that the walk descends only inside
+	// DenyAll stores, where a write grant is refused outright - so prepareWriteDirs' mid-run
+	// mkdir of the granted write directories cannot reach one, let alone plant a symlink in
+	// it. Single-goroutine: shields are derived before the sandbox starts.
+	//
+	// A pointer allocated at construction rather than a value, because the sandbox is passed
+	// by value: a memo written into one copy would be invisible to every other call site. A
+	// test literal leaves it nil, where the walk simply runs each time.
+	credentialLinkCache *credentialLinkMemo
+}
+
+// credentialLinkMemo is one run's symlinked-credential expansion. done is carried apart
+// from the rules because the ordinary host keeps no dotfile farm at all: an empty result
+// is the answer, not a miss, and without the flag that host would re-walk every time.
+type credentialLinkMemo struct {
+	done  bool
+	rules []denylist.Rule
 }
 
 // Fixed in-sandbox paths for the egress bridge. The sandbox filesystem is ours,
@@ -663,6 +690,9 @@ func alwaysShields(sb sandbox) []denylist.Rule {
 // the opt-in machinery expands the same way the shields do: a shield a policy cannot opt
 // into is one it can only be refused over.
 func credentialLinkShields(sb sandbox, rules []denylist.Rule) []denylist.Rule {
+	if m := sb.credentialLinkCache; m != nil && m.done {
+		return m.rules
+	}
 	homes := resolvedHomes(sb)
 	var out []denylist.Rule
 	for _, r := range rules {
@@ -673,6 +703,9 @@ func credentialLinkShields(sb sandbox, rules []denylist.Rule) []denylist.Rule {
 		case denylist.HoldsCredentials, denylist.HoldsHistory, denylist.HoldsPersistence:
 			out = append(out, shieldedLinks(sb, r, homes, r.Path, 0)...)
 		}
+	}
+	if m := sb.credentialLinkCache; m != nil {
+		m.done, m.rules = true, out
 	}
 	return out
 }
@@ -789,6 +822,11 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 // targets - a stowed ~/.config/i3 or ~/.config/systemd is as ordinary as a stowed ~/.ssh.
 // A .git inside a store (~/.password-store is one by design) is skipped for the reason
 // hostFileIDs skips it: content-addressed blobs, no credential names.
+//
+// Opting into the STORE (read: ~/.ssh) lifts the store's own shield but not these, since
+// each is a rule at its own path: the store then reads inside the sandbox as a set of
+// dangling links. That is the conservative answer and it is silent, which on a farm host
+// is a surprise - the remedy is to name the target, which is honored and warns.
 func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, depth int) []denylist.Rule {
 	if depth > maxGitdirDepth || !sb.isDir(dir) {
 		return nil
@@ -813,6 +851,14 @@ func shieldedLinks(sb sandbox, r denylist.Rule, homes []string, dir string, dept
 			// and shielding one of those refuses a policy that has nothing to do with a
 			// credential. The residual is a farm kept outside the home (/opt/dotfiles),
 			// which stays unshielded.
+			//
+			// Deliberate, not pending: dropping the restriction shields whatever a
+			// credential store happens to link to, and "a credential store links to it" is
+			// not evidence a path holds a credential - a chain hop through ~/.ssh to a
+			// granted temp file is the ordinary counterexample. The discriminators that
+			// would separate the two either read the policy's grants, which alwaysShields
+			// must not do, or guess at farm layout. Name the target in a read grant to
+			// reach it; it is shielded at its own path and warns.
 			continue
 		}
 		out = append(out, denylist.Rule{Path: rp, Deny: denylist.DenyAll, Dir: sb.isDir(rp), Holds: r.Holds, Source: r.Source})
