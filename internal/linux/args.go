@@ -263,7 +263,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	}
 
 	// The deny-list goes after the grants so it always wins - except for a shield the
-	// policy explicitly opts into (yz3.2), which denyArgs skips so the grant above binds.
+	// policy explicitly opts into, which denyArgs skips so the grant above binds.
 	//
 	// Two binds do follow it, below: the entrypoint and the interpreter. They are the
 	// file the run was asked to execute and the binary that executes it, so a shield
@@ -431,8 +431,9 @@ var sandboxWritableMounts = []string{"/tmp", "/dev", "/proc"}
 // The --cap-drop drops the whole capability bounding set. The read-only shields (DenyWrite
 // credentials, the re-bound entrypoint/interpreter) are plain --ro-bind mounts; nothing in
 // bento's own layers stops the target from calling mount(MS_REMOUNT|MS_BIND) to clear their
-// read-only flag - the exec filter blocks only execve/execveat, Landlock has no mount hook,
-// and the cross-process block is degraded-tier only. What stops that remount is the target
+// read-only flag - the exec filter blocks execve and leaves execveat open by construction,
+// Landlock has no mount hook, and the cross-process block is degraded-tier only. What
+// stops that remount is the target
 // having no CAP_SYS_ADMIN plus the kernel's mount-lock on the read-only bind. Unprivileged
 // bwrap already yields an empty bounding set, but requesting it explicitly makes the reliance
 // bento's own (robust to a setuid bwrap or a stray --cap-add) rather than an unstated bwrap
@@ -1196,7 +1197,7 @@ func removeCreatedShields(dirs, files []string) {
 // shield over a path whose parent is read-only - which it cannot do - for paths
 // that are not actually a threat there.
 func shieldNeeded(r denylist.Rule, sb sandbox, grants, writes, optIns []string) bool {
-	// An exact opt-in grant (yz3.2) wins over the shield: skip it so the grant binds
+	// An exact opt-in grant wins over the shield: skip it so the grant binds
 	// the real content instead of being overmounted. r.Path is already resolved by the
 	// caller, matching the resolved paths in optIns. Only DenyAll shields are opt-in-able:
 	// the opt-in is a READ escape, and a DenyWrite shield's content is readable already,
@@ -1385,7 +1386,7 @@ func checkNotShielded(sb sandbox, grants, optInShields []string, refuse func(gra
 // logic: both tiers share it, so --allow-degraded cannot accept what the full tier only
 // pretended to honor.
 //
-// There is deliberately no opt-in, unlike the DenyAll shields. That escape (yz3.2) is
+// There is deliberately no opt-in, unlike the DenyAll shields. That escape is
 // READ-only by construction - explicitShieldOptIns takes the policy's reads, and a write
 // grant to a shielded store is the key-planting threat the deny-list exists to stop. A
 // DenyWrite shield is nothing BUT that write surface: its whole content is readable

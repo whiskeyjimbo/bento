@@ -16,8 +16,9 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
-// Resource limits are enforced by running bwrap inside a transient systemd user
-// scope with the limits set as scope properties.
+// Resource limits are enforced by running the tier's own top-level command - bwrap on
+// the full tier, the bento launcher on the degraded one - inside a transient systemd
+// user scope with the limits set as scope properties.
 //
 // Direct cgroup-v2 writes are the theoretically cleaner path, but on a normal
 // login session the process's own cgroup is a session scope that systemd does

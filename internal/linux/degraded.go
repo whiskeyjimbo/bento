@@ -259,8 +259,8 @@ func killProcessGroup(p *os.Process) error {
 // policy: the FHS interpreter/library/CA locations (systemReadPaths), the Nix store
 // when present (on NixOS the interpreter and its whole library closure live there,
 // so the bwrap tier binds it and this tier must grant it), and the device nodes a
-// runtime opens to initialize - /dev/urandom for entropy, /dev/null and /dev/zero
-// for the usual stream sinks. These are read-only except /dev/null, which is
+// runtime opens to initialize - /dev/urandom and /dev/random for entropy, /dev/null and
+// /dev/zero for the usual stream sinks. These are read-only except /dev/null, which is
 // read-write. They are host paths, not a fresh /dev: another cost of having no mount
 // namespace, and part of why the tier is materially weaker.
 //

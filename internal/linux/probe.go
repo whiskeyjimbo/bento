@@ -85,8 +85,8 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// Default Unavailable, not the zero value (Enforced): cpuState is measured only when
 	// a scope is creatable, and a host whose cpu delegation was never measured must not
 	// report the cpu limit as enforced - admission would then admit an unenforceable
-	// CPUQuota. Today limitsLayers reads this only on the same nsOK && scopeOK path, so
-	// the default is belt-and-suspenders against that coupling drifting.
+	// CPUQuota. limitsLayers emits LayerLimitsCPU only on that same scopeOK branch today,
+	// so the default is belt-and-suspenders against that coupling drifting.
 	cpuState := enforce.Unavailable
 	var cpuReason string
 	if scopeOK {
@@ -172,7 +172,7 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 //     Landlock-only degraded tier - path
 //     read/write/exec rules and nothing else. No mount namespace means no rootfs, no
 //     hidden /proc, and critically no deny-list binds, so it is materially weaker
-//     than the full sandbox, not the same thing by another mechanism (design 6.2).
+//     than the full sandbox, not the same thing by another mechanism.
 //   - neither: nothing confines the filesystem, so the layer is unavailable and a
 //     run refuses outright rather than offering a degraded mode that enforces nothing.
 //   - the probe could not answer: unavailable, never degraded. Substituting the weaker

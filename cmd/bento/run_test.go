@@ -790,7 +790,7 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 
 // A refusal raised before enforce.Run was ever reached - a bad --env, an unparseable
 // or unapproved manifest - used to return bare, leaving --json's stdout empty so jq
-// could not tell a refusal from a crash (bv2-w4n5). It must produce the SAME refusal
+// could not tell a refusal from a crash. It must produce the SAME refusal
 // envelope the enforcement layer's own refusals produce, not a fourth shape. This is
 // profile's shape; run answers the same case with a refusal event, see
 // TestRefuseStreamJSONEndsTheStreamWithARefusal.

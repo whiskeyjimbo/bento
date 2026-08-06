@@ -332,10 +332,13 @@ func contentShapes(path string, maxSize int64) ([]string, bool) {
 	defer f.Close()
 
 	// The head is read whole and split here rather than scanned. A bufio.Scanner gives up on
-	// a line longer than its buffer and reports it only through Err(), so a config written
-	// as one long line - minified JSON, a generated toml - would look identical to a clean
-	// file. maxSize bounds the read either way, so splitting costs the same and has no
-	// give-up path to forget to check.
+	// a line longer than its buffer and reports it only through Err(), so a file with no
+	// newline in its first 64KB - a PEM body written unwrapped, a generated single-line
+	// config - would look identical to a clean one. Here that file arrives as one long
+	// line and is still shape-tested. maxSize bounds the read either way, so splitting
+	// costs the same and has no give-up path to forget to check. (Minified JSON is not the
+	// case this rescues: the sniff reads only the first separator on a line, which there is
+	// the JSON one - see TestTokenAssignmentReadsOnlyTheFirstSeparator.)
 	// A read that failed partway still returns the bytes it got, and those are shape-tested
 	// rather than discarded: a file this hunt has already decided to open is a candidate,
 	// and dropping a PEM header that was read because the read later hit an I/O error is

@@ -50,7 +50,7 @@ func stamped(t *testing.T, path string) *manifest.Document {
 
 // The whole point of the journal: after a real approve, a re-approval of the same manifest
 // can name the grant that was added rather than telling the reader to re-read everything.
-// This is bv2-49sm's edit-run-fail loop.
+// This is the edit-run-fail loop.
 func TestReapprovalNamesTheChangedGrants(t *testing.T) {
 	stateHome(t)
 	before := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}

@@ -381,7 +381,7 @@ func execRound(*policy.Policy) (*policy.Policy, error) {
 }
 
 // exec: all lets the target spawn anything the rest of the policy permits, so it is a
-// grant like any other and must pass through the prompt. Before bv2-0exv one observed
+// grant like any other and must pass through the prompt. One observed
 // exec put exec: all in the stamped manifest even if the reviewer declined everything.
 func TestConvergeExecNeedsConsent(t *testing.T) {
 	cases := map[string]struct {
@@ -451,8 +451,8 @@ func TestMergeExecRespectsTheSessionAnswer(t *testing.T) {
 }
 
 // converge must say why it stopped, so profile can exit nonzero over a manifest built
-// from a session the user never finished rather than let `profile && approve` stamp it
-// (bv2-w4n5). A quit and a hit round cap are both "not converged".
+// from a session the user never finished rather than let `profile && approve` stamp it.
+// A quit and a hit round cap are both "not converged".
 func TestConvergeReportsWhyItStopped(t *testing.T) {
 	prompt := newGrantPrompter(strings.NewReader("y\ny\ny\n"), io.Discard)
 	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard); err != nil || stop != convergeDone {
