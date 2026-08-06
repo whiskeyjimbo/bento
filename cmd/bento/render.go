@@ -1685,13 +1685,7 @@ func writeRelocatedShields(w io.Writer) {
 		if r.Source == "" {
 			continue
 		}
-		// An XDG base relocates entry by entry inside Home, which runs once per anchor, so
-		// a two-anchor host derives the same absolute path twice and would otherwise
-		// report it as two shields. (The tool-specific relocations come from Relocated,
-		// which already runs once over the whole anchor set.)
-		if !slices.Contains(paths[r.Source], r.Path) {
-			paths[r.Source] = append(paths[r.Source], r.Path)
-		}
+		paths[r.Source] = append(paths[r.Source], r.Path)
 	}
 	if len(paths) == 0 {
 		return

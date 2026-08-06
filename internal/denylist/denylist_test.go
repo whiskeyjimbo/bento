@@ -618,6 +618,9 @@ func TestRelocatedEmitsOneRulePerVariableAcrossAnchors(t *testing.T) {
 	t.Setenv("GNUPGHOME", "/srv/keys")
 	t.Setenv("HISTFILE", "/srv/hist")
 	t.Setenv("ZDOTDIR", "/srv/zsh")
+	// An XDG base relocates a whole class of entries at once, and its target does not
+	// depend on the anchor either.
+	t.Setenv("XDG_CONFIG_HOME", "/srv/cfg")
 
 	counts := map[string]int{}
 	for _, r := range allRules("/home/a", "/home/b") {
@@ -625,7 +628,7 @@ func TestRelocatedEmitsOneRulePerVariableAcrossAnchors(t *testing.T) {
 			counts[r.Path]++
 		}
 	}
-	for _, p := range []string{"/srv/keys", "/srv/hist", "/srv/zsh/.zshrc"} {
+	for _, p := range []string{"/srv/keys", "/srv/hist", "/srv/zsh/.zshrc", "/srv/cfg/gh"} {
 		if counts[p] != 1 {
 			t.Errorf("shield at %q emitted %d times, want 1", p, counts[p])
 		}
@@ -640,6 +643,7 @@ func TestRelocationOntoASiblingAnchorDefaultIsNotStampedWithASource(t *testing.T
 	t.Setenv("GNUPGHOME", "/home/b/.gnupg")
 	t.Setenv("CARGO_HOME", "/home/b/.cargo")
 	t.Setenv("INPUTRC", "/home/b/.inputrc")
+	t.Setenv("XDG_CONFIG_HOME", "/home/b/.config")
 
 	for _, r := range allRules("/home/a", "/home/b") {
 		if r.Source != "" && strings.HasPrefix(r.Path, "/home/b/") {
