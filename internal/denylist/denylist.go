@@ -697,15 +697,19 @@ func Home(home string) []Rule {
 		// it), and `yes` auto-answers the trust prompt - so shielding the record alone
 		// leaves a bounded-looking shield that is not.
 		//
-		// Taken as whole directories rather than trusted-configs/ and config.toml: the
-		// record is one file among several state files today, and the settings live in
-		// either config.toml or settings.toml. Reads stay allowed, so mise still resolves
-		// tools in-sandbox.
+		// The record is the trusted-configs directory rather than the state tree around
+		// it, which is the ~/.m2 and ~/.gradle line: mise writes a symlink under
+		// state/tracked-configs on every ordinary `mise x` or `mise install`, and a
+		// DenyWrite shield has no opt-out, so taking the tree makes every in-sandbox mise
+		// invocation warn twice about a directory it cannot create. It degrades rather
+		// than failing, which is exactly why it is not worth the noise: tracked-configs
+		// grants no trust. The config directory IS taken whole, because both spellings
+		// mise reads settings from (config.toml and settings.toml) carry the bypass.
 		//
 		// Residual: MISE_TRUSTED_CONFIG_PATHS carries the same bypass as a value rather
 		// than a path, so there is nothing to shield - but it is the host's own
 		// environment granting the trust, not something a sandboxed run can plant.
-		".local/state/mise",
+		".local/state/mise/trusted-configs",
 		".config/mise",
 		// pre-commit clones each hook repo here and the installed .git/hooks/pre-commit
 		// executes it on the host at the developer's next commit. The hook entry point is
@@ -1228,8 +1232,10 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	}
 	// The write-shielded directories a tool-specific variable relocates. addWriteShield is
 	// the wrong emitter here - it produces a file rule, which would bind an empty file over
-	// a directory and leave every entry beside it plantable. Same guards otherwise, and
-	// last so a DenyAll target from any block above already sits in covered().
+	// a directory and leave every entry beside it plantable. Same guards otherwise,
+	// /dev/null included (nothing is plantable in a device node, and the degraded tier
+	// enforces the rule it would otherwise emit), and last so a DenyAll target from any
+	// block above already sits in covered().
 	for _, de := range writeOnlyDirEnvs {
 		base := os.Getenv(de.env)
 		if !filepath.IsAbs(base) {
@@ -1239,7 +1245,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		if isDefault(c, de.def) {
 			continue
 		}
-		if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
+		if p := filepath.Join(c, de.sub); p != "/dev/null" && !covered(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: de.env})
 		}
 	}
@@ -1612,7 +1618,9 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// shield rests on, so relocating the config directory disarms both.
 	{"DIRENV_CONFIG", ".config/direnv", ""},
 	// mise's trust record and the settings that bypass it, each with its own variable.
-	{"MISE_STATE_DIR", ".local/state/mise", ""},
+	// Only the record moves with the state dir; the tracked-configs beside it is written
+	// by ordinary use and deliberately left alone, as at the default location.
+	{"MISE_STATE_DIR", ".local/state/mise", "trusted-configs"},
 	{"MISE_CONFIG_DIR", ".config/mise", ""},
 	{"MISE_DATA_DIR", ".local/share/mise", "shims"},
 	// The cloned hook repos the host executes at the next commit.
