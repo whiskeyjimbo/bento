@@ -684,8 +684,40 @@ func Home(home string) []Rule {
 		".config/emacs",                            // XDG location for the same
 		".config/gdb",                              // gdb 11+ reads gdbinit/gdbearlyinit here
 		".config/tmux",                             // XDG location for tmux.conf
-		".config/direnv",                           // direnvrc, sourced on cd for direnv users
+		".config/direnv",                           // direnvrc, sourced on cd for direnv users, and direnv.toml's [whitelist] skips the allow check entirely
 		".local/share/direnv/allow",                // authorization records: an entry pre-approves a workspace .envrc
+		// mise is direnv's shape: an in-tree mise.toml is inert until trusted, and a
+		// symlink under state/trusted-configs is the per-host record of that trust. Deny
+		// the record and every workspace config mise would have auto-executed is covered
+		// at once, including workspaces this run never touched.
+		//
+		// Both halves are needed. The config directory holds the settings that bypass the
+		// record - trusted_config_paths pre-trusts a path outright (verified: an untrusted
+		// mise.toml's [env] is dropped, and listing its directory there makes mise honor
+		// it), and `yes` auto-answers the trust prompt - so shielding the record alone
+		// leaves a bounded-looking shield that is not.
+		//
+		// Taken as whole directories rather than trusted-configs/ and config.toml: the
+		// record is one file among several state files today, and the settings live in
+		// either config.toml or settings.toml. Reads stay allowed, so mise still resolves
+		// tools in-sandbox.
+		//
+		// Residual: MISE_TRUSTED_CONFIG_PATHS carries the same bypass as a value rather
+		// than a path, so there is nothing to shield - but it is the host's own
+		// environment granting the trust, not something a sandboxed run can plant.
+		".local/state/mise",
+		".config/mise",
+		// pre-commit clones each hook repo here and the installed .git/hooks/pre-commit
+		// executes it on the host at the developer's next commit. The hook entry point is
+		// shielded by Workspace, but the cache it runs FROM is where the code actually
+		// lives, so without this a run under a home write grant poisons an installed hook
+		// without touching .git.
+		//
+		// The cost is the .cargo/bin trade above: a DenyWrite shield has no opt-out, so
+		// `pre-commit install-hooks` and a first `pre-commit run` cannot populate the cache
+		// in-sandbox. Deliberate, and the line ~/.cargo/registry and ~/.m2 sit on the other
+		// side of - those are read back by a build, this one is EXECUTED on the host.
+		".cache/pre-commit",
 		// bento's own approval journal: each entry is this host's record of the permissions a
 		// human approved, and re-approval names the changed lines by diffing against it. A
 		// sandboxed run that could write one would author its own baseline, so the next
@@ -1194,6 +1226,23 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			}
 		}
 	}
+	// The write-shielded directories a tool-specific variable relocates. addWriteShield is
+	// the wrong emitter here - it produces a file rule, which would bind an empty file over
+	// a directory and leave every entry beside it plantable. Same guards otherwise, and
+	// last so a DenyAll target from any block above already sits in covered().
+	for _, de := range writeOnlyDirEnvs {
+		base := os.Getenv(de.env)
+		if !filepath.IsAbs(base) {
+			continue
+		}
+		c := filepath.Clean(base)
+		if isDefault(c, de.def) {
+			continue
+		}
+		if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
+			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: de.env})
+		}
+	}
 	return rules
 }
 
@@ -1520,6 +1569,9 @@ func RelocationVars() []string {
 	for _, e := range dirFileEnvs {
 		out = append(out, e.env)
 	}
+	for _, e := range writeOnlyDirEnvs {
+		out = append(out, e.env)
+	}
 	for _, e := range fileEnvs {
 		out = append(out, e.env)
 	}
@@ -1545,6 +1597,26 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// The variable names a home directory, so the default to compare against is the anchor
 	// itself and the empty def gets there via filepath.Join.
 	{"CURL_HOME", "", ".curlrc"},
+}
+
+// The tool-specific variables that move a whole write-shielded DIRECTORY off its default
+// path - the DenyWrite analog of dirEnvs. Without them a shield on the default location
+// is worth nothing on a host that sets the variable: the tool reads the record or the
+// config from the relocation, and the run plants it there.
+//
+// sub is the shielded subdirectory of the relocated base, empty where the base is the
+// shielded directory itself. Only MISE_DATA_DIR needs it: the data tree carries the
+// interpreter installs a policy may legitimately write, and only shims/ is shielded.
+var writeOnlyDirEnvs = []struct{ env, def, sub string }{
+	// direnv.toml's [whitelist] skips the allow check the ~/.local/share/direnv/allow
+	// shield rests on, so relocating the config directory disarms both.
+	{"DIRENV_CONFIG", ".config/direnv", ""},
+	// mise's trust record and the settings that bypass it, each with its own variable.
+	{"MISE_STATE_DIR", ".local/state/mise", ""},
+	{"MISE_CONFIG_DIR", ".config/mise", ""},
+	{"MISE_DATA_DIR", ".local/share/mise", "shims"},
+	// The cloned hook repos the host executes at the next commit.
+	{"PRE_COMMIT_HOME", ".cache/pre-commit", ""},
 }
 
 // The tool-specific variables that move a whole credential directory off its default path.

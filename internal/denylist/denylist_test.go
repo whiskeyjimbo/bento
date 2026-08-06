@@ -394,6 +394,57 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	}
 }
 
+// The write-shielded directories are the half a tool-specific variable moves without
+// touching any credential: an authorization record, the config that bypasses it, a shim
+// dir. A shield left at the default is worth nothing on a host that sets the variable,
+// because the tool reads the relocation and that is where a run plants.
+//
+// Dir is the property under test as much as the path. Emitted as a file rule these would
+// bind an empty file over the directory and leave every entry beside it plantable, which
+// is the shape of failure a passing "is it shielded" check would miss.
+func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
+	t.Setenv("DIRENV_CONFIG", "/elsewhere/direnv")
+	t.Setenv("MISE_STATE_DIR", "/elsewhere/mise-state")
+	t.Setenv("MISE_CONFIG_DIR", "/elsewhere/mise-config")
+	t.Setenv("MISE_DATA_DIR", "/elsewhere/mise-data")
+	t.Setenv("PRE_COMMIT_HOME", "relcache") // relative: must not shield
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	for path, want := range map[string]string{
+		"/elsewhere/direnv":               "DIRENV_CONFIG",
+		"/elsewhere/mise-state":           "MISE_STATE_DIR",
+		"/elsewhere/mise-config":          "MISE_CONFIG_DIR",
+		"/elsewhere/mise-data/shims":      "MISE_DATA_DIR",
+		"/home/u/.config/direnv":          "",
+		"/home/u/.local/state/mise":       "",
+		"/home/u/.config/mise":            "",
+		"/home/u/.cache/pre-commit":       "",
+		"/home/u/.local/share/mise/shims": "",
+	} {
+		r, ok := byPath[path]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", path)
+			continue
+		}
+		if r.Deny != DenyWrite || !r.Dir {
+			t.Errorf("%s must be a DenyWrite dir shield, got %+v", path, r)
+		}
+		if r.Source != want {
+			t.Errorf("shield at %q credits %q, want %q", path, r.Source, want)
+		}
+	}
+	// MISE_DATA_DIR shields only the shims, not the interpreter installs beside them.
+	if r, ok := byPath["/elsewhere/mise-data"]; ok {
+		t.Errorf("the relocated mise data tree must stay writable, got %+v", r)
+	}
+	if _, ok := byPath["relcache"]; ok {
+		t.Error("a relative PRE_COMMIT_HOME must not produce a shield")
+	}
+}
+
 // A relocation variable accepts any absolute path, so a shield can land on something the
 // run then needs and fail with an error naming only the target. Nothing can reconstruct
 // the cause from the path afterwards, so every family that follows a variable must record
@@ -1248,6 +1299,13 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		// which grant is new, and the entry is trusted precisely because only this host's
 		// approve writes it - so a sandboxed run must not be able to author one.
 		"/home/u/.local/state/bento",
+		// mise's per-host trust record, and the settings that bypass it. Denying both is
+		// what makes every in-tree mise.toml inert without enumerating one of them.
+		"/home/u/.local/state/mise",
+		"/home/u/.config/mise",
+		// The hook repos pre-commit clones and the host executes at the next commit; the
+		// .git/hooks entry point Workspace shields only execs what lives here.
+		"/home/u/.cache/pre-commit",
 	} {
 		r, ok := byPath[p]
 		if !ok {
