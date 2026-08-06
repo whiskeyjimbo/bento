@@ -1186,10 +1186,11 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 	return append(rules, Rule{Path: runtimeDir, Deny: DenyAll, Dir: true, Holds: HoldsServices, Source: "XDG_RUNTIME_DIR"})
 }
 
-// Covers finds the rule shielding path, returning it and true. An exact match wins;
-// otherwise a directory rule enclosing the path covers it. When several match, the
-// strictest wins, so a path inside a DenyAll directory does not read as merely
-// write-shielded because a DenyWrite rule also matched it.
+// Covers finds the rule shielding path, returning it and true. A rule matches either
+// exactly or as a directory enclosing the path, and among the matches the STRICTEST wins -
+// exact and enclosing compete on strictness rather than exact taking precedence, so an
+// enclosing DenyAll directory rule beats an exact DenyWrite file rule and a path inside a
+// DenyAll directory does not read as merely write-shielded.
 //
 // It lives here rather than in each consumer because "is this path shielded" is a
 // question about Rule, and the parity audit and the credential hunt both have to answer

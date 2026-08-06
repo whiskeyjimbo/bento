@@ -23,10 +23,10 @@
 // A second corpus narrows that, and does not close it. Both sources are DESKTOP
 // APPLICATION sandboxes, which is the shared blind spot: the developer token stores
 // (.terraformrc, .m2/settings.xml, .gradle/gradle.properties, .npmrc, .composer/auth.json)
-// are outside firejail's list and AppArmor's alike. The 21 paths shielded for bv2-2k6y
-// were all found by hand while this audit was green, and re-measuring against AppArmor
-// put its recall on that same set at 2 of 21 - so the class that motivated the second
-// corpus is still the class neither corpus covers.
+// are outside firejail's list and AppArmor's alike. The 21 developer token stores bento
+// shields for that class were all found by hand while this audit was green, and
+// re-measuring against AppArmor put its recall on that same set at 2 of 21 - so the class
+// that motivated the second corpus is still the class neither corpus covers.
 //
 // What the second source does buy is the failure mode a single source cannot detect at
 // all: an entry one project overlooks now has a second chance to surface. Adding it
@@ -439,10 +439,16 @@ func expand(raw, home, runUser string) (string, bool) {
 // Diff returns the candidates bento does not fully cover. A candidate is covered when
 // a rule shields it exactly, or a directory rule encloses it (bento's dir shields
 // cover unborn children, so firejail's per-file entries under a shielded dir are
-// covered). A glob candidate is covered only when a directory rule encloses its
-// parent, since bento cannot express the wildcard itself. A candidate bento shields
-// as DenyWrite while firejail blacklists it is reported as Weaker, not missing. A
-// directory-shaped candidate covered only by a rule on the path itself is reported as
+// covered). A glob candidate is passed to Covers as the literal pattern string - nothing
+// here is glob-aware, since bento cannot express a wildcard rule - so a
+// "${HOME}/.ssh/*"-shaped pattern is covered when a directory rule encloses its parent,
+// which falls out of prefix matching, and one with a wildcard mid-path is covered by
+// nothing. An unreviewed glob hard-fails, so the narrowness shows up as noise rather than
+// as a silent pass.
+//
+// A candidate bento shields as DenyWrite while firejail blacklists it is reported as
+// Weaker, not missing. A directory-shaped candidate covered only by a rule on the path
+// itself is reported as
 // Narrowed: Covers answers the exact match whatever the rule's Dir is, so without this
 // moving an entry from a directory list to the flat file list - the same string, a
 // different loop - shrinks the shield to one inode and the ratchet stays green.

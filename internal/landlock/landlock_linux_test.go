@@ -135,7 +135,7 @@ func TestRestrictConfinesReads(t *testing.T) {
 	})
 }
 
-// This is the executable evidence for ADR-0008. No policy reaches
+// This is the executable evidence for withholding an exec allowlist. No policy reaches
 // RestrictExecAllowlist - there is no exec: allowlist mode - so what this test pins is
 // not a shipped guarantee but the kernel behaviour the ADR rests on, kept runnable so
 // the decision can be re-checked rather than re-argued.
@@ -152,7 +152,8 @@ func TestRestrictConfinesReads(t *testing.T) {
 // loader is DENIED is the finding: it is what forces statically linked entries, and
 // forcing those is what made the mode too narrow to serve any job class - a script under
 // an interpreter needs a dynamic binary to be executable. If this arm ever reports OK on
-// some future kernel, ADR-0008's first reason has changed and the decision is worth
+// some future kernel, the first reason for withholding an exec allowlist has changed
+// and the decision is worth
 // reopening.
 func TestExecAllowlistPermitsOnlyTheAllowlistedBinary(t *testing.T) {
 	if !Available() {

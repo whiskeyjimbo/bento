@@ -939,7 +939,7 @@ func TestMergeNoticeReportsWideningAndVoidedApproval(t *testing.T) {
 // A generated manifest must be the same artifact a hand-written one is. Profiling
 // observes host paths, so emitting them verbatim produced a manifest that named one
 // machine: a teammate, or CI, or the same directory after a move, got a stat failure,
-// and the author's home landed in a tracked file (bv2-sz7v).
+// and the author's home landed in a tracked file.
 func TestRelocatableRewritesPathsIntoTheManifestsVocabulary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

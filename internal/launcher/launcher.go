@@ -756,9 +756,13 @@ func proxyEnv() []string {
 // only when the target is not exec-blocked (nothing needs to replace this
 // process, and supervising lets us return the exit code directly).
 //
-// reapUntil returns the moment the target exits, so the egress bridge is not reaped
-// here: its accept loop runs until the process is torn down. Orphaned *grandchildren*
-// of a subprocess-spawning target reparent to whichever ancestor is reaping: under
+// reapUntil returns the moment the target exits, so it never WAITS for the egress bridge:
+// the bridge's accept loop runs until the process is torn down. It does collect the bridge
+// if the bridge exits first, dropping its status on the floor - which is why a bridge that
+// dies mid-run reports itself over the liveness pipe rather than through a wait status.
+//
+// Orphaned *grandchildren* of a subprocess-spawning target reparent to whichever
+// ancestor is reaping: under
 // bwrap that is its own init as PID 1 (this launcher is PID 2), and the whole pid
 // namespace is torn down at the end of the run regardless. RunDegraded calls this
 // with no pid namespace at all, so there an orphan reparents to the host's init

@@ -20,7 +20,7 @@ import (
 // SentinelLaunchDegraded marks the no-bwrap launch stage: bento re-exec'd as a
 // DIRECT child (not inside bubblewrap) to run a target under Landlock-only
 // filesystem confinement plus the seccomp exec- and egress-blocks. It is the
-// execution half of the degraded tier (design 6.2), entered only under
+// execution half of the degraded tier, entered only under
 // --allow-degraded on a userns-blocked host.
 const SentinelLaunchDegraded = "__bento_launch_degraded"
 

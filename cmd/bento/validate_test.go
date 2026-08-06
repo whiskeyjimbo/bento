@@ -123,7 +123,7 @@ func writeManifest(t *testing.T, p *policy.Policy, prov manifest.Provenance) str
 
 // --strict is the documented CI drift gate, and a machine gate reads --json. The two
 // must not disagree: --json --strict on a stale approval has to fail AND still leave a
-// parseable envelope naming the state (bv2-fglb). Executing RunE is the point - the
+// parseable envelope naming the state. Executing RunE is the point - the
 // bug lived in the early `return writeJSON(...)`, which a direct reportApproval test
 // never reached.
 func TestValidateJSONHonorsStrict(t *testing.T) {
@@ -465,7 +465,7 @@ func TestValidateJSONCarriesBlockedHostsAndShieldGrants(t *testing.T) {
 // validate --strict is the pre-merge gate, and it used to pass a manifest run refuses at
 // its first step: an entrypoint that is not there, or an interpreter nobody has. Both
 // modes must fail, since a machine gate reads --json and would otherwise see a green
-// manifest that cannot execute (bv2-clfr).
+// manifest that cannot execute.
 func TestValidateStrictFailsOnAManifestThatCannotRun(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "/nope/missing.py", Interpreter: "pythno3"}
 	path := writeManifest(t, p, manifest.Provenance{})

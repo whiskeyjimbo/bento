@@ -114,8 +114,7 @@ func TestReportApprovalStrictness(t *testing.T) {
 
 // approve rewrites the manifest others read, so a world-writable one gives away the
 // only thing the stamp is worth: that the permissions cannot change without the
-// approval going stale. It is written back with the shared write bits removed
-// (bv2-w4n5).
+// approval going stale. It is written back with the shared write bits removed.
 func TestApproveDropsSharedWriteBits(t *testing.T) {
 	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
 	if err := os.Chmod(path, 0o666); err != nil {
@@ -436,7 +435,7 @@ func TestApproveSaysTheManifestWasApprovedForSomethingElse(t *testing.T) {
 	}
 }
 
-// bv2-h3db: a manifest lists a host the profiling run's egress guard refused exactly as
+// A manifest lists a host the profiling run's egress guard refused exactly as
 // it lists one that worked, so a reader following profile -> validate -> approve stamps
 // egress bento itself would not permit. The record is provenance, so approve is the one
 // command holding both it and the rule it describes.
@@ -504,7 +503,7 @@ func TestApprovalCalloutsNameAnExplicitShieldGrant(t *testing.T) {
 	}
 }
 
-// bv2-7hak: the whole point of an approval is that a human read the permissions, so a
+// The whole point of an approval is that a human read the permissions, so a
 // pipeline reaching approve without --yes must not have that decided for it by where
 // stdin happens to point. Nothing may be stamped: the manifest is left as it was found.
 func TestApproveRefusesANonTerminalStdinWithoutWritingAnything(t *testing.T) {

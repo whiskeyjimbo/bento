@@ -8,7 +8,7 @@ import (
 // /dev/null is a character device but not a terminal. profiling's interactive branch
 // prompts for consent and mounts real credential content for the answers, so under
 // systemd's StandardInput=null, cron, or setsid - where /dev/null is stdin and no
-// human is there to answer - it must not be taken (bv2-mpq9).
+// human is there to answer - it must not be taken.
 func TestIsTerminalRejectsDevNull(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
