@@ -86,12 +86,14 @@ func scanOf(credentials []string, found ...credentialAlias) aliasScan {
 
 // shieldedStores is what the host in these cases shields. It deliberately holds more
 // than any single case's aliases name: the guard's whole point is that a tree is judged
-// against every store, so a fixture where the two coincided would prove nothing.
-var shieldedStores = []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"}
+// against every store, so a fixture where the two coincided would prove nothing. It mixes
+// anchor directories with the files behind them because that is what aliasedCredentials
+// hands over - a fixture of files alone would stop exercising the shipped shape.
+var shieldedStores = []string{"/home/u/.ssh", "/home/u/.ssh/id_rsa", "/home/u/.aws", "/home/u/.aws/credentials"}
 
 // The same set on a host whose home sits behind a symlink; the scan resolves before it
 // compares, so this is the form the guard actually meets there.
-var relocatedShieldedStores = []string{"/var/home/u/.ssh/id_rsa", "/var/home/u/.aws/credentials"}
+var relocatedShieldedStores = []string{"/var/home/u/.ssh", "/var/home/u/.ssh/id_rsa", "/var/home/u/.aws", "/var/home/u/.aws/credentials"}
 
 // The whole cost structure rests on one fact: a hardlink needs a second directory
 // entry pointing at the credential's inode, so nlink==1 on every credential *proves*
@@ -1314,5 +1316,36 @@ func TestCheckAliasedCredentialsJudgesAnOffSwitchOnAnEmptyHost(t *testing.T) {
 	_, err := checkAliasedCredentials(sb, nil, nil, []string{"/home/u"})
 	if err == nil || !strings.Contains(err.Error(), "would accept every alias") {
 		t.Fatalf("a tree holding an empty credential store is still an off-switch; got %v", err)
+	}
+}
+
+// A credential store on a live network filesystem gives every file in it the export's
+// device, so the export's own mount line is wanted. Screening it would refuse every launch
+// on an ordinary NFS home - and would protect nothing, because credentialFiles walked that
+// same export earlier in the run to identify the credentials. Only a mount reached THROUGH
+// a network filesystem is screened.
+func TestMountinfoPathsScansAMountThatIsItselfTheNetworkFilesystem(t *testing.T) {
+	const info = `26 30 8:2 / / rw,relatime - ext4 /dev/sda2 rw
+29 26 0:99 / /home rw - nfs4 srv:/export rw
+31 26 0:99 /u/.ssh /srv/backup/.ssh rw - nfs4 srv:/export rw`
+
+	got, behind, err := mountinfoPaths(strings.NewReader(info), []uint64{uint64(unix.Mkdev(0, 99))})
+	if err != nil {
+		t.Fatalf("mountinfoPaths: %v", err)
+	}
+	if len(behind) > 0 {
+		t.Fatalf("mountinfoPaths behindNetwork = %v; an NFS home is a live mount the run already walked, not a hang risk", behind)
+	}
+	if !slices.Equal(got, []string{"/home", "/srv/backup/.ssh"}) {
+		t.Errorf("mountinfoPaths = %v, want both NFS mounts scanned", got)
+	}
+}
+
+// An anchor does not subsume the files behind it in both directions: a tree strictly
+// inside an anchor covers a credential without covering the anchor, so judging on anchors
+// alone would accept an off-switch the file set caught.
+func TestOverbroadAcknowledgementCatchesATreeInsideAnAnchor(t *testing.T) {
+	if !overbroadAcknowledgement("/home/u/.ssh/keys", []string{"/home/u/.ssh", "/home/u/.ssh/keys/id_rsa"}) {
+		t.Error("a tree between an anchor and a credential it holds is still an off-switch for that credential")
 	}
 }

@@ -73,13 +73,14 @@ type credentialAlias struct {
 // accepts "--accept-alias $HOME" on any run whose aliases happen to sit elsewhere, and
 // accepts anything at all on a run that found nothing.
 //
-// credentials is the anchor set itself - the shielded stores the scan walks - not the
-// files found behind them. The distinction is the acknowledgement's whole point: an
-// anchor that is empty today holds a key tomorrow, and a flag pasted into a command line
-// outlives the run that suggested it, so judging against today's files would accept
-// "--accept-alias $HOME" on a host that has not run ssh-keygen yet and keep accepting it
-// afterwards. Anchors exist whether or not anything is behind them, so the verdict on a
-// tree does not depend on the state of the stores inside it.
+// credentials holds the anchor set - the shielded stores the scan walks - alongside the
+// files found behind them. The anchors are what make the verdict independent of today's
+// contents: an anchor that is empty now holds a key tomorrow, and a flag pasted into a
+// command line outlives the run that suggested it, so judging against files alone would
+// accept "--accept-alias $HOME" on a host that has not run ssh-keygen yet and keep
+// accepting it afterwards. The files stay because an anchor does not subsume them in one
+// direction - a tree strictly INSIDE an anchor covers a file without covering the anchor -
+// and the union is the conservative reading of both.
 //
 // It inherits credentialFiles' narrowings, both in the safe direction. A store the policy
 // opted back in is absent because its shield never engages - there is nothing for a wide
@@ -157,24 +158,29 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	if err != nil {
 		return aliasScan{}, err
 	}
-	slices.Sort(anchors)
 	// An anchor with nothing behind it still counts as a shielded store for the
 	// acknowledgement guard, so the anchors travel out even when there is no file to
 	// compare identities against.
 	if len(creds) == 0 {
+		slices.Sort(anchors)
 		return aliasScan{credentials: anchors}, nil
 	}
 
 	want := make(map[fileID]string, len(creds))
 	shielded := make(map[string]bool, len(creds))
+	credentials := slices.Clone(anchors)
 	for _, c := range creds {
 		// Two credentials that are already hardlinks of each other share an identity;
 		// the shallower path names the pair predictably.
 		if prev, dup := want[c.id]; !dup || c.path < prev {
 			want[c.id] = c.path
 		}
-		shielded[c.path] = true
+		if !shielded[c.path] {
+			shielded[c.path] = true
+			credentials = append(credentials, c.path)
+		}
 	}
+	slices.Sort(credentials)
 
 	resolved := make([]string, 0, len(trees))
 	for _, t := range trees {
@@ -222,7 +228,7 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	})
 	// Overlapping grants (read: ~ alongside read: ~/project) walk the same file twice,
 	// and a bind inside a walked tree is found by both mechanisms; report each once.
-	return aliasScan{found: slices.Compact(out), credentials: anchors}, nil
+	return aliasScan{found: slices.Compact(out), credentials: credentials}, nil
 }
 
 // splitAcknowledgedAliases divides found aliases into the ones that still refuse the run
@@ -282,9 +288,9 @@ func checkAcknowledgementScope(tree string, credentials []string) error {
 // filesystem root, or a tree holding one of the shielded credential stores itself. A
 // backup root passes - it contains second names for credentials, not the stores.
 //
-// credentials is the host's whole shielded anchor set, not the subset this run aliased and
-// not the files behind them, so the verdict on a given tree is the same on every run and
-// on a host whose stores are still empty.
+// credentials is the host's whole shielded set - the anchors and the files behind them -
+// not the subset this run aliased, so the verdict on a given tree is the same on every run
+// and on a host whose stores are still empty.
 func overbroadAcknowledgement(tree string, credentials []string) bool {
 	if tree == "/" || tree == "." || tree == "" {
 		return true
@@ -728,6 +734,11 @@ func identify(path string, d fs.DirEntry) (identifiedFile, error) {
 // to catch. Naming it is also more use than the hang it replaces - the remedy is the
 // user's, either unmounting the export or dropping the bind.
 //
+// It narrows the hang rather than excluding it. A credential store that itself lives on a
+// dead export hangs in credentialFiles' walk, well before this runs, and no screen here
+// can reach that. The mount a credential store lives on is deliberately not screened for
+// the same reason: getting this far means that walk already answered.
+//
 // A mount table that cannot be read or cannot be parsed to the end is an error, not an
 // empty result. A partial list is the dangerous shape precisely because it reads as a
 // complete one, and the hardlink half of the scan does not compensate for it: a bind
@@ -745,7 +756,7 @@ func hostMountpoints(devs []uint64) ([]mountPoint, error) {
 		return nil, err
 	}
 	if len(behindNetwork) > 0 {
-		return nil, fmt.Errorf("%s is reached through a network filesystem, which cannot be stat'd without risking a hang on a dead mount; unmount the export or remove the bind", strings.Join(behindNetwork, ", "))
+		return nil, fmt.Errorf("a mount reached through a network filesystem cannot be scanned for credential aliases without risking a hang on a dead export; unmount it or remove the bind: %s", strings.Join(behindNetwork, ", "))
 	}
 
 	var out []mountPoint
@@ -820,7 +831,13 @@ func mountinfoPaths(r io.Reader, devs []uint64) (paths, behindNetwork []string, 
 		if !e.want {
 			continue
 		}
-		if networkAncestor(byID, id) {
+		// The chain is walked from the PARENT, so a wanted mount that is itself the
+		// network filesystem is not screened. That is the ordinary enterprise host - a home
+		// on NFS gives every credential the export's device, so the export's own mount line
+		// is wanted - and refusing it would refuse every launch on a live mount. It also
+		// protects nothing: credentialFiles walked that same export earlier in this run to
+		// identify the credentials, so reaching here at all proves the mount answers.
+		if networkAncestor(byID, e.parent) {
 			behindNetwork = append(behindNetwork, e.path)
 			continue
 		}
@@ -851,7 +868,10 @@ var networkFstypes = map[string]bool{
 // networkAncestor reports whether a mount or anything it hangs under is a network
 // filesystem. The root's parent is itself in some namespaces and a moved mount can name a
 // parent that is not in the table at all, so the walk stops on both rather than assuming
-// the chain terminates.
+// the chain terminates. A chain that stops early reads as local, which is the availability
+// answer rather than the safe one: a truncated table would otherwise refuse launches on
+// every host whose namespace hides an ancestor, and the failure it lets through is the
+// hang this screen already only narrows.
 func networkAncestor(byID map[string]mountEntry, id string) bool {
 	for seen := map[string]bool{}; !seen[id]; {
 		seen[id] = true
