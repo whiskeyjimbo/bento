@@ -148,9 +148,15 @@ type sandbox struct {
 	// Every consumer derives the same rules from the same tree - shieldRules, reached
 	// by both denyArgs and createdShields, plus checkWriteNotUnderReadOnlyShield and
 	// checkWorkspaceShieldNotRedirected - and checkGrants runs twice, so N write grants
-	// under one checkout re-walk its .git/modules tree up to six times. Sound because
-	// shields are derived at setup, before the sandbox starts, so nothing can change the
-	// tree between calls within a run; single-goroutine for the same reason.
+	// under one checkout re-walk its .git/modules tree at least six times.
+	//
+	// The tree is not frozen across those calls - prepareWriteDirs mkdirs the granted
+	// write directories after checkGrants has already populated the cache. What makes
+	// the memo sound is that the KEY is recomputed every call: checkoutRoot runs fresh,
+	// so a mkdir that moves the anchor (a grant of an unborn <repo>/.git) produces a
+	// miss and a fresh walk, not a stale hit. Within one anchor the only mutation is
+	// that mkdir, which adds an empty directory and no gitdir, so it emits nothing
+	// either way. Single-goroutine: shields are derived before the sandbox starts.
 	//
 	// Allocated at construction rather than on first use because the sandbox is passed
 	// by value: a map made lazily would live in one copy and be invisible to every other
@@ -871,12 +877,13 @@ func checkoutRoot(sb sandbox, dir string) string {
 //     hooks/ and config that run when the developer uses that submodule on the host;
 //   - linked-worktree config at dir/.git/worktrees/<name>/config.worktree.
 //
-// The hooks directory is shielded whether or not it exists yet, matching the
-// top-level .git/hooks shield: an absent hooks/ under a real gitdir is still
-// plantable, so it is tmpfs'd and reclaimed by createdShields. config and
-// config.worktree are only shielded where they exist (they are files, not planting
-// surfaces on their own - a new config.worktree is inert unless config, which is
-// shielded, enables extensions.worktreeConfig).
+// hooks and config.worktree are shielded whether or not they exist yet, matching the
+// top-level shields denylist.Workspace emits: an absent one under a real gitdir is
+// still plantable, so it is tmpfs'd and reclaimed by createdShields. An absent
+// config.worktree is NOT inert on the reasoning that the run cannot enable
+// extensions.worktreeConfig - a repo that already has it on honors a config.worktree
+// planted where none existed, and core.hooksPath there redirects the next commit in
+// that worktree.
 //
 // Not covered, because a concrete-path deny-list cannot express them (a documented
 // residual): independent nested repos created anywhere under the grant,
@@ -901,9 +908,7 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 			return
 		}
 		for _, name := range names {
-			if cfg := filepath.Join(wt, name, "config.worktree"); sb.exists(cfg) {
-				rules = append(rules, denylist.Rule{Path: cfg, Deny: denylist.DenyWrite})
-			}
+			rules = append(rules, denylist.Rule{Path: filepath.Join(wt, name, "config.worktree"), Deny: denylist.DenyWrite})
 		}
 		rules = append(rules, redirectedEntries(wt, links)...)
 	}
@@ -933,10 +938,8 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 				rules,
 				denylist.Rule{Path: cfg, Deny: denylist.DenyWrite},
 				denylist.Rule{Path: filepath.Join(d, "hooks"), Deny: denylist.DenyWrite, Dir: true},
+				denylist.Rule{Path: filepath.Join(d, "config.worktree"), Deny: denylist.DenyWrite},
 			)
-			if cw := filepath.Join(d, "config.worktree"); sb.exists(cw) {
-				rules = append(rules, denylist.Rule{Path: cw, Deny: denylist.DenyWrite})
-			}
 			worktreeConfigs(d)
 		}
 		names, links, ok := sb.listDir(d)
