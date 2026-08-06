@@ -596,7 +596,7 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 
 	// Device 8:2 is where the credentials live.
 	dev := uint64(unix.Mkdev(8, 2))
-	got, err := mountinfoPaths(strings.NewReader(info), []uint64{dev})
+	got, _, err := mountinfoPaths(strings.NewReader(info), []uint64{dev})
 	if err != nil {
 		t.Fatalf("mountinfoPaths: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 func TestMountinfoPathsRefusesATruncatedScan(t *testing.T) {
 	dev := uint64(unix.Mkdev(8, 2))
 	huge := "26 30 8:2 / /" + strings.Repeat("a", 1<<20) + " rw - ext4 /dev/sda2 rw\n"
-	if _, err := mountinfoPaths(strings.NewReader(huge), []uint64{dev}); !errors.Is(err, bufio.ErrTooLong) {
+	if _, _, err := mountinfoPaths(strings.NewReader(huge), []uint64{dev}); !errors.Is(err, bufio.ErrTooLong) {
 		t.Errorf("mountinfoPaths on an over-long line = %v, want bufio.ErrTooLong", err)
 	}
 }
@@ -1228,21 +1228,30 @@ func TestIdentifyReportsASecondLstatFailure(t *testing.T) {
 }
 
 // The device filter is on the mount, not on the path to it: a bind of a credential
-// directory made underneath a dead NFS export carries the home's device, passes the
-// filter, and is then lstat'd through the export - the hang the filter is otherwise
-// credited with preventing. Pinned as the known ceiling, because the ancestry filter that
-// would drop it also drops a home on its own device under an ordinary rootfs.
-func TestMountinfoPathsReturnsAWantedMountNestedInAnUnwantedOne(t *testing.T) {
+// directory made underneath a dead NFS export carries the home's device and passes it. The
+// ancestor chain is what catches that, from the same lines the filter already reads, so
+// the mount is reported separately rather than stat'd - and the caller refuses instead of
+// blocking forever in the kernel with nothing to cancel.
+func TestMountinfoPathsSeparatesAMountBehindANetworkFilesystem(t *testing.T) {
 	const info = `26 30 8:2 / / rw,relatime - ext4 /dev/sda2 rw
 29 26 0:99 / /mnt/dead-nfs rw - nfs4 srv:/export rw
-31 29 8:2 /home/u/.ssh /mnt/dead-nfs/keys rw,relatime - ext4 /dev/sda2 rw`
+31 29 8:2 /home/u/.ssh /mnt/dead-nfs/keys rw,relatime - ext4 /dev/sda2 rw
+32 26 8:2 /home/u/.ssh /srv/backup/.ssh rw,relatime - ext4 /dev/sda2 rw`
 
-	got, err := mountinfoPaths(strings.NewReader(info), []uint64{uint64(unix.Mkdev(8, 2))})
+	got, behind, err := mountinfoPaths(strings.NewReader(info), []uint64{uint64(unix.Mkdev(8, 2))})
 	if err != nil {
 		t.Fatalf("mountinfoPaths: %v", err)
 	}
-	if !slices.Contains(got, "/mnt/dead-nfs/keys") {
-		t.Errorf("mountinfoPaths = %v; the nested bind is filtered out - if that is deliberate, the docstring's ancestry note is stale", got)
+	if slices.Contains(got, "/mnt/dead-nfs/keys") {
+		t.Errorf("mountinfoPaths = %v; a mount reached through NFS must never be handed back to be lstat'd", got)
+	}
+	if !slices.Equal(behind, []string{"/mnt/dead-nfs/keys"}) {
+		t.Errorf("mountinfoPaths behindNetwork = %v, want just the nested bind - dropping it silently is the short list the seam forbids", behind)
+	}
+	// An ordinary bind on the same host is unaffected: the screen is on the chain, not on
+	// the presence of a network mount somewhere in the table.
+	if !slices.Contains(got, "/srv/backup/.ssh") {
+		t.Errorf("mountinfoPaths = %v; a bind with no network ancestor must still be scanned", got)
 	}
 }
 
