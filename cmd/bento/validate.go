@@ -373,9 +373,15 @@ func fileWriteGrantProblems(write []string) []string {
 // the way the backend's shield checks do - because checkWriteNotRoot has already refused
 // it in a sentence naming the whole filesystem rather than whichever dotfile sorts first
 // - so without this the gate passes the one grant that defeats the sandbox outright.
+//
+// Asked of where the grant LANDS, as the backend asks it: checkWriteNotRoot runs on grants
+// resolveGrants has already made symlink-free, so a write naming a link into "/" is refused
+// there, and testing the spelling alone here would let that one through.
 func rootWriteProblems(write []string) []string {
-	if slices.Contains(write, "/") {
-		return []string{grantrefusal.WriteIsRoot().Error()}
+	for _, g := range write {
+		if g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/" {
+			return []string{grantrefusal.WriteIsRoot().Error()}
+		}
 	}
 	return nil
 }

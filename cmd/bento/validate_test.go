@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -897,6 +898,11 @@ func TestValidateRelocatableJSON(t *testing.T) {
 // process directory, and the host root. Each one dies at run's first step, so a manifest
 // carrying one is a manifest the CI gate green-lit and the run refuses.
 func TestMountAndRootGrantProblems(t *testing.T) {
+	// The refusals are about Linux's own pseudo-filesystems; this package builds and tests
+	// everywhere, and elsewhere /tmp is a symlink and there is no procfs to grant.
+	if runtime.GOOS != "linux" {
+		t.Skip("the managed mounts and /proc/<pid> are Linux facts")
+	}
 	self := "/proc/" + strconv.Itoa(os.Getpid())
 	cases := map[string]struct {
 		read, write []string
@@ -918,6 +924,15 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 
 	t.Run("the host root, for write", func(t *testing.T) {
 		assertProblem(t, rootWriteProblems([]string{"/"}), "would make the entire host root writable")
+	})
+	t.Run("a symlink into the host root", func(t *testing.T) {
+		// The backend refuses this: it checks grants it has already made symlink-free, so
+		// testing the spelling alone here would pass a manifest run kills at its first step.
+		link := filepath.Join(t.TempDir(), "everything")
+		if err := os.Symlink("/", link); err != nil {
+			t.Fatal(err)
+		}
+		assertProblem(t, rootWriteProblems([]string{link}), "would make the entire host root writable")
 	})
 	t.Run("a directory that is not the host root", func(t *testing.T) {
 		assertProblem(t, rootWriteProblems([]string{"/srv/app"}), "")

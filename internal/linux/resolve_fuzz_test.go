@@ -96,22 +96,29 @@ func buildSymlinkTree(root string, data []byte) (paths []string) {
 			targets[i] = filepath.Join(root, "never")
 			continue
 		}
-		switch a / 64 % 4 {
-		case 0:
+		// Relative to the LINK'S OWN directory, which is what the kernel resolves a relative
+		// target against. Prefixing ".." to an absolute path instead yields "..//abs/path",
+		// a relative target naming a literal component under the link's grandparent, which
+		// dangles for every tree this builds - so the ".." forms would generate nothing but
+		// broken links and the cross-depth class would never be reached.
+		rel, relErr := filepath.Rel(filepath.Dir(paths[i]), name(tgt))
+		switch {
+		case a/64%4 == 0 || relErr != nil:
 			targets[i] = name(tgt) // absolute
-		case 1:
-			targets[i] = fmt.Sprintf("n%d", tgt) // relative, resolved against the link's own directory
-		case 2:
-			// ".." out of the link's directory and back down to the target by absolute path,
-			// so a nested link reaches across depth rather than around its own siblings.
-			targets[i] = fmt.Sprintf("../%s", name(tgt))
+		case a/64%4 == 1:
+			targets[i] = fmt.Sprintf("n%d", tgt) // a sibling name, which often does not exist
+		case a/64%4 == 2:
+			// The relative route to the target, which carries a ".." for every level the link
+			// sits below their common parent: a nested link reaches across depth here rather
+			// than around its own siblings.
+			targets[i] = rel
 		default:
 			// ".." AFTER ANOTHER NODE that may itself be a symlink: this is the class the
 			// raw-join logic exists for - if n<lead> is a symlink to a dir elsewhere, the ".."
-			// must apply to THAT dir, not be cleaned away lexically to name the link's own
-			// sibling.
+			// must apply to THAT dir, not be cleaned away lexically back to the link's own
+			// directory and on to the target.
 			lead := (tgt + 1) % maxResolveNodes
-			targets[i] = fmt.Sprintf("n%d/../%s", lead, name(tgt))
+			targets[i] = fmt.Sprintf("n%d/../%s", lead, rel)
 		}
 	}
 
