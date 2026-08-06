@@ -692,10 +692,17 @@ func Home(home string) []Rule {
 		// at once, including workspaces this run never touched.
 		//
 		// Both halves are needed. The config directory holds the settings that bypass the
-		// record - trusted_config_paths pre-trusts a path outright (verified: an untrusted
-		// mise.toml's [env] is dropped, and listing its directory there makes mise honor
-		// it), and `yes` auto-answers the trust prompt - so shielding the record alone
-		// leaves a bounded-looking shield that is not.
+		// record - trusted_config_paths pre-trusts a path outright, and `yes` auto-answers
+		// the trust prompt - so shielding the record alone leaves a bounded-looking shield
+		// that is not. The three file-shaped knobs that do the same are in
+		// startupDefaultEnvs, which is where a config mise reads with no trust check at
+		// all belongs.
+		//
+		// The cost, which is the point of the shield rather than a side effect: a run that
+		// meets a workspace mise.toml nobody has trusted yet cannot trust it, and every
+		// mise call there then fails rather than degrading. Exporting
+		// MISE_TRUSTED_CONFIG_PATHS for the run itself is the in-sandbox way through, and
+		// it grants nothing on the host.
 		//
 		// The record is the trusted-configs directory rather than the state tree around
 		// it, which is the ~/.m2 and ~/.gradle line: mise writes a symlink under
@@ -706,9 +713,10 @@ func Home(home string) []Rule {
 		// grants no trust. The config directory IS taken whole, because both spellings
 		// mise reads settings from (config.toml and settings.toml) carry the bypass.
 		//
-		// Residual: MISE_TRUSTED_CONFIG_PATHS carries the same bypass as a value rather
-		// than a path, so there is nothing to shield - but it is the host's own
-		// environment granting the trust, not something a sandboxed run can plant.
+		// Residual: ~/.cache/mise carries the resolved bin_paths mise execs, with no trust
+		// check once a config is trusted, so a write grant reaching the cache redirects a
+		// host `mise x` without touching anything here. Not shielded, because a read-only
+		// cache makes `mise install` fail outright rather than degrade. Filed separately.
 		".local/state/mise/trusted-configs",
 		".config/mise",
 		// pre-commit clones each hook repo here and the installed .git/hooks/pre-commit
@@ -1538,6 +1546,20 @@ var startupDefaultEnvs = []struct{ env, def string }{
 	{"PSQLRC", ".psqlrc"},
 	{"R_PROFILE_USER", ".Rprofile"},
 	{"GOENV", ".config/go/env"},
+	// mise's three file-shaped config knobs, the half of its category-1 completeness the
+	// directory table cannot express. Each names a config mise reads with NO trust check
+	// at all - verified: a [tasks] entry in a MISE_GLOBAL_CONFIG_FILE or a
+	// MISE_SYSTEM_CONFIG_FILE runs on `mise run` with no prompt and no record, and a
+	// MISE_ENV_FILE's assignments land in `mise env` the same way. So a host that points
+	// one of these at a dotfile repo has the shield on the trust record buying nothing:
+	// the file it reads instead is trusted implicitly.
+	//
+	// The system config's default is /etc/mise/config.toml, outside every home anchor and
+	// so outside bento's scope; MISE_ENV_FILE has no default at all. Both get the empty
+	// def, which no absolute value matches, so any value they carry is shielded.
+	{"MISE_GLOBAL_CONFIG_FILE", ".config/mise/config.toml"},
+	{"MISE_SYSTEM_CONFIG_FILE", ""},
+	{"MISE_ENV_FILE", ""},
 }
 
 // The variables read by name rather than from a table above: each relocates a group or
