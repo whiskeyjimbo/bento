@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -121,4 +122,66 @@ func containsSuffix(paths []string, suffix string) bool {
 		}
 	}
 	return false
+}
+
+// The cap exists because the host reads the report a line at a time and refuses one it
+// cannot buffer: an uncapped argv does not make a long line, it costs the rest of the
+// section. It cuts on an argument boundary so no entry reports half a path as a whole
+// one, and it marks the cut so the entry cannot read as faithful.
+func TestCappedArgv(t *testing.T) {
+	long := strings.Repeat("x", 3000)
+
+	if got, truncated := cappedArgv([]string{"cc", "-c", "a.c"}); truncated || got != "cc\x00-c\x00a.c" {
+		t.Errorf("an ordinary argv was altered: %q truncated=%v", got, truncated)
+	}
+
+	got, truncated := cappedArgv([]string{"cc", long, long, "late.c"})
+	if !truncated {
+		t.Fatal("an argv past the cap was reported as whole")
+	}
+	if got != "cc\x00"+long {
+		t.Errorf("the cut did not land on an argument boundary: %q", got)
+	}
+	if len(got) > maxRecordedArgv {
+		t.Errorf("the cut argv is %d bytes, over the %d cap", len(got), maxRecordedArgv)
+	}
+
+	// One argument over the cap has no boundary to cut on, so the entry keeps its image
+	// and reports no argv rather than a prefix of a single argument.
+	if got, truncated := cappedArgv([]string{strings.Repeat("y", maxRecordedArgv+1)}); got != "" || !truncated {
+		t.Errorf("a single oversized argument: got %q truncated=%v, want an empty marked argv", got, truncated)
+	}
+}
+
+// A target killed between the fork and its own exec never reaches the tracer's stop. The
+// wait consumes its death instead, and that status is the run's outcome: superviseTarget
+// reports 128+signal for it, and the recorder may not turn the same run into a failure.
+func TestATargetThatDiesBeforeAttachKeepsItsExitCode(t *testing.T) {
+	// The child is stopped at its initial exec and killed from outside, which is the shape
+	// an OOM kill or an external SIGKILL takes.
+	cmd, err := startTarget([]string{"/bin/true"}, os.Environ(), true)
+	if err != nil {
+		t.Skipf("this host refuses the attach: %v", err)
+	}
+	root := cmd.Process.Pid
+	var ws syscall.WaitStatus
+	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.PtraceDetach(root); err != nil {
+		t.Skipf("could not stage the race: %v", err)
+	}
+	_ = cmd.Process.Kill()
+
+	code, done, err := attachRecorder(root)
+	if !done {
+		t.Skipf("the target reached its stop after all (code %d, err %v)", code, err)
+	}
+	if code != 128+int(syscall.SIGKILL) {
+		t.Errorf("exit code %d, want %d (128+SIGKILL), the code superviseTarget reports", code, 128+int(syscall.SIGKILL))
+	}
+	if err == nil {
+		t.Error("a recorder that never attached did not say so")
+	}
+	_ = cmd.Wait()
 }

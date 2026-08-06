@@ -270,6 +270,11 @@ type ExecRun struct {
 	Pid  int
 	Exe  string
 	Argv []string
+	// ArgvTruncated is whether Argv is a prefix of what actually ran. A very long command
+	// line - a link or compile step - is cut so one entry cannot cost the rest of the
+	// record, and the cut is reported rather than silent: an argv missing its tail that
+	// did not say so would be a record that lies about what ran.
+	ArgvTruncated bool
 }
 
 // ExecRecord is what a run that asked to record its execs got back.
