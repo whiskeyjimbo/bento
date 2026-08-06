@@ -657,10 +657,15 @@ func identify(path string, d fs.DirEntry) (identifiedFile, error) {
 // that nsfs mounts report.
 //
 // The device filter comes from the mountinfo line itself, before any stat. Only a mount on
-// a device a credential lives on can alias one, so everything else is skipped without
-// being touched - which matters because os.Lstat on a dead hard-mounted NFS export blocks
-// forever, and hanging before launch over a filesystem holding no credential would be a
-// worse failure than the one this scan prevents. A device the kernel reports under a
+// a device a credential lives on can alias one, so no mount outside the filter is stat'd -
+// which matters because os.Lstat on a dead hard-mounted NFS export blocks forever, and
+// hanging before launch over a filesystem holding no credential would be a worse failure
+// than the one this scan prevents. It is a filter on the mounts, not on the paths: a
+// wanted mount nested inside an unwanted one is still stat'd, and reaching it traverses
+// the filesystem it hangs under (`mount --bind ~/.ssh /mnt/nfs/x` is enough). Filtering
+// that out by ancestry is not available - a home on its own device sits under a rootfs on
+// another exactly the same way, and dropping it would lose bind detection on every
+// ordinary host. A device the kernel reports under a
 // number that does not match the credential's st_dev (some btrfs anonymous devices) is a
 // miss, not a misattribution.
 //
@@ -683,9 +688,20 @@ func hostMountpoints(devs []uint64) ([]mountPoint, error) {
 
 	var out []mountPoint
 	for _, path := range paths {
-		if id, ok := hostStatID(path); ok {
-			out = append(out, mountPoint{path: path, id: id})
+		id, err := hostStatID(path)
+		if err != nil {
+			// The same two dispositions the alias walk gives its own errors, for the same
+			// reasons: a mountpoint that is gone was unmounted between the read and the
+			// stat, and one this uid cannot stat is behind a parent it cannot traverse -
+			// so the run, which is that uid at that path, cannot reach a bind there
+			// either. Anything else is a could-not-look, and a short mount list is the
+			// one shape this function must never return.
+			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
+				continue
+			}
+			return nil, fmt.Errorf("identifying the mountpoint %s: %w", path, err)
 		}
+		out = append(out, mountPoint{path: path, id: id})
 	}
 	return out, nil
 }
@@ -724,16 +740,24 @@ func mountinfoPaths(r io.Reader, devs []uint64) ([]string, error) {
 
 // hostStatID returns a single path's content identity, without following a final symlink -
 // a symlink named as a credential's ancestor must not redirect the comparison.
-func hostStatID(path string) (fileID, bool) {
+func hostStatID(path string) (fileID, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return fileID{}, false
+		return fileID{}, err
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fileID{}, false
+		return fileID{}, fmt.Errorf("stat of %s carries no unix identity", path)
 	}
-	return fileID{dev: uint64(st.Dev), ino: st.Ino}, true
+	return fileID{dev: uint64(st.Dev), ino: st.Ino}, nil
+}
+
+// hostStatIDOK is hostStatID behind the statID seam, which asks only whether a path has
+// an identity: its caller stats a credential's ancestors, where a directory it cannot
+// stat is one no mount it could compare against is attached to.
+func hostStatIDOK(path string) (fileID, bool) {
+	id, err := hostStatID(path)
+	return id, err == nil
 }
 
 // unescapeMount decodes the octal escapes the kernel writes for the characters that
