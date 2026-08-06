@@ -142,10 +142,12 @@ func writeReapprovalNotice(w io.Writer, realPath string, doc *manifest.Document,
 	writeJournalDiff(w, rec, verdict, doc.Policy)
 }
 
-// requireHonorableGrants refuses to stamp a policy holding a grant no run will honor. The
-// callouts above are for the grants that are a judgement call; this is not one - the run
-// refuses these before the script's first instruction, so a stamp over them records a
-// review of permissions that do not exist, and the stamp is what the CI gate then trusts.
+// requireHonorableGrants refuses to stamp a policy holding a grant no run will honor - the
+// same set validate reports as refusals, since a stamp and a green gate over the same
+// manifest have to mean the same thing. The callouts above are for the grants that are a
+// judgement call; this is not one - the run refuses these before the script's first
+// instruction, so a stamp over them records a review of permissions that do not exist, and
+// the stamp is what the CI gate then trusts.
 //
 // It refuses rather than asks: --yes is the CI shape, and a question there is answered by
 // the flag rather than by anyone.
@@ -160,13 +162,11 @@ func requireHonorableGrants(resolved *policy.Policy) error {
 	}
 	// A host that could not anchor the shields yields no problems rather than an error,
 	// which is the degradation described above.
-	reads, _ := shieldedReadProblems(resolved.Read)
-	writes, _ := shieldedWriteProblems(resolved.Write)
-	problems := append(reads, writes...)
+	problems := grantRefusals(resolved)
 	if len(problems) == 0 {
 		return nil
 	}
-	return fmt.Errorf("not approved: the policy grants a path bento shields on every run, which run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(problems, "\n  "))
+	return fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(problems, "\n  "))
 }
 
 // writeApprovalCallouts names the entries in a policy that deserve a second look before
