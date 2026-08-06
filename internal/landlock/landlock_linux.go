@@ -517,15 +517,24 @@ func withIoctlDev(rule func(...string) ll.FSRule) func(...string) ll.FSRule {
 // reason returns any other stat failure rather than dropping it: this set is the
 // entrypoint's own exec rule, so a swallowed EACCES leaves the target unable to execute
 // itself with nothing naming the tier that stopped it.
+//
+// A directory is refused for execAllowFiles' reason rather than its own: the caller
+// builds an execute rule from this set, and Landlock grants a rule's rights over the
+// whole hierarchy beneath the path, so a directory here would grant execute on every
+// file under it. Absent-versus-refused is the only thing that still separates the two
+// helpers, which is what their split is actually for.
 func existing(paths []string) ([]string, error) {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		_, err := os.Stat(p)
+		fi, err := os.Stat(p)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("landlock: %q: %w", p, err)
+		}
+		if fi.IsDir() {
+			return nil, fmt.Errorf("landlock: exec path %q is a directory; it names one binary, and Landlock would grant execute on everything beneath it", p)
 		}
 		out = append(out, p)
 	}
