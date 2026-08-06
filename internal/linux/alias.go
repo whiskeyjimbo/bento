@@ -452,10 +452,8 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 	// it. Hidden FILE rules are anchors too - a single file is cheap to stat and is named
 	// because it holds a secret.
 	roots := make([]string, 0, 128)
-	for _, h := range sb.homes {
-		for _, a := range denylist.AliasAnchors(h) {
-			roots = append(roots, sb.resolve(a))
-		}
+	for _, a := range denylist.AliasAnchors(sb.homes...) {
+		roots = append(roots, sb.resolve(a))
 	}
 	for _, r := range alwaysShields(sb) {
 		if r.Deny == denylist.DenyAll && !r.Dir {
