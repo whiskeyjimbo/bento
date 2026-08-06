@@ -203,7 +203,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	_ = killProcessGroup(cmd.Process)
 	// See the same guard in Run: a cancel kills the launcher group and the exit status
 	// left behind is indistinguishable from the policy's limits ending the target.
-	if err != nil && ctx.Err() != nil {
+	// ErrWaitDelay is excluded because it is the one failure that means the target
+	// already ran to completion - Wait gave up on a leaked descendant holding the pipes,
+	// and a cancel arriving inside that 2s window does not unmake the exit code below.
+	if err != nil && ctx.Err() != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return enforce.Result{Report: report}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
