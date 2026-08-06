@@ -31,6 +31,7 @@ var (
 	seccompSupported              = seccomp.Supported
 	seccompStrictExecSupported    = seccomp.StrictExecSupported
 	seccompEgressSupported        = seccomp.EgressSupported
+	landlockScopedIPCRestricted   = landlock.ScopedIPCRestricted
 )
 
 // Probe reports what this host can actually enforce.
@@ -52,7 +53,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), degradedFencesOK))
+	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), landlockScopedIPCRestricted(), degradedFencesOK))
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
 	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
@@ -188,7 +189,7 @@ func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuR
 // does not confine - the same paragraph on every degraded host - is Consequences. A
 // refusal prints the first and sends the reader to a fuller report for the second;
 // doctor prints both. Nothing is dropped, only moved out from on top of the remedy.
-func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, degradedFencesOK bool) enforce.LayerStatus {
+func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, scopedIPCRestricted, degradedFencesOK bool) enforce.LayerStatus {
 	status := func(state enforce.State, reason string) enforce.LayerStatus {
 		return enforce.LayerStatus{Layer: enforce.LayerFilesystem, State: state, Reason: reason}
 	}
@@ -220,12 +221,12 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 				"weaker than the full sandbox."))
 		l.Consequences = "It confines filesystem read/write/exec, nothing more: no mount namespace (the deny-list " +
 			"cannot carve a credential out of an allowed tree, and any granted /proc is the host's), no PID " +
-			"namespace (the target shares the host process table, so it can see and signal same-user processes - " +
-			"though seccomp blocks the cross-process memory read/write and ptrace injection that would let it take " +
-			"one over - and a background process it leaves is swept only best-effort by killing the run's process " +
-			"group, which a setsid() escapes and which also stops a target that reads an interactive terminal), " +
-			"and no network namespace (seccomp blocks IP egress but not netlink interface enumeration, nor " +
-			unixSocketClause(resolveUnixRestricted) + ")" +
+			"namespace (the target shares the host process table, so it can " + signalClause(scopedIPCRestricted) +
+			" - though seccomp blocks the cross-process memory read/write and ptrace injection " +
+			"that would let it take one over - and a background process it leaves is swept only best-effort by " +
+			"killing the run's process group, which a setsid() escapes and which also stops a target that reads " +
+			"an interactive terminal), and no network namespace (seccomp blocks IP egress but not netlink " +
+			"interface enumeration, nor " + unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted)
 		return l
@@ -274,24 +275,43 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 
 // unixSocketClause is the unix-socket half of the degraded tier's "no network namespace"
 // disclosure. What the target can reach over AF_UNIX depends on the Landlock ABI, so the
-// sentence cannot be fixed text: from ABI 9 the degraded ruleset handles resolve_unix and
-// grants it only on the write set, so a pathname socket outside the grants is denied and
-// only the abstract namespace - which no file grant governs - is left. Below it no
-// pathname socket is governed at all.
+// sentence cannot be fixed text, and two independent facilities narrow it. From ABI 9 the
+// degraded ruleset handles resolve_unix and grants it only on the write set, so a pathname
+// socket outside the grants is denied; below it no pathname socket is governed at all.
+// From ABI 6 the tier's IPC scoping denies an abstract-namespace socket, which nothing
+// else covers - it lives in the network namespace this tier does not have, no file grant
+// reaches it at any ABI, and the seccomp egress filter sees only AF_UNIX at socket(2).
 //
 // /dev/log is named because it is the one denial with no visible symptom: glibc's
 // syslog(3) discards the message and reports nothing, so a target that logs through it
 // goes quiet rather than failing, and an operator has no thread to pull. The other
 // sockets this denies (nscd, systemd-resolved, dbus, X11) error visibly, and losing them
 // is the trade the tier is for.
-func unixSocketClause(resolveUnixRestricted bool) string {
-	if resolveUnixRestricted {
-		return "an abstract-namespace unix socket to a host daemon, which no file grant governs " +
-			"(a pathname one outside the write grants is denied by Landlock's resolve_unix right - " +
-			"including /dev/log, whose denial is silent, since glibc's syslog(3) drops the message " +
-			"without an error)"
+func unixSocketClause(resolveUnixRestricted, scopedIPCRestricted bool) string {
+	// Below ABI 6 nothing scopes the abstract namespace, and resolve_unix (ABI 9) is out
+	// of reach too, so this one sentence covers every unrestricted kernel.
+	if !scopedIPCRestricted {
+		return "a unix socket to a host daemon, including an abstract-namespace one no grant is needed to reach"
 	}
-	return "a unix socket to a host daemon, including an abstract-namespace one no grant is needed to reach"
+	const pathnameDenied = "a pathname one outside the write grants is denied by Landlock's resolve_unix right - " +
+		"including /dev/log, whose denial is silent, since glibc's syslog(3) drops the message without an error"
+	if resolveUnixRestricted {
+		return "a unix socket a write grant exposes, which is all that stays reachable (" + pathnameDenied +
+			", and an abstract-namespace one by Landlock's IPC scoping)"
+	}
+	return "a pathname unix socket to a host daemon, which this kernel's Landlock (ABI < 9) does not govern " +
+		"(an abstract-namespace one is denied by Landlock's IPC scoping)"
+}
+
+// signalClause is the degraded-tier disclosure for the signalling the missing PID
+// namespace leaves open. Landlock's signal scope (ABI 6) closes it - the domain may
+// still signal within itself, which is where the target's own children are - so above
+// that ABI the shared process table is a visibility residual rather than a reach one.
+func signalClause(scopedIPCRestricted bool) string {
+	if scopedIPCRestricted {
+		return "see same-user processes but not signal them, which Landlock's IPC scoping denies"
+	}
+	return "see and signal same-user processes"
 }
 
 // resolveUnixResidual is the degraded-tier disclosure clause for a kernel whose Landlock

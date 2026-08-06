@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	ll "github.com/landlock-lsm/go-landlock/landlock"
 )
 
 // buildProbe compiles the probe the way make build ships bento, and returns its path.
@@ -515,5 +517,20 @@ func TestRestrictPermitsReparentingInsideAWriteGrant(t *testing.T) {
 	if !strings.Contains(got, "escape=DENIED") {
 		t.Errorf("a rename out of the write grant into the read-only tree succeeded, so "+
 			"granting refer widened reparenting past the write grants: %q", got)
+	}
+}
+
+// The whole IPC-scoping restriction rests on the V6 preset carrying a non-empty scoped
+// set: RestrictScoped keeps only that field, and an empty one restricts nothing and
+// returns success, which no run on any kernel would notice.
+func TestScopedIPCCarriesBothScopes(t *testing.T) {
+	// String() abbreviates a full set to "all"; V5, the last ABI with no scopes at all,
+	// is what an empty one looks like, and is here so the assertion cannot pass on it.
+	got, empty := scopedIPC.String(), ll.V5.String()
+	if !strings.Contains(got, "Scoped: all") {
+		t.Errorf("scopedIPC = %s, want a full scoped set", got)
+	}
+	if strings.Contains(empty, "Scoped: all") {
+		t.Fatalf("V5 = %s: this assertion cannot tell a full scoped set from an empty one", empty)
 	}
 }

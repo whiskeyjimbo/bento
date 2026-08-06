@@ -44,6 +44,12 @@ import (
 // never reach the ruleset.
 var handledFS = ll.V8
 
+// scopedIPC is the scoped set the degraded tier restricts: ABI 6's abstract unix socket
+// and signal scopes, which is every scope Landlock defines through ABI 9. The bwrap tier
+// needs neither - its network namespace already carries its own abstract socket
+// namespace, and its PID namespace hides every process it could signal.
+var scopedIPC = ll.V6
+
 // degradedFS is the handled set for the degraded tier: handledFS plus ABI 9's
 // resolve_unix (V9's handled_access_fs is V8's plus exactly that right). The tiers
 // differ because their exposure does.
@@ -379,6 +385,22 @@ func RestrictDegraded(read, write, exec []string) error {
 	if err := degradedFS.BestEffort().RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock: applying degraded ruleset: %w", err)
 	}
+	// Scoping is a second domain because RestrictPaths keeps only handledAccessFS from a
+	// Config (v0.9.0 config.go), so a scoped set on the path ruleset would be silently
+	// dropped. It is the only mechanism that reaches an abstract unix socket: it lives in
+	// the network namespace this tier does not have, so no file grant and no ABI 9
+	// resolve_unix right governs it, and the seccomp egress filter sees only AF_UNIX at
+	// socket(2) and cannot tell abstract from pathname. Signal scoping closes the
+	// same-user signalling the missing PID namespace leaves open.
+	//
+	// BestEffort restricts nothing below ABI 6, leaving those two residuals exactly as
+	// they are today - the degraded report discloses both against ScopedIPCRestricted.
+	// The target keeps every abstract socket and signal WITHIN its own domain, which is
+	// where its own children are, so nothing bento or the target does to itself is
+	// affected.
+	if err := scopedIPC.BestEffort().RestrictScoped(); err != nil {
+		return fmt.Errorf("landlock: applying degraded IPC scoping: %w", err)
+	}
 	return nil
 }
 
@@ -553,6 +575,16 @@ func IoctlDevRestricted() bool {
 // the degraded run report names it alongside truncate and ioctl_dev.
 func ResolveUnixRestricted() bool {
 	return effectiveABI() >= 9
+}
+
+// ScopedIPCRestricted reports whether this kernel's Landlock ABI (>= 6, and past the
+// signal-scoping errata effectiveABI already floors for) can scope IPC. Two residuals
+// of the degraded tier close with it: an abstract-namespace unix socket to a host
+// daemon, which lives in the network namespace rather than the filesystem and which no
+// file grant governs at any ABI, and signalling a same-user host process. Below it both
+// stay open, which is why the degraded run report names them.
+func ScopedIPCRestricted() bool {
+	return effectiveABI() >= 6
 }
 
 // signalScopeErratum is the errata bit go-landlock checks: when it is clear the
