@@ -526,8 +526,10 @@ func isForeignHomeTree(dir string) bool {
 			return false
 		}
 		// A symlinked home (/home -> /var/home) reaches the same account under two names,
-		// and only one of them compares equal above.
-		if resolved, err := filepath.EvalSymlinks(home); err == nil && dir == resolved {
+		// and only one of them compares equal above. Resolved through pathresolve, the way
+		// the shields and the clamp resolve their own anchors, so a home that does not
+		// exist yet is not called someone else's account on a technicality.
+		if dir == pathresolve.Existing(home) {
 			return false
 		}
 	}
