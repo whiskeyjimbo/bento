@@ -336,14 +336,9 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // what writeShieldedGrantWarning reports after the fact, so validate and approve can
 // raise the exposure while the reviewer is still deciding.
 //
-// It mirrors the backend's own opt-in test (explicitShieldOptIns) rather than
-// approximating it: DenyAll rules only, from the built-in home and runtime lists only,
-// matched by exact string equality against the anchors denylist.HomeAnchors reports. A
-// grant strictly INSIDE a shield is refused at run time, not opted into, so widening
-// this to containment would name it as an exposure the run will never permit. The
-// anchors are taken raw, without the symlink-resolved siblings clampShieldedGrants adds:
-// that widening is a proposal-quality filter, and adding it here would warn about a
-// grant the run does not treat as an opt-in.
+// It is the backend's own opt-in test, not a restatement of it: both call
+// shield.Set.OptIns, so a grant this names as an exposure is one the run honors, and one
+// it stays quiet about is one the run refuses.
 //
 // reads are the policy's resolved grants (absolute, ~ expanded, symlinks NOT followed),
 // which is the same spelling the backend compares. A host with no usable anchor at all
@@ -437,40 +432,34 @@ func shieldSet() (shield.Set, error) {
 // pass over in silence, leaving the refusal to land at run's first step on a manifest the
 // CI gate green-lit.
 //
-// Between them they mirror three of the backend's shield checks, in the order checkGrants
-// runs them,
-// so a grant that trips more than one (a write naming a shield exactly is both inside it
-// and above it) is reported in the sentence the run would have printed:
+// Between them they ask shield.Set.Contains, the same question the run asks, so the three
+// refusals arrive in the order and the wording a run would have printed - a grant that
+// trips more than one (a write naming a shield exactly is both inside it and above it) is
+// reported the way the run reports it:
 //
-//   - checkReadNotShielded / checkWriteNotShielded - a grant at or inside a DenyAll
-//     shield. A read naming one exactly is the deliberate opt-in explicitShieldGrants
-//     reports instead; a write of the same path is not, which is the asymmetry this
-//     exists to say out loud - and why the two kinds are refused in different sentences,
-//     only one of which offers the opt-in as a remedy.
-//   - checkWriteNotUnderReadOnlyShield - a write at or inside a DenyWrite shield, which
-//     has no opt-in at all.
-//   - checkWriteNotAboveShield - a write containing a DenyAll shield.
+//   - a grant at or inside a DenyAll shield. A read naming one exactly is the deliberate
+//     opt-in explicitShieldGrants reports instead; a write of the same path is not, which
+//     is the asymmetry this exists to say out loud, and why the two kinds are refused in
+//     different sentences with only one offering the opt-in as a remedy.
+//   - a write at or inside a DenyWrite shield, which has no opt-in at all.
+//   - a write containing a DenyAll shield.
 //
-// The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes.
-// Both sides are then symlink-resolved before they are compared, as the backend compares
-// them: it works on grants resolveGrants has already made symlink-free, against rules it
-// puts through sb.resolve - which on a real host is this same pathresolve.Existing (see
-// hostResolve). Resolving only one side breaks parity in whichever direction
-// was left literal - a shield that is itself a link (~/.bashrc into the nix store) is
-// missed if the rules stay literal, and `write: ~/.ssh/backup` pointing at /srv is refused
-// here while the run honors it if the grants do. The refusal still quotes both as the
-// manifest and the deny-list spell them, which is what each reader is looking at.
+// The grants are the policy's resolved ones, the same spelling explicitShieldGrants takes,
+// and they are symlink-resolved before the comparison because the run compares grants
+// resolveGrants has already made symlink-free. The refusal still quotes the grant as the
+// manifest spells it and the shield as the deny-list does, which is what each reader is
+// looking at.
 //
-// The rest of checkGrants is mirrored elsewhere in the gate: checkWriteNotRoot by
-// rootWriteProblems, checkGrantNotProcess and checkGrantNotManagedMount by
-// mountGrantProblems, checkGrantNotLooped by loopedGrantProblems.
+// The rest of checkGrants is answered elsewhere in the gate: the root write by
+// rootWriteProblems, the process and managed-mount grants by mountGrantProblems, the
+// looped grant by loopedGrantProblems.
 //
-// Two narrowings remain against the backend, both in the direction that only misses a
-// refusal. The rule set omits extraDeny (see builtinShieldRules). And
-// checkWorkspaceShieldNotRedirected is not mirrored at all: its shields are derived per
-// write grant from the checkout under it, which is state the gate would have to walk the
-// grant to reconstruct, and the refusal it raises is about a symlink on this host rather
-// than anything the manifest says.
+// Two narrowings remain against a run, both in the direction that only misses a refusal.
+// The set omits the caller-supplied denies an embedder passes in, which no manifest can be
+// checked against from here. And the redirected-workspace-shield refusal is not raised at
+// all: those shields are derived per write grant from the checkout under it, which is
+// state the gate would have to walk the grant to reconstruct, and the refusal is about a
+// symlink on this host rather than anything the manifest says.
 func shieldedReadProblems(reads []string) ([]string, error) {
 	set, err := shieldSet()
 	if err != nil {
