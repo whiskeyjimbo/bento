@@ -5,6 +5,36 @@
 // own, while the backend decides how to enforce a rule (bind mounts on Linux,
 // the only backend today). A policy that grants a broad path - say all of $HOME -
 // must never expose these.
+//
+// # Adding a tool
+//
+// A tool integration is a category, not a path, and it has arrived in pieces every time
+// it has been added ad hoc. mise took three commits: a whole-tree shield too broad to
+// live with, then the actual trust record, then the file-shaped knobs that bypass it.
+// Every tool since has had the same five parts. Walk them before adding the first rule:
+//
+//  1. The directory store - where the tool keeps state. Usually the obvious one, and
+//     usually the only part that gets found without looking.
+//  2. File-shaped config and trust knobs. A setting that pre-trusts a path, auto-answers
+//     a trust prompt, or points at an extra config read with no trust check makes a
+//     shield on the store alone bounded-looking and not bounded.
+//  3. Env-var relocations of both. Anything the tool will read from a path named in the
+//     environment belongs in the relocation table; a store shielded only where it sits by
+//     default is one variable away from unshielded.
+//  4. Any cache holding resolved exec paths. A cache of what to exec is a persistence
+//     surface even when the config it came from is shielded.
+//  5. Whether shielding it breaks ordinary in-sandbox use of the tool. DenyWrite has no
+//     opt-out, so a store the tool writes on every routine invocation cannot be
+//     write-shielded without making the tool unusable inside the sandbox. This is the
+//     trap that produced mise's first commit: narrow to the record, or leave it and file
+//     the residual.
+//
+// Item 5 is a real fork, not a rubber stamp - where it says no, the answer is a narrower
+// rule plus a filed residual, not a broader one.
+//
+// This does not make new rules arrive less often. The set of tools is open-world, and
+// the firejail/AppArmor parity audit measures 2-of-21 recall on developer token stores;
+// the checklist only stops a tool that is already being added from landing in thirds.
 package denylist
 
 import (
