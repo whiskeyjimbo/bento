@@ -21,6 +21,11 @@
 # them. An exception is printed on every run: one that stops being needed should be
 # noticed, and one that is about to be copied should be read first.
 #
+# The second check is textual, so it assumes the deny-list is reached by its own package
+# name: an aliased or dot import would slip past it. That is the trust boundary, and it is
+# a shallow one on purpose - the alternative is a type-checked analyzer for a rule that
+# takes one line of grep to state.
+#
 # Exit codes: 0 clean, 1 a boundary was crossed, 2 the check could not run.
 set -u
 
@@ -44,12 +49,25 @@ github.com/whiskeyjimbo/bento/internal/launcher
 github.com/whiskeyjimbo/bento/internal/landlock/internal/probe
 github.com/whiskeyjimbo/bento/backend'
 
-# Test imports count. A test that reaches a filter package from outside the backend is a
-# dependency the next non-test caller will copy, and it compiles in CI either way.
-imports=$(GOWORK=off go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}' ./...) || {
-	echo "layering: go list failed" >&2
-	exit 2
-}
+# Every platform the tree claims to compile for, matching crossbuild's list. go list only
+# reports the files whose build constraints match, so the host pass alone cannot see an
+# import inside a _other.go or a GOARCH-tagged file - and this repo splits exactly that
+# way (backend/backend_other.go, cmd/bento/tty_other.go). A boundary that holds only on
+# the build you happen to run is the silent pass this check exists to prevent.
+#
+# Test imports count too. A test that reaches a filter package from outside the backend is
+# a dependency the next non-test caller will copy, and it compiles in CI either way.
+imports=""
+for platform in linux/amd64 linux/arm64 darwin/arm64; do
+	goos=${platform%/*}
+	goarch=${platform#*/}
+	pass=$(GOWORK=off GOOS="$goos" GOARCH="$goarch" go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}' ./...) || {
+		echo "layering: go list failed for $platform" >&2
+		exit 2
+	}
+	imports="$imports
+$pass"
+done
 
 pattern=$(echo "$kernel_pkgs" | tr '\n' '|' | sed 's/|$//')
 offenders=$(echo "$imports" | awk -v pat="($pattern)\$" '{
@@ -85,9 +103,11 @@ cmd/bento'
 # That is a different question from what a run shields - the run shields only the home it
 # executes as - so it is not a fourth answer to this one, but it is the last place outside
 # internal/shield that builds rules at all. Tracked as bv2-pj8x.8.
-found=$(grep -rEln --include='*.go' "$assemblers" . 2>/dev/null | while read -r f; do
-	# Comments naming a constructor are prose, not assembly.
-	if grep -E "$assemblers" "$f" | grep -qvE '^[[:space:]]*(//|\*)'; then
+found=$(grep -rEln --include='*.go' "$assemblers" . | while read -r f; do
+	# A constructor named in prose is not an assembly site. Line comments and the body of a
+	# block comment are dropped; a block comment written without leading stars still reads
+	# as a call here, which is the direction that fails loudly rather than quietly.
+	if grep -E "$assemblers" "$f" | grep -qvE '^[[:space:]]*(//|/\*|\*)'; then
 		dir=$(dirname "$f")
 		echo "${dir#./}"
 	fi
