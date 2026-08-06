@@ -222,6 +222,11 @@ lint: ## Run golangci-lint (pinned; part of check)
 	@GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 	@printf "$(GREEN)$(BOLD)✓ Lint clean!$(RESET)\n"
 
+layering: ## Check the architectural boundaries (kernel enforcement, shield assembly)
+	@printf "$(CYAN)$(BOLD)==> Checking layering...$(RESET)\n"
+	@./scripts/layering.sh
+	@printf "$(GREEN)$(BOLD)✓ Layering clean!$(RESET)\n"
+
 audit: ## Run the denylist completeness audit script
 	@printf "$(CYAN)$(BOLD)==> Running denylist audit...$(RESET)\n"
 	@./scripts/denylist-audit.sh
@@ -249,7 +254,7 @@ examples: ## Build, vet and test every example module against the public API
 # dependency should stop the merge that introduces it, not be reported the next
 # morning. It is the one gate that needs network: the tool is pinned but the
 # vulnerability database is fetched at run time and is expected to move.
-check: vet crossbuild lint test race audit examples vuln ## Run all quality gates (vet, crossbuild, lint, test, race, audit, examples, vuln)
+check: vet crossbuild lint test race layering audit examples vuln ## Run all quality gates (vet, crossbuild, lint, test, race, layering, audit, examples, vuln)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
