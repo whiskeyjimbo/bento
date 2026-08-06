@@ -68,7 +68,7 @@ func BenchmarkHunt(b *testing.B) {
 	home := buildHome(b, 200, 50) // ~10k files
 	opts := benchOpts(home)
 	for b.Loop() {
-		if _, _, err := Hunt(opts); err != nil {
+		if _, _, _, err := Hunt(opts); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -82,7 +82,7 @@ func BenchmarkHunt(b *testing.B) {
 func TestBuildHomeReachesTheContentSniff(t *testing.T) {
 	home := buildHome(t, 2, 2)
 	opts := benchOpts(home)
-	found, _, err := Hunt(opts)
+	found, _, _, err := Hunt(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestIndexedHuntMatchesLinear(t *testing.T) {
 	}
 	opts := benchOpts(home)
 
-	found, pruned, err := Hunt(opts)
+	found, pruned, _, err := Hunt(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
