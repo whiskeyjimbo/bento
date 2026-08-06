@@ -630,17 +630,12 @@ func interpreterPrefix(interp string) string {
 	return dir
 }
 
-// shieldRules is the full deny-list for a run: the mandatory Home shields plus,
-// for each write-granted checkout, the static Workspace shields and the git
-// directories discovered under it (see gitDirShields). Building it in one place
-// keeps denyArgs and createdShields enforcing and cleaning up the exact same
-// set - a divergence would either leak a host artifact or leave a path unshielded.
 // alwaysShields is the deny-list every run applies regardless of grants: the
 // built-in home credential/config shields, the host's runtime state (its service
-// sockets), plus any caller-supplied extra denies. The three places that enforce
-// the always-on shields - shieldRules, checkNotShielded, checkWriteNotAboveShield -
-// all derive from this, so a caller deny can never reach one and miss another
-// (which would leak a host artifact or leave a path unshielded).
+// sockets), plus any caller-supplied extra denies. Everything that enforces or
+// checks the always-on shields derives from this, so a caller deny can never reach
+// one place and miss another; appliedShields carries that invariant for the grant
+// checks, which need the rules as denyArgs will really mount them.
 func alwaysShields(sb sandbox) []denylist.Rule {
 	rules := append(homeShields(sb), denylist.Runtime(sb.runtimeDir, sb.homes...)...)
 	return append(rules, sb.extraDeny...)
@@ -714,6 +709,11 @@ func homeShields(sb sandbox) []denylist.Rule {
 	return rules
 }
 
+// shieldRules is the full deny-list for a run: the mandatory Home shields plus,
+// for each write-granted checkout, the static Workspace shields and the git
+// directories discovered under it (see gitDirShields). Building it in one place
+// keeps denyArgs and createdShields enforcing and cleaning up the exact same
+// set - a divergence would either leak a host artifact or leave a path unshielded.
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	rules := alwaysShields(sb)
 	for _, w := range writes {

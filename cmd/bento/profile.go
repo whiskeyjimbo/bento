@@ -1685,9 +1685,23 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	var shields []shieldGrant
 	addShields := func(rules []denylist.Rule) {
 		for _, r := range rules {
-			if r.Deny == denylist.DenyAll && !seenShield[r.Path] {
-				seenShield[r.Path] = true
-				shields = append(shields, shieldGrant{Path: r.Path, Holds: r.Holds})
+			if r.Deny != denylist.DenyAll {
+				continue
+			}
+			// Both spellings, for the reason clampWriteShieldedGrants resolves its own
+			// rules: the observer records resolved paths and the enforcer compares
+			// against the shield's resolved path, so a symlinked store (~/.gnupg into a
+			// dotfiles checkout, which stow and home-manager both produce) is observed at
+			// its target. Matching the literal alone keeps that grant in the proposal and
+			// lets the run hard-refuse it - and the refusal's only remedy is a read of the
+			// whole store, so the proposal would steer the reviewer to a BROADER grant
+			// than the program needed. The drop is reported against the grant, so the
+			// extra entry only ever adds a match.
+			for _, p := range []string{r.Path, resolvedOrEmpty(r.Path)} {
+				if p != "" && !seenShield[p] {
+					seenShield[p] = true
+					shields = append(shields, shieldGrant{Path: p, Holds: r.Holds})
+				}
 			}
 		}
 	}
@@ -1726,6 +1740,16 @@ func clampShieldedGrants(reads, writes []string) (keptReads, keptWrites []string
 	return keptReads, keptWrites, dropped, writeShielded
 }
 
+// resolvedOrEmpty is a shield path with the host's symlinks followed, or "" where it
+// does not resolve (an absent store, which is shielded but has no second spelling).
+func resolvedOrEmpty(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
+
 // clampWriteShieldedGrants drops write grants at or inside a DenyWrite home shield
 // (~/.local/bin, ~/.cargo/bin, ~/.rustup, ~/.bashrc, ...). checkWriteNotUnderReadOnlyShield
 // hard-refuses these at run time and there is no opt-in, so proposing one would hand the
@@ -1754,11 +1778,8 @@ func clampWriteShieldedGrants(homes, writes []string) (kept, dropped []string) {
 			// pointing into a dotfiles repo or the nix store, which home-manager and stow
 			// both produce) is observed at its target. Matching only the literal path
 			// would keep that write in the proposal and let compile refuse it - the
-			// disagreement this clamp exists to prevent. Resolving here closes it; a path
-			// that does not resolve is simply not added.
-			if resolved, err := filepath.EvalSymlinks(r.Path); err == nil {
-				add(resolved)
-			}
+			// disagreement this clamp exists to prevent.
+			add(resolvedOrEmpty(r.Path))
 		}
 	}
 	for _, g := range writes {
