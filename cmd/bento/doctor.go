@@ -8,6 +8,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -49,6 +50,12 @@ func newDoctorCmd() *cobra.Command {
 			}
 			report := e.Probe(cmd.Context())
 
+			// A host that cannot anchor its shields refuses every run, and no layer status
+			// carries that: newSandbox fails before any tier is chosen, so Probe never sees
+			// it. Asked here so the machine surface and the exit code say what the human
+			// output on the same invocation already does.
+			_, anchorErr := denylist.HomeAnchors()
+
 			// doctor exits non-zero only for a shortfall in a guarantee EVERY run needs,
 			// so a CI wrapper can gate on baseline host readiness without parsing output.
 			// A conditionally-required core layer (network egress control) and the
@@ -57,10 +64,10 @@ func newDoctorCmd() *cobra.Command {
 			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
-				if err := writeJSON(os.Stdout, toDoctorJSON(report)); err != nil {
+				if err := writeJSON(os.Stdout, toDoctorJSON(report, anchorErr)); err != nil {
 					return err
 				}
-				if shortfall {
+				if shortfall || anchorErr != nil {
 					return &exitError{code: doctorCoreShortfall}
 				}
 				return nil
@@ -70,6 +77,13 @@ func newDoctorCmd() *cobra.Command {
 			writeReportTable(os.Stdout, report)
 			fmt.Println()
 			writeShieldAnchors(os.Stdout)
+			// Before the layer verdict, because this refuses every run whatever the layers
+			// say, and unlike a core-layer shortfall there is no flag that opts into it.
+			if anchorErr != nil {
+				fmt.Println("Runs are refused here until the shields can be anchored. --allow-degraded")
+				fmt.Println("does not help: the anchors decide where the shields land, not how they hold.")
+				return &exitError{code: doctorCoreShortfall}
+			}
 			if shortfall {
 				fmt.Println("A core guarantee every run needs is not fully enforced here. Runs are refused")
 				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")
@@ -109,12 +123,17 @@ func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 }
 
 // toDoctorJSON builds the doctor JSON output. Ready derives from the same
-// gatedShortfall as the exit code, so the field a JSON consumer reads and the process
-// status a shell caller reads can never disagree.
-func toDoctorJSON(r enforce.Report) doctorJSON {
+// gatedShortfall and anchor error as the exit code, so the field a JSON consumer reads
+// and the process status a shell caller reads can never disagree.
+func toDoctorJSON(r enforce.Report, anchorErr error) doctorJSON {
+	var anchors string
+	if anchorErr != nil {
+		anchors = anchorErr.Error()
+	}
 	return doctorJSON{
 		reportJSON:       toReportJSON(r),
-		Ready:            len(gatedShortfall(r)) == 0,
+		Ready:            len(gatedShortfall(r)) == 0 && anchorErr == nil,
+		ShieldAnchors:    anchors,
 		Platform:         platformName(),
 		PlatformVerified: platformVerified(),
 	}

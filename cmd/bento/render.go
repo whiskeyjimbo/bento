@@ -87,6 +87,12 @@ type doctorJSON struct {
 	// can probe every layer as enforced, which is the case that needs saying.
 	Platform         string `json:"platform"`
 	PlatformVerified bool   `json:"platform_verified"`
+	// ShieldAnchors is why this host cannot work out where the credential shields anchor,
+	// absent on a host that can. It refuses every run and no layer reports it - the
+	// sandbox fails to construct before a tier is chosen - so Ready would otherwise say
+	// the host is fine while the human output on the same invocation says runs are
+	// refused.
+	ShieldAnchors string `json:"shield_anchors,omitempty"`
 	// Reason is why there is nothing to report, on a host bento has no backend for. Absent
 	// on a host that was probed, where the layers say it themselves.
 	Reason string `json:"reason,omitempty"`
