@@ -116,6 +116,33 @@ func TestCheckIsQuietWithoutAReachableAlias(t *testing.T) {
 		}
 	})
 
+	// `git clone --local` hardlinks every object in a password store's history, so a clone
+	// of one in a granted tree carries a second name for every blob. The backend anchors on
+	// none of them and does not refuse, so a note here would name a refusal that does not
+	// happen - and would open the granted-tree walk on every Check for the whole life of
+	// the clone.
+	t.Run("a store's own git objects", func(t *testing.T) {
+		home, _ := aliasHome(t)
+		store := filepath.Join(home, ".password-store", ".git", "objects", "ab")
+		if err := os.MkdirAll(store, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		blob := filepath.Join(store, "cdef")
+		if err := os.WriteFile(blob, []byte("blob"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		clone := filepath.Join(filepath.Dir(home), "clone")
+		if err := os.MkdirAll(clone, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(blob, filepath.Join(clone, "cdef")); err != nil {
+			t.Fatal(err)
+		}
+		if r := runnableOver(t, clone, []string{clone}); len(r.CredentialAliases) != 0 {
+			t.Errorf("a git object the user cloned themselves is not an alias past a shield; got %+v", r.CredentialAliases)
+		}
+	})
+
 	// The credential's own path is not a second name for itself. A grant containing the
 	// store walks over it, and its identity is by definition the one being looked for.
 	t.Run("the credential's own path", func(t *testing.T) {
