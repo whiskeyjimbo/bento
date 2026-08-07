@@ -758,12 +758,26 @@ func Home(home string) []Rule {
 		// grants no trust. The config directory IS taken whole, because both spellings
 		// mise reads settings from (config.toml and settings.toml) carry the bypass.
 		//
-		// Residual: ~/.cache/mise carries the resolved bin_paths mise execs, with no trust
-		// check once a config is trusted, so a write grant reaching the cache redirects a
-		// host `mise x` without touching anything here. Not shielded, because a read-only
-		// cache makes `mise install` fail outright rather than degrade. Filed separately.
+		// The cache is the third half, and it is .cache/pre-commit's shape rather than
+		// ~/.cargo/registry's: ~/.cache/mise/<tool>/<version>/bin_paths-*.msgpack.z is the
+		// resolved list of directories mise puts on $PATH, read with NO trust check once a
+		// config is trusted. Rewriting one made `mise x -- jq` run a planted jq in an
+		// already-trusted project against mise 2026.7.18, reaching neither the record nor
+		// the config directory above. A cache read back by a build stays writable; this one
+		// decides which binary executes.
+		//
+		// Taken whole because the bin_paths files sit at <tool>/<version>/, a wildcard no
+		// Rule can express - the same reason sdkman's candidates/*/current/bin is left as a
+		// residual below.
+		//
+		// The cost is larger than the record's and is the .cache/pre-commit trade: with the
+		// cache read-only `mise install` fails outright ("Permission denied (os error 13)")
+		// and lands nothing, where today it installs a usable tool despite the shims shield.
+		// `mise x`, `mise env` and `mise ls` on an already-installed tool are unaffected.
+		// Run the installs outside bento, the same line the $PATH shims block takes.
 		".local/state/mise/trusted-configs",
 		".config/mise",
+		".cache/mise",
 		// pre-commit clones each hook repo here and the installed .git/hooks/pre-commit
 		// executes it on the host at the developer's next commit. The hook entry point is
 		// shielded by Workspace, but the cache it runs FROM is where the code actually
@@ -932,10 +946,10 @@ func Home(home string) []Rule {
 		//
 		// Sparing the prefix keeps the interpreter re-bind working; it does not make
 		// installing in-sandbox clean. A shimming manager writes the shim on every install,
-		// so it meets the shield: against mise 2026.7.18, `mise install` lands the artifact
-		// under installs/ and a later `mise x` works, but it prints `Permission denied (os
-		// error 13)` and exits 1, and `mise reshim` fails outright. Same trade as .nvm and
-		// .rustup, arrived at from the other direction - run the installs outside bento.
+		// so it meets the shield: against mise 2026.7.18, `mise reshim` fails outright.
+		// `mise install` does not reach the shim write at all, because the cache shield
+		// above refuses its lockfile first. Same trade as .nvm and .rustup, arrived at from
+		// the other direction - run the installs outside bento.
 		//
 		// Not expressible as concrete paths, so left as a residual: sdkman's
 		// ~/.sdkman/candidates/*/current/bin and opam's non-default switches, both of which
@@ -1723,8 +1737,8 @@ var dirFileEnvs = []struct{ env, def, file string }{
 // sub is the shielded subdirectory of the relocated base, empty where the base is the
 // shielded directory itself. Only MISE_DATA_DIR needs it: the data tree carries the
 // interpreter installs a policy may legitimately write, and only shims/ is shielded.
-// Sparing the installs does not make `mise install` succeed in-sandbox - see the shim
-// directories above - and following the relocation widens who hits the shim shield.
+// Sparing the installs does not make `mise install` succeed in-sandbox - the cache shield
+// stops it first - and following the relocation widens who hits the shim shield.
 var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// direnv.toml's [whitelist] skips the allow check the ~/.local/share/direnv/allow
 	// shield rests on, so relocating the config directory disarms both.
@@ -1735,6 +1749,8 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"MISE_STATE_DIR", ".local/state/mise", "trusted-configs"},
 	{"MISE_CONFIG_DIR", ".config/mise", ""},
 	{"MISE_DATA_DIR", ".local/share/mise", "shims"},
+	// The resolved bin_paths the host's next `mise x` reads with no trust check.
+	{"MISE_CACHE_DIR", ".cache/mise", ""},
 	// The cloned hook repos the host executes at the next commit.
 	{"PRE_COMMIT_HOME", ".cache/pre-commit", ""},
 }
