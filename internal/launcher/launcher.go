@@ -678,17 +678,32 @@ func refuseNetworkFD(fd int) error {
 //     (0400) are caught by this one even opened read-only.
 //   - Opened read-only. /proc/<pid>/uid_map, gid_map, setgroups, oom_score_adj and the
 //     writable /proc/sys entries are 0644 and pass the first condition; they are
-//     host-reconfiguration channels and only this one catches them. Nothing legitimate
-//     redirects a target's stdout into procfs.
+//     host-reconfiguration channels, and nothing legitimate redirects a target's stdout
+//     into procfs.
 //
-// The bits are not the invoker's to set: procfs rejects chmod with EPERM even from the
-// file's own owner, so a hostile parent cannot open a 0444 alias of /proc/self/mem, and
-// a bind mount elsewhere carries the same inode and the same mode.
+// The second condition holds only where the target could not open the file for writing
+// itself, which is the privilege-drop case this check exists for - a root parent handing
+// a descriptor to an unprivileged target. Where the two share a uid, the target reopens
+// the inherited descriptor writable through /proc/self/fd/N (measured: the magic link
+// re-resolves to the same inode and re-checks only the inode's permission bits), so on
+// those runs the read-only test is a screen against a careless parent, not a fence
+// against a hostile one. It is kept because the case it does hold for is the one the
+// device rule above is written for too.
+//
+// The mode bits are not the invoker's to set: procfs rejects chmod with EPERM even from
+// the file's own owner, so a hostile parent cannot open a 0444 alias of /proc/self/mem,
+// and a bind mount elsewhere carries the same inode and the same mode. An O_PATH
+// descriptor does not evade the first condition either - Fstat and Fstatfs both answer
+// on one, so it is classified like any other.
 //
 // This narrows the residual rather than closing it: a world-readable procfs file on a
-// HOST process still passes, so /proc/<pid>/cmdline, maps, mountinfo and /proc/kallsyms
-// remain readable through an inherited descriptor - argv secrets, ASLR layout and host
-// mount topology. docs/threat-model.md carries that so it is not read as a fence.
+// HOST process still passes, so /proc/<pid>/cmdline, maps, mountinfo, /proc/kallsyms and
+// /proc/net/* remain readable through an inherited descriptor - argv secrets, ASLR
+// layout, host mount topology, and the host network enumeration the AF_NETLINK refusal
+// above exists to deny (a /proc/net seq_file pins the netns of whoever opened it, so the
+// sandbox's fresh procfs and fresh netns do not take it back). Separating those from the
+// ordinary /proc/cpuinfo redirect wants a path denylist, which is what this file refuses
+// to build; docs/threat-model.md carries them so they are not read as a fence.
 func refuseKernelFileFD(fd int, st unix.Stat_t) error {
 	var sf unix.Statfs_t
 	if err := unix.Fstatfs(fd, &sf); err != nil {
