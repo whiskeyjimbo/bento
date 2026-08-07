@@ -242,16 +242,23 @@ really are byte streams, and redirecting stdin from `/proc/cpuinfo` is ordinary 
 procfs descriptor passes only if it is world-readable and open read-only. That refuses
 `/proc/<pid>/mem`, `/proc/kcore` and `/proc/<pid>/environ` on the first condition and
 the writable entries (`uid_map`, `oom_score_adj`, `/proc/sys/*`) on the second. procfs
-rejects `chmod` even from the inode's owner, so the bits are not a hostile parent's to
-forge.
+rejects `chmod` even from the inode's owner, so the mode bits are not a hostile parent's
+to forge.
 
 **World-readable procfs on stdio is an accepted residual.** The narrowing shrinks the
-channel, it does not close it: `/proc/<pid>/cmdline`, `maps`, `mountinfo` and
-`/proc/kallsyms` for a *host* process still pass, so an inherited descriptor can still
-leak argv secrets, ASLR layout, host mount topology and kernel symbol addresses. Those
-are reads of information, not a channel into host memory or a reconfiguration of the
-host, which is where the line is drawn. Refusing procfs wholesale would close it and
-would also refuse a shape of run people actually use.
+channel, it does not close it, in two ways. The read-only half only bites where the
+target could not open the file for writing itself - the privilege-drop case, a root
+parent handing a descriptor down. Where parent and target share a uid, the target
+reopens the inherited descriptor writable through `/proc/self/fd/N`, which re-resolves
+to the same inode and re-checks only its permission bits. And a world-readable procfs
+file on a *host* process still passes: `/proc/<pid>/cmdline`, `maps`, `mountinfo`,
+`/proc/kallsyms` and `/proc/net/*` leak argv secrets, ASLR layout, host mount topology,
+kernel symbol addresses, and - because a `/proc/net` seq_file pins the netns of whoever
+opened it - the host interface, route and socket enumeration the AF_NETLINK refusal
+above exists to deny. Those are reads of information, not a channel into host memory.
+Separating them from the ordinary `/proc/cpuinfo` redirect wants a denylist of paths,
+which is exactly what the family and kind allowlists refuse to be, and refusing procfs
+wholesale would refuse a shape of run people actually use.
 
 ### 4.5 Watching without reading
 
