@@ -86,10 +86,16 @@ builds, bento's public packages are self-sufficient for an embedder.
 `demo/reach.sh` tries to reach `example.com`. So that egress is *undeclared*: what
 happens to it depends entirely on the gate. Run these from this directory.
 
+It carries no approval stamp, so every command below passes `--allow-unapproved`.
+Like `bento run`, the example refuses an unstamped manifest by default: the stamp
+is the fingerprint of the permissions a human approved, and running one without it
+is running permissions nobody signed off on. The flag is the profile-then-run inner
+loop, where nothing has been stamped yet.
+
 ### 1. Declarative box - undeclared egress is denied
 
 ```sh
-./bentoembed demo/reach.yaml
+./bentoembed --allow-unapproved demo/reach.yaml
 ```
 
 ```
@@ -102,7 +108,7 @@ never leaves the sandbox.
 ### 2. Supervised, unattended - pre-approve the host
 
 ```sh
-BENTO_GATE_ALLOW=example.com ./bentoembed demo/reach.yaml
+BENTO_GATE_ALLOW=example.com ./bentoembed --allow-unapproved demo/reach.yaml
 ```
 
 ```
@@ -119,7 +125,7 @@ lists what the gate let out beyond the manifest.
 Run it attached to a terminal, with no pre-approval:
 
 ```sh
-./bentoembed demo/reach.yaml
+./bentoembed --allow-unapproved demo/reach.yaml
 ```
 
 ```
