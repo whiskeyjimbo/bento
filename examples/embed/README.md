@@ -42,7 +42,7 @@ It does three things worth studying:
 ## Build
 
 ```sh
-go build -o embed .
+go build -o bentoembed .
 ```
 
 This module is intentionally separate (its own `go.mod`), so Go's internal-package
@@ -58,7 +58,7 @@ happens to it depends entirely on the gate. Run these from this directory.
 ### 1. Declarative box - undeclared egress is denied
 
 ```sh
-./embed demo/reach.yaml
+./bentoembed demo/reach.yaml
 ```
 
 ```
@@ -71,7 +71,7 @@ never leaves the sandbox.
 ### 2. Supervised, unattended - pre-approve the host
 
 ```sh
-BENTO_GATE_ALLOW=example.com ./embed demo/reach.yaml
+BENTO_GATE_ALLOW=example.com ./bentoembed demo/reach.yaml
 ```
 
 ```
@@ -88,7 +88,7 @@ lists what the gate let out beyond the manifest.
 Run it attached to a terminal, with no pre-approval:
 
 ```sh
-./embed demo/reach.yaml
+./bentoembed demo/reach.yaml
 ```
 
 ```

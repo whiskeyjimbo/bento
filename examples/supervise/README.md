@@ -41,13 +41,13 @@ built to make the difference visible.
 ## Build
 
 ```sh
-go build -o supervise .
+go build -o bentosupervise .
 ```
 
 ## Walkthrough
 
 ```sh
-./supervise run demo/agent.sh
+./bentosupervise run demo/agent.sh
 ```
 
 `demo/agent.sh` reads two files from `../vault`, writes a log, and reaches two hosts

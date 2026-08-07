@@ -80,10 +80,10 @@ Environment:
                      (e.g. "example.com,10.0.0.5:443"), so the gate runs unattended.
 
 Try it (from this directory):
-  go build -o embed .
-  ./embed demo/reach.yaml                                # denied: example.com is undeclared
-  BENTO_GATE_ALLOW=example.com ./embed demo/reach.yaml   # admitted, then surfaced
-  ./embed demo/reach.yaml                                # in a terminal: prompts you
+  go build -o bentoembed .
+  ./bentoembed demo/reach.yaml                                # denied: example.com is undeclared
+  BENTO_GATE_ALLOW=example.com ./bentoembed demo/reach.yaml   # admitted, then surfaced
+  ./bentoembed demo/reach.yaml                                # in a terminal: prompts you
 
 See README.md for the full walkthrough.
 `)

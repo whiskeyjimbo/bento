@@ -78,8 +78,8 @@ the script has its own stdin. "run" needs a terminal on stdin and refuses withou
 one; "perms" is the scriptable half.
 
 Try it (from this directory):
-  go build -o supervise .
-  ./supervise run demo/agent.sh
+  go build -o bentosupervise .
+  ./bentosupervise run demo/agent.sh
 `)
 }
 

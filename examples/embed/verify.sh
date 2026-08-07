@@ -47,7 +47,7 @@ fi
 
 out="$(setsid --wait "$bin" demo/reach.yaml 2>&1)" || {
 	echo "$out" >&2
-	echo "FAIL: README mode 1 (./embed demo/reach.yaml) did not succeed" >&2
+	echo "FAIL: README mode 1 (./bentoembed demo/reach.yaml) did not succeed" >&2
 	exit 1
 }
 case "$out" in
