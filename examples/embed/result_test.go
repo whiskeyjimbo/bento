@@ -176,6 +176,9 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 		Refusals: []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
 		MissingReads:  []string{"/data/\x1b[2Kabsent"},
 		FileishWrites: []string{"/out/\x1b[2Kreport.json"},
+		CredentialAliases: []enforce.CredentialAlias{
+			{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh/id_rsa"},
+		},
 	}
 	var out strings.Builder
 	writeRunnability(&out, printed)
@@ -191,8 +194,13 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 		// which is how a completeness guard passes over the very field it was added for.
 		var want string
 		switch {
-		case v.Kind() == reflect.Slice && v.Len() > 0:
+		case v.Kind() == reflect.Slice && v.Len() > 0 && v.Type().Elem().Kind() == reflect.String:
 			want = v.Index(0).String()
+		// A slice of a struct is asserted on its first field, which is the path in every
+		// case there is: a finding that does not print the path it is about is not a
+		// finding a reader can act on.
+		case v.Kind() == reflect.Slice && v.Len() > 0 && v.Type().Elem().Kind() == reflect.Struct:
+			want = v.Index(0).Field(0).String()
 		case f.Name == "Unresolved" && v.Bool():
 			want = "could not answer"
 		default:

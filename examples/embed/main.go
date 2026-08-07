@@ -267,6 +267,12 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	for _, g := range r.FileishWrites {
 		fmt.Fprintf(w, "embed: note: this write grant is spelled like a file, but write grants name directories, so run creates one under that name: %q\n", g)
 	}
+	// The one finding here that the RUN refuses over. It is not folded into Refusals
+	// because RunOptions.AcceptAliasesUnder lifts it and no manifest carries that, so an
+	// embedder that wants an alias to block decides it here, where its own options are.
+	for _, a := range r.CredentialAliases {
+		fmt.Fprintf(w, "embed: note: this granted path is a second name for a shielded credential and reads straight past the shield: %q aliases %q; the run refuses unless RunOptions.AcceptAliasesUnder names a tree holding it\n", a.Path, a.Credential)
+	}
 }
 
 // writeResult prints every honesty field of a Result. A frontend's job is not to
