@@ -91,11 +91,11 @@ type RunOptions struct {
 	// carry one machine's backup layout to every other. Whatever it admits is reported in
 	// Result.AcceptedAliases, the same way a gate admission is.
 	//
-	// It has no effect on a Degraded run, and not because there is nothing to
-	// acknowledge: that tier applies no shields and never scans for an alias, so an
-	// alias inside a granted tree is readable there and the run proceeds where the full
-	// tier refuses. The guarantee is absent rather than waived, and what the tier does
-	// expose is reported through the Report.
+	// It applies on the degraded tier too: that tier runs the same scan and makes the
+	// same refusal, so one manifest means one thing on both. What differs is the outcome
+	// it acknowledges - the tier applies no shields, so the credential the alias names is
+	// readable under a granted tree either way, and that exposure is reported through
+	// Result.Exposed rather than through this.
 	AcceptAliasesUnder []string
 
 	// RunID names this run so a supervisor outside it can reap the sandboxed tree. A

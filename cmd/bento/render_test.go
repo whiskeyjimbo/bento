@@ -279,8 +279,10 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 	}
 	execEnforced := func() enforce.Report { return report(enforce.Enforced, enforce.Enforced) }
 	execUnavailable := func() enforce.Report { return report(enforce.Enforced, enforce.Unavailable) }
-	// The Landlock-only tier: no read-only remount behind it, so a refused write answers
-	// EACCES and naming EROFS would map an error the script cannot emit.
+	// A degraded filesystem layer: on the Landlock-only tier there is no read-only
+	// remount behind it, so a refused write answers EACCES and naming EROFS would map an
+	// error the script cannot emit. The same state also reaches a bwrap run whose Landlock
+	// backstop failed, which the network: block is what separates.
 	degradedFS := func() enforce.Report { return report(enforce.Degraded, enforce.Enforced) }
 
 	cases := []struct {
@@ -302,6 +304,11 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		// Each line answers for its own layer, so a tier that cannot produce EROFS drops
 		// the write line and keeps the exec one.
 		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS()}, "exec: none", false, true},
+		// A manifest with network rules cannot be the Landlock-only tier - that tier has no
+		// egress stack and the run refuses - so this is a bwrap run whose Landlock backstop
+		// failed, where egress went through a proxy and the claim would contradict the
+		// manifest the reader has open.
+		{"network rules rule the seccomp egress line out", &policy.Policy{Exec: policy.ExecNone, Network: []policy.NetworkRule{{Host: "example.com"}}}, enforce.Result{Report: degradedFS()}, "exec: none", false, false},
 		{"the degraded tier still fences egress, and says only that", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false, true},
 		{"neither layer in force says nothing at all", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Unavailable, enforce.Unavailable)}, "", false, false},
 		// The hints that explain a failure have already spoken by here, and the legend's
@@ -1122,27 +1129,17 @@ func TestWriteChangedAutoExecNoticeNamesAndQuotesEachFile(t *testing.T) {
 	}
 }
 
-// The degraded filesystem tier skips the credential-alias scan entirely, which is the
-// widest thing --allow-degraded gives up - and it was readable only from the help text of
-// --accept-alias, the flag such a run did not pass. The disclosure keys on the probed
-// filesystem state and not on the flag: --allow-degraded on a host where bwrap works
-// still scans, so claiming otherwise there would be its own dishonesty.
-func TestWriteDegradationsNamesTheSkippedAliasScan(t *testing.T) {
+// The degraded tier runs the same credential-alias scan and makes the same refusal as
+// the full tier, so the degradation block must not claim an alias exposure the run would
+// never have performed. What that tier does expose - the shields it cannot apply - is
+// writeExposedWarning's to report, from a Result this function does not have.
+func TestWriteDegradationsClaimsNoAliasExposure(t *testing.T) {
 	var degraded enforce.Report
 	degraded.Add(enforce.LayerFilesystem, enforce.Degraded, "no user namespaces")
 	var b bytes.Buffer
 	writeDegradations(&b, degraded)
-	if !strings.Contains(b.String(), "never scans for credential aliases") {
-		t.Errorf("a degraded filesystem run must disclose the skipped alias scan; got:\n%s", b.String())
-	}
-
-	var other enforce.Report
-	other.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-	other.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp on this host")
-	var full bytes.Buffer
-	writeDegradations(&full, other)
-	if strings.Contains(full.String(), "never scans for credential aliases") {
-		t.Errorf("a run whose filesystem tier scanned must not claim it skipped the scan; got:\n%s", full.String())
+	if strings.Contains(b.String(), "alias") {
+		t.Errorf("the degraded tier scans for aliases, so the block must make no claim about them; got:\n%s", b.String())
 	}
 }
 
@@ -1496,5 +1493,14 @@ func TestWriteExecRecordSeparatesItsFiveStates(t *testing.T) {
 	}
 	if strings.Contains(full, "ends where it") {
 		t.Errorf("a complete record must not claim it was cut short; got:\n%s", full)
+	}
+}
+
+// A host whose $HOME cannot be resolved gets nil grants from resolvedGrants, and
+// writePolicySummary prints the literal grants anyway - so this is asked for a host
+// answer it does not have, over a manifest that does have grants.
+func TestGrantTargetsWithoutAHostAnswer(t *testing.T) {
+	if got := toGrantTargetsJSON([]string{"~/src", "/data"}, nil); got != nil {
+		t.Errorf("no resolution for this host must yield no targets; got %v", got)
 	}
 }

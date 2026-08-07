@@ -321,7 +321,13 @@ func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
 // This is validate's answer, resolved when the summary is written - there is no run to
 // take it from, and the comment on writeResolvedGrants owns that gap. The run's own
 // envelope uses toShieldedGrantsJSON instead, which carries what was actually bound.
+// resolvedGrants yields nil for a host that cannot resolve the grants at all (an
+// unusable $HOME), and writePolicySummary calls through with that nil rather than
+// skipping the line - so nil means "no answer for this host", not "no grants".
 func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
+	if resolved == nil {
+		return nil
+	}
 	var out []grantTargetJSON
 	for i, lit := range literal {
 		if lands, differs := grantTarget(lit, resolved[i]); differs {
@@ -710,12 +716,16 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	netDenied := len(p.Network) == 0 && mountNSConfines
 	// The Landlock-only tier denies egress just as completely, but through a seccomp
 	// filter answering EPERM on socket(), so it needs its own line - the exec line below
-	// reads "on a command" and does not cover a refused socket. Degraded on this layer IS
-	// that tier, and it only stands up where the seccomp egress filter does
-	// (filesystemLayer). A manifest with network rules cannot reach this tier at all: the
-	// egress stack it would need reports Unavailable without a netns and the run refuses,
-	// so a degraded run always denies all egress.
-	netDeniedSeccomp := res.Report.StateOf(enforce.LayerFilesystem) == enforce.Degraded
+	// reads "on a command" and does not cover a refused socket. It only stands up where
+	// the seccomp egress filter does (filesystemLayer).
+	//
+	// Degraded on this layer is two states, not one: the probed Landlock-only tier, and a
+	// bwrap run whose Landlock backstop failed to apply inside the sandbox while the mount
+	// namespace held. The second has a netns and an egress proxy, so it answers neither
+	// this errno nor this claim. A non-empty network: block rules the first out - the
+	// egress stack that tier would need reports Unavailable without a netns and the run
+	// refuses - which is why the zero-rule test is what separates them.
+	netDeniedSeccomp := len(p.Network) == 0 && res.Report.StateOf(enforce.LayerFilesystem) == enforce.Degraded
 	if !mountNSConfines && !netDeniedSeccomp && execMode == "" {
 		return
 	}
@@ -1690,15 +1700,6 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
 			fmt.Fprintf(w, "[bento]   %s\n", line)
 		}
-	}
-	// The sharpest consequence of the degraded filesystem tier is not in the layer line
-	// above: it never scans for aliases at all, so an alias inside a granted tree was
-	// readable and nothing counted it. The guarantee is absent rather than waived, which
-	// is also why --accept-alias cannot cover it. Keyed on the probed layer state, not on
-	// --allow-degraded: the flag on a host where bwrap works still scans.
-	if r.StateOf(enforce.LayerFilesystem) == enforce.Degraded {
-		fmt.Fprintln(w, "[bento]   this tier never scans for credential aliases, so a second name for a shielded")
-		fmt.Fprintln(w, "[bento]   credential under a granted tree was exposed rather than acknowledged.")
 	}
 	fmt.Fprintln(w, "[bento] run `bento doctor` for the full picture, or --strict to refuse rather than degrade.")
 }

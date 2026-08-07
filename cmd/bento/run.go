@@ -145,8 +145,8 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&strict, "strict", false, "refuse to run unless every guarantee the policy needs is fully enforced, and report it if one lapses while the script runs")
-	cmd.Flags().BoolVar(&allowDegraded, "allow-degraded", false, "run even when a core guarantee can only be partially enforced; the widest escape hatch there is - the degraded tier it selects never scans for aliases at all, so it exposes them rather than acknowledging them")
-	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; --allow-degraded never scans for aliases at all, so it exposes them rather than acknowledging them")
+	cmd.Flags().BoolVar(&allowDegraded, "allow-degraded", false, "run even when a core guarantee can only be partially enforced; the widest escape hatch there is - the degraded tier it selects applies no shields, so a credential under a granted tree is readable whether or not anything aliases it")
+	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; the degraded tier scans and refuses the same way, so this is needed there too")
 	cmd.Flags().BoolVar(&allowUnapproved, "allow-unapproved", false, "run even if the manifest is unapproved or its approval is stale (the profile-then-run inner loop)")
 	cmd.Flags().StringArrayVar(&envFlags, "env", nil, "supply a value for an allowlisted env var (NAME=VALUE); repeatable")
 	cmd.Flags().StringVar(&runID, "run-id", "", "name this run so a supervisor can reap the whole process tree it leaves behind, not just bento's own pid. The run gets a transient systemd user scope named bento-run-<id>.scope, which `systemctl --user kill` ends and `systemctl --user show -p ControlGroup` resolves to a cgroup path. The id is letters, digits and underscore, up to 64. It needs a scope to name, so a manifest that sets no resource limits, or a host that cannot create one, is refused rather than run without a handle")
