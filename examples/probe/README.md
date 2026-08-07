@@ -67,7 +67,8 @@ bento run broad-home.manifest.yaml --allow-unapproved
 
 `read.home-listing` should report a count close to `ls -A ~ | wc -l`, proving
 home really is mounted, while all four `read.shield-*` probes stay DENIED. The
-closing line should say 44 or so paths shielded. If the count is small, the
+closing line names how many paths were shielded; it should be dozens, not a
+handful - the exact number is host-dependent. If the count is small, the
 grant reached nothing and the DENIEDs mean nothing - see below.
 
 **4. Egress, then the hardening tier.**
