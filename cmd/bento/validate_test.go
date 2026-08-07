@@ -356,8 +356,9 @@ func TestValidateStatesTheSandboxHome(t *testing.T) {
 		t.Errorf("summary must name the HOME the script will see; got:\n%s", out)
 	}
 
-	// The value the run would use, resolved the way the run resolves it: an allowlisted
-	// name the host never set reaches the sandbox as nothing at all, not as an empty HOME.
+	// An allowlisted name the host never set is passed through as nothing, not as an
+	// empty string - so the sandbox lands on the same remapped home an unlisted HOME
+	// gets, which an env: list naming HOME gives the reader no reason to expect.
 	p := &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}
 	env, unset, err := enforce.ResolveEnv(p, nil, func(string) (string, bool) { return "", false })
 	if err != nil || len(env) != 0 || len(unset) != 1 {
@@ -366,8 +367,9 @@ func TestValidateStatesTheSandboxHome(t *testing.T) {
 	os.Unsetenv("HOME")
 	buf.Reset()
 	writePolicySummary(&buf, "m.yaml", p, nil, nil)
-	if !strings.Contains(buf.String(), "allowlisted but unset here") {
-		t.Errorf("an allowlisted-but-unset HOME must be called out; got:\n%s", buf.String())
+	if got := buf.String(); !strings.Contains(got, "allowlisted but unset on this host") ||
+		!strings.Contains(got, enforce.SandboxHome) {
+		t.Errorf("an allowlisted-but-unset HOME must say so and name the remapped home; got:\n%s", got)
 	}
 }
 
