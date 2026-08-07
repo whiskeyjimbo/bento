@@ -223,10 +223,9 @@ func dropDeclined(merged *policy.Policy, declined map[string]bool) *policy.Polic
 }
 
 // applyExecAnswer holds the session's exec answer against the merge. mergePolicies
-// promotes exec: all from EITHER side and dropDeclinedSeeds only reaches a seeded
-// manifest, so without this an existing unapproved or stale manifest at --out
-// reinstates the grant the reviewer just declined - the hole the prompt exists to
-// close. It only ever narrows, and only from exec: all, so a hand-written none-strict
+// promotes exec: all from EITHER side, and exec is not a path so dropDeclined does not
+// reach it; without this an existing unapproved or stale manifest at --out reinstates
+// the grant the reviewer just declined - the hole the prompt exists to close. It only ever narrows, and only from exec: all, so a hand-written none-strict
 // is left alone rather than being widened to plain none.
 func applyExecAnswer(merged, accepted *policy.Policy) *policy.Policy {
 	if accepted.Exec != policy.ExecAll && merged.Exec == policy.ExecAll {

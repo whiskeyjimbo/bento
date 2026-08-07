@@ -465,8 +465,12 @@ func SandboxScratch(p string) bool {
 // granted write:~/proj drops a symlink to /etc inside it and writes through the link),
 // and a report that did not would go quiet on exactly the case the resolution exists
 // for.
+// isSystemPath is asked on both spellings, though only the resolved one reaches
+// Synthesize through here (the literal is already inside skip): a /usr write reported
+// when it arrives through a link and passed over in silence when it is spelled straight
+// is the same withheld class answering two ways.
 func FlooredWrite(dir string) bool {
-	if flooredWrite(dir) {
+	if flooredWrite(dir) || isSystemPath(dir) {
 		return true
 	}
 	resolved := pathresolve.Existing(dir)
