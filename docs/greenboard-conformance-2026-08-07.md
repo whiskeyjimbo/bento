@@ -162,16 +162,13 @@ cross a refresh.
   "a missing grant looks like a missing file" recovery needs, and now carry `Source` -
   which environment variable relocated the shield. Still the argument for reading the
   Report rather than the exit code.
-- `docs/rewrite-assessment-2026-08-06.md` records a known divergence between the three
-  sites that answer "does this grant land inside a shield" (runtime, validate gate, profile
-  clamp). It diverges in **both** directions, so neither surface substitutes for the other.
-  Gap A: a write grant at the target of a symlinked entry in a credential store validates
-  clean and the run refuses it (`credentialLinkShields` is runtime-only). Gap B: where a
-  shield rule resolves onto a home, the gate keeps a rule the runtime drops and flags every
-  grant inside that home, which the run honors - the gate refusing what a run accepts, the
-  direction `render.go:461` asserts cannot happen. Consequence for greenboard: smoke-run
-  every lane manifest, and treat a validate refusal on one as a claim to check rather than a
-  verdict. Gap B is exotic host state and lower confidence; Gap A is not.
+- **`bento validate` now answers shield containment the way a run does.** The divergence
+  `docs/rewrite-assessment-2026-08-06.md` measured across three sites was closed by the
+  `internal/shield` port under epic `bv2-pj8x`, which landed the same day and deleted the
+  mirrors - both its gaps with it, plus a third the port's review found. That is what makes
+  greenboard §7.5 sound: `bento validate --relocatable --strict` in CI is a real gate on a
+  lane manifest rather than a subset of what a run would refuse. Smoke-run each lane
+  manifest once anyway, for the tier and the host, not for the grants.
 
 ## 6. What to change, on which side
 

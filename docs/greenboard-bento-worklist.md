@@ -28,7 +28,7 @@ Three ways out, and bento only owes work on two of them:
   `--json` already reports post-hoc: `GateDenied`, `Denied`, `GuardBlocked`, `Untunneled`
   (`cmd/bento/run.go:467`). Card-visible, just not live. No bento change.
 
-**Decide this first** - items 4 and 5 read differently depending on the answer, and it is a
+**Decide this first** - items 3 and 4 read differently depending on the answer, and it is a
 one-way door for the runner's language.
 
 ### 2. Answer what happens when Claude Code refreshes its OAuth token in-sandbox
@@ -51,19 +51,7 @@ This is the single most likely way an overnight first cut fails at 3am.
 
 ## Wanted before the board runs unattended
 
-### 3. Close shield-parity Gap A
-
-Greenboard §7.5 wants lane manifests under a CI check, which means `bento validate` is
-load-bearing for them. `credentialLinkShields` is runtime-only, so a write grant at the
-target of a symlinked entry in a credential store validates clean and the run refuses it
-(`docs/rewrite-assessment-2026-08-06.md` §2). Gap B is the reverse and lower confidence.
-
-The real fix is the `internal/shield` subsystem rewrite that assessment recommends - three
-consumers of one rule engine, mirrors deleted. Until then a green `validate` on a lane
-manifest is not a promise the lane starts, so the runner has to smoke-run each manifest
-once, which is a workaround greenboard should not have to keep.
-
-### 4. Confirm a grant can bind a unix socket file
+### 3. Confirm a grant can bind a unix socket file
 
 §9 leaves "where the socket lives" open and calls it cheap either way: inside the worktree
 under a relative grant, or an embedder hook that binds one. The first needs no bento
@@ -81,7 +69,7 @@ Note the constraint that makes this safe: the netns fence does not cover AF_UNIX
 degraded tier for the same reason - `run --strict` already expresses that, no change
 needed.
 
-### 5. Decide whether the credential opt-in should count as a pinned path
+### 4. Decide whether the credential opt-in should count as a pinned path
 
 `bento validate --relocatable` flags `~/.claude/.credentials.json` as a `pinned_path`
 (`manifest.NonAnchoring`, `manifest/manifest.go:342-344`), so a monitored-auth lane manifest
