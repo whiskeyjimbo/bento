@@ -702,14 +702,18 @@ func writeSandboxHome(w io.Writer, p *policy.Policy) {
 		return
 	}
 	// The host value, because that is what enforce.ResolveEnv hands the run for an
-	// allowlisted name (validate takes no --env, so nothing can override it).
+	// allowlisted name. `bento run --env HOME=...` can still replace it, which is why
+	// the line says which HOME it is rather than asserting the run's.
 	home, ok := os.LookupEnv("HOME")
 	if !ok {
-		fmt.Fprintf(w, "  note: HOME is allowlisted but unset here, so the sandbox is given none at all\n")
-		fmt.Fprintf(w, "        and a `~` the script expands is resolved by the shell, not by bento.\n")
+		// Allowlisting a name the host never set passes nothing through, so the sandbox
+		// falls back to the same remapped home a manifest that never named HOME gets -
+		// which the reader has no reason to expect from an env: list that says HOME.
+		fmt.Fprintf(w, "  note: HOME is allowlisted but unset on this host, so nothing is passed through\n")
+		writeSandboxHomeNote(w, "  ")
 		return
 	}
-	fmt.Fprintf(w, "  HOME inside the sandbox: %s\n", strconv.Quote(home))
+	fmt.Fprintf(w, "  HOME inside the sandbox: %s (this host's)\n", strconv.Quote(home))
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal
