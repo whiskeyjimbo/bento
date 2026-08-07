@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -692,11 +693,23 @@ func writeGrantRefusals(w io.Writer, kinds ...[]string) {
 // a script using the ordinary `~/.config/...` idiom fails on a path its author never
 // wrote and reads as a bug in their own code. validate is where the reader is already
 // reviewing permissions, which is before the first confusing traceback rather than after.
+// Passing HOME through is what `bento profile` writes by default, so staying silent
+// there left the common path with nothing said about the value that decides where a `~`
+// in the script lands - and the manifest names HOME without giving it.
 func writeSandboxHome(w io.Writer, p *policy.Policy) {
-	if slices.Contains(p.Env, "HOME") {
+	if !slices.Contains(p.Env, "HOME") {
+		writeSandboxHomeNote(w, "  ")
 		return
 	}
-	writeSandboxHomeNote(w, "  ")
+	// The host value, because that is what enforce.ResolveEnv hands the run for an
+	// allowlisted name (validate takes no --env, so nothing can override it).
+	home, ok := os.LookupEnv("HOME")
+	if !ok {
+		fmt.Fprintf(w, "  note: HOME is allowlisted but unset here, so the sandbox is given none at all\n")
+		fmt.Fprintf(w, "        and a `~` the script expands is resolved by the shell, not by bento.\n")
+		return
+	}
+	fmt.Fprintf(w, "  HOME inside the sandbox: %s\n", strconv.Quote(home))
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal
