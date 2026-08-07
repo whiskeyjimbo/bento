@@ -152,6 +152,15 @@ func loadStore() (*store, error) {
 	// fails where it used to print what is there. resolveSymlinks keeps the shields
 	// correct either way, and the write path below reports the failure loudly.
 	_ = os.MkdirAll(dir, 0o700)
+	// Tighten BEFORE reading, not only on the way out: a dir left group/world-writable
+	// is one another uid can plant an allow in, and tightening it after the run has
+	// already applied that allow warns about an exposure that has happened. A dir that
+	// is not there yet has nothing to tighten and nothing to read; any other failure
+	// (someone else owns it, so the chmod is refused) is fatal, because it says the
+	// decisions in there are not ours to trust.
+	if err := tightenStoreDir(dir); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
 	s := &store{Version: storeVersion, Apps: map[string]*appPerms{}, dir: dir, path: filepath.Join(dir, "permissions.json")}
 	if err := requireRegular(s.path); err != nil {
 		return nil, err
@@ -191,15 +200,17 @@ func emptyStore() (*store, error) {
 // save persists the decisions this run changed, applied onto the current on-disk
 // store under the lock. It deliberately does NOT write back the whole in-memory
 // snapshot: a key the run only read must survive a concurrent `perms forget`/`reset`
-// that deleted it while the run was parked at a prompt. Only entries this run added
-// or changed (relative to what it loaded) are reapplied, so concurrent additions and
-// deletions both stand.
+// that deleted it while the run was parked at a prompt. Only entries this run added,
+// changed, or DELETED (relative to what it loaded) are reapplied, so concurrent
+// additions and deletions both stand.
 func (s *store) save() error { return s.write(true) }
 
-// overwrite writes the store atomically WITHOUT reconciling with the on-disk copy,
-// so a deletion (forget/reset) sticks. The tradeoff is the other direction: a run
-// that saves in the window between an edit command's unlocked load and this write is
-// clobbered. That window is acceptable for a manual admin command.
+// overwrite writes the store atomically WITHOUT reconciling with the on-disk copy, so
+// the in-memory value wins outright. The tradeoff is that a run which saves in the
+// window between an unlocked load and this write is clobbered, so it is used only where
+// the merge would give the wrong answer: an operator-typed `perms global allow`, which
+// the merge's deny-preference would override, and a reset recovering a store that could
+// not be read, which has no base to diff a deletion against.
 func (s *store) overwrite() error { return s.write(false) }
 
 // write persists the store atomically (temp + rename) at mode 0600, serialized by
@@ -212,8 +223,9 @@ func (s *store) write(merge bool) error {
 	}
 	// MkdirAll is a no-op on a directory that already exists, so a store dir created
 	// with a permissive umask (or by an earlier version) keeps whatever mode it has.
-	// It holds the persisted record of human approvals; anyone who can write there can
-	// grant themselves an allow the next run applies without prompting.
+	// loadStore tightens it too, which is where the exposure actually closes; this one
+	// covers the write paths that never loaded (a reset recovering an unreadable store)
+	// and the directory being widened while the run was parked at a prompt.
 	if err := tightenStoreDir(s.dir); err != nil {
 		return err
 	}
@@ -337,6 +349,13 @@ func tightenStoreDir(dir string) error {
 // appKey refuses a non-regular entrypoint: a FIFO or device at permissions.json or
 // .lock blocks in ReadFile or OpenFile before anything is prompted, so the tool hangs
 // instead of failing. A path that does not exist yet is the first-write case.
+//
+// It refuses a file somebody else owns for a separate reason: tightening the directory
+// stops the NEXT plant, not the one already sitting there from when the directory was
+// writable. These bytes are read as decisions a human made, and a run applies a
+// remembered allow with no prompt, so a file this uid did not write is not a store to
+// read - it is somebody else's answers. `perms reset` is the way out, and survives this
+// error by design.
 func requireRegular(path string) error {
 	fi, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -347,6 +366,13 @@ func requireRegular(path string) error {
 	}
 	if !fi.Mode().IsRegular() {
 		return fmt.Errorf("permission store %s is not a regular file", path)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("cannot read ownership of %s", path)
+	}
+	if euid := uint32(os.Geteuid()); st.Uid != euid {
+		return fmt.Errorf("permission store %s is owned by uid %d, not you (%d); it records what YOU approved, so it will not be read. remove it, or clear it with `supervise perms reset`", path, st.Uid, euid)
 	}
 	return nil
 }
@@ -365,10 +391,12 @@ func checkVersion(v int, path string) error {
 }
 
 // mergeChanges applies onto the on-disk store (the receiver) the decisions mem
-// changed since it loaded (mem vs base). Disk stays authoritative for everything
-// else, so a concurrent run's additions and a concurrent forget/reset's deletions
-// both survive; a concurrent deny still wins a per-key conflict. A nil base (a store
-// never loaded from disk) treats every entry as new.
+// changed since it loaded (mem vs base) - including the ones it REMOVED, so a
+// `perms forget`/`reset` is a delete-set applied under the lock rather than a
+// pre-lock snapshot written over whatever landed meanwhile. Disk stays authoritative
+// for everything else, so a concurrent run's additions and a concurrent deletion both
+// survive; a concurrent deny still wins a per-key conflict. A nil base (a store never
+// loaded from disk) treats every entry as new and can express no deletion.
 func (disk *store) mergeChanges(mem, base *store) {
 	if base == nil {
 		base = &store{}
@@ -378,6 +406,13 @@ func (disk *store) mergeChanges(mem, base *store) {
 	mergeDecisionChanges(&disk.Global.Network, mem.Global.Network, base.Global.Network)
 	if mem.Global.Exec != base.Global.Exec {
 		disk.Global.Exec = mergeExec(mem.Global.Exec, disk.Global.Exec)
+	}
+	// An app present at load and gone now was forgotten; drop it from disk. Done before
+	// the change loop so nothing depends on the order the maps iterate in.
+	for key := range base.Apps {
+		if _, ok := mem.Apps[key]; !ok {
+			delete(disk.Apps, key)
+		}
 	}
 	for key, ma := range mem.Apps {
 		ba := base.Apps[key]
@@ -415,11 +450,17 @@ func (disk *store) mergeChanges(mem, base *store) {
 	}
 }
 
-// mergeDecisionChanges writes onto dst the entries of mem this run added or changed
-// since load (those differing from base). An entry unchanged since load is left
+// mergeDecisionChanges writes onto dst the entries of mem this run added, changed, or
+// removed since load (those differing from base). An entry unchanged since load is left
 // alone, so a concurrent delete is not undone. A concurrent deny already on dst wins
-// over this run's non-deny, matching the store's deny-wins model.
+// over this run's non-deny, matching the store's deny-wins model - but not over a
+// removal, which is the operator saying that decision should not exist at all.
 func mergeDecisionChanges(dst *map[string]decision, mem, base map[string]decision) {
+	for k := range base {
+		if _, ok := mem[k]; !ok {
+			delete(*dst, k)
+		}
+	}
 	for k, v := range mem {
 		if bv, ok := base[k]; ok && bv == v {
 			continue
@@ -434,12 +475,14 @@ func mergeDecisionChanges(dst *map[string]decision, mem, base map[string]decisio
 	}
 }
 
-// mergeExec folds a disk exec value into this run's, deny-preferring: an unknown
-// (empty) run value takes the disk value, and a disk deny beats this run's non-deny,
-// so a concurrent exec deny survives the merge.
+// mergeExec folds a disk exec value into this run's, deny-preferring: a disk deny beats
+// this run's non-deny, so a concurrent exec deny survives the merge. It is reached only
+// where mem differs from base, so an empty mem is a REMOVAL (forget/reset cleared the
+// rule) rather than "this run has no opinion" - taking disk's value there would leave
+// the rule the operator just forgot standing.
 func mergeExec(mem, disk string) string {
 	if mem == "" {
-		return disk
+		return ""
 	}
 	if execDecision(disk) == deny && execDecision(mem) != deny {
 		return disk
