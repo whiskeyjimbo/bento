@@ -602,6 +602,40 @@ func TestUnrequestedLimitDoesNotRefuse(t *testing.T) {
 	}
 }
 
+// The backend emits --setenv for every key it is handed, so a map an embedder built
+// from os.Environ rather than ResolveEnv would carry the host's environment into the
+// sandbox and the manifest would stop describing what the target can see.
+func TestRunRefusesUndeclaredEnv(t *testing.T) {
+	p := validPolicy()
+	p.Env = []string{"HOME"}
+
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	_, err := Run(context.Background(), f, p, Process{Env: map[string]string{
+		"HOME":           "/home/user",
+		"AWS_SECRET_KEY": "hunter2",
+		"GITHUB_TOKEN":   "ghp_x",
+	}}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Run returned %v, want a *Refusal naming the undeclared names", err)
+	}
+	if !strings.Contains(refusal.Reason, "AWS_SECRET_KEY, GITHUB_TOKEN") {
+		t.Errorf("reason = %q, want both undeclared names, sorted", refusal.Reason)
+	}
+	if f.ran {
+		t.Error("the enforcer ran despite the refusal")
+	}
+
+	// The declared subset - including a name the host had no value for, which ResolveEnv
+	// reports as unset and omits - is admitted.
+	f = &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	if _, err := Run(context.Background(), f, p, Process{Env: map[string]string{}}, Options{}); err != nil {
+		t.Fatalf("Run with an env the policy covers: %v", err)
+	}
+}
+
 func TestRunRejectsNilEnforcer(t *testing.T) {
 	if _, err := Run(context.Background(), nil, validPolicy(), Process{}, Options{}); err == nil {
 		t.Error("expected error for nil enforcer")
