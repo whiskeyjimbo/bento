@@ -33,6 +33,37 @@ It does three things worth studying:
    all, including the ones that stay empty under its own options (see "Every honesty
    surface").
 
+## Calling `DispatchReexec` first
+
+Building the sandbox is not something bento can do from within your process: it re-runs
+your binary, and that second run - the launcher - is what sets up the confinement and
+execs the target. `backend.DispatchReexec()` is how the launcher takes over. It looks at
+`os.Args[1]`, and either recognizes itself and never returns, or returns and lets your
+program start normally.
+
+That is why it must be the *first* statement in `main()`, ahead of flag parsing and any
+other setup. Flags bento passes to the launcher are not your program's flags, so a parser
+that runs first will reject them and exit. The same applies to test binaries: put the call
+at the top of `TestMain`, before `m.Run()` parses the testing flags, or the launcher will
+run your whole test suite again - which starts another sandbox, which runs it again.
+
+```go
+func TestMain(m *testing.M) {
+	backend.DispatchReexec()
+	os.Exit(m.Run())
+}
+```
+
+`main.go` and `main_test.go` here both do this. If you forget, `backend.New` and
+`backend.Profile` return an error naming the missed call rather than letting the program
+hang or quietly misbehave - and when the process they run in is itself an undispatched
+stage, they name it on stderr and exit 125, which is what stops a test suite forking
+itself. The root README's embedding section has the rest.
+
+One consequence worth knowing: every `init()` in your binary runs again in the launcher,
+under an environment bento constructed rather than the one you were started with. Keep
+package init cheap and free of environment-dependent side effects.
+
 ## Prerequisites
 
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces.
