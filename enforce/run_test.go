@@ -718,6 +718,27 @@ func TestReportSetReplacesOrAdds(t *testing.T) {
 	}
 }
 
+// Report is copied by value all over this package, so a Set that compacted through the
+// shared backing array would rewrite what a copy taken earlier still reads. The
+// duplicate entry is what makes it visible: it shortens the slice, so the copy's own
+// length reaches past the compacted end.
+func TestReportSetDoesNotMutateAnEarlierCopy(t *testing.T) {
+	var r Report
+	r.Add(LayerFilesystem, Enforced, "")
+	r.Add(LayerNetwork, Enforced, "")
+	r.Add(LayerNetwork, Enforced, "")
+
+	before := r
+	r.Set(LayerFilesystem, Unavailable, "userns blocked")
+
+	if got := before.StateOf(LayerFilesystem); got != Enforced {
+		t.Errorf("the copy's filesystem state = %v, want the Enforced it held before the Set", got)
+	}
+	if got := before.StateOf(LayerNetwork); got != Enforced {
+		t.Errorf("the copy's network state = %v, want Enforced - compaction must not shift entries under it", got)
+	}
+}
+
 // StateOf must return the most severe state among duplicate layer entries, agreeing
 // with shortfall/Degradations - else a first-match Enforced could mask a governing
 // Degraded/Unavailable duplicate. A missing layer is Unavailable.
