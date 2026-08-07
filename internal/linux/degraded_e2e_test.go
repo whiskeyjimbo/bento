@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,7 +51,15 @@ func TestDegradedEndToEndOnClampedHost(t *testing.T) {
 	if err := os.WriteFile(ungrantedFile, []byte("do-not-read"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := &policy.Policy{Entrypoint: bin, Read: []string{grantedDir}, Exec: policy.ExecNone}
+	// The two names are declared, not just passed: enforce.Run refuses an environment
+	// carrying a name the manifest does not, so an undeclared pair would refuse here
+	// before the probe is consulted and the refusal below would prove nothing.
+	p := &policy.Policy{
+		Entrypoint: bin,
+		Read:       []string{grantedDir},
+		Exec:       policy.ExecNone,
+		Env:        []string{"GRANTED", "UNGRANTED"},
+	}
 	env := map[string]string{"GRANTED": grantedFile, "UNGRANTED": ungrantedFile}
 
 	// Default posture refuses: a degraded core layer is not silently accepted.
@@ -58,6 +67,11 @@ func TestDegradedEndToEndOnClampedHost(t *testing.T) {
 	var refusal *enforce.Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("default run on a clamped host must refuse; got %v", err)
+	}
+	// Named, not just refused: Run raises several refusals ahead of the probe, and any
+	// of them would satisfy the assertion above while proving nothing about the clampdown.
+	if !slices.ContainsFunc(refusal.Short, func(l enforce.LayerStatus) bool { return l.Layer == enforce.LayerFilesystem }) {
+		t.Fatalf("refusal names %v, want the filesystem layer the clampdown degraded", refusal.Short)
 	}
 
 	// --allow-degraded runs it through the no-bwrap tier, which confines.
