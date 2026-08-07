@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -708,8 +709,16 @@ func TestObserverPanicDoesNotDropTheConnection(t *testing.T) {
 // A panic before the tunnel is established answers the client with a status line, like
 // every other outcome the handler can reach. Left bare, the connection just closes and
 // the target reads a proxy fault as a network hiccup and retries into it.
+//
+// The fault is reported too, for the reason report() and callGate() each recover under
+// a named outcome: a connection the proxy dropped without reaching an allowlist
+// decision is the one thing the run record must not show as nothing having happened.
+// Faulted carries no destination even here, where the panic landed after the CONNECT
+// was read, because it must also describe a panic that landed before one was.
 func TestPanicBeforeTheTunnelAnswersWithAStatus(t *testing.T) {
+	var seen []Decision
 	p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(d Decision, _, _ string) { seen = append(seen, d) }),
 		WithDialer(func(context.Context, string, string) (net.Conn, error) { panic("dialer blew up") }))
 	dialProxy, stop := startProxy(t, p)
 	defer stop()
@@ -719,6 +728,11 @@ func TestPanicBeforeTheTunnelAnswersWithAStatus(t *testing.T) {
 	status, _ := connect(t, c, "example.com:443")
 	if !strings.Contains(status, "502") {
 		t.Errorf("status = %q, want 502 after a panic in the handler", status)
+	}
+	// The status is written after the report, so reading it orders this against the
+	// handler.
+	if !slices.Contains(seen, Faulted) {
+		t.Errorf("decisions = %v, want a Faulted among them", seen)
 	}
 }
 

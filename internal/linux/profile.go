@@ -248,9 +248,11 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 		opts = append(opts, proxy.WithoutEgress())
 	}
 	stop, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
-		// A refusal at the concurrency limit carries no host: it was turned away before
-		// its CONNECT was read, so there is nothing to put in the proposed manifest.
-		if d == proxy.Refused {
+		// Neither of these carries a host - one was turned away before its CONNECT was
+		// read, the other faulted somewhere that may have been before it - so there is
+		// nothing to put in the proposed manifest. A profiling run drops the connection
+		// either way, and the destination it would have proposed is simply lost.
+		if d == proxy.Refused || d == proxy.Faulted {
 			return
 		}
 		record(d, host, port)

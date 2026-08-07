@@ -62,6 +62,13 @@ const (
 	// nothing that separates the guard's refusal from an ordinary dial failure, so
 	// the observer is the only place the distinction survives.
 	GuardBlocked Decision = "blocked"
+	// Faulted marks a connection the proxy itself dropped, because a handler panicked.
+	// It names no host or port for the same reason Refused does not: the panic may have
+	// landed before the CONNECT was read. It is distinct from every other decision
+	// because none of them describes a fault - each names who refused, and this one is
+	// the proxy failing to reach a refusal at all - and a run that silently drops a
+	// connection is the one outcome the allowlist's word cannot be taken on.
+	Faulted Decision = "fault"
 )
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
@@ -668,11 +675,15 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// with one too rather than a bare close the target reads as a network hiccup - but
 	// only before the tunnel is established, because after the 200 the connection
 	// carries the target's own bytes and a status line spliced into them is corruption.
-	// The decision itself still goes unreported: there is no seam on the Proxy to route
-	// it to, and no Decision that would not lie about what happened.
+	// The decision is reported either way: what the client is told changes with the
+	// tunnel, what the run records does not.
 	established := false
 	defer func() {
-		if recover() == nil || established {
+		if recover() == nil {
+			return
+		}
+		p.report(Faulted, "", "")
+		if established {
 			return
 		}
 		client.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
