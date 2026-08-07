@@ -253,9 +253,11 @@ func (s SetupState) String() string {
 		return "target-unreached"
 	case SetupAttested:
 		return "attested"
-	default:
-		return "silent"
+	case SetupSilent:
 	}
+	// Silent, and the state the enum does not name yet: a stage that reached no stage at
+	// all must never read as attested, so the unnamed one reads as the weakest.
+	return "silent"
 }
 
 // Result is the outcome of a Run: the target's exit code and the report of what
