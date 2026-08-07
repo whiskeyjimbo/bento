@@ -109,6 +109,17 @@ func TestValidateEmptyExecModeDefaultsValid(t *testing.T) {
 	}
 }
 
+// The exact quota systemd accepts, one permyriad below the int32 it stores it in.
+// Paired with the "cpu just past the ceiling" rejection: a bound off by one in
+// either direction refuses a runnable policy or admits an unrunnable one.
+func TestValidateAcceptsTheLargestCPUQuota(t *testing.T) {
+	p := valid()
+	p.Limits = Limits{CPU: "21474836.47%"}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("systemd accepts this quota: %v", err)
+	}
+}
+
 // Validate is the gate for Go embedders, who construct a Policy directly rather
 // than parsing a manifest. Each case is a malformed policy that must never reach
 // a backend.
@@ -157,6 +168,10 @@ func TestValidateRejects(t *testing.T) {
 		{"cpu bare dot", func(p *Policy) { p.Limits = Limits{CPU: ".5%"} }, "plain decimal percentage"},
 		// A digit string long enough to overflow float64 is decimal but not a real bound.
 		{"cpu overflowing", func(p *Policy) { p.Limits = Limits{CPU: strings.Repeat("9", 400) + "%"} }, "too large"},
+		// systemd holds the quota in permyriad and that must fit an int32, so the ceiling
+		// is 21474836.47%. Bisected against systemd-run directly; everything between it and
+		// the float64 overflow used to validate and then be refused at scope creation.
+		{"cpu just past the ceiling", func(p *Policy) { p.Limits = Limits{CPU: "21474836.48%"} }, "too large"},
 		// systemd parses a quota into permyriad, so a third fractional digit is invalid to
 		// it and a zero quota is "too small". Both were verified against systemd directly;
 		// accepting them here is the late-failure contract this validation exists to remove.
@@ -320,7 +335,9 @@ func TestParseBytes(t *testing.T) {
 			t.Errorf("parseBytes(%q) = %d, want %d", in, got, want)
 		}
 	}
-	for _, bad := range []string{"", "lots", "-1", "12X3"} {
+	// systemd's parse_size is case-sensitive and gets the original string, so a
+	// lowercase suffix validated here and then died at scope creation.
+	for _, bad := range []string{"", "lots", "-1", "12X3", "128k", "128m", "128g"} {
 		if _, err := parseBytes(bad); err == nil {
 			t.Errorf("parseBytes(%q) should fail", bad)
 		}

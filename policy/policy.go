@@ -609,13 +609,16 @@ func (l Limits) validate() error {
 		if !cpuPercentRe.MatchString(num) {
 			return fmt.Errorf("policy: limits.cpu %q must be a plain decimal percentage (e.g. \"100%%\" or \"12.5%%\"); %q is not one", l.CPU, num)
 		}
-		// The spelling is decimal by here, but an arbitrarily long digit string still
-		// overflows to +Inf, and a quota systemd cannot read may be ignored outright -
-		// running the target with no cpu cap at all, which is the failure a limit exists
-		// to prevent. NaN and a negative are unreachable past the pattern.
+		// The spelling is decimal by here, but systemd holds the quota in permyriad and
+		// that has to fit an int32, so it refuses anything past 21474836.47% - and a
+		// quota systemd cannot read may be ignored outright, running the target with no
+		// cpu cap at all, which is the failure a limit exists to prevent. The bound is
+		// exact rather than a boundary multiply: the pattern caps the fraction at two
+		// digits, so the same decimal parses to the same double on both sides. NaN and a
+		// negative are unreachable past the pattern.
 		pct, err := strconv.ParseFloat(num, 64)
-		if err != nil || math.IsInf(pct, 0) {
-			return fmt.Errorf("policy: limits.cpu %q is too large to be a real bound", l.CPU)
+		if err != nil || pct > 21474836.47 {
+			return fmt.Errorf("policy: limits.cpu %q is too large; systemd's ceiling is \"21474836.47%%\"", l.CPU)
 		}
 		// systemd's floor is one permyriad, so it refuses "0%" and "0.00%" as too small.
 		// The fraction is at most two digits by here, which makes this comparison exact.
@@ -639,8 +642,8 @@ func (l Limits) validate() error {
 	return nil
 }
 
-// parseBytes parses a byte quantity with a K/M/G suffix (powers of 1024), or a
-// bare byte count. Validate uses it to reject an unparseable Limits.Memory; the
+// parseBytes parses a byte quantity with an uppercase K/M/G suffix (powers of
+// 1024), or a bare byte count. Validate uses it to reject an unparseable Limits.Memory; the
 // backend passes the original string to systemd, which parses it again.
 func parseBytes(s string) (int64, error) {
 	// No whitespace trimming, here or around the number: the backend hands the ORIGINAL
@@ -651,12 +654,16 @@ func parseBytes(s string) (int64, error) {
 	}
 	mult := int64(1)
 	switch s[len(s)-1] {
-	case 'K', 'k':
+	case 'K':
 		mult = 1 << 10
-	case 'M', 'm':
+	case 'M':
 		mult = 1 << 20
-	case 'G', 'g':
+	case 'G':
 		mult = 1 << 30
+	case 'k', 'm', 'g':
+		// systemd's parse_size is case-sensitive and gets this exact string, so a
+		// lowercase suffix is the same validates-then-dies trap as " 128M ".
+		return 0, fmt.Errorf("size %q must spell its suffix uppercase (%q)", s, strings.ToUpper(s))
 	}
 	num := s
 	if mult != 1 {
