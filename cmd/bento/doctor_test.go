@@ -81,6 +81,28 @@ func TestDoctorJSONCarriesPlatformIndependentOfReady(t *testing.T) {
 	}
 }
 
+// doctor's anchor block is where a reviewer goes to learn what the shields rest on, so
+// an NSS build has to say so there and not only in `bento version`. The branch where the
+// anchors cannot be resolved at all says it too - a passwd lookup an LD_PRELOAD made to
+// fail is how an NSS build loses its anchor - but that needs a uid with no passwd entry,
+// which a test on a normal host cannot arrange.
+func TestShieldAnchorsCarryTheNSSCaveat(t *testing.T) {
+	pureLookup(t, false)
+	t.Setenv("HOME", t.TempDir())
+	var caveat bytes.Buffer
+	writeShieldAnchors(&caveat)
+	if !strings.Contains(caveat.String(), "libc NSS") {
+		t.Errorf("the anchor block must name an NSS build; got:\n%s", caveat.String())
+	}
+
+	pureLookup(t, true)
+	var b bytes.Buffer
+	writeShieldAnchors(&b)
+	if strings.Contains(b.String(), "libc NSS") {
+		t.Errorf("the supported build must carry no caveat; got:\n%s", b.String())
+	}
+}
+
 // The summary sits three lines under a table that reports each layer's real state, so a
 // clause about a layer this host enforces is read as a warning about this host. It has to
 // name what actually fell short and nothing else.

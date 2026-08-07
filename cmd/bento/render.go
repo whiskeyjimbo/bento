@@ -1497,7 +1497,11 @@ func writeShieldAnchors(w io.Writer) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
 		fmt.Fprintf(w, "Credential shields: %v, so they cannot be anchored at all and runs are refused.\n", err)
-		fmt.Fprintf(w, "Set $HOME to an absolute path, or give this uid a passwd entry.\n\n")
+		fmt.Fprintf(w, "Set $HOME to an absolute path, or give this uid a passwd entry.\n")
+		// A passwd lookup made to fail is how an NSS build loses its anchor, so this is
+		// the branch where the caveat is the diagnosis rather than a caveat.
+		writeNSSCaveat(w)
+		fmt.Fprintln(w)
 		return
 	}
 	// Quoted for the reason the shield warnings are: an anchor is $HOME or a passwd entry,
