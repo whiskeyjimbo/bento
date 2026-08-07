@@ -217,8 +217,12 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	_ = killProcessGroup(cmd.Process)
 	// See the same guard in Run: a cancel kills the launcher group and the signalled
 	// status it leaves is indistinguishable from the policy's limits ending the target.
-	// An ordinary exit status is not that kill - the launcher reports even a signalled
-	// target as 128+signal of its own - so a cancel landing after it does not unmake it.
+	// An ordinary exit status is not that kill: on the supervise path the launcher
+	// outlives the target and reports even a signalled one as 128+signal of its own, so
+	// a cancel landing after that status does not unmake it. On the exec-block path the
+	// launcher execveats the target over itself and there is nothing left to convert, so
+	// a target that dies of its own signal inside the cancel window is read as the
+	// cancel - the same conservative direction the guard takes everywhere else.
 	if err != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
 		// Carried out through the cancel for the reason the full tier's is: a target killed
 		// partway is the run least likely to be looked at and most likely to have left an
