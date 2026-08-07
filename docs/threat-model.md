@@ -94,8 +94,10 @@ A few things Bento trusts rather than defends:
   uid) `$HOME` is the only anchor left. And where the binary is built against libc
   NSS rather than the pure-Go resolver, `LD_PRELOAD` can make the passwd lookup
   fail and drop that anchor - the shipped build is static and tagged `osusergo`,
-  which is what keeps that out of the caller's reach; a `go build` without it is
-  not the shipped configuration and does not carry this property.
+  which is what keeps that out of the caller's reach; a `go build` or `go install`
+  without it is not the shipped configuration and does not carry this property.
+  Such a build says so in `bento version` and under `bento doctor`'s anchor line,
+  since nothing else distinguishes the two.
 
 ## 4. The defenses
 

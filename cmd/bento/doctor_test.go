@@ -18,6 +18,16 @@ func onPlatform(t *testing.T, name string) {
 	t.Cleanup(func() { platformName = saved })
 }
 
+// pureLookup pins which passwd resolver this build is said to carry. Without it a test
+// asserts whatever the runner's C toolchain decided, which is the one thing the caveat
+// exists to distinguish.
+func pureLookup(t *testing.T, pure bool) {
+	t.Helper()
+	saved := pureUserLookup
+	pureUserLookup = pure
+	t.Cleanup(func() { pureUserLookup = saved })
+}
+
 // An arm64 Linux build probes a real kernel and fills the table in exactly as a verified
 // host's does, so the only thing separating "this is what bento enforces" from "this is
 // what this kernel answered" is doctor naming the platform and saying which one it has.
