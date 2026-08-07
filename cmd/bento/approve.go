@@ -172,6 +172,14 @@ func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval approvalState
 // before. The verdict approve exists to give is a property of the manifest and must not
 // start depending on where it is checked - writeApprovalCallouts already says in words
 // that nothing was checked there.
+//
+// An empty set is not a promise that the run honors every grant, and this gate must not be
+// read as closed: the run also refuses on a credential alias, which gate.Refusals does not
+// answer and cannot, since that refusal turns on `--accept-alias` - a flag of the run,
+// which no stamp can attest. So a manifest can stamp here and still be refused at the
+// first step by the host it is stamped on. Nothing to do about it from here; what would
+// make it worse is a check added to the run's set and not to gate's, which is the drift
+// this function exists to catch.
 func requireHonorableGrants(resolved *policy.Policy) error {
 	if resolved == nil {
 		return nil
