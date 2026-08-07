@@ -169,22 +169,19 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 // -race it settles the mutex, and the assertions settle the property -race cannot see,
 // that a verdict lands on its own connection's set and never on another's.
 func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
-	const conns = 200
+	const conns = 201 // divisible by the three decisions
 	c := &egressCollector{}
 	var wg sync.WaitGroup
+	// One host per connection, out of a single namespace: a prefix per decision would
+	// make the set-membership assertions below true no matter where a verdict landed.
+	decision := func(i int) proxy.Decision {
+		return [...]proxy.Decision{proxy.AdmittedByGate, proxy.Denied, proxy.GuardBlocked}[i%3]
+	}
 	for i := range conns {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			host := fmt.Sprintf("h%d.example", i%10)
-			switch i % 3 {
-			case 0:
-				c.observe(proxy.AdmittedByGate, "admitted-"+host, "443")
-			case 1:
-				c.observe(proxy.Denied, "denied-"+host, "443")
-			default:
-				c.observe(proxy.GuardBlocked, "blocked-"+host, "443")
-			}
+			c.observe(decision(i), fmt.Sprintf("h%d.example", i), "443")
 		}()
 	}
 	wg.Wait()
@@ -192,13 +189,26 @@ func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 	if got := c.counted(); got != conns {
 		t.Errorf("counted() = %d, want %d: every connection's decision is tallied exactly once", got, conns)
 	}
-	admitted := make(map[enforce.HostPort]bool, len(c.gateAdmitted()))
-	for _, hp := range c.gateAdmitted() {
-		admitted[hp] = true
-	}
-	for _, hp := range c.guardBlocked() {
-		if admitted[hp] {
-			t.Errorf("%v is reported as both guard-blocked and gate-admitted; the guard's refusal replaces the gate's admission", hp)
+	for _, set := range []struct {
+		name string
+		want proxy.Decision
+		got  []enforce.HostPort
+	}{
+		{"gateAdmitted", proxy.AdmittedByGate, c.gateAdmitted()},
+		{"allowlistDenied", proxy.Denied, c.allowlistDenied()},
+		{"guardBlocked", proxy.GuardBlocked, c.guardBlocked()},
+	} {
+		if len(set.got) != conns/3 {
+			t.Errorf("%s() has %d hosts, want %d: a connection's verdict reaches exactly one set", set.name, len(set.got), conns/3)
+		}
+		for _, hp := range set.got {
+			var i int
+			if _, err := fmt.Sscanf(hp.Host, "h%d.example", &i); err != nil {
+				t.Fatalf("%s() = %v, which no connection reported", set.name, hp)
+			}
+			if decision(i) != set.want {
+				t.Errorf("%v got %v, but %s() claims it: a verdict landed on another connection's set", hp, decision(i), set.name)
+			}
 		}
 	}
 }
