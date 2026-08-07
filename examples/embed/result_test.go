@@ -2,10 +2,12 @@ package main
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -152,6 +154,52 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 				"or record in notWarnings why it needs no warning. An unread honesty field is a "+
 				"frontend that is silent about it.", f.Name)
 		}
+	}
+}
+
+// The completeness guard for the pre-flight, the counterpart to the one above. A field
+// added to gate.Runnability must not leave the reference embedder silent about it: the
+// gate exists so a moved entrypoint or a grant this host refuses is read before the run,
+// and a field no frontend prints is that pre-flight answering less than it asked.
+//
+// What it does NOT cover, so it is not read as more than it is: a field whose CONTENTS
+// are incomplete. Refusals mirrors a set the backend owns, and a check the backend adds
+// there arrives as a shorter list rather than as a new field - which nothing here, and no
+// completeness test over fields, can see.
+func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
+	printed := gate.Runnability{
+		Unresolved:    true,
+		// Problems and Refusals arrive already quoted - gate builds them with %q around
+		// the path - so only the two fields this file renders from a raw path carry an
+		// escape, which is what the scan below is watching.
+		Problems: []string{`entrypoint "/gone/run.sh": no such file or directory`},
+		Refusals: []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
+		MissingReads:  []string{"/data/\x1b[2Kabsent"},
+		FileishWrites: []string{"/out/\x1b[2Kreport.json"},
+	}
+	var out strings.Builder
+	writeRunnability(&out, printed)
+	got := out.String()
+
+	for _, f := range reflect.VisibleFields(reflect.TypeFor[gate.Runnability]()) {
+		if !f.IsExported() {
+			continue
+		}
+		v := reflect.ValueOf(printed).FieldByIndex(f.Index)
+		want := "could not answer"
+		if v.Kind() == reflect.Slice {
+			want = v.Index(0).String()
+		}
+		// Either spelling counts: a raw path is quoted on its way out, an already-quoted
+		// sentence is not, and which of the two a field is does not change what the guard
+		// is asking - that the field reached the output at all.
+		if !strings.Contains(got, want) && !strings.Contains(got, strconv.Quote(want)) {
+			t.Errorf("gate.Runnability.%s is new or unprinted: print it in writeRunnability and give it a "+
+				"value here. A pre-flight field no frontend reads is the silence it exists to close.\ngot:\n%s", f.Name, got)
+		}
+	}
+	if strings.ContainsRune(got, '\x1b') {
+		t.Errorf("an escape byte from a grant reached the terminal unquoted: %q", got)
 	}
 }
 

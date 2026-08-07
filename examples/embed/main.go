@@ -120,9 +120,7 @@ func run(manifestPath string) int {
 	// one the manifest was written on is where they are hardest to read. Reported rather
 	// than fatal, for the reason validate needs --strict to fail: a grant this host
 	// refuses may be fine on the host the manifest is meant for.
-	for _, r := range gate.Check(p).Refusals {
-		fmt.Fprintf(os.Stderr, "embed: note: %s\n", r)
-	}
+	writeRunnability(os.Stderr, gate.Check(p))
 
 	// The policy names which env vars may pass through; resolving those names
 	// against the host is the core's job, exposed here so the values a target sees
@@ -236,6 +234,39 @@ func run(manifestPath string) int {
 		return 124
 	}
 	return res.ExitCode
+}
+
+// writeRunnability prints every field of the gate's verdict, for the reason writeResult
+// prints every field of a Result: the pre-flight exists so a manifest's problems are read
+// here rather than met at the run's first step, and a field left unread turns the ones it
+// would have named back into that silence. Nothing here is fatal - a grant this host
+// refuses may be fine on the host the manifest is meant for, which is why validate needs
+// --strict to fail on one - so an embedder deciding otherwise chooses that here.
+//
+// TestWriteRunnabilitySurfacesEveryField guards it against a new Runnability field
+// arriving unprinted. What that cannot guard is a field whose CONTENTS grow: Refusals
+// mirrors a set the backend owns, and a check the backend adds to that set arrives here
+// as a shorter list, not as a new field.
+func writeRunnability(w io.Writer, r gate.Runnability) {
+	// The one field that is not a finding about the manifest: this host could not answer,
+	// so every empty list below is unknown rather than clean.
+	if r.Unresolved {
+		fmt.Fprintf(w, "embed: note: this host could not answer what it makes of the manifest, so nothing below is a clean bill\n")
+	}
+	for _, p := range r.Problems {
+		fmt.Fprintf(w, "embed: note: this host cannot start what the manifest names: %s\n", p)
+	}
+	for _, g := range r.Refusals {
+		fmt.Fprintf(w, "embed: note: %s\n", g)
+	}
+	// Quoted for the reason writeResult quotes its paths: a grant is the manifest's bytes,
+	// and an escape in one would move the cursor through this report.
+	for _, g := range r.MissingReads {
+		fmt.Fprintf(w, "embed: note: this read grant names nothing on this host, so the sandbox denies that path without saying why: %q\n", g)
+	}
+	for _, g := range r.FileishWrites {
+		fmt.Fprintf(w, "embed: note: this write grant is spelled like a file, but write grants name directories, so run creates one under that name: %q\n", g)
+	}
 }
 
 // writeResult prints every honesty field of a Result. A frontend's job is not to
