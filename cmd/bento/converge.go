@@ -71,11 +71,13 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 			// discover, unseen - a wider consent than the prompt asked for.
 			case grantAll, grantYes:
 				accept(it)
+				continue
 			case grantQuit:
 				return nil, convergeQuit, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
-			default:
-				declined[it.key()] = true
+			case grantNo:
 			}
+			// grantNo, and any answer the enum does not name yet: decline, do not re-ask.
+			declined[it.key()] = true
 		}
 	}
 
@@ -121,7 +123,7 @@ loop:
 			case grantQuit:
 				stop = convergeQuit
 				break loop
-			default:
+			case grantNo:
 				declined[execGrant.key()] = true
 			}
 		}
@@ -149,14 +151,17 @@ loop:
 			case grantAll:
 				acceptAll = true
 				accept(it)
+				continue
 			case grantYes:
 				accept(it)
+				continue
 			case grantQuit:
 				stop = convergeQuit
 				break loop
-			default: // grantNo and any unrecognized answer: decline, do not re-ask
-				declined[it.key()] = true
+			case grantNo:
 			}
+			// grantNo, and any answer the enum does not name yet: decline, do not re-ask.
+			declined[it.key()] = true
 		}
 	}
 

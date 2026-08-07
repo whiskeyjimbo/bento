@@ -373,9 +373,12 @@ func approvalName(s approvalState) string {
 		return "current"
 	case approvalStale:
 		return "stale"
-	default:
-		return "unapproved"
+	case approvalUnstamped:
 	}
+	// Unstamped, and the state the enum does not name yet. A consumer reading --json
+	// treats anything but "current" as not-approved, so an unnamed state reads as the
+	// safe one rather than as a spelling nobody handles.
+	return "unapproved"
 }
 
 type policyJSON struct {
@@ -628,7 +631,9 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "  note: fork/clone blocking needs an architecture-specific seccomp filter\n")
 		fmt.Fprintf(w, "        (amd64). Where it is unavailable, run and doctor report the exec-strict\n")
 		fmt.Fprintf(w, "        layer degraded and --strict refuses it.\n")
-	default:
+	// The zero value stands for ExecNone, and a mode outside the enum never reaches the
+	// summary - policy validation refuses it before anything is printed.
+	case policy.ExecNone, "":
 		fmt.Fprintf(w, "exec:         blocked on the standard exec path (execve)\n")
 		fmt.Fprintf(w, "  note: execve covers effectively every real subprocess (fork+exec, os/exec,\n")
 		fmt.Fprintf(w, "        system). execveat stays open by construction - the launcher needs it -\n")
