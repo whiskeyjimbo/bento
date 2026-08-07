@@ -251,6 +251,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
+		noteProxyFault(&report, collected.faultCount())
 		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
@@ -264,6 +265,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
+		noteProxyFault(&report, collected.faultCount())
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAutoExec(autoExecBefore, snapshotAutoExec(preflight.writes))}, nil
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
@@ -281,6 +283,18 @@ func noteDeadListener(r *enforce.Report, err error) {
 	}
 	worsenNetwork(r, enforce.Degraded,
 		fmt.Sprintf("the egress proxy stopped accepting mid-run (%v); declared egress was refused for the remainder", err))
+}
+
+// noteProxyFault records connections a panicking proxy handler dropped. The run does
+// not fail on one - the connection was refused, which is the safe direction - but a
+// handler that faulted never reached its allowlist decision, so the layer cannot be
+// reported as having enforced the manifest on that connection.
+func noteProxyFault(r *enforce.Report, faults int) {
+	if faults == 0 {
+		return
+	}
+	worsenNetwork(r, enforce.Degraded,
+		fmt.Sprintf("the egress proxy dropped %d connection(s) on an internal fault; those were refused without reaching an allowlist decision", faults))
 }
 
 // bridgeReportedDeath reads the bridge's liveness pipe, which the host has already
@@ -703,13 +717,15 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 // result: a total count, the deduped set of hosts the gate admitted beyond
 // the manifest, the deduped set the upstream guard refused to dial, the
 // deduped set the allowlist itself refused, the deduped set a consulted gate
-// refused, and the deduped set refused for not being a CONNECT at all. The
+// refused, the deduped set refused for not being a CONNECT at all, and a count of
+// the connections a panicking handler dropped. The
 // observer runs in each handler's own goroutine, so a mutex guards the shared
 // state; the gate itself is never called under this lock (it runs in the handler,
 // the observer only records the outcome).
 type egressCollector struct {
 	mu         sync.Mutex
 	count      int
+	faulted    int
 	admitted   map[string]enforce.HostPort
 	blocked    map[string]enforce.HostPort
 	denied     map[string]enforce.HostPort
@@ -720,6 +736,14 @@ type egressCollector struct {
 func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A fault is an outcome on a connection, not another connection, so it is counted
+	// apart from the tally rather than added to it. Where the panic pre-empted every
+	// other report the connection is missing from that tally entirely; the degraded
+	// network layer this count produces is what covers it.
+	if d == proxy.Faulted {
+		c.faulted++
+		return
+	}
 	c.count++
 	// Key each set on JoinHostPort so an IPv6 host:port dedupes correctly. Each
 	// CONNECT lands in at most one of them - the guard's refusal replaces the gate's
@@ -761,6 +785,12 @@ func (c *egressCollector) counted() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.count
+}
+
+func (c *egressCollector) faultCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.faulted
 }
 
 // gateAdmitted returns a copy of the admitted set, sorted so the result is
