@@ -621,7 +621,7 @@ func TestApproveReviewsAStampThisHostNeverRecorded(t *testing.T) {
 	if strings.Contains(out, "is already approved") {
 		t.Fatalf("a stamp this host never recorded must not short-circuit the review; got:\n%s", out)
 	}
-	for _, want := range []string{"exec: all", "whole home", "not one bento recorded here", "holds no record"} {
+	for _, want := range []string{"exec: all", "whole home", "cannot confirm it", "holds no record"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the review must print %q; got:\n%s", want, out)
 		}
@@ -664,7 +664,7 @@ func TestApprovalCalloutsSeeAManifestReachedThroughASymlink(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./x", Write: []string{"."}}
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, real, namedManifestPath(link), p, resolvedGrants(p, link), nil)
+	writeApprovalCallouts(&buf, real, leafNamePath(link), p, resolvedGrants(p, link), nil)
 	out := buf.String()
 	// Both, not either: one grant over the project directory covers the manifest's name
 	// and the entrypoint beside it, and each is a callout in its own right.
@@ -672,5 +672,29 @@ func TestApprovalCalloutsSeeAManifestReachedThroughASymlink(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("callouts missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// The same crossing of namespaces for the entrypoint: a script kept in a store or a
+// dotfiles repo and linked into the project is covered by a grant over that project
+// directory under the name the link carries, not under the one it resolves to. Whoever
+// holds the grant unlinks it and drops their own code at that name, which is what the
+// callout exists to say.
+func TestApprovalCalloutsSeeAnEntrypointReachedThroughASymlink(t *testing.T) {
+	store, proj := t.TempDir(), t.TempDir()
+	real := filepath.Join(store, "tool.py")
+	if err := os.WriteFile(real, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(proj, "tool.py")); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(proj, "bento.yaml")
+
+	p := &policy.Policy{Entrypoint: "./tool.py", Write: []string{"."}}
+	var buf strings.Builder
+	writeApprovalCallouts(&buf, manifestPath, leafNamePath(manifestPath), p, resolvedGrants(p, manifestPath), nil)
+	if !strings.Contains(buf.String(), "covers the entrypoint") {
+		t.Errorf("a grant covering the name that reaches the entrypoint must be called out; got:\n%s", buf.String())
 	}
 }

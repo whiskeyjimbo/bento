@@ -94,7 +94,7 @@ func newApproveCmd() *cobra.Command {
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil)
-			writeApprovalCallouts(os.Stdout, trust.realPath, namedManifestPath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writeApprovalCallouts(os.Stdout, trust.realPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, doc.Policy, approval, rec, journal)
@@ -148,7 +148,10 @@ func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval approvalState
 	case approval == approvalStale:
 		fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
 	case approval == approvalCurrent && verdict != journalMatches:
-		fmt.Fprintf(w, "\nThis manifest carries a stamp for the permissions above, but not one bento recorded here.\n")
+		// Worded as what bento cannot confirm rather than as a stamp it never wrote: an
+		// untrusted journal can hold this host's own record in a directory somebody widened
+		// since, and the paragraph below says so in the next breath.
+		fmt.Fprintf(w, "\nThis manifest carries a stamp for the permissions above, and bento cannot confirm it\nwas stamped here.\n")
 	default:
 		return
 	}
@@ -249,7 +252,11 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 		// leading ~ against $HOME and anchors the rest to the manifest's directory, and a
 		// second implementation of that would answer differently for `entrypoint: ~/bin/x`
 		// exactly where CoversResolved's lexical test then reports no coverage.
-		entrypoint := pathresolve.Existing(resolved.Entrypoint)
+		// Asked under both its names for the same reason the manifest is: a script kept
+		// elsewhere and linked into the project is covered by a grant over that directory
+		// under the name the link carries, and replacing the link is how it rewrites its
+		// own code.
+		entrypoint, linkedEntrypoint := pathresolve.Existing(resolved.Entrypoint), leafNamePath(resolved.Entrypoint)
 		for _, g := range resolved.Write {
 			g = pathresolve.Existing(g)
 			// Two independent tests rather than a switch: one grant over a directory holding
@@ -258,7 +265,7 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 			if policy.CoversResolved(g, realPath) || policy.CoversResolved(g, namedPath) {
 				notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
 			}
-			if policy.CoversResolved(g, entrypoint) {
+			if policy.CoversResolved(g, entrypoint) || policy.CoversResolved(g, linkedEntrypoint) {
 				notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
 			}
 		}
@@ -293,12 +300,13 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	}
 }
 
-// namedManifestPath is the manifest as the resolved grants name it: resolvedGrants anchors
-// every relative grant to the directory of the path the user typed, and each is then run
-// through pathresolve.Existing, so the comparison needs that directory resolved the same
-// way with the manifest's own last component left alone. Resolving the whole path instead
-// would give back trust.realPath, which is the other name and is asked separately.
-func namedManifestPath(path string) string {
+// leafNamePath is a file under the name that reaches it rather than the one it resolves
+// to: the directory is resolved the way the grants around it are, and the last component
+// is left alone. A grant covering that directory covers this name, and whoever holds it
+// can unlink the link and put a file of their own there - which is the same power over the
+// manifest or the entrypoint as rewriting the file it points at, and is invisible to a
+// comparison against the resolved location alone.
+func leafNamePath(path string) string {
 	return filepath.Join(pathresolve.Existing(filepath.Dir(path)), filepath.Base(path))
 }
 
