@@ -86,7 +86,8 @@ make install DESTDIR=./pkg PREFIX=/usr    # stages ./pkg/usr/bin/bento
 `CGO_ENABLED` is deliberately not overridable. The build forces a static,
 `osusergo` binary because the credential shields anchor on the uid's passwd entry,
 and routing that lookup through libc NSS would put it back under caller control -
-see the comment in the Makefile.
+see the comment in the Makefile. `go install` does not set it for you, so pass
+`CGO_ENABLED=0` there; a build that did not says so in `bento version`.
 
 `make build` keeps the symbol table and DWARF so a failure inside a sandbox layer
 can be debugged. Only the release build strips (`-s -w` in `.goreleaser.yaml`),
@@ -178,7 +179,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - run: go install github.com/whiskeyjimbo/bento/cmd/bento@latest
+      - run: CGO_ENABLED=0 go install github.com/whiskeyjimbo/bento/cmd/bento@latest
       - run: bento doctor
       - run: bento validate --strict ./fetch.py.manifest.yaml
       - run: bento run --env CI_TOKEN="$CI_TOKEN" ./fetch.py.manifest.yaml

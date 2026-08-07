@@ -1433,6 +1433,20 @@ func writePlatform(w io.Writer) {
 	fmt.Fprintln(w)
 }
 
+// writeNSSCaveat says when this build resolves the anchoring passwd entry through libc
+// NSS. It is written wherever bento describes what the shields rest on, because the two
+// builds are otherwise indistinguishable from outside: same anchors, same shield count,
+// same version string. Silent when the resolver is Go's own, which is the supported
+// build and needs no remark.
+func writeNSSCaveat(w io.Writer) {
+	if pureUserLookup {
+		return
+	}
+	fmt.Fprintf(w, "  Built against libc NSS, so the passwd lookup the anchors come from runs through\n")
+	fmt.Fprintf(w, "  the host's NSS modules, which a caller can steer. Rebuild with CGO_ENABLED=0 to\n")
+	fmt.Fprintf(w, "  get the resolver the shields assume.\n")
+}
+
 // writeShieldAnchors names the home directories the credential shields will anchor on
 // here, and says whether the passwd entry corroborated $HOME.
 //
@@ -1465,6 +1479,7 @@ func writeShieldAnchors(w io.Writer) {
 		fmt.Fprintf(w, "  are shielded - a grant reaching that directory hands out whatever sockets and\n")
 		fmt.Fprintf(w, "  tokens it holds. Point it at an absolute path outside the home to shield it.\n")
 	}
+	writeNSSCaveat(w)
 	writeNestedAnchors(w, anchors)
 	writeRelocatedShields(w)
 	fmt.Fprintln(w)
