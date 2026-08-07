@@ -66,9 +66,11 @@ type Runnability struct {
 	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
 	// that is the failure run's own epilogue warns is hard to diagnose.
 	MissingReads []string
-	// Unresolved marks a host that could not answer at all, which the caller signals by
-	// passing a nil policy. Reported as unknown rather than as a pass: a host that cannot
-	// resolve the grants refuses the run for that same reason.
+	// Unresolved marks a host that could not answer at all: the caller could not resolve
+	// the manifest's paths and signals that by passing a nil policy, or this host cannot
+	// work out where its shields anchor. Reported as unknown rather than as a pass -
+	// either host refuses the run for that same reason, and an empty refusal set here is
+	// indistinguishable from a manifest a healthy host has nothing to refuse about.
 	Unresolved bool
 }
 
@@ -78,6 +80,13 @@ type Runnability struct {
 // approved manifest's policy in place makes it read as stale against its own stamp.
 func Check(resolved *policy.Policy) Runnability {
 	if resolved == nil {
+		return Runnability{Unresolved: true}
+	}
+	// A host that cannot anchor its shields refuses every run, and it cannot say which
+	// grants that run would have refused - so the answer is unknown rather than the empty
+	// refusal set a host with nothing to refuse yields, which is what the same manifest
+	// looks like on a healthy host.
+	if _, err := ShieldSet(); err != nil {
 		return Runnability{Unresolved: true}
 	}
 	var r Runnability
