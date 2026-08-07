@@ -455,9 +455,9 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 	r.Add(enforce.LayerExec, enforce.Enforced, "")
 
-	var out, errOut bytes.Buffer
+	var errOut bytes.Buffer
 	p := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}}
-	_ = writeRunResult(&out, &errOut, false, p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
 	got := errOut.String()
 	hint := strings.Index(got, "denies silently")
 	shapes := strings.Index(got, "Read-only file system")
@@ -473,7 +473,7 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	// the claim of silence and its mapping are never separated.
 	errOut.Reset()
 	shell := &policy.Policy{Entrypoint: "/work/t.sh", Interpreter: "/bin/sh", Read: []string{"/data"}}
-	_ = writeRunResult(&out, &errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
 	got = errOut.String()
 	if !strings.Contains(got, "PATH is not passed through") {
 		t.Fatalf("the PATH miss must still be explained; got:\n%s", got)
@@ -486,7 +486,7 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	// filter that killed the run, and the generic hint never speaks there.
 	errOut.Reset()
 	limited := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}, Limits: policy.Limits{Memory: "64M"}}
-	_ = writeRunResult(&out, &errOut, false, limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
 	got = errOut.String()
 	if !strings.Contains(got, "killed by signal 9") {
 		t.Fatalf("the kill must still be named; got:\n%s", got)
