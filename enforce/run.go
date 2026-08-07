@@ -144,12 +144,23 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// are both in hand, and it is a mistake in what the caller asked for: the category
 	// ValidateRunID describes, which a supervisor must not retry.
 	//
-	// A gate needs no counterpart: it requires LayerNetwork, which is Unavailable on
-	// the userns-blocked host this tier is for, so admit already refuses it above.
-	if degraded && len(opts.DenyPaths) > 0 {
-		return Result{}, &Refusal{
-			Report: required,
-			Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
+	// A gate gets the same treatment. On the Linux backend admit has already refused it
+	// - a gate requires LayerNetwork, and the userns-blocked host this tier is for
+	// probes that Unavailable, which no posture admits - but that is an invariant of one
+	// backend's probe, and Run takes any Enforcer. An enforcer whose probe pairs a
+	// degraded filesystem with a usable network reopens exactly this bug.
+	if degraded {
+		if len(opts.DenyPaths) > 0 {
+			return Result{}, &Refusal{
+				Report: required,
+				Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
+			}
+		}
+		if opts.NetworkGate != nil {
+			return Result{}, &Refusal{
+				Report: required,
+				Reason: "a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
+			}
 		}
 	}
 	res, err := e.Run(ctx, p, proc, RunOptions{
@@ -200,9 +211,9 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// covers a target that ran and whose outcome is simply unattested. A caller that
 	// retries must expect either.
 	//
-	// A Refusal and not a Shortfall: a Shortfall means the target ran and a guarantee
-	// slipped, only strict mode looks at one, and the whole point here is that a default
-	// run must not pass this by.
+	// A Refusal and not a Shortfall: a Shortfall describes a completed run whose report
+	// named which guarantee slipped, and there is no report here to name one from - the
+	// point of this branch is that nothing at all was attested.
 	if res.Setup == SetupSilent {
 		return res, &Refusal{
 			Report: res.Report,
@@ -238,10 +249,12 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 //
 // Only core layers outside strict, because that is what admission gates on: a
 // hardening layer the backend downgraded mid-run was never grounds to refuse the run,
-// so it is not grounds to fault the completed one either. Requested resource limits are
-// not re-checked for the same reason - admission judged whether the host could deliver
-// them, and reporting the answer twice would fault runs the caller was never offered a
-// choice about.
+// so it is not grounds to fault the completed one either. That leaves the default
+// branch a narrower mirror of admit's than the other two: admit also refuses a
+// requested-but-unenforceable resource limit, and a limit the backend finds undelegated
+// only once the scope exists is the same unbounded target arriving late. It is left
+// alone here because TestRunPreservesBackendReportRefinement pins the current answer and
+// the question is its own - not because the two cases differ.
 func postRunShortfall(opts Options, r Report) []LayerStatus {
 	switch {
 	case opts.Strict:

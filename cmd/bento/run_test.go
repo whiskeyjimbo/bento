@@ -343,7 +343,7 @@ func TestWriteRunResultStreamWriteFailureRefusesEveryOutcome(t *testing.T) {
 		{"verdict", enforce.Result{ExitCode: 5}, nil},
 		{"refusal", enforce.Result{}, &enforce.Refusal{Report: report, Reason: "cannot enforce here"}},
 		{"failed", enforce.Result{}, errors.New("the sandbox stage died")},
-		{"strict shortfall", enforce.Result{ExitCode: 5}, &enforce.Shortfall{Report: report}},
+		{"posture shortfall", enforce.Result{ExitCode: 5}, &enforce.Shortfall{Report: report}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -370,7 +370,7 @@ func TestWriteRunResultStreamIntactKeepsTheEarnedCode(t *testing.T) {
 		want int
 	}{
 		{"verdict", nil, 5},
-		{"strict shortfall", &enforce.Shortfall{Report: report}, postureShortfall},
+		{"posture shortfall", &enforce.Shortfall{Report: report}, postureShortfall},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -762,7 +762,7 @@ func TestWriteRunResultPostureShortfall(t *testing.T) {
 		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, postureShortfall)
 	}
 	if !strings.Contains(stderr.String(), "did not hold for the whole run") {
-		t.Errorf("a strict shortfall must be named on stderr; got %q", stderr.String())
+		t.Errorf("a posture shortfall must be named on stderr; got %q", stderr.String())
 	}
 
 	stdout.Reset()
@@ -781,7 +781,7 @@ func TestWriteRunResultPostureShortfall(t *testing.T) {
 		t.Fatalf("not JSON: %v", err)
 	}
 	if !env.PostureShortfall {
-		t.Error("the verdict must mark the strict shortfall")
+		t.Error("the verdict must mark the posture shortfall")
 	}
 	// The target ran, so this ends in a verdict - not the refusal or failed event, which
 	// both say it did not produce the code below.
@@ -850,7 +850,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 		{"failed with none at all", &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{ExitCode: 1}, false, true},
 		{"succeeded", granted, enforce.Result{ExitCode: 0}, false, false},
 		{"the egress hint already explained it", networked, enforce.Result{ExitCode: 1}, false, false},
-		{"a strict shortfall has its own line", granted, enforce.Result{ExitCode: 1}, true, false},
+		{"a posture shortfall has its own line", granted, enforce.Result{ExitCode: 1}, true, false},
 		{"a guard block is not something profiling widens", granted, enforce.Result{ExitCode: 1, GuardBlocked: []enforce.HostPort{{Host: "a.com", Port: "443"}}}, false, false},
 		{"the target never ran, so it failed on nothing profiling can see", granted, enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, false, false},
 	}
