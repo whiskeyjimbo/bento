@@ -75,11 +75,8 @@ func newDoctorCmd() *cobra.Command {
 				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")
 				return &exitError{code: doctorCoreShortfall}
 			}
-			if report.HasDegradation() {
-				fmt.Println("Baseline confinement holds on this host, so manifests run by default. Some")
-				fmt.Println("layers below fall short; whether a run is affected depends on what its manifest")
-				fmt.Println("needs. Egress control and a requested resource limit are refused by default when")
-				fmt.Println("needed; other hardening gaps run with the gap reported. --strict refuses any.")
+			if short := report.Degradations(); len(short) > 0 {
+				writeDegradedSummary(os.Stdout, short)
 				return nil
 			}
 			fmt.Println("This host enforces every layer.")
