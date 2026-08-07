@@ -3,8 +3,10 @@
 //
 // It is run deliberately, never as a gate: see the internal/credhunt package doc for why
 // wiring a per-host shape scan into CI would either flood it or force a suppression list.
-// It always exits 0 - findings are leads to read, not a build verdict - so that nobody is
-// tempted to put it in `make check` and read its status.
+// Findings never set the status - they are leads to read, not a build verdict, so that
+// nobody is tempted to put it in `make check` and gate on how many turned up. A status of
+// 1 means the scan itself did not happen: the homes could not be resolved, or one could
+// not be walked, where zero leads would otherwise read as a clean home.
 //
 //	GOWORK=off go run ./cmd/credhunt
 package main
