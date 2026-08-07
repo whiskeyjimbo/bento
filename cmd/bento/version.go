@@ -76,5 +76,9 @@ func versionBanner() string {
 		fmt.Fprintf(&b, "  Support for %s is planned, not verified. The sandbox builds and probes a real\n", platformName())
 		fmt.Fprintf(&b, "  kernel here; that the layers mean what they mean on %s is untested.\n", verifiedPlatform)
 	}
+	// A separate axis from platform support: a supported platform built the wrong way
+	// still confines, it just anchors the credential shields on a lookup the caller can
+	// reach. `go install` produces exactly that on a host with a C toolchain.
+	writeNSSCaveat(&b)
 	return b.String()
 }

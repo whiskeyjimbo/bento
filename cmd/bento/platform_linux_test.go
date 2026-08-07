@@ -56,9 +56,21 @@ func TestVersionNamesWhatThisBuildCanEnforce(t *testing.T) {
 	// teach an operator to read past the ones that matter.
 	t.Run("the verified platform", func(t *testing.T) {
 		onPlatform(t, verifiedPlatform)
+		pureLookup(t, true)
 		out := versionBanner()
 		if want := "Platform: " + verifiedPlatform + "\n"; !strings.HasSuffix(out, want) {
 			t.Errorf("version = %q, want it to end at %q", out, want)
+		}
+	})
+
+	// A `go install` on a host with a C toolchain produces this build, and it is otherwise
+	// indistinguishable: same platform, same version string, same shield count.
+	t.Run("a build resolving passwd through libc NSS", func(t *testing.T) {
+		onPlatform(t, verifiedPlatform)
+		pureLookup(t, false)
+		out := versionBanner()
+		if !strings.Contains(out, "libc NSS") || !strings.Contains(out, "CGO_ENABLED=0") {
+			t.Errorf("version = %q, want the NSS anchor caveat and how to rebuild", out)
 		}
 	})
 
