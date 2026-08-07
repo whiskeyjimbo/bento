@@ -92,10 +92,13 @@ type networkRule struct {
 	Port string `yaml:"port"`
 }
 
+// limits holds PIDs as a pointer where policy.Limits holds a plain int: only here
+// can an explicit `pids: 0` be told apart from an absent key, and downstream the
+// two are the same value meaning no cap.
 type limits struct {
 	Memory string `yaml:"memory"`
 	CPU    string `yaml:"cpu"`
-	PIDs   int    `yaml:"pids"`
+	PIDs   *int   `yaml:"pids,omitempty"`
 }
 
 // UnmarshalYAML rejects the bare "host:port" scalar form with an actionable
@@ -165,7 +168,16 @@ func Parse(r io.Reader) (*Document, error) {
 		return nil, fmt.Errorf("manifest: contains more than one YAML document; a manifest must be a single policy")
 	}
 	p := m.toPolicy()
-	if err := joinProblems(p.Problems()); err != nil {
+	probs := p.Problems()
+	// Refused the way Limits.validate refuses memory "0" and cpu "0%", and reported
+	// alongside them rather than ahead of them: a manifest that reads as declaring a
+	// task ceiling and grants none is a false contract in a document a reviewer
+	// approves. It cannot live with its siblings in policy, where PIDs is a plain int
+	// and an explicit zero is already indistinguishable from an absent key.
+	if m.Limits != nil && m.Limits.PIDs != nil && *m.Limits.PIDs == 0 {
+		probs = append(probs, errors.New("policy: limits.pids is zero; a run needs at least one task (omit limits.pids for no cap)"))
+	}
+	if err := joinProblems(probs); err != nil {
 		return nil, err
 	}
 	var prov Provenance
@@ -452,7 +464,10 @@ func fromPolicy(p *policy.Policy) manifest {
 		m.Network = append(m.Network, networkRule{Host: r.Host, Port: r.Port})
 	}
 	if !p.Limits.IsZero() {
-		m.Limits = &limits{Memory: p.Limits.Memory, CPU: p.Limits.CPU, PIDs: p.Limits.PIDs}
+		m.Limits = &limits{Memory: p.Limits.Memory, CPU: p.Limits.CPU}
+		if n := p.Limits.PIDs; n != 0 {
+			m.Limits.PIDs = &n
+		}
 	}
 	return m
 }
@@ -477,7 +492,10 @@ func (m *manifest) toPolicy() *policy.Policy {
 		p.Network = append(p.Network, policy.NetworkRule{Host: r.Host, Port: r.Port})
 	}
 	if m.Limits != nil {
-		p.Limits = policy.Limits{Memory: m.Limits.Memory, CPU: m.Limits.CPU, PIDs: m.Limits.PIDs}
+		p.Limits = policy.Limits{Memory: m.Limits.Memory, CPU: m.Limits.CPU}
+		if m.Limits.PIDs != nil {
+			p.Limits.PIDs = *m.Limits.PIDs
+		}
 	}
 	return p
 }

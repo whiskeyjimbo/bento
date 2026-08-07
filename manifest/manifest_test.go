@@ -93,6 +93,9 @@ func TestLoadRejects(t *testing.T) {
 		{"non-canonical ip", "entrypoint: ./x\nnetwork:\n  - {host: \"127.1\", port: \"80\"}\n", "canonical IP"},
 		{"port out of range", "entrypoint: ./x\nnetwork:\n  - {host: a.com, port: \"70000\"}\n", "out of range"},
 		{"negative pids", "entrypoint: ./x\nlimits: {pids: -1}\n", "pids must not be negative"},
+		// The zero decodes to the same int as an absent key, so it emits no TasksMax and
+		// the manifest reads as declaring a task ceiling it does not grant.
+		{"zero pids", "entrypoint: ./x\nlimits: {memory: 128M, pids: 0}\n", "pids is zero"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
