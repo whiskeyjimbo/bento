@@ -144,6 +144,27 @@ Inside a repo you've granted write access to, `.git/hooks`, `.git/config`,
 `.vscode`, and `.idea` are read-only, so a program that can write your project
 can't leave something that fires the next time you open it.
 
+What those shields cannot take away is the checked-in project file that also runs
+on the host without anyone reading it first - `package.json`'s install scripts,
+`.pnpmfile.cjs`, `conftest.py`, `build.rs`, the maven and gradle wrappers,
+`.github/workflows`, `.husky`. Denying them would turn ordinary work into refusals,
+so a run that changes one is *reported* instead (`internal/linux/autoexec.go`): a
+fixed set of names at each write grant's root, stamped before and after, and the
+changed ones printed. A reviewer who knows which of those a run touched looks there
+first.
+
+**The report is a hint, not a fence, and it is deliberately not exhaustive.** Three
+things it does not see: an independent nested repo under the grant (a monorepo's
+inner `package.json`), a repo created during the run, and an in-tree hook runner
+reached through `core.hooksPath` pointing somewhere other than the `.husky` names
+above. Covering them means walking the granted tree instead of stating a fixed set of
+paths, which costs O(tree) twice per run and gives up the property that makes the
+report readable - short enough to print whole. That trade buys a better *hint*; it
+buys no fence, because the fences here (`gitDirShields`, the workspace denylist) are
+concrete-path shields that hold regardless of what the report names. A gap in a
+report is a missed pointer; a gap in a fence is a silent hole, and these are not the
+same cost.
+
 Keeping the list complete is a repeatable audit against firejail's disable-common
 list, not a matter of remembering. Under default-deny, ungranted paths are inaccessible
 by default; the denylist serves as an additional safety net carving out sensitive locations
