@@ -1344,7 +1344,13 @@ func toExecRecordJSON(rec *enforce.ExecRecord) *execRecordJSON {
 // A run that asked and got nothing has to say WHICH nothing. "Nothing was watching" and
 // "nothing ran" are different answers, and only the first one means the reader should go
 // change how they invoked bento - so an unwatched record prints the reason the backend
-// gave and stops there, and a watched but empty record says so in its own words.
+// gave and stops there.
+//
+// The list is led by the target itself, which the launcher seeds rather than observes
+// (its exec retires before the tracer can set its options). So the count of what the run
+// SPAWNED is one less than the list, and a record holding only that entry is a run that
+// executed nothing of its own - not an empty record. Reporting it as one line among the
+// rest would say a run that spawned nothing executed one command.
 //
 // Two partial states are marked rather than smoothed over. A record that never reached
 // its end marker is truncated - the recorder is deliberately not allowed to kill the run
@@ -1353,30 +1359,42 @@ func toExecRecordJSON(rec *enforce.ExecRecord) *execRecordJSON {
 // on its own line, because a command line missing its tail that did not say so would be a
 // record that lies about what ran.
 //
-// Exe and argv are the target's own bytes, so every field is quoted.
+// Exe, argv and the unwatched reason all crossed the sandbox boundary, so all three are
+// quoted: a newline inside one would otherwise forge a line of its own in this block.
 func writeExecRecord(w io.Writer, res enforce.Result) {
 	rec := res.ExecRecord
 	if rec == nil {
 		return
 	}
 	if !rec.Watched {
-		fmt.Fprintf(w, "[bento] exec record: nothing was watching this run, so no execs were recorded: %s\n", rec.Reason)
+		fmt.Fprintf(w, "[bento] nothing was watching this run, so no execs were recorded: %q\n", rec.Reason)
 		return
 	}
-	if len(rec.Runs) == 0 {
-		fmt.Fprintln(w, "[bento] exec record: the recorder was watching and the run executed nothing beyond the target itself.")
-	} else {
-		fmt.Fprintln(w, "[bento] exec record: the run executed these, in the order they ran:")
+	writeRun := func(r enforce.ExecRun) {
+		fmt.Fprintf(w, "[bento]   %q %q\n", r.Exe, r.Argv)
+		if r.ArgvTruncated {
+			fmt.Fprintln(w, "[bento]     (arguments cut - the command line was longer than the record holds)")
+		}
+	}
+	switch len(rec.Runs) {
+	case 0:
+		// Not reachable through a healthy recorder, which seeds the target before the run
+		// starts - so this is a record that lost even that, and the one thing it must not
+		// do is read as a run that executed nothing.
+		fmt.Fprintln(w, "[bento] the exec record came back without even the target's own entry, so nothing")
+		fmt.Fprintln(w, "[bento] about what ran can be read out of it.")
+	case 1:
+		fmt.Fprintln(w, "[bento] the run executed nothing beyond the target itself:")
+		writeRun(rec.Runs[0])
+	default:
+		fmt.Fprintln(w, "[bento] the run executed these, in the order they ran, led by the target itself:")
 		for _, r := range rec.Runs {
-			fmt.Fprintf(w, "[bento]   %q %q\n", r.Exe, r.Argv)
-			if r.ArgvTruncated {
-				fmt.Fprintln(w, "[bento]     (arguments cut - the command line was longer than the record holds)")
-			}
+			writeRun(r)
 		}
 	}
 	if !rec.Complete {
-		fmt.Fprintln(w, "[bento] exec record: the recorder stopped before the run did, so this record ends where it")
-		fmt.Fprintln(w, "[bento] ends rather than where the run did - anything after that point is unrecorded.")
+		fmt.Fprintln(w, "[bento] the recorder stopped before the run did, so this record ends where it ends")
+		fmt.Fprintln(w, "[bento] rather than where the run did - anything after that point is unrecorded.")
 	}
 }
 
