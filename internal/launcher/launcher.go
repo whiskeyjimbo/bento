@@ -687,8 +687,9 @@ func refuseNetworkFD(fd int) error {
 // the inherited descriptor writable through /proc/self/fd/N (measured: the magic link
 // re-resolves to the same inode and re-checks only the inode's permission bits), so on
 // those runs the read-only test is a screen against a careless parent, not a fence
-// against a hostile one. It is kept because the case it does hold for is the one the
-// device rule above is written for too.
+// against a hostile one. It is kept because the case it does hold for is a real one: a
+// parent with more rights than the target is the configuration the device rules above
+// are written against too, and nothing refuses a root-started run.
 //
 // The mode bits are not the invoker's to set: procfs rejects chmod with EPERM even from
 // the file's own owner, so a hostile parent cannot open a 0444 alias of /proc/self/mem,
