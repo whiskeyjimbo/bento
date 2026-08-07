@@ -81,6 +81,49 @@ func TestDoctorJSONCarriesPlatformIndependentOfReady(t *testing.T) {
 	}
 }
 
+// The summary sits three lines under a table that reports each layer's real state, so a
+// clause about a layer this host enforces is read as a warning about this host. It has to
+// name what actually fell short and nothing else.
+func TestDegradedSummaryNamesOnlyTheLayersThatFellShort(t *testing.T) {
+	var limitsOnly enforce.Report
+	limitsOnly.Add(enforce.LayerLimits, enforce.Unavailable, "systemd-run is not installed")
+
+	var b strings.Builder
+	writeDegradedSummary(&b, limitsOnly.Degradations())
+	// The summary is wrapped to the report width, so assert against it unwrapped.
+	got := strings.Join(strings.Fields(b.String()), " ")
+	if !strings.Contains(got, "One layer below falls short (limits)") {
+		t.Errorf("a lone shortfall must be counted and named; got %q", got)
+	}
+	if strings.Contains(got, "network") || strings.Contains(got, "Egress") {
+		t.Errorf("a layer this host enforces must not appear; got %q", got)
+	}
+	if !strings.Contains(got, "needs limits is refused by default") {
+		t.Errorf("a requested limit this host cannot enforce refuses; got %q", got)
+	}
+	if strings.Contains(got, "runs with the gap reported") {
+		t.Errorf("nothing here runs with a gap, so that clause has no referent; got %q", got)
+	}
+
+	// A hardening gap that is not a limit is the other half: the run proceeds.
+	var mixed enforce.Report
+	mixed.Add(enforce.LayerNetwork, enforce.Unavailable, "no egress stack")
+	mixed.Add(enforce.LayerExec, enforce.Degraded, "seccomp is filtered")
+
+	b.Reset()
+	writeDegradedSummary(&b, mixed.Degradations())
+	got = strings.Join(strings.Fields(b.String()), " ")
+	if !strings.Contains(got, "2 layers below fall short (network, exec-block)") {
+		t.Errorf("both shortfalls must be counted and named; got %q", got)
+	}
+	if !strings.Contains(got, "needs network is refused by default") {
+		t.Errorf("a core layer refuses the manifests that need it; got %q", got)
+	}
+	if !strings.Contains(got, "needs exec-block runs with the gap reported") {
+		t.Errorf("a non-limit hardening gap runs; got %q", got)
+	}
+}
+
 // doctor gates its exit code only on core guarantees every manifest needs. Network
 // egress control is core but conditionally required (only a manifest that declares
 // egress needs it), so a host that cannot fence egress still runs every no-network

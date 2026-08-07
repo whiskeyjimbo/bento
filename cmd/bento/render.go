@@ -1433,6 +1433,44 @@ func writePlatform(w io.Writer) {
 	fmt.Fprintln(w)
 }
 
+// writeDegradedSummary says what the shortfalls this host actually has will cost a run.
+// It names them rather than reciting the policy for every layer bento has: rendered next
+// to a table that reports network enforced, a standing sentence about egress being
+// refused reads as a warning about this host, and the reader cannot tell which half of
+// it applies.
+func writeDegradedSummary(w io.Writer, short []enforce.LayerStatus) {
+	var all, refused, reported []string
+	for _, l := range short {
+		all = append(all, string(l.Layer))
+		// The two halves of admit(): a core layer refuses when the manifest needs it, and
+		// so does a requested limit - unlike the other hardening layers, a limit protects
+		// the host, so running unbounded is not an option the run gets to take.
+		if l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU {
+			refused = append(refused, string(l.Layer))
+		} else {
+			reported = append(reported, string(l.Layer))
+		}
+	}
+
+	s := "Baseline confinement holds on this host, so manifests run by default. "
+	if len(short) == 1 {
+		s += fmt.Sprintf("One layer below falls short (%s); ", all[0])
+	} else {
+		s += fmt.Sprintf("%d layers below fall short (%s); ", len(short), strings.Join(all, ", "))
+	}
+	s += "whether a run is affected depends on what its manifest needs. "
+	if len(refused) > 0 {
+		s += fmt.Sprintf("A manifest that needs %s is refused by default. ", strings.Join(refused, " or "))
+	}
+	if len(reported) > 0 {
+		s += fmt.Sprintf("A manifest that needs %s runs with the gap reported. ", strings.Join(reported, " or "))
+	}
+	s += "--strict refuses any."
+	for _, line := range wrapText(s, textWidth) {
+		fmt.Fprintln(w, line)
+	}
+}
+
 // writeNSSCaveat says when this build resolves the anchoring passwd entry through libc
 // NSS. It is written wherever bento describes what the shields rest on, because the two
 // builds are otherwise indistinguishable from outside: same anchors, same shield count,
