@@ -322,9 +322,6 @@ func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
 // take it from, and the comment on writeResolvedGrants owns that gap. The run's own
 // envelope uses toShieldedGrantsJSON instead, which carries what was actually bound.
 func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
-	if len(resolved) != len(literal) {
-		return nil
-	}
 	var out []grantTargetJSON
 	for i, lit := range literal {
 		if lands, differs := grantTarget(lit, resolved[i]); differs {
@@ -408,9 +405,10 @@ type shieldGrant struct {
 	Holds denylist.Holds
 }
 
-// toShieldGrantsJSON renders the grants validate resolved for itself, which is why no
-// on_host is set: there is no run to have bound one, and resolved_read is validate's
-// answer to what a grant reaches.
+// toShieldGrantsJSON renders the grants validate resolved for itself. No on_host is set
+// even though shield.Set.OptIns computes one: resolved_read is validate's answer to what
+// a grant reaches, and it carries the landing path in exactly the cases where it differs
+// from the spelling.
 func toShieldGrantsJSON(gs []shieldGrant) []shieldedGrantJSON {
 	var out []shieldedGrantJSON
 	for _, g := range gs {
@@ -436,14 +434,14 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 	if len(res.Shields) == 0 {
 		return
 	}
-	hidden, readonly := 0, 0
+	// The backend emits exactly two kinds, so the read-only count determines the other.
+	readonly := 0
 	for _, s := range res.Shields {
 		if s.Kind == "read-only" {
 			readonly++
-		} else {
-			hidden++
 		}
 	}
+	hidden := len(res.Shields) - readonly
 	msg := fmt.Sprintf("%d hidden", hidden)
 	if readonly > 0 {
 		msg += fmt.Sprintf(", %d read-only", readonly)

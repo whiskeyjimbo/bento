@@ -649,17 +649,30 @@ func interpreterPrefix(interp string) string {
 // envArgs clears the inherited environment and sets only what the policy allowed
 // through, plus the minimum an interpreter needs to run.
 func envArgs(proc enforce.Process) []string {
+	env := sandboxEnv(proc.Env)
 	args := []string{"--clearenv"}
-	for _, k := range slices.Sorted(maps.Keys(proc.Env)) {
-		args = append(args, "--setenv", k, proc.Env[k])
-	}
-	if _, ok := proc.Env["PATH"]; !ok {
-		args = append(args, "--setenv", "PATH", enforce.SandboxPath)
-	}
-	if _, ok := proc.Env["HOME"]; !ok {
-		args = append(args, "--setenv", "HOME", enforce.SandboxHome)
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		args = append(args, "--setenv", k, env[k])
 	}
 	return args
+}
+
+// sandboxEnv fills in the HOME and PATH a target sees when the policy passes neither
+// through. Both tiers build their environment from here, because a `~` or a bare command
+// name resolving on one tier and not the other is one manifest meaning two things - and
+// every frontend that speaks about this states enforce.SandboxHome unconditionally.
+func sandboxEnv(policyEnv map[string]string) map[string]string {
+	env := maps.Clone(policyEnv)
+	if env == nil {
+		env = map[string]string{}
+	}
+	if _, ok := env["PATH"]; !ok {
+		env["PATH"] = enforce.SandboxPath
+	}
+	if _, ok := env["HOME"]; !ok {
+		env["HOME"] = enforce.SandboxHome
+	}
+	return env
 }
 
 // observeHomeTmpfs returns the HOME path to cover with an empty tmpfs during a

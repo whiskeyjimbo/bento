@@ -144,7 +144,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// session-bus variables systemd-run needs to reach the user manager - so add them
 	// here and have the launcher drop them again before exec. Without limits nothing is
 	// added and the run is unchanged.
-	env := envSlice(proc.Env)
+	env := envSlice(sandboxEnv(proc.Env))
 	var stripEnv []string
 	scoped := false
 	if !p.Limits.IsZero() {
