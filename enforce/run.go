@@ -58,6 +58,11 @@ type Options struct {
 	//     a report is read the target has already had the path.
 	DenyPaths []string
 
+	// RecordExec asks for a record of the execs the run performed, returned in
+	// Result.ExecRecord. See RunOptions.RecordExec for what it costs the target and why
+	// a run that cannot have one is not refused over it.
+	RecordExec bool
+
 	// AcceptAliasesUnder acknowledges the credential aliases inside the named host
 	// trees, which would otherwise refuse the run. See RunOptions.AcceptAliasesUnder
 	// for why it is a tree and why it is not a policy field.
@@ -131,6 +136,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,
 		DenyPaths:          opts.DenyPaths,
+		RecordExec:         opts.RecordExec,
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
 		RunID:              opts.RunID,
 	})

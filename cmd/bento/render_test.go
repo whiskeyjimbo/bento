@@ -1430,3 +1430,55 @@ func TestDoctorNamesAnAnchorInsideAnotherAnchor(t *testing.T) {
 		}
 	}
 }
+
+// The five states an exec record comes back in. Four of them are a record that is absent
+// or partial, and each has to be distinguishable from the others: a reader who cannot
+// tell "nothing was watching" from "nothing ran" learns the wrong thing about their run,
+// and one who cannot tell a truncated record from a whole one believes a list that stops
+// early.
+func TestWriteExecRecordSeparatesItsFiveStates(t *testing.T) {
+	render := func(rec *enforce.ExecRecord) string {
+		var b bytes.Buffer
+		writeExecRecord(&b, enforce.Result{ExecRecord: rec})
+		return b.String()
+	}
+
+	// A run that did not ask is byte-for-byte the run it would otherwise be, output
+	// included.
+	if got := render(nil); got != "" {
+		t.Errorf("a run that asked for no record must print nothing; got %q", got)
+	}
+
+	// The reason is the whole value of an unwatched record: it is what says whether to
+	// drop --allow-degraded, change the manifest's exec mode, or lower yama's
+	// ptrace_scope.
+	unwatched := render(&enforce.ExecRecord{Reason: "yama ptrace_scope refused the attach"})
+	if !strings.Contains(unwatched, "yama ptrace_scope refused the attach") {
+		t.Errorf("an unwatched record must name why; got:\n%s", unwatched)
+	}
+
+	empty := render(&enforce.ExecRecord{Watched: true, Complete: true})
+	if strings.Contains(empty, "nothing was watching") {
+		t.Errorf("a watched run that executed nothing is not an unwatched run; got:\n%s", empty)
+	}
+
+	full := render(&enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{
+		{Exe: "/usr/bin/cc", Argv: []string{"cc", "-o", "a\nb"}, ArgvTruncated: true},
+	}})
+	// Argv is the target's own bytes, so an argument holding a newline must not become a
+	// line of its own inside the block.
+	if !strings.Contains(full, `"a\nb"`) {
+		t.Errorf("the record must quote what the target ran; got:\n%s", full)
+	}
+	if !strings.Contains(full, "cut") {
+		t.Errorf("a capped argv must say so, or the record lies about what ran; got:\n%s", full)
+	}
+
+	partial := render(&enforce.ExecRecord{Watched: true, Runs: []enforce.ExecRun{{Exe: "/bin/sh"}}})
+	if !strings.Contains(partial, "ends") {
+		t.Errorf("a record that never reached its end marker must say so; got:\n%s", partial)
+	}
+	if strings.Contains(full, "ends where it") {
+		t.Errorf("a complete record must not claim it was cut short; got:\n%s", full)
+	}
+}
