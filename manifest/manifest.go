@@ -228,6 +228,9 @@ func screenSource(data string) error {
 			// Refusing the construct outright also keeps a manifest readable as written:
 			// a merge key means the grants in force are not the grants on the page.
 			return fmt.Errorf("manifest: line %d uses a YAML anchor, alias, or merge key; these expand without bound at decode time and hide what a manifest grants, so a manifest must spell its values out", lineOf(tok))
+		default:
+			// The lexer's token set is the library's to grow; only the constructs above
+			// make the decoded policy differ from the page.
 		}
 	}
 	return nil

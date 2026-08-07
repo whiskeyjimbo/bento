@@ -152,6 +152,9 @@ func (s Set) credentialLinks(base []denylist.Rule) []denylist.Rule {
 		switch r.Holds {
 		case denylist.HoldsCredentials, denylist.HoldsHistory, denylist.HoldsPersistence:
 			out = append(out, s.linksUnder(r, r.Path, 0)...)
+		case denylist.HoldsUnknown, denylist.HoldsPrivateData, denylist.HoldsServices:
+			// No second spelling to chase: these buckets are directories of data and
+			// sockets rather than the credential stores tools symlink into.
 		}
 	}
 	return out
