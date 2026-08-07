@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
@@ -332,6 +334,43 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 	return out
 }
 
+// shieldSetCache holds the memoized set described on commandShieldSet.
+var shieldSetCache struct {
+	sync.Mutex
+	key string
+	set shield.Set
+	err error
+}
+
+// commandShieldSet is gate.ShieldSet memoized for one command. The set walks the credential
+// stores on disk and validate asks for it five times over one manifest; asking afresh
+// inside the comparison loops made the command seven times slower than it was before it
+// made the comparison at all (4ms to 30ms on a two-grant manifest; 4ms again with this,
+// against 4.7ms per walk on a developer home).
+//
+// It lives here and not in gate because a cache over a disk walk is only honest for as
+// long as the process, and a bento command is one render pass over one manifest, all of
+// it before any run starts. A library cannot promise that, which is why gate.ShieldSet
+// walks fresh - and why gate.Check's own walk is a second one this cannot serve, which
+// costs validate 5ms (14ms to 20ms on the manifest above). Paid rather than reached
+// around with a set parameter on Check: an embedder would then be the one holding a
+// stale set, which is the bug this shape exists to remove.
+//
+// Keyed on the environment even so: the tests relocate HOME and the shield variables per
+// case in one process, and a cache that outlived that would answer the second case with
+// the first case's host. On the anchors alone it would miss the dozen variables that
+// relocate individual shields.
+func commandShieldSet() (shield.Set, error) {
+	key := strings.Join(os.Environ(), "\x00")
+	shieldSetCache.Lock()
+	defer shieldSetCache.Unlock()
+	if shieldSetCache.key != key {
+		shieldSetCache.key = key
+		shieldSetCache.set, shieldSetCache.err = gate.ShieldSet()
+	}
+	return shieldSetCache.set, shieldSetCache.err
+}
+
 // explicitShieldGrants reports the read grants that name a mandatory shield
 // (~/.ssh, ~/.gnupg, the runtime dir's agent sockets) exactly, which the backend honors
 // as a deliberate, read-only exception rather than refusing. It is the pre-run answer to
@@ -348,7 +387,7 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // an empty answer: the footer this feeds asserts the shields hold, and printing that
 // unqualified for a host that can build none of them is the one wrong thing to say.
 func explicitShieldGrants(reads []string) ([]shieldGrant, error) {
-	set, err := gate.ShieldSet()
+	set, err := commandShieldSet()
 	if err != nil {
 		return nil, err
 	}
@@ -1571,7 +1610,7 @@ func writeNestedAnchors(w io.Writer, anchors []string) {
 // naming: it is set on nearly every host, but Runtime stamps it only where it points
 // somewhere other than /run, which is a real relocation and not an ordinary host.
 func writeRelocatedShields(w io.Writer) {
-	set, err := gate.ShieldSet()
+	set, err := commandShieldSet()
 	if err != nil {
 		return
 	}

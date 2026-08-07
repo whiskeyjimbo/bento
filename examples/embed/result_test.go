@@ -186,9 +186,19 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			continue
 		}
 		v := reflect.ValueOf(printed).FieldByIndex(f.Index)
-		want := "could not answer"
-		if v.Kind() == reflect.Slice {
+		// Only the two shapes the fixture above can seed. A field of any other kind is not
+		// waved through on a sentence that happens to be in the output for another reason -
+		// which is how a completeness guard passes over the very field it was added for.
+		var want string
+		switch {
+		case v.Kind() == reflect.Slice && v.Len() > 0:
 			want = v.Index(0).String()
+		case f.Name == "Unresolved" && v.Bool():
+			want = "could not answer"
+		default:
+			t.Errorf("gate.Runnability.%s is new: give it a value in the fixture above and teach this "+
+				"switch its shape, then print it in writeRunnability.", f.Name)
+			continue
 		}
 		// Either spelling counts: a raw path is quoted on its way out, an already-quoted
 		// sentence is not, and which of the two a field is does not change what the guard

@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
@@ -178,7 +177,7 @@ func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, bro
 	// A set the host cannot anchor at all - not merely an unusable $HOME, which drops to
 	// the passwd home - leaves the proposal unclamped: there are no shields to clamp
 	// against, and the run this proposal feeds would be refused for that same reason.
-	if set, err := gate.ShieldSet(); err == nil {
+	if set, err := commandShieldSet(); err == nil {
 		p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(set, p.Read, p.Write)
 	}
 	p.Write, broadWrites = partitionBroad(p.Write)

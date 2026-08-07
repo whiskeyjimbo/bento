@@ -589,7 +589,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	// The error is dropped: it is the same failure to anchor the shields that shieldErr
 	// carries, and the footer below reports it once in words rather than twice as an empty
 	// list - which is what the zero set yields.
-	shieldSet, _ := gate.ShieldSet()
+	shieldSet, _ := commandShieldSet()
 	readRefusals := gate.ShieldedReadProblems(shieldSet, resolvedRead)
 	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
