@@ -1,8 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -145,21 +145,31 @@ func foreignHomeShields(grants []string) []string {
 }
 
 // homeRoot reports the per-user home directory a path lives under, when the path sits
-// beneath a conventional home root (/root, /home/<user>, /Users/<user>). It is a
-// heuristic used only to warn, never to drop, so a home in an unconventional location
-// (a container image or Silverblue's /var/home) simply yields no warning rather than a
-// wrong one.
+// under /root or under one of the containers user homes live in (/home/<user>,
+// /var/home/<user>, /Users/<user>).
+//
+// The containers come from profile rather than being listed again here: a root this
+// misses is a home foreignHomeShields cannot warn about, and converge no longer only
+// warns on that answer - it decides whether a grant is auto-accepted under [a]ll and
+// whether a seeded grant is mounted on an approval stamp alone. A layout known to one
+// package and not the other is then a consent gap, not a missing line of output.
 func homeRoot(path string) (string, bool) {
-	// A cleaned absolute path splits to ["", "home", "u", ...] - segs[0] is empty.
-	segs := strings.Split(filepath.Clean(path), "/")
-	switch {
-	case len(segs) >= 2 && segs[1] == "root":
+	clean := filepath.Clean(path)
+	if clean == "/root" || strings.HasPrefix(clean, "/root/") {
 		return "/root", true
-	case len(segs) >= 3 && (segs[1] == "home" || segs[1] == "Users"):
-		return "/" + segs[1] + "/" + segs[2], true
-	default:
-		return "", false
 	}
+	for _, c := range profile.HomeContainers() {
+		rest, ok := strings.CutPrefix(clean, c+"/")
+		if !ok {
+			continue
+		}
+		user, _, _ := strings.Cut(rest, "/")
+		if user == "" {
+			continue
+		}
+		return c + "/" + user, true
+	}
+	return "", false
 }
 
 // clampProposal filters a synthesized proposal for review, in an order that is
@@ -205,13 +215,36 @@ func partitionBroad(paths []string) (kept, dropped []string) {
 // needs - as an automatic read or write grant (partitionBroad) or as the discovery run's own
 // script-directory grant (discoveryPolicy).
 func isBroadDir(path string) bool {
-	if path == "/" || filepath.Dir(path) == "/" {
-		return true
-	}
 	// Every anchor counts, since either can be the home the script actually walked -
 	// under sudo -H a proposal of the passwd home is just as broad as one of $HOME. The
 	// values are already cleaned, which proposal paths are too (Synthesize), so a $HOME
 	// carrying a trailing slash cannot slip the whole home tree through as non-broad.
 	anchors, _ := denylist.HomeAnchors()
-	return slices.Contains(anchors, path)
+	// Judged where it LANDS as well as how it is spelled, the same as the shield clamps
+	// above, and on both sides of the comparison. A link is otherwise enough to steer a
+	// whole tree past this: the target plants $scriptdir/link -> $HOME and the proposal
+	// names the link, and on a host where /home is itself a symlink the observer records
+	// /var/home/u while the anchor is spelled /home/u. Either way the grant binds the
+	// home, which is precisely what this refuses to propose.
+	for _, spelling := range []string{path, pathresolve.Existing(path)} {
+		if spelling == "/" || filepath.Dir(spelling) == "/" {
+			return true
+		}
+		for _, a := range anchors {
+			if spelling == a || spelling == pathresolve.Existing(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolvedNote names where a grant lands when that differs from how it is spelled, for
+// a message about a clamp that fired on the resolved name. Without it the line names a
+// path the reviewer can look at and see nothing wrong with.
+func resolvedNote(path string) string {
+	if r := pathresolve.Existing(path); r != path {
+		return fmt.Sprintf(" (it resolves to %q)", r)
+	}
+	return ""
 }

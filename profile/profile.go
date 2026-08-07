@@ -572,6 +572,11 @@ func runtimeTree(interp string) string {
 // enclose that user's credential stores, so it is too broad to prefix-drop.
 var homeContainers = []string{"/home", "/var/home", "/Users"}
 
+// HomeContainers returns those directories, so a frontend deciding which home a grant
+// belongs to answers from the same list the write floors do. The two disagreeing is a
+// grant floored here and reported as nobody's home there.
+func HomeContainers() []string { return slices.Clone(homeContainers) }
+
 // isHomeShapedTree reports whether tree looks like a user's home directory or a shallow
 // child of one, without consulting $HOME - so it catches an interpreter under another
 // user's home (sudo) or a symlinked home that a $HOME comparison would miss. /root is a
