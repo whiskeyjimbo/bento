@@ -522,18 +522,20 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// nothing, whatever code the refusal carried.
 		if res.Setup != enforce.SetupTargetUnreached {
 			writeDenialLegend(stderr, p, res, hinted)
-			// Last of the block, because it is the only section whose length is set by what
-			// the target did rather than by what the sandbox found: a build's exec tree is
-			// hundreds of lines, and printing it above the warnings would scroll every one
-			// of them away. It is also the only section the reader explicitly asked for, so
-			// it is the one they are already looking for at the bottom.
-			//
-			// Under the same guard as the legend, and for a stronger reason than sharing
-			// one: a target that was never reached ran no execs to record, and the stage
-			// writes the unreached marker INSTEAD of the record section, so anything this
-			// printed there would contradict the line above it that says nothing started.
-			writeExecRecord(stderr, res)
 		}
+		// Last of the block, because it is the only section whose length is set by what the
+		// target did rather than by what the sandbox found: a build's exec tree is hundreds
+		// of lines, and printing it above the warnings would scroll every one of them away.
+		// It is also the only section the reader explicitly asked for, so it is the one they
+		// are already looking for at the bottom.
+		//
+		// Deliberately outside the legend's target-unreached guard, and not by oversight: a
+		// stage that never reached the target writes the unreached marker INSTEAD of the
+		// record section, which comes back as nothing having watched rather than as a run
+		// that exec'd nothing - a true answer for a reader who asked. Suppressing it here
+		// would also split the two output paths, since the --json envelope carries the
+		// record whatever the setup state.
+		writeExecRecord(stderr, res)
 	}
 
 	// The script ran under --strict, but a guarantee strict required lapsed during the
