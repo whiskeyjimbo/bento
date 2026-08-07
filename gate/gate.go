@@ -297,12 +297,21 @@ func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
 	for _, g := range reads {
-		if r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil); v != shield.Honored {
-			refuse := grantrefusal.InsideShield
-			if v == shield.FoldedShield {
-				refuse = grantrefusal.FoldedShield
-			}
-			problems = append(problems, refuse(g, r.Path).Error())
+		r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil)
+		// Enumerated rather than defaulted to the InsideShield wording, which offered a
+		// caller-denied grant the opt-in remedy that exists only for the built-ins. The
+		// arms mirror the backend's checkReadGrants so the two cannot word the same
+		// verdict differently.
+		switch v {
+		case shield.InsideShield:
+			problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
+		case shield.InsideCallerShield:
+			problems = append(problems, grantrefusal.InsideCallerShield(g, r.Path).Error())
+		case shield.FoldedShield:
+			problems = append(problems, grantrefusal.FoldedShield(g, r.Path).Error())
+		case shield.Honored:
+		case shield.UnderWriteShield, shield.AboveShield:
+			// Write-only verdicts: Contains cannot reach either under shield.Read.
 		}
 	}
 	return problems

@@ -10,8 +10,11 @@ linters:
     - bodyclose
     - gosec
     - misspell
+    - exhaustive
 
   settings:
+    exhaustive:
+      default-signifies-exhaustive: true
     misspell:
       ignore-rules:
         # A hard link, hardlinked - the dictionary wants "hardline".

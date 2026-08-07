@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/gate"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 )
 
@@ -160,4 +161,24 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 	t.Run("a directory that is not the host root", func(t *testing.T) {
 		assertProblem(t, gate.RootWriteProblems([]string{"/srv/app"}), "")
 	})
+}
+
+// The read half enumerates the verdicts rather than wording every non-Honored one as
+// InsideShield, which it used to: that sentence offers the read opt-in, and an embedder's
+// deny has none - so the old wording pointed a caller-denied grant at an escape that does
+// not exist for it. Unreachable through ShieldSet, which assembles with nil caller denies,
+// so the set is built directly with one.
+func TestACallerDeniedReadIsNotOfferedTheBuiltInOptIn(t *testing.T) {
+	home := t.TempDir()
+	denied := filepath.Join(home, "vault")
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(),
+		[]denylist.Rule{{Path: denied, Deny: denylist.DenyAll, Dir: true}})
+
+	problems := gate.ShieldedReadProblems(set, []string{filepath.Join(denied, "key")})
+	if len(problems) != 1 {
+		t.Fatalf("a read inside a caller-supplied deny must be refused; got %v", problems)
+	}
+	if !strings.Contains(problems[0], "the program running bento shields") {
+		t.Errorf("refusal must name the embedder's shield, not the built-in opt-in; got %q", problems[0])
+	}
 }

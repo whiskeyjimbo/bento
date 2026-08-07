@@ -1125,6 +1125,9 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG,
 			syscall.ENOSYS, syscall.EBADF:
 			return
+		default:
+			// Errno is not an enum with a fixed set; every other failure is a real
+			// refusal of a path that resolved, which is what the caller records.
 		}
 	} else {
 		// Only a probe that SUCCEEDED settles the question an open's return value settles -

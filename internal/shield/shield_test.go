@@ -53,6 +53,7 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 		return shield.AboveShield
 	case shieldcorpus.FoldedShield:
 		return shield.FoldedShield
+	case shieldcorpus.Honored:
 	}
 	return shield.Honored
 }
