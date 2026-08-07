@@ -255,6 +255,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.pyenv/shims",
 		"/home/u/.asdf/shims",
 		"/home/u/.local/share/mise/shims",
+		"/home/u/.cache/mise",
 		"/home/u/.local/share/pnpm",
 	}
 	for _, p := range wantDenyWriteDir {
@@ -407,6 +408,7 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	t.Setenv("MISE_STATE_DIR", "/elsewhere/mise-state")
 	t.Setenv("MISE_CONFIG_DIR", "/elsewhere/mise-config")
 	t.Setenv("MISE_DATA_DIR", "/elsewhere/mise-data")
+	t.Setenv("MISE_CACHE_DIR", "/elsewhere/mise-cache")
 	t.Setenv("PRE_COMMIT_HOME", "relcache") // relative: must not shield
 
 	byPath := map[string]Rule{}
@@ -418,11 +420,13 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		"/elsewhere/mise-state/trusted-configs":     "MISE_STATE_DIR",
 		"/elsewhere/mise-config":                    "MISE_CONFIG_DIR",
 		"/elsewhere/mise-data/shims":                "MISE_DATA_DIR",
+		"/elsewhere/mise-cache":                     "MISE_CACHE_DIR",
 		"/home/u/.config/direnv":                    "",
 		"/home/u/.local/state/mise/trusted-configs": "",
 		"/home/u/.config/mise":                      "",
 		"/home/u/.cache/pre-commit":                 "",
 		"/home/u/.local/share/mise/shims":           "",
+		"/home/u/.cache/mise":                       "",
 	} {
 		r, ok := byPath[path]
 		if !ok {
