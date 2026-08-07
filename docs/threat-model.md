@@ -264,9 +264,19 @@ file on a *host* process still passes: `/proc/<pid>/cmdline`, `maps`, `mountinfo
 kernel symbol addresses, and - because a `/proc/net` seq_file pins the netns of whoever
 opened it - the host interface, route and socket enumeration the AF_NETLINK refusal
 above exists to deny. Those are reads of information, not a channel into host memory.
+
+The `/proc/net` pinning is measured, not inferred. Under `bwrap --unshare-net
+--unshare-user --ro-bind / / --proc /proc`, descriptors opened on the host before the
+call still answered with host data: 69 lines from the inherited `/proc/net/tcp` against
+1 (the header alone) from the sandbox's own, and 247 against 1 for `/proc/net/unix`. The
+fresh netns and fresh procfs mount do not take back a reference the open already took.
+
 Separating them from the ordinary `/proc/cpuinfo` redirect wants a denylist of paths,
 which is exactly what the family and kind allowlists refuse to be, and refusing procfs
-wholesale would refuse a shape of run people actually use.
+wholesale would refuse a shape of run people actually use. A `/proc/net/` prefix check
+would also be strictly weaker than the mode screen it sits beside: the mode bits survive
+a bind mount because the inode does, while a path does not - and the more-privileged
+parent this check exists for is the only one who can bind-mount in the first place.
 
 ### 4.5 Watching without reading
 
