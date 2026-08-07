@@ -25,8 +25,9 @@ import (
 )
 
 // hostShieldSet is the set clampProposal would clamp against on this host, off the $HOME
-// the case relocated. Asked per call rather than once, because gate.ShieldSet keys its
-// memo on the environment and a case that moves HOME after it must get the new one.
+// the case relocated. Asked per call rather than once, because a case that moves HOME
+// must get the new one - which is what gate.ShieldSet walking fresh gives it, and what
+// commandShieldSet's environment key preserves for the command path clampProposal takes.
 func hostShieldSet(t *testing.T) shield.Set {
 	t.Helper()
 	set, err := gate.ShieldSet()

@@ -25,8 +25,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -86,7 +84,8 @@ func Check(resolved *policy.Policy) Runnability {
 	// grants that run would have refused - so the answer is unknown rather than the empty
 	// refusal set a host with nothing to refuse yields, which is what the same manifest
 	// looks like on a healthy host.
-	if _, err := ShieldSet(); err != nil {
+	set, err := ShieldSet()
+	if err != nil {
 		return Runnability{Unresolved: true}
 	}
 	var r Runnability
@@ -101,7 +100,7 @@ func Check(resolved *policy.Policy) Runnability {
 			r.Problems = append(r.Problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
-	r.Refusals = Refusals(resolved)
+	r.Refusals = refusals(set, resolved)
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
 	return r
@@ -118,6 +117,12 @@ func Check(resolved *policy.Policy) Runnability {
 // it. Callers that need to distinguish the two ask ShieldSet, which reports the error.
 func Refusals(resolved *policy.Policy) []string {
 	set, _ := ShieldSet()
+	return refusals(set, resolved)
+}
+
+// refusals is the set against a shield set the caller already has, so Check pays for one
+// walk of the credential stores rather than two.
+func refusals(set shield.Set, resolved *policy.Policy) []string {
 	shieldedReads := ShieldedReadProblems(set, resolved.Read)
 	shieldedWrites := ShieldedWriteProblems(set, resolved.Write)
 	problems := append(shieldedReads, shieldedWrites...)
@@ -221,13 +226,6 @@ func MountGrantProblems(read, write []string) []string {
 	return problems
 }
 
-// shieldCache holds the memoized set described on ShieldSet.
-var shieldCache struct {
-	sync.Mutex
-	key string
-	set shield.Set
-}
-
 // ShieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
 // same rules, the same symlink expansion and the same drops, from internal/shield - the
 // package the backend answers with too, so the gate cannot predict a refusal the run does
@@ -235,31 +233,24 @@ var shieldCache struct {
 // caller-supplied denies an embedder passes in, which no manifest can be checked against
 // from here; that narrowing only ever misses a refusal.
 //
-// Memoized for the process. The set walks the credential stores on disk and validate asks
-// for it five times over one manifest; resolving inside the comparison loops made the
-// command seven times slower than it was before it made the comparison at all (4ms to
-// 30ms on a two-grant manifest; 4ms again with this).
+// Walked fresh on every call, and it is not cheap: 4.7ms on a developer home against
+// 36us to hand back a memoized one. It was memoized for the process, keyed on the
+// environment, which is wrong for a library - the set is walked off DISK, and a
+// credential store a sibling ssh-keygen creates, a checkout cloned under a write grant or
+// a relocation symlink repointed all move it with the environment untouched. A long-lived
+// embedder asking twice would have got the first answer forever, in both directions: a
+// refusal for a shield that has since gone, which the package doc above puts as the worse
+// of the two, and a pass for a grant that now reaches a credential store.
 //
-// Keyed on the environment rather than computed once, because that is where all of the
-// set's moving input comes from and it is fixed only within a run: the tests relocate HOME
-// and the shield variables per case in one process, and a cache that outlived that would
-// answer the second case with the first case's host. On the anchors alone it would miss
-// the dozen variables that relocate individual shields, which is not a stale answer a
-// caller can see coming. The one input the key does not cover is the passwd home
-// HomeAnchors falls back to, which no process can change under itself.
+// A caller asking repeatedly holds the set instead, which also fixes the lifetime the
+// memo could not: Check walks once for the whole verdict, and the CLI - where five asks
+// over one manifest is what the memo was for - caches it for the one command.
 func ShieldSet() (shield.Set, error) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
 		return shield.Set{}, err
 	}
-	runtimeDir := denylist.RuntimeDir()
-	key := strings.Join(os.Environ(), "\x00")
-	shieldCache.Lock()
-	defer shieldCache.Unlock()
-	if shieldCache.key != key {
-		shieldCache.key, shieldCache.set = key, shield.Assemble(shield.Host(), anchors, runtimeDir, nil)
-	}
-	return shieldCache.set, nil
+	return shield.Assemble(shield.Host(), anchors, denylist.RuntimeDir(), nil), nil
 }
 
 // ShieldedReadProblems and ShieldedWriteProblems report the grants the run's shield checks
