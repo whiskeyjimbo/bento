@@ -8,6 +8,54 @@ single worker, PRs only).
 
 ---
 
+## Decisions, 2026-08-07
+
+The four questions below were answered together. Items 1 and 3 are settled; 2 and 4 turned
+out to be the wrong questions and are restated here.
+
+**1. The runner embeds bento in Go.** No bento change, and `ADR-0007` stays Proposed - this
+is explicitly not a reason to move it. The execution layer had already chosen this in §9
+("sandboxing a lane: bento directly, the way `examples/supervise/` does it"), and §9's broker
+runs tack, which is Go. Embedding gives §6 its live `NetworkGate` for free.
+
+One cost that came with it: `enforce.Run` sees only a `*policy.Policy`, so an embedded runner
+does **not** inherit the approval check - it lives in `cmd/bento`. §3 rests on the per-lane
+approval meaning something, so `ADR-0007`'s step 2 (extract approval and trust into a package
+both the CLI and embedders call) is now load-bearing for greenboard whether or not a service
+surface is ever built.
+
+**2. Token refresh is the wrong question. There is a third auth mode.**
+`CLAUDE_CODE_OAUTH_TOKEN`, minted by `claude setup-token`, is long-lived, subscription-billed,
+overrides the credential store, and has no refresh token - so nothing writes
+`~/.claude/.credentials.json`. It rides the `env` allowlist as a name, which is
+fingerprint-stable. §4's two-mode framing should become three.
+
+The rotation argument that first settled this is **unverified** and should not be re-derived
+as fact: Claude Code's refresh defaults `refresh_token` to the old value, which is not what a
+client written against guaranteed rotation looks like. Never measure this with live
+credentials - a real rotation past a read-only bind logs the operator out.
+
+**3. A read grant binds a socket the target connects through, at `exec: none`.** Verified,
+with an ungranted socket invisible as `ENOENT`. Zero bento change. Three constraints §9 needs:
+
+- Grant the worktree **directory**, never the socket path. A socket-file grant pins the inode
+  for the run's lifetime, so a broker restarting mid-run is unreachable forever after -
+  `ECONNREFUSED`, which reads as "broker down" rather than "grant wrong".
+- bwrap binds an existing path, so the broker must listen **before** the run starts.
+- §9's "Plan and Review can reach `exec: none`" needs an in-process broker client. A client
+  the lane spawns is an exec whatever its transport, and `tack` is a spawned binary.
+
+The degraded-tier caveat is real but cheaper than stated: `Options.admit` already refuses a
+degraded core layer by default, so the runner just must not set `AllowDegraded`. `--strict`
+does not enter into it, because there is no CLI.
+
+**4. The credential opt-in stays a pinned path**, and under item 2 the collision does not
+arise - a manifest authenticating by env carries no `~` path and is relocatable. If the
+credential grant is kept anyway, gate CI on the exact `pinned_paths` set rather than on its
+emptiness; note the entries are formatted human strings, and `--relocatable` exits 125.
+
+---
+
 ## Blocking the first cut
 
 ### 1. Decide how the runner invokes a sandbox, and make that path complete
