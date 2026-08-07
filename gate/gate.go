@@ -106,8 +106,11 @@ func Check(resolved *policy.Policy) Runnability {
 	return r
 }
 
-// Refusals is every grant this host will not honor, in the words run refuses them
-// with: the whole of the backend's checkGrants that the gate can answer from here. One
+// Refusals is every grant this host will not honor for a reason the manifest holds, in
+// the words run refuses them with: the whole of the backend's checkGrants that the gate
+// can answer from here. It is NOT the run's whole refusal set - preflightGrants runs
+// checkGrants and then the credential-alias scan, and that scan is unmirrored, for the
+// reason ShieldedReadProblems' last paragraph gives. One
 // function because every reader of it - a validate verdict, a refusal to stamp an
 // approval, an embedder's preflight - has to agree on the set, and a check added to only
 // one of them is how a manifest gets stamped for a permission that does not exist.
@@ -287,12 +290,22 @@ func ShieldSet() (shield.Set, error) {
 // RootWriteProblems, the process and managed-mount grants by MountGrantProblems, the
 // looped grant by LoopedGrantProblems.
 //
-// Two narrowings remain against a run, both in the direction that only misses a refusal.
+// Three narrowings remain against a run, all in the direction that only misses a refusal.
 // The set omits the caller-supplied denies an embedder passes in, which no manifest can be
-// checked against from here. And the redirected-workspace-shield refusal is not raised at
+// checked against from here. The redirected-workspace-shield refusal is not raised at
 // all: those shields are derived per write grant from the checkout under it, which is
 // state the gate would have to walk the grant to reconstruct, and the refusal is about a
 // symlink on this host rather than anything the manifest says.
+//
+// And the whole credential-alias refusal is unmirrored - the one narrowing that is not a
+// missing case but a missing check. preflightGrants runs checkGrants and then scans for a
+// second readable name (a hardlink, a bind) reaching a shielded credential's inode from
+// inside a tree the run exposes, and refuses on one. Nothing here answers it, so an empty
+// refusal set does not mean the run honors every grant. It stays out rather than being
+// approximated because the refusal is conditional on `--accept-alias`, a flag of the run
+// and deliberately not a field of the policy (enforce.RunOptions.AcceptAliasesUnder), so a
+// gate that raised it would refuse what a run accepts - the one direction the package doc
+// above rules out.
 func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
