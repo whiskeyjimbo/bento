@@ -182,10 +182,10 @@ printing `Reason` alone gives a generic posture string. Printing `%v` on the err
 covers both parts.
 
 `enforce.Shortfall` is the one an embedder is likeliest to mishandle. It means the
-target **ran** and then a guarantee `Strict` required lapsed, so the `Result` is
+target **ran** and then a guarantee the run was admitted on lapsed, so the `Result` is
 complete and must not be discarded like a failure - but its exit code is no longer the
-answer. It is unreachable under this example's options and handled anyway, because
-setting `Strict: true` is exactly what a copyist does first.
+answer. It is not strict-only: the default posture refuses a degraded core layer at
+admission and faults the completed run when the backend reports one instead.
 
 ## Driving bento from another language
 
@@ -238,12 +238,12 @@ Three rules a subprocess consumer gets wrong:
   cannot finish writing stdout it says so on stderr and exits 125 rather than leaving a
   truncated run that reads as a complete one. A consumer that only checks "did the JSON
   parse" would accept the truncation.
-- **125 is bento's own failure code**, not the target's, and `--strict` adds 124 for a
-  run whose posture lapsed. Every other code is the target's, passed through untouched,
+- **125 is bento's own failure code**, not the target's, and 124 is a run whose posture
+  lapsed while the target ran. Every other code is the target's, passed through untouched,
   so a process exit status alone cannot tell a bento verdict from a script that happened
   to exit 125 - that is what `event` is for.
-- **`strict_shortfall`** (`--strict` only) means the target ran and then a guarantee
-  lapsed. `exit_code` in the verdict is still the target's own there; it is the process
+- **`posture_shortfall`** means the target ran and then a guarantee the run was
+  admitted on lapsed. `exit_code` in the verdict is still the target's own there; it is the process
   status that becomes 124. Ignore the field and a run whose posture did not hold reads
   as an ordinary clean run.
 
