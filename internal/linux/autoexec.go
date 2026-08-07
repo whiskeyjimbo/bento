@@ -74,10 +74,10 @@ var autoExecDirs = []string{
 // Running git against the grant is not a way in for the run. gitDirShields DenyWrites
 // .git/config and every config.worktree, the workspace denylist covers ~/.gitconfig and
 // ~/.config/git/config, and /etc/gitconfig is under no write grant - so every file the
-// value could come from is fixed for the run. GIT_* is dropped below for the same
-// reason from the other direction, and
-// `rev-parse --git-path` only reads config - none of git's config-driven exec knobs
-// (aliases, pager, fsmonitor, textconv) fire for it.
+// value could come from is fixed for the run. GIT_* is dropped below for the same reason
+// from the other direction - notably GIT_CONFIG_GLOBAL, which would name a global config
+// no shield covers - and `rev-parse --git-path` only reads config, so none of git's
+// config-driven exec knobs (aliases, pager, fsmonitor, textconv) fire for it.
 //
 // Answers outside every write grant are dropped: an absolute hooksPath into a checkout
 // the run cannot write is not a file the run can plant. The default .git/hooks is inside
@@ -90,8 +90,16 @@ var autoExecDirs = []string{
 // wherever that link points - turning the report into a list of host files outside every
 // grant. Resolving also keeps the other direction honest, where an absolute hooksPath
 // spells a real grant through a different alias and the hint would be dropped. A path
-// that cannot be resolved is compared as written; it is one that does not exist yet, so
-// there is nothing behind it to walk.
+// that cannot be resolved at all is compared as written, whatever the reason: EvalSymlinks
+// needs the same traversal the stamping ReadDir needs, so a name it cannot walk is one
+// nothing walks either.
+//
+// The resolution and the ReadDir that follows it are two separate lookups, which a
+// process racing between them could point at different directories. Neither snapshot
+// runs while the target does - the baseline precedes it and the compare follows it - so
+// the racer has to be something that outlived the target, which the bwrap tier's pid
+// namespace reaps. It is a residual of the degraded tier and the cancelled run, and it
+// costs the report a stray filename rather than anything a read of names can reach.
 //
 // Where the grant is not a repo at all, git discovers upward, so an enclosing checkout's
 // hooks directory can be the answer. It is reported only if it too is under a write
