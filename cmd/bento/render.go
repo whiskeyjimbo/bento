@@ -1305,6 +1305,81 @@ func writeChangedAutoExecNotice(w io.Writer, res enforce.Result) {
 	}
 }
 
+// execRunJSON is one exec an enforced run performed, for the --json envelope; see
+// enforce.ExecRun.
+type execRunJSON struct {
+	Pid  int      `json:"pid"`
+	Exe  string   `json:"exe"`
+	Argv []string `json:"argv"`
+	// ArgvTruncated says argv is a prefix of what ran, so a consumer diffing two runs
+	// does not read a cut tail as a different command line.
+	ArgvTruncated bool `json:"argv_truncated,omitempty"`
+}
+
+// execRecordJSON is the exec record for the --json envelope; see enforce.ExecRecord.
+// watched and complete are always emitted, never omitempty: their false values are the
+// answers a consumer needs most, and a missing key would read as "no execs happened".
+type execRecordJSON struct {
+	Watched  bool          `json:"watched"`
+	Reason   string        `json:"reason,omitempty"`
+	Complete bool          `json:"complete"`
+	Runs     []execRunJSON `json:"runs,omitempty"`
+}
+
+func toExecRecordJSON(rec *enforce.ExecRecord) *execRecordJSON {
+	if rec == nil {
+		return nil
+	}
+	out := &execRecordJSON{Watched: rec.Watched, Reason: rec.Reason, Complete: rec.Complete}
+	for _, r := range rec.Runs {
+		out.Runs = append(out.Runs, execRunJSON{Pid: r.Pid, Exe: r.Exe, Argv: r.Argv, ArgvTruncated: r.ArgvTruncated})
+	}
+	return out
+}
+
+// writeExecRecord prints the execs the run performed, for a run that asked for them with
+// --record-exec. Nothing at all for a run that did not ask: the record is a diagnostic,
+// and a run without one is byte-for-byte the run it would otherwise be.
+//
+// A run that asked and got nothing has to say WHICH nothing. "Nothing was watching" and
+// "nothing ran" are different answers, and only the first one means the reader should go
+// change how they invoked bento - so an unwatched record prints the reason the backend
+// gave and stops there, and a watched but empty record says so in its own words.
+//
+// Two partial states are marked rather than smoothed over. A record that never reached
+// its end marker is truncated - the recorder is deliberately not allowed to kill the run
+// it observes, so one that died leaves a record ending where it ended, and a partial
+// record read as whole would be worse than none. And an argv the stage capped is marked
+// on its own line, because a command line missing its tail that did not say so would be a
+// record that lies about what ran.
+//
+// Exe and argv are the target's own bytes, so every field is quoted.
+func writeExecRecord(w io.Writer, res enforce.Result) {
+	rec := res.ExecRecord
+	if rec == nil {
+		return
+	}
+	if !rec.Watched {
+		fmt.Fprintf(w, "[bento] exec record: nothing was watching this run, so no execs were recorded: %s\n", rec.Reason)
+		return
+	}
+	if len(rec.Runs) == 0 {
+		fmt.Fprintln(w, "[bento] exec record: the recorder was watching and the run executed nothing beyond the target itself.")
+	} else {
+		fmt.Fprintln(w, "[bento] exec record: the run executed these, in the order they ran:")
+		for _, r := range rec.Runs {
+			fmt.Fprintf(w, "[bento]   %q %q\n", r.Exe, r.Argv)
+			if r.ArgvTruncated {
+				fmt.Fprintln(w, "[bento]     (arguments cut - the command line was longer than the record holds)")
+			}
+		}
+	}
+	if !rec.Complete {
+		fmt.Fprintln(w, "[bento] exec record: the recorder stopped before the run did, so this record ends where it")
+		fmt.Fprintln(w, "[bento] ends rather than where the run did - anything after that point is unrecorded.")
+	}
+}
+
 // verifiedPlatform is the one host bento is verified on. Every other platform either has
 // no backend at all or, on another Linux architecture, builds and probes without anything
 // having confirmed the layers mean there what they mean here.
