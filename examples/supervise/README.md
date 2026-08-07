@@ -165,14 +165,20 @@ worth knowing:
   identical code shares the same decisions wherever it lives. This is launcher
   identity, not behavior identity (a script that `curl | sh`s more code keeps its
   key), so it is convenience memory, not a security boundary.
-- **The store is shielded from the trial.** The trial runs default-deny, mounting only
+- **The store is shielded on both passes.** The trial runs default-deny, mounting only
   the script's own directory. The store lives under the config dir, so a script placed
   in or beside it (say, under a dev-set `XDG_CONFIG_HOME`) could reach it through that
-  script-dir grant; the wrapper passes the store directory to `backend.Profile` as a
-  trial deny path, so the untrusted script cannot read or tamper with your saved
-  decisions wherever the script lives.
+  script-dir grant; the wrapper passes the store directory as a deny path to
+  `backend.Profile` for the trial and to `enforce.Options` for the enforced run, so the
+  untrusted script cannot read or tamper with your saved decisions wherever it lives.
 - **A grant that would expose the store is refused** outright (you cannot approve
-  `read ~/.config` when the store lives under it).
+  `read ~/.config` when the store lives under it). That refusal is what names the
+  offending grant for you; the kernel deny above is the layer under it, so a spelling
+  the refusal misjudges is not the whole boundary.
+- **The store directory is yours alone.** It is narrowed to 0700 before it is read, not
+  only when it is written, and a `permissions.json` another uid owns is refused rather
+  than applied - anyone who can write there could otherwise plant an allow a later run
+  honors with no prompt.
 - **Deny wins.** A remembered deny overrides an allow, and a stored deny that fires
   is printed so a silent block is never a mystery.
 - **It fails closed, never quietly.** A store that cannot be read or parsed - or that

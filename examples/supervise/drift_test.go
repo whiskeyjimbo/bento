@@ -224,3 +224,25 @@ func TestDriftWarnsStoreDenyAboveAManifestGrant(t *testing.T) {
 		t.Errorf("a store deny above a manifest grant must warn; got %q", out.String())
 	}
 }
+
+// The widened check is re-decided rather than inherited, because a more specific store
+// allow under the deny leaves the granted file permitted on both sides. Warning there
+// would be a false alarm on the one message that exists to be believed.
+func TestDriftSilentWhenAStoreAllowShadowsTheDeny(t *testing.T) {
+	s := newTestStore()
+	key := "sha256:aaaa"
+	s.rememberPath("", "read", "/home/u/.ssh", deny, true)
+	s.rememberPath("", "read", "/home/u/.ssh/config", allow, true)
+
+	script := t.TempDir() + "/agent.sh"
+	writeManifestAt(t, script, &policy.Policy{
+		Entrypoint: script, Interpreter: "sh",
+		Read: []string{"/home/u/.ssh/config"},
+	})
+
+	var out strings.Builder
+	warnManifestDrift(&out, s, key, script)
+	if out.Len() != 0 {
+		t.Errorf("supervise permits the granted file too; got %q", out.String())
+	}
+}

@@ -258,14 +258,16 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// reader has not read yet.
 	p.drain()
 
-	// Belt-and-suspenders behind the store shield: this wrapper protects the store by
-	// refusing every grant that covers it rather than by shielding it on the enforced
-	// run (enforce.Options.DenyPaths), because a refusal tells the operator which grant
-	// was the problem where a shield would leave the script failing on an absent path.
-	// So the protection rests entirely on approve() having refused. Re-check the
-	// assembled policy so a future edit that builds it by some path other than
-	// consider/coversStore cannot silently expose the store. Reaching here with a
-	// covering grant is a bug, so fail closed rather than run.
+	// The refusal is what the operator sees - it names the grant that was the problem,
+	// where a bare shield would leave the script failing on an absent path - so approve()
+	// refuses a covering grant and this re-checks the assembled policy, in case a future
+	// edit builds it by some path other than consider/coversStore. Reaching here with a
+	// covering grant is a bug, so fail closed rather than run. The enforced run below
+	// shields the store in the kernel as well: both checks here run through the one
+	// coversStore predicate, so any spelling it judges wrong - a bind-mount alias, a
+	// symlink planted after resolveSymlinks read it, a case-folding mount - is wrong in
+	// both at once, and the phase that would then be exposed is the one running the
+	// target under every grant the human just approved.
 	if err := assertStoreShielded(approved, s.dir); err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: refusing to run: %v\n", err)
 		return 1
@@ -287,7 +289,7 @@ func supervised(ctx context.Context, s *store, script string) int {
 	sup := &supervisor{p: p, s: s, key: key, name: name, session: make(map[string]bool)}
 	res, err := enforce.Run(ctx, e, approved,
 		enforce.Process{Stdout: os.Stdout, Stderr: os.Stderr, Env: env},
-		enforce.Options{NetworkGate: sup.gate})
+		enforce.Options{NetworkGate: sup.gate, DenyPaths: []string{s.dir}})
 	// An interrupt kills the sandboxed child, so the run's outcome - a signal-killed
 	// exit code, or an error from the teardown - describes the cancel, not the target.
 	// Checked before err so the interrupt is not reported as a sandbox failure.
@@ -478,11 +480,11 @@ func finalExitCode(targetExit int, saveErr error, recordedDeny bool) int {
 }
 
 // assertStoreShielded refuses a policy that grants any path covering the permission
-// store. This wrapper shields the store by refusing rather than by DenyPaths, so this
-// is the last check that a copyist widening the approval path cannot expose the store
-// to the supervised script; `perms export` runs it too, since a manifest leaves the
-// wrapper's shielding behind entirely. Both callers word the refusal, so this names
-// only the grant.
+// store, so a copyist widening the approval path cannot expose the store to the
+// supervised script. It is the readable half of the protection, not the whole of it -
+// the run itself passes the store as a DenyPaths shield - and it is all there is on the
+// export path, where a manifest leaves the wrapper's shielding behind entirely. Both
+// callers word the refusal, so this names only the grant.
 func assertStoreShielded(final *policy.Policy, storeDir string) error {
 	for _, g := range append(append([]string{}, final.Read...), final.Write...) {
 		if coversStore(g, storeDir) {

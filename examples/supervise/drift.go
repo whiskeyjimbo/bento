@@ -13,8 +13,8 @@ import (
 // warnManifestDrift warns when a script's committed manifest disagrees with the
 // store's effective decisions, so the same script does not silently behave
 // differently under `supervise` and plain `bento run`. It walks the store's own
-// allow/deny opinions one-directionally and reports each that the manifest resolves
-// the other way. A store-UNKNOWN item is never drift: under `bento run` the manifest
+// allow/deny opinions and reports each that the manifest resolves the other way. A
+// store-UNKNOWN item is never drift: under `bento run` the manifest
 // applies, under supervise it prompts, and a prompt is not silent - warning on it
 // would false-alarm every fresh store. Only fields both sides express are compared
 // (read/write/network/exec); args, env, and limits are the store's blind spots.
@@ -59,8 +59,26 @@ func warnManifestDrift(w io.Writer, s *store, key, script string) {
 			}
 		}
 		for _, p := range denies {
-			if pathOverlaps(p, mPaths) {
+			if pathCoveredBy(p, mPaths) {
 				drift = append(drift, driftManifestAllows(kind, quotePath(p)))
+				continue
+			}
+			// The other containment direction: a deny recorded on a DIRECTORY, with the
+			// manifest granting a file inside it. That is the standing denylist's own
+			// spelling, and one-directional coverage never saw it. The grant is named rather
+			// than the deny, because the grant is the path the two sides disagree about - and
+			// it is re-decided rather than inherited from the deny, since a more specific
+			// store allow underneath (`deny ~/.ssh` plus `allow ~/.ssh/config`) leaves that
+			// file permitted here too, and warning about it would be a false alarm on the one
+			// message that has to stay worth reading.
+			for _, g := range mPaths {
+				if !policy.CoversResolved(p, g) {
+					continue
+				}
+				if d, ok := s.decidePath(key, kind, g); ok && d == deny {
+					drift = append(drift, driftManifestAllows(kind, quotePath(g)))
+					break
+				}
 			}
 		}
 	}
@@ -114,22 +132,6 @@ func driftManifestAllows(kind, disp string) string {
 func pathCoveredBy(path string, grants []string) bool {
 	for _, g := range grants {
 		if policy.CoversResolved(g, path) {
-			return true
-		}
-	}
-	return false
-}
-
-// pathOverlaps is pathCoveredBy in both directions, for a store DENY: a deny recorded on
-// a directory disagrees with a manifest grant on a file inside it just as sharply as one
-// recorded on the file, and containment only runs the other way there. The standing
-// denylist is the case that spells a deny as a directory, so one-directional coverage
-// stayed silent for exactly the drift this warning exists to catch. An ALLOW is judged
-// one-directionally on purpose: a store allow of a tree the manifest only partly grants
-// really is broader than the manifest, and that is already reported.
-func pathOverlaps(path string, grants []string) bool {
-	for _, g := range grants {
-		if policy.CoversResolved(g, path) || policy.CoversResolved(path, g) {
 			return true
 		}
 	}

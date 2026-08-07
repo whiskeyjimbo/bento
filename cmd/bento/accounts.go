@@ -8,40 +8,64 @@ import (
 	"sync"
 )
 
-// groupHoldsOnly reports whether the account database proves that a group holds nobody but
-// uid - the case a group-write bit grants no one anything. It is the ordinary state on a
-// distro with per-user private groups, where a umask of 002 leaves every directory the user
-// creates 0775 owned by a group with a single member, and reading that as shared warns
-// about a reader nobody can be.
+// groupReach is what the account database could establish about a group: whether its
+// write bit reaches anybody besides uid. Three-valued because the question is - a group
+// PROVEN to hold other people is a different fact from one nothing could be learned
+// about, and collapsing them leaves a caller unable to refuse the first without also
+// refusing every host where the second is the only answer available.
+type groupReach uint8
+
+const (
+	// groupUnknown is the zero value on purpose: facts assembled without a lookup must
+	// read as nothing established rather than as a group proven to hold nobody.
+	groupUnknown groupReach = iota
+	groupPrivate
+	groupShared
+)
+
+// groupReachOf answers the membership question from the account database. groupPrivate is
+// the ordinary state on a distro with per-user private groups, where a umask of 002 leaves
+// every directory the user creates 0775 owned by a group with a single member, and reading
+// that as shared warns about a reader nobody can be.
 //
-// Proof, not absence of evidence: a gid the database does not name, a member it names but
-// cannot resolve, or files it cannot read all answer false, and the caller warns. Root is
-// not counted, for the reason foreignOwner does not count it - it can write anywhere
-// regardless, so its membership describes no widening.
-func groupHoldsOnly(gid, uid uint32) bool {
-	return accountDB().holdsOnly(gid, uid)
+// Proof either way, never absence of evidence: a gid the database does not name, a member
+// it names but cannot resolve, or files it cannot read all answer groupUnknown. Root is not
+// counted, for the reason foreignOwner does not count it - it can write anywhere regardless,
+// so its membership describes no widening.
+func groupReachOf(gid, uid uint32) groupReach {
+	return accountDB().reach(gid, uid)
 }
 
-func (db *accounts) holdsOnly(gid, uid uint32) bool {
+func (db *accounts) reach(gid, uid uint32) groupReach {
 	if db == nil {
-		return false
+		return groupUnknown
 	}
 	members, named := db.members[gid]
 	if !named {
-		return false
+		return groupUnknown
 	}
+	// A resolvable other member is proof and ends it; an unresolvable name only withholds
+	// proof, so the scan finishes before settling for that - a group naming both holds
+	// somebody whatever the one it could not resolve turns out to be.
+	unresolved := false
 	for _, name := range members {
 		member, known := db.uidByName[name]
-		if !known || (member != uid && member != 0) {
-			return false
+		switch {
+		case !known:
+			unresolved = true
+		case member != uid && member != 0:
+			return groupShared
 		}
 	}
 	for _, member := range db.primary[gid] {
 		if member != uid && member != 0 {
-			return false
+			return groupShared
 		}
 	}
-	return true
+	if unresolved {
+		return groupUnknown
+	}
+	return groupPrivate
 }
 
 // accounts is /etc/passwd and /etc/group in the two shapes the membership question asks

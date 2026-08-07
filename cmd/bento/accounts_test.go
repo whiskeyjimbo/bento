@@ -4,14 +4,16 @@ import "testing"
 
 // The per-user private group is the case this exists for: a 0775 directory owned by a group
 // with one member grants write to nobody but its owner, and warning about it fires on every
-// command of every Debian-style host, where umask 002 leaves that mode everywhere.
-func TestGroupHoldsOnly(t *testing.T) {
+// command of every Debian-style host, where umask 002 leaves that mode everywhere. Proven
+// shared and nothing-established are kept apart, because approve refuses the first.
+func TestGroupReach(t *testing.T) {
 	const group = `root:x:0:
 adm:x:4:syslog,jrose,alloy
 sudo:x:27:jrose
 jrose:x:1000:
 shared:x:1200:
 wheel:x:1300:ghost
+mixed:x:1400:ghost,peer
 `
 	const passwd = `root:x:0:0::/root:/bin/sh
 syslog:x:104:110::/nonexistent:/usr/sbin/nologin
@@ -23,34 +25,35 @@ peer:x:1001:1200::/home/peer:/bin/zsh
 	const me = 1000
 	for name, tc := range map[string]struct {
 		gid  uint32
-		want bool
+		want groupReach
 	}{
-		"private group holds only its owner":            {1000, true},
-		"a named member who is us is not somebody else": {27, true},
-		"a group naming other people is shared":         {4, false},
-		"a login group somebody else holds is shared":   {1200, false},
-		"a member passwd cannot resolve is not proof":   {1300, false},
-		"a gid the database does not name is not proof": {4242, false},
-		"root can write anywhere, so its group is ours": {0, true},
+		"private group holds only its owner":                  {1000, groupPrivate},
+		"a named member who is us is not somebody else":       {27, groupPrivate},
+		"a group naming other people is shared":               {4, groupShared},
+		"a login group somebody else holds is shared":         {1200, groupShared},
+		"a member passwd cannot resolve is not proof":         {1300, groupUnknown},
+		"a resolvable other member outweighs one that is not": {1400, groupShared},
+		"a gid the database does not name is not proof":       {4242, groupUnknown},
+		"root can write anywhere, so its group is ours":       {0, groupPrivate},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := db.holdsOnly(tc.gid, me); got != tc.want {
-				t.Errorf("holdsOnly(%d, %d) = %v, want %v", tc.gid, me, got, tc.want)
+			if got := db.reach(tc.gid, me); got != tc.want {
+				t.Errorf("reach(%d, %d) = %v, want %v", tc.gid, me, got, tc.want)
 			}
 		})
 	}
 
-	// Nothing read means nothing proven, which is the answer that warns.
+	// Nothing read means nothing proven, which is the answer that warns without refusing.
 	var unread *accounts
-	if unread.holdsOnly(1000, me) {
-		t.Error("a database that could not be read proves nothing")
+	if got := unread.reach(1000, me); got != groupUnknown {
+		t.Errorf("a database that could not be read proves nothing; got %v", got)
 	}
 
 	// glibc reads membership from every line naming a gid, so a second line for one adds
 	// members rather than replacing them.
 	twice := parseAccounts("jrose:x:1000:peer\njrose:x:1000:\n", passwd)
-	if twice.holdsOnly(1000, me) {
-		t.Error("a member named on an earlier line for the same gid is still in the group")
+	if got := twice.reach(1000, me); got != groupShared {
+		t.Errorf("a member named on an earlier line for the same gid is still in the group; got %v", got)
 	}
 
 	// A compat entry makes the files a base something else is merged onto, so nothing in
@@ -61,8 +64,8 @@ peer:x:1001:1200::/home/peer:/bin/zsh
 		"an exclusion":   {group, passwd + "-ghost\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if parseAccounts(tc.group, tc.passwd).holdsOnly(1000, me) {
-				t.Error("files a directory service is merged into prove nothing on their own")
+			if got := parseAccounts(tc.group, tc.passwd).reach(1000, me); got != groupUnknown {
+				t.Errorf("files a directory service is merged into prove nothing on their own; got %v", got)
 			}
 		})
 	}
