@@ -14,8 +14,8 @@ import (
 )
 
 // hostShieldSet is the set the gate builds for the run being validated, off the $HOME the
-// case relocated. Asked per assertion rather than once per test, because ShieldSet keys
-// its memo on the environment and a case that moves HOME after it must get the new one.
+// case relocated. Asked per assertion rather than once per test, because a case that moves
+// HOME after it must get the new one - which is what ShieldSet walking fresh gives it.
 func hostShieldSet(t *testing.T) shield.Set {
 	t.Helper()
 	set, err := gate.ShieldSet()
