@@ -342,11 +342,32 @@ func TestValidateStatesTheSandboxHome(t *testing.T) {
 		t.Errorf("summary must say what HOME becomes inside the sandbox; got:\n%s", out)
 	}
 
-	// Passed through, so ~ means what the author expects and the note would be wrong.
+	// Passed through, so ~ means what the author expects and the note would be wrong -
+	// but the value still has to be named, since it is what decides whether a ~ the
+	// script expands lands on a granted path, and the manifest carries only the name.
+	t.Setenv("HOME", "/home/someone")
 	buf.Reset()
 	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil, nil)
-	if strings.Contains(buf.String(), "HOME is not passed through") {
-		t.Errorf("a manifest allowlisting HOME must not be told it was remapped; got:\n%s", buf.String())
+	out := buf.String()
+	if strings.Contains(out, "HOME is not passed through") {
+		t.Errorf("a manifest allowlisting HOME must not be told it was remapped; got:\n%s", out)
+	}
+	if !strings.Contains(out, `HOME inside the sandbox: "/home/someone"`) {
+		t.Errorf("summary must name the HOME the script will see; got:\n%s", out)
+	}
+
+	// The value the run would use, resolved the way the run resolves it: an allowlisted
+	// name the host never set reaches the sandbox as nothing at all, not as an empty HOME.
+	p := &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}
+	env, unset, err := enforce.ResolveEnv(p, nil, func(string) (string, bool) { return "", false })
+	if err != nil || len(env) != 0 || len(unset) != 1 {
+		t.Fatalf("ResolveEnv(unset HOME) = %v, %v, %v; want it reported unset", env, unset, err)
+	}
+	os.Unsetenv("HOME")
+	buf.Reset()
+	writePolicySummary(&buf, "m.yaml", p, nil, nil)
+	if !strings.Contains(buf.String(), "allowlisted but unset here") {
+		t.Errorf("an allowlisted-but-unset HOME must be called out; got:\n%s", buf.String())
 	}
 }
 
