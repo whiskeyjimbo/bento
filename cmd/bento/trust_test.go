@@ -101,6 +101,18 @@ func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 	if len(got) != 1 || got[0].fatal {
 		t.Fatalf("a group nothing is known about is reported, not refused; got %+v", got)
 	}
+	// A proven-shared directory this user does not own - root:www-data 0775 - is refused,
+	// and foreignOwner exempts root, so this arm's hint is the only remedy named. A chmod
+	// they cannot run would be worse than naming none.
+	notOurs := fileFacts{path: "/var/www", mode: fs.ModeDir | 0o775, uid: 0, group: groupShared}
+	ours := dirFlaws(notOurs, "the directory holding it", me)
+	if len(ours) != 1 || !ours[0].fatal {
+		t.Fatalf("a group proven to hold other users is refused; got %+v", ours)
+	}
+	if strings.Contains(ours[0].hint, "chmod") {
+		t.Errorf("a directory root owns cannot be chmod'd by uid %d; got %q", me, ours[0].hint)
+	}
+
 	// The reader is left with something to do about it, which is the other half of why the
 	// warning was ignorable.
 	if !strings.Contains(got[0].hint, "chmod g-w /home/me/proj") {

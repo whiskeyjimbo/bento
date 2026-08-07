@@ -248,8 +248,8 @@ func writeJournalEntry(path string, data []byte) error {
 // The mode bits are read raw rather than through fileFacts.sharedWrite, which exempts a
 // sticky directory. That exemption is about who can replace an existing file, and the threat
 // here is a record planted before bento wrote one - sticky does not stop anybody creating
-// their own entry. For the same reason there is no privateGroup lookup: bento creates this
-// directory 0700, so a group-write bit on it was set deliberately by somebody.
+// their own entry. For the same reason there is no group-membership lookup: bento creates
+// this directory 0700, so a group-write bit on it was set deliberately by somebody.
 //
 // The leaf only, deliberately, where the manifest's own check walks the whole chain: a
 // writable ancestor lets someone rename this directory away, but the worst that buys them
