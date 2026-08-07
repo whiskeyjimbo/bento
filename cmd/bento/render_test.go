@@ -1457,9 +1457,25 @@ func TestWriteExecRecordSeparatesItsFiveStates(t *testing.T) {
 		t.Errorf("an unwatched record must name why; got:\n%s", unwatched)
 	}
 
+	// The launcher seeds the target before the run starts, so a lone entry is a run that
+	// spawned nothing - not an empty record - and it must not be counted among what the
+	// run executed. Asserting on the target's own line as well, because a branch that
+	// collapsed into silence would pass a check that only forbids wording.
+	lone := render(&enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{
+		{Exe: "/bin/sh", Argv: []string{"sh", "./s.sh"}},
+	}})
+	if !strings.Contains(lone, "nothing beyond the target") || !strings.Contains(lone, `"/bin/sh"`) {
+		t.Errorf("a run that spawned nothing must say so and still show the target; got:\n%s", lone)
+	}
+
+	// A record that lost even the seeded target entry is damaged, and the one thing it
+	// must not do is read as the healthy run above.
 	empty := render(&enforce.ExecRecord{Watched: true, Complete: true})
-	if strings.Contains(empty, "nothing was watching") {
-		t.Errorf("a watched run that executed nothing is not an unwatched run; got:\n%s", empty)
+	if strings.Contains(empty, "nothing was watching") || strings.Contains(empty, "nothing beyond the target") {
+		t.Errorf("a record missing even the target's entry is neither unwatched nor a clean run; got:\n%s", empty)
+	}
+	if empty == "" {
+		t.Errorf("a damaged record must not print nothing, which is how a run that asked for none prints")
 	}
 
 	full := render(&enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{
