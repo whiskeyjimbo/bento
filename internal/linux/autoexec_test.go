@@ -76,6 +76,9 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = grant
+		cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "GIT_")
+		})
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -86,6 +89,11 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.MkdirAll(inTree, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	// bento is reachable from inside a hook or a `git rebase --exec`, which export
+	// GIT_DIR. It overrides cmd.Dir outright, so an inherited one would resolve some
+	// other repo's hooks and silently report on a directory this grant never had.
+	t.Setenv("GIT_DIR", filepath.Join(elsewhere, "decoy.git"))
 
 	before := snapshotAutoExec([]string{grant})
 	planted := filepath.Join(inTree, "pre-commit")
@@ -106,6 +114,25 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	}
 	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
 		t.Errorf("a hooks dir outside every write grant is out of scope, got %v", got)
+	}
+
+	// core.hooksPath is fixed for the run, but the directory it names is an ordinary
+	// project path the run can replace with a symlink. Judged by name alone that stays
+	// inside the grant, and the after-snapshot walks wherever it points - which would
+	// let a run fill its own report with host files it never touched.
+	git("config", "core.hooksPath", "scripts/githooks")
+	if err := os.RemoveAll(inTree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(elsewhere, "hooks"), inTree); err != nil {
+		t.Fatal(err)
+	}
+	before = snapshotAutoExec([]string{grant})
+	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "post-commit"), []byte("x\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
+		t.Errorf("a hooks dir symlinked out of the grant is out of scope, got %v", got)
 	}
 }
 

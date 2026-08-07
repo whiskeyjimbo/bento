@@ -282,8 +282,9 @@ Separating them from the ordinary `/proc/cpuinfo` redirect wants a denylist of p
 which is exactly what the family and kind allowlists refuse to be, and refusing procfs
 wholesale would refuse a shape of run people actually use. A `/proc/net/` prefix check
 would also be strictly weaker than the mode screen it sits beside: the mode bits survive
-a bind mount because the inode does, while a path does not - and the more-privileged
-parent this check exists for is the only one who can bind-mount in the first place.
+a bind mount because the inode does, while a path does not, and a parent needs no
+privilege at all to get one - `unshare -Urm` and a bind mount of `/proc/net/tcp`
+elsewhere is enough to open it under a name no prefix rule would catch.
 
 ### 4.5 Watching without reading
 

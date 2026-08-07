@@ -72,7 +72,10 @@ var autoExecDirs = []string{
 // cases wrong. It is a fixed cost, not a tree walk: one resolution per grant.
 //
 // Running git against the grant is not a way in for the run. gitDirShields DenyWrites
-// .git/config and every config.worktree, so the value cannot move mid-run, and
+// .git/config and every config.worktree, the workspace denylist covers ~/.gitconfig and
+// ~/.config/git/config, and /etc/gitconfig is under no write grant - so every file the
+// value could come from is fixed for the run. GIT_* is dropped below for the same
+// reason from the other direction, and
 // `rev-parse --git-path` only reads config - none of git's config-driven exec knobs
 // (aliases, pager, fsmonitor, textconv) fire for it.
 //
@@ -80,9 +83,30 @@ var autoExecDirs = []string{
 // the run cannot write is not a file the run can plant. The default .git/hooks is inside
 // the grant and stays in, at the cost of a ReadDir - it is DenyWrite-shielded, so it
 // cannot change and never reaches the report.
+//
+// Containment is tested on symlink-resolved paths, both sides. core.hooksPath is fixed
+// for the run but the directory it names is an ordinary project path the run may replace
+// with a symlink, and comparing the names alone would then have the after-snapshot walk
+// wherever that link points - turning the report into a list of host files outside every
+// grant. Resolving also keeps the other direction honest, where an absolute hooksPath
+// spells a real grant through a different alias and the hint would be dropped. A path
+// that cannot be resolved is compared as written; it is one that does not exist yet, so
+// there is nothing behind it to walk.
+//
+// Where the grant is not a repo at all, git discovers upward, so an enclosing checkout's
+// hooks directory can be the answer. It is reported only if it too is under a write
+// grant, which is the same question asked of any other answer.
 func hookRunnerDir(grant string, writes []string) string {
 	cmd := exec.Command("git", "rev-parse", "--git-path", "hooks")
 	cmd.Dir = grant
+	// GIT_* out of the environment, or the answer is not this grant's. GIT_DIR and
+	// GIT_WORK_TREE override cmd.Dir outright (measured), and GIT_CONFIG_COUNT with
+	// GIT_CONFIG_KEY_0=core.hooksPath sets the value directly - all three are set
+	// whenever bento is itself run from a hook or a `git rebase --exec`, which is an
+	// ordinary way to reach it.
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_")
+	})
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -94,13 +118,22 @@ func hookRunnerDir(grant string, writes []string) string {
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(grant, dir)
 	}
+	dir = resolved(dir)
 	for _, w := range writes {
-		rel, err := filepath.Rel(w, dir)
+		rel, err := filepath.Rel(resolved(w), dir)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
 			return dir
 		}
 	}
 	return ""
+}
+
+// resolved is EvalSymlinks with the path itself as the answer when it cannot be walked.
+func resolved(path string) string {
+	if p, err := filepath.EvalSymlinks(path); err == nil {
+		return p
+	}
+	return path
 }
 
 // autoExecState is one snapshot of those files: absolute path to a size-and-mtime stamp,
