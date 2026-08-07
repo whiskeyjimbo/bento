@@ -215,12 +215,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 
 	err = cmd.Run()
 	_ = killProcessGroup(cmd.Process)
-	// See the same guard in Run: a cancel kills the launcher group and the exit status
-	// left behind is indistinguishable from the policy's limits ending the target.
-	// ErrWaitDelay is excluded because it is the one failure that means the target
-	// already ran to completion - Wait gave up on a leaked descendant holding the pipes,
-	// and a cancel arriving inside that 2s window does not unmake the exit code below.
-	if err != nil && ctx.Err() != nil && !errors.Is(err, exec.ErrWaitDelay) {
+	// See the same guard in Run: a cancel kills the launcher group and the signalled
+	// status it leaves is indistinguishable from the policy's limits ending the target.
+	// An ordinary exit status is not that kill - the launcher reports even a signalled
+	// target as 128+signal of its own - so a cancel landing after it does not unmake it.
+	if err != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
 		// Carried out through the cancel for the reason the full tier's is: a target killed
 		// partway is the run least likely to be looked at and most likely to have left an
 		// auto-executing file behind.
@@ -239,6 +238,26 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	default:
 		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
+}
+
+// killedByCancel reports whether a cancel is the better reading of how a run ended,
+// for a run whose context was cancelled and whose command failed. A signalled status is
+// ambiguous - the cancel's own kill and the policy's limits both produce it - and is
+// read as the cancel, which is the conservative half: it withholds a result rather than
+// attributing one. Anything else is read as the target's, because both tiers turn a
+// signalled target into an ordinary 128+signal exit code, so an exit status reaching
+// here is one the wrapper chose to report after the target finished. That leaves a
+// narrow race where the launcher had already computed the status when the group kill
+// landed; the status it reports is still the target's.
+//
+// No status at all means the command never started, where the cancel is all there is
+// to say.
+func killedByCancel(st *os.ProcessState) bool {
+	if st == nil {
+		return true
+	}
+	_, signaled, _ := exitStatusOf(st)
+	return signaled
 }
 
 // exitStatusOf maps a finished process's status to a conventional exit code, plus

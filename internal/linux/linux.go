@@ -231,12 +231,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	bridgeDied := bridgeReportedDeath(bridgeLiveness)
 
-	// A cancelled ctx SIGKILLs the target, and the exit status that produces is
-	// byte-identical to the policy's own memory cap killing it (137, signal 9) under a
-	// full Enforced report - the opposite meaning. Only consulted where the command
-	// failed: a target that exited on its own just before the cancel landed did run to
-	// completion, and a late cancel does not unmake that.
-	if runErr != nil && ctx.Err() != nil {
+	// A cancelled ctx SIGKILLs the wrapper, and the signalled status that produces is
+	// byte-identical to the policy's own memory cap bringing the scope down around the
+	// run under a full Enforced report - the opposite meaning. Only consulted where the
+	// command failed, and only for that signalled status: bwrap reports a signalled
+	// target as 128+signal of its own, so an ordinary exit code here is one the target
+	// ran to completion for, and a late cancel does not unmake that.
+	if runErr != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
 		// The auto-exec report rides the cancel out. A target killed partway is the run
 		// most likely to have rewritten a package.json and least likely to be looked at,
 		// and it is the one path where nothing else says what the host now holds.

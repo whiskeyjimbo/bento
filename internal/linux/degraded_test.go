@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -299,11 +300,15 @@ func TestDegradedSweepsLeakedProcessGroup(t *testing.T) {
 // cancelled-context guard exists to prevent, inverted - and it is invisible without
 // this, because every ordinary cancelled run still reports correctly.
 //
-// Two things make the window: the descendant must escape the process group (setsid),
-// since one left inside it is killed by the ctx-cancel sweep, which closes the pipes and
-// lets Wait return normally; and the target must exit 0, because exec returns
-// ErrWaitDelay only in place of a nil error - a nonzero exit comes back as its own
-// ExitError and never reaches this branch.
+// The descendant must escape the process group (setsid) to make the window: one left
+// inside it is killed by the ctx-cancel sweep, which closes the pipes and lets Wait
+// return normally.
+//
+// Both exit codes are run because they take different routes through the guard, and the
+// nonzero one is the route that was wrong: exec returns ErrWaitDelay only in place of a
+// nil error, so a zero exit arrives as that sentinel while a nonzero one arrives as its
+// own ExitError. Excluding the sentinel kept the first and discarded the second, for two
+// targets that both finished.
 func TestDegradedKeepsTheResultWhenCancelLandsInTheWaitDelay(t *testing.T) {
 	requireDegraded(t)
 	setsidBin, err := exec.LookPath("setsid")
@@ -317,52 +322,57 @@ func TestDegradedKeepsTheResultWhenCancelLandsInTheWaitDelay(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	dir := t.TempDir()
-	script := filepath.Join(dir, "s.sh")
-	// Exit at once, leaving a detached descendant holding stdout past cmd.WaitDelay. The
-	// marker is the last thing before the exit, so the test cancels on the target's own
-	// progress rather than on a wall clock a slow host would outrun.
-	done := filepath.Join(dir, "done")
-	if err := os.WriteFile(script, []byte(`"$SETSID" "$SLEEP" 5 & echo ran; : > "$DONE"`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Write: []string{dir}, Exec: policy.ExecAll}
-	var out strings.Builder
-	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SETSID": setsidBin, "SLEEP": sleepBin, "DONE": done}}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(done); err == nil {
-				break
+	for _, want := range []int{0, 7} {
+		t.Run(fmt.Sprintf("exit%d", want), func(t *testing.T) {
+			dir := t.TempDir()
+			script := filepath.Join(dir, "s.sh")
+			// Exit at once, leaving a detached descendant holding stdout past cmd.WaitDelay.
+			// The marker is the last thing before the exit, so the test cancels on the
+			// target's own progress rather than on a wall clock a slow host would outrun.
+			done := filepath.Join(dir, "done")
+			body := fmt.Sprintf(`"$SETSID" "$SLEEP" 5 & echo ran; : > "$DONE"; exit %d`, want)
+			if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
 			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		// The marker says the script is done, not that the launcher has exited, and a
-		// cancel that lands while it is still alive kills it and produces a real
-		// cancellation instead of the window under test. Only landing early can go wrong
-		// - the WaitDelay runs from the launcher's exit, so the remaining second of it is
-		// slack - which is why the grace is generous rather than tight.
-		time.Sleep(time.Second)
-		cancel() // Wait is now parked on the descendant's pipe
-	}()
+			p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{dir}, Write: []string{dir}, Exec: policy.ExecAll}
+			var out strings.Builder
+			proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SETSID": setsidBin, "SLEEP": sleepBin, "DONE": done}}
 
-	start := time.Now()
-	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p, proc, "", nil)
-	if err != nil {
-		t.Fatalf("a cancel inside the WaitDelay window discarded a finished target's result: %v\noutput:\n%s", err, out.String())
-	}
-	// Without this the test passes vacuously if the descendant ever stops escaping the
-	// group: the sweep would close the pipes at the cancel, Wait would return nil, and
-	// the guard would keep the result without the excluded branch being reached at all.
-	// Only the real window takes the full WaitDelay to return.
-	if elapsed := time.Since(start); elapsed < 2*time.Second {
-		t.Fatalf("the run returned after %v, so Wait never waited out the 2s WaitDelay - the descendant did not hold the pipes and this asserts nothing", elapsed)
-	}
-	if res.ExitCode != 0 || !strings.Contains(out.String(), "ran") {
-		t.Errorf("exit code = %d, output %q - want the finished target's own 0 and its output", res.ExitCode, out.String())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				deadline := time.Now().Add(10 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(done); err == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				// The marker says the script is done, not that the launcher has exited, and a
+				// cancel that lands while it is still alive kills it and produces a real
+				// cancellation instead of the window under test. Only landing early can go
+				// wrong - the WaitDelay runs from the launcher's exit, so the remaining second
+				// of it is slack - which is why the grace is generous rather than tight.
+				time.Sleep(time.Second)
+				cancel() // Wait is now parked on the descendant's pipe
+			}()
+
+			start := time.Now()
+			res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p, proc, "", nil)
+			if err != nil {
+				t.Fatalf("a cancel inside the WaitDelay window discarded a finished target's result: %v\noutput:\n%s", err, out.String())
+			}
+			// Without this the test passes vacuously if the descendant ever stops escaping the
+			// group: the sweep would close the pipes at the cancel, Wait would return nil, and
+			// the guard would keep the result without the cancel ever racing it at all.
+			// Only the real window takes the full WaitDelay to return.
+			if elapsed := time.Since(start); elapsed < 2*time.Second {
+				t.Fatalf("the run returned after %v, so Wait never waited out the 2s WaitDelay - the descendant did not hold the pipes and this asserts nothing", elapsed)
+			}
+			if res.ExitCode != want || !strings.Contains(out.String(), "ran") {
+				t.Errorf("exit code = %d, output %q - want the finished target's own %d and its output", res.ExitCode, out.String(), want)
+			}
+		})
 	}
 }
 
