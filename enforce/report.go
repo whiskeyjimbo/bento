@@ -50,9 +50,11 @@ func (l Layer) Tier() Tier {
 	switch l {
 	case LayerExec, LayerExecStrict, LayerLimits, LayerLimitsCPU:
 		return TierHardening
-	default:
-		return TierCore
+	case LayerFilesystem, LayerNetwork:
 	}
+	// A layer the enum does not name yet is core, which is the tier admission actually
+	// gates on - a new layer defaulting to hardening would be silently optional.
+	return TierCore
 }
 
 // State is how fully a layer is enforced on this host. The values are ordered by

@@ -579,10 +579,12 @@ func requireApproval(doc *manifest.Document, allow bool) error {
 	case approvalStale:
 		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; %s - "+
 			"re-review it there, or pass --allow-unapproved", noStampDiff)
-	default:
-		return fmt.Errorf("refusing to run: the manifest is not approved; " +
-			"review it and run `bento approve`, or pass --allow-unapproved")
+	case approvalUnstamped:
 	}
+	// Unstamped, and the state the enum does not name yet: refused, so a value added to
+	// approvalState cannot open a run - strictApprovalError already lands that way round.
+	return fmt.Errorf("refusing to run: the manifest is not approved; " +
+		"review it and run `bento approve`, or pass --allow-unapproved")
 }
 
 func parseEnvFlags(flags []string) (map[string]string, error) {
