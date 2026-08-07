@@ -4,6 +4,7 @@ package linux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,6 +161,45 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	wantDenied := []enforce.HostPort{{Host: "denied.example", Port: "443"}}
 	if denied := c.allowlistDenied(); !slices.Equal(denied, wantDenied) {
 		t.Errorf("allowlistDenied() = %v, want %v (a guard block and a gate admission are not denials)", denied, wantDenied)
+	}
+}
+
+// The proxy calls observe from a goroutine per connection, and the test above drives it
+// serially, where the race detector sees nothing. This is the concurrent half: under
+// -race it settles the mutex, and the assertions settle the property -race cannot see,
+// that a verdict lands on its own connection's set and never on another's.
+func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
+	const conns = 200
+	c := &egressCollector{}
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			host := fmt.Sprintf("h%d.example", i%10)
+			switch i % 3 {
+			case 0:
+				c.observe(proxy.AdmittedByGate, "admitted-"+host, "443")
+			case 1:
+				c.observe(proxy.Denied, "denied-"+host, "443")
+			default:
+				c.observe(proxy.GuardBlocked, "blocked-"+host, "443")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := c.counted(); got != conns {
+		t.Errorf("counted() = %d, want %d: every connection's decision is tallied exactly once", got, conns)
+	}
+	admitted := make(map[enforce.HostPort]bool, len(c.gateAdmitted()))
+	for _, hp := range c.gateAdmitted() {
+		admitted[hp] = true
+	}
+	for _, hp := range c.guardBlocked() {
+		if admitted[hp] {
+			t.Errorf("%v is reported as both guard-blocked and gate-admitted; the guard's refusal replaces the gate's admission", hp)
+		}
 	}
 }
 
