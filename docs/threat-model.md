@@ -154,24 +154,31 @@ every entry auto-executes (`.github/workflows`, `.husky`), stamped before and af
 and the changed ones printed. A reviewer who knows which of those a run touched looks
 there first.
 
-**The report is a hint, not a fence, and it is deliberately not exhaustive.** Three
+The hook runner is resolved rather than named, because `core.hooksPath` is commonly
+something other than `.husky` - any tool that installs its own hooks points it at an
+in-tree directory of its own. `git rev-parse --git-path hooks` per grant answers with
+the path git will actually use, including the relative and per-worktree spellings, and
+that directory joins the one-level list when it lands inside a write grant. It is the
+same fixed cost as the named directories, not a walk: `gitDirShields` DenyWrites
+`.git/config` and every `config.worktree`, so the value cannot move mid-run.
+
+**The report is a hint, not a fence, and it is deliberately not exhaustive.** Two
 things it does not see: an independent nested repo under the grant (a monorepo's
-inner `package.json`), a repo created during the run, and an in-tree hook runner
-reached through `core.hooksPath` pointing somewhere other than the `.husky` names
-above. Covering them means walking the granted tree instead of stating a fixed set of
+inner `package.json`), and a repo created during the run. Covering them means
+walking the granted tree instead of stating a fixed set of
 paths, which costs O(tree) twice per run and gives up the property that makes the
 report readable - short enough to print whole. That trade buys a better *hint* and no
 fence at all, which is the whole reason it is not taken: what the report names has
 never been what the shields cover.
 
-These same three are fence residuals too, and the report is not what would close them.
+These same two are fence residuals too, and the report is not what would close them.
 `gitDirShields` says so in its own terms: a nested repo created anywhere under the
 grant keeps a `.git/hooks` the workspace shields do not reach, because those anchor at
 the enclosing checkout. Widening the *report* would surface such a hook after the fact;
 it would not stop one being planted. The in-tree hook-runner case cannot be fenced at
 all by construction - the hooks are ordinary project files under a write grant - so
-there the report is the only visibility there is, and the `.husky` names are how much
-of it is covered.
+there the report is the only visibility there is, which is why it resolves
+`core.hooksPath` rather than guessing at the directory's name.
 
 Keeping the list complete is a repeatable audit against firejail's disable-common
 list, not a matter of remembering. Under default-deny, ungranted paths are inaccessible

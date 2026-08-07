@@ -476,7 +476,8 @@ type Result struct {
 	Exposed []ShieldApplied
 	// ChangedAutoExec names the files under a write grant that auto-execute on the host
 	// later and that this run created, modified or removed - a package.json's install
-	// scripts, a conftest.py, a .github/workflows entry. These are the surfaces the
+	// scripts, a conftest.py, a .github/workflows entry, a hook in whatever directory
+	// this checkout's core.hooksPath resolves to. These are the surfaces the
 	// shields deliberately do not deny, because an agent doing ordinary work must be able
 	// to edit them, so the guarantee here is weaker than a shield's by design: nothing
 	// the sandbox wrote executes without someone having had the chance to look at it, and
