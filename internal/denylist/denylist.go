@@ -777,9 +777,14 @@ func Home(home string) []Rule {
 		//
 		// The cost is larger than the record's and is the .cache/pre-commit trade: with the
 		// cache read-only `mise install` fails outright ("Permission denied (os error 13)")
-		// and lands nothing, where today it installs a usable tool despite the shims shield.
+		// and lands nothing. The shims shield alone does not stop it - an unshielded cache
+		// leaves a usable tool installed - so this is where in-sandbox installing ends.
 		// `mise x`, `mise env` and `mise ls` on an already-installed tool are unaffected.
 		// Run the installs outside bento, the same line the $PATH shims block takes.
+		//
+		// Residual: mise also takes cache_dir from a settings key in .config/mise, which no
+		// env table can follow, so a host that relocates its cache that way is unshielded
+		// there. Not a bypass - .config/mise is write-shielded, so no run can plant it.
 		".local/state/mise/trusted-configs",
 		".config/mise",
 		".cache/mise",

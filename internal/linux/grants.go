@@ -104,7 +104,10 @@ func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []strin
 			return grantrefusal.FoldedShield(g, r.Path)
 		case shield.Honored:
 		case shield.UnderWriteShield, shield.AboveShield:
-			// Write-only verdicts: Contains cannot reach either under this kind.
+			// Reachable under shield.Write and deliberately left here: both are refused by
+			// checkWriteNotUnderReadOnlyShield and checkWriteNotAboveShield, which run after
+			// this one and word them for a write. Answering them here would refuse the same
+			// grant in the read sentence.
 		}
 	}
 	return nil

@@ -298,10 +298,10 @@ func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	var problems []string
 	for _, g := range reads {
 		r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil)
-		// Enumerated rather than defaulted to the InsideShield wording, which offered a
-		// caller-denied grant the opt-in remedy that exists only for the built-ins. The
-		// arms mirror the backend's checkReadGrants so the two cannot word the same
-		// verdict differently.
+		// Enumerated rather than defaulted to one sentence: the InsideShield wording
+		// offers the read opt-in, which exists for bento's own shields and not for an
+		// embedder's deny. The arms mirror the backend's checkNotShielded so the two
+		// cannot word the same verdict differently.
 		switch v {
 		case shield.InsideShield:
 			problems = append(problems, grantrefusal.InsideShield(g, r.Path).Error())
