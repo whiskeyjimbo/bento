@@ -554,7 +554,7 @@ func networkStdioRefusals() []error {
 // raw frames on the host's wire - through the check written to stop exactly that.
 //
 // The file KINDS are an allowlist for the same reason, and only a regular file and a
-// pipe pass - the pipe unconditionally, the regular file subject to refuseNamespaceFD,
+// pipe pass - the pipe unconditionally, the regular file subject to refuseKernelFileFD,
 // because S_IFREG is the one kind whose type bits are honest and still not enough.
 // An anonymous-inode descriptor - pidfd, eventfd, epoll,
 // timerfd, io_uring - carries no type bits at all (S_IFMT is 0), so a switch that
@@ -603,7 +603,7 @@ func refuseNetworkFD(fd int) error {
 	case unix.S_IFREG:
 		// A file on stdio is the ordinary case - redirection - but the type bits alone do
 		// not settle it, so this one kind is narrowed by the filesystem underneath it.
-		return refuseNamespaceFD(fd)
+		return refuseKernelFileFD(fd, st)
 	case unix.S_IFIFO:
 		// `bento run | less`.
 		return nil
@@ -635,11 +635,12 @@ func refuseNetworkFD(fd int) error {
 	return nil
 }
 
-// refuseNamespaceFD refuses a regular-file descriptor that is really a namespace handle.
-// /proc/self/ns/net and its siblings open on nsfs, whose inodes carry S_IFREG, so the
-// kind allowlist above sees an ordinary redirected file and waves one through. The type
-// bits are not lying - there is nothing to fix in the S_IFMT switch - which is why this
-// is a second question asked of the same descriptor rather than another case in it.
+// refuseKernelFileFD refuses a regular-file descriptor that is really a kernel interface.
+// /proc/self/ns/net and its siblings open on nsfs, and every procfs file opens on procfs;
+// both carry S_IFREG inodes, so the kind allowlist above sees an ordinary redirected file
+// and waves one through. The type bits are not lying - there is nothing to fix in the
+// S_IFMT switch - which is why this is a second question asked of the same descriptor
+// rather than another case in it.
 //
 // Keying on the filesystem instead of the namespace type is not the denylist the
 // families and kinds above refuse to be. Those are small enumerable sets, so an
@@ -664,13 +665,49 @@ func refuseNetworkFD(fd int) error {
 // answers NS_GET_USERNS/NS_GET_PARENT, and it pins them alive. Refusing costs nothing
 // either way, since a namespace handle is not a byte stream and no legitimate parent
 // passes one as stdio.
-func refuseNamespaceFD(fd int) error {
+//
+// procfs cannot be refused wholesale on that reasoning, because its files ARE byte
+// streams and a parent redirecting stdin from /proc/cpuinfo or /proc/self/status is an
+// ordinary thing to do. What separates those from /proc/<pid>/mem - a read/write channel
+// into a host process's address space - /proc/kcore and /proc/<pid>/environ is the
+// permission bits on the procfs inode, which unlike filesystem magics ARE a small
+// enumerable set, so screening on them is the allowlist this file argues for and not the
+// denylist it refuses to be. Two conditions, and they catch two different classes:
+//
+//   - World-readable. /proc/kcore (0400), /proc/<pid>/mem (0600) and /proc/<pid>/environ
+//     (0400) are caught by this one even opened read-only.
+//   - Opened read-only. /proc/<pid>/uid_map, gid_map, setgroups, oom_score_adj and the
+//     writable /proc/sys entries are 0644 and pass the first condition; they are
+//     host-reconfiguration channels and only this one catches them. Nothing legitimate
+//     redirects a target's stdout into procfs.
+//
+// The bits are not the invoker's to set: procfs rejects chmod with EPERM even from the
+// file's own owner, so a hostile parent cannot open a 0444 alias of /proc/self/mem, and
+// a bind mount elsewhere carries the same inode and the same mode.
+//
+// This narrows the residual rather than closing it: a world-readable procfs file on a
+// HOST process still passes, so /proc/<pid>/cmdline, maps, mountinfo and /proc/kallsyms
+// remain readable through an inherited descriptor - argv secrets, ASLR layout and host
+// mount topology. docs/threat-model.md carries that so it is not read as a fence.
+func refuseKernelFileFD(fd int, st unix.Stat_t) error {
 	var sf unix.Statfs_t
 	if err := unix.Fstatfs(fd, &sf); err != nil {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a regular file whose filesystem could not be identified: %w", fd, err)
 	}
-	if sf.Type == unix.NSFS_MAGIC {
+	switch sf.Type {
+	case unix.NSFS_MAGIC:
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited namespace handle; setns through it reaches the host namespaces the sandbox exists to leave", fd)
+	case unix.PROC_SUPER_MAGIC:
+		if st.Mode&unix.S_IROTH == 0 {
+			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited procfs file that is not world-readable (mode %#o); the restricted ones - /proc/<pid>/mem, /proc/kcore, /proc/<pid>/environ - reach host memory no fence bento installs revokes", fd, st.Mode&07777)
+		}
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+		if err != nil {
+			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a procfs file whose access mode could not be read: %w", fd, err)
+		}
+		if flags&unix.O_ACCMODE != unix.O_RDONLY {
+			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited procfs file open for writing; writable procfs entries reconfigure the host and nothing legitimate redirects stdio into one", fd)
+		}
 	}
 	return nil
 }
