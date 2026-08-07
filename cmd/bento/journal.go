@@ -195,8 +195,10 @@ func storeApprovalRecord(realPath string, p *policy.Policy, reviewed bool) error
 }
 
 // writeJournalEntry writes one record through a temporary file in the journal directory
-// and a rename, the same shape as writeManifestAtomically and for the same reason: a
-// half-written entry is what the next re-approval would read and diff against. It is its
+// and a rename, the same shape as writeManifestAtomically and for the same reason - down
+// to flushing the content but not the directory: a half-written entry is what the next
+// re-approval would read and diff against, while a rename lost to a power loss leaves the
+// previous entry, which reads as journalForeign and declines to diff. It is its
 // own writer rather than a parameter on that one, whose warning is about a manifest's mode.
 //
 // The directory is 0700 and the entry 0600. A journal anyone else can write is a forgeable
@@ -220,6 +222,10 @@ func writeJournalEntry(path string, data []byte) error {
 		return err
 	}
 	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
 	}

@@ -77,7 +77,13 @@ func newApproveCmd() *cobra.Command {
 			if err := requireHonorableGrants(resolved); err != nil {
 				return err
 			}
-			if approval == approvalCurrent && trust.file.sharedWrite() == 0 {
+			// The stamp is an unkeyed sha256 that travels inside the manifest, so on its own
+			// it is satisfied identically by one this host wrote and one that arrived already
+			// stamped from anywhere. The journal is what tells those apart - it is written
+			// only by this host's approve - so the shortcut is for a re-approval, and a stamp
+			// nobody here recorded goes through the whole review rather than exiting green.
+			rec, journal := readApprovalRecord(trust.realPath, doc)
+			if approval == approvalCurrent && journal == journalMatches && trust.file.sharedWrite() == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
 			}
@@ -88,10 +94,10 @@ func newApproveCmd() *cobra.Command {
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil)
-			writeApprovalCallouts(os.Stdout, trust.realPath, doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writeApprovalCallouts(os.Stdout, trust.realPath, namedManifestPath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
-			writeReapprovalNotice(os.Stdout, trust.realPath, doc, approval)
+			writeReapprovalNotice(os.Stdout, doc.Policy, approval, rec, journal)
 			if err := confirmApproval(cmd.Context(), os.Stdout, assumeYes); err != nil {
 				return err
 			}
@@ -124,23 +130,29 @@ func newApproveCmd() *cobra.Command {
 	return cmd
 }
 
-// writeReapprovalNotice tells the reviewer that the policy above is not the one that was
-// stamped. Re-approving a manifest whose permissions drifted prints the same block as a
-// first approval, so the added grant that sent the reader here - `run` refuses a drifted
-// manifest and points at this command - has to be found by memory.
+// writeReapprovalNotice tells the reviewer why they are being asked to read a policy that
+// already carries a stamp. Two cases reach here. The permissions drifted, and re-approving
+// prints the same block as a first approval, so the added grant that sent the reader here -
+// `run` refuses a drifted manifest and points at this command - has to be found by memory.
+// Or the stamp is current but is not one this host recorded, which is the case the journal
+// exists to name: the shortcut above already declined it, and without a line here the
+// prompt would arrive with nothing saying why.
 //
 // The stamp itself cannot say which lines are new - it is a sha256 of the policy, not a
 // copy of it - so the delta comes from the approval journal, which is this host's own
 // record of what its previous approve stamped. Where the journal has a trustworthy entry
 // the notice names the changed lines; where it does not it says which of the two reasons
 // applies, both of which are worth knowing on their own. See journal.go.
-func writeReapprovalNotice(w io.Writer, realPath string, doc *manifest.Document, approval approvalState) {
-	if approval != approvalStale {
+func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval approvalState, rec approvalRecord, verdict journalVerdict) {
+	switch {
+	case approval == approvalStale:
+		fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
+	case approval == approvalCurrent && verdict != journalMatches:
+		fmt.Fprintf(w, "\nThis manifest carries a stamp for the permissions above, but not one bento recorded here.\n")
+	default:
 		return
 	}
-	fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
-	rec, verdict := readApprovalRecord(realPath, doc)
-	writeJournalDiff(w, rec, verdict, doc.Policy)
+	writeJournalDiff(w, rec, verdict, p)
 }
 
 // requireHonorableGrants refuses to stamp a policy holding a grant no run will honor - the
@@ -184,11 +196,16 @@ func requireHonorableGrants(resolved *policy.Policy) error {
 // it the proposal lists a host bento itself would not let the target reach exactly as it
 // lists one that worked, and the reader stamps the difference blind.
 //
-// manifestPath is the symlink-resolved location the stamp will be written to, and the
-// grants are resolved the same way before they are compared - CoversResolved is lexical,
-// so an unresolved path is the one input that makes it answer "no" exactly where it
-// matters.
-func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy.Policy, blockedHosts []string) {
+// The manifest is named twice because a grant can reach it under either name and either
+// one hands the script the policy that governs it. realPath is the symlink-resolved
+// location the stamp is written to - a grant covering it rewrites the file. namedPath is
+// the manifest in the namespace the grants themselves live in, since resolvedGrants
+// anchors every relative grant to the directory of the name the user typed - a grant
+// covering it can unlink the link and drop a self-stamped manifest at that name. For a
+// manifest kept in a dotfiles repo and linked into a project the two differ, and
+// CoversResolved is a lexical prefix test, so asking with only one of them answers "no"
+// exactly where it matters.
+func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved *policy.Policy, blockedHosts []string) {
 	var notes []string
 	for _, r := range p.Network {
 		// Asked of the rule rather than of the recorded destination's text, so a rule that
@@ -235,10 +252,13 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 		entrypoint := pathresolve.Existing(resolved.Entrypoint)
 		for _, g := range resolved.Write {
 			g = pathresolve.Existing(g)
-			switch {
-			case policy.CoversResolved(g, manifestPath):
+			// Two independent tests rather than a switch: one grant over a directory holding
+			// both the manifest and the script covers each of them, and reporting only the
+			// first would drop a callout that is true.
+			if policy.CoversResolved(g, realPath) || policy.CoversResolved(g, namedPath) {
 				notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
-			case policy.CoversResolved(g, entrypoint):
+			}
+			if policy.CoversResolved(g, entrypoint) {
 				notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
 			}
 		}
@@ -271,6 +291,15 @@ func writeApprovalCallouts(w io.Writer, manifestPath string, p, resolved *policy
 	for _, n := range notes {
 		fmt.Fprintf(w, "  - %s\n", n)
 	}
+}
+
+// namedManifestPath is the manifest as the resolved grants name it: resolvedGrants anchors
+// every relative grant to the directory of the path the user typed, and each is then run
+// through pathresolve.Existing, so the comparison needs that directory resolved the same
+// way with the manifest's own last component left alone. Resolving the whole path instead
+// would give back trust.realPath, which is the other name and is asked separately.
+func namedManifestPath(path string) string {
+	return filepath.Join(pathresolve.Existing(filepath.Dir(path)), filepath.Base(path))
 }
 
 // confirmApproval asks before the stamp goes on. A stdin that is not a terminal is
@@ -335,10 +364,16 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 }
 
 // writeManifestAtomically replaces the manifest through a temporary file in its own
-// directory and a rename, so an interrupted write cannot leave a truncated manifest where
-// a complete one was - os.WriteFile opens the real file for truncation, and the half of a
-// manifest it is mid-way through writing is what every other command would read. Both
-// approve and profile write through here.
+// directory, flushed, and a rename, so an interrupted write cannot leave a truncated
+// manifest where a complete one was - os.WriteFile opens the real file for truncation, and
+// the half of a manifest it is mid-way through writing is what every other command would
+// read. Both approve and profile write through here.
+//
+// The directory is not flushed after the rename, unlike examples/supervise's store: a
+// rename that does not survive a power loss leaves the previous manifest in place, whose
+// stamp is stale or absent, and the cost is a re-run of approve. That store fixes the same
+// hazard because stale content there silently reverts a deny; here every outcome is one
+// approve refuses and asks about again.
 //
 // It writes at the location the trust was gathered against, which is the symlink-resolved
 // one: a manifest kept in a dotfiles repo and linked into place is ordinary here, and
@@ -346,7 +381,10 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 // detach it from its source. Taking the location from the trust rather than resolving the
 // name again is what keeps the write and the check talking about the same file. The rename
 // still acts on a name, so someone who can write the resolved directory can still choose
-// what ends up there - but that is fatal in the trust check, so approve never gets here.
+// what ends up there. That is a property of the caller, not of this function: approve
+// refuses such a location outright, while profile only warns and writes anyway - which is
+// sound there because the draft it writes carries no approval stamp, so approve refuses it
+// later on the same grounds.
 //
 // The mode carries forward from the file being replaced (0600 for one that does not exist
 // yet), minus group and world write: approval is drift detection whose whole value is that
@@ -372,6 +410,10 @@ func writeManifestAtomically(trust manifestTrust, data []byte, warn io.Writer) e
 		return err
 	}
 	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
 	}

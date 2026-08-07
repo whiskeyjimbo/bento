@@ -110,7 +110,8 @@ func TestReapprovalSaysWhenThereIsNoRecordOfTheStamp(t *testing.T) {
 	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: "a-stamp-from-elsewhere"}}
 
 	var buf strings.Builder
-	writeReapprovalNotice(&buf, "/nowhere/m.yaml", doc, approvalStale)
+	rec, verdict := readApprovalRecord("/nowhere/m.yaml", doc)
+	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
 	out := buf.String()
 	if !strings.Contains(out, "holds no record") {
 		t.Errorf("an absent record must say bento holds no record; got:\n%s", out)
@@ -139,7 +140,8 @@ func TestReapprovalRefusesToDiffAgainstADisagreeingRecord(t *testing.T) {
 	doc.Provenance.Approves = "some-other-approval"
 
 	var buf strings.Builder
-	writeReapprovalNotice(&buf, path, doc, approvalStale)
+	rec, verdict := readApprovalRecord(path, doc)
+	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
 	out := buf.String()
 	if !strings.Contains(out, "a different approval") {
 		t.Errorf("a disagreeing record must be reported as such; got:\n%s", out)
@@ -354,7 +356,8 @@ func TestAReviewedStampIsNotReportedAsUnread(t *testing.T) {
 		Provenance: manifest.Provenance{Approves: p.Fingerprint()},
 	}
 	var buf strings.Builder
-	writeReapprovalNotice(&buf, path, drifted, approvalStale)
+	rec, verdict := readApprovalRecord(path, drifted)
+	writeReapprovalNotice(&buf, drifted.Policy, approvalStale, rec, verdict)
 	out := buf.String()
 	if strings.Contains(out, "nobody read it") {
 		t.Errorf("a stamp a human approved must not be reported as unread; got:\n%s", out)
@@ -408,7 +411,8 @@ func TestAPlantedRecordInASharedJournalIsNotDiffedAgainst(t *testing.T) {
 		t.Errorf("a record in a world-writable journal must not be trusted; verdict = %v", verdict)
 	}
 	var buf strings.Builder
-	writeReapprovalNotice(&buf, path, doc, approvalStale)
+	rec, verdict := readApprovalRecord(path, doc)
+	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
 	if strings.Contains(buf.String(), "/etc/shadow") {
 		t.Errorf("a planted baseline must never reach the reader as a diff; got:\n%s", buf.String())
 	}
