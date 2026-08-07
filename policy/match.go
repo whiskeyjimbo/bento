@@ -40,6 +40,12 @@ func Allows(rules []NetworkRule, host, port string) bool {
 // authorizes a connection to a non-public address.
 func PortMatches(pattern, port string) bool { return matchPort(pattern, port) }
 
+// NormalizeHost is the host key Allows compares against, exported for an embedder that
+// keys state of its own by host - a supervising wrapper remembering per-host decisions -
+// and would otherwise hand-roll the fold. Its copy is what diverges: strings.ToLower is
+// the obvious spelling and the wrong one, for the reason normalizeHost gives below.
+func NormalizeHost(host string) string { return normalizeHost(host) }
+
 // normalizeHost lowercases and strips a trailing dot (the DNS root label), so
 // "API.Example.Com." and "api.example.com" compare equal.
 //

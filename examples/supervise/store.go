@@ -558,15 +558,14 @@ func resolveLattice(global, app decision) (decision, bool) {
 	return "", false
 }
 
-// normalizeHost lowercases and strips a trailing dot, matching bento's own host
-// matching - so a store key cannot be evaded by case or a trailing dot. It does
-// NOT fold IDN homographs (neither does bento); a hostname key never covers the
-// server's IP literal. These are advisory against a determined target.
-func normalizeHost(h string) string {
-	return strings.TrimSuffix(strings.ToLower(h), ".")
-}
-
-func netKey(host, port string) string { return normalizeHost(host) + ":" + port }
+// netKey is the store's key for one destination. The host is folded by bento's own
+// normalizer rather than a local copy: the store keys the live NetworkGate, so a
+// remembered allow that matches here admits a connection the proxy then dials with the
+// RAW host bytes. A hand-rolled strings.ToLower folds Unicode - U+212A onto ASCII 'k' -
+// which is precisely the name-checked-versus-name-dialed split policy.NormalizeHost
+// refuses to open. A hostname key still never covers the server's IP literal; these are
+// advisory against a determined target.
+func netKey(host, port string) string { return policy.NormalizeHost(host) + ":" + port }
 
 // splitNetKey reverses netKey. The key always ends in ":port" (netKey builds it),
 // so the host is everything before the last colon - correct for an IPv6 literal too.
