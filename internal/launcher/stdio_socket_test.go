@@ -260,6 +260,62 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
+	// procfs inodes are S_IFREG too, but unlike nsfs they really are byte streams, so the
+	// filesystem cannot be refused wholesale - the permission bits separate the ordinary
+	// redirect from the host-memory channel.
+	t.Run("a world-readable procfs file is allowed", func(t *testing.T) {
+		for _, p := range []string{"/proc/cpuinfo", "/proc/self/status"} {
+			f, err := os.Open(p)
+			if err != nil {
+				t.Skipf("no %s available: %v", p, err)
+			}
+			defer f.Close()
+			if err := refuseNetworkFD(int(f.Fd())); err != nil {
+				t.Errorf("%s on stdio was refused; redirecting stdin from one is ordinary: %v", p, err)
+			}
+		}
+	})
+
+	// /proc/self/mem is the reproduction: a read/write channel into an address space that
+	// the mount namespace does not cover, Landlock does not fence and dropInheritedFDs
+	// skips by design.
+	t.Run("a restricted procfs file is refused", func(t *testing.T) {
+		for _, p := range []string{"/proc/self/mem", "/proc/self/environ", "/proc/kcore"} {
+			f, err := os.Open(p)
+			if err != nil {
+				// /proc/kcore wants root, so a non-root run exercises the other two rather
+				// than skipping the case entirely.
+				t.Logf("no %s available: %v", p, err)
+				continue
+			}
+			defer f.Close()
+			err = refuseNetworkFD(int(f.Fd()))
+			if err == nil {
+				t.Fatalf("%s on stdio was accepted", p)
+			}
+			if !strings.Contains(err.Error(), "not world-readable") {
+				t.Errorf("wrong refusal for %s: %v", p, err)
+			}
+		}
+	})
+
+	// The other condition, and the one the mode bits miss: /proc/<pid>/uid_map and the
+	// writable /proc/sys entries are 0644 and still reconfigure the host.
+	t.Run("a writable procfs file is refused", func(t *testing.T) {
+		f, err := os.OpenFile("/proc/self/oom_score_adj", os.O_RDWR, 0)
+		if err != nil {
+			t.Skipf("no writable procfs file available: %v", err)
+		}
+		defer f.Close()
+		err = refuseNetworkFD(int(f.Fd()))
+		if err == nil {
+			t.Fatal("a procfs file open for writing on stdio was accepted")
+		}
+		if !strings.Contains(err.Error(), "open for writing") {
+			t.Errorf("wrong refusal for a writable procfs file: %v", err)
+		}
+	})
+
 	t.Run("a closed descriptor is allowed", func(t *testing.T) {
 		// Nothing was inherited there, so the target sees the same EBADF the check does.
 		if err := refuseNetworkFD(9999); err != nil {
