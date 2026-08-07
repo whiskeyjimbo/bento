@@ -163,11 +163,11 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 	})
 }
 
-// The read half enumerates the verdicts rather than wording every non-Honored one as
-// InsideShield, which it used to: that sentence offers the read opt-in, and an embedder's
-// deny has none - so the old wording pointed a caller-denied grant at an escape that does
-// not exist for it. Unreachable through ShieldSet, which assembles with nil caller denies,
-// so the set is built directly with one.
+// A caller-denied read has to be refused in its own sentence: the InsideShield wording
+// offers the read opt-in, and an embedder's deny has none, so one sentence for every
+// non-Honored verdict points this grant at an escape that does not exist for it.
+// Unreachable through ShieldSet, which assembles with nil caller denies, so the set is
+// built directly with one.
 func TestACallerDeniedReadIsNotOfferedTheBuiltInOptIn(t *testing.T) {
 	home := t.TempDir()
 	denied := filepath.Join(home, "vault")
