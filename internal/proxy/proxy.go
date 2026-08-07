@@ -295,6 +295,9 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		if grant := literalGrantOf(ctx); grant == nil || !grant.Equal(ip) {
 			return blocked(ctx, ip.String())
 		}
+	case ipPublic:
+		// The ordinary egress target; the gate above already decided whether this
+		// connection may reach it at all.
 	}
 	return nil
 }

@@ -304,6 +304,9 @@ func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p
 		fmt.Fprintf(w, "not a baseline for this stamp, so there is no diff to show: read the whole policy\n")
 		fmt.Fprintf(w, "above as if it were unapproved.\n")
 		return
+	case journalMatches:
+		// The only verdict with a baseline to diff against, which is the rest of this
+		// function.
 	}
 
 	shape, err := manifest.Marshal(p, manifest.Provenance{})

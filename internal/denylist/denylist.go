@@ -161,6 +161,9 @@ func (h Holds) Code() string {
 		return "persistence"
 	case HoldsServices:
 		return "services"
+	case HoldsUnknown:
+		// Named so the exhaustive check holds, and left to fall through: the answer below
+		// is HoldsUnknown's as much as it is an out-of-range value's.
 	}
 	return "unknown"
 }
@@ -192,6 +195,7 @@ func (h Holds) Noun() string {
 		// Not "directory": the bucket also holds single socket files, and a noun naming a
 		// directory sends a reader looking for contents that are not there.
 		return "service socket path"
+	case HoldsUnknown:
 	}
 	return "always-shielded path"
 }
@@ -220,6 +224,7 @@ func (h Holds) Exposure() string {
 		// directory of every session socket down to one tool's IPC socket, and a clause
 		// listing three daemons misdescribes the single-socket end of it.
 		return "reach the host services behind it, such as the container daemon, the session bus, and the agent sockets"
+	case HoldsUnknown:
 	}
 	return "read what bento shields there"
 }

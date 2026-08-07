@@ -102,6 +102,9 @@ func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []strin
 			// the store under another spelling, which a read grant reaches on its own, so
 			// there is no write-specific remedy to word differently.
 			return grantrefusal.FoldedShield(g, r.Path)
+		case shield.Honored:
+		case shield.UnderWriteShield, shield.AboveShield:
+			// Write-only verdicts: Contains cannot reach either under this kind.
 		}
 	}
 	return nil

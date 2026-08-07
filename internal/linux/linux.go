@@ -780,6 +780,8 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.untunneled = make(map[string]enforce.HostPort)
 		}
 		c.untunneled[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+	case proxy.Allowed, proxy.Refused, proxy.Faulted:
+		// Counted rather than named: these carry no host and port to collect.
 	}
 }
 
