@@ -149,9 +149,10 @@ on the host without anyone reading it first - `package.json`'s install scripts,
 `.pnpmfile.cjs`, `conftest.py`, `build.rs`, the maven and gradle wrappers,
 `.github/workflows`, `.husky`. Denying them would turn ordinary work into refusals,
 so a run that changes one is *reported* instead (`internal/linux/autoexec.go`): a
-fixed set of names at each write grant's root, stamped before and after, and the
-changed ones printed. A reviewer who knows which of those a run touched looks there
-first.
+fixed set of names at each write grant's root, plus one level of the directories whose
+every entry auto-executes (`.github/workflows`, `.husky`), stamped before and after,
+and the changed ones printed. A reviewer who knows which of those a run touched looks
+there first.
 
 **The report is a hint, not a fence, and it is deliberately not exhaustive.** Three
 things it does not see: an independent nested repo under the grant (a monorepo's
@@ -159,11 +160,18 @@ inner `package.json`), a repo created during the run, and an in-tree hook runner
 reached through `core.hooksPath` pointing somewhere other than the `.husky` names
 above. Covering them means walking the granted tree instead of stating a fixed set of
 paths, which costs O(tree) twice per run and gives up the property that makes the
-report readable - short enough to print whole. That trade buys a better *hint*; it
-buys no fence, because the fences here (`gitDirShields`, the workspace denylist) are
-concrete-path shields that hold regardless of what the report names. A gap in a
-report is a missed pointer; a gap in a fence is a silent hole, and these are not the
-same cost.
+report readable - short enough to print whole. That trade buys a better *hint* and no
+fence at all, which is the whole reason it is not taken: what the report names has
+never been what the shields cover.
+
+These same three are fence residuals too, and the report is not what would close them.
+`gitDirShields` says so in its own terms: a nested repo created anywhere under the
+grant keeps a `.git/hooks` the workspace shields do not reach, because those anchor at
+the enclosing checkout. Widening the *report* would surface such a hook after the fact;
+it would not stop one being planted. The in-tree hook-runner case cannot be fenced at
+all by construction - the hooks are ordinary project files under a write grant - so
+there the report is the only visibility there is, and the `.husky` names are how much
+of it is covered.
 
 Keeping the list complete is a repeatable audit against firejail's disable-common
 list, not a matter of remembering. Under default-deny, ungranted paths are inaccessible
