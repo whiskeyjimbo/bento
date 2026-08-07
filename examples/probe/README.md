@@ -113,8 +113,8 @@ The two environment variables:
   on its own. Without this the shield probes report SKIPPED rather than guessing.
   Exporting it is only half: env does not cross into the sandbox unless the
   manifest names it, so every manifest here allowlists it in `env:`. A manifest
-  `bento profile` drafts does not, which is why the shield probes skip under the
-  root README's quick start and run under this tour.
+  `bento profile` drafts does not, so the shield probes skip under a profiled
+  manifest and run under these.
   It doubles as the witness for `env.passthrough`: `PATH` and `HOME` are injected
   by bento itself, so only an explicitly allowlisted host variable shows that
   passthrough works.

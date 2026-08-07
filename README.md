@@ -214,6 +214,9 @@ cd examples/probe
 ./bento validate ./probe.py.manifest.yaml    # 2. check it, and read what it grants
 ./bento approve  ./probe.py.manifest.yaml    # 3. stamp a fingerprint over the permissions
 ./bento run      ./probe.py.manifest.yaml    # 4. execute under them
+
+export BENTO_PROBE_HOME="$HOME"              # 5. the shields, against a read over all of $HOME
+./bento run broad-home.manifest.yaml --allow-unapproved
 ```
 
 Run step 0 first on a host you have not run Bento on before. A core layer this
@@ -253,11 +256,18 @@ a write grant over the whole example directory, and *both* hosts the probe
 tried - including the one it was denied. Profiling drafts a manifest; approving
 one is a judgement you make.
 
-The credential shields are the headline feature and this sequence does not show them:
-the probe demonstrates them against `BENTO_PROBE_HOME`, and a profiled manifest
-allowlists only the variables the run actually read, so the shield probes report SKIPPED
-here. Env does not cross into the sandbox unless the manifest names it - which is the
-same lesson, arriving the hard way. The tour below runs them.
+Step 5 is the one to check by hand. It grants read access to your entire home directory,
+and `~/.ssh` and `~/.aws` are still unreadable.
+
+It uses a manifest that ships with the example instead of the profiled one, because
+profiling grants only what that run happened to touch. The probe also needs
+`BENTO_PROBE_HOME` to find your real home, since bento sets `HOME` to `/tmp` inside the
+sandbox - and a variable only crosses in if the manifest lists it under `env:`, which
+`broad-home.manifest.yaml` does.
+
+One caveat: check that the run reports a non-zero shielded-path count. If the grant had
+reached nothing at all, the probes would report DENIED too and the output would look the
+same.
 
 The probe example also ships hand-written manifests covering the deny-all floor,
 narrow grants, a broad home grant with the credential shields still holding,
@@ -410,16 +420,9 @@ Bento is architected around a platform-decoupled enforcement seam:
 
 Bento can be imported directly into Go applications to enforce sandbox policies in-process, receive structured execution results, or supply custom interactive network gates (such as prompting a human when an agent attempts undeclared network egress).
 
-### `DispatchReexec` is mandatory
+### Call `DispatchReexec` first
 
-Confining a target re-invokes the embedding binary as a hidden launch stage, so `backend.DispatchReexec()` must be the first statement in `main()` - before flag parsing, before any other initialization. **This applies to tests too:** any test package that performs an enforced or profiling run needs it at the top of `TestMain`, before the testing package parses flags. Without it the staged child runs the whole test suite again, which re-enters the sandbox and stages again.
-
-```go
-func TestMain(m *testing.M) {
-	backend.DispatchReexec()
-	os.Exit(m.Run())
-}
-```
+To build the sandbox, bento runs your own binary again as the launcher. So `backend.DispatchReexec()` has to be the first statement in `main()` - before flag parsing, before any other setup - or that second run starts your program over instead of handing control to bento. Test binaries need the same call at the top of `TestMain`, before the testing package parses flags, or the staged child runs the whole suite again. [`examples/embed`](examples/embed/README.md#calling-dispatchreexec-first) works through both.
 
 A call that never happened is caught before any run starts: `backend.New` and `backend.Profile` return an error naming the missed call. They name the same call on stderr and exit 125 instead when the process they are called in is *itself* an undispatched stage, which is what stops the test-suite fork bomb - a returned error there could be logged and ignored, and an exit is the one outcome a `recover()` in the embedder's own `main()` cannot resume past.
 
