@@ -235,9 +235,13 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 		return fmt.Errorf("manifest is not approved")
 	case approvalStale:
 		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved (%s)", noStampDiff)
-	default:
+	case approvalCurrent:
 		return nil
 	}
+	// The state the enum does not name yet. Refused rather than passed, so a value added
+	// to approvalState cannot make the CI gate green on a manifest run then refuses -
+	// requireApproval already lands that way round.
+	return fmt.Errorf("manifest is not approved")
 }
 
 // writeRunnability prints the host's verdict in the same shape as the approval line

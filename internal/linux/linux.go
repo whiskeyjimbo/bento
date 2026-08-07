@@ -780,8 +780,13 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.untunneled = make(map[string]enforce.HostPort)
 		}
 		c.untunneled[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
-	case proxy.Allowed, proxy.Refused, proxy.Faulted:
-		// Counted rather than named: these carry no host and port to collect.
+	case proxy.Allowed, proxy.Refused:
+		// Counted but not named. An egress the rules allow outright is what the manifest
+		// already says, and the report exists for the destinations a run would not predict
+		// from reading it.
+	case proxy.Faulted:
+		// Returned above, before the tally: a fault is an outcome on a connection rather
+		// than a destination reached.
 	}
 }
 
