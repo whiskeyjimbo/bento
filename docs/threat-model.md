@@ -212,6 +212,26 @@ share no major. A host terminal on stdio is therefore an accepted residual of ru
 interactively: it is the user's own tty, and what it still permits (injecting into that
 terminal) is not something this layer can take away.
 
+A regular file is the ordinary redirect, but two pseudo-filesystems carry `S_IFREG`
+inodes that are not ordinary files, so the descriptor's filesystem is screened as well.
+A namespace handle (`/proc/self/ns/net` and siblings, on nsfs) is refused outright:
+`setns` through it reaches the host namespaces the sandbox exists to leave, and no
+legitimate parent passes one as stdio. procfs cannot be refused that way - its files
+really are byte streams, and redirecting stdin from `/proc/cpuinfo` is ordinary - so a
+procfs descriptor passes only if it is world-readable and open read-only. That refuses
+`/proc/<pid>/mem`, `/proc/kcore` and `/proc/<pid>/environ` on the first condition and
+the writable entries (`uid_map`, `oom_score_adj`, `/proc/sys/*`) on the second. procfs
+rejects `chmod` even from the inode's owner, so the bits are not a hostile parent's to
+forge.
+
+**World-readable procfs on stdio is an accepted residual.** The narrowing shrinks the
+channel, it does not close it: `/proc/<pid>/cmdline`, `maps`, `mountinfo` and
+`/proc/kallsyms` for a *host* process still pass, so an inherited descriptor can still
+leak argv secrets, ASLR layout, host mount topology and kernel symbol addresses. Those
+are reads of information, not a channel into host memory or a reconfiguration of the
+host, which is where the line is drawn. Refusing procfs wholesale would close it and
+would also refuse a shape of run people actually use.
+
 ### 4.5 Watching without reading
 
 The ptrace observer pulls the path argument of an attempted open straight from
