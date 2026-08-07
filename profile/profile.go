@@ -265,11 +265,7 @@ func Synthesize(entrypoint, interpreter string, interpreterArgs []string, obs Ob
 	// the same function the backend binds with, so the two cannot answer differently
 	// about where a grant lands.
 	writeSkip := func(dir string) bool {
-		if skip(dir) || FlooredWrite(dir) {
-			return true
-		}
-		resolved := pathresolve.Existing(dir)
-		return resolved != dir && (isSystemPath(resolved) || SandboxScratch(resolved) || FlooredWrite(resolved))
+		return skip(dir) || FlooredWrite(dir) || ScratchWrite(dir)
 	}
 
 	p := &policy.Policy{
@@ -463,7 +459,31 @@ func SandboxScratch(p string) bool {
 //
 // Callers pass the DIRECTORY a write collapses to (filepath.Dir of an observed path),
 // which is the granularity a write grant has.
+//
+// It answers about where the grant LANDS as well as how it is spelled, so the frontend
+// names the same withheld writes Synthesize dropped: the floors resolve (a target
+// granted write:~/proj drops a symlink to /etc inside it and writes through the link),
+// and a report that did not would go quiet on exactly the case the resolution exists
+// for.
 func FlooredWrite(dir string) bool {
+	if flooredWrite(dir) {
+		return true
+	}
+	resolved := pathresolve.Existing(dir)
+	return resolved != dir && (isSystemPath(resolved) || flooredWrite(resolved))
+}
+
+// ScratchWrite is the same question for the sandbox's private tmpfs: a grant withheld
+// because the name is not on the host, judged on both spellings.
+func ScratchWrite(dir string) bool {
+	if SandboxScratch(dir) {
+		return true
+	}
+	resolved := pathresolve.Existing(dir)
+	return resolved != dir && SandboxScratch(resolved)
+}
+
+func flooredWrite(dir string) bool {
 	// A home container that lives under a system root (/var/home on an ostree layout,
 	// where the user's own home IS /var/home/u) holds accounts, not system state, so the
 	// home rules judge what is inside it rather than the system floor - which would

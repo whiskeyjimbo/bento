@@ -821,6 +821,31 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 	}
 }
 
+// The floor Synthesize applies to the resolved name is the one a report can least afford
+// to miss: it fires on a directory converge already granted, so the grant's own text
+// looks ordinary and nothing else in the run names the tree the write really reaches.
+func TestFlooredWritesReportAWriteThroughASymlink(t *testing.T) {
+	proj := t.TempDir()
+	link := filepath.Join(proj, "cfg")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	notes := printFlooredWrites(&buf, []string{filepath.Join(link, "cron.d", "job")})
+	got := buf.String()
+
+	want := []accessNoteJSON{{Kind: "write", Path: filepath.Join(link, "cron.d"), Reason: "system-tree"}}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %+v, want %+v: the withheld write must reach --json too", notes, want)
+	}
+	// Naming only the grant's own spelling sends the reviewer to look at a directory
+	// there is nothing wrong with.
+	if !strings.Contains(got, `resolves to "/etc/cron.d"`) {
+		t.Errorf("the message must name where the write lands:\n%s", got)
+	}
+}
+
 // The provenance record exists so approve can name a rule the reader is about to stamp,
 // so it carries exactly the refusals the written manifest grants: a host the guard
 // refused and the proposal then dropped (an unrepresentable name, a rule the merge never
