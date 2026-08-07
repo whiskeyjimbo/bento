@@ -5,8 +5,10 @@ package linux
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // The auto-executing files a write grant legitimately contains. Each runs on the host
@@ -44,12 +46,61 @@ var autoExecNames = []string{
 // same is named in its own right rather than walked - a recursive walk of a grant is what
 // this deliberately is not.
 //
+// The .husky names stay even though hookRunnerDir resolves core.hooksPath: husky's
+// directory is committed, and a clone whose `npm install` has not run yet has the hooks
+// on disk with core.hooksPath still unset.
+//
 // Residual: .github/actions/<name>/action.yml is a local composite action a workflow
 // runs, and the name in the middle is chosen per repo, so no concrete path reaches it.
 var autoExecDirs = []string{
 	".github/workflows", // runs on the CI host at the next push
-	".husky",            // an in-tree hook runner core.hooksPath points at
+	".husky",            // husky's default core.hooksPath
 	".husky/_",          // husky v9 keeps the wrapper the hooks source in here
+}
+
+// hookRunnerDir names the directory git runs this checkout's hooks out of. Everything in
+// it executes on the host at the next commit with nobody reading it first, which is the
+// criterion autoExecDirs is built on - but unlike those, its location is configuration
+// rather than a fixed name. core.hooksPath is commonly something other than .husky:
+// tooling that installs its own hooks (beads, and any other non-husky installer) points
+// it at an in-tree directory of its own, whose contents are then ordinary project files
+// under a write grant that the report never named.
+//
+// The value that matters is the one git itself computes - relative to the checkout,
+// overridden per linked worktree, or absolute and pointing at another repo entirely -
+// so this asks git rather than parsing .git/config, which gets the worktree and relative
+// cases wrong. It is a fixed cost, not a tree walk: one resolution per grant.
+//
+// Running git against the grant is not a way in for the run. gitDirShields DenyWrites
+// .git/config and every config.worktree, so the value cannot move mid-run, and
+// `rev-parse --git-path` only reads config - none of git's config-driven exec knobs
+// (aliases, pager, fsmonitor, textconv) fire for it.
+//
+// Answers outside every write grant are dropped: an absolute hooksPath into a checkout
+// the run cannot write is not a file the run can plant. The default .git/hooks is inside
+// the grant and stays in, at the cost of a ReadDir - it is DenyWrite-shielded, so it
+// cannot change and never reaches the report.
+func hookRunnerDir(grant string, writes []string) string {
+	cmd := exec.Command("git", "rev-parse", "--git-path", "hooks")
+	cmd.Dir = grant
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(grant, dir)
+	}
+	for _, w := range writes {
+		rel, err := filepath.Rel(w, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return dir
+		}
+	}
+	return ""
 }
 
 // autoExecState is one snapshot of those files: absolute path to a size-and-mtime stamp,
@@ -68,19 +119,24 @@ func snapshotAutoExec(writes []string) autoExecState {
 			state[p] = fmt.Sprintf("%d:%d", fi.Size(), fi.ModTime().UnixNano())
 		}
 	}
+	stampDir := func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			stamp(filepath.Join(dir, e.Name()))
+		}
+	}
 	for _, w := range writes {
 		for _, n := range autoExecNames {
 			stamp(filepath.Join(w, n))
 		}
 		for _, d := range autoExecDirs {
-			dir := filepath.Join(w, d)
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				stamp(filepath.Join(dir, e.Name()))
-			}
+			stampDir(filepath.Join(w, d))
+		}
+		if hooks := hookRunnerDir(w, writes); hooks != "" {
+			stampDir(hooks)
 		}
 	}
 	return state
