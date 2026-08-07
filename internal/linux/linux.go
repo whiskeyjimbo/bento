@@ -286,15 +286,17 @@ func noteDeadListener(r *enforce.Report, err error) {
 }
 
 // noteProxyFault records connections a panicking proxy handler dropped. The run does
-// not fail on one - the connection was refused, which is the safe direction - but a
-// handler that faulted never reached its allowlist decision, so the layer cannot be
-// reported as having enforced the manifest on that connection.
+// not fail on one - the connection is dropped, which is the safe direction - but the
+// layer cannot be reported as having enforced the manifest on a connection whose
+// handler did not run to an outcome. Where the fault landed is not said, because it is
+// not known: before the CONNECT was read the destination never surfaced, and after the
+// tunnel was up an allowlist decision had already been reported for it.
 func noteProxyFault(r *enforce.Report, faults int) {
 	if faults == 0 {
 		return
 	}
 	worsenNetwork(r, enforce.Degraded,
-		fmt.Sprintf("the egress proxy dropped %d connection(s) on an internal fault; those were refused without reaching an allowlist decision", faults))
+		fmt.Sprintf("the egress proxy dropped %d connection(s) on an internal fault, so their handlers did not run to an outcome", faults))
 }
 
 // bridgeReportedDeath reads the bridge's liveness pipe, which the host has already
