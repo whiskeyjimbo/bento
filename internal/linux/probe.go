@@ -440,12 +440,10 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // needs, counts as "blocked": that is the host answering. Everything else - the probe
 // timing out, bwrap failing to start, an exit whose output names no such failure (a
 // reaped canary, EAGAIN under load) - leaves the question open, and saying "userns
-// blocked" there costs the user the full sandbox on a host that supports it. The match
-// is on a namespace WORD in bwrap's message rather than on an errno: "Permission denied"
-// is what a noexec canary, a refused bind mount and a refused namespace all produce, and
-// only the last of the three is this verdict. Blocked is the permissive branch here -
-// filesystemLayer offers the degraded tier for it and refuses outright for unanswered -
-// so guessing it from an errno errs in the direction that runs.
+// blocked" there costs the user the full sandbox on a host that supports it. What counts
+// as naming a refusal is usernsRefused's business, and it needs both a namespace word and
+// a refusal errno: bwrap words exhaustion with the same words it words a refusal, and it
+// words a canary that would not exec with the same errno.
 // containerUsernsRemedy is the container half of every userns-blocked diagnosis, and
 // is carried by all of them rather than gated on detecting a container: podman, k8s and
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
@@ -469,6 +467,35 @@ const containerUsernsRemedy = " If bento is running inside a container, the host
 	"systempaths=unconfined alongside them: docker masks paths under /proc that the sandbox's " +
 	"root filesystem has to mount once the namespace is granted."
 
+// usernsRefused reports whether bwrap's output is the host REFUSING the namespace, as
+// opposed to any other way the probe can fail. It takes both halves of each of bwrap's
+// three refusal shapes, because neither half alone is the answer.
+//
+// A namespace word alone is not: bwrap words exhaustion the same way it words a refusal
+// ("Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces
+// exceeded (ENOSPC)", or an EAGAIN under load), and that is transient rather than a fact
+// about the host. An errno alone is not either: canUnshare execs a canary INSIDE the
+// sandbox, so a noexec mount, mode 000 or an AppArmor exec denial yields "bwrap: execvp
+// true: Permission denied", which says nothing about the namespace at all.
+//
+// Getting it wrong in this direction is expensive: blocked is the PERMISSIVE verdict -
+// filesystemLayer offers the Landlock-only tier for it and refuses outright for
+// unanswered - so every miss hands the user reduced confinement plus AppArmor remediation
+// for a sysctl that was never the problem.
+func usernsRefused(out string) bool {
+	// bwrap's two unconditional refusals, both die() with no errno appended: the kernel
+	// forbids unprivileged user namespaces, or it has none at all. Matched on their own
+	// wording, since there is no errno to pair with.
+	if strings.Contains(out, "No permissions") || strings.Contains(out, "likely because the kernel does not") {
+		return true
+	}
+	// The errno-carrying shapes. "setting up uid map" is the second half of creating a
+	// namespace: it exists, the host refused the map write, and the sandbox has no usable
+	// identity in it either way.
+	named := strings.Contains(out, "namespace") || strings.Contains(out, "setting up uid map")
+	return named && (strings.Contains(out, "Permission denied") || strings.Contains(out, "Operation not permitted"))
+}
+
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError
@@ -487,7 +514,9 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	// user namespace", which is false on this host. Only proc carries a remedy, because
 	// masking paths under /proc is the one cause established for this class.
 	if strings.Contains(out, "Can't mount ") || strings.Contains(out, "Can't bind mount ") {
-		diagnosis := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
+		// Worded for mounts in general rather than for the pseudo-filesystems: the probe
+		// binds the host root as well, and a refused --bind is not a procfs problem.
+		diagnosis := "bubblewrap can create a user namespace here but cannot set up the mounts " +
 			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
 		if strings.Contains(out, "Can't mount proc") {
 			// This reason is the head of a block that runs past twenty lines once the
@@ -508,21 +537,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
 		"bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 
-	// The match is on a namespace WORD, not on an errno. bwrap words a real refusal three
-	// ways, and all three name what failed: "No permissions to create new user
-	// namespace", the generic "Creating new namespace failed", and "setting up uid map",
-	// which is the second half of creating one (the namespace exists, the host refused
-	// the map write, and the sandbox has no usable identity in it either way).
-	//
-	// A bare "Permission denied" naming none of them is not the host answering. canUnshare
-	// execs a canary INSIDE the sandbox, so "bwrap: execvp true: Permission denied" is a
-	// noexec mount or an AppArmor exec denial on the canary and says nothing about the
-	// namespace. That message used to read as blocked, which is the PERMISSIVE branch -
-	// filesystemLayer turns it into the Landlock-only tier under --allow-degraded and
-	// tells the user to go flip AppArmor sysctls that were never the problem, on a host
-	// where bwrap works fine. Unanswered is what the third state is for, and it fails
-	// closed.
-	if !strings.Contains(out, "namespace") && !strings.Contains(out, "setting up uid map") {
+	if !usernsRefused(out) {
 		if out != "" {
 			return namespacesUnknown, unknownBase + ": " + strings.TrimSpace(out)
 		}

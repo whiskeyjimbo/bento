@@ -700,6 +700,14 @@ func TestParseAppliedClosesTheExecRecordAtItsMarker(t *testing.T) {
 		"a second marker":                   "EXEC-RECORD\n",
 		"junk":                              "exec-ra\n",
 		"a recorder line reopening it":      "exec-recorder no \"tampered\"\n",
+		// The in-section stance tolerates a short write ("exec-ra" is garbled, not
+		// tampering) because the stage writes the section in one call. Past the marker the
+		// same accident reads as tampering, which is the fail-closed direction and costs
+		// nothing: the target it would have described never ran.
+		"a short-written unreached line": "target-unre\n",
+		// The stage writes target-unreached at most once, and reconcile prints its detail,
+		// so a second one is the report being edited rather than worsened.
+		"a second unreached line": `target-unreached "real"` + "\n" + `target-unreached "forged"` + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "applied")

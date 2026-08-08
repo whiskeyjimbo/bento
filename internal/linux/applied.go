@@ -133,10 +133,13 @@ func parseApplied(f *os.File) applied {
 			// above it were applied but the target never ran, and the exec-record section.
 			// Accepting the first is safe because it can only ever WORSEN the report - the
 			// same monotonicity the rest of reconcile rests on - so it cannot be used to
-			// claim a layer. Anything else did not come from the stage's writes, so the
+			// claim a layer. Once only, though: the stage writes it at most once, and its
+			// detail is attacker-chosen prose that reconcile prints, so a second one
+			// overwriting the first is the report being edited rather than worsened.
+			// Anything else did not come from the stage's writes, so the
 			// report is treated as tampered, the same stance parseObservations takes.
 			switch {
-			case key == launcher.AppliedTargetUnreached:
+			case key == launcher.AppliedTargetUnreached && !a.targetUnreached:
 				a.targetUnreached = true
 				if v, err := strconv.Unquote(rest); err == nil {
 					a.targetErr = v

@@ -152,10 +152,11 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	//
 	// And network RULES with it, on the same predicate requiredLayers uses: the two are
 	// one class there (either brings LayerNetwork up) and splitting them here is what let
-	// a network manifest through. It fails the other way from the gate - the target gets
-	// strictly LESS network than declared, since runDegraded never listens on the proxy
-	// socket newSandbox sets and the launcher blocks egress outright - so what breaks is
-	// the attestation: Result.Report would assert LayerNetwork Enforced for a run in
+	// a network manifest through. On the Linux backend it fails the other way from the
+	// gate - the target gets strictly LESS network than declared, since runDegraded never
+	// listens on the proxy socket newSandbox sets and the launcher blocks egress outright
+	// - so what breaks is the attestation: Result.Report would assert LayerNetwork
+	// Enforced for a run in
 	// which no proxy listened and no allowlist was consulted, and nothing downstream
 	// corrects it (reconcile never touches LayerNetwork, and the overlay only worsens).
 	if degraded {
@@ -174,7 +175,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		if len(p.Network) > 0 {
 			return Result{}, &Refusal{
 				Report: required,
-				Reason: "network rules cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in, and blocks egress outright",
+				Reason: "network rules cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
 			}
 		}
 	}
