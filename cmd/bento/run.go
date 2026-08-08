@@ -38,7 +38,7 @@ func newRunCmd() *cobra.Command {
 			"run the script - a bad manifest, or a guarantee this host cannot enforce - it\n" +
 			"exits 125, following the convention env(1) and docker use for \"the command\n" +
 			"could not be executed\", so it is distinct from any code the script itself returns.\n" +
-			"Under --strict a script that ran while a guarantee it needed lapsed mid-run exits\n" +
+			"A script that ran while a guarantee the run was admitted on lapsed mid-run exits\n" +
 			"124, reserved the same way. A script can return any code itself, so a machine\n" +
 			"gate should read --json, where the outcome is a field rather than a code.\n\n" +
 			"--json makes stdout a stream of JSON objects, one per line: the script's own\n" +
@@ -487,7 +487,7 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		// that fixes its own half, which this one has to say does NOT apply to its half.
 		untunneled := writeUntunneledWarning(stderr, res)
 		// Last, and only where nothing above already explained the failure. A signal
-		// death is not a script failure at all, a strict shortfall gets its own line
+		// death is not a script failure at all, a posture shortfall gets its own line
 		// below, and a guard block is a destination no amount of profiling will widen
 		// the manifest into reaching - pointing at profile in any of those sends the
 		// reader at the wrong problem. A denial has just named the destination and the
