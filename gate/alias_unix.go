@@ -137,8 +137,20 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 		// chased either: a deduplicating store (Nix) hardlinks identical files by design,
 		// and following the link would make an extra link the normal case.
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // every error is handled in the callback; see the docstring
-			if err != nil || !d.Type().IsRegular() {
+			if err != nil {
 				return nil //nolint:nilerr // an anchor bento cannot walk yields no finding, which is this answer's stated direction
+			}
+			// Skipped for the reason the backend skips it: a password store keeps its
+			// history as content-addressed blobs, and `git clone --local` hardlinks every
+			// one of them into the clone. Those links are the user's own copy, made
+			// deliberately, so anchoring on a blob would report a clone in a granted tree
+			// as an alias the run does not refuse over. The live credential files outside
+			// .git still anchor the store.
+			if d.IsDir() && d.Name() == ".git" {
+				return fs.SkipDir
+			}
+			if !d.Type().IsRegular() {
+				return nil
 			}
 			id, links, ok := identify(d)
 			if !ok || links < 2 {
