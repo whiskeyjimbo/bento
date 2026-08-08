@@ -1041,7 +1041,7 @@ func printFlooredWrites(out io.Writer, writes []string) []accessNoteJSON {
 		}
 		seen[dir] = true
 		notes = append(notes, accessNoteJSON{Kind: "write", Path: dir, Reason: "system-tree"})
-		fmt.Fprintf(out, "[bento] not proposing write access to %q - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir)
+		fmt.Fprintf(out, "[bento] not proposing write access to %q%s - it is a system tree or another user's home, where a writable grant is a privilege-escalation vector rather than a script's own storage. The attempt was recorded; if the script genuinely needs it, add the write: grant by hand.\n", dir, resolvedNote(dir))
 	}
 	return notes
 }
@@ -1066,7 +1066,7 @@ func printScratchWrites(out io.Writer, writes []string) []accessNoteJSON {
 			continue
 		}
 		dir := filepath.Dir(w)
-		if !profile.SandboxScratch(dir) || seen[dir] {
+		if !profile.ScratchWrite(dir) || seen[dir] {
 			continue
 		}
 		seen[dir] = true
