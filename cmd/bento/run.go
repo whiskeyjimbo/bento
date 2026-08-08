@@ -140,7 +140,7 @@ func newRunCmd() *cobra.Command {
 				RunID:              runID,
 				RecordExec:         recordExec,
 			})
-			return writeRunResult(os.Stdout, os.Stderr, asJSON, p, env, res, missingReads, stream, err)
+			return writeRunResult(os.Stderr, asJSON, p, env, res, missingReads, stream, err)
 		},
 	}
 
@@ -370,7 +370,7 @@ func reportStreamed(stderr io.Writer, stream *eventStream, code int) error {
 // what the sandbox was actually given, not what the manifest allowed: a name the host
 // never set never reaches the box, so the notes that turn on a variable's absence have to
 // read the resolved map rather than p.Env.
-func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
+func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
