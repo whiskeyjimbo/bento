@@ -1196,7 +1196,7 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	count, _ := dropOnce(drops, tid, &counted)
 	count(&regs, 0)
 
-	if lost := forgetExitedTid(tid, tracees, lastOp, held, drops); lost != 1 {
+	if lost := forgetExitedTid(tid, tracees, lastOp, held, drops, map[int]bool{}); lost != 1 {
 		t.Errorf("lost = %d, want 1 - the probe's exit stop can never arrive, so whether it succeeded is unknowable", lost)
 	}
 	if tracees[tid] {

@@ -1048,7 +1048,7 @@ func writeSandboxHomeMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // says what that path was.
 //
 // A heuristic, and gated on a shell because 127 is a number any other language is free to
-// choose for itself. Unlike profiling there is no Execed signal here to tell a bare name
+// choose for itself. Unlike profiling there is no exec-attempt signal here to tell a bare name
 // that was never found from an absolute path the box does not carry, so the remedies are
 // ordered to serve both: the grant is what either case needs, and PATH is named as the
 // extra step only the bare-name case takes.

@@ -59,6 +59,10 @@ type Result struct {
 	// a spawn that never happened must not widen policy, while the reporting layer needs
 	// this one to tell a target that named a path the sandbox did not hold from one that
 	// never named a path at all.
+	//
+	// execve(2) only. Its one reader asks whether a SHELL that exited 127 named the tool
+	// it could not find, and a shell spawns with execve - so counting execveat here could
+	// only suppress that report on a run where it was the right one.
 	ExecAttempted bool
 	ExitCode      int
 	// Signaled reports the root died from a signal (crash, OOM-kill, timeout);
@@ -375,7 +379,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		case ws.Exited() || ws.Signaled():
 			// A subprocess ended and is reaped; forget it so the guard does not wait on a
 			// freed pid, and nothing to resume.
-			res.Dropped += forgetExitedTid(wpid, tracees, lastOp, held, drops)
+			res.Dropped += forgetExitedTid(wpid, tracees, lastOp, held, drops, execSpawn)
 			continue
 		case ws.Stopped() && ws.StopSignal() == syscall.SIGTRAP|0x80:
 			// A syscall stop. Decode the file-opening ones, unless it came through a
@@ -775,10 +779,14 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // stale entry left behind then matches the new thread's exit stop at the same call site, and
 // recordHeldExistence records the dead thread's pathname gated on the live call's return
 // value - a path the run never touched, in the manifest the user consents to. Dropping it here
-// is what keeps that key from ever being reachable by another thread.
-func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool) int {
+// is what keeps that key from ever being reachable by another thread. A parked spawn answer is
+// swept for the same reason and reports no loss: a tid that exited without reaching its exec
+// event ran no exec, and left behind it would answer for whatever thread the kernel hands the
+// tid to next - with exec: all as the price of being wrong.
+func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool, execSpawn map[int]bool) int {
 	delete(tracees, wpid)
 	delete(lastOp, wpid)
+	delete(execSpawn, wpid)
 	forgetDropsOf(drops, wpid)
 	return releaseHeldOf(held, wpid)
 }
