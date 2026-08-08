@@ -13,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // fileID identifies a file's content. A hardlink shares its (device, inode) with the file
@@ -41,6 +42,16 @@ type fileID struct {
 // which took `bento validate` from 20ms to 22.5ms - and a walk of the granted trees only
 // where that first walk found a credential carrying a second directory entry. That gate is
 // the backend's too, and on a host with no such credential no grant is walked at all.
+//
+// Where it IS open, the granted trees are walked whole: a manifest granting a 287MB
+// checkout on a host holding one hardlinked key took validate from 20ms to 53ms. That is
+// the cost on exactly the hosts this exists for - a snapshot tool, a --link-dest backup, a
+// Nix store, all of which leave every dotfile a second link by design - so it is per
+// Check, and an embedder calling Check in a loop pays it every time.
+//
+// ponytail: whole-tree walk per Check, bounded only by the grant. If that bites, the
+// answer is a set the caller holds across calls rather than a cache here, which is the
+// shape ShieldSet just moved to and for the same reason.
 //
 // Unreadable and unstattable paths are skipped rather than raising. The backend refuses
 // over one, because there a could-not-look reported as clean is the failure; here the
@@ -89,8 +100,8 @@ func credentialAliases(set shield.Set, reads, writes []string) []enforce.Credent
 // set the caller already built: the two together are what decides which stores count, and
 // a store bento starts shielding has to arrive here without anyone remembering to add it.
 //
-// A store a read grant names exactly is skipped, because its shield never engages - the
-// run honors that grant as a deliberate opt-in, so there is no shield for a second name to
+// A store a read grant opts back in is skipped, because its shield never engages - the run
+// honors that grant as a deliberate exception, so there is no shield for a second name to
 // read past.
 func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, map[string]bool) {
 	// A host with no anchors shields nothing at all, which Check reports as unknown before
@@ -113,7 +124,11 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 	shielded := map[string]bool{}
 	seen := map[string]bool{}
 	for _, root := range roots {
-		if seen[root] || slices.Contains(optIns, root) {
+		// Covering rather than equal, as the backend asks it: an anchor NESTED in an
+		// opted-in store is opted in too, and skipping only the exact match would report an
+		// alias of a credential the run hands over deliberately - a finding the run does
+		// not refuse over, which is the one direction this must not go.
+		if seen[root] || slices.ContainsFunc(optIns, func(o string) bool { return policy.CoversResolved(o, root) }) {
 			continue
 		}
 		seen[root] = true

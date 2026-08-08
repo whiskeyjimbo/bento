@@ -96,6 +96,26 @@ func TestCheckIsQuietWithoutAReachableAlias(t *testing.T) {
 		}
 	})
 
+	// A read grant naming the store exactly opts its shield back out, and the run honors
+	// that grant - so there is no shield left for a second name to read past, and a finding
+	// here would be one the run does not refuse over. The parity that decides the whole
+	// shape of this field: a note the run contradicts is worse than no note.
+	t.Run("a store the policy opted back in", func(t *testing.T) {
+		home, key := aliasHome(t)
+		ssh := filepath.Join(home, ".ssh")
+		backup := filepath.Join(filepath.Dir(home), "backup")
+		if err := os.MkdirAll(backup, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(key, filepath.Join(backup, "id_ed25519")); err != nil {
+			t.Fatal(err)
+		}
+		r := runnableOver(t, key, []string{ssh, backup})
+		if len(r.CredentialAliases) != 0 {
+			t.Errorf("a store granted exactly is handed over deliberately, so nothing behind it is an alias past a shield; got %+v", r.CredentialAliases)
+		}
+	})
+
 	// The credential's own path is not a second name for itself. A grant containing the
 	// store walks over it, and its identity is by definition the one being looked for.
 	t.Run("the credential's own path", func(t *testing.T) {
