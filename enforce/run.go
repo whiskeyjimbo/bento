@@ -132,6 +132,22 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
 	// degradation travels to the caller in the Report, not here.
 	degraded := required.StateOf(LayerFilesystem) == Degraded
+	// The degraded tier has no mount namespace and applies no shields, so it cannot
+	// honor a caller deny. The backend refuses on this too, and keeps its copy because
+	// it is reachable without Run - but a backend refusal is a plain error, and a
+	// frontend that sorts the two apart files it under the runs that failed for reasons
+	// out of the caller's hands. It is decidable here, where the tier and the options
+	// are both in hand, and it is a mistake in what the caller asked for: the category
+	// ValidateRunID describes, which a supervisor must not retry.
+	//
+	// A gate needs no counterpart: it requires LayerNetwork, which is Unavailable on
+	// the userns-blocked host this tier is for, so admit already refuses it above.
+	if degraded && len(opts.DenyPaths) > 0 {
+		return Result{}, &Refusal{
+			Report: required,
+			Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
+		}
+	}
 	res, err := e.Run(ctx, p, proc, RunOptions{
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,

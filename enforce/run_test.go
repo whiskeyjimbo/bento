@@ -717,6 +717,27 @@ func TestMissingRequiredCoreLayerRefused(t *testing.T) {
 // what consults it - so the run needs LayerNetwork whether or not the manifest asked
 // for egress. A host that cannot provide it must refuse the gated run rather than run
 // a live proxy on a run enforce judged as having no network concern.
+// The degraded tier applies no shields, so a caller deny it cannot honor is a mistake
+// in what the caller asked for - a *Refusal, which a frontend files apart from the runs
+// that failed for reasons out of the caller's hands, and which a supervisor must not
+// retry. The backend refuses this too, but only as a plain error.
+func TestDegradedTierRefusesCallerDenyPaths(t *testing.T) {
+	f := &fakeEnforcer{}
+	f.probe.Add(LayerFilesystem, Degraded, "no user namespaces")
+
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{
+		AllowDegraded: true,
+		DenyPaths:     []string{"/home/user/.ssh"},
+	})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Run returned %v, want a *Refusal - a deny the tier cannot apply is a caller-side mistake", err)
+	}
+	if f.ran {
+		t.Error("the enforcer ran despite the refusal")
+	}
+}
+
 func TestGatedRunRequiresTheNetworkLayer(t *testing.T) {
 	gate := func(context.Context, string, string) bool { return true }
 
