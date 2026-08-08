@@ -246,12 +246,13 @@ func TestALostTraceMarksTheRecordFailed(t *testing.T) {
 // happens at the exec event, after the reset the exec itself performs.
 //
 // So the assertion is on a non-empty image, which fails both if the kernel stops resetting
-// the flag and if the read is ever moved off the event.
+// the flag and if the read is moved anywhere BEFORE the exec, which is the direction that
+// matters: a read at the entry stop sees the flag the target set, and one at a later stop sees
+// the reset like this one does.
 func TestANonDumpableTargetStillRecordsItsImage(t *testing.T) {
 	rec := &execRecorder{}
-	script := "/bin/sh -c 'exec /bin/true'"
 	if _, err := superviseTraced([]string{"/bin/sh", "-c", "exec /bin/true"}, os.Environ(), rec); err != nil {
-		t.Fatalf("%s: %v", script, err)
+		t.Fatal(err)
 	}
 	// The control: the same shape without the prctl has to record an image, or a blank one
 	// below would prove nothing about dumpable.
@@ -259,7 +260,8 @@ func TestANonDumpableTargetStillRecordsItsImage(t *testing.T) {
 		t.Fatalf("a plain exec recorded no image, so this host cannot stand up the comparison: %+v", rec.runs)
 	}
 
-	// PR_SET_DUMPABLE is 4. Set in the shell before it execs, so the flag is live across the
+	// A process of its own, because prctl is per-process and the test binary itself has to
+	// stay readable: the helper sets the flag and then execs, so it is live going into the
 	// exec whose event the recorder reads.
 	rec = &execRecorder{}
 	code, err := superviseTraced([]string{"/proc/self/exe", "-test.run", "TestNonDumpableExecHelper"},

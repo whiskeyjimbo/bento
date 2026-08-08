@@ -1191,8 +1191,9 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// because a TRACER is the only thing that sees four of them: the signal machinery
 	// converts them before userspace ever does, but the syscall-exit stop happens first,
 	// so this decoder reads the raw value. They say the call was aborted or is about to be
-	// re-issued, never anything about the path - and the re-issued call arrives at a stop
-	// of its own carrying the real answer, which is the one worth filtering on. Reachable
+	// re-issued, never anything about the path. Which of the two it is depends on the
+	// handler's SA_RESTART, and the skip is right either way: a re-issued call arrives at a
+	// stop of its own carrying the real answer, and an aborted one never resolved. Reachable
 	// wherever a probe can block and a signal can land: a stat on a FUSE or NFS mount under
 	// a Go target, whose runtime preempts with a handled signal constantly.
 	if ret := int64(regs.Rax); ret < 0 {
