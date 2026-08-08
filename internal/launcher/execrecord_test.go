@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // The record's whole claim is that the target cannot hide an exec from it: the
@@ -232,5 +234,63 @@ func TestALostTraceMarksTheRecordFailed(t *testing.T) {
 	want := AppliedExecRecorder + " " + AppliedNo
 	if !strings.Contains(string(report), want) {
 		t.Errorf("exec record = %q, want a %q line; %q is the record that reads as complete when it is not", report, want, AppliedExecRecorder+" "+AppliedYes)
+	}
+}
+
+// The record's claim that the target cannot hide an exec from it covers the entry's CONTENT
+// as well as the event, and that half rests on a kernel detail worth pinning: execve resets
+// the dumpable flag. prctl(PR_SET_DUMPABLE, 0) needs no privilege, refuses a same-uid reader
+// of /proc/<pid>/exe with EPERM, and exempts no tracer - so a target that sets it once
+// before forking its build would blank the image of every exec in the tree, while the
+// section's marker went on attesting the record was whole. What stops it is that the read
+// happens at the exec event, after the reset the exec itself performs.
+//
+// So the assertion is on a non-empty image, which fails both if the kernel stops resetting
+// the flag and if the read is ever moved off the event.
+func TestANonDumpableTargetStillRecordsItsImage(t *testing.T) {
+	rec := &execRecorder{}
+	script := "/bin/sh -c 'exec /bin/true'"
+	if _, err := superviseTraced([]string{"/bin/sh", "-c", "exec /bin/true"}, os.Environ(), rec); err != nil {
+		t.Fatalf("%s: %v", script, err)
+	}
+	// The control: the same shape without the prctl has to record an image, or a blank one
+	// below would prove nothing about dumpable.
+	if len(rec.runs) == 0 || rec.runs[len(rec.runs)-1].exe == "" {
+		t.Fatalf("a plain exec recorded no image, so this host cannot stand up the comparison: %+v", rec.runs)
+	}
+
+	// PR_SET_DUMPABLE is 4. Set in the shell before it execs, so the flag is live across the
+	// exec whose event the recorder reads.
+	rec = &execRecorder{}
+	code, err := superviseTraced([]string{"/proc/self/exe", "-test.run", "TestNonDumpableExecHelper"},
+		append(os.Environ(), "BENTO_LAUNCHER_NONDUMPABLE=1"), rec)
+	if err != nil {
+		t.Fatalf("non-dumpable target: %v", err)
+	}
+	// The helper fails the run if its prctl was refused, so a clean exit is what says the
+	// tracee really was undumpable when it exec'd.
+	if code != 0 {
+		t.Fatalf("the non-dumpable helper exited %d, so it never staged the prctl", code)
+	}
+	var got []string
+	for _, r := range rec.runs {
+		got = append(got, r.exe)
+	}
+	if !containsSuffix(got, "true") {
+		t.Errorf("a non-dumpable target's exec recorded images %q, want one ending in /true; a blank entry is a record attesting to an exec whose image it lost", got)
+	}
+}
+
+// The non-dumpable tracee for the test above: it makes itself undumpable and then execs, in
+// its own process because prctl is per-process and the test binary must stay readable.
+func TestNonDumpableExecHelper(t *testing.T) {
+	if os.Getenv("BENTO_LAUNCHER_NONDUMPABLE") == "" {
+		t.Skip("child tracee for the non-dumpable exec test")
+	}
+	if _, _, errno := syscall.RawSyscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		t.Fatalf("prctl(PR_SET_DUMPABLE, 0): %v", errno)
+	}
+	if err := syscall.Exec("/bin/true", []string{"/bin/true"}, nil); err != nil {
+		t.Fatalf("exec: %v", err)
 	}
 }

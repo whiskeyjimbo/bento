@@ -225,6 +225,13 @@ func traceExecs(root int, rec *execRecorder) (int, error) {
 // the target - so the one way to fail here is the tracee dying between the wait and the
 // read, and then the exec is going with it. It is recorded with whatever was readable
 // rather than dropped, so the record does not silently lose an entry.
+//
+// That the target cannot blank its own entry rests on WHERE this is called from, which is
+// the exec event and nowhere else. prctl(PR_SET_DUMPABLE, 0) needs no privilege and does
+// refuse a same-uid reader - being the tracer is no exemption - but execve resets the
+// dumpable flag, so the very exec being recorded here clears it. A read moved to any other
+// stop loses that and a target could blank every image and argv in the tree while the
+// section's marker went on attesting the record was whole.
 func recordExec(pid int, rec *execRecorder) {
 	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err != nil {
