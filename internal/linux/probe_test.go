@@ -489,6 +489,27 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			namespacesBlocked, "cannot create an unprivileged user namespace", "",
 		},
 		{
+			// bwrap words exhaustion with the same words it words a refusal, so a namespace
+			// name alone cannot decide it. The host may grant the namespace on the next
+			// attempt, and the AppArmor remedy the blocked branch prints is about a sysctl
+			// that is not set here.
+			"the namespace limit was exhausted",
+			&usernsError{output: "bwrap: Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)", err: errors.New("exit status 1")},
+			namespacesUnknown, "is unknown", "unprivileged user namespace",
+		},
+		{
+			"the namespace failed under load",
+			&usernsError{output: "bwrap: Creating new namespace failed: Resource temporarily unavailable", err: errors.New("exit status 1")},
+			namespacesUnknown, "is unknown", "unprivileged user namespace",
+		},
+		{
+			// The kernel has no user namespaces at all. bwrap says so with no errno
+			// appended, so this shape is matched on its own wording.
+			"the kernel supports no user namespaces",
+			&usernsError{output: "bwrap: Creating new namespace failed, likely because the kernel does not support user namespaces.  bwrap must be installed setuid on such systems.", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot create an unprivileged user namespace", "",
+		},
+		{
 			// canUnshare execs its canary INSIDE the sandbox, so a noexec mount, mode 000
 			// or an AppArmor exec denial produces this - a "Permission denied" that names
 			// no namespace and says nothing about whether the host grants one. Reading it
@@ -504,7 +525,7 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			// mount", which the base-mount prefix test has to spell separately.
 			"a bind mount refused inside the namespace",
 			&usernsError{output: "bwrap: Can't bind mount /oldroot/tmp on /newroot/tmp: Permission denied", err: errors.New("exit status 1")},
-			namespacesBlocked, "cannot mount the pseudo-filesystems", "unprivileged user namespace",
+			namespacesBlocked, "cannot set up the mounts", "unprivileged user namespace",
 		},
 		{
 			"probe timed out",
@@ -533,7 +554,7 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			// "Permission denied" wording must still not be read as a userns refusal.
 			"a base mount other than proc refused",
 			&usernsError{output: "bwrap: Can't mount devpts on /newroot/dev/pts: Permission denied", err: errors.New("exit status 1")},
-			namespacesBlocked, "cannot mount the pseudo-filesystems", "unprivileged user namespace",
+			namespacesBlocked, "cannot set up the mounts", "unprivileged user namespace",
 		},
 		{
 			"canary reaped without a namespace error",

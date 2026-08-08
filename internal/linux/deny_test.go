@@ -521,6 +521,17 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		t.Errorf("the refusal must name the caller deny; got %v", err)
 	}
 
+	// The read opt-in must not be an escape here. The guard now asks the whole assembled
+	// shield set, and Contains passes over an opted-into shield before it distinguishes a
+	// caller deny from a built-in - so if a caller-denied store were ever opt-in-able, an
+	// untrusted manifest could read: its way past the one shield the embedder controls.
+	// OptIns excludes it, and this is what holds that.
+	optedIn := &policy.Policy{Entrypoint: store, Interpreter: "cat", Read: []string{store}}
+	if _, cleanupIn, err := newSandbox(optedIn, "bento-placeholder", false, []string{store}); err == nil {
+		cleanupIn()
+		t.Error("a read grant naming the caller's store must not opt the entrypoint past its deny")
+	}
+
 	// An entrypoint outside the deny path is untouched.
 	script := filepath.Join(dir, "run.sh")
 	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
