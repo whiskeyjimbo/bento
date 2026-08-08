@@ -168,7 +168,7 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 		}
 		ent := s.Apps[key].Entrypoint
 		delete(s.Apps, key)
-		if err := s.overwrite(); err != nil {
+		if err := s.save(); err != nil {
 			fmt.Fprintf(out, "supervise: %v\n", err)
 			return 1
 		}
@@ -196,7 +196,7 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 				fmt.Fprintf(out, "supervise: no global rule %s\n", quoteNetKey(k))
 				return 1
 			}
-			if err := s.overwrite(); err != nil {
+			if err := s.save(); err != nil {
 				fmt.Fprintf(out, "supervise: %v\n", err)
 				return 1
 			}
@@ -204,7 +204,7 @@ func forgetPerms(s *store, args []string, out io.Writer) int {
 			return 0
 		}
 		s.Global = globalPerms{}
-		if err := s.overwrite(); err != nil {
+		if err := s.save(); err != nil {
 			fmt.Fprintf(out, "supervise: %v\n", err)
 			return 1
 		}
@@ -272,11 +272,10 @@ func globalPermsCmd(s *store, args []string, out io.Writer) int {
 		permsUsage(out)
 		return 2
 	}
-	// An explicit `global allow` uses the non-folding write so it sticks, the same as
-	// forget and reset: the concurrent-merge deny-preference would otherwise override
-	// the allow the operator just typed. A deny has no such conflict - the merge is
-	// deny-preferring, so folding it in gets the operator's rule AND keeps a
-	// concurrent run's recorded block, which overwrite would clobber.
+	// An explicit `global allow` is the one edit that uses the non-folding write, so it
+	// sticks: the merge's deny-preference would otherwise override the allow the operator
+	// just typed. A deny has no such conflict - folding it in gets the operator's rule AND
+	// keeps a concurrent run's recorded block, which overwrite would clobber.
 	write := s.overwrite
 	if d == deny {
 		write = s.save
@@ -310,7 +309,15 @@ func resetPerms(s *store, in io.Reader, out io.Writer, unreadable bool) int {
 	}
 	s.Apps = map[string]*appPerms{}
 	s.Global = globalPerms{}
-	if err := s.overwrite(); err != nil {
+	// The merging write applies the cleared entries as a delete-set under the lock, so a
+	// run that commits between this command's load and its write keeps its decisions
+	// instead of being silently rolled back. An unreadable store has no base to diff
+	// against, and discarding the file wholesale is the whole point there.
+	write := s.save
+	if unreadable {
+		write = s.overwrite
+	}
+	if err := write(); err != nil {
 		fmt.Fprintf(out, "supervise: %v\n", err)
 		return 1
 	}

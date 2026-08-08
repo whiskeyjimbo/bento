@@ -501,3 +501,88 @@ func TestCoversStoreJudgesRelativeGrants(t *testing.T) {
 		t.Errorf("coversStore(%q, %q) = true; a relative grant outside the store must not be refused", sibling, s.dir)
 	}
 }
+
+// The dir was tightened only on the way out, so a run whose store dir was writable
+// read the allow another uid planted there, applied it with no prompt, and warned
+// about the exposure afterwards. The tighten has to happen before the read.
+func TestLoadTightensAPermissiveStoreDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadStore(); err != nil {
+		t.Fatalf("loadStore: %v", err)
+	}
+	fi, err := os.Stat(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got&0o077 != 0 {
+		t.Errorf("store dir mode after load = %#o, want group/world access removed", got)
+	}
+}
+
+// A forget wrote its pre-lock snapshot, and the flock guaranteed it landed AFTER a
+// concurrent run's save - so surgically deleting one key silently reverted every deny
+// that run had just recorded. The deletion has to be applied as a delete-set under the
+// lock, not as a whole-store overwrite.
+func TestForgetDeletesUnderTheLockWithoutRevertingAConcurrentSave(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	seed, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.rememberNetwork("", "tracker.example", "443", allow, true)
+	seed.Global.Exec = string(policy.ExecAll)
+	seed.app("sha256:aa").Entrypoint = "/w/a.sh"
+	seed.app("sha256:bb").Entrypoint = "/w/b.sh"
+	if err := seed.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The editing command loads first, mutates, and writes last - the losing side of
+	// the race the lock decides.
+	editor, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(editor.Apps, "sha256:aa")
+	delete(editor.Global.Network, netKey("tracker.example", "443"))
+	editor.Global.Exec = ""
+
+	run, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.rememberPath("sha256:bb", "read", "/etc/shadow", deny, false)
+	if err := run.save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := editor.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Apps["sha256:aa"]; ok {
+		t.Error("the forgotten app is still on disk; the deletion did not survive the merge")
+	}
+	if _, ok := got.Global.Network[netKey("tracker.example", "443")]; ok {
+		t.Error("the forgotten global network rule is still on disk")
+	}
+	if got.Global.Exec != "" {
+		t.Errorf("global exec = %q, want the forgotten rule gone", got.Global.Exec)
+	}
+	if d, ok := got.decidePath("sha256:bb", "read", "/etc/shadow"); !ok || d != deny {
+		t.Errorf("the concurrent run's deny = (%q, %v), want deny; forget clobbered it", d, ok)
+	}
+}
