@@ -794,8 +794,9 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 		"/var/lib/app/state.db",
 		"/var/lib/app/other.db", // same collapsed dir: reported once
 		"/home/other/.bashrc",
-		"relative/path", // no absolute anchor, nothing to name
-		"/work/ok.txt",  // an ordinary grant, reported by the clamps instead
+		"/usr/lib/thing.so", // a system tree the write floor knows only as a read path
+		"relative/path",     // no absolute anchor, nothing to name
+		"/work/ok.txt",      // an ordinary grant, reported by the clamps instead
 	})
 	got := buf.String()
 
@@ -803,6 +804,7 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 	want := []accessNoteJSON{
 		{Kind: "write", Path: "/var/lib/app", Reason: "system-tree"},
 		{Kind: "write", Path: "/home/other", Reason: "system-tree"},
+		{Kind: "write", Path: "/usr/lib", Reason: "system-tree"},
 	}
 	if !slices.Equal(notes, want) {
 		t.Errorf("notes = %+v, want %+v", notes, want)
@@ -816,8 +818,8 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 	if strings.Contains(got, "/work") {
 		t.Errorf("an ordinary grant must not be reported as floored:\n%s", got)
 	}
-	if n := strings.Count(got, "not proposing write access"); n != 2 {
-		t.Errorf("printed %d messages, want 2 (the duplicate directory is reported once):\n%s", n, got)
+	if n := strings.Count(got, "not proposing write access"); n != 3 {
+		t.Errorf("printed %d messages, want 3 (the duplicate directory is reported once):\n%s", n, got)
 	}
 }
 

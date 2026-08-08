@@ -508,8 +508,8 @@ func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
 
 // mergePolicies promotes exec: all from either side, so an existing manifest at --out
 // that already carries it would reinstate the grant the reviewer just declined - the
-// exact hole the prompt exists to close, and one dropDeclinedSeeds cannot reach because
-// an unapproved or stale manifest seeds nothing. The session's answer has to win in the
+// exact hole the prompt exists to close, and one dropDeclined cannot reach because exec
+// is not a path. The session's answer has to win in the
 // artifact, and it must narrow only from exec: all so a hand-written none-strict is not
 // widened to plain none.
 func TestMergeExecRespectsTheSessionAnswer(t *testing.T) {
