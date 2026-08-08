@@ -344,8 +344,8 @@ func ShieldedReadProblems(set shield.Set, reads []string) []string {
 		case shield.FoldedShield:
 			problems = append(problems, grantrefusal.FoldedShield(g, r.Path).Error())
 		case shield.Honored:
-		case shield.UnderWriteShield, shield.AboveShield:
-			// Write-only verdicts: Contains cannot reach either under shield.Read.
+		case shield.UnderWriteShield, shield.AboveShield, shield.AboveWriteShield:
+			// Write-only verdicts: Contains cannot reach any of them under shield.Read.
 		}
 	}
 	return problems
@@ -432,6 +432,13 @@ func writeShieldProblem(set shield.Set, g string) (string, bool) {
 	case shield.FoldedShield:
 		return grantrefusal.FoldedShield(g, r.Path).Error(), true
 	case shield.Honored:
+		return "", false
+	case shield.AboveWriteShield:
+		// The one verdict a run raises that the gate deliberately does not: only the
+		// degraded tier refuses it, because only that tier has no bind to enforce the
+		// shield with, and the gate does not know which tier will run. Reporting it would
+		// refuse write: ~/.pyenv for every full-tier run, which is the direction the
+		// package doc rules out.
 		return "", false
 	}
 	// Only Honored means no problem. A verdict added to shield and not named above is a
