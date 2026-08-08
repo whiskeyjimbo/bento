@@ -585,19 +585,32 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	sb.shieldCache = &shieldMemo{}
 
 	// compile re-binds the entrypoint and the interpreter read-only AFTER the
-	// deny-list, so either one can carry a caller-denied file into the sandbox
+	// deny-list, so either one can carry a fully-shielded file into the sandbox
 	// whatever the shields say - and the run reports nothing lifted, because no
-	// shield was. Harmless in the CLI frame, where the operator typed the entrypoint,
-	// but Options.DenyPaths exists for the embedder frame (a supervisor profiling
-	// untrusted code with its own control store shielded), where the manifest is the
-	// untrusted input. Refuse here, where both are already resolved.
+	// shield was. Both directions of that leak: where a grant covers the store the
+	// shield is emitted and the re-bind lands read-only INSIDE the tmpfs meant to
+	// hide it; where none does there is no shield at all and the bind creates the
+	// path. Harmless in the CLI frame, where the operator typed the entrypoint, but
+	// an approved manifest is untrusted input under --allow-unapproved and in the
+	// embedder frame (a supervisor profiling untrusted code with its own control
+	// store shielded). Refuse here, where both are already resolved.
+	//
+	// Asked of the whole assembled DenyAll set rather than only the caller's denies:
+	// ~/.ssh is no more executable than an embedder's control store, and the opt-ins
+	// are honored so a read grant naming the store still binds it as the full tier
+	// already promises.
+	set := shields(sb)
+	optIns := optInPaths(explicitShieldOptIns(sb, p.Read))
 	for _, e := range []struct{ kind, path string }{
 		{"entrypoint", sb.entrypoint},
 		{"interpreter", sb.interpreter},
 	} {
-		if e.path != "" && callerDenied(sb, e.path) {
+		if e.path == "" {
+			continue
+		}
+		if r, v := set.Contains(e.path, shield.Read, optIns, nil); v == shield.InsideShield || v == shield.InsideCallerShield {
 			cleanup()
-			return sandbox{}, noop, fmt.Errorf("linux: %s %q is inside a caller-denied path, which the sandbox may not expose", e.kind, e.path)
+			return sandbox{}, noop, fmt.Errorf("linux: %s %q is inside the shielded path %q, which the sandbox may not expose", e.kind, e.path, r.Path)
 		}
 	}
 	return sb, cleanup, nil
