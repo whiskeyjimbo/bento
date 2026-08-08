@@ -586,3 +586,15 @@ func TestForgetDeletesUnderTheLockWithoutRevertingAConcurrentSave(t *testing.T) 
 		t.Errorf("the concurrent run's deny = (%q, %v), want deny; forget clobbered it", d, ok)
 	}
 }
+
+// The store keys the live network gate, so its fold has to be the one policy.Allows
+// uses. A hand-rolled strings.ToLower folded U+212A (KELVIN SIGN) onto ASCII 'k',
+// letting a target's CONNECT match a stored allow while the proxy dialed the raw bytes.
+func TestNetKeyDoesNotFoldUnicodeOntoASCII(t *testing.T) {
+	if netKey("Keys.example.com", "443") == netKey("keys.example.com", "443") {
+		t.Error("netKey folded U+212A onto ASCII 'k'; the name checked and the name dialed would differ")
+	}
+	if netKey("KEYS.Example.COM.", "443") != netKey("keys.example.com", "443") {
+		t.Error("netKey must still fold ASCII case and strip the root label")
+	}
+}

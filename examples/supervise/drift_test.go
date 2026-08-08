@@ -202,3 +202,25 @@ func TestDriftAnchorsRelativeManifestGrants(t *testing.T) {
 		t.Errorf("a relative grant naming the same file must not warn; got %q", out.String())
 	}
 }
+
+// A standing deny is the one most likely to be spelled as a directory, and containment
+// only ran manifest-grant-over-store-path - so a global read-deny on ~/.ssh above a
+// manifest granting ~/.ssh/config went unreported, which is the exact divergence the
+// warning's own comment names.
+func TestDriftWarnsStoreDenyAboveAManifestGrant(t *testing.T) {
+	s := newTestStore()
+	key := "sha256:aaaa"
+	s.rememberPath("", "read", "/home/u/.ssh", deny, true)
+
+	script := t.TempDir() + "/agent.sh"
+	writeManifestAt(t, script, &policy.Policy{
+		Entrypoint: script, Interpreter: "sh",
+		Read: []string{"/home/u/.ssh/config"},
+	})
+
+	var out strings.Builder
+	warnManifestDrift(&out, s, key, script)
+	if !strings.Contains(out.String(), "/home/u/.ssh") {
+		t.Errorf("a store deny above a manifest grant must warn; got %q", out.String())
+	}
+}
