@@ -71,6 +71,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if opts.Gate != nil {
 			return enforce.Result{}, fmt.Errorf("linux: a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in")
 		}
+		// Network rules are the same class as the gate - enforce.requiredLayers brings
+		// LayerNetwork up for either - and were the half this guard was missing. newSandbox
+		// does set sb.proxySocket for a network manifest and runDegraded never listens on
+		// it, so the run would get the launcher's blanket egress block while its report
+		// claimed the declared destinations were allowed.
+		if len(p.Network) > 0 {
+			return enforce.Result{}, fmt.Errorf("linux: network rules cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in, and blocks egress outright")
+		}
 		// Same shape as the gate above: this tier has no mount namespace and applies no
 		// shields, so a caller deny would silently not be enforced. Reporting it through
 		// Exposed instead would hand back a run that read the caller's control state and
