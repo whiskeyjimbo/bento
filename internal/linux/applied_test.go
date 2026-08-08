@@ -686,6 +686,48 @@ func TestParseExecRecordRoundTrip(t *testing.T) {
 	}
 }
 
+// The exec-record marker ENDS the section, and everything past it but a target-unreached
+// line is content the stage did not write. An appended exec-ran used to be decoded,
+// appended to the record, and reported inside a COMPLETE one - an exec nobody observed,
+// carried by an attestation that says it was watched. A second marker used to re-set
+// completeness, and junk used to set a garbled flag the first marker had already read.
+func TestParseAppliedClosesTheExecRecordAtItsMarker(t *testing.T) {
+	const head = "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder yes\n" +
+		`exec-ran 7 "/usr/bin/cc" "cc\x00a.c"` + "\nEXEC-RECORD\n"
+
+	for name, tail := range map[string]string{
+		"an exec appended after the marker": `exec-ran 9 "/bin/true" "true"` + "\n",
+		"a second marker":                   "EXEC-RECORD\n",
+		"junk":                              "exec-ra\n",
+		"a recorder line reopening it":      "exec-recorder no \"tampered\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte(head+tail), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if a := parseApplied(openReport(t, path)); a.complete {
+				t.Errorf("content past the record marker must void the report; got %+v", a)
+			}
+		})
+	}
+
+	// The one thing that legitimately follows: the exec-block path writes the record
+	// before execveat, so a failed transition appends the unreached line behind a closed
+	// section. It must still be read, and the record it follows still stands.
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte(head+`target-unreached "no such file"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete || !a.targetUnreached || a.targetErr != "no such file" {
+		t.Errorf("a target-unreached line past the record marker must be read; got %+v", a)
+	}
+	if !a.execRecordComplete || len(a.execRuns) != 1 {
+		t.Errorf("the record it follows must stand; got complete=%v runs=%+v", a.execRecordComplete, a.execRuns)
+	}
+}
+
 // A record that never reached its marker is what a tracer dying mid-run leaves: the
 // recorder deliberately runs without PTRACE_O_EXITKILL, so the record ends where it
 // ended. It must read as truncated rather than as a run that stopped exec'ing.
