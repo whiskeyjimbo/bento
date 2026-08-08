@@ -418,13 +418,18 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 			reason = fmt.Sprintf("%s, %s, is setgid and group-writable (%#o), which is the shared-project layout, so the group holds other people who can replace the manifest", d.path, role, d.mode.Perm())
 			// Not chmod: the directory is that mode on purpose, for people whose write it is
 			// not this manifest's business to take away. Somewhere else is the remedy.
-			hint = fmt.Sprintf("keep the manifest somewhere only you can write, and point bento at it there, rather than narrowing %s", d.path)
+			hint = relocateHint(d.path)
 		case d.group == groupShared:
-			// The chmod hint stands here, unlike setgid: a plain 0775 directory is usually
-			// just what the umask left, and narrowing it takes nothing from anybody who was
-			// meant to have it.
 			fatal = true
-			reason = fmt.Sprintf("%s, %s, is group-writable (%#o) and its group holds other users, so they can replace the manifest", d.path, role, d.mode.Perm())
+			reason = fmt.Sprintf("%s, %s, is %s-writable (%#o) and its group holds other users, so they can replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
+			// The chmod hint stands where the caller owns the directory - a plain 0775 is
+			// usually just what the umask left, and narrowing it takes nothing from anybody
+			// who was meant to have it. Where they do not, it names a command that fails: a
+			// root-owned /var/www group-writable to www-data is proven-shared, and
+			// foreignOwner exempts root, so nothing else here would name a remedy at all.
+			if d.uid != euid {
+				hint = relocateHint(d.path)
+			}
 		}
 		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: hint})
 	}
@@ -454,6 +459,13 @@ func ownershipHint(f fileFacts, euid uint32) string {
 		return fmt.Sprintf("chown 0 %s hands it over, if nobody else is meant to write there", f.path)
 	}
 	return fmt.Sprintf("keep the manifest somewhere you own, and point bento at it there, rather than relying on uid %d to leave it alone", f.uid)
+}
+
+// relocateHint is the remedy for a directory whose write belongs to somebody else and is
+// not this manifest's to take away - a shared-project layout, or one this user does not
+// own at all. Moving the manifest is the whole of what they can do without the owner.
+func relocateHint(path string) string {
+	return fmt.Sprintf("keep the manifest somewhere only you can write, and point bento at it there, rather than narrowing %s", path)
 }
 
 // chmodNarrowing is the argument to chmod that takes the reported write away, and only
