@@ -399,6 +399,38 @@ func TestDegradedRefusesWriteAboveShield(t *testing.T) {
 	}
 }
 
+// The write-shield direction the full tier's bind ordering covers and this one cannot.
+// `write: ~/.pyenv` contains the ~/.pyenv/shims DenyWrite shield; under bwrap denyArgs
+// re-binds the shim directory read-only after the grant and wins, so the grant is
+// legitimate there and stays accepted. Here there is no bind, and Landlock unions the
+// rights of every matching rule, so no narrower rule can carve the shield back out - the
+// run would plant a $PATH shim on the real host that the host executes later. This is the
+// one grant check the two tiers deliberately answer differently, so the refusal is what
+// keeps --allow-degraded from silently meaning less than the manifest says.
+func TestDegradedRefusesWriteAboveWriteShield(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pyenv := filepath.Join(home, ".pyenv")
+	if err := os.MkdirAll(filepath.Join(pyenv, "shims"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Write: []string{pyenv}, Exec: policy.ExecNone}
+	_, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{}, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "write-shielded") {
+		t.Fatalf("degraded tier must refuse a write grant above the pyenv shim shield; got err=%v", err)
+	}
+
+	// Control arm: the same grant compiles fine on the full tier, so the refusal above is
+	// a tier difference rather than a manifest the whole product now rejects.
+	full := testSandbox(pyenv, filepath.Join(pyenv, "shims"), "/work")
+	full.homes = []string{home}
+	compileOrFail(t, &policy.Policy{Write: []string{pyenv}}, full)
+}
+
 // A grant onto a whole managed pseudo-filesystem is refused in the degraded tier too.
 // With no pid namespace and no fresh /proc, a read: /proc grant would serve the host's
 // process table (environ of same-uid processes: tokens, DB passwords), so the full
