@@ -103,6 +103,17 @@ const (
 	sysExecveat = 322
 )
 
+// The kernel's internal restart signals, which have no names in syscall or x/sys/unix
+// because no userspace program can see one: the signal machinery rewrites them to EINTR or
+// re-issues the call before the return reaches userspace. A ptracer at the syscall-exit
+// stop reads the raw value and so sees all four, and ptrace(2) documents exactly that.
+const (
+	errRestartSys          syscall.Errno = 512
+	errRestartNoIntr       syscall.Errno = 513
+	errRestartNoHand       syscall.Errno = 514
+	errRestartRestartBlock syscall.Errno = 516
+)
+
 // auditArchX8664 is the AUDIT_ARCH_ value the kernel reports for a syscall dispatched
 // through the 64-bit entry point. internal/seccomp gates its filters on the same value;
 // it is repeated here rather than shared because this package decodes syscalls and
@@ -1165,10 +1176,20 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// its own. EBADF is a dirfd that names nothing, so no path was resolved against it;
 	// an absolute pathname ignores the dirfd and cannot answer EBADF, so skipping it
 	// hides no real file.
+	//
+	// EINTR and the restart pseudo-errnos are in that category too, and they are here
+	// because a TRACER is the only thing that sees four of them: the signal machinery
+	// converts them before userspace ever does, but the syscall-exit stop happens first,
+	// so this decoder reads the raw value. They say the call was aborted or is about to be
+	// re-issued, never anything about the path - and the re-issued call arrives at a stop
+	// of its own carrying the real answer, which is the one worth filtering on. Reachable
+	// wherever a probe can block and a signal can land: a stat on a FUSE or NFS mount under
+	// a Go target, whose runtime preempts with a handled signal constantly.
 	if ret := int64(regs.Rax); ret < 0 {
 		switch syscall.Errno(-ret) {
 		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG,
-			syscall.ENOSYS, syscall.EBADF:
+			syscall.ENOSYS, syscall.EBADF, syscall.EINTR,
+			errRestartSys, errRestartNoIntr, errRestartNoHand, errRestartRestartBlock:
 			return
 		default:
 			// Errno is not an enum with a fixed set; every other failure is a real
