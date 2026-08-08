@@ -40,8 +40,11 @@ func runCmd(t *testing.T, args ...string) error {
 	t.Helper()
 	cmd := newRunCmd()
 	cmd.SetArgs(args)
-	cmd.SetOut(os.Stderr)
-	cmd.SetErr(os.Stderr)
+	// Buffered rather than passed through, so a refused run's usage/error text does not
+	// interleave with the test output that reports it.
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	return cmd.Execute()
 }

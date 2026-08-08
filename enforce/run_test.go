@@ -627,8 +627,8 @@ func TestRunRefusesUndeclaredEnv(t *testing.T) {
 		t.Error("the enforcer ran despite the refusal")
 	}
 
-	// The declared subset - including a name the host had no value for, which ResolveEnv
-	// reports as unset and omits - is admitted.
+	// The empty map ResolveEnv returns when the host set none of the declared names is
+	// the subset case, and must admit.
 	f = &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
 	if _, err := Run(context.Background(), f, p, Process{Env: map[string]string{}}, Options{}); err != nil {
