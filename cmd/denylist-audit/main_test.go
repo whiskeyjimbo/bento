@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -441,5 +442,63 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 	}
 	if code := run(healthy, &b, &b); code == exitFetchFailed || code == exitContentRefused {
 		t.Errorf("run = %d with every source intact; a refusal status here would report a fetch problem over an audit that ran", code)
+	}
+}
+
+// The wrapper's case arms are the other half of that contract, and the mapping is where
+// the original P0 lived - a real failure landing on the arm that prints "offline?" and
+// passes. No Go test reaches scripts/denylist-audit.sh through make audit, so it is
+// driven here: a fake `go` on PATH builds a stub that exits with the status under test,
+// and the banner pins which arm ran rather than the exit code alone.
+func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
+	repo, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = filepath.Dir(repo)
+
+	fake := filepath.Join(t.TempDir(), "go")
+	const shim = "#!/bin/sh\nout=\nwhile [ $# -gt 0 ]; do\n\tif [ \"$1\" = -o ]; then out=$2; fi\n\tshift\ndone\nprintf '#!/bin/sh\\nexit %s\\n' \"$STUB_STATUS\" >\"$out\"\nchmod +x \"$out\"\n"
+	if err := os.WriteFile(fake, []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		stub   int    // what the audit binary exits with
+		want   int    // what the wrapper must report to CI
+		banner string // the arm that must have run
+	}{
+		{0, 0, ""},
+		{1, 1, "in-scope upstream shields are missing"},
+		{3, 0, "skipping the check"},
+		{4, 1, "proved nothing"},
+		// A panic exits 2. It must not reach the pass-over arm, which is why that arm
+		// is 3 and not 2.
+		{2, 2, "unexpected failure (exit 2)"},
+		{126, 126, "unexpected failure (exit 126)"},
+	} {
+		t.Run(fmt.Sprintf("status%d", tc.stub), func(t *testing.T) {
+			cmd := exec.Command(filepath.Join(repo, "scripts", "denylist-audit.sh"))
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(),
+				"PATH="+filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"),
+				fmt.Sprintf("STUB_STATUS=%d", tc.stub))
+			var out bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &out
+			got := 0
+			if err := cmd.Run(); err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) {
+					t.Fatalf("running the wrapper: %v", err)
+				}
+				got = exit.ExitCode()
+			}
+			if got != tc.want {
+				t.Errorf("audit exited %d, wrapper reported %d, want %d\n%s", tc.stub, got, tc.want, out.String())
+			}
+			if !strings.Contains(out.String(), tc.banner) {
+				t.Errorf("wrapper on status %d must say %q; got:\n%s", tc.stub, tc.banner, out.String())
+			}
+		})
 	}
 }
