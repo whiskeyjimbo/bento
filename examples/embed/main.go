@@ -52,23 +52,35 @@ func main() {
 		usage(os.Stdout)
 		os.Exit(0)
 	}
+	allowUnapproved := false
+	if len(args) > 0 && args[0] == "--allow-unapproved" {
+		allowUnapproved, args = true, args[1:]
+	}
 	if len(args) != 1 {
 		usage(os.Stderr)
 		os.Exit(2)
 	}
-	os.Exit(run(args[0]))
+	os.Exit(run(args[0], allowUnapproved))
 }
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `embed - run a script under bento's sandbox, in-process via the public API
 
 Usage:
-  embed <manifest.yaml>
+  embed [--allow-unapproved] <manifest.yaml>
   embed -h | --help
 
-It loads the manifest, runs the target it describes under the sandbox, reports any
-enforcement shortfall, surfaces any egress the network gate admitted beyond the
-manifest, and passes the target's exit code through.
+It loads the manifest, refuses one whose approval stamp is missing or stale, runs
+the target it describes under the sandbox, reports any enforcement shortfall,
+surfaces any egress the network gate admitted beyond the manifest, and passes the
+target's exit code through.
+
+Approval:
+  A manifest carries the fingerprint of the permissions a human approved. Running
+  one that lacks it, or whose permissions changed since, is refused, as "bento run"
+  refuses it. The CLI also weighs the manifest's trust record, which this example
+  does not. --allow-unapproved opts out, for the profile-then-run inner loop where
+  nothing has been stamped yet.
 
 Network gate (interactive supervision):
   On a controlling terminal, egress to a host the manifest did not declare prompts
@@ -79,17 +91,17 @@ Environment:
   BENTO_GATE_ALLOW   comma-separated hosts or host:port admitted without a prompt
                      (e.g. "example.com,10.0.0.5:443"), so the gate runs unattended.
 
-Try it (from this directory):
+Try it (from this directory; the demo manifest is deliberately unstamped):
   go build -o bentoembed .
-  ./bentoembed demo/reach.yaml                                # denied: example.com is undeclared
-  BENTO_GATE_ALLOW=example.com ./bentoembed demo/reach.yaml   # admitted, then surfaced
-  ./bentoembed demo/reach.yaml                                # in a terminal: prompts you
+  ./bentoembed --allow-unapproved demo/reach.yaml              # denied: example.com is undeclared
+  BENTO_GATE_ALLOW=example.com ./bentoembed --allow-unapproved demo/reach.yaml
+  ./bentoembed --allow-unapproved demo/reach.yaml              # in a terminal: prompts you
 
 See README.md for the full walkthrough.
 `)
 }
 
-func run(manifestPath string) int {
+func run(manifestPath string, allowUnapproved bool) int {
 	f, err := os.Open(manifestPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
@@ -97,19 +109,39 @@ func run(manifestPath string) int {
 	}
 	defer f.Close()
 
-	// manifest.Load -> a validated *policy.Policy. The whole enforcement API takes
-	// domain values like this; a library embedder never shells out or parses CLI
-	// text.
-	p, err := manifest.Load(f)
+	// manifest.Parse -> the validated *policy.Policy plus the provenance block the
+	// stamp lives in. The whole enforcement API takes domain values like this; a
+	// library embedder never shells out or parses CLI text. (manifest.Load returns
+	// the policy alone, for a consumer that is not about to run it.)
+	doc, err := manifest.Parse(f)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
 	}
+	p := doc.Policy
+
+	// The gate `bento run` holds by default, and the reason Parse rather than Load is
+	// the right entry point for an embedder that executes: the stamp attests that the
+	// permissions have not changed since a human approved them, so a manifest widened
+	// after approval is caught here. It is drift detection, not authentication - the
+	// stamp is unkeyed and does not record who wrote it, so a manifest stamped by
+	// whoever sent it to you is "approved" only against its own claim.
+	if !allowUnapproved {
+		switch doc.Provenance.Approves {
+		case "":
+			fmt.Fprintf(os.Stderr, "embed: refusing to run: the manifest is not approved; review it and run `bento approve`, or pass --allow-unapproved\n")
+			return 2
+		case p.Fingerprint():
+		default:
+			fmt.Fprintf(os.Stderr, "embed: refusing to run: the manifest's permissions changed since it was approved; re-review it and run `bento approve`, or pass --allow-unapproved\n")
+			return 2
+		}
+	}
 
 	// A manifest's relative read/write/entrypoint means "beside the manifest", not
 	// "beside whatever cwd embed was started from", so anchor before anything reads
-	// the policy. Resolve is separate from Load because it must follow an approval
-	// check - this example has none, so it goes directly after the load.
+	// the policy. Resolve is separate from Parse because the fingerprint above must
+	// see the manifest as written - resolving first rewrites the very paths it covers.
 	if err := manifest.Resolve(p, manifestPath); err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
@@ -179,9 +211,9 @@ func run(manifestPath string) int {
 		defer tty.Close()
 		promptIn, promptOut = tty, tty
 	}
-	var gate enforce.NetworkGate
+	var netGate enforce.NetworkGate
 	if len(preApproved) > 0 || promptIn != nil {
-		gate = newSupervisor(preApproved, promptIn, promptOut).gate
+		netGate = newSupervisor(preApproved, promptIn, promptOut).gate
 	}
 
 	proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
@@ -189,7 +221,7 @@ func run(manifestPath string) int {
 	// (e.g. exec-block unavailable, so the target can spawn subprocesses) is reported
 	// but the run proceeds. An embedder confining genuinely untrusted code wants
 	// Strict: true, which refuses unless every layer, hardening included, is enforced.
-	res, err := enforce.Run(context.Background(), e, p, proc, enforce.Options{NetworkGate: gate})
+	res, err := enforce.Run(context.Background(), e, p, proc, enforce.Options{NetworkGate: netGate})
 
 	var refusal *enforce.Refusal
 	var shortfall *enforce.Shortfall
@@ -224,7 +256,7 @@ func run(manifestPath string) int {
 	// A structured Result, not scraped output: report everything the run could not
 	// guarantee and everything it exposed anyway, then pass the target's exit code
 	// through.
-	writeResult(os.Stderr, p, gate != nil, res)
+	writeResult(os.Stderr, p, netGate != nil, res)
 	if shortfall != nil {
 		// The target ran, but under Strict its guarantees lapsed partway. Passing its own
 		// code through would report a clean run over a posture that did not hold, so it
