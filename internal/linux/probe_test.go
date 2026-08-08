@@ -437,7 +437,8 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 func TestClassifyUnshareNamesTheContainerRemedy(t *testing.T) {
 	for _, out := range []string{
 		"bwrap: No permissions to create new user namespace",
-		"bwrap: Permission denied",
+		"bwrap: Creating new namespace failed: Permission denied",
+		"bwrap: setting up uid map: Permission denied",
 	} {
 		state, reason := classifyUnshare(&usernsError{output: out, err: errors.New("exit status 1")})
 		if state != namespacesBlocked {
@@ -473,9 +474,37 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 			namespacesBlocked, "cannot create an unprivileged user namespace", "",
 		},
 		{
-			"permission denied",
-			&usernsError{output: "bwrap: Permission denied", err: errors.New("exit status 1")},
+			// bwrap's generic wording for the same refusal: unshare(2) returned EPERM and
+			// the message names the namespace without qualifying it "user".
+			"namespace creation refused",
+			&usernsError{output: "bwrap: Creating new namespace failed: Permission denied", err: errors.New("exit status 1")},
 			namespacesBlocked, "cannot create an unprivileged user namespace", "",
+		},
+		{
+			// The namespace was created and the host refused the uid-map write, which
+			// leaves the sandbox with no usable identity in it. Still a refusal, still
+			// named, so still blocked - the errno is not what decides.
+			"uid map refused",
+			&usernsError{output: "bwrap: setting up uid map: Permission denied", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot create an unprivileged user namespace", "",
+		},
+		{
+			// canUnshare execs its canary INSIDE the sandbox, so a noexec mount, mode 000
+			// or an AppArmor exec denial produces this - a "Permission denied" that names
+			// no namespace and says nothing about whether the host grants one. Reading it
+			// as blocked selected the Landlock-only tier and the AppArmor remediation on a
+			// host where bwrap works.
+			"canary could not be exec'd",
+			&usernsError{output: "bwrap: execvp true: Permission denied", err: errors.New("exit status 1")},
+			namespacesUnknown, "is unknown", "unprivileged user namespace",
+		},
+		{
+			// A bind refused inside a granted namespace belongs with the other mount
+			// failures, not with the namespace refusals: bwrap words it "Can't bind
+			// mount", which the base-mount prefix test has to spell separately.
+			"a bind mount refused inside the namespace",
+			&usernsError{output: "bwrap: Can't bind mount /oldroot/tmp on /newroot/tmp: Permission denied", err: errors.New("exit status 1")},
+			namespacesBlocked, "cannot mount the pseudo-filesystems", "unprivileged user namespace",
 		},
 		{
 			"probe timed out",
