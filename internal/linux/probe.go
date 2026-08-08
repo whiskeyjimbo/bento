@@ -441,9 +441,11 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // timing out, bwrap failing to start, an exit whose output names no such failure (a
 // reaped canary, EAGAIN under load) - leaves the question open, and saying "userns
 // blocked" there costs the user the full sandbox on a host that supports it. The match
-// is on bwrap's message, so a "Permission denied" naming neither still reads as
-// blocked; that is the pre-existing reading, and it errs toward the tier that confines
-// less rather than toward claiming a guarantee.
+// is on a namespace WORD in bwrap's message rather than on an errno: "Permission denied"
+// is what a noexec canary, a refused bind mount and a refused namespace all produce, and
+// only the last of the three is this verdict. Blocked is the permissive branch here -
+// filesystemLayer offers the degraded tier for it and refuses outright for unanswered -
+// so guessing it from an errno errs in the direction that runs.
 // containerUsernsRemedy is the container half of every userns-blocked diagnosis, and
 // is carried by all of them rather than gated on detecting a container: podman, k8s and
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
@@ -484,7 +486,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	// one worded "Permission denied" would borrow base's "cannot create an unprivileged
 	// user namespace", which is false on this host. Only proc carries a remedy, because
 	// masking paths under /proc is the one cause established for this class.
-	if strings.Contains(out, "Can't mount ") {
+	if strings.Contains(out, "Can't mount ") || strings.Contains(out, "Can't bind mount ") {
 		diagnosis := "bubblewrap can create a user namespace here but cannot mount the pseudo-filesystems " +
 			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
 		if strings.Contains(out, "Can't mount proc") {
@@ -506,7 +508,21 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
 		"bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 
-	if !strings.Contains(out, "user namespace") && !strings.Contains(out, "Permission denied") {
+	// The match is on a namespace WORD, not on an errno. bwrap words a real refusal three
+	// ways, and all three name what failed: "No permissions to create new user
+	// namespace", the generic "Creating new namespace failed", and "setting up uid map",
+	// which is the second half of creating one (the namespace exists, the host refused
+	// the map write, and the sandbox has no usable identity in it either way).
+	//
+	// A bare "Permission denied" naming none of them is not the host answering. canUnshare
+	// execs a canary INSIDE the sandbox, so "bwrap: execvp true: Permission denied" is a
+	// noexec mount or an AppArmor exec denial on the canary and says nothing about the
+	// namespace. That message used to read as blocked, which is the PERMISSIVE branch -
+	// filesystemLayer turns it into the Landlock-only tier under --allow-degraded and
+	// tells the user to go flip AppArmor sysctls that were never the problem, on a host
+	// where bwrap works fine. Unanswered is what the third state is for, and it fails
+	// closed.
+	if !strings.Contains(out, "namespace") && !strings.Contains(out, "setting up uid map") {
 		if out != "" {
 			return namespacesUnknown, unknownBase + ": " + strings.TrimSpace(out)
 		}
