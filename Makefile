@@ -112,9 +112,15 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # this package with it. CGO_ENABLED=1 because -race needs cgo (so check now wants a C
 # toolchain), and the scope stays narrow: the linux tier tests spawn real bwrap and
 # systemd scopes, which -race would make slow without telling us anything about them.
+# The egress collector is the same class of property one layer up - the proxy calls its
+# observe from a goroutine per connection - so it needs the detector too. It is named
+# rather than run as a package because the rest of internal/linux is the real-sandbox tier
+# above: -race over the whole package is 83s against 1s for these. Widen the pattern when
+# another concurrent structure lands here.
 race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
+	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 -run 'TestEgressCollector' ./internal/linux/
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
 
 # A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as

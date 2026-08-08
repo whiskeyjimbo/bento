@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -451,11 +452,10 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 // driven here: a fake `go` on PATH builds a stub that exits with the status under test,
 // and the banner pins which arm ran rather than the exit code alone.
 func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
-	repo, err := filepath.Abs("..")
+	repo, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo = filepath.Dir(repo)
 
 	fake := filepath.Join(t.TempDir(), "go")
 	const shim = "#!/bin/sh\nout=\nwhile [ $# -gt 0 ]; do\n\tif [ \"$1\" = -o ]; then out=$2; fi\n\tshift\ndone\nprintf '#!/bin/sh\\nexit %s\\n' \"$STUB_STATUS\" >\"$out\"\nchmod +x \"$out\"\n"
@@ -466,7 +466,7 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 	for _, tc := range []struct {
 		stub   int    // what the audit binary exits with
 		want   int    // what the wrapper must report to CI
-		banner string // the arm that must have run
+		banner string // the arm that must have run; empty means the silent pass arm
 	}{
 		{0, 0, ""},
 		{1, 1, "in-scope upstream shields are missing"},
@@ -480,7 +480,11 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 		t.Run(fmt.Sprintf("status%d", tc.stub), func(t *testing.T) {
 			cmd := exec.Command(filepath.Join(repo, "scripts", "denylist-audit.sh"))
 			cmd.Dir = repo
-			cmd.Env = append(os.Environ(),
+			// The script is set -u, so it gets the real environment with only PATH
+			// replaced - dropping the old entry rather than shadowing it, since which
+			// of two PATH= entries a shell honours is not specified.
+			env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "PATH=") })
+			cmd.Env = append(env,
 				"PATH="+filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"),
 				fmt.Sprintf("STUB_STATUS=%d", tc.stub))
 			var out bytes.Buffer
@@ -495,6 +499,11 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("audit exited %d, wrapper reported %d, want %d\n%s", tc.stub, got, tc.want, out.String())
+			}
+			// The silent arm is asserted as silence, not as a substring: status 3 also
+			// exits 0, so only the absence of its banner tells the two apart.
+			if tc.banner == "" && out.Len() != 0 {
+				t.Errorf("a clean audit must say nothing; got:\n%s", out.String())
 			}
 			if !strings.Contains(out.String(), tc.banner) {
 				t.Errorf("wrapper on status %d must say %q; got:\n%s", tc.stub, tc.banner, out.String())
