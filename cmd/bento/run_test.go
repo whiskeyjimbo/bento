@@ -87,16 +87,13 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 			Reason: strings.Repeat("this host cannot bind-mount the grants, ", 30),
 		}},
 	}
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	err := writeRunResult(&stderr, false, validPolicy(), nil,
 		enforce.Result{ExitCode: 7}, nil, nil, refusal)
 
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != bentoFailed {
 		t.Fatalf("human refusal = %v, want exitError{%d}", err, bentoFailed)
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("human refusal must not write JSON to stdout; got %q", stdout.String())
 	}
 	out := stderr.String()
 	if !strings.HasPrefix(out, "bento: refusing to run: "+refusal.Reason) {
@@ -397,7 +394,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 	}
 	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	err := writeRunResult(&stderr, false, netPolicy, nil, res, nil, nil, nil)
 	if got := asExitError(t, err).code; got != 1 {
 		t.Fatalf("exit code = %d, want 1", got)
@@ -407,9 +404,6 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("human output missing %q; got:\n%s", want, out)
 		}
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("human mode must not write to stdout; got %q", stdout.String())
 	}
 }
 
