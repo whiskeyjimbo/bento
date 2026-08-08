@@ -185,3 +185,52 @@ func TestATargetThatDiesBeforeAttachKeepsItsExitCode(t *testing.T) {
 	}
 	_ = cmd.Wait()
 }
+
+// A trace that dies mid-run is the case the section's marker exists for, and the marker
+// alone cannot carry it: a truncated record ends with a marker exactly like a complete
+// one, because the launcher writes the section after the target finishes either way. Only
+// the recorder's own failure marker separates them, so a loop that returns an error
+// without setting it produces a record the host reads as watched and complete when the
+// tracer saw nothing at all.
+//
+// The first resume answering ESRCH is the cheapest shape and a real one - a root SIGKILLed
+// between the attach and the resume, which is what an OOM kill looks like from here. A
+// reaped pid stands in for it.
+func TestALostTraceMarksTheRecordFailed(t *testing.T) {
+	cmd, err := startTarget([]string{"/bin/true"}, os.Environ(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cmd.Process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	dead := cmd.Process.Pid
+
+	rec := &execRecorder{runs: []execRun{{exe: "/bin/true", argv: []string{"/bin/true"}}}}
+	if _, err := traceExecs(dead, rec); !errors.Is(err, syscall.ESRCH) {
+		t.Skipf("pid %d does not answer ESRCH (%v), so it cannot stand in for a dead root", dead, err)
+	}
+	if rec.failed == nil {
+		t.Fatal("a trace that lost its target left the record claiming it was watching")
+	}
+
+	// The record still gets written - the target ran - so what the host sees is asserted
+	// rather than only the field.
+	f, err := os.CreateTemp(t.TempDir(), "applied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	applied := &appliedReport{f: f}
+	if err := applied.writeExecRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	report, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AppliedExecRecorder + " " + AppliedNo
+	if !strings.Contains(string(report), want) {
+		t.Errorf("exec record = %q, want a %q line; %q is the record that reads as complete when it is not", report, want, AppliedExecRecorder+" "+AppliedYes)
+	}
+}

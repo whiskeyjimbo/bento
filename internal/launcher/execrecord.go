@@ -144,9 +144,16 @@ func attachRecorder(root int) (code int, done bool, err error) {
 
 // traceExecs is the wait loop. It resumes the stopped root, records an exec at each
 // PTRACE_EVENT_EXEC stop, and returns the target's exit code when the root ends.
+// Losing the loop is what makes a record incomplete, so the failure is marked on the
+// recorder before it is returned: the record is written either way (the target ran), and
+// without the marker a trace that ended after two of a hundred execs reads as a run that
+// simply stopped exec'ing - the silently-incomplete record the section's marker exists to
+// prevent. The likeliest shape is the very first resume answering ESRCH, a root SIGKILLed
+// between the attach and here, which leaves nothing recorded but the seed entry.
 func traceExecs(root int, rec *execRecorder) (int, error) {
 	if err := syscall.PtraceCont(root, 0); err != nil {
-		return 0, fmt.Errorf("launcher: resuming the target: %w", err)
+		rec.failed = fmt.Errorf("launcher: resuming the target: %w", err)
+		return 0, rec.failed
 	}
 
 	// Every tracee seen and not yet reaped: root, plus each descendant auto-attached at
@@ -162,7 +169,8 @@ func traceExecs(root int, rec *execRecorder) (int, error) {
 			continue
 		}
 		if err != nil {
-			return 0, fmt.Errorf("launcher: supervising the target: %w", err)
+			rec.failed = fmt.Errorf("launcher: supervising the target: %w", err)
+			return 0, rec.failed
 		}
 		tracees[wpid] = true
 
