@@ -155,7 +155,12 @@ func (r *Report) Set(layer Layer, state State, reason string) {
 // SetStatus replaces a layer's status with one the caller holds whole, for the same
 // reason AddStatus exists.
 func (r *Report) SetStatus(s LayerStatus) {
-	out, replaced := r.Layers[:0], false
+	// A fresh slice, not r.Layers[:0]: Report is a struct wrapping a slice and is copied
+	// by value all over this package (Result.Report, Refusal.Report, the overlay in
+	// Run), so compacting through the shared backing array would rewrite entries a copy
+	// taken earlier still reads through its own unshortened length. A silently corrupted
+	// report is the one thing this package exists not to produce.
+	out, replaced := make([]LayerStatus, 0, len(r.Layers)), false
 	for _, l := range r.Layers {
 		switch {
 		case l.Layer != s.Layer:
