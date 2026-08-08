@@ -53,8 +53,14 @@ type Access struct {
 // Result is what a traced run observed.
 type Result struct {
 	Accesses []Access
-	Execed   bool // the program exec'd at least one subprocess
-	ExitCode int
+	Execed   bool // an execve(2) ran and replaced an image, so a subprocess exists
+	// ExecAttempted reports that an execve(2) was ISSUED, whether or not it ran. It is
+	// the weaker fact and the two have different jobs: a grant hangs off Execed, because
+	// a spawn that never happened must not widen policy, while the reporting layer needs
+	// this one to tell a target that named a path the sandbox did not hold from one that
+	// never named a path at all.
+	ExecAttempted bool
+	ExitCode      int
 	// Signaled reports the root died from a signal (crash, OOM-kill, timeout);
 	// Signal is that signal number. A signaled or nonzero run may have stopped
 	// partway, so its accesses - and any manifest synthesized from them - are
@@ -87,9 +93,9 @@ const (
 	sysOpenat2 = 437
 	sysCreat   = 85
 	sysExecve  = 59
-	// sysExecveat is the dirfd-relative spawn. It does not set Execed (see the
-	// sysExecve case), but the binary it names is still a file the run must be able
-	// to read, so its path is recorded like any other access.
+	// sysExecveat is the dirfd-relative spawn. It never sets Execed (see the sysExecve
+	// case), but the binary it names is still a file the run must be able to read, so
+	// its path is recorded like any other access.
 	sysExecveat = 322
 )
 
@@ -231,6 +237,11 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// The op of each pid's last syscall stop that was read successfully - the parity a
 	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
+	// Whether each tid's most recent spawn attempt was an execve rather than an execveat,
+	// parked at the entry stop for the exec event to read. Keyed on the tid because the
+	// event carries the new image's registers and so no stop key can be rebuilt from it,
+	// the same reason releaseHeldOf sweeps by tid.
+	execSpawn := map[int]bool{}
 	// Whether an open of each path was ever seen to return a file. Keyed on the path
 	// alone rather than on seen's path+write key: a program that probes a path read-only,
 	// gets ENOENT, then creates it has opened one file, and letting the two entries carry
@@ -373,7 +384,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// counter's own.
 			if op, native := nativeSyscall(wpid, lastOp, held, &res.Dropped); native {
 				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, op, record, recordProbe, openResult, count, release, held, &res)
+				inspect(wpid, op, record, recordProbe, openResult, count, release, held, execSpawn, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -396,10 +407,24 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// so the one way to get here is the tracee dying between the wait and the
 			// call - and then the retirement is the smaller half of the loss, because the
 			// execed image is going with it.
+			//
+			// This is also where Execed is set, because this event is the only report that
+			// a spawn actually happened - the syscall that fired it has no exit stop to
+			// return through. WHICH spawn syscall it was is the entry stop's answer, parked
+			// under the calling tid; that tid is this event's message, so a thread's execve
+			// is credited to the thread that issued it and not to the leader whose pid it
+			// has just taken over. An unloadable message falls back to the stopping pid,
+			// which is the same tid whenever the execing thread was the leader.
 			case syscall.PTRACE_EVENT_EXEC:
+				spawner := wpid
 				if old, err := syscall.PtraceGetEventMsg(wpid); err == nil {
-					res.Dropped += forgetRetiredTid(wpid, int(old), tracees, lastOp, held, drops)
+					spawner = int(old)
+					res.Dropped += forgetRetiredTid(wpid, spawner, tracees, lastOp, held, drops)
 				}
+				if execSpawn[spawner] {
+					res.Execed = true
+				}
+				delete(execSpawn, spawner)
 			}
 
 			// A group-stop, a ptrace event (a new child), or a genuine
@@ -838,7 +863,7 @@ func existenceHeld(held map[string]heldPath) int {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, res *Result) {
+func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, execSpawn map[int]bool, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -962,20 +987,32 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 			drop()
 		}
 	case sysExecve:
-		// Tested at the ENTRY stop because that is the only stop where the number still
-		// tells execve from execveat: after a successful execveat the kernel reports the
-		// EXIT stop as 59, so an ungated test here counts every execveat as an execve.
+		// Which spawn syscall this is can only be read HERE: after a successful execveat
+		// the kernel reports the exit stop as 59, so a number tested at any later stop
+		// counts every execveat as an execve. Whether the call ran can only be read at the
+		// exec EVENT, which is where the flag is set - so the answer to the first question
+		// is parked under this tid for the second to pick up (see execSpawned).
 		//
-		// Only execve is counted, and the reason is not that execveat is harmless. The
-		// exec-block filter denies execve and permits execveat by construction - the
-		// launcher's own transition into the sandbox is an execveat - so a target that
-		// spawns that way runs identically under exec: none and exec: all, and reporting
-		// it buys the user nothing. What it costs is the point: Execed grants ExecAll,
-		// and on ExecAll the launcher installs no exec-block filter at all, so a single
-		// execveat would turn into blanket execve permission for the whole run.
-		res.Execed = true
+		// Both halves are load-bearing, in the same direction. Execed grants ExecAll, and
+		// on ExecAll the launcher installs no exec-block filter at all, so a single
+		// mis-attributed spawn turns into blanket execve permission for the whole run. An
+		// execveat is not attributed because the filter denies execve and permits execveat
+		// by construction - the launcher's own transition into the sandbox is an execveat -
+		// so a target spawning that way runs identically under exec: none and exec: all,
+		// and reporting it costs the user the filter and buys nothing. An execve that
+		// FAILED spawns nothing, so it buys nothing either, at the same price: a script
+		// reaching for a helper that is absent inside the profiling sandbox issues one
+		// execve, gets ENOENT, and would take the whole run's exec block with it. That
+		// attempt is still worth reporting - just not as a grant - which is what the
+		// weaker flag set here carries.
+		execSpawn[pid] = true
+		res.ExecAttempted = true
 		recordExecTarget(pid, atFdCwd, uintptr(regs.Rdi), false, record, drop)
 	case sysExecveat:
+		// Recorded as not-an-execve rather than left alone: a failed execve on this tid
+		// parked a true above, and the exec event this execveat may be about to fire has no
+		// way of its own to tell whose answer it is reading.
+		execSpawn[pid] = false
 		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, record, drop)
 	default:
 		inspectMutating(pid, &regs, record, dropSlot)

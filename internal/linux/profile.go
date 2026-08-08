@@ -268,7 +268,8 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 // parseObservations reads the launcher's observation report: "R <path>" and
 // "W <path>" lines for opens, an "ABSENT <path>" line for each of those the run never
 // found a file at, a "PROBED <path>" line for each that nothing ever opened, an "EXEC"
-// line if the target spawned a subprocess, an "EXIT <code>"
+// line if the target reached for another image and an "EXECRAN" line if it got there,
+// an "EXIT <code>"
 // or "SIGNAL <n>" line carrying the run's exit status, and a "DROPPED <n>" line
 // counting accesses the observer could not name.
 //
@@ -301,6 +302,8 @@ func parseObservations(f *os.File) (profile.Observation, error) {
 		case line == observe.ReportEnd:
 			ended = true
 		case line == "EXEC":
+			obs.ExecAttempted = true
+		case line == "EXECRAN":
 			obs.Execed = true
 		case line == "SECCOMPKILLED":
 			obs.SeccompKilled = true

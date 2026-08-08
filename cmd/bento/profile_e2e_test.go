@@ -267,8 +267,8 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 
 	// A sibling of the script's directory: real on the host, and absent inside the
 	// sandbox, since discoveryPolicy grants the script's own directory and nothing else.
-	// That is the shape that sets Execed - the exec is attempted and fails - as opposed
-	// to a bare name, which never reaches execve at all.
+	// That is the shape that sets ExecAttempted - the exec is attempted and fails - as
+	// opposed to a bare name, which never reaches execve at all.
 	toolDir := t.TempDir()
 	tool := filepath.Join(toolDir, "bentotool")
 	if err := os.WriteFile(tool, []byte("#!/bin/sh\necho TOOL-RAN\n"), 0o755); err != nil {
@@ -335,8 +335,14 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 	// Absolute path to the same tool. The exec IS attempted, so the observer records the
 	// target and proposes it - the message's claim that profiling again changes nothing
 	// would be false here, which is why this case must fall through to the generic
-	// wording. Asserting the read list is what catches an Execed gate that stopped
-	// working, rather than only catching the wrong string.
+	// wording. Asserting the read list is what catches the gate that stopped working,
+	// rather than only catching the wrong string.
+	//
+	// The proposed Exec is asserted here too, because this is the one case where the two
+	// exec facts disagree and the whole point of separating them: the attempt earns the
+	// generic wording, and it must NOT also earn exec: all - nothing was spawned, and a
+	// manifest granting blanket execve off a helper that was missing is the widest thing
+	// a failed profiling round could hand the user.
 	t.Run("named but not mounted", func(t *testing.T) {
 		got, status := profile(t, "abs.sh", tool+"\n")
 		if strings.Contains(status.unfinished, enforce.SandboxPath) {
@@ -344,6 +350,9 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 		}
 		if !hasPath(got.Read, tool) {
 			t.Errorf("an attempted exec of %q must be recorded and proposed; got %v", tool, got.Read)
+		}
+		if got.Exec != policy.ExecNone {
+			t.Errorf("an exec that failed spawned nothing, so Exec = %v, want %v", got.Exec, policy.ExecNone)
 		}
 	})
 }

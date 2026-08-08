@@ -159,6 +159,14 @@ func TestObserveTraceeHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
 			os.Exit(7)
 		}
+	case "failedexecve":
+		// An execve of a path that is not there: one spawn syscall issued, ENOENT, and no
+		// subprocess. The absent path is the shape a script reaching for a helper the
+		// profiling sandbox does not hold produces.
+		if err := syscall.Exec(traceeAbsentExecTarget, []string{traceeAbsentExecTarget}, nil); !errors.Is(err, syscall.ENOENT) {
+			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
+			os.Exit(7)
+		}
 	case "execthread":
 		// execve from a thread that is NOT the thread-group leader: the kernel kills the
 		// other threads and hands the execing one the leader's pid, so its own tid
@@ -628,6 +636,11 @@ func plantPathTracee(dir string, n int) {
 // stats it first, and present on every host this package builds for.
 const traceeExecTarget = "/bin/true"
 
+// traceeAbsentExecTarget is what the failed-exec mode spawns: under /proc, which is
+// mounted on every host this package builds for and holds no such entry, so the execve
+// fails on the final component rather than on a missing directory a host might supply.
+const traceeAbsentExecTarget = "/proc/bento-observe-no-such-helper"
+
 // execLinkName is the symlink the fexecve tracee opens its exec target through, so that
 // the only route to the real target's path is resolving the descriptor.
 const execLinkName = "exec-target-link"
@@ -772,7 +785,7 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var res Result
 			count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, tc.held, &res)
+			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, tc.held, map[int]bool{}, &res)
 			if res.Dropped != tc.want {
 				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
 			}
@@ -797,7 +810,7 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 
 	var res Result
 	count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, held, &res)
+	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, held, map[int]bool{}, &res)
 	res.Dropped += releaseHeldOf(held, dead)
 
 	if res.Dropped != 2 {
@@ -961,27 +974,36 @@ func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
 // execveat), so an execveat-spawning target behaves the same under exec: none as under
 // exec: all - reporting it would widen the manifest to nothing but the user's cost.
 //
-// The two are told apart only at the syscall ENTRY stop: after a successful execveat the
-// kernel reports the EXIT stop as execve's own number, so a decoder that tests at either
-// stop counts every execveat as an execve. Both directions are pinned because a fix that
-// stopped detecting exec altogether would satisfy the execveat half on its own.
+// An execve that FAILED must not set it either, for the same reason and at the same price:
+// it spawned nothing, so reporting it would trade the run's exec-block filter for nothing -
+// and a script reaching for a helper that is absent inside the profiling sandbox produces
+// exactly one failed execve.
+//
+// The two syscalls are told apart only at the syscall ENTRY stop (after a successful
+// execveat the kernel reports the EXIT stop as execve's own number), and whether the call
+// ran is only known at the exec event, so a flag set from either alone gets one of these
+// three wrong. All three directions are pinned because a fix that stopped detecting exec
+// altogether would satisfy two of them on its own.
 func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 	for _, tc := range []struct {
-		mode string
-		want bool
+		mode   string
+		want   bool
+		target string
 	}{
-		{"execve", true},
-		{"execveat", false},
+		{"execve", true, traceeExecTarget},
+		{"execveat", false, traceeExecTarget},
+		{"failedexecve", false, traceeAbsentExecTarget},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			res := traceHelper(t, tc.mode, t.TempDir(), 0)
 			if res.Execed != tc.want {
 				t.Errorf("Execed = %v after a %s spawn, want %v", res.Execed, tc.mode, tc.want)
 			}
-			// The spawned binary is a file the sandbox must be able to read, and this
-			// path is absolute, so no PATH search stats it into the record incidentally.
-			if !slices.Contains(res.Accesses, Access{Path: traceeExecTarget}) {
-				t.Errorf("%s spawned %s and it is absent from the recorded accesses: %v", tc.mode, traceeExecTarget, res.Accesses)
+			// The named binary is a file the sandbox must be able to read - the failed
+			// spawn included, because the script meant to run it - and these paths are
+			// absolute, so no PATH search stats one into the record incidentally.
+			if !slices.Contains(res.Accesses, Access{Path: tc.target}) {
+				t.Errorf("%s named %s and it is absent from the recorded accesses: %v", tc.mode, tc.target, res.Accesses)
 			}
 		})
 	}

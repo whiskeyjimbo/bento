@@ -66,7 +66,15 @@ type Observation struct {
 	// traffic. They are recorded instead, so the proposal can say what it declined to
 	// propose and why, which is the only place the destination survives at all.
 	Untunneled []HostPort
-	Execed     bool
+	// Execed reports that a spawn actually happened, and is the only one of these two
+	// a grant may hang off: synthesizing exec: all off an attempt that never ran turns
+	// one missing helper into blanket execve permission for the whole run.
+	Execed bool
+	// ExecAttempted reports that the run reached for another image, whether or not it
+	// got there. It separates a target that named a path the sandbox did not hold from
+	// one that only searched for a bare name, which is a distinction the 127 warning
+	// needs and no grant does.
+	ExecAttempted bool
 	// Interpreter is the absolute, resolved path the interpreter ran from (empty
 	// for a self-interpreting binary). It anchors dropping the interpreter's own
 	// runtime tree from the proposal - under a version manager that tree lives in

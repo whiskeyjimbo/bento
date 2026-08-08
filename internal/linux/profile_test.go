@@ -21,7 +21,7 @@ import (
 func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	// A complete report (records then the trailing marker) parses.
 	good := filepath.Join(t.TempDir(), "report")
-	content := fmt.Sprintf("R %q\nW %q\nEXEC\n%s\n", "/a", "/b", observe.ReportEnd)
+	content := fmt.Sprintf("R %q\nW %q\nEXEC\nEXECRAN\n%s\n", "/a", "/b", observe.ReportEnd)
 	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -29,8 +29,8 @@ func TestParseObservationsRequiresCompletionMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a complete report should parse: %v", err)
 	}
-	if len(obs.Reads) != 1 || len(obs.Writes) != 1 || !obs.Execed {
-		t.Fatalf("parsed = %+v, want one read, one write, execed", obs)
+	if len(obs.Reads) != 1 || len(obs.Writes) != 1 || !obs.Execed || !obs.ExecAttempted {
+		t.Fatalf("parsed = %+v, want one read, one write, an exec attempt and a spawn", obs)
 	}
 
 	// The empty file bwrap leaves when it aborts before the launcher runs, and a
@@ -84,9 +84,11 @@ func TestParseObservationsRejectsContentAfterMarker(t *testing.T) {
 }
 
 // A path containing a newline and forged record text must parse as a single read,
-// not inject extra W/EXEC records into the proposed manifest.
+// not inject extra W/EXEC records into the proposed manifest. EXECRAN is in the forgery
+// because it is the record a grant hangs off - exec: all for the whole run - which makes
+// it the most valuable line for a target to smuggle in through a path it controls.
 func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
-	evil := "/tmp/x\nW /etc/ssh\nEXEC"
+	evil := "/tmp/x\nW /etc/ssh\nEXEC\nEXECRAN"
 	report := filepath.Join(t.TempDir(), "r")
 	content := fmt.Sprintf("R %q\n%s\n", evil, observe.ReportEnd)
 	if err := os.WriteFile(report, []byte(content), 0o644); err != nil {
@@ -100,8 +102,8 @@ func TestParseObservationsQuotedPathsResistInjection(t *testing.T) {
 	if len(obs.Reads) != 1 || obs.Reads[0] != evil {
 		t.Errorf("reads = %q, want the single literal path", obs.Reads)
 	}
-	if len(obs.Writes) != 0 || obs.Execed {
-		t.Errorf("forged records leaked: writes=%v execed=%v", obs.Writes, obs.Execed)
+	if len(obs.Writes) != 0 || obs.Execed || obs.ExecAttempted {
+		t.Errorf("forged records leaked: writes=%v execed=%v attempted=%v", obs.Writes, obs.Execed, obs.ExecAttempted)
 	}
 }
 

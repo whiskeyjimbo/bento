@@ -19,6 +19,7 @@ type Access struct {
 type Result struct {
 	Accesses      []Access
 	Execed        bool
+	ExecAttempted bool
 	ExitCode      int
 	Signaled      bool
 	Signal        int

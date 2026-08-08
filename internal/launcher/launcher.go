@@ -428,8 +428,15 @@ func runObserve(cfg Config, env []string) (int, error) {
 				fmt.Fprintf(&b, "PROBED %q\n", a.Path)
 			}
 		}
-		if res.Execed {
+		// Two records rather than one, because the two facts do different work on the
+		// host: EXEC is the attempt, which the 127 warning reads, and EXECRAN is the
+		// spawn that actually happened, which is what grants exec: all. A run that
+		// spawned wrote both.
+		if res.ExecAttempted {
 			b.WriteString("EXEC\n")
+		}
+		if res.Execed {
+			b.WriteString("EXECRAN\n")
 		}
 		// The run's exit status, so the host can warn when a signaled/nonzero run may
 		// have stopped partway and the observations are incomplete. Written before the
