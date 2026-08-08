@@ -104,10 +104,12 @@ func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []strin
 			return grantrefusal.FoldedShield(g, r.Path)
 		case shield.Honored:
 		case shield.UnderWriteShield, shield.AboveShield, shield.AboveWriteShield:
-			// Reachable under shield.Write and deliberately left here: all three are refused
-			// by checkWriteNotUnderReadOnlyShield, checkWriteNotAboveShield and
-			// checkWriteNotAboveWriteShield, which run after this one and word them for a
-			// write. Answering them here would refuse the same grant in the read sentence.
+			// Reachable under shield.Write and deliberately left here: the first two are
+			// refused by checkWriteNotUnderReadOnlyShield and checkWriteNotAboveShield,
+			// which run after this one and word them for a write, and AboveWriteShield by
+			// checkWriteNotAboveWriteShield on the degraded tier only, where the full
+			// tier's bind ordering is not there to enforce it. Answering any of them here
+			// would refuse the grant in the read sentence, or on the wrong tier.
 		}
 	}
 	return nil

@@ -600,7 +600,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	// are honored so a read grant naming the store still binds it as the full tier
 	// already promises.
 	set := shields(sb)
-	optIns := optInPaths(explicitShieldOptIns(sb, p.Read))
+	optIns := shield.Targets(explicitShieldOptIns(sb, p.Read))
 	for _, e := range []struct{ kind, path string }{
 		{"entrypoint", sb.entrypoint},
 		{"interpreter", sb.interpreter},

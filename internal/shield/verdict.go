@@ -155,7 +155,16 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 	// Last, so a grant that contains both kinds is refused in the DenyAll sentence: that
 	// one refuses on every tier, and this one only on the tier with no binds.
 	for _, a := range s.applied {
-		if a.Rule.Deny == denylist.DenyWrite && policy.CoversResolved(grant, a.Resolved) {
+		if a.Rule.Deny != denylist.DenyWrite {
+			continue
+		}
+		// Asked of the same three spellings the DenyAll loop above asks of, and for a
+		// sharper reason: where the shield's own name is a symlink out of the grant (a
+		// pyenv relocated to another disk), the resolved path escapes while the NAME the
+		// host's $PATH walks through stays inside a writable tree, so the run replaces the
+		// link with a directory of planted shims. That is the plant this refuses.
+		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
+		if policy.CoversResolved(grant, a.Resolved) || policy.CoversResolved(grant, loc) || policy.CoversResolved(grant, a.Rule.Path) {
 			return a.Rule, AboveWriteShield
 		}
 	}
