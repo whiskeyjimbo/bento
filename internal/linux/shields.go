@@ -596,19 +596,6 @@ func explicitShieldOptIns(sb sandbox, literalReads []string) []shield.OptIn {
 	return shields(sb).OptIns(literalReads)
 }
 
-// callerDenied reports whether a caller-supplied deny covers a resolved host path. Both
-// sides are resolved because a caller names its store in its own spelling and the shield
-// binds where that lands.
-func callerDenied(sb sandbox, onHost string) bool {
-	for _, r := range sb.extraDeny {
-		rp := sb.resolve(r.Path)
-		if onHost == rp || policy.CoversResolved(rp, onHost) {
-			return true
-		}
-	}
-	return false
-}
-
 func optInPaths(optIns []shield.OptIn) []string {
 	out := make([]string, 0, len(optIns))
 	for _, o := range optIns {

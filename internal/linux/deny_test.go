@@ -517,7 +517,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		cleanup()
 		t.Fatal("an entrypoint inside a caller deny must be refused")
 	}
-	if !strings.Contains(err.Error(), "caller-denied") {
+	if !strings.Contains(err.Error(), store) {
 		t.Errorf("the refusal must name the caller deny; got %v", err)
 	}
 
@@ -531,6 +531,34 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		t.Errorf("an entrypoint outside the caller deny must be accepted: %v", err)
 	} else {
 		cleanupOK()
+	}
+}
+
+// The same refusal for a BUILT-IN shield. bwrap is last-wins and the entrypoint re-bind
+// is emitted after the deny-list, so `entrypoint: ~/.ssh/id_ed25519, interpreter: cat`
+// bound the key read-only inside the very tmpfs meant to hide it - and the run report
+// asserted the shield applied with nothing lifted. An always-on credential shield is no
+// more executable than an embedder's control store, so both are refused by one check.
+func TestEntrypointInsideABuiltInShieldRefused(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(ssh, "id_ed25519")
+	if err := os.WriteFile(key, []byte("PRIVATE-KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: key, Interpreter: "cat"}
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	if err == nil {
+		cleanup()
+		t.Fatal("an entrypoint inside the ~/.ssh shield must be refused")
+	}
+	if !strings.Contains(err.Error(), ssh) {
+		t.Errorf("the refusal must name the shield; got %v", err)
 	}
 }
 
