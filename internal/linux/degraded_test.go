@@ -691,6 +691,27 @@ func TestDegradedRefusesANetworkGate(t *testing.T) {
 	}
 }
 
+// The same refusal for network RULES, which enforce.requiredLayers treats as one class
+// with the gate and this guard used to split from it. newSandbox sets sb.proxySocket for
+// a network manifest and runDegraded never listens on it, while the launcher blocks
+// egress unconditionally - so the run would get strictly less network than declared and
+// the report would still attest the layer enforced.
+func TestDegradedRefusesNetworkRules(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{
+		Entrypoint: entry,
+		Exec:       policy.ExecNone,
+		Network:    []policy.NetworkRule{{Host: "example.com", Port: "443"}},
+	}
+	_, err := enforcerUsing("/bin/true").Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{Degraded: true})
+	if err == nil || !strings.Contains(err.Error(), "network rules cannot be honored") {
+		t.Fatalf("the degraded tier must refuse a network manifest it cannot proxy; got err=%v", err)
+	}
+}
+
 // The degraded tier's twin of TestRunRefusesAnAliasedCredential. It matters more here:
 // the full tier still binds a shield over ~/.ssh if the check is dropped, while
 // Landlock grants the whole tree and the aliased key is simply readable. No sandbox is

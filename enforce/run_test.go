@@ -793,6 +793,42 @@ func TestDegradedTierRefusesCallerDenyPaths(t *testing.T) {
 	}
 }
 
+// The gate and network rules are one class to requiredLayers and have to be one class
+// here. An enforcer whose probe pairs a degraded filesystem with a usable network is
+// admitted - nothing is Unavailable, so the AllowDegraded shortfall check passes - and
+// the degraded tier then runs with no proxy, no allowlist and a blanket egress block
+// while Result.Report attests LayerNetwork Enforced. The target gets strictly less
+// network than declared, so what fails is the attestation, and nothing downstream can
+// correct it.
+func TestDegradedTierRefusesNetworkRulesAndGates(t *testing.T) {
+	netPolicy := validPolicy()
+	netPolicy.Network = []policy.NetworkRule{{Host: "example.com", Port: "443"}}
+
+	for _, tc := range []struct {
+		name string
+		p    *policy.Policy
+		opts Options
+	}{
+		{"network rules", netPolicy, Options{AllowDegraded: true}},
+		{"a gate", validPolicy(), Options{AllowDegraded: true, NetworkGate: func(context.Context, string, string) bool { return true }}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeEnforcer{}
+			f.probe.Add(LayerFilesystem, Degraded, "no user namespaces")
+			f.probe.Add(LayerNetwork, Enforced, "")
+
+			_, err := Run(context.Background(), f, tc.p, Process{}, tc.opts)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("Run returned %v, want a *Refusal - egress the tier cannot honor is a caller-side mistake", err)
+			}
+			if f.ran {
+				t.Error("the enforcer ran despite the refusal")
+			}
+		})
+	}
+}
+
 func TestGatedRunRequiresTheNetworkLayer(t *testing.T) {
 	gate := func(context.Context, string, string) bool { return true }
 
