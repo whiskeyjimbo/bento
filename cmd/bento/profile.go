@@ -1185,11 +1185,11 @@ func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged [
 	}
 	for _, d := range broadReads {
 		withheld = append(withheld, accessNoteJSON{Kind: "read", Path: d, Reason: "too-broad"})
-		fmt.Fprintf(out, "[bento] not proposing read access to %q - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d)
+		fmt.Fprintf(out, "[bento] not proposing read access to %q%s - too broad to grant automatically (it would re-expose every credential the deny-list does not enumerate); the specific paths under it the script actually read are proposed on their own, so add a narrower read: directory by hand only if it needs more.\n", d, resolvedNote(d))
 	}
 	for _, d := range broadWrites {
 		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "too-broad"})
-		fmt.Fprintf(out, "[bento] not proposing write access to %q - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d)
+		fmt.Fprintf(out, "[bento] not proposing write access to %q%s - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d, resolvedNote(d))
 	}
 	for _, d := range foreignHomeShields(append(append([]string{}, p.Read...), p.Write...)) {
 		flagged = append(flagged, grantKinds(p, d, "foreign-home-shield")...)

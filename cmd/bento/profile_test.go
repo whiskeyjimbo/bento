@@ -140,10 +140,79 @@ func TestForeignHomeShieldsWarnsButKeeps(t *testing.T) {
 	if slices.Contains(foreignHomeShields([]string{"/root/.ssh", "/var/home/u/.ssh"}), "/root/.ssh") {
 		t.Error("the profiler's own credential path must not warn as foreign")
 	}
-	// Documented blind spot: an unconventional home root (/var/home) is not recognized,
-	// so it yields no warning rather than a wrong one.
-	if len(foreignHomeShields([]string{"/var/home/u/.ssh"})) != 0 {
-		t.Error("/var/home is not a recognized home root; it must not warn")
+	// An ostree layout is a home root like any other: converge treats "no warning" as
+	// "safe to auto-accept under [a]ll", so a root this misses is a credential store
+	// mounted without ever being shown.
+	if len(foreignHomeShields([]string{"/var/home/u/.ssh"})) == 0 {
+		t.Error("/var/home/u is a foreign home; its credential store must warn")
+	}
+}
+
+// The ostree root must not warn about the profiler's OWN home, or a Silverblue host
+// prompts per-path on every grant it makes - the noise that turning the blind spot into
+// a warning would otherwise buy.
+func TestForeignHomeShieldsQuietOnAnOstreeOwnHome(t *testing.T) {
+	t.Setenv("HOME", "/var/home/u")
+
+	if warned := foreignHomeShields([]string{"/var/home/u/.ssh", "/var/home/u"}); len(warned) != 0 {
+		t.Errorf("foreignHomeShields = %v, want none: /var/home/u is this run's own home and the run shields it", warned)
+	}
+	if root, ok := homeRoot("/var/home/u/.ssh/id_rsa"); !ok || root != "/var/home/u" {
+		t.Errorf("homeRoot = (%q, %v), want (\"/var/home/u\", true)", root, ok)
+	}
+}
+
+// isBroadDir is a consent gate, not a spelling check: under [a]ll a grant it calls
+// narrow is auto-accepted with no per-path prompt, so a target that steers it with a
+// symlink gets the whole home mounted unseen. Both directions of the comparison have to
+// resolve - the grant may name a link into the home, and the home itself may be spelled
+// through one (an automounted /home -> /var/home).
+func TestIsBroadDirResolves(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(filepath.Join(home, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(work, "link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	// The grant names the link the target planted; it lands on the whole home.
+	if !isBroadDir(link) {
+		t.Errorf("isBroadDir(%q) = false; it resolves to $HOME %q, so it binds the whole home", link, home)
+	}
+	if kept, dropped := partitionBroad([]string{link}); len(kept) != 0 || !slices.Contains(dropped, link) {
+		t.Errorf("partitionBroad(%q) = (kept %v, dropped %v), want it dropped", link, kept, dropped)
+	}
+	// Discovery binds the script's own directory, so a script sitting behind such a link
+	// would mount the home for the profiling run itself.
+	if p := discoveryPolicy(filepath.Join(link, "run.sh"), "sh", nil, nil); len(p.Read) != 0 || len(p.Write) != 0 {
+		t.Errorf("discoveryPolicy granted %v/%v for a script directory that resolves to $HOME", p.Read, p.Write)
+	}
+	// A directory genuinely inside the home is still narrow enough to grant.
+	if isBroadDir(filepath.Join(home, "sub")) {
+		t.Error("a directory inside the home is not broad")
+	}
+
+	// The other direction: $HOME is spelled through a link (/home -> /var/home) while the
+	// observer records the resolved name, so the grant and the anchor never match
+	// literally.
+	real := filepath.Join(root, "real", "u")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "container")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", filepath.Join(root, "container", "u"))
+	if !isBroadDir(real) {
+		t.Errorf("isBroadDir(%q) = false; it is $HOME under the spelling the observer records", real)
 	}
 }
 
