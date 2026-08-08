@@ -50,14 +50,19 @@ func TestDirFlawsFatality(t *testing.T) {
 		facts     fileFacts
 		wantFatal bool
 	}{
-		"private":                {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me}, false},
-		"group-writable":         {fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me}, false},
-		"world-writable":         {fileFacts{path: "/w", mode: fs.ModeDir | 0o777, uid: me}, true},
-		"setgid group-writable":  {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o775, uid: me}, true},
-		"setgid but not group":   {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o755, uid: me}, false},
-		"an ACL names a writer":  {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me, aclWrite: true}, true},
-		"sticky world-writable":  {fileFacts{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}, false},
-		"setgid sticky and open": {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | fs.ModeSticky | 0o775, uid: me}, false},
+		"private":               {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me}, false},
+		"group-writable":        {fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me}, false},
+		"world-writable":        {fileFacts{path: "/w", mode: fs.ModeDir | 0o777, uid: me}, true},
+		"setgid group-writable": {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o775, uid: me}, true},
+		"setgid but not group":  {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | 0o755, uid: me}, false},
+		"an ACL names a writer": {fileFacts{path: "/w", mode: fs.ModeDir | 0o755, uid: me, aclWrite: true}, true},
+		// The proof withGroup already gathered, which the setgid proxy discarded: a plain 0775
+		// directory whose group the account database says holds five other people is the same
+		// second writer the setgid layout is refused for, and at least as common.
+		"a group proven to hold other users": {fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me, group: groupShared}, true},
+		"a group proven to hold nobody":      {fileFacts{path: "/w", mode: fs.ModeDir | 0o775, uid: me, group: groupPrivate}, false},
+		"sticky world-writable":              {fileFacts{path: "/tmp", mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}, false},
+		"setgid sticky and open":             {fileFacts{path: "/w", mode: fs.ModeDir | fs.ModeSetgid | fs.ModeSticky | 0o775, uid: me}, false},
 		// Sticky is the same exemption whichever way the write was granted: a named user who
 		// cannot unlink our manifest cannot replace it either, and refusing every approve
 		// under a /tmp that carries an ACL would leave the user no remedy.
@@ -80,19 +85,21 @@ func TestDirFlawsFatality(t *testing.T) {
 // already the owner. Reported as a flaw it fired on every command of every host whose umask
 // is 002 - which is most of them - and said "anyone there can replace the manifest" about a
 // group with a single member. Setgid still overrides: that is the directory saying the group
-// is a real one whatever a single-member reading of it would conclude.
+// is a real one whatever a single-member reading of it would conclude. A group nothing could
+// be learned about is warned on and not refused, which is the reading that has to survive on
+// every host where a directory service means nothing is ever proven.
 func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 	const me = 1000
-	private := fileFacts{path: "/home/me/proj", mode: fs.ModeDir | 0o775, uid: me, privateGroup: true}
+	private := fileFacts{path: "/home/me/proj", mode: fs.ModeDir | 0o775, uid: me, group: groupPrivate}
 	if got := dirFlaws(private, "the directory holding it", me); len(got) != 0 {
 		t.Errorf("a group nobody else is in grants nobody anything; got %+v", got)
 	}
 
-	shared := private
-	shared.privateGroup = false
-	got := dirFlaws(shared, "the directory holding it", me)
+	unknown := private
+	unknown.group = groupUnknown
+	got := dirFlaws(unknown, "the directory holding it", me)
 	if len(got) != 1 || got[0].fatal {
-		t.Fatalf("a group with other people in it is reported, not refused; got %+v", got)
+		t.Fatalf("a group nothing is known about is reported, not refused; got %+v", got)
 	}
 	// The reader is left with something to do about it, which is the other half of why the
 	// warning was ignorable.

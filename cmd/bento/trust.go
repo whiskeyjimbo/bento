@@ -29,10 +29,10 @@ type fileFacts struct {
 	// rewrite, which zeroes the group class and with it the mask every named entry is
 	// filtered through.
 	aclWrite bool
-	// privateGroup marks a group-write grant that reaches nobody: the owning group was
-	// resolved and holds no member but the owner. False whenever that could not be
-	// established, so a group nothing could be learned about is read as holding somebody.
-	privateGroup bool
+	// group is what the account database could establish about a group-write grant: that
+	// it reaches nobody, that it reaches other real users, or nothing at all. The zero
+	// value is groupUnknown, so facts assembled without a lookup are not read as private.
+	group groupReach
 }
 
 func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
@@ -49,12 +49,12 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, nil
 }
 
-// withGroup fills in privateGroup, and only where a group-write bit makes the answer
-// matter: the lookup reads the account database, and the modes that grant the group
-// nothing have no question to ask of it.
+// withGroup fills in group, and only where a group-write bit makes the answer matter:
+// the lookup reads the account database, and the modes that grant the group nothing have
+// no question to ask of it.
 func withGroup(f fileFacts, gid uint32) fileFacts {
 	if f.mode.Perm()&0o020 != 0 {
-		f.privateGroup = groupHoldsOnly(gid, f.uid)
+		f.group = groupReachOf(gid, f.uid)
 	}
 	return f
 }
@@ -129,7 +129,7 @@ func (f fileFacts) sharedWrite() fs.FileMode {
 		return 0
 	}
 	shared := f.mode.Perm() & 0o022
-	if f.privateGroup && f.mode&fs.ModeSetgid == 0 {
+	if f.group == groupPrivate && f.mode&fs.ModeSetgid == 0 {
 		shared &^= 0o020
 	}
 	return shared
@@ -399,23 +399,32 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 		})
 	}
 	if shared := d.sharedWrite(); shared != 0 {
-		// World write is always fatal. Group write on its own is not: it is what a umask of
-		// 002 leaves on every directory it creates, and the group it grants may hold nobody -
-		// refusing it would fail approve on ordinary machines. sharedWrite has already dropped
-		// the ones proven to hold nobody, so what reaches here is a group with other people in
-		// it or one nothing could be learned about, and neither is worth a refusal on its own.
-		// Setgid is what says otherwise. A setgid group-writable directory is the shared
-		// project layout, made that way so a group of people can all write there, so the
-		// "nobody else is in the group" reading is the one thing it rules out.
+		// World write is always fatal. Group write is fatal once something says the group
+		// really does hold other people: the account database proving it, or setgid, which
+		// is the shared-project layout - made that way so a group can all write there - and
+		// says so structurally on a host where nothing can be proven at all. Group write
+		// with neither is not: it is what a umask of 002 leaves on every directory it
+		// creates, and where the database cannot answer (a directory service, an
+		// unresolvable member, a gid the files do not name) the group may hold nobody, so
+		// refusing would fail approve on ordinary machines. sharedWrite has already dropped
+		// the ones proven to hold nobody.
 		fatal := shared&0o002 != 0
 		reason := fmt.Sprintf("%s, %s, is %s-writable (%#o), so anyone there can replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
 		hint := fmt.Sprintf("chmod %s %s narrows it, if nobody else is meant to write there", chmodNarrowing(shared), d.path)
-		if shared&0o020 != 0 && d.mode&fs.ModeSetgid != 0 {
+		switch {
+		case shared&0o020 == 0:
+		case d.mode&fs.ModeSetgid != 0:
 			fatal = true
 			reason = fmt.Sprintf("%s, %s, is setgid and group-writable (%#o), which is the shared-project layout, so the group holds other people who can replace the manifest", d.path, role, d.mode.Perm())
 			// Not chmod: the directory is that mode on purpose, for people whose write it is
 			// not this manifest's business to take away. Somewhere else is the remedy.
 			hint = fmt.Sprintf("keep the manifest somewhere only you can write, and point bento at it there, rather than narrowing %s", d.path)
+		case d.group == groupShared:
+			// The chmod hint stands here, unlike setgid: a plain 0775 directory is usually
+			// just what the umask left, and narrowing it takes nothing from anybody who was
+			// meant to have it.
+			fatal = true
+			reason = fmt.Sprintf("%s, %s, is group-writable (%#o) and its group holds other users, so they can replace the manifest", d.path, role, d.mode.Perm())
 		}
 		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: hint})
 	}

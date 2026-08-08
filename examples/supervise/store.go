@@ -329,6 +329,12 @@ func writeFileDurably(path string, data []byte) error {
 // warning when it does. The store is the record of what a human approved, so a
 // directory others can write is one where they can plant an allow this tool then
 // applies without prompting.
+//
+// Failing to narrow it is fatal only where the bits grant somebody WRITE, which is the
+// plant. Group or world READ leaks which decisions were made and admits nothing, and a
+// config home on a read-only mount (a container with one baked in) is an ordinary place
+// to keep a store - refusing there would break `perms list` over a mode that lets nobody
+// change anything.
 func tightenStoreDir(dir string) error {
 	fi, err := os.Stat(dir)
 	if err != nil {
@@ -339,7 +345,11 @@ func tightenStoreDir(dir string) error {
 		return nil
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
+		if mode&0o022 != 0 {
+			return fmt.Errorf("permission store %s is group/world-writable (%#o) and cannot be narrowed (%w); anyone who can write there can grant themselves an allow the next run applies with no prompt. chmod 0700 it, or point XDG_CONFIG_HOME somewhere only you can write", dir, mode, err)
+		}
+		fmt.Fprintf(os.Stderr, "supervise: permission store %s is group/world-readable (%#o) and could not be narrowed (%v); it records what you approved, so others can read it.\n", dir, mode, err)
+		return nil
 	}
 	fmt.Fprintf(os.Stderr, "supervise: permission store %s was group/world-accessible (%#o); tightened to 0700 - it records what you approved.\n", dir, mode)
 	return nil
@@ -354,8 +364,9 @@ func tightenStoreDir(dir string) error {
 // stops the NEXT plant, not the one already sitting there from when the directory was
 // writable. These bytes are read as decisions a human made, and a run applies a
 // remembered allow with no prompt, so a file this uid did not write is not a store to
-// read - it is somebody else's answers. `perms reset` is the way out, and survives this
-// error by design.
+// read - it is somebody else's answers. That holds for root reading a user's store too:
+// root can write anywhere regardless, but applying another uid's remembered allows to a
+// root run is a widening, not a convenience.
 func requireRegular(path string) error {
 	fi, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -372,7 +383,7 @@ func requireRegular(path string) error {
 		return fmt.Errorf("cannot read ownership of %s", path)
 	}
 	if euid := uint32(os.Geteuid()); st.Uid != euid {
-		return fmt.Errorf("permission store %s is owned by uid %d, not you (%d); it records what YOU approved, so it will not be read. remove it, or clear it with `supervise perms reset`", path, st.Uid, euid)
+		return fmt.Errorf("permission store %s is owned by uid %d, not you (%d); it records what YOU approved, so it will not be read. remove it and start over", path, st.Uid, euid)
 	}
 	return nil
 }
