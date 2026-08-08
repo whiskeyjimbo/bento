@@ -552,3 +552,29 @@ func TestCommandPutsInterpreterArgsBeforeTheEntrypoint(t *testing.T) {
 		t.Errorf("command = %q", got)
 	}
 }
+
+// The two tiers build the target's environment through different mechanisms - bwrap
+// --setenv arguments and a plain KEY=VALUE slice - and the defaults have to survive
+// both, or a `~` expansion works under bwrap and fails under --allow-degraded.
+func TestBothTiersDefaultHomeAndPath(t *testing.T) {
+	proc := enforce.Process{Env: map[string]string{"LANG": "C"}}
+
+	args := envArgs(proc)
+	if i := pairIndex(args, "--setenv", "HOME"); i < 0 || args[i+2] != enforce.SandboxHome {
+		t.Errorf("bwrap tier HOME = %v, want %s", args, enforce.SandboxHome)
+	}
+	if i := pairIndex(args, "--setenv", "PATH"); i < 0 || args[i+2] != enforce.SandboxPath {
+		t.Errorf("bwrap tier PATH = %v, want %s", args, enforce.SandboxPath)
+	}
+
+	env := envSlice(sandboxEnv(proc.Env))
+	if !slices.Contains(env, "HOME="+enforce.SandboxHome) || !slices.Contains(env, "PATH="+enforce.SandboxPath) {
+		t.Errorf("degraded tier env = %v, want HOME and PATH defaulted", env)
+	}
+
+	// A policy that passes either through keeps its own value on both tiers.
+	got := sandboxEnv(map[string]string{"HOME": "/work", "PATH": "/opt/bin"})
+	if got["HOME"] != "/work" || got["PATH"] != "/opt/bin" {
+		t.Errorf("declared values were overwritten: %v", got)
+	}
+}
