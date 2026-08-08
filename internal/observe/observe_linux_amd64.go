@@ -451,15 +451,20 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// stop reports it, including the fork/clone and exec events handled above,
 			// and forwarding it (default action: core dump) would kill the tracee.
 			//
-			// One policy covers all three because the kernel delivers this signal only
-			// when the restart is from a signal-delivery-stop and ignores it at every
-			// other stop. So a target that stops ITSELF - kill -STOP, a shell's job
-			// control, SIGTTOU off a stdio that is not the terminal - reports the stop
-			// twice, once as the delivery and once as the group-stop, and the resume
-			// lifts the group-stop rather than re-arming it. Without that the reinjected
-			// SIGSTOP would re-enter group-stop on every pass and hang the profiler with
-			// no diagnostic, and nothing here sends SIGCONT. It is also why a self-stop
-			// does not pause a profiled run the way it would an untraced one.
+			// One policy covers all three, and the reason is what group-stop does with a
+			// forwarded stop signal: a target that stops ITSELF - kill -STOP, a shell's
+			// job control, SIGTTIN on a background process group reading the controlling
+			// terminal - reports the stop twice, once as the delivery and once as the
+			// group-stop it caused, and the second resume LIFTS the group-stop rather
+			// than re-arming it. If it re-armed instead, the loop would dequeue and
+			// forward the same SIGSTOP forever - nothing here sends SIGCONT - and a
+			// profile would hang with no diagnostic. ptrace(2) recommends passing 0 when
+			// restarting from any stop that is not a signal-delivery-stop, which would
+			// say the same thing more directly; the forwarding here predates that reading
+			// and is pinned by test rather than by the recommendation.
+			//
+			// It is also why a self-stop does not pause a profiled run the way it would
+			// an untraced one.
 			sig := 0
 			if ws.Stopped() {
 				if s := ws.StopSignal(); s != syscall.SIGTRAP && s != syscall.SIGTRAP|0x80 {

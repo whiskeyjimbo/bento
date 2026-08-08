@@ -752,17 +752,13 @@ if rc < 0:
 	}
 }
 
-// A target that stops ITSELF must not hang the profiler. The loop forwards every non-SIGTRAP
-// signal, so a self-stop is reported twice - once as the signal-delivery-stop and once as the
-// group-stop it causes - and the second report carries SIGSTOP again. Nothing in the trace
-// ever sends SIGCONT, so if that reinjection re-armed the group-stop the loop would make zero
-// forward progress and Trace would never return: a hung profile with no diagnostic rather than
-// a crash. What saves it is that the kernel delivers the restart signal only from a
-// signal-delivery-stop and ignores it at a group-stop, which is a contract subtle enough to be
-// worth pinning rather than trusting a reader to rediscover.
+// A target that stops ITSELF must not hang the profiler - see the resume in Trace's default
+// branch for why forwarding the stop signal does not re-arm the group-stop.
 //
-// kill -STOP is the pause-for-the-operator idiom; SIGTSTP is the job-control shape; the
-// repeated stop is there because a fix that resumed only the first one would pass the others.
+// SIGSTOP specifically, because it cannot be caught, blocked or ignored: forwarding it always
+// enters group-stop, so the case is staged on the reference host and not only where a shell
+// happens to leave the disposition alone. The repeated stop is there because a fix that
+// resumed the first one only would pass the single case.
 func TestTraceOutlivesASelfStoppingTarget(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -770,26 +766,32 @@ func TestTraceOutlivesASelfStoppingTarget(t *testing.T) {
 	}
 	for _, script := range []string{
 		"kill -STOP $$",
-		"kill -TSTP $$",
 		"kill -STOP $$; kill -STOP $$; kill -STOP $$",
 	} {
 		t.Run(script, func(t *testing.T) {
 			// Run off the test goroutine so a livelock is a failure with a name rather than
-			// the whole package timing out on a stack dump.
-			done := make(chan Result, 1)
+			// the whole package timing out on a stack dump. The outcome travels through the
+			// channel rather than being reported from inside: on the deadline arm this
+			// goroutine is still in Trace and outlives the subtest, and touching t there
+			// panics the whole binary instead of failing the case that just caught the bug.
+			type outcome struct {
+				res Result
+				err error
+			}
+			done := make(chan outcome, 1)
 			go func() {
 				res, err := Trace([]string{sh, "-c", script + "; exit 7"}, os.Environ(), nil, nil, nil)
-				if err != nil {
-					t.Error(err)
-				}
-				done <- res
+				done <- outcome{res, err}
 			}()
 			select {
-			case res := <-done:
+			case got := <-done:
+				if got.err != nil {
+					t.Fatal(got.err)
+				}
 				// The exit code is what says the script RESUMED rather than being killed
 				// out of its stop by the cleanup.
-				if res.ExitCode != 7 {
-					t.Errorf("exit code %d, want 7 - the target did not run past its own stop", res.ExitCode)
+				if got.res.ExitCode != 7 {
+					t.Errorf("exit code %d, want 7 - the target did not run past its own stop", got.res.ExitCode)
 				}
 			case <-time.After(20 * time.Second):
 				t.Fatalf("Trace never returned for %q: the group-stop is being reinjected and the loop makes no progress", script)
