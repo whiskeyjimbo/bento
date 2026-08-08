@@ -71,6 +71,15 @@ func WriteAboveShield(grant, shield string) error {
 	return fmt.Errorf("write grant %q contains the always-shielded path %q, so its parent would be writable and a run could tamper with or expose it; grant a narrower directory instead", grant, shield)
 }
 
+// WriteAboveWriteShield refuses a write grant that contains a write-shielded path, on the
+// degraded tier only. It names the tier because the same manifest runs under bwrap: there
+// the shield's read-only bind lands after the grant and holds, and here there is nothing
+// to land - Landlock unions the rights of every matching rule, so no narrower rule can
+// carve the shield back out of a granted tree.
+func WriteAboveWriteShield(grant, shield string) error {
+	return fmt.Errorf("write grant %q contains the write-shielded path %q, which the degraded tier cannot shield: without a mount namespace there is nothing to bind read-only over it, so a run could plant an executable there that the host runs later; grant a directory that does not contain %q, or run without --allow-degraded", grant, shield, shield)
+}
+
 // FoldedShield refuses a grant containing a shielded path whose directory folds case, so
 // the shield's single byte-exact bind leaves the same file readable under another
 // spelling. It offers no opt-in and no narrower grant of the shield itself, because a

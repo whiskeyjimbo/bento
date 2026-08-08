@@ -56,6 +56,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if err := checkGrants(sb, p, reads, writes); err != nil {
 		return enforce.Result{}, err
 	}
+	// The one grant check this tier does not share, because it is the one the full tier's
+	// bind ordering genuinely enforces and this tier has no way to.
+	if err := checkWriteNotAboveWriteShield(sb, writes); err != nil {
+		return enforce.Result{}, err
+	}
 	// Report the same explicit shield opt-ins the full tier does, named by their literal
 	// deny-list path. The degraded tier cannot carve a shield out of a read grant at all,
 	// so it exposes them regardless; surfacing the opted-in ones keeps its warning

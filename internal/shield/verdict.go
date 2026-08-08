@@ -37,6 +37,13 @@ const (
 	// AboveShield means a write that CONTAINS a fully-shielded path, which would make the
 	// shield's own name replaceable in a directory the run can write.
 	AboveShield
+	// AboveWriteShield means a write that CONTAINS a read-only (DenyWrite) shield. It is
+	// separate from AboveShield because only one tier is affected: under bwrap the
+	// shield's ro-bind is emitted after the grant's bind and wins, so the shield holds,
+	// while the Landlock-only tier has no binds and no way to carve a narrower right out
+	// of a granted tree - Landlock takes the UNION of every matching rule - so the
+	// shielded directory is plainly writable on the host there.
+	AboveWriteShield
 	// FoldedShield means a grant CONTAINS a fully-shielded path whose directory folds
 	// case, so the byte-exact bind that shields it leaves the same file reachable under
 	// another spelling. Unlike AboveShield it applies to reads as much as writes, because
@@ -142,6 +149,14 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
 		if policy.CoversResolved(grant, loc) || policy.CoversResolved(grant, a.Rule.Path) {
 			return a.Rule, AboveShield
+		}
+	}
+
+	// Last, so a grant that contains both kinds is refused in the DenyAll sentence: that
+	// one refuses on every tier, and this one only on the tier with no binds.
+	for _, a := range s.applied {
+		if a.Rule.Deny == denylist.DenyWrite && policy.CoversResolved(grant, a.Resolved) {
+			return a.Rule, AboveWriteShield
 		}
 	}
 	return denylist.Rule{}, Honored

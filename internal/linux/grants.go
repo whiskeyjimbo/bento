@@ -103,11 +103,11 @@ func checkNotShielded(sb sandbox, kind shield.Kind, grants, optInShields []strin
 			// there is no write-specific remedy to word differently.
 			return grantrefusal.FoldedShield(g, r.Path)
 		case shield.Honored:
-		case shield.UnderWriteShield, shield.AboveShield:
-			// Reachable under shield.Write and deliberately left here: both are refused by
-			// checkWriteNotUnderReadOnlyShield and checkWriteNotAboveShield, which run after
-			// this one and word them for a write. Answering them here would refuse the same
-			// grant in the read sentence.
+		case shield.UnderWriteShield, shield.AboveShield, shield.AboveWriteShield:
+			// Reachable under shield.Write and deliberately left here: all three are refused
+			// by checkWriteNotUnderReadOnlyShield, checkWriteNotAboveShield and
+			// checkWriteNotAboveWriteShield, which run after this one and word them for a
+			// write. Answering them here would refuse the same grant in the read sentence.
 		}
 	}
 	return nil
@@ -227,6 +227,33 @@ func checkWriteNotAboveShield(sb sandbox, writes []string) error {
 		}
 		if r, v := set.Contains(w, shield.Write, nil, nil); v == shield.AboveShield {
 			return grantrefusal.WriteAboveShield(w, r.Path)
+		}
+	}
+	return nil
+}
+
+// checkWriteNotAboveWriteShield refuses a write grant that CONTAINS a DenyWrite shield
+// (write: ~/.pyenv over the ~/.pyenv/shims shield, write: ~/.local/share/mise over
+// mise/shims). It is the above-direction counterpart of checkWriteNotUnderReadOnlyShield,
+// and unlike every other check in this file it is NOT shared with the full tier - which
+// is why it sits in runDegraded rather than in checkGrants.
+//
+// The asymmetry is the mechanism, not a lapse. Under bwrap denyArgs re-binds the shield
+// read-only after the grant's bind and bwrap is last-wins, so the shield holds and
+// `write: ~/.pyenv` is a legitimate grant (pinned by
+// TestWriteGrantDoesNotLeavePyenvInterpreterWritable). The Landlock-only tier has no
+// binds, and no narrower rule can substitute: an access is allowed if ANY matching rule
+// grants it, so a read-only rule on the shim directory under a read-write rule on the
+// prefix leaves it writable - measured, not assumed. Nothing here can enforce the shield,
+// so the only honest answer is to refuse the run.
+func checkWriteNotAboveWriteShield(sb sandbox, writes []string) error {
+	set := shields(sb)
+	for _, w := range writes {
+		if w == "/" {
+			continue // rejected with a clearer message by checkWriteNotRoot
+		}
+		if r, v := set.Contains(w, shield.Write, nil, nil); v == shield.AboveWriteShield {
+			return grantrefusal.WriteAboveWriteShield(w, r.Path)
 		}
 	}
 	return nil
