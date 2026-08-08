@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -114,6 +115,9 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// down: judging admission on one set and reporting on another is how a layer gets
 	// admitted on and then erased from the report.
 	if err := ValidateRunID(opts.RunID); err != nil {
+		return Result{}, err
+	}
+	if err := admitEnv(p, proc); err != nil {
 		return Result{}, err
 	}
 	wanted := requiredLayers(p, opts)
@@ -358,6 +362,32 @@ func ValidateRunID(id string) error {
 		return nil
 	}
 	return &Refusal{Reason: fmt.Sprintf("run id %q must be 1-64 characters of letters, digits, or underscore", id)}
+}
+
+// admitEnv refuses a run whose resolved environment carries a name the manifest does
+// not declare. The backend emits --setenv for every key it is given and makes no
+// judgment about them, and ResolveEnv is where the allowlist is applied - so a map an
+// embedder assembled by any other path (os.Environ, or its own literal) reaches the
+// sandbox whole, and the manifest stops describing what the target can see.
+//
+// A Refusal, and settled before anything is probed: it is a mistake in what the caller
+// asked for, the category a supervisor must not retry. The names are sorted so the
+// message is the same on every run of the same mistake.
+func admitEnv(p *policy.Policy, proc Process) error {
+	var undeclared []string
+	for name := range proc.Env {
+		if !slices.Contains(p.Env, name) {
+			undeclared = append(undeclared, name)
+		}
+	}
+	if len(undeclared) == 0 {
+		return nil
+	}
+	slices.Sort(undeclared)
+	return &Refusal{
+		Reason: fmt.Sprintf("the environment passed to this run carries %s, which the manifest does not declare; build it with enforce.ResolveEnv or add the name to `env:` so the manifest still describes what the script can see",
+			strings.Join(undeclared, ", ")),
+	}
 }
 
 // admitRunID refuses a run that asked to be reapable but would not get a scope to be

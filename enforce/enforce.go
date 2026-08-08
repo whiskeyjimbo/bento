@@ -181,10 +181,13 @@ type Process struct {
 	// Env are the resolved environment values handed to the target. The policy
 	// declares which NAMES may pass through; resolving those names against the
 	// host, and merging any values supplied at invocation, is the core's job -
-	// a backend applies this map and makes no decisions about it. Callers MUST build
-	// this via ResolveEnv, which is what enforces the policy's allowlist: Run does not
-	// re-check the keys, so a map assembled by any other path (e.g. from os.Environ)
-	// would leak host variables the manifest never declared straight into the sandbox.
+	// a backend applies this map and makes no decisions about it. Build it with
+	// ResolveEnv, which is what resolves the policy's allowlist against the host.
+	//
+	// Run refuses a map with a name the policy does not declare (see admitEnv). Profile
+	// shares this type and does not: it runs a discovery pass whose whole purpose is to
+	// find out what the manifest should declare, so it is given an environment the
+	// not-yet-written manifest cannot list.
 	Env map[string]string
 }
 
