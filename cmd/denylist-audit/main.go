@@ -84,10 +84,15 @@ const (
 // 2 is deliberately unused: Go's runtime exits 2 on panic, so any status the wrapper
 // treats as "skip, pass" would turn a crash inside the audit into a green gate. The
 // wrapper's unexpected-failure arm catches 2 instead.
+//
+// exitEnvUnclean is separate from exitContentRefused for the same reason: it is raised
+// before anything is fetched, so the corpus arm's "an upstream corpus is not the profile"
+// would send a CI reader after an upstream that is fine.
 const (
 	exitGap            = 1
 	exitFetchFailed    = 3
 	exitContentRefused = 4
+	exitEnvUnclean     = 5
 )
 
 // errRefuse marks a fetch failure that is a judgement about the RESPONSE rather than a
@@ -117,7 +122,7 @@ func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
 	for _, v := range denylist.RelocationVars() {
 		if err := os.Unsetenv(v); err != nil {
 			fmt.Fprintf(stderr, "denylist-audit: could not clear $%s, so the rule set is this host's: %v\n", v, err)
-			return exitContentRefused
+			return exitEnvUnclean
 		}
 	}
 	sources, status := collect(fetch, stderr)

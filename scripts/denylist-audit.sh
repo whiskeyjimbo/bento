@@ -19,7 +19,10 @@
 # build - fix the list or file a bead), 3 means the upstream fetch failed (offline or
 # GitHub down), which is an infrastructure condition, not a deny-list regression, so
 # this wrapper reports it and passes rather than turning network flakiness into red, and
-# 4 means a corpus arrived but is not the profile it should be, which is a real red.
+# 4 means a corpus arrived but is not the profile it should be, which is a real red, and 5
+# means the audit could not clear the relocation variables that make its own list CI's
+# rather than this host's - red too, and separate from 4 so a reader is not sent after an
+# upstream corpus that is fine.
 #
 # Only the fetch failure passes, and it has a status of its own so that nothing else can
 # reach that arm. In particular Go's runtime exits 2 on panic: were the pass-over status
@@ -58,6 +61,10 @@ case "$status" in
 	;;
 4)
 	echo "denylist-audit: an upstream corpus is not the profile it should be (see above); the audit proved nothing." >&2
+	exit 1
+	;;
+5)
+	echo "denylist-audit: could not clear a relocation variable (see above), so the audit's own list would have been this host's, not CI's." >&2
 	exit 1
 	;;
 *)

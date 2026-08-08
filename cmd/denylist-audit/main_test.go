@@ -472,6 +472,7 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 		{1, 1, "in-scope upstream shields are missing"},
 		{3, 0, "skipping the check"},
 		{4, 1, "proved nothing"},
+		{5, 1, "could not clear a relocation variable"},
 		// A panic exits 2. It must not reach the pass-over arm, which is why that arm
 		// is 3 and not 2.
 		{2, 2, "unexpected failure (exit 2)"},
