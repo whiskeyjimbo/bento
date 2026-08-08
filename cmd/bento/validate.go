@@ -283,6 +283,14 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "        Fine if the script creates it, or if the manifest is meant for another\n")
 		fmt.Fprintf(w, "        machine; otherwise it is a typo that will read as a permission bug.\n")
 	}
+	for _, a := range r.CredentialAliases {
+		fmt.Fprintf(w, "  note: this granted path is a second name for a shielded credential, so the\n")
+		fmt.Fprintf(w, "        script reads it straight past the shield: %q\n", a.Path)
+		fmt.Fprintf(w, "        aliases %q.\n", a.Credential)
+		fmt.Fprintf(w, "        run refuses over this unless --accept-alias names a tree holding it, so\n")
+		fmt.Fprintf(w, "        remove the alias, narrow the grant, or acknowledge it there - which is\n")
+		fmt.Fprintf(w, "        why this is a note and not a refusal: nothing in the manifest decides it.\n")
+	}
 	// A property of the host rather than of the manifest, said here because the grants
 	// above are what a reader is weighing and this is the one thing about the shields that
 	// a run's own output cannot show: the degraded rule set is identical to a healthy one.
@@ -440,6 +448,12 @@ type policyJSON struct {
 	// file. A note beside missing_read_grants and read the same way: runnable stays true
 	// and --strict does not fail on it.
 	FileishWriteGrants []string `json:"fileish_write_grants,omitempty"`
+	// CredentialAliases are the granted paths that reach a shielded credential's content
+	// by a second name. A note here and a refusal at the run, which is the one place the
+	// two differ on purpose: the run's refusal is lifted by --accept-alias, a flag no
+	// manifest carries, so --strict does not fail on one and runnable stays true. A gate
+	// that wants an alias to block has to decide that itself, knowing its own run's flags.
+	CredentialAliases []credentialAliasJSON `json:"credential_aliases,omitempty"`
 	// UnshieldableRuntimeDir is XDG_RUNTIME_DIR as this host spells it when no shield can
 	// follow it there, and absent otherwise. The degraded rule set is byte-identical to a
 	// healthy host's - the same two rules, the same count, no refusal - so a gate reading
@@ -473,7 +487,18 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 	o.RefusedGrants = r.Refusals
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
+	for _, a := range r.CredentialAliases {
+		o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})
+	}
 	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
+}
+
+// credentialAliasJSON is the envelope's spelling of one alias. Both paths, because neither
+// alone is actionable: the alias is what to remove or stop granting, and the credential is
+// what it exposes.
+type credentialAliasJSON struct {
+	Path       string `json:"path"`
+	Credential string `json:"credential"`
 }
 
 type limitsJSON struct {

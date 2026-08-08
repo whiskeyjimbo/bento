@@ -27,6 +27,7 @@ import (
 	"slices"
 	"syscall"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
@@ -64,6 +65,25 @@ type Runnability struct {
 	// Silence is still wrong - the grant matches nothing, the sandbox denies quietly, and
 	// that is the failure run's own epilogue warns is hard to diagnose.
 	MissingReads []string
+	// CredentialAliases are the paths inside the granted trees that reach a shielded
+	// credential's content by a second name - the hardlink a `cp -al` snapshot, an
+	// `rsync --link-dest` backup or a whole-tree deduplicator leaves behind. A shield
+	// hides a path, not the content behind it, so the run reads one straight past the
+	// shield and refuses before the script's first instruction.
+	//
+	// A refusal there and only a finding here, which is the one place this package reports
+	// something the run refuses over without calling it one. The run's refusal is lifted by
+	// `--accept-alias`, a flag of the run and deliberately not a field of the policy
+	// (enforce.RunOptions.AcceptAliasesUnder), so nothing here can know whether this run
+	// will be refused - and refusing on the caller's behalf would refuse what a run
+	// accepts, the one direction this package rules out. A strict caller must not fail on
+	// it for that reason; a reader is meant to decide between removing the alias,
+	// narrowing the grant, and acknowledging the tree.
+	//
+	// Empty is not a clean bill. Only the hardlink half is answered - a bind alias needs
+	// the mount table - and only over the trees the manifest grants rather than everything
+	// the run binds. Both narrowings only miss a finding.
+	CredentialAliases []enforce.CredentialAlias
 	// Unresolved marks a host that could not answer at all: the caller could not resolve
 	// the manifest's paths and signals that by passing a nil policy, or this host cannot
 	// work out where its shields anchor. Reported as unknown rather than as a pass -
@@ -103,14 +123,15 @@ func Check(resolved *policy.Policy) Runnability {
 	r.Refusals = refusals(set, resolved)
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
+	r.CredentialAliases = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
 }
 
 // Refusals is every grant this host will not honor for a reason the manifest holds, in
 // the words run refuses them with: the whole of the backend's checkGrants that the gate
 // can answer from here. It is NOT the run's whole refusal set - preflightGrants runs
-// checkGrants and then the credential-alias scan, and that scan is unmirrored, for the
-// reason ShieldedReadProblems' last paragraph gives. One
+// checkGrants and then the credential-alias scan, which is a finding rather than a refusal
+// here, for the reason ShieldedReadProblems' last paragraph gives. One
 // function because every reader of it - a validate verdict, a refusal to stamp an
 // approval, an embedder's preflight - has to agree on the set, and a check added to only
 // one of them is how a manifest gets stamped for a permission that does not exist.
@@ -297,15 +318,15 @@ func ShieldSet() (shield.Set, error) {
 // state the gate would have to walk the grant to reconstruct, and the refusal is about a
 // symlink on this host rather than anything the manifest says.
 //
-// And the whole credential-alias refusal is unmirrored - the one narrowing that is not a
-// missing case but a missing check. preflightGrants runs checkGrants and then scans for a
-// second readable name (a hardlink, a bind) reaching a shielded credential's inode from
-// inside a tree the run exposes, and refuses on one. Nothing here answers it, so an empty
-// refusal set does not mean the run honors every grant. It stays out rather than being
-// approximated because the refusal is conditional on `--accept-alias`, a flag of the run
-// and deliberately not a field of the policy (enforce.RunOptions.AcceptAliasesUnder), so a
-// gate that raised it would refuse what a run accepts - the one direction the package doc
-// above rules out.
+// And the credential-alias refusal is not in this set at all - the one narrowing that is
+// not a missing case but a missing check. preflightGrants runs checkGrants and then scans
+// for a second readable name (a hardlink, a bind) reaching a shielded credential's inode
+// from inside a tree the run exposes, and refuses on one. So an empty refusal set does not
+// mean the run honors every grant. It stays out because that refusal is conditional on
+// `--accept-alias`, a flag of the run and deliberately not a field of the policy
+// (enforce.RunOptions.AcceptAliasesUnder), so a gate raising it would refuse what a run
+// accepts - the one direction the package doc above rules out. Check answers what it can
+// of it as a finding instead: Runnability.CredentialAliases.
 func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
