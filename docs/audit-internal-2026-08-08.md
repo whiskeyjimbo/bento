@@ -192,12 +192,27 @@ again:
   binary rather than by reasoning: the compiler emits `XORPS X15, X15` / `MOVQ FS:0xfffffff8,
   R14` at every ABI0 call site, so the caller restores both special registers itself.
 
-One dismissal is left **unresolved between two auditors** and is recorded on its bead rather
-than silently resolved: whether the degraded tier's exposure report actively misleads. The
-shields/grants agent read `shieldsApplied`'s `DenyWrite -> "read-only"` mapping as naming
-the protection that is absent; the shield agent treated the entry's mere presence in
-`exposedShields` as adequate disclosure. It turns on what `cmd/bento/render.go` prints,
-which neither agent read.
+One dismissal was contested between two auditors, and resolving it **reversed a finding**.
+The shields/grants agent read `shieldsApplied`'s `DenyWrite -> "read-only"` mapping as
+naming the protection that is absent; the shield agent treated the entry's presence in
+`exposedShields` as adequate disclosure. It turned on what `cmd/bento/render.go` prints,
+which neither agent read - and reading it took one grep.
+
+The degraded tier does not fill `Result.Shields`; `internal/linux/degraded.go:241` assigns
+these to `Result.Exposed`, and the only consumer of that field is `writeExposedWarning`,
+which prints a `WARNING:` header saying the paths "a normal run would hide or make read-only
+were left exposed to the script" before listing `"path" (kind)`. The Kind string appears
+only inside an explicit exposure warning that states in the same sentence that the path was
+left exposed. The dismissal survives; the P2 does not, and is closed with that reason.
+
+The underlying hole is unchanged - the write-grant-above-a-DenyWrite-shield finding stands
+as filed. What changes is its framing: the operator is told, so it is a disclosed gap rather
+than a silent one.
+
+The lesson is about triage, not about either agent. This was ranked the round's top
+dismissal by blast-radius-if-wrong and then deferred to a bead, on the grounds that neither
+agent had read the file. Ranking is for when the budget is spent; a one-grep item is never
+budget-limited, and deferring it would have shipped an overstated P2 into the tracker.
 
 ## Scope
 
@@ -210,4 +225,6 @@ Not covered: `cmd/`, `enforce/`, `policy/`, `gate/`, `profile/`, `examples/` exc
 internal finding's blast radius had to be traced into them. Those were audited on 2026-08-07
 under `audit-non-internal-2026-08-07`.
 
-Every agent had an advisor this round.
+Advisor coverage is not recorded for this round. Round 3's report noted two agents that had
+none; nothing here establishes the figure either way, so treat it as unknown rather than as
+a contrast with that note.
