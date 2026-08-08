@@ -397,7 +397,7 @@ Bento organizes enforcement capabilities into **Core** and **Hardening** tiers:
 
 If a hardening layer is missing on the host, `bento doctor` flags the shortfall. When `--strict` is passed, `bento run` refuses to execute under degraded enforcement.
 
-A core guarantee that can only be partially enforced stops the run by default. `--allow-degraded` overrides that, and it is the widest escape hatch Bento has: it also skips the credential-alias scan entirely, so aliased copies of shielded paths under a granted tree are exposed rather than acknowledged. Use `--accept-alias <path>` to acknowledge a specific tree instead.
+A core guarantee that can only be partially enforced stops the run by default. `--allow-degraded` overrides that, and it is the widest escape hatch Bento has: the tier it selects applies no shields, so a credential under a granted tree is readable whether or not anything aliases it. The credential-alias scan itself still runs there and refuses the same way, so `--accept-alias <path>` acknowledges a tree on both tiers.
 
 ---
 
