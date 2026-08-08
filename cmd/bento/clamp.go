@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -126,20 +127,35 @@ func foreignHomeShields(grants []string) []string {
 		selves[self] = true
 		selves[pathresolve.Existing(self)] = true
 	}
+	reaches := func(g string) bool {
+		// Judged where it LANDS as well as how it is spelled, the same as the clamps
+		// above: a link into another user's store (the target plants one in its own
+		// directory) is otherwise a grant this predicate reads as belonging to no home at
+		// all, and converge auto-accepts what it says nothing about.
+		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+			root, ok := homeRoot(spelling)
+			// The root is resolved against the anchors too, or the run's own home warns
+			// whenever the grant is spelled through the link: on an ostree host the anchors
+			// say /var/home/u while the stock /home symlink makes the same home /home/u.
+			if !ok || selves[root] || selves[pathresolve.Existing(root)] {
+				continue
+			}
+			for _, r := range denylist.Home(root) {
+				if spelling == r.Path || policy.CoversResolved(r.Path, spelling) || policy.CoversResolved(spelling, r.Path) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, g := range grants {
-		root, ok := homeRoot(g)
-		if !ok || selves[root] || seen[g] {
+		if seen[g] || !reaches(g) {
 			continue
 		}
-		for _, r := range denylist.Home(root) {
-			if g == r.Path || policy.CoversResolved(r.Path, g) || policy.CoversResolved(g, r.Path) {
-				seen[g] = true
-				out = append(out, g)
-				break
-			}
-		}
+		seen[g] = true
+		out = append(out, g)
 	}
 	return out
 }
@@ -227,7 +243,9 @@ func isBroadDir(path string) bool {
 	// /var/home/u while the anchor is spelled /home/u. Either way the grant binds the
 	// home, which is precisely what this refuses to propose.
 	for _, spelling := range []string{path, pathresolve.Existing(path)} {
-		if spelling == "/" || filepath.Dir(spelling) == "/" {
+		// A home container is every account at once, which /home and /Users happen to be
+		// caught by as top-level directories and /var/home is not.
+		if spelling == "/" || filepath.Dir(spelling) == "/" || slices.Contains(profile.HomeContainers(), spelling) {
 			return true
 		}
 		for _, a := range anchors {

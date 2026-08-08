@@ -162,6 +162,28 @@ func TestForeignHomeShieldsQuietOnAnOstreeOwnHome(t *testing.T) {
 	}
 }
 
+// foreignHomeShields is the other half of the same consent gate, and it judges the same
+// way: a grant that names a link into another user's store belongs, as spelled, to no
+// home at all, and converge reads "no warning" as safe to auto-accept under [a]ll.
+func TestForeignHomeShieldsResolves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	link := filepath.Join(t.TempDir(), "link")
+	// A dangling link resolves to its target all the same, which is what a target plants:
+	// the store it points at belongs to an account this host need not have.
+	if err := os.Symlink("/home/realuser/.ssh", link); err != nil {
+		t.Fatal(err)
+	}
+	if warned := foreignHomeShields([]string{link}); !slices.Equal(warned, []string{link}) {
+		t.Errorf("foreignHomeShields(%q) = %v, want the grant back: it lands in a foreign credential store", link, warned)
+	}
+	// The grant is named as the reviewer would read it in the manifest, not as resolved.
+	plain := filepath.Join(t.TempDir(), "data")
+	if warned := foreignHomeShields([]string{plain}); len(warned) != 0 {
+		t.Errorf("foreignHomeShields(%q) = %v, want none: it reaches no home", plain, warned)
+	}
+}
+
 // isBroadDir is a consent gate, not a spelling check: under [a]ll a grant it calls
 // narrow is auto-accepted with no per-path prompt, so a target that steers it with a
 // symlink gets the whole home mounted unseen. Both directions of the comparison have to
@@ -198,6 +220,13 @@ func TestIsBroadDirResolves(t *testing.T) {
 	// A directory genuinely inside the home is still narrow enough to grant.
 	if isBroadDir(filepath.Join(home, "sub")) {
 		t.Error("a directory inside the home is not broad")
+	}
+	// A container is every account at once. /home and /Users are caught as top-level
+	// directories; /var/home is not, and it is the layout the home rules do know.
+	for _, c := range profile.HomeContainers() {
+		if !isBroadDir(c) {
+			t.Errorf("isBroadDir(%q) = false; the container holds every user's home", c)
+		}
 	}
 
 	// The other direction: $HOME is spelled through a link (/home -> /var/home) while the
