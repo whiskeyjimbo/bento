@@ -779,11 +779,16 @@ func TestGatedRunSurfacesAMidRunNetworkDegradation(t *testing.T) {
 		return f
 	}
 
+	// Network is core tier, and the default posture refuses a degraded core layer at
+	// admission - so the same state arriving from the backend must fault the run too,
+	// not just under --strict. A nil here would hand back a clean success for a run that
+	// lost a guarantee the posture exists to require.
 	f := newFake()
 	res, err := Run(context.Background(), f, validPolicy(), Process{},
 		Options{NetworkGate: func(context.Context, string, string) bool { return true }})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	var deflt *Shortfall
+	if !errors.As(err, &deflt) {
+		t.Fatalf("Run under the default posture returned %v, want a *Shortfall for a core layer that lapsed mid-run", err)
 	}
 	if got := res.Report.StateOf(LayerNetwork); got != Degraded {
 		t.Errorf("network state = %s, want degraded - the backend's mid-run verdict must survive the overlay", got)

@@ -370,7 +370,7 @@ func TestWriteRunResultStreamIntactKeepsTheEarnedCode(t *testing.T) {
 		want int
 	}{
 		{"verdict", nil, 5},
-		{"strict shortfall", &enforce.Shortfall{Report: report}, strictShortfall},
+		{"strict shortfall", &enforce.Shortfall{Report: report}, postureShortfall},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -750,7 +750,7 @@ func validPolicy() *policy.Policy { return &policy.Policy{Entrypoint: "./x"} }
 // asked for did not hold). Passing the script's own code through would report a clean
 // run over a lapsed guarantee, so it gets its own code, and --json says so in the
 // envelope rather than leaving a machine consumer reading an ordinary completed run.
-func TestWriteRunResultStrictShortfall(t *testing.T) {
+func TestWriteRunResultPostureShortfall(t *testing.T) {
 	var report enforce.Report
 	report.Add(enforce.LayerNetwork, enforce.Degraded, "the egress proxy stopped serving")
 	shortfall := &enforce.Shortfall{Report: report, Short: report.Degradations()}
@@ -758,8 +758,8 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := writeRunResult(&stdout, &stderr, false, validPolicy(), nil,
 		enforce.Result{ExitCode: 0, Report: report}, nil, nil, shortfall)
-	if got := asExitError(t, err).code; got != strictShortfall {
-		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, strictShortfall)
+	if got := asExitError(t, err).code; got != postureShortfall {
+		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, postureShortfall)
 	}
 	if !strings.Contains(stderr.String(), "did not hold for the whole run") {
 		t.Errorf("a strict shortfall must be named on stderr; got %q", stderr.String())
@@ -769,18 +769,18 @@ func TestWriteRunResultStrictShortfall(t *testing.T) {
 	stderr.Reset()
 	err = writeRunResult(&stdout, &stderr, true, validPolicy(), nil,
 		enforce.Result{ExitCode: 7, Report: report}, nil, newEventStream(&stdout), shortfall)
-	if got := asExitError(t, err).code; got != strictShortfall {
-		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, strictShortfall)
+	if got := asExitError(t, err).code; got != postureShortfall {
+		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, postureShortfall)
 	}
 	var env struct {
-		Event           string `json:"event"`
-		ExitCode        int    `json:"exit_code"`
-		StrictShortfall bool   `json:"strict_shortfall"`
+		Event            string `json:"event"`
+		ExitCode         int    `json:"exit_code"`
+		PostureShortfall bool   `json:"posture_shortfall"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	if !env.StrictShortfall {
+	if !env.PostureShortfall {
 		t.Error("the verdict must mark the strict shortfall")
 	}
 	// The target ran, so this ends in a verdict - not the refusal or failed event, which

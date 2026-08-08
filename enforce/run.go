@@ -208,18 +208,45 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 			Short: res.Report.Degradations(),
 		}
 	}
-	// Strict admitted this run against the pre-run probe, but the overlay above can
-	// have worsened a layer with what the backend learned while running - a proxy
-	// listener that died mid-run leaves the egress guarantee strict required unmet. A
-	// nil error here would hand back the target's own exit code as if the posture had
-	// held for the whole run, so report the lapse. It is deliberately not a Refusal:
-	// the target ran, and a caller that retried on it would run it twice.
-	if opts.Strict {
-		if short := res.Report.Degradations(); len(short) > 0 {
-			return res, &Shortfall{Report: res.Report, Short: short}
-		}
+	// Admission judged the pre-run probe, but the overlay above can have worsened a
+	// layer with what the backend learned while running - a proxy listener that died
+	// mid-run, or an in-sandbox Landlock ruleset that failed to apply. A nil error here
+	// would hand back the target's own exit code as if the posture had held for the
+	// whole run, so hold the run to the same bar it was admitted on, whichever posture
+	// that was: a core layer that came back Degraded is the exact state the default
+	// posture refuses, and it must not pass merely because the probe learned of it two
+	// microseconds late.
+	//
+	// Deliberately not a Refusal under any posture: the target ran, and a caller that
+	// retried on it would run it twice. That is why the bar is re-applied here rather
+	// than by calling admit again - the judgment is the same, the verdict is not.
+	if short := postRunShortfall(opts, res.Report); len(short) > 0 {
+		return res, &Shortfall{Report: res.Report, Short: short}
 	}
 	return res, nil
+}
+
+// postRunShortfall returns the layers of the final report that fall below what the
+// caller's posture admitted the run on. It mirrors admit's branches: strict requires
+// every layer fully enforced, --allow-degraded waives a degraded core layer but not one
+// that enforces nothing, and the default posture refuses a core layer that is anything
+// less than enforced.
+//
+// Only core layers outside strict, because that is what admission gates on: a
+// hardening layer the backend downgraded mid-run was never grounds to refuse the run,
+// so it is not grounds to fault the completed one either. Requested resource limits are
+// not re-checked for the same reason - admission judged whether the host could deliver
+// them, and reporting the answer twice would fault runs the caller was never offered a
+// choice about.
+func postRunShortfall(opts Options, r Report) []LayerStatus {
+	switch {
+	case opts.Strict:
+		return r.Degradations()
+	case opts.AllowDegraded:
+		return r.shortfall(TierCore, Unavailable)
+	default:
+		return r.shortfall(TierCore, Degraded)
+	}
 }
 
 // BaselineLayers returns the layers every policy requires regardless of its contents -
@@ -395,9 +422,9 @@ type Refusal struct {
 	Waivable bool
 }
 
-// Shortfall is returned when a run that strict mode admitted did not hold its
-// posture for the whole run: the backend reported a layer worse than the pre-run
-// probe did. Unlike a Refusal the target ran and Result carries its exit code, so a
+// Shortfall is returned when an admitted run did not hold for the whole run the posture
+// it was admitted on: the backend reported a layer worse than the pre-run probe did.
+// Unlike a Refusal the target ran and Result carries its exit code, so a
 // caller must treat it as a completed run whose guarantees lapsed, never retry it.
 type Shortfall struct {
 	// Report is the final report, covering only the layers the run required.
@@ -408,7 +435,7 @@ type Shortfall struct {
 
 func (e *Shortfall) Error() string {
 	var b strings.Builder
-	b.WriteString("the run completed but strict mode's guarantees did not hold for it")
+	b.WriteString("the run completed but the guarantees it was admitted on did not hold for it")
 	for _, l := range e.Short {
 		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Disclosure())
 	}

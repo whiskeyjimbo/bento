@@ -203,9 +203,9 @@ func run(manifestPath string) int {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 125
 	case errors.As(err, &shortfall):
-		// Strict admitted the run and then a guarantee it required lapsed while the target
-		// ran. Unreachable under the zero-value Options below, but an embedder who copies
-		// this and sets Strict: true reaches it - and it is a COMPLETED run, so the report
+		// The run was admitted and then a guarantee the posture required lapsed while the
+		// target ran - reachable under these options too, since the default posture holds
+		// the core tier to the same bar after the run as at admission. It is a COMPLETED run, so the report
 		// and the target's own exit code below still hold and must not be discarded. The
 		// exit code is overridden at the end instead: a lapsed posture must not be
 		// reported as a clean run. Nothing is printed here: Shortfall.Error() enumerates

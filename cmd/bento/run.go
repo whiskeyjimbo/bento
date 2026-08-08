@@ -453,11 +453,11 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 			// shortfall out of it.
 			ExecRecord *execRecordJSON `json:"exec_record,omitempty"`
 			Report     reportJSON      `json:"report"`
-			// StrictShortfall says the run was admitted under --strict but a guarantee it
-			// required lapsed while the target ran, so exit_code below is the code of a run
-			// whose posture did not hold. Without it a machine consumer reading the envelope
-			// alone would see an ordinary completed run.
-			StrictShortfall bool `json:"strict_shortfall,omitempty"`
+			// PostureShortfall says a guarantee the run was admitted on lapsed while the
+			// target ran, so exit_code below is the code of a run whose posture did not hold.
+			// Without it a machine consumer reading the envelope alone would see an ordinary
+			// completed run.
+			PostureShortfall bool `json:"posture_shortfall,omitempty"`
 			// MissingReadGrants are the read grants that named nothing on this host when the
 			// run started, spelled as validate spells them. A note, not a verdict - the run
 			// proceeds - but it is the field that connects a script dying on a file it could
@@ -538,19 +538,19 @@ func writeRunResult(stdout, stderr io.Writer, asJSON bool, p *policy.Policy, env
 		writeExecRecord(stderr, res)
 	}
 
-	// The script ran under --strict, but a guarantee strict required lapsed during the
-	// run. Passing the script's own code through would report a clean run over a
-	// posture that did not hold, which is the one thing strict exists to prevent - so
-	// it gets its own code, distinct from both.
+	// The script ran, but a guarantee the run was admitted on lapsed during it. Passing
+	// the script's own code through would report a clean run over a posture that did not
+	// hold, which is the one thing the posture exists to prevent - so it gets its own
+	// code, distinct from both.
 	code := res.ExitCode
 	if shortfall != nil {
 		if !asJSON {
 			// writeDegradations above already named each layer that fell short, so this
-			// says only what the report cannot: the script ran anyway, and under --strict
-			// that makes its exit code no longer the answer.
-			fmt.Fprintln(stderr, "[bento] --strict: the script ran, but the guarantees above did not hold for the whole run, so its exit code is not reported.")
+			// says only what the report cannot: the script ran anyway, and that makes its
+			// exit code no longer the answer.
+			fmt.Fprintln(stderr, "[bento] the script ran, but the guarantees above did not hold for the whole run, so its exit code is not reported.")
 		}
-		code = strictShortfall
+		code = postureShortfall
 	}
 	if asJSON {
 		return reportStreamed(stderr, stream, code)
