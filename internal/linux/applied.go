@@ -116,6 +116,13 @@ func parseApplied(f *os.File) applied {
 	// rather than clearing execRecordComplete in place, because the marker arrives after
 	// the records and would otherwise overwrite the fact that one was lost.
 	var garbled bool
+	// Set by the exec-record marker, which ENDS that section: the stage writes it in one
+	// call and writes nothing after it but a target-unreached line. Kept apart from
+	// execRecordComplete because that one answers "is the record trustworthy" and this one
+	// answers "is the section over" - conflating them let an exec-ran line appended after
+	// the marker be decoded, appended to the record, and reported as part of a complete
+	// one, which is forged content silently ACCEPTED rather than merely tolerated.
+	var recordClosed bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
@@ -134,6 +141,15 @@ func parseApplied(f *os.File) applied {
 				if v, err := strconv.Unquote(rest); err == nil {
 					a.targetErr = v
 				}
+			case recordClosed && line != "":
+				// Checked after target-unreached and before everything else, because that
+				// line is the ONE thing the stage writes past the exec-record marker: the
+				// exec-block path writes the record before execveat, so a failed transition
+				// appends the unreached line behind a closed section. Everything else -
+				// another exec-ran, a second marker, junk - did not come from the stage's
+				// writes, and this is the section where accepting it would put an exec that
+				// was never observed inside a record reported as complete.
+				return applied{}
 			case key == launcher.AppliedExecRecorder:
 				a.execRecorder = value
 				if v, err := strconv.Unquote(detail); err == nil {
@@ -153,6 +169,7 @@ func parseApplied(f *os.File) applied {
 				}
 			case line == launcher.AppliedExecRecordMarker:
 				a.execRecordComplete = !garbled
+				recordClosed = true
 			case a.execRecorder != "":
 				// Inside the record section, an unrecognized line is the section's problem
 				// and not the report's. The stage writes it in one call after the run, so a
