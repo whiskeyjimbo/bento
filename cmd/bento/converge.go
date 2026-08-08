@@ -26,8 +26,10 @@ const maxConvergeRounds = 25
 // an approved manifest to accept before round 1, so a session resumed after a quit
 // continues where it left off rather than re-asking every path; only its Read and Write
 // are read, and nil starts fresh. It
-// returns the final proposal with reads/writes narrowed to exactly the accepted set.
-func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, convergeStop, error) {
+// returns the final proposal with reads/writes narrowed to exactly the accepted set,
+// and the refusals themselves - keyed by grantItem.key(), so the merge can hold them
+// against a manifest that already granted what the user just said no to.
+func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Policy, error), prompt func(kind, path string) (grantChoice, error), risky func(path string) bool, out io.Writer) (*policy.Policy, convergeStop, map[string]bool, error) {
 	stop := convergeDone
 	acceptedR := map[string]bool{}
 	acceptedW := map[string]bool{}
@@ -62,7 +64,7 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 			}
 			c, err := prompt(it.kind, it.path)
 			if err != nil {
-				return nil, convergeQuit, err
+				return nil, convergeQuit, declined, err
 			}
 			switch c {
 			// [a]ll here accepts only this seeded path. In the loop below it answers for
@@ -73,7 +75,7 @@ func converge(base, seed *policy.Policy, round func(*policy.Policy) (*policy.Pol
 				accept(it)
 				continue
 			case grantQuit:
-				return nil, convergeQuit, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
+				return nil, convergeQuit, declined, fmt.Errorf("aborted: quit before the first profiling round, so there is no proposal to write")
 			case grantNo:
 			}
 			// grantNo, and any answer the enum does not name yet: decline, do not re-ask.
@@ -104,7 +106,7 @@ loop:
 		discovery.Write = append(append([]string{}, base.Write...), sortedBoolKeys(acceptedW)...)
 		proposal, err := round(&discovery)
 		if err != nil {
-			return nil, convergeQuit, err
+			return nil, convergeQuit, declined, err
 		}
 		last = proposal
 		// exec: all is broader than any single path - it lets the target spawn anything
@@ -115,7 +117,7 @@ loop:
 			fmt.Fprintf(out, "[bento] round %d: the target spawned a subprocess.\n", r)
 			c, err := prompt(execGrant.kind, execGrant.path)
 			if err != nil {
-				return nil, convergeQuit, err
+				return nil, convergeQuit, declined, err
 			}
 			switch c {
 			case grantAll, grantYes:
@@ -145,7 +147,7 @@ loop:
 			}
 			c, err := prompt(it.kind, it.path)
 			if err != nil {
-				return nil, convergeQuit, err
+				return nil, convergeQuit, declined, err
 			}
 			switch c {
 			case grantAll:
@@ -172,7 +174,7 @@ loop:
 	if acceptedExec {
 		final.Exec = policy.ExecAll
 	}
-	return final, stop, nil
+	return final, stop, declined, nil
 }
 
 // convergeStop says why the loop ended. Anything but convergeDone means the user was
@@ -194,27 +196,29 @@ func foreignShielded(path string) bool {
 	return len(foreignHomeShields([]string{path})) > 0
 }
 
-// dropDeclinedSeeds removes from merged any seed grant missing from accepted - the
-// convergence loop's final set, which holds exactly what the user said yes to. Only a
-// path the seed itself carried is eligible, so an unrelated grant already in the
-// manifest still merges through. A nil seed means nothing was prompted, so nothing is
-// dropped.
-func dropDeclinedSeeds(merged, seed, accepted *policy.Policy) *policy.Policy {
-	if seed == nil {
-		return merged
-	}
-	keep := func(all, seeded, ok []string) []string {
-		out := make([]string, 0, len(all))
-		for _, p := range all {
-			if slices.Contains(seeded, p) && !slices.Contains(ok, p) {
+// dropDeclined removes from merged every grant the session asked about and the user
+// refused. The refusal has to hold in the artifact and not only in the mount: mergeExisting
+// unions in whatever the file at --out already granted, regardless of its approval state,
+// so without this a manifest that is unapproved or stale - the ordinary profile-then-run
+// inner loop state - reinstates the path the reviewer just declined. Only a path that was
+// actually asked about is eligible, so an unrelated grant already in the manifest still
+// merges through; nothing was prompted means nothing is dropped.
+//
+// Keyed by kind as well as path, because the two are decided separately: a declined
+// read of a path must not take a write of it with it.
+func dropDeclined(merged *policy.Policy, declined map[string]bool) *policy.Policy {
+	keep := func(kind string, paths []string) []string {
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if declined[grantItem{kind, p}.key()] {
 				continue
 			}
 			out = append(out, p)
 		}
 		return out
 	}
-	merged.Read = keep(merged.Read, seed.Read, accepted.Read)
-	merged.Write = keep(merged.Write, seed.Write, accepted.Write)
+	merged.Read = keep("read", merged.Read)
+	merged.Write = keep("write", merged.Write)
 	return merged
 }
 

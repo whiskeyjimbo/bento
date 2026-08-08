@@ -176,6 +176,9 @@ func newProfileCmd() *cobra.Command {
 			// the granting session itself finished. Either way the manifest below is
 			// written but not vouched for - see the exit code at the end.
 			var status roundStatus
+			// The paths the session asked about and the user refused, held against the
+			// merge below.
+			var declined map[string]bool
 			stop := convergeDone
 			interactive := interactiveStdin()
 			if interactive {
@@ -209,7 +212,7 @@ func newProfileCmd() *cobra.Command {
 					status.flagged = mergeNotes(status.flagged, s.flagged)
 					return p, err
 				}
-				proposed, stop, err = converge(base, seed, round, newGrantPrompter(cmd.Context(), answers, os.Stderr), foreignShielded, os.Stderr)
+				proposed, stop, declined, err = converge(base, seed, round, newGrantPrompter(cmd.Context(), answers, os.Stderr), foreignShielded, os.Stderr)
 			} else {
 				// No terminal to prompt on (a pipe or CI): keep the non-interactive contract -
 				// one default-deny pass and write, plus at most the one retry below. A
@@ -294,15 +297,23 @@ func newProfileCmd() *cobra.Command {
 				}
 			}
 			warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
-			// The merge re-reads the same file the seed came from, so a seeded grant the
-			// user declined this session would come back through the union. Drop it: a
-			// refusal at the prompt has to hold in the artifact, not only in the mount.
-			proposed = dropDeclinedSeeds(proposed, seed, accepted)
+			// The merge unions in whatever the file at --out granted, whether or not it is
+			// approved, so a grant the user declined this session would come back through
+			// it. Drop it: a refusal at the prompt has to hold in the artifact, not only in
+			// the mount.
+			proposed = dropDeclined(proposed, declined)
 			// Only when a session actually asked: a non-interactive pass prompts for
 			// nothing, so it has no answer to hold against the merge.
 			if interactive {
 				proposed = applyExecAnswer(proposed, accepted)
 			}
+			// After the drop, not inside mergeExisting: the kept lists are the one surface
+			// whose job is to say what the file carries that this run did not show, and a
+			// path the drop just removed is in neither. Naming it there sends a reviewer -
+			// or a gate reading merged.kept_read - looking for a grant the manifest has not
+			// got.
+			merge.keptRead = retained(merge.keptRead, proposed.Read)
+			merge.keptWrite = retained(merge.keptWrite, proposed.Write)
 
 			// From the final policy rather than per round: this names a grant the script's own
 			// directory produces, so it survives every round and a per-round callout would
@@ -1498,6 +1509,18 @@ func only(a, b []string) []string {
 	var out []string
 	for _, x := range a {
 		if !slices.Contains(b, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// retained returns the entries of a that b still carries - the counterpart of only,
+// for narrowing a list computed against a policy that has since had grants dropped.
+func retained(a, b []string) []string {
+	var out []string
+	for _, x := range a {
+		if slices.Contains(b, x) {
 			out = append(out, x)
 		}
 	}

@@ -54,7 +54,7 @@ func TestConvergeAcceptRevealsDownstream(t *testing.T) {
 	// One prompt per new path: config in round 1, data in round 2. Round 3 sees both
 	// granted and nothing new, so it converges without prompting.
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\n")), io.Discard)
-	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestConvergeDeclineNeverMountsOrReveals(t *testing.T) {
 	// "y" is never consumed. A broken converge that mounts a declined path would reveal
 	// dataPath, prompt it, and the "y" would accept it, failing the assertions below.
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("n\ny\n")), io.Discard)
-	final, _, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, capturing, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 		prompts++
 		return grantAll, nil
 	}
-	final, _, err := converge(baseDiscovery(), nil, branchingRound, counting, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, branchingRound, counting, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestConvergeAcceptAllStopsPrompting(t *testing.T) {
 func TestConvergeQuitKeepsAcceptedSoFar(t *testing.T) {
 	// A round-1 prompt: quit before accepting anything.
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("q\n")), io.Discard)
-	final, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestConvergeNoAttemptsConvergesImmediately(t *testing.T) {
 		t.Fatalf("must not prompt when there is nothing to grant (%s %s)", kind, path)
 		return grantNo, nil
 	}
-	final, _, err := converge(baseDiscovery(), nil, empty, fail, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, empty, fail, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestConvergeAllStillPromptsRiskyPaths(t *testing.T) {
 		}
 		return grantAll, nil // [a]ll on the innocuous path
 	}
-	final, _, err := converge(baseDiscovery(), nil, round, prompt, risky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, round, prompt, risky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestConvergeCapsRoundsOnNonConvergence(t *testing.T) {
 		return &policy.Policy{Entrypoint: "/x", Read: []string{"/p/" + string(rune('a'+rounds%26)) + string(rune('0'+rounds))}}, nil
 	}
 	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
-	if _, _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil {
+	if _, _, _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if rounds > maxConvergeRounds+1 {
@@ -272,7 +272,7 @@ func TestConvergeDoesNotReaskDeclined(t *testing.T) {
 		}
 		return grantNo, nil // decline /b
 	}
-	final, _, err := converge(baseDiscovery(), nil, twoPaths, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), nil, twoPaths, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestConvergeSeedMountsGrantsWithoutReasking(t *testing.T) {
 		return grantYes, nil
 	}
 	seed := &policy.Policy{Read: []string{cfgPath}}
-	final, _, err := converge(baseDiscovery(), seed, recording, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), seed, recording, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestConvergeSeedPromptsRiskyPaths(t *testing.T) {
 		return grantNo, nil
 	}
 	seed := &policy.Policy{Read: []string{cfgPath, cred}}
-	final, _, err := converge(baseDiscovery(), seed, recording, prompt, func(p string) bool { return p == cred }, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), seed, recording, prompt, func(p string) bool { return p == cred }, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestConvergeSeedAllDoesNotCoverLaterRounds(t *testing.T) {
 		return grantAll, nil
 	}
 	seed := &policy.Policy{Read: []string{cred}}
-	if _, _, err := converge(baseDiscovery(), seed, branchingRound, prompt, func(p string) bool { return p == cred }, io.Discard); err != nil {
+	if _, _, _, err := converge(baseDiscovery(), seed, branchingRound, prompt, func(p string) bool { return p == cred }, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if asked[cfgPath] != 1 {
@@ -375,32 +375,84 @@ func TestConvergeSeedAllDoesNotCoverLaterRounds(t *testing.T) {
 	}
 }
 
-// The merge re-reads the manifest the seed came from, so without the drop a declined
-// seed would be written back out - a refusal that held for the mount and not the file.
-func TestDropDeclinedSeedsRemovesRefusedGrants(t *testing.T) {
+// The merge unions in the manifest at --out whatever its approval state, so without the
+// drop a declined grant would be written back out - a refusal that held for the mount
+// and not the file.
+func TestDropDeclinedRemovesRefusedGrants(t *testing.T) {
 	const cred = "/home/other/.ssh/id_rsa"
-	merged := &policy.Policy{Read: []string{cred, cfgPath, "/discovered"}, Write: []string{"/w"}}
-	seed := &policy.Policy{Read: []string{cred, cfgPath}, Write: []string{"/w"}}
-	accepted := &policy.Policy{Read: []string{cfgPath, "/discovered"}}
+	merged := &policy.Policy{Read: []string{cred, cfgPath, "/discovered", "/both"}, Write: []string{"/w", "/both"}}
+	declined := map[string]bool{
+		grantItem{"read", cred}.key():  true,
+		grantItem{"write", "/w"}.key(): true,
+		// The same path decided both ways: refusing the read must not take the write.
+		grantItem{"read", "/both"}.key(): true,
+	}
 
-	got := dropDeclinedSeeds(merged, seed, accepted)
+	got := dropDeclined(merged, declined)
 	if hasPath(got.Read, cred) {
-		t.Errorf("a declined seed must not survive the merge; got Read=%v", got.Read)
+		t.Errorf("a declined read must not survive the merge; got Read=%v", got.Read)
 	}
 	if !hasPath(got.Read, cfgPath) || !hasPath(got.Read, "/discovered") {
-		t.Errorf("an accepted seed and a fresh discovery must both survive; got Read=%v", got.Read)
+		t.Errorf("an accepted grant and a fresh discovery must both survive; got Read=%v", got.Read)
 	}
 	if hasPath(got.Write, "/w") {
-		t.Errorf("a declined seeded write must not survive either; got Write=%v", got.Write)
+		t.Errorf("a declined write must not survive either; got Write=%v", got.Write)
+	}
+	if hasPath(got.Read, "/both") || !hasPath(got.Write, "/both") {
+		t.Errorf("read and write are decided separately; got Read=%v Write=%v", got.Read, got.Write)
 	}
 }
 
-// With no seed nothing was prompted, so the merge must widen exactly as it always did.
-func TestDropDeclinedSeedsKeepsEverythingWithoutASeed(t *testing.T) {
+// Nothing prompted means nothing declined, so the merge must widen exactly as it always
+// did - the non-interactive pass, and an interactive one where every answer was yes.
+func TestDropDeclinedKeepsEverythingWithoutARefusal(t *testing.T) {
 	merged := &policy.Policy{Read: []string{"/a", "/b"}}
-	got := dropDeclinedSeeds(merged, nil, &policy.Policy{})
+	got := dropDeclined(merged, nil)
 	if !hasPath(got.Read, "/a") || !hasPath(got.Read, "/b") {
-		t.Errorf("without a seed the merge must be untouched; got Read=%v", got.Read)
+		t.Errorf("with no refusals the merge must be untouched; got Read=%v", got.Read)
+	}
+}
+
+// The kept lists say what the file carries that this run did not show, so they have to
+// describe the manifest actually written: computed inside mergeExisting, they name the
+// pre-drop policy, and a path the session declined is then reported as kept while being
+// absent from disk - to the reviewer and to a gate reading merged.kept_read.
+func TestKeptListsDescribeTheWrittenManifest(t *testing.T) {
+	const cred = "/home/other/.ssh/id_rsa"
+	existing := &policy.Policy{Read: []string{cred, "/w/prior.txt"}}
+	accepted := &policy.Policy{Read: []string{cfgPath}}
+	declined := map[string]bool{grantItem{"read", cred}.key(): true}
+
+	merged := mergePolicies(existing, accepted)
+	keptRead := only(existing.Read, accepted.Read)
+	merged = dropDeclined(merged, declined)
+	keptRead = retained(keptRead, merged.Read)
+
+	if hasPath(keptRead, cred) {
+		t.Errorf("kept_read names %q, which the drop removed from the manifest; got %v", cred, keptRead)
+	}
+	if !hasPath(keptRead, "/w/prior.txt") {
+		t.Errorf("a grant the file really does carry must still be reported; got %v", keptRead)
+	}
+}
+
+// The hole the drop exists to close, from the session's end: an unapproved manifest at
+// --out seeds nothing, so the target attempts the path under default-deny and converge
+// prompts for it. Answering n has to reach the artifact, and the seed-shaped drop could
+// not - it only ever looked at paths a seed carried, and there was no seed.
+func TestDeclinedPathHeldAgainstAnUnapprovedManifest(t *testing.T) {
+	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("n\n")), io.Discard)
+	final, _, declined, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard)
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if hasPath(final.Read, cfgPath) {
+		t.Fatalf("the declined path must not be in the accepted set; got Read=%v", final.Read)
+	}
+	// What mergeExisting does with the unapproved file already at --out.
+	merged := mergePolicies(&policy.Policy{Read: []string{cfgPath}}, final)
+	if got := dropDeclined(merged, declined); hasPath(got.Read, cfgPath) {
+		t.Errorf("the declined path came back through the union; got Read=%v", got.Read)
 	}
 }
 
@@ -427,7 +479,7 @@ func TestConvergeExecNeedsConsent(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader(tc.answers)), io.Discard)
-			final, _, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
+			final, _, _, err := converge(baseDiscovery(), nil, execRound, prompt, noRisky, io.Discard)
 			if err != nil {
 				t.Fatalf("converge: %v", err)
 			}
@@ -445,7 +497,7 @@ func TestConvergeSeededExecResumesWithoutPrompt(t *testing.T) {
 	// An empty prompt input returns grantQuit on EOF, so any prompt at all would end
 	// the loop before it converged - the tripwire that exec was not re-asked.
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("")), io.Discard)
-	final, _, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
+	final, _, _, err := converge(baseDiscovery(), seed, execRound, prompt, noRisky, io.Discard)
 	if err != nil {
 		t.Fatalf("converge: %v", err)
 	}
@@ -484,12 +536,12 @@ func TestMergeExecRespectsTheSessionAnswer(t *testing.T) {
 // A quit and a hit round cap are both "not converged".
 func TestConvergeReportsWhyItStopped(t *testing.T) {
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\ny\n")), io.Discard)
-	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard); err != nil || stop != convergeDone {
+	if _, stop, _, err := converge(baseDiscovery(), nil, branchingRound, prompt, noRisky, io.Discard); err != nil || stop != convergeDone {
 		t.Errorf("a converged session: stop = %v, err = %v; want convergeDone", stop, err)
 	}
 
 	quitting := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("q\n")), io.Discard)
-	if _, stop, err := converge(baseDiscovery(), nil, branchingRound, quitting, noRisky, io.Discard); err != nil || stop != convergeQuit {
+	if _, stop, _, err := converge(baseDiscovery(), nil, branchingRound, quitting, noRisky, io.Discard); err != nil || stop != convergeQuit {
 		t.Errorf("a quit session: stop = %v, err = %v; want convergeQuit", stop, err)
 	}
 
@@ -500,7 +552,7 @@ func TestConvergeReportsWhyItStopped(t *testing.T) {
 		return &policy.Policy{Entrypoint: "/x", Read: []string{fmt.Sprintf("/p/%d", round)}}, nil
 	}
 	acceptAll := func(kind, path string) (grantChoice, error) { return grantAll, nil }
-	if _, stop, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil || stop != convergeMaxRounds {
+	if _, stop, _, err := converge(baseDiscovery(), nil, everNew, acceptAll, noRisky, io.Discard); err != nil || stop != convergeMaxRounds {
 		t.Errorf("a capped session: stop = %v, err = %v; want convergeMaxRounds", stop, err)
 	}
 }
@@ -542,7 +594,7 @@ func TestConvergeRunsEveryRoundUnderTheBasesInvocation(t *testing.T) {
 		return branchingRound(d)
 	}
 	prompt := newGrantPrompter(t.Context(), ttyLines(strings.NewReader("y\ny\n")), io.Discard)
-	if _, _, err := converge(base, nil, capturing, prompt, noRisky, io.Discard); err != nil {
+	if _, _, _, err := converge(base, nil, capturing, prompt, noRisky, io.Discard); err != nil {
 		t.Fatalf("converge: %v", err)
 	}
 	if len(ran) == 0 {
