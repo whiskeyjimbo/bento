@@ -1336,8 +1336,10 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// (credentials{,.toml}, hidden) and the build configs (config{,.toml}, env - each
 	// names a rustc-wrapper/linker/runner the host executes, readable but not writable)
 	// sit side by side under it. The dirEnvs table cannot express that split (it is
-	// DenyAll-only), so emit the mixed set explicitly, re-based on the relocation and
-	// mirroring the default ~/.cargo rules. The DenyAll files go in first so
+	// DenyAll-only), so emit the mixed set explicitly, re-based on the relocation. The
+	// third default ~/.cargo rule - the bin directory `cargo install` writes and rustup's
+	// env puts on $PATH - is a directory shield, so it rides in writeOnlyDirEnvs below
+	// rather than here, where every rule is file-shaped. The DenyAll files go in first so
 	// addWriteShield's collision guard sees them; a write grant over the relocated dir is
 	// refused upstream for containing the credential shields, as for the default ~/.cargo.
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
@@ -1745,11 +1747,16 @@ var dirFileEnvs = []struct{ env, def, file string }{
 // config from the relocation, and the run plants it there.
 //
 // sub is the shielded subdirectory of the relocated base, empty where the base is the
-// shielded directory itself. Only MISE_DATA_DIR needs it: the data tree carries the
+// shielded directory itself. MISE_DATA_DIR needs it because the data tree carries the
 // interpreter installs a policy may legitimately write, and only shims/ is shielded.
 // Sparing the installs does not make `mise install` succeed in-sandbox - the cache shield
 // stops it first - and following the relocation widens who hits the shim shield.
 var writeOnlyDirEnvs = []struct{ env, def, sub string }{
+	// The third half of the CARGO_HOME split the explicit block in Home cannot emit: the
+	// bin directory `cargo install` writes and rustup's env line puts on $PATH, so a
+	// planted file there runs on the host under a name the user already types. The
+	// registry and build caches beside it stay writable, as at the default ~/.cargo.
+	{"CARGO_HOME", ".cargo", "bin"},
 	// direnv.toml's [whitelist] skips the allow check the ~/.local/share/direnv/allow
 	// shield rests on, so relocating the config directory disarms both.
 	{"DIRENV_CONFIG", ".config/direnv", ""},

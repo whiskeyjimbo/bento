@@ -409,6 +409,7 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	t.Setenv("MISE_CONFIG_DIR", "/elsewhere/mise-config")
 	t.Setenv("MISE_DATA_DIR", "/elsewhere/mise-data")
 	t.Setenv("MISE_CACHE_DIR", "/elsewhere/mise-cache")
+	t.Setenv("CARGO_HOME", "/elsewhere/cargo")
 	t.Setenv("PRE_COMMIT_HOME", "relcache") // relative: must not shield
 
 	byPath := map[string]Rule{}
@@ -416,6 +417,8 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		byPath[r.Path] = r
 	}
 	for path, want := range map[string]string{
+		"/elsewhere/cargo/bin":                      "CARGO_HOME",
+		"/home/u/.cargo/bin":                        "",
 		"/elsewhere/direnv":                         "DIRENV_CONFIG",
 		"/elsewhere/mise-state/trusted-configs":     "MISE_STATE_DIR",
 		"/elsewhere/mise-config":                    "MISE_CONFIG_DIR",
@@ -1105,7 +1108,8 @@ func TestHomeShieldsRelocatedHistoryAndNpmConfig(t *testing.T) {
 
 // CARGO_HOME relocates both severity classes at once: the registry tokens
 // (credentials{,.toml}) hidden, and the build configs (config{,.toml}, env - each names
-// a tool the host executes) readable but not writable. Both must follow the relocation,
+// a tool the host executes) readable but not writable, and bin/ - which rustup's env line
+// puts on $PATH - write-shielded as a directory. All three must follow the relocation,
 // mirroring the default ~/.cargo. A relative value and the default location are dropped.
 func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 	t.Setenv("CARGO_HOME", "/cfg/cargo")
@@ -1128,6 +1132,15 @@ func TestHomeShieldsRelocatedCargoHome(t *testing.T) {
 		if r, ok := byRule[p]; !ok || r.Deny != DenyWrite || r.Dir {
 			t.Errorf("shield at %q must be a DenyWrite file rule, got %+v (present=%v)", p, byRule[p], ok)
 		}
+	}
+	// The bin directory is a directory rule: emitted as a file it would bind an empty
+	// file over it and leave every entry beside it plantable.
+	if r, ok := byRule["/cfg/cargo/bin"]; !ok || r.Deny != DenyWrite || !r.Dir {
+		t.Errorf("shield at /cfg/cargo/bin must be a DenyWrite dir shield, got %+v (present=%v)", r, ok)
+	}
+	// The registry and build caches under the relocation stay writable, as at the default.
+	if r, ok := byRule["/cfg/cargo"]; ok {
+		t.Errorf("the relocated CARGO_HOME itself must stay writable, got %+v", r)
 	}
 	// The default ~/.cargo files stay shielded regardless.
 	if r := byRule["/home/u/.cargo/credentials.toml"]; r.Deny != DenyAll {
