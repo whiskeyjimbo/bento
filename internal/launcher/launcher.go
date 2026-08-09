@@ -1073,7 +1073,7 @@ func serveBridge(l net.Listener, socket string, liveness *bridgeLiveness) error 
 			continue
 		}
 		failures = 0
-		go bridgeConn(c, socket)
+		go bridgeConn(c, socket, idleTimeout)
 	}
 }
 
@@ -1139,8 +1139,9 @@ func (b *bridgeLiveness) close() {
 
 // bridgeConn forwards one loopback connection to the host-side proxy socket in
 // both directions, half-closing each side when its source is done so a
-// half-closed tunnel is not truncated.
-func bridgeConn(client net.Conn, socket string) {
+// half-closed tunnel is not truncated. idle is how long the connection may sit
+// with no traffic before it is dropped.
+func bridgeConn(client net.Conn, socket string, idle time.Duration) {
 	defer client.Close()
 	upstream, err := net.Dial("unix", socket)
 	if err != nil {
@@ -1160,7 +1161,7 @@ func bridgeConn(client net.Conn, socket string) {
 	// bounds writes too - kill the active side's next write, dropping a connection
 	// that never went idle.
 	extend := func() {
-		t := time.Now().Add(idleTimeout)
+		t := time.Now().Add(idle)
 		client.SetDeadline(t)
 		upstream.SetDeadline(t)
 	}
@@ -1174,11 +1175,13 @@ func bridgeConn(client net.Conn, socket string) {
 
 // idleTimeout tears down a bridged connection that has sat with no traffic this
 // long, so a stalled connection cannot pin a goroutine for the life of the run.
-var idleTimeout = 5 * time.Minute
+// bridgeConn takes it as an argument so a test can shorten it without writing to
+// shared state other bridges are reading.
+const idleTimeout = 5 * time.Minute
 
 // copyIdle copies src→dst, calling extend on every read so activity in this
 // direction keeps the bridge's idle deadline fresh; an idle bridge is dropped
-// after idleTimeout when neither direction reads.
+// when neither direction reads.
 func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 	buf := make([]byte, 32*1024)
 	for {

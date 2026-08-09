@@ -76,7 +76,7 @@ func TestBridgeForwardsBothDirections(t *testing.T) {
 			if err != nil {
 				return
 			}
-			go bridgeConn(c, sock)
+			go bridgeConn(c, sock, idleTimeout)
 		}
 	}()
 
@@ -106,10 +106,6 @@ func TestBridgeForwardsBothDirections(t *testing.T) {
 // per-direction deadline the silent conn's deadline would expire and - because
 // SetDeadline bounds writes too - abort the busy direction mid-transfer.
 func TestBridgeOneWayTransferNotIdleTimedOut(t *testing.T) {
-	old := idleTimeout
-	idleTimeout = 200 * time.Millisecond
-	defer func() { idleTimeout = old }()
-
 	// A silent upstream: it drains what the client sends but never replies, so the
 	// upstream->client direction stays idle for the whole transfer.
 	sock := filepath.Join(t.TempDir(), "proxy.sock")
@@ -139,7 +135,7 @@ func TestBridgeOneWayTransferNotIdleTimedOut(t *testing.T) {
 		if err != nil {
 			return
 		}
-		bridgeConn(c, sock)
+		bridgeConn(c, sock, 200*time.Millisecond)
 	}()
 
 	c, err := net.Dial("tcp", tcp.Addr().String())
@@ -203,7 +199,7 @@ func TestBridgeDoesNotTruncateOnClientHalfClose(t *testing.T) {
 		if err != nil {
 			return
 		}
-		bridgeConn(c, sock)
+		bridgeConn(c, sock, idleTimeout)
 	}()
 
 	c, err := net.Dial("tcp", tcp.Addr().String())
