@@ -816,7 +816,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// may have already sent its TLS ClientHello into br's buffer along with the
 	// CONNECT headers; reading the raw conn would drop those bytes and break the
 	// handshake.
-	tunnel(br, client, upstream)
+	tunnel(br, client, upstream, idleTimeout)
 }
 
 // report hands a decision to the observer, containing a panic there rather than
@@ -1023,21 +1023,23 @@ func writeStatus(c net.Conn, status, body string) {
 
 // idleTimeout tears down a tunnel that has sat with no traffic in either
 // direction for this long, so untrusted code cannot pin host resources with idle
-// connections held open indefinitely.
-var idleTimeout = 5 * time.Minute
+// connections held open indefinitely. tunnel takes it as an argument so a test can
+// shorten it without writing to shared state other tunnels are reading.
+const idleTimeout = 5 * time.Minute
 
 // tunnel copies bytes both ways until either side closes or the tunnel goes idle.
 // The client side is read through clientR (which may hold buffered bytes); client
-// and upstream are the conns used to write, half-close, and bound idleness.
-func tunnel(clientR io.Reader, client, upstream net.Conn) {
+// and upstream are the conns used to write, half-close, and bound idleness; idle
+// is how long the tunnel may sit with no traffic before it is torn down.
+func tunnel(clientR io.Reader, client, upstream net.Conn, idle time.Duration) {
 	// Traffic in either direction means the tunnel is active, so re-arm the idle
 	// deadline on BOTH conns on every read. A long one-way transfer (a large
 	// upload with a silent upstream, say) keeps only its own direction busy; if
 	// each direction armed only its own conn, the silent side would trip the idle
-	// timeout after idleTimeout and - because SetDeadline bounds writes too - kill
+	// timeout after idle and - because SetDeadline bounds writes too - kill
 	// the active side's next write, aborting a transfer that never went idle.
 	extend := func() {
-		t := time.Now().Add(idleTimeout)
+		t := time.Now().Add(idle)
 		client.SetDeadline(t)
 		upstream.SetDeadline(t)
 	}
@@ -1051,7 +1053,7 @@ func tunnel(clientR io.Reader, client, upstream net.Conn) {
 
 // copyIdle copies src→dst, calling extend on every read so activity in this
 // direction keeps the tunnel's idle deadline fresh; an idle tunnel is torn down
-// after idleTimeout when neither direction reads.
+// when neither direction reads.
 func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 	buf := make([]byte, 32*1024)
 	for {
@@ -1069,7 +1071,10 @@ func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 }
 
 // halfClose signals EOF to the write side of c so the paired copy finishes
-// instead of hanging on a peer that will never send again.
+// instead of hanging on a peer that will never send again. A conn with no
+// CloseWrite offers no way to end one direction alone, so it gets an expired
+// deadline, which ends both: a truncated return path beats a tunnel that never
+// finishes. Production conns are TCP or unix and take the CloseWrite branch.
 func halfClose(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()

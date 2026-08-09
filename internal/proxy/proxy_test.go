@@ -877,10 +877,6 @@ func TestOversizedRequestRejected(t *testing.T) {
 // per-direction deadline, the silent conn's deadline would expire and - because
 // SetDeadline bounds writes too - abort the busy direction mid-transfer.
 func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
-	old := idleTimeout
-	idleTimeout = 200 * time.Millisecond
-	defer func() { idleTimeout = old }()
-
 	// tunnel writes client->upstream and upstream->client; the test feeds the
 	// client side and drains the upstream side, leaving the upstream->client
 	// direction permanently silent.
@@ -888,7 +884,7 @@ func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
 	upstreamConn, server := net.Pipe()
 	defer sandbox.Close()
 	defer server.Close()
-	go tunnel(clientConn, clientConn, upstreamConn)
+	go tunnel(clientConn, clientConn, upstreamConn, 200*time.Millisecond)
 
 	// Total transfer (~300ms) outlasts the idle timeout, but each per-chunk gap
 	// (20ms) stays an order of magnitude under it, so scheduler jitter under load
