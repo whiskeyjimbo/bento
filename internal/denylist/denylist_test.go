@@ -410,6 +410,18 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	t.Setenv("MISE_DATA_DIR", "/elsewhere/mise-data")
 	t.Setenv("MISE_CACHE_DIR", "/elsewhere/mise-cache")
 	t.Setenv("CARGO_HOME", "/elsewhere/cargo")
+	t.Setenv("GOBIN", "/elsewhere/gobin")
+	t.Setenv("RUSTUP_HOME", "/elsewhere/rustup")
+	t.Setenv("NVM_DIR", "/elsewhere/nvm")
+	t.Setenv("NPM_CONFIG_PREFIX", "/elsewhere/npm")
+	t.Setenv("PYENV_ROOT", "/elsewhere/pyenv")
+	t.Setenv("RBENV_ROOT", "/elsewhere/rbenv")
+	t.Setenv("NODENV_ROOT", "/elsewhere/nodenv")
+	t.Setenv("ASDF_DATA_DIR", "/elsewhere/asdf")
+	t.Setenv("VOLTA_HOME", "/elsewhere/volta")
+	t.Setenv("BUN_INSTALL", "/elsewhere/bun")
+	t.Setenv("PNPM_HOME", "/elsewhere/pnpm")
+	t.Setenv("GHCUP_INSTALL_BASE_PREFIX", "/elsewhere/ghcup")
 	t.Setenv("PRE_COMMIT_HOME", "relcache") // relative: must not shield
 
 	byPath := map[string]Rule{}
@@ -417,8 +429,42 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		byPath[r.Path] = r
 	}
 	for path, want := range map[string]string{
-		"/elsewhere/cargo/bin":                      "CARGO_HOME",
-		"/home/u/.cargo/bin":                        "",
+		"/elsewhere/cargo/bin":        "CARGO_HOME",
+		"/home/u/.cargo/bin":          "",
+		"/elsewhere/gobin":            "GOBIN",
+		"/elsewhere/rustup":           "RUSTUP_HOME",
+		"/elsewhere/nvm":              "NVM_DIR",
+		"/elsewhere/npm":              "NPM_CONFIG_PREFIX",
+		"/elsewhere/pyenv/bin":        "PYENV_ROOT",
+		"/elsewhere/pyenv/shims":      "PYENV_ROOT",
+		"/elsewhere/rbenv/bin":        "RBENV_ROOT",
+		"/elsewhere/rbenv/shims":      "RBENV_ROOT",
+		"/elsewhere/nodenv/bin":       "NODENV_ROOT",
+		"/elsewhere/nodenv/shims":     "NODENV_ROOT",
+		"/elsewhere/asdf/bin":         "ASDF_DATA_DIR",
+		"/elsewhere/asdf/shims":       "ASDF_DATA_DIR",
+		"/elsewhere/volta/bin":        "VOLTA_HOME",
+		"/elsewhere/bun/bin":          "BUN_INSTALL",
+		"/elsewhere/pnpm":             "PNPM_HOME",
+		"/elsewhere/ghcup/.ghcup/bin": "GHCUP_INSTALL_BASE_PREFIX",
+		// The default each of those relocates away from stays shielded on its own: the
+		// relocation follows the shield, it does not move it.
+		"/home/u/go/bin":                            "",
+		"/home/u/.rustup":                           "",
+		"/home/u/.nvm":                              "",
+		"/home/u/.npm-packages":                     "",
+		"/home/u/.pyenv/bin":                        "",
+		"/home/u/.pyenv/shims":                      "",
+		"/home/u/.rbenv/bin":                        "",
+		"/home/u/.rbenv/shims":                      "",
+		"/home/u/.nodenv/bin":                       "",
+		"/home/u/.nodenv/shims":                     "",
+		"/home/u/.asdf/bin":                         "",
+		"/home/u/.asdf/shims":                       "",
+		"/home/u/.volta/bin":                        "",
+		"/home/u/.bun/bin":                          "",
+		"/home/u/.local/share/pnpm":                 "",
+		"/home/u/.ghcup/bin":                        "",
 		"/elsewhere/direnv":                         "DIRENV_CONFIG",
 		"/elsewhere/mise-state/trusted-configs":     "MISE_STATE_DIR",
 		"/elsewhere/mise-config":                    "MISE_CONFIG_DIR",
@@ -446,7 +492,13 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	// Each variable relocates a base whose shielded part is narrower than the base
 	// itself: mise writes tracked-configs and its interpreter installs beside the record
 	// and the shims on every ordinary invocation, and a DenyWrite shield has no opt-out.
-	for _, p := range []string{"/elsewhere/mise-data", "/elsewhere/mise-state", "/home/u/.local/state/mise"} {
+	for _, p := range []string{
+		"/elsewhere/mise-data", "/elsewhere/mise-state", "/home/u/.local/state/mise",
+		// The version managers' roots hold the interpreter installs a policy may
+		// legitimately write, so only the bin/shim dirs under them are shielded.
+		"/elsewhere/pyenv", "/elsewhere/rbenv", "/elsewhere/nodenv", "/elsewhere/asdf",
+		"/elsewhere/volta", "/elsewhere/bun", "/elsewhere/ghcup",
+	} {
 		if r, ok := byPath[p]; ok {
 			t.Errorf("%s must stay writable, got %+v", p, r)
 		}

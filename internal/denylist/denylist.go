@@ -1770,6 +1770,38 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"MISE_CACHE_DIR", ".cache/mise", ""},
 	// The cloned hook repos the host executes at the next commit.
 	{"PRE_COMMIT_HOME", ".cache/pre-commit", ""},
+
+	// The $PATH-resident binary and shim directories Home shields at their defaults. Each
+	// variable is the tool's own documented relocation, so a shield left at the default
+	// buys nothing on a host that sets it: the shim the host's next bare command name
+	// resolves to is written at the relocation, and that is where a run plants it.
+	//
+	// The version managers keep the two-row bin/shims shape rather than taking the root,
+	// for the reason the default rules give: the install prefix under the root holds the
+	// interpreter a policy may legitimately write, and DenyWrite has no opt-in, so a root
+	// rule would refuse that grant outright.
+	//
+	// Left as residuals, both list-valued so this table cannot express them: GOPATH, whose
+	// first element supplies GOBIN's default, and rvm's lowercase rvm_path.
+	{"GOBIN", "go/bin", ""},
+	{"RUSTUP_HOME", ".rustup", ""},
+	{"NVM_DIR", ".nvm", ""},
+	{"NPM_CONFIG_PREFIX", ".npm-packages", ""},
+	{"PYENV_ROOT", ".pyenv", "bin"},
+	{"PYENV_ROOT", ".pyenv", "shims"},
+	{"RBENV_ROOT", ".rbenv", "bin"},
+	{"RBENV_ROOT", ".rbenv", "shims"},
+	{"NODENV_ROOT", ".nodenv", "bin"},
+	{"NODENV_ROOT", ".nodenv", "shims"},
+	{"ASDF_DATA_DIR", ".asdf", "bin"},
+	{"ASDF_DATA_DIR", ".asdf", "shims"},
+	{"VOLTA_HOME", ".volta", "bin"},
+	{"BUN_INSTALL", ".bun", "bin"},
+	// pnpm's variable names the global bindir itself, not a tree above it.
+	{"PNPM_HOME", ".local/share/pnpm", ""},
+	// ghcup installs to $VAR/.ghcup and the variable defaults to $HOME, so the default to
+	// compare against is the anchor - the empty-def shape dirFileEnvs' CURL_HOME uses.
+	{"GHCUP_INSTALL_BASE_PREFIX", "", ".ghcup/bin"},
 }
 
 // The tool-specific variables that move a whole credential directory off its default path.
