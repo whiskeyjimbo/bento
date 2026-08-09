@@ -48,7 +48,15 @@ func FuzzNAT64DiscoveryOnlyNarrows(f *testing.F) {
 		binary.BigEndian.PutUint64(target[:8], targetHi)
 		binary.BigEndian.PutUint64(target[8:], targetLo)
 
-		p := New(egressRules, WithNAT64Discovery(fakeLookup(net.IP(synth[:]))))
+		// RFC 7050 contemplates a site publishing several Pref64, and a short one
+		// matches every address a longer one under it does. Pairing each answer with a
+		// /32 sharing its leading bytes makes every iteration a multi-prefix site, so
+		// the teeth below also cover the case where two prefixes disagree.
+		companion := make(net.IP, 16)
+		copy(companion, synth[:4])
+		companion[4], companion[5], companion[6], companion[7] = 192, 0, 0, 170
+
+		p := New(egressRules, WithNAT64Discovery(fakeLookup(net.IP(synth[:]), companion)))
 		p.discoverNAT64(t.Context())
 
 		ip := net.IP(target[:])

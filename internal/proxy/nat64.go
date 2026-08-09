@@ -167,10 +167,21 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 	if c != ipPublic || ip.To4() != nil {
 		return c
 	}
+	// A site may publish more than one Pref64, and embeddedV4 matches on prefix bits
+	// alone, so a short prefix matches every address under it and decodes a different
+	// IPv4 than the specific one does. Taking the strictest verdict over all matches
+	// keeps the guard independent of the order discovery happened to append them; the
+	// classes are declared least to most restrictive, so that is max.
+	matched := false
+	strictest := c
 	for _, pfx := range p.nat64 {
 		if v4 := pfx.embeddedV4(ip); v4 != nil {
-			return classifyIP(v4)
+			matched = true
+			strictest = max(strictest, classifyIP(v4))
 		}
+	}
+	if matched {
+		return strictest
 	}
 	if p.nat64Inconclusive && embeddedIPv4(ip) == nil {
 		return ipPrivate

@@ -291,3 +291,24 @@ func TestRFC8215ThisNetworkStaysHostReserved(t *testing.T) {
 		t.Errorf("wrapped 8.8.8.8 classified %d, want ipPrivate (%d)", got, ipPrivate)
 	}
 }
+
+// A site publishing both a /32 and a /96 under it: the /32 matches on four bytes
+// and decodes 8.8.8.8, the /96 decodes 192.168.1.1. The verdict must be the strict
+// one whichever order the resolver listed the answers in.
+func TestNAT64MultiplePrefixesTakeTheStrictestVerdict(t *testing.T) {
+	short := net.ParseIP("2001:db8::").To16()
+	short[4], short[5], short[6], short[7] = 192, 0, 0, 170
+	long := net.ParseIP("2001:db8:808:808::c000:aa")
+	target := net.ParseIP("2001:db8:808:808::c0a8:101")
+
+	for _, order := range [][]net.IP{{short, long}, {long, short}} {
+		p := New(egressRules, WithNAT64Discovery(fakeLookup(order...)))
+		p.discoverNAT64(context.Background())
+		if len(p.nat64) != 2 {
+			t.Fatalf("discovery = %+v, want both prefixes", p.nat64)
+		}
+		if got := p.classify(target); got != ipPrivate {
+			t.Errorf("answers %v: classify(%v) = %d, want ipPrivate (%d)", order, target, got, ipPrivate)
+		}
+	}
+}
