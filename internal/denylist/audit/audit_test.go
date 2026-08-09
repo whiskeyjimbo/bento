@@ -492,8 +492,9 @@ func TestFirejailCompleteness(t *testing.T) {
 // The audit is a comparison of two lists and only means something when its own list is
 // the same on every host: a rule the developer's shell adds can cover an upstream
 // candidate and report a real gap as covered. Audit gets that by building from Home and
-// Runtime alone - every environment read in the denylist package lives in Relocated,
-// which Audit does not call - so the property is structural rather than a clearing step
+// Runtime alone - both take their paths as parameters, and every environment read this
+// call graph could otherwise reach lives in Relocated, which Audit does not call - so the
+// property is structural rather than a clearing step
 // each call site has to remember. This pins it, because Audit reaching for Relocated
 // would look like an improvement in coverage and would silently make the verdict the
 // operator's.

@@ -1749,6 +1749,9 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// The variable names a home directory, so the default to compare against is the anchor
 	// itself and the empty def gets there via filepath.Join.
 	{"CURL_HOME", "", ".curlrc"},
+	// PULUMI_HOME moves the whole tree; only credentials.json in it is a secret, and the
+	// plugins and workspace state beside it are what an in-sandbox `pulumi` reads.
+	{"PULUMI_HOME", ".pulumi", "credentials.json"},
 }
 
 // The tool-specific variables that move a whole write-shielded DIRECTORY off its default
@@ -1847,6 +1850,12 @@ var dirEnvs = []struct{ env, def string }{
 	{"CLOUDSDK_CONFIG", ".config/gcloud"},
 	{"GH_CONFIG_DIR", ".config/gh"},
 	{"AZURE_CONFIG_DIR", ".azure"},
+	// The container-host client key, the DOCKER_CONFIG shape for the other toolchain;
+	// LXD_CONF is the legacy variable incus still honors.
+	{"INCUS_CONF", ".config/incus"},
+	{"LXD_CONF", ".config/lxc"},
+	// The sync encryption key and the shell history it decrypts move together.
+	{"ATUIN_DATA_DIR", ".local/share/atuin"},
 }
 
 // The hidden home directories, split by what the contents ARE. Every bucket is shielded

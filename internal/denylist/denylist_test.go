@@ -365,6 +365,9 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 	t.Setenv("CLOUDSDK_CONFIG", "/secrets/gcloud")
 	t.Setenv("GH_CONFIG_DIR", "/secrets/gh")
 	t.Setenv("AZURE_CONFIG_DIR", "/secrets/azure")
+	t.Setenv("INCUS_CONF", "/secrets/incus")
+	t.Setenv("LXD_CONF", "/secrets/lxc")
+	t.Setenv("ATUIN_DATA_DIR", "/secrets/atuin")
 	t.Setenv("PASSWORD_STORE_DIR", "relpass") // relative: must not shield
 
 	byPath := map[string]bool{}
@@ -381,6 +384,9 @@ func TestHomeShieldsRelocatedCredentialDirs(t *testing.T) {
 		"/secrets/gcloud", "/home/u/.config/gcloud",
 		"/secrets/gh", "/home/u/.config/gh",
 		"/secrets/azure", "/home/u/.azure",
+		"/secrets/incus", "/home/u/.config/incus",
+		"/secrets/lxc", "/home/u/.config/lxc",
+		"/secrets/atuin", "/home/u/.local/share/atuin",
 	} {
 		if !byPath[p] {
 			t.Errorf("expected a shield at %q (credential relocation), missing", p)
@@ -740,12 +746,13 @@ func TestRelocationOntoASiblingAnchorDefaultIsNotStampedWithASource(t *testing.T
 func TestHomeShieldsRelocatedDirectoryCredentialFiles(t *testing.T) {
 	t.Setenv("DBT_PROFILES_DIR", "/srv/dbt")
 	t.Setenv("CURL_HOME", "/srv/curl")
+	t.Setenv("PULUMI_HOME", "/srv/pulumi")
 
 	byPath := map[string]Rule{}
 	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = r
 	}
-	for _, p := range []string{"/srv/dbt/profiles.yml", "/srv/curl/.curlrc"} {
+	for _, p := range []string{"/srv/dbt/profiles.yml", "/srv/curl/.curlrc", "/srv/pulumi/credentials.json"} {
 		r, ok := byPath[p]
 		if !ok {
 			t.Errorf("expected a shield at %q, missing", p)
@@ -755,7 +762,7 @@ func TestHomeShieldsRelocatedDirectoryCredentialFiles(t *testing.T) {
 			t.Errorf("shield at %q is %+v, want a DenyAll file rule", p, r)
 		}
 	}
-	for _, p := range []string{"/srv/dbt", "/srv/curl"} {
+	for _, p := range []string{"/srv/dbt", "/srv/curl", "/srv/pulumi"} {
 		if _, ok := byPath[p]; ok {
 			t.Errorf("the whole directory %q is shielded; only the credential file inside it should be", p)
 		}
