@@ -385,6 +385,7 @@ func Home(home string) []Rule {
 		{HoldsPrivateData, bulkStoreDirs},
 		{HoldsHistory, historyDirs},
 		{HoldsPersistence, persistenceDirs},
+		{HoldsServices, serviceDirs},
 	}
 	credentialFiles := []string{
 		".git-credentials",
@@ -463,6 +464,14 @@ func Home(home string) []Rule {
 		".sbt/.credentials",         // sbt's conventional credentials file, same shape
 
 		// Credential files various tools read by default.
+		// The age private key sops reads by default: it decrypts every sops-encrypted file
+		// in the user's repos, so the ciphertext a run can already read is worth nothing
+		// without it and everything with it. The .config/sops tree beside it is ordinary
+		// config, so the file is shielded on its own.
+		".config/sops/age/keys.txt",
+		// Pulumi Cloud access token, the .terraform.d/credentials.tfrc.json analog; the
+		// rest of ~/.pulumi is plugins and workspace state an in-sandbox run reads.
+		".pulumi/credentials.json",
 		".fetchmailrc",       // fetchmail account password
 		".davfs2/secrets",    // davfs2 mount credentials
 		".cargo/credentials", // legacy cargo registry token (pre-credentials.toml)
@@ -1644,6 +1653,7 @@ var fileDenyAllEnvs = []struct {
 	{"PGPASSFILE", ".pgpass", HoldsCredentials},
 	{"WGETRC", ".wgetrc", HoldsCredentials},
 	{"ANSIBLE_CONFIG", ".ansible.cfg", HoldsCredentials},
+	{"SOPS_AGE_KEY_FILE", ".config/sops/age/keys.txt", HoldsCredentials},
 }
 
 // The single startup files a variable designates with no default path to compare against.
@@ -1879,6 +1889,12 @@ var credentialAnchorDirs = []string{
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
 	".config/helm",      // repository basic-auth and OCI registry auth (caches live under .cache/.local)
+	// The client certificate and key authenticating to a container host, where creating a
+	// privileged container with / bound in is root on that host - the .docker precedent,
+	// one rung sharper. The legacy lxc path is where the same key sits after an upgrade,
+	// which incus does not remove.
+	".config/incus",
+	".config/lxc",
 	// Found by the shape hunt (internal/credhunt) rather than by either upstream corpus -
 	// its sessions/*/.cache/KEYREGISTRY holds the CLI's stored git-host credentials.
 	".local/share/GitKrakenCLI",
@@ -1898,6 +1914,13 @@ var credentialAnchorDirs = []string{
 	".kde4/share/apps/kwallet", // KDE Wallet (legacy KDE4 path)
 	".git-credential-cache",    // git credential-cache helper socket dir
 	".cache/git/credential",    // modern git credential-cache socket location
+
+	// atuin replaces the shell history files shielded by name above, and keeps beside that
+	// history the key that decrypts the user's synced copy of it. Taken whole rather than
+	// per-file, the way the shell histories are hidden rather than write-denied: it costs
+	// in-sandbox atuin its recording, which is the same trade a hidden ~/.bash_history
+	// already makes for every other shell.
+	".local/share/atuin",
 
 	".cert",             // NetworkManager / 802.1X / VPN client certificates and private keys
 	".config/borg/keys", // borg repository keys (the repo caches beside them stay readable)
@@ -2170,6 +2193,22 @@ var historyDirs = []string{
 	".kde4/share/apps/klipper",         // clipboard history (KDE4)
 	".local/share/klipper",             // clipboard history (KDE5+)
 	".local/share/ibus-typing-booster", // learned typing history
+}
+
+// serviceDirs hold an agent's control socket. A unix socket is a read-write channel to
+// whatever is on the other end no matter how the path is mounted - the kernel refuses a
+// write through a read-only bind only for regular files, directories and symlinks, so
+// connect() succeeds through one (see Runtime, where the same reasoning takes all of
+// /run). The directory is shielded rather than the socket by name, for the reason Runtime
+// gives: naming today's socket leaves the next one beside it exposed. They hold no key
+// material - that is the point, the key stays in the vault - so they anchor nothing.
+var serviceDirs = []string{
+	// The 1Password SSH agent's default socket directory on Linux. Reachable, it signs
+	// with the user's keys on demand: a sandboxed run gets live SSH authentication to
+	// every host those keys reach without the private key ever leaving the vault. The
+	// .config/1Password and .config/op stores are shielded above; this is the channel
+	// that makes shielding them insufficient on its own.
+	".1password",
 }
 
 // persistenceDirs run code on the host at the next login or session. Hiding them (not

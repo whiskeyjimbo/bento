@@ -853,6 +853,7 @@ func TestHomeShieldsSingleFileRelocationsWhole(t *testing.T) {
 	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/secrets/token")
 	t.Setenv("TF_CLI_CONFIG_FILE", "/secrets/terraformrc")
 	t.Setenv("ANSIBLE_CONFIG", "/secrets/ansible.cfg")
+	t.Setenv("SOPS_AGE_KEY_FILE", "/secrets/age.txt")
 
 	byRule := map[string]Rule{}
 	for _, r := range allRules("/home/u") {
@@ -864,6 +865,7 @@ func TestHomeShieldsSingleFileRelocationsWhole(t *testing.T) {
 		"/secrets/token",
 		"/secrets/terraformrc",
 		"/secrets/ansible.cfg",
+		"/secrets/age.txt",
 	} {
 		r, ok := byRule[p]
 		if !ok {
@@ -1537,6 +1539,13 @@ func TestHomeShieldsTierTwoCredentialStores(t *testing.T) {
 		"/home/u/.hashcat",               // potfile: recovered plaintext passwords
 		"/home/u/.ivy2/.credentials",     // build-tool registry credentials
 		"/home/u/.sbt/.credentials",      //
+		// Stores firejail carries no entry for, so only a named rule reaches them.
+		"/home/u/.1password",                // SSH agent socket: signing with the vault's keys
+		"/home/u/.local/share/atuin",        // sync encryption key beside the whole shell history
+		"/home/u/.config/sops/age/keys.txt", // age key decrypting every sops secret in a repo
+		"/home/u/.config/incus",             // client key: root-equivalent on the container host
+		"/home/u/.config/lxc",               // the legacy path an upgrade leaves behind
+		"/home/u/.pulumi/credentials.json",  // Pulumi Cloud access token
 	} {
 		if r, ok := byPath[p]; !ok || r.Deny != DenyAll {
 			t.Errorf("%s must be shielded DenyAll, got %+v (present=%v)", p, byPath[p], ok)
@@ -1544,7 +1553,7 @@ func TestHomeShieldsTierTwoCredentialStores(t *testing.T) {
 	}
 	// The build-tool trees stay readable, as in TestHomeShieldsPathsFirejailDoesNotList:
 	// only the credential file inside is hidden, so in-sandbox builds keep their caches.
-	for _, p := range []string{"/home/u/.ivy2", "/home/u/.sbt"} {
+	for _, p := range []string{"/home/u/.ivy2", "/home/u/.sbt", "/home/u/.config/sops", "/home/u/.pulumi"} {
 		if r, ok := byPath[p]; ok {
 			t.Errorf("%s is shielded as %+v; only its credentials file should be", p, r)
 		}
