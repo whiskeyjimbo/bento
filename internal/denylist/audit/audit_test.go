@@ -489,6 +489,30 @@ func TestFirejailCompleteness(t *testing.T) {
 	t.Errorf("firejail shields %d in-scope path(s) bento neither shields nor excludes - classify each (shield in denylist.go or add to IntentionalExclusions):%s", len(unclassified), b.String())
 }
 
+// The audit is a comparison of two lists and only means something when its own list is
+// the same on every host: a rule the developer's shell adds can cover an upstream
+// candidate and report a real gap as covered. Audit gets that by building from Home and
+// Runtime alone - every environment read in the denylist package lives in Relocated,
+// which Audit does not call - so the property is structural rather than a clearing step
+// each call site has to remember. This pins it, because Audit reaching for Relocated
+// would look like an improvement in coverage and would silently make the verdict the
+// operator's.
+func TestAuditVerdictIgnoresTheAmbientRelocations(t *testing.T) {
+	sources := firejailSources([]string{"# Top secret\nblacklist ${HOME}/.audit-spike-store\n"})
+	want, _, _ := Audit(sources, "/home/u", "/run/user/1000")
+	if len(want) != 1 {
+		t.Fatalf("the unshielded upstream path must report as a gap first, got %+v", want)
+	}
+	// Pointed at exactly the gap: were the relocations in the rule set, this would cover
+	// it and the gap would vanish.
+	for _, v := range denylist.RelocationVars() {
+		t.Setenv(v, "/home/u/.audit-spike-store")
+	}
+	if got, _, _ := Audit(sources, "/home/u", "/run/user/1000"); len(got) != len(want) {
+		t.Errorf("the ambient relocations changed the verdict: %d gap(s) with them set, %d without", len(got), len(want))
+	}
+}
+
 // The exec half of the classifier claimed to cover "a plant that runs on the host later"
 // while firejail's $PATH and portable-app sections sat in the out-of-scope bucket - the
 // most direct instance of that threat there is. Both must now classify in scope, and the

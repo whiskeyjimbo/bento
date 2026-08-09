@@ -1358,10 +1358,11 @@ func TestShieldSummaryGroupsAGroupRelocation(t *testing.T) {
 // variable at its conventional value produces the default rule, carrying no source at all.
 func TestDoctorNamesRelocatingVariablesButNotTheOrdinaryOnes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("ZDOTDIR", "")
-	// HOME moves to a temp dir, so an XDG base inherited from the real environment points
-	// outside it and reads as a relocation; clear them to get the ordinary host back.
-	for _, env := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+	// HOME moves to a temp dir, so anything inherited from the real environment - an XDG
+	// base, a GOBIN a version manager exports - points outside it and reads as a
+	// relocation. Clear every variable the rule set reads to get the ordinary host back,
+	// rather than the handful this developer's shell happened to carry.
+	for _, env := range denylist.RelocationVars() {
 		t.Setenv(env, "")
 	}
 	// The shape that is genuinely ordinary: Runtime leaves a runtime dir under /run to the

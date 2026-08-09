@@ -417,7 +417,18 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 	t.Setenv("PYENV_ROOT", "/elsewhere/pyenv")
 	t.Setenv("RBENV_ROOT", "/elsewhere/rbenv")
 	t.Setenv("NODENV_ROOT", "/elsewhere/nodenv")
+	t.Setenv("ASDF_DIR", "/elsewhere/asdf-dir")
 	t.Setenv("ASDF_DATA_DIR", "/elsewhere/asdf")
+	t.Setenv("rvm_path", "/elsewhere/rvm")
+	t.Setenv("KREW_ROOT", "/elsewhere/krew")
+	t.Setenv("PUB_CACHE", "/elsewhere/pub-cache")
+	t.Setenv("CABAL_DIR", "/elsewhere/cabal")
+	t.Setenv("FOUNDRY_DIR", "/elsewhere/foundry")
+	t.Setenv("COMPOSER_HOME", "/elsewhere/composer")
+	t.Setenv("MIX_HOME", "/elsewhere/mix")
+	t.Setenv("GRADLE_USER_HOME", "/elsewhere/gradle")
+	t.Setenv("GEM_HOME", "/elsewhere/gem")
+	t.Setenv("DOTNET_CLI_HOME", "/elsewhere/dotnet")
 	t.Setenv("VOLTA_HOME", "/elsewhere/volta")
 	t.Setenv("BUN_INSTALL", "/elsewhere/bun")
 	t.Setenv("PNPM_HOME", "/elsewhere/pnpm")
@@ -429,24 +440,35 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		byPath[r.Path] = r
 	}
 	for path, want := range map[string]string{
-		"/elsewhere/cargo/bin":        "CARGO_HOME",
-		"/home/u/.cargo/bin":          "",
-		"/elsewhere/gobin":            "GOBIN",
-		"/elsewhere/rustup":           "RUSTUP_HOME",
-		"/elsewhere/nvm":              "NVM_DIR",
-		"/elsewhere/npm":              "NPM_CONFIG_PREFIX",
-		"/elsewhere/pyenv/bin":        "PYENV_ROOT",
-		"/elsewhere/pyenv/shims":      "PYENV_ROOT",
-		"/elsewhere/rbenv/bin":        "RBENV_ROOT",
-		"/elsewhere/rbenv/shims":      "RBENV_ROOT",
-		"/elsewhere/nodenv/bin":       "NODENV_ROOT",
-		"/elsewhere/nodenv/shims":     "NODENV_ROOT",
-		"/elsewhere/asdf/bin":         "ASDF_DATA_DIR",
-		"/elsewhere/asdf/shims":       "ASDF_DATA_DIR",
-		"/elsewhere/volta/bin":        "VOLTA_HOME",
-		"/elsewhere/bun/bin":          "BUN_INSTALL",
-		"/elsewhere/pnpm":             "PNPM_HOME",
-		"/elsewhere/ghcup/.ghcup/bin": "GHCUP_INSTALL_BASE_PREFIX",
+		"/elsewhere/cargo/bin":            "CARGO_HOME",
+		"/home/u/.cargo/bin":              "",
+		"/elsewhere/gobin":                "GOBIN",
+		"/elsewhere/rustup":               "RUSTUP_HOME",
+		"/elsewhere/nvm":                  "NVM_DIR",
+		"/elsewhere/npm":                  "NPM_CONFIG_PREFIX",
+		"/elsewhere/pyenv/bin":            "PYENV_ROOT",
+		"/elsewhere/pyenv/shims":          "PYENV_ROOT",
+		"/elsewhere/rbenv/bin":            "RBENV_ROOT",
+		"/elsewhere/rbenv/shims":          "RBENV_ROOT",
+		"/elsewhere/nodenv/bin":           "NODENV_ROOT",
+		"/elsewhere/nodenv/shims":         "NODENV_ROOT",
+		"/elsewhere/asdf-dir/bin":         "ASDF_DIR",
+		"/elsewhere/asdf/shims":           "ASDF_DATA_DIR",
+		"/elsewhere/rvm/bin":              "rvm_path",
+		"/elsewhere/rvm/scripts":          "rvm_path",
+		"/elsewhere/krew/bin":             "KREW_ROOT",
+		"/elsewhere/pub-cache/bin":        "PUB_CACHE",
+		"/elsewhere/cabal/bin":            "CABAL_DIR",
+		"/elsewhere/foundry/bin":          "FOUNDRY_DIR",
+		"/elsewhere/composer/vendor/bin":  "COMPOSER_HOME",
+		"/elsewhere/mix/escripts":         "MIX_HOME",
+		"/elsewhere/gradle/init.d":        "GRADLE_USER_HOME",
+		"/elsewhere/gem/bin":              "GEM_HOME",
+		"/elsewhere/dotnet/.dotnet/tools": "DOTNET_CLI_HOME",
+		"/elsewhere/volta/bin":            "VOLTA_HOME",
+		"/elsewhere/bun/bin":              "BUN_INSTALL",
+		"/elsewhere/pnpm":                 "PNPM_HOME",
+		"/elsewhere/ghcup/.ghcup/bin":     "GHCUP_INSTALL_BASE_PREFIX",
 		// The default each of those relocates away from stays shielded on its own: the
 		// relocation follows the shield, it does not move it.
 		"/home/u/go/bin":                            "",

@@ -1781,8 +1781,9 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// interpreter a policy may legitimately write, and DenyWrite has no opt-in, so a root
 	// rule would refuse that grant outright.
 	//
-	// Left as residuals, both list-valued so this table cannot express them: GOPATH, whose
-	// first element supplies GOBIN's default, and rvm's lowercase rvm_path.
+	// Left as a residual: GOPATH, which is colon-separated and so cannot go through a
+	// filepath.Join of one base. Its first element supplies GOBIN's default, and GOBIN is
+	// what `go install` honors when both are set.
 	{"GOBIN", "go/bin", ""},
 	{"RUSTUP_HOME", ".rustup", ""},
 	{"NVM_DIR", ".nvm", ""},
@@ -1793,15 +1794,36 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"RBENV_ROOT", ".rbenv", "shims"},
 	{"NODENV_ROOT", ".nodenv", "bin"},
 	{"NODENV_ROOT", ".nodenv", "shims"},
-	{"ASDF_DATA_DIR", ".asdf", "bin"},
+	// asdf splits the two: the checkout with its own bin/asdf moves with ASDF_DIR, the
+	// shims with ASDF_DATA_DIR, and either can be set alone.
+	{"ASDF_DIR", ".asdf", "bin"},
 	{"ASDF_DATA_DIR", ".asdf", "shims"},
+	{"rvm_path", ".rvm", "bin"},
+	{"rvm_path", ".rvm", "scripts"},
 	{"VOLTA_HOME", ".volta", "bin"},
 	{"BUN_INSTALL", ".bun", "bin"},
+	{"KREW_ROOT", ".krew", "bin"},
+	{"PUB_CACHE", ".pub-cache", "bin"},
+	{"CABAL_DIR", ".cabal", "bin"},
+	{"FOUNDRY_DIR", ".foundry", "bin"},
+	{"COMPOSER_HOME", ".config/composer", "vendor/bin"},
+	{"MIX_HOME", ".mix", "escripts"},
+	// Gradle runs every script in init.d before each build. The credential file beside it
+	// (gradle.properties) is DenyAll at the default and does not follow the relocation -
+	// a file-shaped shield this table cannot emit, filed as a residual.
+	{"GRADLE_USER_HOME", ".gradle", "init.d"},
+	// The default bindir carries the ruby ABI version in its name, so there is no
+	// home-relative default to compare against and the empty def only spares $HOME
+	// itself; a GEM_HOME left at its default emits a rule inside the tree already
+	// shielded there, which is redundant rather than wrong.
+	{"GEM_HOME", "", "bin"},
 	// pnpm's variable names the global bindir itself, not a tree above it.
 	{"PNPM_HOME", ".local/share/pnpm", ""},
 	// ghcup installs to $VAR/.ghcup and the variable defaults to $HOME, so the default to
 	// compare against is the anchor - the empty-def shape dirFileEnvs' CURL_HOME uses.
 	{"GHCUP_INSTALL_BASE_PREFIX", "", ".ghcup/bin"},
+	// dotnet's global tools land under $VAR/.dotnet, the same anchor-defaulting shape.
+	{"DOTNET_CLI_HOME", "", ".dotnet/tools"},
 }
 
 // The tool-specific variables that move a whole credential directory off its default path.
