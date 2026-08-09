@@ -646,11 +646,9 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			// the 503 has already observed the report.
 			p.report(Refused, "", "")
 			// Written on the accept goroutine, so it must not block: a client that never
-			// reads leaves the whole proxy not accepting. The status is ~120 bytes against
-			// a socket buffer that dwarfs it, so this deadline should never fire - it is
-			// what keeps "accept-loop work is non-blocking" an invariant rather than a
-			// property of the current message length.
-			c.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
+			// reads leaves the whole proxy not accepting. writeStatus bounds the write,
+			// which is what keeps "accept-loop work is non-blocking" an invariant rather
+			// than a property of the current message length.
 			writeStatus(c, "503 Service Unavailable", "bento egress proxy is at its connection limit")
 			c.Close()
 		}
@@ -662,7 +660,8 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 // cut short; a legitimate destination that needs longer than this is already failing.
 const dialTimeout = 15 * time.Second
 
-// statusWriteTimeout bounds the at-capacity refusal written from the accept loop.
+// statusWriteTimeout bounds every status line the proxy writes, so a client that
+// never reads cannot hold the writer.
 const statusWriteTimeout = 5 * time.Second
 
 // connectTimeout bounds how long a client may take to send its CONNECT request
@@ -689,7 +688,6 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		if established {
 			return
 		}
-		client.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
 		writeStatus(client, "502 Bad Gateway", "bento egress proxy could not complete the request")
 	}()
 
@@ -1012,7 +1010,14 @@ func canonicalPort(s string) bool {
 	return n <= 65535
 }
 
+// writeStatus answers c with a plaintext status. Bodies carry attacker-sized text
+// (a malformed target is echoed with %q, which quadruples every escaped byte), so
+// one large enough to outrun the socket buffer would otherwise block in the kernel
+// against a client that never reads, pinning the caller's handler slot for the rest
+// of the run. The deadline lives here rather than at each call site so no future
+// status path can be added without it.
 func writeStatus(c net.Conn, status, body string) {
+	c.SetWriteDeadline(time.Now().Add(statusWriteTimeout))
 	fmt.Fprintf(c, "HTTP/1.1 %s\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", status, body)
 }
 

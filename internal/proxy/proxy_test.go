@@ -1778,3 +1778,31 @@ func TestTunnelHalfCloseKeepsTheReturnDirectionOpen(t *testing.T) {
 		t.Errorf("reply = %q, want the upstream's post-EOF answer to survive the half-close", got)
 	}
 }
+
+// A malformed target is echoed back with %q, which expands each control byte to
+// four characters, so a request under the 64 KiB read limit produces a status body
+// several times the socket buffer. Against a client that never reads, an unbounded
+// write blocks in the kernel with no deadline in scope and pins the handler slot,
+// its goroutine and its fd for the rest of the run.
+func TestStatusWriteDoesNotPinAHandlerOnAClientThatNeverReads(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}})
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	// No colon, so net.SplitHostPort fails and the raw target reaches the error body
+	// before any character screen: ~240 KB against a wmem_default of ~208 KB.
+	fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\n\r\n", strings.Repeat("\x01", 60000))
+
+	// The handler is done when it closes the conn. Probe with a write rather than a
+	// read: reading would drain the socket and unblock the very write under test.
+	deadline := time.Now().Add(statusWriteTimeout + 5*time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := c.Write([]byte("x")); err != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("handler still held the connection after the status write should have timed out")
+}
