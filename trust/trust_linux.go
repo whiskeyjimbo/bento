@@ -3,6 +3,7 @@
 package trust
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,11 +16,70 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// attrMissing reports the errno a getxattr of an absent attribute answers with. Linux says
-// ENODATA; the other platforms this builds for have a distinct ENOATTR that ENODATA does
-// not alias, and reading that as a real failure would report a private directory as one
-// somebody else can write.
-func attrMissing(err error) bool { return errors.Is(err, unix.ENODATA) }
+// POSIX ACL entry tags and permission bits, as the kernel lays them out in
+// system.posix_acl_access. See acl(5) and fs/posix_acl.c.
+const (
+	aclTagUser   = 0x0002 // a named user
+	aclTagGroup  = 0x0008 // a named group
+	aclTagMask   = 0x0010 // the ceiling every named entry is filtered through
+	aclPermWrite = 0x0002
+	aclEntrySize = 8
+	aclVersion   = 2
+)
+
+// ACLNamedWrite reports whether a POSIX ACL grants write to a named user or group - that
+// is, to somebody the mode bits cannot name. Only named entries count: a directory that
+// merely inherited a default ACL carries an access ACL with no named entry in it, and
+// treating the ACL's presence as the signal would flag every such directory.
+//
+// Absence of the attribute, and a filesystem that does not carry it at all, both mean the
+// mode is the whole story - which is the common case and not a finding.
+//
+// Linux only, and the non-Linux half refuses rather than answering: this reads the Linux
+// kernel's own attribute, which no other platform carries, so a build that answered
+// "no named writer" there would be reporting a clean verdict about an ACL nobody read.
+func ACLNamedWrite(path string) (bool, error) {
+	// Sized from the attribute rather than guessed: a long ACL read into a short buffer
+	// fails, and answering "no named writer" about an ACL nobody read would be the one
+	// wrong answer this can give.
+	size, err := unix.Getxattr(path, "system.posix_acl_access", nil)
+	switch {
+	case errors.Is(err, unix.ENODATA), errors.Is(err, unix.ENOTSUP):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
+	}
+	buf := make([]byte, size)
+	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
+	switch {
+	case errors.Is(err, unix.ENODATA):
+		return false, nil // set aside between the two reads
+	case err != nil:
+		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
+	}
+	acl := buf[:n]
+	if len(acl) < 4 || binary.LittleEndian.Uint32(acl) != aclVersion {
+		return false, fmt.Errorf("cannot read the ACL on %s: unrecognized format", path)
+	}
+	entries := acl[4:]
+	if len(entries)%aclEntrySize != 0 {
+		return false, fmt.Errorf("cannot read the ACL on %s: truncated entry", path)
+	}
+	// The mask is the ceiling on every named entry, so a named grant it does not include
+	// grants nothing. A missing mask means an ACL with no named entries to filter.
+	var named, mask uint16
+	for i := 0; i < len(entries); i += aclEntrySize {
+		tag := binary.LittleEndian.Uint16(entries[i:])
+		perm := binary.LittleEndian.Uint16(entries[i+2:])
+		switch tag {
+		case aclTagUser, aclTagGroup:
+			named |= perm
+		case aclTagMask:
+			mask = perm
+		}
+	}
+	return named&mask&aclPermWrite != 0, nil
+}
 
 // manifestLocation is the path an open manifest actually came from, read back from the
 // kernel's own name for the descriptor rather than the name it was opened by.

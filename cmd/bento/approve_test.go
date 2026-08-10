@@ -97,6 +97,10 @@ func TestReportApprovalStrictness(t *testing.T) {
 		"unstamped": {doc(""), true},
 		"current":   {&manifest.Document{Policy: current, Provenance: manifest.Provenance{Approves: current.Fingerprint()}}, false},
 	}
+	// The report consults the journal for a current stamp, so the state home is the
+	// test's own rather than the developer's - every other journal test isolates it the
+	// same way, and reading the real one makes the result depend on what is in it.
+	stateHome(t)
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			if err := reportApproval(io.Discard, "", tc.doc, false); err != nil {

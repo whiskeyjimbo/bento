@@ -3,16 +3,20 @@
 package trust
 
 import (
-	"errors"
+	"fmt"
 	"os"
-
-	"golang.org/x/sys/unix"
 )
 
-// attrMissing is ENOATTR off Linux, which is a distinct errno from the ENODATA the Linux
-// build answers with - see the Linux half. Getting it wrong is not a fail-open: the ACL
-// check would error, and the callers read an error as untrusted.
-func attrMissing(err error) bool { return errors.Is(err, unix.ENOATTR) }
+// ACLNamedWrite cannot answer off Linux, and says so rather than reporting no named writer.
+// The Linux half reads system.posix_acl_access, which no other platform carries: on darwin
+// the attribute is simply absent - ENOATTR, itself a different errno from the ENODATA that
+// means the same thing on Linux - and the ACL lives behind acl_get_file instead. Reading
+// that absence as "no ACL" would wave through the one grant this check exists to catch, on
+// every path that reaches it. An error is the direction to be wrong in: every caller reads
+// one as untrusted. Reading the real list is what a platform backend owes.
+func ACLNamedWrite(path string) (bool, error) {
+	return false, fmt.Errorf("who else can write %s cannot be checked on this platform: its access-control list is not readable through the POSIX attribute", path)
+}
 
 // manifestLocation reports the location as unknown off Linux: reading back where an open
 // descriptor came from is what /proc is used for here, and the name the manifest was

@@ -543,7 +543,13 @@ func TestASharedJournalEntryIsReplacedByTheNextApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(entry, []byte("{}\n"), 0o666); err != nil {
+	if err := os.WriteFile(entry, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Chmod after the write: WriteFile honors the umask, so under the common 022 the
+	// entry would land 0644, read as private, and the assertion below would pass while
+	// testing nothing.
+	if err := os.Chmod(entry, 0o666); err != nil {
 		t.Fatal(err)
 	}
 	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
@@ -584,7 +590,7 @@ func TestACurrentStampThisHostNeverWroteIsReported(t *testing.T) {
 	if err := reportApproval(&shipped, path, doc, true); err != nil {
 		t.Fatalf("an unrecorded stamp must not fail --strict: %v", err)
 	}
-	if !strings.Contains(shipped.String(), "holds no record of approving it") {
+	if !strings.Contains(shipped.String(), "holds no record of approving these permissions") {
 		t.Errorf("a stamp this host never wrote must be reported; got:\n%s", shipped.String())
 	}
 
@@ -596,5 +602,21 @@ func TestACurrentStampThisHostNeverWroteIsReported(t *testing.T) {
 	}
 	if strings.Contains(ours.String(), "holds no record") {
 		t.Errorf("a stamp this host recorded must not be reported as unrecorded; got:\n%s", ours.String())
+	}
+
+	// The stronger case of the same claim: this host approved an EARLIER version and
+	// somebody else stamped the one in hand. The entry is positive evidence rather than
+	// the absence of any, so silence here would be the worse answer of the two.
+	widened := &policy.Policy{Entrypoint: "./x", Read: []string{"/data", "/etc"}}
+	elsewhere := &manifest.Document{Policy: widened, Provenance: manifest.Provenance{Approves: widened.Fingerprint()}}
+	if _, verdict := readApprovalRecord(path, elsewhere); verdict != journalForeign {
+		t.Fatalf("the record must disagree with the new stamp; verdict = %v", verdict)
+	}
+	var foreign strings.Builder
+	if err := reportApproval(&foreign, path, elsewhere, true); err != nil {
+		t.Fatalf("a foreign record must not fail --strict: %v", err)
+	}
+	if !strings.Contains(foreign.String(), "holds no record of approving these permissions") {
+		t.Errorf("a stamp for permissions this host never approved must be reported; got:\n%s", foreign.String())
 	}
 }

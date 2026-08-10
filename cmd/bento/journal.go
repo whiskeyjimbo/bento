@@ -283,10 +283,19 @@ func requirePrivateJournal(path string) error {
 	return nil
 }
 
-// stampUnrecorded reports a current stamp this host has no record of writing. The stamp is
-// unkeyed and travels with the file, so a current one proves the permissions have not
+// stampUnrecorded reports a current stamp this host has no record of approving. The stamp
+// is unkeyed and travels with the file, so a current one proves the permissions have not
 // drifted since SOMEBODY approved them, never that it was you - and the journal is the only
 // thing that can tell the two apart.
+//
+// journalForeign counts as well as journalAbsent, and is the stronger case of the two: an
+// entry recording a DIFFERENT approval is positive evidence that what this host approved is
+// not what the manifest now carries, where an absent one is only the lack of any evidence.
+// A rename lost to a power loss reads as foreign too, so the sentence says what bento holds
+// no record of rather than accusing the stamp of coming from elsewhere.
+//
+// journalUntrusted is not included: a journal somebody else can write is no evidence in
+// either direction, and it has its own report naming the directory to repair.
 //
 // Only for a current stamp. An unstamped or stale one already gets its own line, which says
 // more than this would.
@@ -295,7 +304,7 @@ func stampUnrecorded(realPath string, doc *manifest.Document) bool {
 		return false
 	}
 	_, verdict := readApprovalRecord(realPath, doc)
-	return verdict == journalAbsent
+	return verdict == journalAbsent || verdict == journalForeign
 }
 
 // unrecordedStamp is what both callers say about one, in one string for noStampDiff's
@@ -307,7 +316,7 @@ func stampUnrecorded(realPath string, doc *manifest.Document) bool {
 // $XDG_STATE_HOME has never held anything; refusing either would break working setups over
 // a fact the operator may already know. --strict does not fail on it either - it gates
 // drift, and nothing here has drifted.
-const unrecordedStamp = "this host holds no record of approving it, so its stamp is somebody's review rather than yours - `bento approve` after reading the permissions makes it yours"
+const unrecordedStamp = "this host holds no record of approving these permissions, so the stamp is somebody's review rather than yours - `bento approve` after reading them makes it yours"
 
 // writeJournalDiff names the permissions that changed since the stamp, or says why it
 // cannot. It replaces the half-answer writeReapprovalNotice gave on its own - "something

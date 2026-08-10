@@ -11,7 +11,6 @@
 package trust
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -19,8 +18,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 // fileFacts is the ownership and permissions of one path, the two things that decide
@@ -64,67 +61,6 @@ func withGroup(f fileFacts, gid uint32) fileFacts {
 		f.group = groupReachOf(gid, f.uid)
 	}
 	return f
-}
-
-// POSIX ACL entry tags and permission bits, as the kernel lays them out in
-// system.posix_acl_access. See acl(5) and fs/posix_acl.c.
-const (
-	aclTagUser   = 0x0002 // a named user
-	aclTagGroup  = 0x0008 // a named group
-	aclTagMask   = 0x0010 // the ceiling every named entry is filtered through
-	aclPermWrite = 0x0002
-	aclEntrySize = 8
-	aclVersion   = 2
-)
-
-// ACLNamedWrite reports whether a POSIX ACL grants write to a named user or group - that
-// is, to somebody the mode bits cannot name. Only named entries count: a directory that
-// merely inherited a default ACL carries an access ACL with no named entry in it, and
-// treating the ACL's presence as the signal would flag every such directory.
-//
-// Absence of the attribute, and a filesystem that does not carry it at all, both mean the
-// mode is the whole story - which is the common case and not a finding.
-func ACLNamedWrite(path string) (bool, error) {
-	// Sized from the attribute rather than guessed: a long ACL read into a short buffer
-	// fails, and answering "no named writer" about an ACL nobody read would be the one
-	// wrong answer this can give.
-	size, err := unix.Getxattr(path, "system.posix_acl_access", nil)
-	switch {
-	case attrMissing(err), errors.Is(err, unix.ENOTSUP):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
-	}
-	buf := make([]byte, size)
-	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
-	switch {
-	case attrMissing(err):
-		return false, nil // set aside between the two reads
-	case err != nil:
-		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
-	}
-	acl := buf[:n]
-	if len(acl) < 4 || binary.LittleEndian.Uint32(acl) != aclVersion {
-		return false, fmt.Errorf("cannot read the ACL on %s: unrecognized format", path)
-	}
-	entries := acl[4:]
-	if len(entries)%aclEntrySize != 0 {
-		return false, fmt.Errorf("cannot read the ACL on %s: truncated entry", path)
-	}
-	// The mask is the ceiling on every named entry, so a named grant it does not include
-	// grants nothing. A missing mask means an ACL with no named entries to filter.
-	var named, mask uint16
-	for i := 0; i < len(entries); i += aclEntrySize {
-		tag := binary.LittleEndian.Uint16(entries[i:])
-		perm := binary.LittleEndian.Uint16(entries[i+2:])
-		switch tag {
-		case aclTagUser, aclTagGroup:
-			named |= perm
-		case aclTagMask:
-			mask = perm
-		}
-	}
-	return named&mask&aclPermWrite != 0, nil
 }
 
 // sharedWrite is the write bits granted to someone other than the owner. A group bit whose

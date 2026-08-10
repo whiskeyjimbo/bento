@@ -11,12 +11,18 @@ import (
 // resolution can be tested without touching the real environment.
 type Lookup func(name string) (string, bool)
 
-// SandboxHome is the HOME a target sees when the policy does not pass one through: the
-// sandbox's own tmpfs, never the caller's home, so a script that writes dotfiles cannot
-// reach the real one. It lives here rather than in the backend that sets it because a
-// frontend has to be able to state it before a run - `~` in the target's own code means
-// this, and a reader who has to learn that from a traceback naming a path they never
-// wrote is debugging the wrong thing.
+// SandboxHome is the HOME a target sees under a full-isolation run when the policy does
+// not pass one through: the sandbox's own tmpfs, never the caller's home, so a script that
+// writes dotfiles cannot reach the real one. It lives here rather than in the backend that
+// sets it because a frontend has to be able to state it before a run - `~` in the target's
+// own code means this, and a reader who has to learn that from a traceback naming a path
+// they never wrote is debugging the wrong thing.
+//
+// The literal holds on a tier with a mount namespace and nowhere else. A backend without
+// one cannot make /tmp the sandbox's own, so it substitutes a private scratch directory of
+// its own choosing and HOME is that instead: what carries across the tiers is that HOME is
+// writable and is not the caller's, which is what a manifest depends on. A frontend
+// speaking ahead of a run therefore leads with this and says the fallback exists.
 const SandboxHome = "/tmp"
 
 // SandboxPath is the PATH a target sees when the policy does not pass one through. It
