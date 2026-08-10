@@ -134,7 +134,7 @@ func TestDegradedConfinesFilesystemAndEgress(t *testing.T) {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}
 	got := out.String()
-	for _, want := range []string{"GRANTED_READ_OK", "UNGRANTED_READ_DENIED", "SOCKET_BLOCKED", "EXEC_BLOCKED"} {
+	for _, want := range []string{"GRANTED_READ_OK", "UNGRANTED_READ_DENIED", "SOCKET_BLOCKED", "EXEC_BLOCKED", "HOME_WRITE_OK"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q; exit=%d output:\n%s", want, res.ExitCode, got)
 		}
@@ -460,8 +460,13 @@ func requireDegraded(t *testing.T) {
 }
 
 // buildDegradedProbe compiles a static Go binary that reports whether a granted read
-// succeeds, an ungranted read is denied, and an IP socket is refused. Static (CGO
-// off) so it needs no libc in the read set.
+// succeeds, an ungranted read is denied, an IP socket is refused, and the default HOME
+// can be written. Static (CGO off) so it needs no libc in the read set.
+//
+// HOME is the one of those that differs by tier: under bwrap it is a fresh tmpfs, and
+// here there is no mount namespace, so a HOME defaulted to the literal /tmp would name
+// the host's - outside both Landlock sets - and $HOME/.cache would fail EACCES where the
+// full tier succeeds.
 func buildDegradedProbe(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -501,6 +506,13 @@ func main() {
 		fmt.Println("EXEC_BLOCKED")
 	} else {
 		fmt.Println("EXEC_NOT_BLOCKED")
+	}
+	if f, err := os.CreateTemp(os.Getenv("HOME"), "home-"); err == nil {
+		f.Close()
+		os.Remove(f.Name())
+		fmt.Println("HOME_WRITE_OK")
+	} else {
+		fmt.Println("HOME_WRITE_FAIL", err)
 	}
 }
 `

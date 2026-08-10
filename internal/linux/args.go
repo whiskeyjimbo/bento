@@ -649,7 +649,7 @@ func interpreterPrefix(interp string) string {
 // envArgs clears the inherited environment and sets only what the policy allowed
 // through, plus the minimum an interpreter needs to run.
 func envArgs(proc enforce.Process) []string {
-	env := sandboxEnv(proc.Env)
+	env := sandboxEnv(proc.Env, enforce.SandboxHome)
 	args := []string{"--clearenv"}
 	for _, k := range slices.Sorted(maps.Keys(env)) {
 		args = append(args, "--setenv", k, env[k])
@@ -659,9 +659,15 @@ func envArgs(proc enforce.Process) []string {
 
 // sandboxEnv fills in the HOME and PATH a target sees when the policy passes neither
 // through. Both tiers build their environment from here, because a `~` or a bare command
-// name resolving on one tier and not the other is one manifest meaning two things - and
-// every frontend that speaks about this states enforce.SandboxHome unconditionally.
-func sandboxEnv(policyEnv map[string]string) map[string]string {
+// name resolving on one tier and not the other is one manifest meaning two things.
+//
+// home is the tier's own default rather than enforce.SandboxHome unconditionally: under
+// bwrap /tmp is a fresh writable tmpfs, and on the degraded tier - which has no mount
+// namespace - it is the host's, in neither the Landlock read set nor the write set. A
+// default HOME there would name a path the target cannot touch, so the degraded tier
+// passes the scratch directory that stands in for the tmpfs. What HOME MEANS is what has
+// to match across the tiers; the literal cannot.
+func sandboxEnv(policyEnv map[string]string, home string) map[string]string {
 	env := maps.Clone(policyEnv)
 	if env == nil {
 		env = map[string]string{}
@@ -670,7 +676,7 @@ func sandboxEnv(policyEnv map[string]string) map[string]string {
 		env["PATH"] = enforce.SandboxPath
 	}
 	if _, ok := env["HOME"]; !ok {
-		env["HOME"] = enforce.SandboxHome
+		env["HOME"] = home
 	}
 	return env
 }

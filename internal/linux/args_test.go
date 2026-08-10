@@ -567,13 +567,18 @@ func TestBothTiersDefaultHomeAndPath(t *testing.T) {
 		t.Errorf("bwrap tier PATH = %v, want %s", args, enforce.SandboxPath)
 	}
 
-	env := envSlice(sandboxEnv(proc.Env))
-	if !slices.Contains(env, "HOME="+enforce.SandboxHome) || !slices.Contains(env, "PATH="+enforce.SandboxPath) {
+	// The degraded tier's own default is its scratch directory, not enforce.SandboxHome:
+	// with no mount namespace /tmp is the host's, and it is in neither the Landlock read
+	// set nor the write set, so a target given it as HOME cannot write $HOME/.cache where
+	// the bwrap tier can. The stand-in for the tmpfs is what makes HOME mean the same
+	// thing on both tiers.
+	env := envSlice(sandboxEnv(proc.Env, "/run/scratch"))
+	if !slices.Contains(env, "HOME=/run/scratch") || !slices.Contains(env, "PATH="+enforce.SandboxPath) {
 		t.Errorf("degraded tier env = %v, want HOME and PATH defaulted", env)
 	}
 
 	// A policy that passes either through keeps its own value on both tiers.
-	got := sandboxEnv(map[string]string{"HOME": "/work", "PATH": "/opt/bin"})
+	got := sandboxEnv(map[string]string{"HOME": "/work", "PATH": "/opt/bin"}, "/run/scratch")
 	if got["HOME"] != "/work" || got["PATH"] != "/opt/bin" {
 		t.Errorf("declared values were overwritten: %v", got)
 	}

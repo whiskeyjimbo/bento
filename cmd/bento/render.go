@@ -1005,8 +1005,9 @@ func writeTargetUnreached(w io.Writer, res enforce.Result) {
 // copies that drift. prefix opens each line: the continuation lines align under the
 // first word after it.
 func writeSandboxHomeNote(w io.Writer, prefix string) {
-	fmt.Fprintf(w, "%snote: HOME is not passed through, so inside the sandbox it is %s and `~`\n", prefix, enforce.SandboxHome)
-	fmt.Fprintf(w, "%s      expands there, not to your home directory. The manifest's grants are\n", prefix)
+	fmt.Fprintf(w, "%snote: HOME is not passed through, so inside the sandbox it is %s - a private\n", prefix, enforce.SandboxHome)
+	fmt.Fprintf(w, "%s      scratch directory elsewhere on a host that falls back to --allow-degraded -\n", prefix)
+	fmt.Fprintf(w, "%s      and `~` expands there, not to your home directory. The grants are\n", prefix)
 	fmt.Fprintf(w, "%s      matched against host paths, so a script resolving ~ itself will miss\n", prefix)
 	fmt.Fprintf(w, "%s      them - write the paths it opens absolute, or allowlist HOME in env:.\n", prefix)
 }

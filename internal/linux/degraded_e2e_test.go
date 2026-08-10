@@ -83,7 +83,7 @@ func TestDegradedEndToEndOnClampedHost(t *testing.T) {
 		t.Fatalf("--allow-degraded run failed: %v\noutput:\n%s", err, out.String())
 	}
 	got := out.String()
-	for _, want := range []string{"GRANTED_READ_OK", "UNGRANTED_READ_DENIED", "SOCKET_BLOCKED", "EXEC_BLOCKED"} {
+	for _, want := range []string{"GRANTED_READ_OK", "UNGRANTED_READ_DENIED", "SOCKET_BLOCKED", "EXEC_BLOCKED", "HOME_WRITE_OK"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q; exit=%d output:\n%s", want, res.ExitCode, got)
 		}
