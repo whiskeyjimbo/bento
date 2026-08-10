@@ -126,7 +126,10 @@ the rest with it. Where the entry is a single file - `~/.netrc` - naming that
 file is the exact match, and there is nothing inside it to ask for. Only the
 hidden-outright shields are opt-in-able at all; the read-only ones have nothing to
 grant but the write they exist to refuse, and a write grant under one is refused
-outright.
+outright. What the opt-in lifts is the read: a store opted in is bound read-only,
+because a write grant to one is the key-planting shape no spelling lifts. A tool
+that rewrites its own store - Claude Code rewriting `.credentials.json` on token
+refresh - fails that write under the opt-in, which is the shield working.
 
 A credential store that is a directory is shielded whole, not file by file.
 Shielding `~/.ssh/id_rsa` by name leaves `~/.ssh/my_deploy_key` sitting there,
