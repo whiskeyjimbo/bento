@@ -367,7 +367,7 @@ func readApprovalAnswer(ctx context.Context, lines <-chan string, w io.Writer) e
 // that the permissions cannot move without it going stale - which a second writer,
 // whether on the manifest or on the directory it can be renamed within, gives away for
 // free. Only what approve cannot fix and what is unambiguously shared is fatal; see
-// trust.Manifest.flaws for which is which.
+// trust.Manifest.Flaws for which is which.
 func requireApprovableLocation(path string, mt trust.Manifest) error {
 	for _, flaw := range mt.Flaws(uint32(os.Geteuid())) {
 		if flaw.Fatal {

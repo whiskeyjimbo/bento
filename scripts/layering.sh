@@ -96,7 +96,6 @@ assemblers='denylist\.Home\(|denylist\.Relocated\(|denylist\.Runtime\(|denylist\
 
 shield_assemblers='internal/shield
 internal/linux
-gate
 internal/denylist/audit
 internal/credhunt
 cmd/credhunt
@@ -113,16 +112,22 @@ cmd/bento'
 # (sb.isDir, sb.listDir, checkoutRoot) that internal/shield has no way to ask for. So the
 # boundary holds for the built-in shields and is stated rather than enforced for the
 # grant-derived half. Listed so a NEW package building rules still fails here.
-#
-# gate is a test fixture only: it hands a Rule to shield.Assemble as input, which is the
-# opposite of assembling a set.
+
+# gate hands a Rule to shield.Assemble as INPUT, which is the opposite of assembling a set.
+# Exempted per file rather than per directory, unlike the entries above: the justification is
+# about the test, so a production rule in the same package must still fail here.
+fixture_files='gate/problems_test.go'
+
 found=$(grep -rEln --include='*.go' "$assemblers" . | while read -r f; do
+	f=${f#./}
+	if echo "$fixture_files" | grep -qxF "$f"; then
+		continue
+	fi
 	# A constructor named in prose is not an assembly site. Line comments and the body of a
 	# block comment are dropped; a block comment written without leading stars still reads
 	# as a call here, which is the direction that fails loudly rather than quietly.
 	if grep -E "$assemblers" "$f" | grep -qvE '^[[:space:]]*(//|/\*|\*)'; then
-		dir=$(dirname "$f")
-		echo "${dir#./}"
+		dirname "$f"
 	fi
 done | sort -u)
 

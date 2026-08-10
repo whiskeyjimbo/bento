@@ -463,7 +463,7 @@ func dirFlaws(d fileFacts, role string, euid uint32) []Flaw {
 // Telling an ordinary user to chown a file that is not theirs names a command that fails,
 // which is worse than naming none - so they are told the thing they can do without the
 // owner's help, in the same shape as the shared-project directory's hint. It carries the
-// same hedge the chmod hint does, and for a stronger Reason: this fires on the directory
+// same hedge the chmod hint does, and for a stronger reason: this fires on the directory
 // as well as the manifest, and taking a whole checkout from the uid that populated it
 // breaks every later step still running as them.
 func ownershipHint(f fileFacts, euid uint32) string {

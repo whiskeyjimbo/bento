@@ -87,7 +87,7 @@ func TestWriteManifestAtomicallyCreatesAPrivateManifest(t *testing.T) {
 }
 
 // trustOf is how the write path is reached in a test: the location a manifest is rewritten
-// at comes from the mt, which only an open handle can produce.
+// at comes from the trust facts, which only an open handle can produce.
 func trustOf(t *testing.T, path string) trust.Manifest {
 	t.Helper()
 	f, err := os.Open(path)
@@ -141,7 +141,7 @@ func TestLoadDocumentRefusesANonRegularFile(t *testing.T) {
 	}
 }
 
-// approvable runs the check the way approve does, on the mt from the same open that
+// approvable runs the check the way approve does, on the trust facts from the same open that
 // read the manifest.
 func approvable(t *testing.T, path string) error {
 	t.Helper()
@@ -308,7 +308,7 @@ func TestWriteManifestAtomicallyExplainsAnUnwritableDirectory(t *testing.T) {
 	}
 }
 
-// The same refusal driven end to end rather than from a synthesized mt, which needs a
+// The same refusal driven end to end rather than from synthesized trust facts, which needs a
 // second uid to plant the link and so a euid that can hand one out. Everything else here is
 // clean: the manifest and its directory are private and ours, and the sticky directory the
 // link sits in reports no flaw of its own - the link's owner is the whole finding.
