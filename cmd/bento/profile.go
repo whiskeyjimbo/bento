@@ -22,6 +22,7 @@ import (
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func newProfileCmd() *cobra.Command {
@@ -283,7 +284,7 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return refuse(err)
 			}
-			proposed, trust := merge.policy, merge.trust
+			proposed, mt := merge.policy, merge.trust
 			// A manifest that does not exist yet still has a location to judge, and the first
 			// run is the case nothing else looks at - seedGrants returns on a missing file,
 			// and only an interactive session calls it at all.
@@ -291,12 +292,12 @@ func newProfileCmd() *cobra.Command {
 			// location at all leaves behind too: this stands in for "there was no manifest",
 			// and on such a host the walk below refuses rather than describing an existing
 			// manifest as one about to be created.
-			if !trust.located {
-				if trust, err = inspectNewManifest(out); err != nil {
+			if !mt.Located() {
+				if mt, err = trust.InspectNew(out, uint32(os.Geteuid())); err != nil {
 					return refuse(err)
 				}
 			}
-			warnUntrusted(os.Stderr, trust.locationFlaws(uint32(os.Geteuid())))
+			warnUntrusted(os.Stderr, mt.LocationFlaws(uint32(os.Geteuid())))
 			// The merge unions in whatever the file at --out granted, whether or not it is
 			// approved, so a grant the user declined this session would come back through
 			// it. Drop it: a refusal at the prompt has to hold in the artifact, not only in
@@ -333,7 +334,7 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return refuse(err)
 			}
-			if err := writeManifestAtomically(trust, data, os.Stderr); err != nil {
+			if err := writeManifestAtomically(mt, data, os.Stderr); err != nil {
 				return refuse(err)
 			}
 
@@ -1346,7 +1347,7 @@ func seedGrants(path, script string, out io.Writer) (*policy.Policy, error) {
 		// a whole profiling session whose result cannot be written out.
 		return nil, fmt.Errorf("refusing to profile against unreadable manifest %s: %w", path, err)
 	}
-	if checkApproval(doc) != approvalCurrent {
+	if trust.CheckApproval(doc) != trust.ApprovalCurrent {
 		fmt.Fprintf(out, "[bento] %s is not approved, so its grants are not mounted - review and `bento approve` it to resume from them.\n", path)
 		return nil, nil
 	}
@@ -1387,7 +1388,7 @@ type mergeOutcome struct {
 	// trust is where the write must land - the location this load inspected, rather than
 	// the name resolved a second time. Zero on the first run, where there is no file to
 	// have gathered it from.
-	trust manifestTrust
+	trust trust.Manifest
 	// widened is whether there was a manifest to merge into at all. The deltas below are
 	// meaningless without it: on a first run everything is "added".
 	widened bool
@@ -1428,14 +1429,14 @@ type mergeOutcome struct {
 // produced the proposal was not resuming from it either. Refusing says which file and
 // which two programs, which is what picking a different --out needs.
 func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, error) {
-	existing, trust, err := loadDocument(path)
+	existing, mt, err := loadDocument(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return mergeOutcome{policy: proposed}, nil
 	case err != nil:
 		return mergeOutcome{}, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
 	}
-	approved := checkApproval(existing) == approvalCurrent
+	approved := trust.CheckApproval(existing) == trust.ApprovalCurrent
 	// Resolve before the union: a proposal names absolute paths, so a relative grant
 	// in the existing manifest would survive the merge as a second spelling of a path
 	// the proposal already carries, and the written manifest would hold both.
@@ -1448,7 +1449,7 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 	out := mergeOutcome{
 		policy:      mergePolicies(existing.Policy, proposed),
 		carried:     existing.Provenance,
-		trust:       trust,
+		trust:       mt,
 		widened:     true,
 		keptRead:    only(existing.Policy.Read, proposed.Read),
 		keptWrite:   only(existing.Policy.Write, proposed.Write),

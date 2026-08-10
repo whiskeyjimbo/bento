@@ -10,6 +10,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 // stateHome points the journal at a directory this test owns. The environment is the seam:
@@ -111,7 +112,7 @@ func TestReapprovalSaysWhenThereIsNoRecordOfTheStamp(t *testing.T) {
 
 	var buf strings.Builder
 	rec, verdict := readApprovalRecord("/nowhere/m.yaml", doc)
-	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
+	writeReapprovalNotice(&buf, doc.Policy, trust.ApprovalStale, rec, verdict)
 	out := buf.String()
 	if !strings.Contains(out, "holds no record") {
 		t.Errorf("an absent record must say bento holds no record; got:\n%s", out)
@@ -141,7 +142,7 @@ func TestReapprovalRefusesToDiffAgainstADisagreeingRecord(t *testing.T) {
 
 	var buf strings.Builder
 	rec, verdict := readApprovalRecord(path, doc)
-	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
+	writeReapprovalNotice(&buf, doc.Policy, trust.ApprovalStale, rec, verdict)
 	out := buf.String()
 	if !strings.Contains(out, "a different approval") {
 		t.Errorf("a disagreeing record must be reported as such; got:\n%s", out)
@@ -190,7 +191,7 @@ func TestAnUnwritableJournalStillStamps(t *testing.T) {
 	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
 		t.Fatalf("an unwritable state home must not fail the approval: %v", err)
 	}
-	if checkApproval(stamped(t, path)) != approvalCurrent {
+	if trust.CheckApproval(stamped(t, path)) != trust.ApprovalCurrent {
 		t.Error("the manifest must be stamped even though the journal could not be written")
 	}
 }
@@ -357,7 +358,7 @@ func TestAReviewedStampIsNotReportedAsUnread(t *testing.T) {
 	}
 	var buf strings.Builder
 	rec, verdict := readApprovalRecord(path, drifted)
-	writeReapprovalNotice(&buf, drifted.Policy, approvalStale, rec, verdict)
+	writeReapprovalNotice(&buf, drifted.Policy, trust.ApprovalStale, rec, verdict)
 	out := buf.String()
 	if strings.Contains(out, "nobody read it") {
 		t.Errorf("a stamp a human approved must not be reported as unread; got:\n%s", out)
@@ -412,7 +413,7 @@ func TestAPlantedRecordInASharedJournalIsNotDiffedAgainst(t *testing.T) {
 	}
 	var buf strings.Builder
 	rec, verdict := readApprovalRecord(path, doc)
-	writeReapprovalNotice(&buf, doc.Policy, approvalStale, rec, verdict)
+	writeReapprovalNotice(&buf, doc.Policy, trust.ApprovalStale, rec, verdict)
 	if strings.Contains(buf.String(), "/etc/shadow") {
 		t.Errorf("a planted baseline must never reach the reader as a diff; got:\n%s", buf.String())
 	}

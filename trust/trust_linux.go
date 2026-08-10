@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package trust
 
 import (
 	"errors"
@@ -207,7 +207,7 @@ func fdFacts(fd int, path string) (fileFacts, error) {
 		return fileFacts{}, err
 	}
 	facts := withGroup(fileFacts{path: path, mode: statMode(st.Mode), uid: st.Uid}, st.Gid)
-	aclWrite, err := aclNamedWrite(procFD(fd))
+	aclWrite, err := ACLNamedWrite(procFD(fd))
 	if err != nil {
 		return fileFacts{}, noProcError(err)
 	}

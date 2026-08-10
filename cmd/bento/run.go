@@ -16,6 +16,7 @@ import (
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func newRunCmd() *cobra.Command {
@@ -79,11 +80,11 @@ func newRunCmd() *cobra.Command {
 			// Parse the manifest once: the same bytes are approval-checked and executed,
 			// so a swap between two opens cannot run a different policy than the one
 			// approved.
-			doc, trust, err := loadDocument(args[0])
+			doc, mt, err := loadDocument(args[0])
 			if err != nil {
 				return refuse(err)
 			}
-			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
+			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			if err := requireApproval(doc, allowUnapproved); err != nil {
 				return refuse(err)
 			}
@@ -573,16 +574,16 @@ func requireApproval(doc *manifest.Document, allow bool) error {
 	if allow {
 		return nil
 	}
-	switch checkApproval(doc) {
-	case approvalCurrent:
+	switch trust.CheckApproval(doc) {
+	case trust.ApprovalCurrent:
 		return nil
-	case approvalStale:
+	case trust.ApprovalStale:
 		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; %s - "+
 			"re-review it there, or pass --allow-unapproved", noStampDiff)
-	case approvalUnstamped:
+	case trust.ApprovalUnstamped:
 	}
 	// Unstamped, and the state the enum does not name yet: refused, so a value added to
-	// approvalState cannot open a run - strictApprovalError already lands that way round.
+	// trust.ApprovalState cannot open a run - strictApprovalError already lands that way round.
 	return fmt.Errorf("refusing to run: the manifest is not approved; " +
 		"review it and run `bento approve`, or pass --allow-unapproved")
 }

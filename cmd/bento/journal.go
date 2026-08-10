@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 // The approval journal is how bento can say what changed. The stamp in the manifest is a
@@ -245,8 +247,8 @@ func writeJournalEntry(path string, data []byte) error {
 // in: refusing to write into a shared journal establishes nothing about a record already
 // sitting there.
 //
-// The mode bits are read raw rather than through fileFacts.sharedWrite, which exempts a
-// sticky directory. That exemption is about who can replace an existing file, and the threat
+// The mode bits are read raw rather than through the trust walk's shared-write rule, which
+// exempts a sticky directory. That exemption is about who can replace an existing file, and the threat
 // here is a record planted before bento wrote one - sticky does not stop anybody creating
 // their own entry. For the same reason there is no group-membership lookup: bento creates
 // this directory 0700, so a group-write bit on it was set deliberately by somebody.
@@ -261,21 +263,21 @@ func requirePrivateJournal(path string) error {
 	if err != nil {
 		return err
 	}
-	facts, err := factsOf(path, fi)
-	if err != nil {
-		return err
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("cannot read ownership of %s", path)
 	}
-	if shared := facts.mode.Perm() & 0o022; shared != 0 {
-		return fmt.Errorf("%s is group/world-writable (%#o), and an approval record someone else can write is a forgeable diff", path, facts.mode.Perm())
+	if shared := fi.Mode().Perm() & 0o022; shared != 0 {
+		return fmt.Errorf("%s is group/world-writable (%#o), and an approval record someone else can write is a forgeable diff", path, fi.Mode().Perm())
 	}
-	acl, err := aclNamedWrite(path)
+	acl, err := trust.ACLNamedWrite(path)
 	if err != nil {
 		return err
 	}
 	if acl {
 		return fmt.Errorf("%s grants write to another user or group through an ACL, and an approval record someone else can write is a forgeable diff", path)
 	}
-	if facts.foreignOwner(uint32(os.Geteuid())) {
+	if st.Uid != uint32(os.Geteuid()) && st.Uid != 0 {
 		return fmt.Errorf("%s is owned by another user, so bento cannot treat what is in it as its own record of what you approved", path)
 	}
 	return nil

@@ -15,6 +15,7 @@ import (
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -50,17 +51,17 @@ func newValidateCmd() *cobra.Command {
 			"rather than passing over the question - a warning, as every trust finding is.",
 		Args: exactArgs(1, "a manifest path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			doc, trust, err := loadDocument(args[0])
+			doc, mt, err := loadDocument(args[0])
 			if err != nil {
 				return err
 			}
-			warnStampAtRisk(cmd.ErrOrStderr(), doc, trust)
+			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := gate.Check(resolved)
 			pinned := pinnedPaths(doc.Policy)
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
-				out.Approval = approvalName(checkApproval(doc))
+				out.Approval = approvalName(trust.CheckApproval(doc))
 				out.setRunnable(run)
 				if relocatable {
 					out.setRelocatable(pinned)
@@ -110,21 +111,21 @@ func newValidateCmd() *cobra.Command {
 // does not report them itself: whether anyone else can change the manifest only costs
 // something once there is a stamp to devalue, which is not knowable until it is parsed.
 // See warnStampAtRisk.
-func loadDocument(path string) (*manifest.Document, manifestTrust, error) {
+func loadDocument(path string) (*manifest.Document, trust.Manifest, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, manifestTrust{}, err
+		return nil, trust.Manifest{}, err
 	}
 	defer f.Close()
-	trust, err := inspectManifest(f, path)
+	mt, err := trust.Inspect(f, path)
 	if err != nil {
-		return nil, manifestTrust{}, err
+		return nil, trust.Manifest{}, err
 	}
 	doc, err := manifest.Parse(f)
 	if err != nil {
-		return doc, trust, notAManifest(f, path, err)
+		return doc, mt, notAManifest(f, path, err)
 	}
-	return doc, trust, nil
+	return doc, mt, nil
 }
 
 // notAManifest replaces a parse error with the mistake it usually is: the script was
@@ -174,37 +175,16 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// approvalState describes how a manifest's stored approval relates to its current
-// policy.
-type approvalState int
-
-const (
-	approvalUnstamped approvalState = iota // no provenance approval recorded
-	approvalCurrent                        // stored fingerprint matches the policy
-	approvalStale                          // policy changed since it was approved
-)
-
-func checkApproval(doc *manifest.Document) approvalState {
-	switch doc.Provenance.Approves {
-	case "":
-		return approvalUnstamped
-	case doc.Policy.Fingerprint():
-		return approvalCurrent
-	default:
-		return approvalStale
-	}
-}
-
 // reportApproval prints the approval status and, under strict, fails when it is
 // not current - the CI signal that a manifest's permissions changed without
 // re-approval.
 func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
-	switch checkApproval(doc) {
-	case approvalCurrent:
+	switch trust.CheckApproval(doc) {
+	case trust.ApprovalCurrent:
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
-	case approvalUnstamped:
+	case trust.ApprovalUnstamped:
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
-	case approvalStale:
+	case trust.ApprovalStale:
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              %s,\n", noStampDiff)
 		fmt.Fprintf(w, "              so re-review the whole manifest above and re-stamp it there\n")
@@ -231,16 +211,16 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 	if !strict {
 		return nil
 	}
-	switch checkApproval(doc) {
-	case approvalUnstamped:
+	switch trust.CheckApproval(doc) {
+	case trust.ApprovalUnstamped:
 		return fmt.Errorf("manifest is not approved")
-	case approvalStale:
+	case trust.ApprovalStale:
 		return fmt.Errorf("manifest approval is stale: permissions changed since it was approved (%s)", noStampDiff)
-	case approvalCurrent:
+	case trust.ApprovalCurrent:
 		return nil
 	}
 	// The state the enum does not name yet. Refused rather than passed, so a value added
-	// to approvalState cannot make the CI gate green on a manifest run then refuses -
+	// to trust.ApprovalState cannot make the CI gate green on a manifest run then refuses -
 	// requireApproval already lands that way round.
 	return fmt.Errorf("manifest is not approved")
 }
@@ -378,13 +358,13 @@ func relocatableError(relocatable bool, pinned []string) error {
 
 // approvalName is the machine-readable spelling of an approval state, so --json
 // can express the same verdict the human summary prints.
-func approvalName(s approvalState) string {
+func approvalName(s trust.ApprovalState) string {
 	switch s {
-	case approvalCurrent:
+	case trust.ApprovalCurrent:
 		return "current"
-	case approvalStale:
+	case trust.ApprovalStale:
 		return "stale"
-	case approvalUnstamped:
+	case trust.ApprovalUnstamped:
 	}
 	// Unstamped, and the state the enum does not name yet. A consumer reading --json
 	// treats anything but "current" as not-approved, so an unnamed state reads as the

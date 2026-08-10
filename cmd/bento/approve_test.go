@@ -12,6 +12,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func doc(approves string) *manifest.Document {
@@ -23,15 +24,15 @@ func TestCheckApproval(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	cases := map[string]struct {
 		approves string
-		want     approvalState
+		want     trust.ApprovalState
 	}{
-		"no approval":   {"", approvalUnstamped},
-		"matching":      {p.Fingerprint(), approvalCurrent},
-		"changed since": {"a-stale-fingerprint", approvalStale},
+		"no approval":   {"", trust.ApprovalUnstamped},
+		"matching":      {p.Fingerprint(), trust.ApprovalCurrent},
+		"changed since": {"a-stale-fingerprint", trust.ApprovalStale},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := checkApproval(doc(tc.approves)); got != tc.want {
+			if got := trust.CheckApproval(doc(tc.approves)); got != tc.want {
 				t.Errorf("checkApproval = %v, want %v", got, tc.want)
 			}
 		})
@@ -69,7 +70,7 @@ func TestApprovalCheckedBeforePathResolution(t *testing.T) {
 	stamped := p.Fingerprint()
 	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: stamped}}
 
-	if got := checkApproval(doc); got != approvalCurrent {
+	if got := trust.CheckApproval(doc); got != trust.ApprovalCurrent {
 		t.Fatalf("as-written approval = %v, want current", got)
 	}
 	if err := manifest.Resolve(p, "/work/proj/manifest.yaml"); err != nil {
@@ -78,7 +79,7 @@ func TestApprovalCheckedBeforePathResolution(t *testing.T) {
 	if p.Fingerprint() == stamped {
 		t.Fatal("manifest.Resolve must change the fingerprint, else the check ordering would not matter")
 	}
-	if got := checkApproval(doc); got != approvalStale {
+	if got := trust.CheckApproval(doc); got != trust.ApprovalStale {
 		t.Fatalf("post-resolution approval = %v, want stale (so the check must precede resolution)", got)
 	}
 }
@@ -151,7 +152,7 @@ func TestApproveWritesThroughASymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkApproval(doc) != approvalCurrent {
+	if trust.CheckApproval(doc) != trust.ApprovalCurrent {
 		t.Error("the stamp must land on the link's target, not on a file replacing the link")
 	}
 }
@@ -217,7 +218,7 @@ func TestInspectManifestRefusesAManifestUnlinkedWhileOpen(t *testing.T) {
 			defer f.Close()
 			disturb(t, path)
 
-			_, err = inspectManifest(f, path)
+			_, err = trust.Inspect(f, path)
 			if err == nil {
 				t.Fatal("a manifest with no location left to judge must fail")
 			}
@@ -470,7 +471,7 @@ func TestApproveCallsOutAHostTheProfilingRunWasRefused(t *testing.T) {
 	if !slices.Equal(doc.Provenance.BlockedHosts, []string{"metadata.internal:80"}) {
 		t.Errorf("blocked-hosts = %v, want it carried through the stamp", doc.Provenance.BlockedHosts)
 	}
-	if checkApproval(doc) != approvalCurrent {
+	if trust.CheckApproval(doc) != trust.ApprovalCurrent {
 		t.Error("the record is provenance, not permission: it must not shift the approval fingerprint")
 	}
 }

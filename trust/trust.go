@@ -1,10 +1,19 @@
-package main
+// Package trust answers the two questions a manifest's approval rests on, for the CLI and
+// for any other caller that runs one: whether the stamped fingerprint still matches the
+// policy, and who besides the observing identity could have changed the file it is stamped
+// on.
+//
+// Neither question is decided here. The observing identity is a parameter rather than
+// os.Geteuid, because a caller running a manifest on somebody else's behalf must judge the
+// location against that somebody; and a Flaw is data, so what to refuse over is the
+// caller's to say. The CLI treats them as advisory on a read and fatal on an approve, which
+// is one answer among several rather than the package's.
+package trust
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,8 +21,6 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/whiskeyjimbo/bento/manifest"
 )
 
 // fileFacts is the ownership and permissions of one path, the two things that decide
@@ -70,14 +77,14 @@ const (
 	aclVersion   = 2
 )
 
-// aclNamedWrite reports whether a POSIX ACL grants write to a named user or group - that
+// ACLNamedWrite reports whether a POSIX ACL grants write to a named user or group - that
 // is, to somebody the mode bits cannot name. Only named entries count: a directory that
 // merely inherited a default ACL carries an access ACL with no named entry in it, and
 // treating the ACL's presence as the signal would flag every such directory.
 //
 // Absence of the attribute, and a filesystem that does not carry it at all, both mean the
 // mode is the whole story - which is the common case and not a finding.
-func aclNamedWrite(path string) (bool, error) {
+func ACLNamedWrite(path string) (bool, error) {
 	// Sized from the attribute rather than guessed: a long ACL read into a short buffer
 	// fails, and answering "no named writer" about an ACL nobody read would be the one
 	// wrong answer this can give.
@@ -155,17 +162,17 @@ func (f fileFacts) foreignOwner(euid uint32) bool {
 	return f.uid != euid && f.uid != 0
 }
 
-// manifestTrust is a manifest's own permissions together with those of every directory
+// Manifest is a manifest's own permissions together with those of every directory
 // that leads to it. The directories matter on their own: write and search in one is
 // enough to rename something else into place, whatever the manifest's own mode said.
-type manifestTrust struct {
+type Manifest struct {
 	file fileFacts
 	dir  fileFacts
-	// realPath is where the manifest actually lives, as the kernel names the open
+	// RealPath is where the manifest actually lives, as the kernel names the open
 	// descriptor: the same resolution dir and chain were judged against, so a caller that
 	// rewrites the manifest writes at the location that was inspected rather than
 	// resolving the name a second time and racing whoever can repoint it.
-	realPath string
+	RealPath string
 	// chain is every other directory the resolution passed through, in the reverse of the
 	// order it read them so the nearest comes first: those above dir, since renaming one of
 	// them aside substitutes the manifest as surely as replacing the file, and those that
@@ -180,31 +187,33 @@ type manifestTrust struct {
 	links []fileFacts
 	// located records that the location above was actually established. False is the
 	// zero value on purpose: a host where the location cannot be read must not read as
-	// one where it was read and found clean, and locationFlaws reports the gap rather
-	// than answering nothing. See errLocationUnknown.
+	// one where it was read and found clean, and LocationFlaws reports the gap rather
+	// than answering nothing. See ErrLocationUnknown.
 	located bool
 }
 
-// errLocationUnknown is what the platform stubs return where the location cannot be
+// ErrLocationUnknown is what the platform stubs return where the location cannot be
 // established at all, as opposed to a location that was read and is unsound. The two
 // answers differ in what a caller may do with them: an unsound location is a finding
 // about this manifest, an unknown one is a finding about this host.
-var errLocationUnknown = errors.New("where a manifest lives cannot be checked on this platform")
+var ErrLocationUnknown = errors.New("where a manifest lives cannot be checked on this platform")
 
-// trustFlaw is one way someone other than this user could change the manifest. fatal
-// marks the ones approve refuses to stamp over: not everything reported is, since a
-// mode on the manifest itself is corrected by the rewrite, and a group-writable
-// directory is what a umask of 002 leaves on every directory it creates.
-type trustFlaw struct {
-	reason string
-	fatal  bool
-	// hint is the command that resolves the flaw, where one does. A permissive umask is the
+// Flaw is one way someone other than the observing identity could change the manifest.
+// Fatal marks the ones a caller establishing trust should refuse to stamp over: not
+// everything reported is, since a mode on the manifest itself is corrected by the
+// rewrite, and a group-writable directory is what a umask of 002 leaves on every
+// directory it creates. What to do about either is the caller's decision - nothing here
+// acts on Fatal.
+type Flaw struct {
+	Reason string
+	Fatal  bool
+	// Hint is the command that resolves the flaw, where one does. A permissive umask is the
 	// usual cause and chmod is the whole fix, but the reader has to be told so: a warning on
 	// every command that never names its remedy is the shape of a line people learn to skip.
-	hint string
+	Hint string
 }
 
-// inspectManifest reads the trust facts for an already-open manifest. The file's come from
+// Inspect reads the trust facts for an already-open manifest. The file's come from
 // fstat of the handle, and where it lives from the kernel's own name for the descriptor:
 // authoritative, and free of any race with the bytes already parsed. The directories that
 // lead there come from walking the given path a component at a time, since the endpoint
@@ -213,33 +222,33 @@ type trustFlaw struct {
 // The directories are judged on their mode bits and their access ACL. The manifest's own
 // facts come from fstat, which carries no ACL, because the rewrite corrects its mode - and
 // with the group class the mask every named ACL entry is filtered through.
-func inspectManifest(f *os.File, path string) (manifestTrust, error) {
+func Inspect(f *os.File, path string) (Manifest, error) {
 	fi, err := f.Stat()
 	if err != nil {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
 	// A manifest read from a pipe or a device has no location to judge: the kernel names
 	// the descriptor `pipe:[N]`, whose directory reads back as the process's own working
 	// directory, and a verdict about that describes nothing the manifest came from.
 	// Approve could not rewrite it either.
 	if !fi.Mode().IsRegular() {
-		return manifestTrust{}, fmt.Errorf("%s is not a regular file, so there is nothing to vouch for its permissions", path)
+		return Manifest{}, fmt.Errorf("%s is not a regular file, so there is nothing to vouch for its permissions", path)
 	}
 	file, err := factsOf(path, fi)
 	if err != nil {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
 	target, err := manifestLocation(f)
 	// A host that cannot read the location still knows everything fstat says about the
 	// manifest itself, and refusing here would withhold that over a fact the caller may
 	// not need: validate only warns on what it finds, and a macOS developer linting a
 	// manifest in CI is asking about its contents. What is missing is reported by
-	// locationFlaws, so it is carried rather than assumed clean.
-	if errors.Is(err, errLocationUnknown) {
-		return manifestTrust{file: file}, nil
+	// LocationFlaws, so it is carried rather than assumed clean.
+	if errors.Is(err, ErrLocationUnknown) {
+		return Manifest{file: file}, nil
 	}
 	if err != nil {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
 	// The kernel's name is not always usable as a path, and a rewrite sent to one that no
 	// longer leads back to this descriptor would land somewhere the facts gathered here do
@@ -249,44 +258,47 @@ func inspectManifest(f *os.File, path string) (manifestTrust, error) {
 	// other reason the stat fails describes a different problem and is left as it came.
 	targetFI, err := os.Stat(target)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
 	if err != nil || !os.SameFile(fi, targetFI) {
-		return manifestTrust{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
+		return Manifest{}, fmt.Errorf("%s moved while it was being read; nothing can be said about where it lives", path)
 	}
 	dirs, links, _, err := pathDirs(path)
 	if err != nil {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
 	// The walk landed where the kernel says the descriptor is, or the two disagree about
 	// which file this is and neither the facts nor the location can be trusted. Nothing
 	// short of a swap mid-walk makes them differ, and that is the case worth refusing.
 	if dirPath := filepath.Dir(target); dirs[0].path != dirPath {
-		return manifestTrust{}, fmt.Errorf("%s moved while it was being read: it resolved to %s but is open in %s", path, dirs[0].path, dirPath)
+		return Manifest{}, fmt.Errorf("%s moved while it was being read: it resolved to %s but is open in %s", path, dirs[0].path, dirPath)
 	}
-	return manifestTrust{file: file, dir: dirs[0], chain: dirs[1:], links: links, realPath: target, located: true}, nil
+	return Manifest{file: file, dir: dirs[0], chain: dirs[1:], links: links, RealPath: target, located: true}, nil
 }
 
-// inspectNewManifest gathers what can be judged about a manifest that does not exist yet:
+// InspectNew gathers what can be judged about a manifest that does not exist yet:
 // its location. The path is walked the same way as an existing manifest's, so the write lands
 // where the facts were read, and where the kernel would have put it - including through a
 // symlink at the name itself, which a dotfiles repo whose target is not checked out yet
 // leaves dangling, and which os.WriteFile would have followed rather than replaced.
 //
 // file describes the manifest as it will be created rather than one that is there, so only
-// locationFlaws is meaningful on the result - flaws would report a clean verdict about a
-// file nobody has looked at.
-func inspectNewManifest(path string) (manifestTrust, error) {
+// LocationFlaws is meaningful on the result - Flaws would report a clean verdict about a
+// file nobody has looked at. euid is who will create it, which is the same identity the
+// result is later judged against: reading it from the process here would answer for the
+// observer rather than for the writer, which is the whole distinction Flaws takes it as a
+// parameter to keep.
+func InspectNew(path string, euid uint32) (Manifest, error) {
 	dirs, links, leaf, err := pathDirs(path)
 	if err != nil {
-		return manifestTrust{}, err
+		return Manifest{}, err
 	}
-	return manifestTrust{
-		file:     fileFacts{path: path, mode: newManifestMode, uid: uint32(os.Geteuid())},
+	return Manifest{
+		file:     fileFacts{path: path, mode: newManifestMode, uid: euid},
 		dir:      dirs[0],
 		chain:    dirs[1:],
 		links:    links,
-		realPath: filepath.Join(dirs[0].path, leaf),
+		RealPath: filepath.Join(dirs[0].path, leaf),
 		located:  true,
 	}, nil
 }
@@ -301,36 +313,36 @@ const newManifestMode fs.FileMode = 0o600
 // flaws lists what euid cannot vouch for about the manifest's location, most specific
 // first. An approval stamp is unkeyed drift detection: it attests that the permissions
 // match what was stamped, which says nothing once someone else can restamp them.
-func (t manifestTrust) flaws(euid uint32) []trustFlaw {
-	var out []trustFlaw
+func (t Manifest) Flaws(euid uint32) []Flaw {
+	var out []Flaw
 	if t.file.sharedWrite() != 0 {
-		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s is group/world-writable (%#o)", t.file.path, t.file.mode.Perm()),
+		out = append(out, Flaw{
+			Reason: fmt.Sprintf("%s is group/world-writable (%#o)", t.file.path, t.file.mode.Perm()),
 		})
 	}
 	if t.file.foreignOwner(euid) {
-		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s is owned by uid %d", t.file.path, t.file.uid),
-			fatal:  true,
-			hint:   ownershipHint(t.file, euid),
+		out = append(out, Flaw{
+			Reason: fmt.Sprintf("%s is owned by uid %d", t.file.path, t.file.uid),
+			Fatal:  true,
+			Hint:   ownershipHint(t.file, euid),
 		})
 	}
-	return append(out, t.locationFlaws(euid)...)
+	return append(out, t.LocationFlaws(euid)...)
 }
 
-// locationFlaws is the half of flaws that is about where the manifest lives rather than
+// LocationFlaws is the half of flaws that is about where the manifest lives rather than
 // the manifest itself. approve reports these on their own: the file's own mode is
 // something its rewrite corrects and announces, so warning about it here as well would
 // describe a state approve is in the middle of leaving.
-func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
+func (t Manifest) LocationFlaws(euid uint32) []Flaw {
 	// Nothing was read, so there is nothing to judge and a clean verdict would be the one
 	// wrong answer: every directory below reads as mode 0 owned by root, which is neither
 	// what is there nor a sentence about this manifest. Fatal because approve's stamp is
 	// worth exactly what the location vouches for, and here nothing does.
 	if !t.located {
-		return []trustFlaw{{
-			reason: fmt.Sprintf("where %s lives cannot be checked on %s, so nothing vouches for who else can replace it", t.file.path, runtime.GOOS),
-			fatal:  true,
+		return []Flaw{{
+			Reason: fmt.Sprintf("where %s lives cannot be checked on %s, so nothing vouches for who else can replace it", t.file.path, runtime.GOOS),
+			Fatal:  true,
 		}}
 	}
 	out := dirFlaws(t.dir, "the directory holding it", euid)
@@ -352,9 +364,9 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 		if holder, ok := t.dirAt(filepath.Dir(l.path)); ok && holder.mode.Perm()&0o022 == 0 {
 			continue
 		}
-		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s, a symlink on the path to it, is owned by uid %d and sits in a directory they can write, so they can repoint it at a manifest of their choosing", l.path, l.uid),
-			fatal:  true,
+		out = append(out, Flaw{
+			Reason: fmt.Sprintf("%s, a symlink on the path to it, is owned by uid %d and sits in a directory they can write, so they can repoint it at a manifest of their choosing", l.path, l.uid),
+			Fatal:  true,
 		})
 		break
 	}
@@ -364,7 +376,7 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 	// is read.
 	for _, d := range t.chain {
 		for _, f := range dirFlaws(d, "a directory on the path to it", euid) {
-			if f.fatal {
+			if f.Fatal {
 				return append(out, f)
 			}
 		}
@@ -376,7 +388,7 @@ func (t manifestTrust) locationFlaws(euid uint32) []trustFlaw {
 // from. Every directory holding a link the walk followed is among them, since the walk had
 // to enter it to read the link - a miss means the two disagree, and a link whose holder
 // cannot be found is judged as though the holder were writable rather than waved through.
-func (t manifestTrust) dirAt(path string) (fileFacts, bool) {
+func (t Manifest) dirAt(path string) (fileFacts, bool) {
 	if t.dir.path == path {
 		return t.dir, true
 	}
@@ -390,12 +402,12 @@ func (t manifestTrust) dirAt(path string) (fileFacts, bool) {
 
 // dirFlaws reports what a directory on the way to the manifest lets someone other than
 // euid do with it. role names the directory in the message.
-func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
-	var out []trustFlaw
+func dirFlaws(d fileFacts, role string, euid uint32) []Flaw {
+	var out []Flaw
 	if d.aclSharedWrite() {
-		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s, %s, has an ACL granting write to a named user or group, who can replace the manifest", d.path, role),
-			fatal:  true,
+		out = append(out, Flaw{
+			Reason: fmt.Sprintf("%s, %s, has an ACL granting write to a named user or group, who can replace the manifest", d.path, role),
+			Fatal:  true,
 		})
 	}
 	if shared := d.sharedWrite(); shared != 0 {
@@ -431,13 +443,13 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 				hint = relocateHint(d.path)
 			}
 		}
-		out = append(out, trustFlaw{reason: reason, fatal: fatal, hint: hint})
+		out = append(out, Flaw{Reason: reason, Fatal: fatal, Hint: hint})
 	}
 	if d.foreignOwner(euid) {
-		out = append(out, trustFlaw{
-			reason: fmt.Sprintf("%s, %s, is owned by uid %d, who can replace the manifest", d.path, role, d.uid),
-			fatal:  true,
-			hint:   ownershipHint(d, euid),
+		out = append(out, Flaw{
+			Reason: fmt.Sprintf("%s, %s, is owned by uid %d, who can replace the manifest", d.path, role, d.uid),
+			Fatal:  true,
+			Hint:   ownershipHint(d, euid),
 		})
 	}
 	return out
@@ -451,7 +463,7 @@ func dirFlaws(d fileFacts, role string, euid uint32) []trustFlaw {
 // Telling an ordinary user to chown a file that is not theirs names a command that fails,
 // which is worse than naming none - so they are told the thing they can do without the
 // owner's help, in the same shape as the shared-project directory's hint. It carries the
-// same hedge the chmod hint does, and for a stronger reason: this fires on the directory
+// same hedge the chmod hint does, and for a stronger Reason: this fires on the directory
 // as well as the manifest, and taking a whole checkout from the uid that populated it
 // breaks every later step still running as them.
 func ownershipHint(f fileFacts, euid uint32) string {
@@ -493,31 +505,18 @@ func writerClass(shared fs.FileMode) string {
 	}
 }
 
-// warnStampAtRisk reports who besides this user can change the manifest - but only for a
-// manifest carrying an approval stamp, which is the only thing the warning is about. An
-// unstamped one is the profile-then-run inner loop, run with --allow-unapproved, where
-// there is nothing yet to devalue and the warning is inapplicable; left unconditional it
-// fired on every command of that loop, twice, on any host whose umask is 002. A reader
-// learns within a day that [bento] lines are noise, which is the same shape as the lines
-// they will someday need read - an accepted alias, a shielded-grant opt-in, a degraded
-// layer. approve does not go through here: there a human is establishing the trust, so
-// the state of the location is the decision being made.
-func warnStampAtRisk(w io.Writer, doc *manifest.Document, trust manifestTrust) {
-	if doc.Provenance.Approves == "" {
-		return
-	}
-	warnUntrusted(w, trust.flaws(uint32(os.Geteuid())))
-}
+// Located reports whether where the manifest lives was actually established. False on a
+// host that cannot read it at all, where a caller about to write has nothing inspected to
+// write at - see ErrLocationUnknown.
+func (t Manifest) Located() bool { return t.located }
 
-// warnUntrusted reports every flaw as advisory. The read commands do not refuse on one:
-// a permissive umask or a shared checkout is ordinary, and failing run and validate over
-// it would break working setups to describe a risk the user may already accept. approve,
-// where a human is establishing the trust, does refuse.
-func warnUntrusted(w io.Writer, flaws []trustFlaw) {
-	for _, f := range flaws {
-		fmt.Fprintf(w, "[bento] %s - its approval stamp attests only what whoever can write it leaves there.\n", f.reason)
-		if f.hint != "" {
-			fmt.Fprintf(w, "[bento] %s\n", f.hint)
-		}
-	}
-}
+// Path is the manifest as it was named, not as it resolved: RealPath is the resolution.
+func (t Manifest) Path() string { return t.file.path }
+
+// Mode is the manifest's own permission bits, which a caller rewriting it carries forward.
+func (t Manifest) Mode() fs.FileMode { return t.file.mode.Perm() }
+
+// SharedWrite is the write the manifest itself grants to someone other than its owner,
+// with the exemptions sharedWrite applies - the bits that make an approval stamp attest
+// only what the other writer leaves there.
+func (t Manifest) SharedWrite() fs.FileMode { return t.file.sharedWrite() }

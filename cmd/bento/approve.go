@@ -16,6 +16,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func newApproveCmd() *cobra.Command {
@@ -51,24 +52,24 @@ func newApproveCmd() *cobra.Command {
 			path := args[0]
 			// approve reports the location facts itself below, as a refusal for what it
 			// cannot fix and as the clamp warning for what it can.
-			doc, trust, err := loadDocument(path)
+			doc, mt, err := loadDocument(path)
 			if err != nil {
 				return err
 			}
 			// The trust is reported below rather than by loadDocument, so a manifest
 			// approve is about to clamp is not also warned about as if it were staying
 			// that way. What approve cannot fix refuses here; the rest it acts on.
-			if err := requireApprovableLocation(path, trust); err != nil {
+			if err := requireApprovableLocation(path, mt); err != nil {
 				return err
 			}
-			warnUntrusted(cmd.ErrOrStderr(), trust.locationFlaws(uint32(os.Geteuid())))
+			warnUntrusted(cmd.ErrOrStderr(), mt.LocationFlaws(uint32(os.Geteuid())))
 
 			// A current stamp is not the whole claim: the fingerprint covers the policy, so
 			// a chmod after an approve leaves it reading as current over permissions nobody
 			// attested. The rewrite is what clamps those and says so, and it is skipped here,
 			// so a manifest still needing the clamp goes through it rather than being
 			// reported as already approved for a mode approve never vouched for.
-			approval := checkApproval(doc)
+			approval := trust.CheckApproval(doc)
 			resolved := resolvedGrants(doc.Policy, path)
 			// Before the already-approved shortcut, not after: a manifest stamped by an
 			// earlier bento - or by this one on a host whose shields anchor elsewhere -
@@ -82,8 +83,8 @@ func newApproveCmd() *cobra.Command {
 			// stamped from anywhere. The journal is what tells those apart - it is written
 			// only by this host's approve - so the shortcut is for a re-approval, and a stamp
 			// nobody here recorded goes through the whole review rather than exiting green.
-			rec, journal := readApprovalRecord(trust.realPath, doc)
-			if approval == approvalCurrent && journal == journalMatches && trust.file.sharedWrite() == 0 {
+			rec, journal := readApprovalRecord(mt.RealPath, doc)
+			if approval == trust.ApprovalCurrent && journal == journalMatches && mt.SharedWrite() == 0 {
 				fmt.Fprintf(os.Stdout, "%s is already approved for its current permissions.\n", path)
 				return nil
 			}
@@ -94,7 +95,7 @@ func newApproveCmd() *cobra.Command {
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil)
-			writeApprovalCallouts(os.Stdout, trust.realPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, doc.Policy, approval, rec, journal)
@@ -114,13 +115,13 @@ func newApproveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := writeManifestAtomically(trust, out, os.Stderr); err != nil {
+			if err := writeManifestAtomically(mt, out, os.Stderr); err != nil {
 				return err
 			}
 			// After the manifest, and only once it landed: the journal describes an approval
 			// that is on disk, and recording one for a stamp that failed to write would give
 			// the next re-approval a baseline no manifest ever carried.
-			writeApprovalRecord(trust.realPath, doc.Policy, !assumeYes, os.Stderr)
+			writeApprovalRecord(mt.RealPath, doc.Policy, !assumeYes, os.Stderr)
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
 			return nil
 		},
@@ -143,11 +144,11 @@ func newApproveCmd() *cobra.Command {
 // record of what its previous approve stamped. Where the journal has a trustworthy entry
 // the notice names the changed lines; where it does not it says which of the two reasons
 // applies, both of which are worth knowing on their own. See journal.go.
-func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval approvalState, rec approvalRecord, verdict journalVerdict) {
+func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval trust.ApprovalState, rec approvalRecord, verdict journalVerdict) {
 	switch {
-	case approval == approvalStale:
+	case approval == trust.ApprovalStale:
 		fmt.Fprintf(w, "\nThis manifest was approved before and its permissions have changed since.\n")
-	case approval == approvalCurrent && verdict != journalMatches:
+	case approval == trust.ApprovalCurrent && verdict != journalMatches:
 		// Worded as what bento cannot confirm rather than as a stamp it never wrote: an
 		// untrusted journal can hold this host's own record in a directory somebody widened
 		// since, and the paragraph below says so in the next breath.
@@ -366,14 +367,14 @@ func readApprovalAnswer(ctx context.Context, lines <-chan string, w io.Writer) e
 // that the permissions cannot move without it going stale - which a second writer,
 // whether on the manifest or on the directory it can be renamed within, gives away for
 // free. Only what approve cannot fix and what is unambiguously shared is fatal; see
-// manifestTrust.flaws for which is which.
-func requireApprovableLocation(path string, trust manifestTrust) error {
-	for _, flaw := range trust.flaws(uint32(os.Geteuid())) {
-		if flaw.fatal {
-			if flaw.hint != "" {
-				return fmt.Errorf("refusing to approve %s: %s; %s", path, flaw.reason, flaw.hint)
+// trust.Manifest.flaws for which is which.
+func requireApprovableLocation(path string, mt trust.Manifest) error {
+	for _, flaw := range mt.Flaws(uint32(os.Geteuid())) {
+		if flaw.Fatal {
+			if flaw.Hint != "" {
+				return fmt.Errorf("refusing to approve %s: %s; %s", path, flaw.Reason, flaw.Hint)
 			}
-			return fmt.Errorf("refusing to approve %s: %s", path, flaw.reason)
+			return fmt.Errorf("refusing to approve %s: %s", path, flaw.Reason)
 		}
 	}
 	return nil
@@ -406,12 +407,12 @@ func requireApprovableLocation(path string, trust manifestTrust) error {
 // yet), minus group and world write: approval is drift detection whose whole value is that
 // the permissions cannot change without the stamp going stale, and a manifest anyone can
 // edit gives that away.
-func writeManifestAtomically(trust manifestTrust, data []byte, warn io.Writer) error {
-	target := trust.realPath
-	mode := trust.file.mode.Perm()
+func writeManifestAtomically(mt trust.Manifest, data []byte, warn io.Writer) error {
+	target := mt.RealPath
+	mode := mt.Mode()
 	if shared := mode & 0o022; shared != 0 {
 		mode &^= 0o022
-		fmt.Fprintf(warn, "[bento] %s was group/world-writable (%#o); writing it back as %#o - a manifest others can edit makes its approval stamp meaningless.\n", trust.file.path, trust.file.mode.Perm(), mode)
+		fmt.Fprintf(warn, "[bento] %s was group/world-writable (%#o); writing it back as %#o - a manifest others can edit makes its approval stamp meaningless.\n", mt.Path(), mt.Mode(), mode)
 	}
 
 	dir := filepath.Dir(target)
