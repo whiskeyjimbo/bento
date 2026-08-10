@@ -85,7 +85,7 @@ func newValidateCmd() *cobra.Command {
 			if relocatable {
 				writeRelocatable(os.Stdout, pinned)
 			}
-			if err := reportApproval(os.Stdout, doc, strict); err != nil {
+			if err := reportApproval(os.Stdout, mt.RealPath, doc, strict); err != nil {
 				return err
 			}
 			if err := strictRunnableError(run, strict); err != nil {
@@ -178,10 +178,15 @@ func fileExists(path string) bool {
 // reportApproval prints the approval status and, under strict, fails when it is
 // not current - the CI signal that a manifest's permissions changed without
 // re-approval.
-func reportApproval(w io.Writer, doc *manifest.Document, strict bool) error {
+func reportApproval(w io.Writer, realPath string, doc *manifest.Document, strict bool) error {
 	switch trust.CheckApproval(doc) {
 	case trust.ApprovalCurrent:
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
+		if stampUnrecorded(realPath, doc) {
+			for _, line := range wrapText(unrecordedStamp, textWidth-len("              ")) {
+				fmt.Fprintf(w, "              %s\n", line)
+			}
+		}
 	case trust.ApprovalUnstamped:
 		fmt.Fprintf(w, "\napproval:     not approved - run `bento approve` after reviewing the permissions above\n")
 	case trust.ApprovalStale:

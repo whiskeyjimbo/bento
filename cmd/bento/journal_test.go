@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -564,5 +565,36 @@ func TestASharedJournalEntryIsReplacedByTheNextApproval(t *testing.T) {
 	}
 	if _, verdict := readApprovalRecord(path, doc); verdict != journalMatches {
 		t.Errorf("the journal must recover on the next approval; verdict = %v", verdict)
+	}
+}
+
+// The stamp travels with the manifest and is unkeyed, so a current one says the
+// permissions have not drifted since somebody approved them and never that it was this
+// host. The journal is the only thing that can tell those apart, and saying so is the
+// whole of what bento can do about a shipped stamp: it is a note, because a manifest
+// approved on a workstation and run on a builder is legitimate and refusing it would
+// break that.
+func TestACurrentStampThisHostNeverWroteIsReported(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
+
+	var shipped strings.Builder
+	if err := reportApproval(&shipped, path, doc, true); err != nil {
+		t.Fatalf("an unrecorded stamp must not fail --strict: %v", err)
+	}
+	if !strings.Contains(shipped.String(), "holds no record of approving it") {
+		t.Errorf("a stamp this host never wrote must be reported; got:\n%s", shipped.String())
+	}
+
+	// Once this host records the approval, the note is inapplicable and must go.
+	writeApprovalRecord(path, p, true, io.Discard)
+	var ours strings.Builder
+	if err := reportApproval(&ours, path, doc, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ours.String(), "holds no record") {
+		t.Errorf("a stamp this host recorded must not be reported as unrecorded; got:\n%s", ours.String())
 	}
 }

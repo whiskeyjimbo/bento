@@ -99,10 +99,10 @@ func TestReportApprovalStrictness(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := reportApproval(io.Discard, tc.doc, false); err != nil {
+			if err := reportApproval(io.Discard, "", tc.doc, false); err != nil {
 				t.Errorf("non-strict must never fail; got %v", err)
 			}
-			err := reportApproval(io.Discard, tc.doc, true)
+			err := reportApproval(io.Discard, "", tc.doc, true)
 			if tc.strictFail && err == nil {
 				t.Error("--strict should have failed")
 			}
@@ -580,7 +580,7 @@ func TestStaleRefusalsSayWhereTheDiffIs(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	_ = reportApproval(&buf, stale, false)
+	_ = reportApproval(&buf, "", stale, false)
 	if !strings.Contains(buf.String(), "hash of the permissions, not a copy of them") {
 		t.Errorf("validate's STALE report must say the same; got:\n%s", buf.String())
 	}
