@@ -19,7 +19,9 @@ import (
 // manifest that cannot run. Two documented departures, both carried on the case:
 // OptInRead, which the run honors but a draft manifest should not arrive holding, and
 // ClampKeeps for a grant that merely contains a shield, which the run re-shields the
-// interior of.
+// interior of. WorkspaceDerived is a third, and not a departure the clamp chose: it passes
+// no workspace shields, so a refusal derived from the checkout under the grant is one it
+// cannot see - the proposal keeps a grant the run will refuse.
 func TestShieldCorpusClampDrops(t *testing.T) {
 	for _, c := range shieldcorpus.Cases {
 		t.Run(c.Name, func(t *testing.T) {
@@ -40,7 +42,7 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 			}
 			keptReads, keptWrites, dropped, writeShielded := clampShieldedGrants(set, reads, writes)
 
-			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) && !c.ClampKeeps
+			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) && !c.ClampKeeps && !c.WorkspaceDerived
 			kept := append(append([]string{}, keptReads...), keptWrites...)
 			gotDropped := len(dropped) > 0 || len(writeShielded) > 0
 			if gotDropped != wantDropped {

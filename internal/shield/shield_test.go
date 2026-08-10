@@ -32,9 +32,17 @@ func TestCorpusVerdicts(t *testing.T) {
 					t.Errorf("%s is meant to be an opt-in read but no shield was found to opt into", g)
 				}
 			}
+			// No workspace shields, as at the other two sites that call in here: they are
+			// derived from the checkout under a grant, through seams only the backend has.
+			// So a case whose refusal comes from one is Honored here, and the corpus says
+			// which those are rather than leaving the gap unstated.
+			wantV := want(c.Verdict)
+			if c.WorkspaceDerived {
+				wantV = shield.Honored
+			}
 			_, got := set.Contains(g, kind, optIns, nil)
-			if got != want(c.Verdict) {
-				t.Errorf("%s\nthe run says %s, the shared verdict says %v\nshape: %s", g, c.Verdict, got, c.Why)
+			if got != wantV {
+				t.Errorf("%s\nthe run says %s, the shared verdict says %v, want %v\nshape: %s", g, c.Verdict, got, wantV, c.Why)
 			}
 		})
 	}

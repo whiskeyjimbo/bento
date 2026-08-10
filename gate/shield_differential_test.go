@@ -16,10 +16,11 @@ import (
 // refuses hands the author a manifest that dies at its first step. The profiler clamp is
 // the third site, asserted beside the clamp in cmd/bento.
 //
-// The gate and the backend are allowed to differ in exactly one direction and for
-// exactly one reason: the gate cannot see the caller-supplied denies an embedder passes,
-// so it can miss a refusal. Nothing in this corpus uses those, so here they must agree
-// outright.
+// The gate and the backend are allowed to differ in one direction only - the gate misses
+// a refusal, never invents one - and for two reasons: it cannot see the caller-supplied
+// denies an embedder passes, and it passes no workspace shields, so a refusal derived from
+// the checkout under a grant is one it cannot reach. Nothing in this corpus uses the
+// former; the latter is carried on Case.WorkspaceDerived.
 
 // gateVerdict classifies the sentence the gate refuses a grant with. Matched on the
 // distinguishing clause rather than the whole sentence because the corpus records which
@@ -64,8 +65,12 @@ func TestShieldCorpusGateVerdicts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := gateVerdict(t, c, home); got != c.Verdict {
-				t.Errorf("%s\nthe run says %s, the gate says %s\nshape: %s", c.Path(home), c.Verdict, got, c.Why)
+			want := c.Verdict
+			if c.WorkspaceDerived {
+				want = shieldcorpus.Honored
+			}
+			if got := gateVerdict(t, c, home); got != want {
+				t.Errorf("%s\nthe run says %s, the gate says %s, want %s\nshape: %s", c.Path(home), c.Verdict, got, want, c.Why)
 			}
 		})
 	}

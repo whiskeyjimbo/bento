@@ -94,6 +94,15 @@ type Case struct {
 	// the verdict of every grant in the layout, so leaving it on throughout would let one
 	// divergence mask the rest.
 	Folding bool
+	// WorkspaceDerived marks a case whose refusal comes from a shield derived from the
+	// checkout under the grant rather than from the deny list. Only the backend can build
+	// one: the rules come from walking the grant's enclosing checkout through the
+	// sandbox's own filesystem seams, and the other two sites pass no workspace shields to
+	// Contains at all (gate.writeShieldProblem, clampWriteShieldedGrants), so both answer
+	// Honored. That divergence is deliberate and one-directional - they miss a refusal
+	// rather than invent one - and this field is where it is stated instead of being a
+	// hole in the corpus.
+	WorkspaceDerived bool
 	// ShieldOntoHome adds a shield rule whose symlink lands on the home anchor itself.
 	// Only the case testing that shape gets it: a rule resolving onto the home covers
 	// every other grant in the layout, so leaving it in place for all of them would let
@@ -167,6 +176,14 @@ var Cases = []Case{
 		Grant:   ".local/bin/mytool",
 		Write:   true,
 		Verdict: UnderWriteShield,
+	},
+	{
+		Name:             "write to the hooks dir of an enclosing checkout",
+		Why:              "a write grant under a git checkout shields that checkout's .git/hooks, so a planted pre-commit cannot run on the host at the developer's next commit; the shield is derived from the checkout rather than listed, which only the backend can do",
+		Grant:            "checkout/.git/hooks",
+		Write:            true,
+		Verdict:          UnderWriteShield,
+		WorkspaceDerived: true,
 	},
 	{
 		Name:       "write containing a shield",
@@ -266,6 +283,9 @@ func Build(dir string, c Case) (string, error) {
 	for _, d := range []string{
 		".ssh",
 		".local/bin",
+		// A git checkout, for the shields the backend derives from one. Nothing else in
+		// the layout sits under a .git, so it changes no other case's verdict.
+		"checkout/.git/hooks",
 		"farm/ssh",
 		"farm/keys",
 		"gnupg-target",

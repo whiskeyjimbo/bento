@@ -88,11 +88,15 @@ if [ -n "$offenders" ]; then
 	status=1
 fi
 
-# The deny-list constructors that turn rules into a run's shield set. Assembling these is
-# internal/shield's job; the exceptions below read the same rules as data.
-assemblers='denylist\.Home\(|denylist\.Relocated\(|denylist\.Runtime\('
+# Every way a rule reaches a run's shield set: the built-in constructors, and a Rule
+# written out by hand - which is how the whole grant-derived family is built, and was
+# invisible here while only the constructors were matched. Assembling any of them is
+# internal/shield's job; the exceptions below say what else does and why.
+assemblers='denylist\.Home\(|denylist\.Relocated\(|denylist\.Runtime\(|denylist\.Workspace\(|denylist\.Rule\{'
 
 shield_assemblers='internal/shield
+internal/linux
+gate
 internal/denylist/audit
 internal/credhunt
 cmd/credhunt
@@ -103,6 +107,15 @@ cmd/bento'
 # That is a different question from what a run shields - the run shields only the home it
 # executes as - so it is not a fourth answer to this one, but it is the last place outside
 # internal/shield that builds rules at all. Tracked as bv2-pj8x.8.
+#
+# internal/linux is not reading rules as data: workspaceShields and gitDirShields really do
+# assemble part of a run's shield set, from what the grants reached, using host facts
+# (sb.isDir, sb.listDir, checkoutRoot) that internal/shield has no way to ask for. So the
+# boundary holds for the built-in shields and is stated rather than enforced for the
+# grant-derived half. Listed so a NEW package building rules still fails here.
+#
+# gate is a test fixture only: it hands a Rule to shield.Assemble as input, which is the
+# opposite of assembling a set.
 found=$(grep -rEln --include='*.go' "$assemblers" . | while read -r f; do
 	# A constructor named in prose is not an assembly site. Line comments and the body of a
 	# block comment are dropped; a block comment written without leading stars still reads
@@ -123,11 +136,11 @@ done)
 if [ -n "$extra" ]; then
 	echo "layering: only internal/shield assembles the shields a run applies, but rules are built in:" >&2
 	echo "$extra" | sed 's/^/  /' >&2
-	echo "  Route it through internal/shield, or add it to shield_assemblers in $0 with the reason it reads rules as data." >&2
+	echo "  Route it through internal/shield, or add it to shield_assemblers in $0 with the reason it builds its own." >&2
 	status=1
 fi
 
-echo "layering: kernel enforcement confined to $(echo "$kernel_importers" | wc -l | tr -d ' ') packages; shield assembly in internal/shield, read as data by:"
+echo "layering: kernel enforcement confined to $(echo "$kernel_importers" | wc -l | tr -d ' ') packages; shield assembly in internal/shield, with rules also built in:"
 echo "$shield_assemblers" | grep -vx 'internal/shield' | sed 's/^/  /'
 
 exit $status
