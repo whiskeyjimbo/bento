@@ -90,7 +90,7 @@ func ACLNamedWrite(path string) (bool, error) {
 	// wrong answer this can give.
 	size, err := unix.Getxattr(path, "system.posix_acl_access", nil)
 	switch {
-	case errors.Is(err, unix.ENODATA), errors.Is(err, unix.ENOTSUP):
+	case attrMissing(err), errors.Is(err, unix.ENOTSUP):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)
@@ -98,7 +98,7 @@ func ACLNamedWrite(path string) (bool, error) {
 	buf := make([]byte, size)
 	n, err := unix.Getxattr(path, "system.posix_acl_access", buf)
 	switch {
-	case errors.Is(err, unix.ENODATA):
+	case attrMissing(err):
 		return false, nil // set aside between the two reads
 	case err != nil:
 		return false, fmt.Errorf("cannot read the ACL on %s: %w", path, err)

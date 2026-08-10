@@ -15,6 +15,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// attrMissing reports the errno a getxattr of an absent attribute answers with. Linux says
+// ENODATA; the other platforms this builds for have a distinct ENOATTR that ENODATA does
+// not alias, and reading that as a real failure would report a private directory as one
+// somebody else can write.
+func attrMissing(err error) bool { return errors.Is(err, unix.ENODATA) }
+
 // manifestLocation is the path an open manifest actually came from, read back from the
 // kernel's own name for the descriptor rather than the name it was opened by.
 func manifestLocation(f *os.File) (string, error) {

@@ -3,8 +3,16 @@
 package trust
 
 import (
+	"errors"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
+
+// attrMissing is ENOATTR off Linux, which is a distinct errno from the ENODATA the Linux
+// build answers with - see the Linux half. Getting it wrong is not a fail-open: the ACL
+// check would error, and the callers read an error as untrusted.
+func attrMissing(err error) bool { return errors.Is(err, unix.ENOATTR) }
 
 // manifestLocation reports the location as unknown off Linux: reading back where an open
 // descriptor came from is what /proc is used for here, and the name the manifest was
