@@ -303,8 +303,9 @@ func writeJournalDiff(w io.Writer, rec approvalRecord, verdict journalVerdict, p
 		fmt.Fprintf(w, "\nbento has a record of an approval for this manifest but will not compare against it:\n")
 		fmt.Fprintf(w, "the journal under $XDG_STATE_HOME/bento/approvals/ is not yours alone - somebody else\n")
 		fmt.Fprintf(w, "can write it, or it belongs to another user - so a record there is no evidence of what\n")
-		fmt.Fprintf(w, "you approved. Read the whole policy above as if it were unapproved; this run reports\n")
-		fmt.Fprintf(w, "the path and what is wrong with it on stderr when it records this approval.\n")
+		fmt.Fprintf(w, "you approved. Read the whole policy above as if it were unapproved. Recording this\n")
+		fmt.Fprintf(w, "approval replaces the entry with one only you can write; where it is the directory\n")
+		fmt.Fprintf(w, "that is shared, that write is refused and reported on stderr instead.\n")
 		return
 	case journalForeign:
 		fmt.Fprintf(w, "\nbento's record for this manifest describes a different approval than the stamp it now\n")

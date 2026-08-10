@@ -524,3 +524,45 @@ func TestReadApprovalAnswer(t *testing.T) {
 		})
 	}
 }
+
+// The entry half of the untrusted verdict, which the notice now describes rather than
+// promising a stderr report for: a private directory holding an entry somebody else can
+// write is not diffed against, and recording the next approval replaces it with one only
+// this user can write. Checking the entry before replacing it would refuse instead, and
+// leave a journal that never recovers.
+func TestASharedJournalEntryIsReplacedByTheNextApproval(t *testing.T) {
+	base := stateHome(t)
+	dir := filepath.Join(base, "bento", "approvals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	entry, err := journalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("{}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalUntrusted {
+		t.Fatalf("an entry anyone can write must not be trusted; verdict = %v", verdict)
+	}
+
+	var warn strings.Builder
+	writeApprovalRecord(path, p, true, &warn)
+	if warn.Len() != 0 {
+		t.Errorf("replacing the entry must not warn: %s", warn.String())
+	}
+	fi, err := os.Stat(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("the replacement must be private; mode = %#o", got)
+	}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalMatches {
+		t.Errorf("the journal must recover on the next approval; verdict = %v", verdict)
+	}
+}
