@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -984,5 +985,52 @@ func TestATornRecordLineDoesNotVoidTheAttestation(t *testing.T) {
 	}
 	if b := parseApplied(openReport(t, other)); b.complete {
 		t.Error("a line the stage never writes was accepted after the marker")
+	}
+}
+
+// The observation report and the applied-layer report are the same descriptor - each is
+// the child's first extra file - so a sandbox asking for both would have the two writers
+// overwriting each other. compile refuses that combination, and this is what makes the
+// refusal reachable: every other test drives observe or applied alone, so a regression
+// that dropped the guard would leave two reports on one fd and pass the suite.
+func TestAProfiledRunCannotAlsoBeReportedOn(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/work/run.py"}
+	base := testSandbox("/work/run.py")
+
+	both := base
+	both.observe, both.applied = true, true
+	if _, _, err := compile(p, enforce.Process{}, both); err == nil {
+		t.Fatalf("compile accepted a run that is both profiled and reported on: the two reports share fd %d", observeReportFD)
+	}
+
+	// Either alone still compiles, and each names its own descriptor on the wire - the
+	// half a bare refusal test would not catch if the flags stopped being emitted.
+	for _, tc := range []struct {
+		name string
+		set  func(*sandbox)
+		flag string
+	}{
+		{"profiling", func(sb *sandbox) { sb.observe = true }, "--observe-fd"},
+		{"enforcing", func(sb *sandbox) { sb.applied = true }, "--applied-fd"},
+	} {
+		sb := base
+		tc.set(&sb)
+		args, _, err := compile(p, enforce.Process{}, sb)
+		if err != nil {
+			t.Fatalf("compile (%s): %v", tc.name, err)
+		}
+		if !slices.Contains(args, tc.flag) {
+			t.Errorf("a %s run did not pass %s, so its report has nowhere to land", tc.name, tc.flag)
+		}
+	}
+
+	// A run asking for neither claims neither descriptor: naming one the host does not
+	// pass would point the launcher at whatever its Go runtime happens to hold there.
+	args, _, err := compile(p, enforce.Process{}, base)
+	if err != nil {
+		t.Fatalf("compile (plain): %v", err)
+	}
+	if slices.Contains(args, "--observe-fd") || slices.Contains(args, "--applied-fd") {
+		t.Errorf("a run that asked for no report claimed a report descriptor: %v", args)
 	}
 }
