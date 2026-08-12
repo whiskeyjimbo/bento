@@ -468,6 +468,7 @@ func TestHomeShieldsRelocatedWriteOnlyDirs(t *testing.T) {
 		"/elsewhere/foundry/bin":          "FOUNDRY_DIR",
 		"/elsewhere/composer/vendor/bin":  "COMPOSER_HOME",
 		"/elsewhere/mix/escripts":         "MIX_HOME",
+		"/elsewhere/mix/archives":         "MIX_HOME",
 		"/elsewhere/gradle/init.d":        "GRADLE_USER_HOME",
 		"/elsewhere/gem/bin":              "GEM_HOME",
 		"/elsewhere/dotnet/.dotnet/tools": "DOTNET_CLI_HOME",
@@ -747,12 +748,13 @@ func TestHomeShieldsRelocatedDirectoryCredentialFiles(t *testing.T) {
 	t.Setenv("DBT_PROFILES_DIR", "/srv/dbt")
 	t.Setenv("CURL_HOME", "/srv/curl")
 	t.Setenv("PULUMI_HOME", "/srv/pulumi")
+	t.Setenv("GRADLE_USER_HOME", "/srv/gradle")
 
 	byPath := map[string]Rule{}
 	for _, r := range allRules("/home/u") {
 		byPath[r.Path] = r
 	}
-	for _, p := range []string{"/srv/dbt/profiles.yml", "/srv/curl/.curlrc", "/srv/pulumi/credentials.json"} {
+	for _, p := range []string{"/srv/dbt/profiles.yml", "/srv/curl/.curlrc", "/srv/pulumi/credentials.json", "/srv/gradle/gradle.properties"} {
 		r, ok := byPath[p]
 		if !ok {
 			t.Errorf("expected a shield at %q, missing", p)
@@ -805,6 +807,48 @@ func TestHomeShieldsRelocatedHgrcPath(t *testing.T) {
 	}
 	if r := byPath["/home/u/.hgrc"]; r.Source != "" {
 		t.Errorf("the default ~/.hgrc is stamped $%s; it is already shielded by name", r.Source)
+	}
+}
+
+// GOPATH is a colon-separated list whose FIRST element supplies the bindir `go install`
+// writes and the shell resolves a bare tool name in. GOBIN overrides it outright, so the
+// GOPATH bindir is a target only where GOBIN is unset.
+func TestHomeShieldsTheGopathBindir(t *testing.T) {
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "/srv/go:/srv/go-second:relgo")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	r, ok := byPath["/srv/go/bin"]
+	if !ok {
+		t.Fatal("expected a shield at /srv/go/bin, missing")
+	}
+	if r.Deny != DenyWrite || !r.Dir || r.Source != "GOPATH" {
+		t.Errorf("shield at /srv/go/bin is %+v, want a DenyWrite directory rule stamped GOPATH", r)
+	}
+	// Only the first element supplies the bindir; the rest hold module sources and build
+	// caches an in-sandbox build legitimately writes.
+	if _, ok := byPath["/srv/go-second/bin"]; ok {
+		t.Error("a non-first GOPATH element was shielded; only the first supplies the bindir")
+	}
+
+	// GOBIN is what `go install` honors when both are set, and it has a shield of its own.
+	t.Setenv("GOBIN", "/elsewhere/gobin")
+	for _, r := range allRules("/home/u") {
+		if r.Source == "GOPATH" {
+			t.Errorf("GOPATH emitted a shield at %q while GOBIN is set", r.Path)
+		}
+	}
+
+	// A restatement of the default adds nothing: ~/go/bin is shielded by name.
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "/home/u/go")
+	for _, r := range allRules("/home/u") {
+		if r.Source == "GOPATH" {
+			t.Errorf("a restatement of the default GOPATH produced a rule at %q", r.Path)
+		}
 	}
 }
 

@@ -669,6 +669,8 @@ func Home(home string) []Rule {
 		".yarnrc",              // yarn-path names a binary yarn execs (classic; rarely holds a token)
 		".config/pip/pip.conf", // index-url can redirect installs to a malicious registry; readable but not writable
 		".pip/pip.conf",        // legacy per-user pip config, also read by default (same index-url redirect)
+		".config/uv/uv.toml",   // uv's index url/extra-index-url, pip.conf's redirect in the newer installer
+		".aider.conf.yml",      // aider's config names the editor and test/lint commands it runs
 		".xscreensaver",        // names programs run as screensavers
 		".psqlrc",              // \! runs a shell command when psql starts
 		".Rprofile",            // R sources it at startup (.Renviron holds the secrets and is DenyAll above)
@@ -835,6 +837,9 @@ func Home(home string) []Rule {
 		".config/Code - Insiders",
 		".config/Cursor",
 		".config/VSCodium",
+		".config/Windsurf",
+		".config/zed", // tasks.json and the language-server settings name host command lines
+		".codeium",    // the Codeium/Windsurf plugin's own tree, config and downloaded language server
 		".vscode-server", // Remote's extension host, with its own data/Machine/settings.json
 		".vscode-oss",
 		".vscode-insiders", // the home-level extension tree of the Insiders build
@@ -915,6 +920,8 @@ func Home(home string) []Rule {
 		".codex",
 		".cursor",
 		".gemini", // settings.json declares MCP servers, the same host-exec knob
+		".config/opencode",
+		".config/goose", // its extensions are command lines goose spawns on the host
 
 		// Directories the distro default profile prepends to $PATH when they exist
 		// (/etc/skel/.profile does this for both). A binary planted here is run by the
@@ -925,6 +932,11 @@ func Home(home string) []Rule {
 		// to them.
 		".local/bin",
 		"bin",
+		// The same $PATH prepend from the two user-level package managers that ship it in
+		// their own profile snippet rather than /etc/skel: nix's per-user profile link and
+		// flatpak's exported wrappers, both on $PATH on a stock distro that has either.
+		".nix-profile/bin",
+		".local/share/flatpak/exports/bin",
 		// The rest of the $PATH-resident binary directories firejail write-protects: each
 		// holds executables or shims a later shell resolves a bare command name to, so a
 		// planted file runs on the host under a name the user already types.
@@ -997,6 +1009,9 @@ func Home(home string) []Rule {
 		".foundry/bin",                // forge/cast/anvil
 		".pub-cache/bin",              // dart/flutter global activate
 		".mix/escripts",               // elixir escripts
+		// Archives are code mix loads on every invocation, not just on a bare command
+		// name, so a planted one runs under the developer's next mix command.
+		".mix/archives",
 		".local/share/pnpm",           // pnpm's global bindir
 		// The per-user gem tree, taken whole the way .gem above is: the bindir under it
 		// carries the ruby ABI version in its name, so no concrete path reaches it.
@@ -1361,6 +1376,20 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			}
 		}
 	}
+	// GOPATH is a colon-separated list, and only its FIRST element supplies the bindir
+	// `go install` writes - the one $PATH carries and the host's next bare tool name
+	// resolves to. GOBIN overrides it outright when set, and has its own row below, so the
+	// GOPATH bindir is only a target where GOBIN is unset. The remaining elements hold
+	// module sources and caches an in-sandbox build legitimately writes.
+	if gobin := os.Getenv("GOBIN"); gobin == "" {
+		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && filepath.IsAbs(gopath[0]) {
+			if c := filepath.Clean(gopath[0]); !isDefault(c, "go") {
+				if p := filepath.Join(c, "bin"); !covered(p) && shieldable(p) {
+					rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: "GOPATH"})
+				}
+			}
+		}
+	}
 	// The write-shielded directories a tool-specific variable relocates. addWriteShield is
 	// the wrong emitter here - it produces a file rule, which would bind an empty file over
 	// a directory and leave every entry beside it plantable. Same guards otherwise,
@@ -1695,6 +1724,7 @@ var loneEnvs = []string{
 	"MAILCAPS",
 	"CARGO_HOME",
 	"HGRCPATH",
+	"GOPATH",
 	"XDG_RUNTIME_DIR",
 }
 
@@ -1752,6 +1782,10 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// PULUMI_HOME moves the whole tree; only credentials.json in it is a secret, and the
 	// plugins and workspace state beside it are what an in-sandbox `pulumi` reads.
 	{"PULUMI_HOME", ".pulumi", "credentials.json"},
+	// gradle.properties carries the signing keys and repository passwords; the caches and
+	// wrapper distributions beside it are what an in-sandbox build reads. init.d under the
+	// same variable is write-shielded in writeOnlyDirEnvs, the other half of the split.
+	{"GRADLE_USER_HOME", ".gradle", "gradle.properties"},
 }
 
 // The tool-specific variables that move a whole write-shielded DIRECTORY off its default
@@ -1794,9 +1828,8 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// interpreter a policy may legitimately write, and DenyWrite has no opt-in, so a root
 	// rule would refuse that grant outright.
 	//
-	// Left as a residual: GOPATH, which is colon-separated and so cannot go through a
-	// filepath.Join of one base. Its first element supplies GOBIN's default, and GOBIN is
-	// what `go install` honors when both are set.
+	// GOPATH is colon-separated and so cannot go through a filepath.Join of one base; it
+	// gets the SplitList shape HGRCPATH and MAILCAPS use, in the block above.
 	{"GOBIN", "go/bin", ""},
 	{"RUSTUP_HOME", ".rustup", ""},
 	{"NVM_DIR", ".nvm", ""},
@@ -1821,9 +1854,9 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"FOUNDRY_DIR", ".foundry", "bin"},
 	{"COMPOSER_HOME", ".config/composer", "vendor/bin"},
 	{"MIX_HOME", ".mix", "escripts"},
+	{"MIX_HOME", ".mix", "archives"},
 	// Gradle runs every script in init.d before each build. The credential file beside it
-	// (gradle.properties) is DenyAll at the default and does not follow the relocation -
-	// a file-shaped shield this table cannot emit, filed as a residual.
+	// (gradle.properties) is file-shaped, so it follows the relocation from dirFileEnvs.
 	{"GRADLE_USER_HOME", ".gradle", "init.d"},
 	// The default bindir carries the ruby ABI version in its name, so there is no
 	// home-relative default to compare against and the empty def only spares $HOME
@@ -1895,6 +1928,10 @@ var credentialAnchorDirs = []string{
 	".config/msmtp",     // XDG msmtp config
 	".mutt",             // ~/.mutt/muttrc and sourced files
 	".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
+	// step-cli keeps the CA and provisioner private keys here; the certificates and the
+	// config beside them under ~/.step are what a sandboxed step run reads, so only the
+	// secrets directory is taken - the .subversion/auth narrowing.
+	".step/secrets",
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
 	".config/helm",      // repository basic-auth and OCI registry auth (caches live under .cache/.local)
