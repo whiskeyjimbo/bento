@@ -16,6 +16,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/launcher"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/profile"
 )
 
 // systemReadPaths are mounted read-only in every sandbox so an interpreter can
@@ -585,7 +586,7 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 	// privilege, but it is exposure nobody asked for. Structural rather than keyed on the
 	// running user's home, because that comparison fails exactly when it matters most:
 	// as root, home is /root, so a sibling test would never fire for anything under /home.
-	if slices.Contains(homeContainers, filepath.Dir(prefix)) {
+	if slices.Contains(profile.HomeContainers(), filepath.Dir(prefix)) {
 		return true
 	}
 	// The prefix comes from the symlink-resolved interpreter, so the home it is compared
@@ -620,10 +621,6 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 	}
 	return false
 }
-
-// homeContainers are the directories user homes are conventionally created under, so a
-// prefix sitting directly inside one is somebody's home rather than an install root.
-var homeContainers = []string{"/home", "/var/home", "/export/home", "/Users"}
 
 // interpreterPrefix returns the install root of an interpreter that lives
 // outside the system paths (e.g. ~/.pyenv/versions/3.12/bin/python3 →

@@ -1022,6 +1022,13 @@ func TestAProfiledRunCannotAlsoBeReportedOn(t *testing.T) {
 		if !slices.Contains(args, tc.flag) {
 			t.Errorf("a %s run did not pass %s, so its report has nowhere to land", tc.name, tc.flag)
 		}
+		// The bridge's liveness pipe is wired only by the egress path, and base has no
+		// proxy socket. TestOnlyTheEnforcingPathClaimsTheLivenessDescriptor covers the
+		// other conjunct - egress without the applied report - so between them a run
+		// claims fd bridgeLivenessFD only when it actually passes one.
+		if slices.Contains(args, "--bridge-liveness-fd") {
+			t.Errorf("a %s run with no egress claimed the liveness descriptor, which only the proxy path passes", tc.name)
+		}
 	}
 
 	// A run asking for neither claims neither descriptor: naming one the host does not

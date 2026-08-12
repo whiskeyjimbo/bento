@@ -686,7 +686,7 @@ func TestSynthesizeDropsForeignHomeWriteGrants(t *testing.T) {
 	// by the home rules rather than by whatever the test host's real home happens to be.
 	t.Setenv("HOME", "/home/profiler")
 
-	for _, w := range []string{"/home/other/.bashrc", "/var/home/other/.profile", "/Users/other/.zshrc"} {
+	for _, w := range []string{"/home/other/.bashrc", "/var/home/other/.profile", "/export/home/other/.kshrc", "/Users/other/.zshrc"} {
 		p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{w}})
 		if len(p.Write) != 0 {
 			t.Errorf("write %s proposed the grant %v, want none - a whole foreign account must not be proposed", w, p.Write)
@@ -694,7 +694,7 @@ func TestSynthesizeDropsForeignHomeWriteGrants(t *testing.T) {
 	}
 	// The container itself is every account at once. Nothing else catches it inside
 	// Synthesize: it is not home-shaped, and the caller's broad clamp is a frontend.
-	for _, c := range []string{"/home", "/var/home", "/Users"} {
+	for _, c := range homeContainers {
 		if !isForeignHomeTree(c) {
 			t.Errorf("isForeignHomeTree(%s) = false, want true - a grant of the container is every account", c)
 		}
