@@ -144,6 +144,13 @@ var Cases = []Case{
 		Verdict: InsideShield,
 	},
 	{
+		Name:    "write to an absent path inside a symlinked credential subdirectory",
+		Why:     "the two cases above name a file that is there; this one does not, and the pair is what holds a site to answering the same way for both - an absent write admitted at preflight is created by the run and refused on the next pass with the artifact already on the host",
+		Grant:   "farm/keys/id_absent",
+		Write:   true,
+		Verdict: InsideShield,
+	},
+	{
 		Name:           "read under a shield that resolved onto the home anchor",
 		Why:            "a rule whose symlink lands on a home (or above one) is not shielded at all - shielding it would hide everything the policy granted rather than one store - so the run honors this and a site that refuses it refuses what the run allows",
 		Grant:          "gnupg-target/notes",
@@ -294,7 +301,12 @@ func Build(dir string, c Case) (string, error) {
 			return "", err
 		}
 	}
-	for _, f := range []string{".ssh/config", "farm/ssh/known_hosts", "gnupg-target/notes"} {
+	// farm/keys/id_ed25519 exists and farm/keys/id_absent does not, both inside the same
+	// symlinked credential subdirectory. A check whose answer turns on the file being there
+	// - EvalSymlinks against the way a write really lands, an isDir gate, Lstat against
+	// Stat - answers alike for the two only if it does not, and admitting an absent path
+	// that the run then creates is how a hooks directory reached the host once already.
+	for _, f := range []string{".ssh/config", "farm/ssh/known_hosts", "farm/keys/id_ed25519", "gnupg-target/notes"} {
 		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
 			return "", err
 		}
