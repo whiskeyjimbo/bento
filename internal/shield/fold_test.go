@@ -112,21 +112,57 @@ func TestReadInsideAShieldIsRefusedThroughAFoldedSpelling(t *testing.T) {
 	}
 }
 
-// Only the SHIELD'S OWN name folds. A mount that folds ~/.ssh says nothing about whether
-// two spellings of a directory above it are one directory, and a refusal there would land
-// on a grant that reaches no shielded store - in the DenyWrite sentence, which has no
-// opt-in to offer the author as a way out.
-func TestAnAncestorSpelledDifferentlyIsNotFoldedOntoTheShield(t *testing.T) {
+// A whole-mount fold folds EVERY component, so an ancestor respelling reaches the store
+// just as surely as the shield's own name does - vfat, exfat and ciopfs are the cases the
+// deny-list leads with, and a rule that only ever folded the last component would leave
+// all three open one directory up.
+func TestAnAncestorRespellingIsRefusedWhereTheWholeMountFolds(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Same last component as the shield, a different directory above it.
-	elsewhere := filepath.Join(home, ".LOCAL", "bin", "mytool")
-	set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+	// .LOCAL is the respelled component; the shield's own name is spelled as it is.
+	grant := filepath.Join(home, ".LOCAL", "bin", "mytool")
 
-	if _, got := set.Contains(elsewhere, shield.Write, nil, nil); got != shield.Honored {
-		t.Errorf("a grant under a differently-spelled ANCESTOR must not be folded onto the shield; got %v", got)
+	for _, tc := range []struct {
+		name string
+		fold bool
+		want shield.Verdict
+	}{
+		{"case-sensitive mount", false, shield.Honored},
+		{"case-folding mount", true, shield.UnderWriteShield},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := shield.Assemble(folding(tc.fold), []string{home}, denylist.RuntimeDir(), nil)
+			if _, got := set.Contains(grant, shield.Write, nil, nil); got != tc.want {
+				t.Fatalf("write grant of %q: got %v, want %v", grant, got, tc.want)
+			}
+		})
+	}
+}
+
+// The other half of the same rule, and the reason each differing component is settled by
+// asking the host rather than by which component it is. ext4's casefold is PER-DIRECTORY,
+// so a home that does not fold makes ~/.LOCAL a genuinely different directory even where
+// the shield's own parent folds - and refusing that grant would turn away a write that
+// reaches no shielded store at all, in the DenyWrite sentence, which has no opt-in to
+// offer the author as a way out.
+func TestAnAncestorThatDoesNotFoldIsNotFoldedOntoTheShield(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A host that folds inside ~/.local but nowhere above it.
+	fs := shield.Host()
+	fs.SameFile = func(a, b string) bool {
+		return strings.HasPrefix(a, filepath.Join(home, ".local")+string(filepath.Separator)) &&
+			shieldcorpus.FS(shieldcorpus.Case{Folding: true}).SameFile(a, b)
+	}
+	set := shield.Assemble(fs, []string{home}, denylist.RuntimeDir(), nil)
+
+	grant := filepath.Join(home, ".LOCAL", "bin", "mytool")
+	if _, got := set.Contains(grant, shield.Write, nil, nil); got != shield.Honored {
+		t.Errorf("an ancestor the host says is a different directory must not be folded onto the shield; got %v", got)
 	}
 }
 

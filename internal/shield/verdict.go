@@ -182,35 +182,47 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 	return denylist.Rule{}, Honored
 }
 
-// covers reports whether a shield at or above grant covers it, byte-exact or under the
-// one respelling a case-folding mount admits.
+// covers reports whether a shield at or above grant covers it, byte-exact or through a
+// respelling the host's own mounts admit.
 //
-// Exactly one component is compared case-blind: the shield's own name, the component
-// foldsCase proves folds. Everything above it is still byte-exact, and deliberately so - a
-// fold at ~/.pyenv/shims says nothing about whether /home/U and /home/u are one directory,
-// and case-blinding the ancestors would refuse a write grant that reaches no shielded
-// store at all, in a sentence that offers no opt-in because a DenyWrite shield has none.
-// The narrower test is also the honest one: it is exactly the reach the detector proves,
-// so a folding ancestor over a non-folding child stays outside both, as foldsCase says.
+// The two folding cases the deny-list has to survive want opposite answers from a
+// whole-path comparison, which is why this walks components instead. A whole-mount fold
+// (vfat, exfat, ciopfs) folds EVERY component, so /home/U/.ssh/id_rsa is the shielded key
+// and refusing it is the whole point. ext4's casefold is per-directory, so with +F on
+// ~/.config alone, ~/.CONFIG/gh is a genuinely different path and refusing it would turn
+// away a write grant that reaches no shielded store, in a sentence that offers no way out
+// because a DenyWrite shield has no opt-in.
 //
-// EqualFold rather than a lowercased comparison, because what is being modelled is the
-// filesystem's fold: ext4's casefold and vfat both fold the whole Unicode range, where
+// So each component that differs is settled by asking the host, not by a rule about which
+// component it is: the two spellings of the path SO FAR must be one file. That is the
+// same question foldsCase asks, put to the pair actually in front of it, and it costs a
+// syscall only where the spellings really differ - after the byte-exact test above has
+// already declined, which on a host that folds nothing is where this stops.
+//
+// EqualFold and not a lowercased comparison, because what is being modelled is the
+// filesystem's fold: ext4's casefold and vfat fold the whole Unicode range, where
 // lowercasing the Kelvin sign and lowercasing "k" do not meet.
-//
-// The name comparison is the cheap half and runs first. It is only ever a prefilter - on a
-// host that does not fold, two spellings differing in case alone still reach the syscall,
-// which is the one case the byte-exact test has already declined.
 func (s Set) covers(shield, grant string) bool {
 	if policy.CoversResolved(shield, grant) {
 		return true
 	}
-	dir := filepath.Dir(shield)
-	rest, ok := strings.CutPrefix(filepath.Clean(grant), strings.TrimSuffix(dir, "/")+"/")
-	if !ok {
+	sp := strings.Split(filepath.Clean(shield), string(filepath.Separator))
+	gp := strings.Split(filepath.Clean(grant), string(filepath.Separator))
+	if len(gp) < len(sp) {
 		return false
 	}
-	name, _, _ := strings.Cut(rest, "/")
-	return strings.EqualFold(name, filepath.Base(shield)) && s.foldsCase(shield)
+	for i, name := range sp {
+		if name == gp[i] {
+			continue
+		}
+		if !strings.EqualFold(name, gp[i]) {
+			return false
+		}
+		if !s.fs.SameFile(strings.Join(sp[:i+1], string(filepath.Separator)), strings.Join(gp[:i+1], string(filepath.Separator))) {
+			return false
+		}
+	}
+	return true
 }
 
 // foldsCase reports whether the directory holding path reaches path's content under a

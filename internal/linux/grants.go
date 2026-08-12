@@ -43,7 +43,8 @@ func checkGrants(sb sandbox, p *policy.Policy, reads, writes []string) error {
 	// Before checkWriteNotUnderReadOnlyShield, which also consults the workspace shields
 	// and compares against their RESOLVED paths: where a symlink redirects one, that
 	// check fires on the target and tells the author to remove a grant that is not the
-	// problem, while the remedy that works - remove the symlink - is this one's.
+	// problem, while the remedies that work - take the link out of the path, or make it
+	// resolve to itself - are this one's to name.
 	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
 		return err
 	}
@@ -159,7 +160,8 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	// on the host. checkoutRoot walks up regardless of what the grant itself is.
 	var workspace []denylist.Rule
 	for _, w := range writes {
-		workspace = append(workspace, workspaceShields(sb, w)...)
+		ws, _ := workspaceShields(sb, w)
+		workspace = append(workspace, ws...)
 	}
 	set := shields(sb)
 	for _, g := range writes {
@@ -202,9 +204,10 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 		if w == "/" || !sb.isDir(w) {
 			continue
 		}
-		for _, r := range workspaceShields(sb, w) {
+		ws, _ := workspaceShields(sb, w)
+		for _, r := range ws {
 			if real := sb.resolve(r.Path); real != r.Path {
-				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q: the shield would bind on the target while the host keeps walking the link's own name, which stays writable inside the grant. A link covering part of a relocated git store is refused for the same reason, since the scan cannot see whether a gitdir lies behind it without walking a tree the run controls. Replace the symlink with a bind mount, so the path resolves to itself; or move the checkout out from under the grant", w, r.Path, real)
+				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q: the shield would bind on the target while the host keeps walking the link's own name, which stays writable inside the grant. A link covering part of a relocated git store is refused for the same reason, since the scan cannot see whether a gitdir lies behind it without walking a tree the run controls. Remove the symlink; or, where it is holding a relocated store the checkout needs, replace it with a bind mount so the path resolves to itself; or move the checkout out from under the grant", w, r.Path, real)
 			}
 		}
 	}

@@ -101,17 +101,17 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		if !sb.isDir(w) {
 			continue
 		}
-		// Grants sharing a checkout derive one set of shields between them, so the
-		// appends are collapsed here rather than per consumer. The cache hands the same
-		// slice back for the second grant, which is a rule list appended twice: denyArgs
-		// drops the copies on its resolved-shield key, createdShields has no such key,
-		// and the two are documented as selecting the same rules.
-		root := checkoutRoot(sb, w)
+		// One checkout derives one set of shields however many grants land in it, and
+		// that is settled here rather than in each consumer: denyArgs collapses repeats
+		// on its resolved-shield key and createdShields has no such key, so a duplicate
+		// admitted here reaches only one of the two - and they are meant to select the
+		// same rules.
+		ws, root := workspaceShields(sb, w)
 		if seen[root] {
 			continue
 		}
 		seen[root] = true
-		rules = append(rules, workspaceShields(sb, w)...)
+		rules = append(rules, ws...)
 	}
 	return rules
 }
@@ -131,16 +131,18 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 // A grant outside any checkout anchors on itself, and shields above a grant are
 // unreachable, so shieldNeeded skips them and the argv is unchanged for the ordinary
 // "write: <repo>" and "write: <repo>/build" shapes.
-func workspaceShields(sb sandbox, dir string) []denylist.Rule {
+// The checkout it anchored on comes back with the rules, so a caller collapsing grants
+// that share one does not have to walk to it a second time.
+func workspaceShields(sb sandbox, dir string) ([]denylist.Rule, string) {
 	root := checkoutRoot(sb, dir)
 	if rules, ok := sb.workspaceShieldCache[root]; ok {
-		return rules
+		return rules, root
 	}
 	rules := slices.Clip(append(denylist.Workspace(root), gitDirShields(sb, root)...))
 	if sb.workspaceShieldCache != nil {
 		sb.workspaceShieldCache[root] = rules
 	}
-	return rules
+	return rules, root
 }
 
 // checkoutRoot walks up from dir to the nearest directory holding a .git, or returns

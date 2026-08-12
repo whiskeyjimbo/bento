@@ -52,7 +52,8 @@ func TestWorkspaceShieldCacheIsTransparent(t *testing.T) {
 	cached := sb
 	cached.workspaceShieldCache = map[string][]denylist.Rule{}
 	for _, root := range []string{first, second, first, second} {
-		want, got := workspaceShields(sb, root), workspaceShields(cached, root)
+		want, _ := workspaceShields(sb, root)
+		got, _ := workspaceShields(cached, root)
 		if !slices.Equal(want, got) {
 			t.Errorf("%s: cached shields differ from the uncached walk\n got %v\nwant %v", root, got, want)
 		}
