@@ -65,13 +65,14 @@ func TestBuildStagesTheLayoutTheCasesAreWrittenAgainst(t *testing.T) {
 
 // Whether a grant's path is on disk decides what several of the cases measure, and Build
 // and Cases state it in two places that cannot see each other. This pins the pairing:
-// every grant is staged unless it is one of the three the corpus deliberately leaves
-// absent, each of which loses its point the moment something creates it.
+// every grant is staged unless the corpus deliberately leaves it absent, and each of those
+// loses its point the moment something creates it.
 func TestEveryCaseGrantIsStagedUnlessItIsDeliberatelyAbsent(t *testing.T) {
 	absent := map[string]string{
-		"farm/pending/id_rsa":  "behind a dangling link: a dotfiles tree checked out lazily",
+		"farm/pending/id_rsa": "behind a dangling link: a dotfiles tree checked out lazily",
 		"farm/keys/id_absent": "the absent half of the pair inside a symlinked credential subdirectory",
 		".local/bin/mytool":   "the tool a run would install into a DenyWrite shield, which is refused before anything is there to stat",
+		".local/BIN/mytool":   "the same tool by the spelling only a folding mount reaches, which Build cannot stage at all",
 	}
 	for _, c := range shieldcorpus.Cases {
 		home, err := shieldcorpus.Build(t.TempDir(), c)

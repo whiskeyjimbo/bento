@@ -85,6 +85,70 @@ func TestWriteUnderAReadOnlyShieldIsRefusedThroughAFoldedSpelling(t *testing.T) 
 	}
 }
 
+// The same respelling against a DenyAll shield, where it is sharper still: nothing has to
+// be writable for the store's content to leave, so this is the read that would have handed
+// over a private key beside a byte-exact bind at ~/.ssh.
+func TestReadInsideAShieldIsRefusedThroughAFoldedSpelling(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	grant := filepath.Join(home, ".SSH", "id_rsa")
+
+	for _, tc := range []struct {
+		name string
+		fold bool
+		want shield.Verdict
+	}{
+		{"case-sensitive mount", false, shield.Honored},
+		{"case-folding mount", true, shield.InsideShield},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := shield.Assemble(folding(tc.fold), []string{home}, denylist.RuntimeDir(), nil)
+			if _, got := set.Contains(grant, shield.Read, nil, nil); got != tc.want {
+				t.Fatalf("read grant of %q: got %v, want %v", grant, got, tc.want)
+			}
+		})
+	}
+}
+
+// Only the SHIELD'S OWN name folds. A mount that folds ~/.ssh says nothing about whether
+// two spellings of a directory above it are one directory, and a refusal there would land
+// on a grant that reaches no shielded store - in the DenyWrite sentence, which has no
+// opt-in to offer the author as a way out.
+func TestAnAncestorSpelledDifferentlyIsNotFoldedOntoTheShield(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Same last component as the shield, a different directory above it.
+	elsewhere := filepath.Join(home, ".LOCAL", "bin", "mytool")
+	set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+
+	if _, got := set.Contains(elsewhere, shield.Write, nil, nil); got != shield.Honored {
+		t.Errorf("a grant under a differently-spelled ANCESTOR must not be folded onto the shield; got %v", got)
+	}
+}
+
+// The workspace shields are the second place a DenyWrite rule is matched, and they are the
+// ones a checkout derives - a planted pre-commit runs on the host at the developer's next
+// commit, so a folded spelling reaching them is worth as much to a run as one reaching a
+// listed shield.
+func TestAFoldedWriteIntoAWorkspaceShieldIsRefused(t *testing.T) {
+	home := t.TempDir()
+	hooks := filepath.Join(home, "proj", ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := []denylist.Rule{{Path: hooks, Deny: denylist.DenyWrite, Dir: true}}
+	set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+
+	grant := filepath.Join(home, "proj", ".git", "HOOKS", "pre-commit")
+	if _, got := set.Contains(grant, shield.Write, nil, workspace); got != shield.UnderWriteShield {
+		t.Errorf("write grant of %q: got %v, want UnderWriteShield", grant, got)
+	}
+}
+
 // A grant INSIDE a shield stays InsideShield on a folding mount: that refusal offers the
 // opt-in, and the folding one does not, so letting the later check win would withdraw a
 // remedy the run still honors.

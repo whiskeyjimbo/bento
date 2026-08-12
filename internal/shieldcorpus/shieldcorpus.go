@@ -185,6 +185,14 @@ var Cases = []Case{
 		Verdict: UnderWriteShield,
 	},
 	{
+		Name:    "write inside a DenyWrite shield reached by a folded spelling",
+		Why:     "a DenyWrite shield is one byte-exact bind too, so where the mount folds, ~/.local/BIN reaches the same shim directory the shield binds at ~/.local/bin; there is no opt-in to weigh here, which is why this one is refused where the folding cases above a DenyAll shield are refused in their own sentence",
+		Grant:   ".local/BIN/mytool",
+		Write:   true,
+		Folding: true,
+		Verdict: UnderWriteShield,
+	},
+	{
 		Name:             "write to the hooks dir of an enclosing checkout",
 		Why:              "a write grant under a git checkout shields that checkout's .git/hooks, so a planted pre-commit cannot run on the host at the developer's next commit; the shield is derived from the checkout rather than listed, which only the backend can do",
 		Grant:            "checkout/.git/hooks",

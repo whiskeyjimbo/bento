@@ -95,7 +95,13 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// enforcer skips the shield so the real content binds read-only. A grant strictly
 		// inside one is refused either way - a shield cannot be partly lifted - so opting
 		// one file in means naming the shielding directory and taking its siblings with it.
-		if policy.CoversResolved(a.Resolved, grant) && !slices.Contains(optIns, a.Resolved) {
+		// The folded spelling counts here too, and more sharply than anywhere else: a
+		// DenyAll shield hides a credential store, so a read of ~/.SSH/id_rsa beside a
+		// byte-exact bind at ~/.ssh hands over the key with nothing needing to be writable.
+		// An opt-in is matched on the shield's own resolved path, so a grant that reaches
+		// the store only by respelling it is not one and is refused - which is the right
+		// way round, the opt-in being a path the author named deliberately.
+		if s.covers(a.Resolved, grant) && !slices.Contains(optIns, a.Resolved) {
 			if s.callerDenied(a.Resolved) {
 				return a.Rule, InsideCallerShield
 			}
@@ -177,18 +183,34 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 }
 
 // covers reports whether a shield at or above grant covers it, byte-exact or under the
-// respelling a case-folding mount admits. The folded arm is gated on foldsCase, so it
-// carries that detector's reach and no more: it answers for a whole-mount fold, where
-// every component folds, and for an ext4 casefold attribute on the shield's own parent.
+// one respelling a case-folding mount admits.
 //
-// The case-blind comparison is the cheap half and runs first, because it is only ever a
-// prefilter - a host that does not fold reaches the syscall for two paths differing in
-// case alone, which the byte-exact test has already declined.
+// Exactly one component is compared case-blind: the shield's own name, the component
+// foldsCase proves folds. Everything above it is still byte-exact, and deliberately so - a
+// fold at ~/.pyenv/shims says nothing about whether /home/U and /home/u are one directory,
+// and case-blinding the ancestors would refuse a write grant that reaches no shielded
+// store at all, in a sentence that offers no opt-in because a DenyWrite shield has none.
+// The narrower test is also the honest one: it is exactly the reach the detector proves,
+// so a folding ancestor over a non-folding child stays outside both, as foldsCase says.
+//
+// EqualFold rather than a lowercased comparison, because what is being modelled is the
+// filesystem's fold: ext4's casefold and vfat both fold the whole Unicode range, where
+// lowercasing the Kelvin sign and lowercasing "k" do not meet.
+//
+// The name comparison is the cheap half and runs first. It is only ever a prefilter - on a
+// host that does not fold, two spellings differing in case alone still reach the syscall,
+// which is the one case the byte-exact test has already declined.
 func (s Set) covers(shield, grant string) bool {
 	if policy.CoversResolved(shield, grant) {
 		return true
 	}
-	return policy.CoversResolved(strings.ToLower(shield), strings.ToLower(grant)) && s.foldsCase(shield)
+	dir := filepath.Dir(shield)
+	rest, ok := strings.CutPrefix(filepath.Clean(grant), strings.TrimSuffix(dir, "/")+"/")
+	if !ok {
+		return false
+	}
+	name, _, _ := strings.Cut(rest, "/")
+	return strings.EqualFold(name, filepath.Base(shield)) && s.foldsCase(shield)
 }
 
 // foldsCase reports whether the directory holding path reaches path's content under a
