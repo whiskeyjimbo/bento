@@ -275,6 +275,24 @@ func TestHuntPrunesCheckoutsButNeverTheScanRoot(t *testing.T) {
 	}
 }
 
+// The object store skipped by name is the ONLY narrowing a home that is itself a dotfiles
+// checkout gets - it is deliberately spared the checkout prune - so it has to be counted
+// like every other one. Uncounted, the report says "0 tree(s) pruned" on the one home
+// where a tree went unscanned, which reads as a scan that looked everywhere.
+func TestHuntCountsTheVCSObjectStorePrune(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1; a prune the operator cannot see is a suppression", pruned)
+	}
+}
+
 // A machine store is pruned as content-addressed artifacts rather than the user's own
 // files, but the prune must be visible: an operator who cannot see that the tool narrowed
 // cannot tell a clean home from a scan that skipped the interesting part.

@@ -223,6 +223,7 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 			// loose blobs under names that carry no shape at all, so it contributes only
 			// noise. denylist's alias scan makes the same narrowing for the same reason.
 			if n := d.Name(); n == ".git" || n == ".hg" || n == ".svn" {
+				pruned++
 				return fs.SkipDir
 			}
 			// A source checkout is workspace surface, not home-shield surface: bento
