@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
@@ -49,9 +50,15 @@ import (
 // corpus carries its own, and Audit diffs their combined candidates against one rule
 // list. A plain function value rather than an interface: there is one method's worth of
 // behavior here, and both parsers already have this shape.
+//
+// A parser returns what it DROPPED alongside what it kept: every drop is a directive that
+// leaves the diff without being compared, and a corpus that quietly stops parsing reads
+// exactly like a corpus with nothing left to find. Name is what the report calls the
+// profile when it says so.
 type Source struct {
+	Name    string
 	Content string
-	Parse   func(content, home, runUser string) []Candidate
+	Parse   func(content, home, runUser string) ([]Candidate, int)
 }
 
 // Candidate is one upstream directive mapped into bento's terms.
@@ -136,7 +143,8 @@ var DormantKeywords = map[string]string{
 func StaleKeywords(sources []Source, home, runUser string) []string {
 	sections := map[string]bool{}
 	for _, s := range sources {
-		for _, c := range s.Parse(s.Content, home, runUser) {
+		candidates, _ := s.Parse(s.Content, home, runUser)
+		for _, c := range candidates {
 			sections[strings.ToLower(c.Section)] = true
 		}
 	}
@@ -344,8 +352,15 @@ type Gap struct {
 // ${PATH} entries, and the non-shield directives (noblacklist, read-write, include,
 // mkdir, rmenv, whitelist) are dropped: those are outside bento's home/runtime
 // threat model, which its empty-root default already covers.
-func ParseFirejail(content, home, runUser string) []Candidate {
+//
+// The second return is the number of SHIELD directives - blacklist, blacklist-nolog,
+// read-only - the parser could not turn into a candidate, which is a different thing from
+// the deliberate drops above. A directive the parser does not understand leaves the diff
+// silently, so an upstream that moves a block behind a spelling this parser misses reads
+// as a corpus with fewer entries rather than as one that stopped being read.
+func ParseFirejail(content, home, runUser string) ([]Candidate, int) {
 	var out []Candidate
+	dropped := 0
 	var section string
 	headerCaptured := false
 	for line := range strings.SplitSeq(content, "\n") {
@@ -385,6 +400,12 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		line = strings.TrimSpace(strings.TrimPrefix(line, buildCondition(line)))
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
+			// A shield keyword with no path is a line this parser was meant to read and
+			// could not; anything else here is a directive with no argument, which shields
+			// nothing under any spelling.
+			if len(fields) == 1 && shieldKeyword(fields[0]) {
+				dropped++
+			}
 			continue
 		}
 		var deny denylist.Deny
@@ -396,6 +417,14 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		case "read-only":
 			deny = denylist.DenyWrite
 		default:
+			// The known non-shield directives (noblacklist, whitelist, include, mkdir...)
+			// are a deliberate drop. A token that is none of them is a spelling this
+			// parser does not recognise - a "?HAS_FOO:blacklist" with no space after the
+			// colon is the cheapest live example - and one of those carrying a whole block
+			// away is exactly what the count exists to make visible.
+			if !firejailDirectives[fields[0]] {
+				dropped++
+			}
 			continue
 		}
 		// The path is the rest of the line, not the second field: firejail profiles carry
@@ -411,11 +440,46 @@ func ParseFirejail(content, home, runUser string) []Candidate {
 		}
 		path, ok := expand(raw, home, runUser)
 		if !ok {
+			// A system path or a ${PATH}/${CFG} entry is out of bento's scope by design and
+			// not a drop worth counting - most of the corpus is that. An UNRECOGNISED
+			// variable is: firejail renaming or adding one moves home-relative entries
+			// behind a spelling expand answers "out of scope" to, and that answer is
+			// indistinguishable here from the one /etc gets.
+			if v := leadingVar(raw); v != "" && !knownFirejailVars[v] {
+				dropped++
+			}
 			continue
 		}
 		out = append(out, Candidate{Path: path, Deny: deny, Glob: strings.ContainsAny(raw, "*?"), Dir: strings.HasSuffix(raw, "/"), Section: section, Raw: line})
 	}
-	return out
+	return out, dropped
+}
+
+// knownFirejailVars are the profile variables whose scope is already decided: expand
+// resolves the first two, and the rest name system locations bento's empty-root default
+// covers. A variable outside this set is one nobody has classified, which is what the
+// parser's dropped count exists to surface.
+var knownFirejailVars = map[string]bool{
+	"${HOME}": true, "${RUNUSER}": true, "${PATH}": true, "${CFG}": true, "${DESKTOP}": true,
+}
+
+// leadingVar returns the "${...}" token a directive's path starts with, or "" when it
+// starts with anything else.
+func leadingVar(raw string) string {
+	if !strings.HasPrefix(raw, "${") {
+		return ""
+	}
+	if i := strings.IndexByte(raw, '}'); i > 0 {
+		return raw[:i+1]
+	}
+	return ""
+}
+
+// shieldKeyword reports whether a firejail directive keyword is one that shields a path -
+// the directives this parser maps into candidates, as opposed to the ones it drops by
+// design.
+func shieldKeyword(k string) bool {
+	return k == "blacklist" || k == "blacklist-nolog" || k == "read-only"
 }
 
 // firejailDirectives are the leading keywords of firejail profile directives. A
@@ -441,12 +505,19 @@ func isCommentedDirective(comment string) bool {
 // with it ("?HAS_X11: blacklist ${HOME}/.ICEauthority"); both the parser and the
 // commented-directive check must look past it to the directive keyword, and they read
 // it here so the two cannot diverge on the syntax again.
+//
+// The space after the colon is optional in firejail's grammar, so the token is cut at the
+// colon rather than at the whitespace: "?HAS_X11:blacklist ..." otherwise reads as a
+// directive keyword nothing recognises, and the whole conditional block leaves the diff.
 func buildCondition(line string) string {
-	fields := strings.Fields(line)
-	if len(fields) > 0 && strings.HasPrefix(fields[0], "?") && strings.HasSuffix(fields[0], ":") {
-		return fields[0]
+	if !strings.HasPrefix(line, "?") {
+		return ""
 	}
-	return ""
+	i := strings.IndexByte(line, ':')
+	if i < 0 || strings.ContainsFunc(line[:i], unicode.IsSpace) {
+		return ""
+	}
+	return line[:i+1]
 }
 
 // expand resolves the firejail variables bento cares about and reports whether the
@@ -673,7 +744,8 @@ func relLookup(path, home string, m map[string]string) bool {
 func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfScope []Gap) {
 	var candidates []Candidate
 	for _, s := range sources {
-		candidates = append(candidates, s.Parse(s.Content, home, runUser)...)
+		parsed, _ := s.Parse(s.Content, home, runUser)
+		candidates = append(candidates, parsed...)
 	}
 	rules := append(denylist.Home(home), denylist.Runtime(runUser, home)...)
 	inScope, outOfScope := SplitByScope(Diff(candidates, rules))

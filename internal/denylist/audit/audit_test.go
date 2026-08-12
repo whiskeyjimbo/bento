@@ -29,7 +29,7 @@ read-write ${HOME}/.local/share
 include disable-common.local
 rmenv GITHUB_TOKEN
 `
-	got := ParseFirejail(content, "/HOME", "/run/user/1000")
+	got, _ := ParseFirejail(content, "/HOME", "/run/user/1000")
 
 	want := []Candidate{
 		{Path: "/HOME/.ssh", Deny: denylist.DenyAll},
@@ -82,7 +82,7 @@ blacklist ${HOME}/.xinitrc
 blacklist ${HOME}/.config/i3
 `
 	byPath := map[string]Candidate{}
-	for _, c := range ParseFirejail(content, "/HOME", "/run/user/1000") {
+	for _, c := range mustParse(ParseFirejail(content, "/HOME", "/run/user/1000")) {
 		byPath[c.Path] = c
 	}
 
@@ -119,7 +119,7 @@ func TestParseFirejailInScopeHeaderUpgradesLeadingNote(t *testing.T) {
 blacklist ${HOME}/.xinitrc
 blacklist ${HOME}/.config/autostart
 `
-	for _, c := range ParseFirejail(content, "/HOME", "/run/user/1000") {
+	for _, c := range mustParse(ParseFirejail(content, "/HOME", "/run/user/1000")) {
 		if c.Section != "X11 session autostart" {
 			t.Errorf("%s attributed to %q, want the header \"X11 session autostart\"", c.Path, c.Section)
 		}
@@ -629,7 +629,7 @@ func TestParseAppArmor(t *testing.T) {
   allow @{HOME}/.cache/{,**} rw,
 `
 	got := map[string]Candidate{}
-	for _, c := range ParseAppArmor(content, "/HOME", "/run/user/1000") {
+	for _, c := range mustParse(ParseAppArmor(content, "/HOME", "/run/user/1000")) {
 		got[c.Path] = c
 	}
 
@@ -688,7 +688,7 @@ func TestParseAppArmor(t *testing.T) {
 // rooted at a literal "@HOME" that match no rule - which silently drops the entire
 // corpus from the diff while the gate still reports a pass.
 func TestParseAppArmorSubstitutesBeforeExpanding(t *testing.T) {
-	got := ParseAppArmor("  deny @{HOME}/.ssh/{,**} mrwkl,\n", "/HOME", "/run/user/1000")
+	got, _ := ParseAppArmor("  deny @{HOME}/.ssh/{,**} mrwkl,\n", "/HOME", "/run/user/1000")
 	if len(got) != 1 || got[0].Path != "/HOME/.ssh" {
 		t.Errorf("ParseAppArmor = %+v, want exactly /HOME/.ssh", got)
 	}
@@ -704,7 +704,7 @@ func TestParseAppArmorKeepsTheTreeBranchOfADuplicatedPath(t *testing.T) {
 		"tree branch first": "  deny @{HOME}/.ssh{/**,} mrwkl,\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := ParseAppArmor(line, "/HOME", "/run/user/1000")
+			got, _ := ParseAppArmor(line, "/HOME", "/run/user/1000")
 			if len(got) != 1 || got[0].Path != "/HOME/.ssh" || !got[0].Dir {
 				t.Errorf("ParseAppArmor = %+v, want exactly /HOME/.ssh as a directory", got)
 			}
@@ -722,7 +722,7 @@ func TestParseAppArmorMergesTheStrongestClaimAcrossLines(t *testing.T) {
 		"read first":  "  deny @{HOME}/.foo{,/**} mrwkl,\n  deny @{HOME}/.foo w,\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := ParseAppArmor(profile, "/HOME", "/run/user/1000")
+			got, _ := ParseAppArmor(profile, "/HOME", "/run/user/1000")
 			if len(got) != 1 || got[0].Deny != denylist.DenyAll || !got[0].Dir {
 				t.Errorf("ParseAppArmor = %+v, want one DenyAll directory candidate for /HOME/.foo", got)
 			}
@@ -799,5 +799,80 @@ func TestStaleKeywordsNoticesARetitledSection(t *testing.T) {
 		if slices.Contains(stale, kw) {
 			t.Errorf("%q is recorded dormant but was reported stale; the gate would red-fail on a corpus that is fine", kw)
 		}
+	}
+}
+
+// mustParse drops the parser's dropped-line count for the tests that assert only on the
+// candidates. The count has tests of its own.
+func mustParse(candidates []Candidate, _ int) []Candidate { return candidates }
+
+// A drop is a directive that leaves the diff without being compared, and a corpus that
+// quietly stops parsing reads exactly like one with nothing left to find. So the parser
+// counts what it could not read - and does NOT count the drops that are deliberate, or
+// the count is noise nobody can ratchet on.
+func TestParseFirejailCountsWhatItCouldNotRead(t *testing.T) {
+	const deliberate = `# Top secret
+blacklist ${HOME}/.ssh
+blacklist /etc/shadow
+blacklist ${PATH}/sudo
+noblacklist ${HOME}/.config/foo
+read-write ${HOME}/.local/share
+include disable-common.local
+rmenv GITHUB_TOKEN
+`
+	kept, dropped := ParseFirejail(deliberate, "/HOME", "/run/user/1000")
+	if len(kept) != 1 || dropped != 0 {
+		t.Errorf("kept %d dropped %d, want 1 and 0: a system path, a ${PATH} entry and the non-shield directives are drops by design", len(kept), dropped)
+	}
+
+	// The three shapes that are NOT by design: a shield keyword with no path, a keyword
+	// spelling this parser does not know, and a variable nobody has classified.
+	const unread = `# Top secret
+blacklist ${HOME}/.ssh
+blacklist
+bl@cklist ${HOME}/.gnupg
+blacklist ${XDGDATA}/keyrings
+`
+	kept, dropped = ParseFirejail(unread, "/HOME", "/run/user/1000")
+	if len(kept) != 1 || dropped != 3 {
+		t.Errorf("kept %d dropped %d, want 1 and 3; an unreadable directive absent from both counts is one nobody can notice", len(kept), dropped)
+	}
+}
+
+// firejail's build-condition token may be written with no space after the colon. Read as
+// a directive keyword it matches nothing, so the whole conditional block would leave the
+// diff - and before the drop count existed, leave it silently.
+func TestParseFirejailReadsABuildConditionWithNoSpace(t *testing.T) {
+	kept, dropped := ParseFirejail("# Top secret\n?HAS_X11:blacklist ${HOME}/.ICEauthority\n", "/HOME", "/run/user/1000")
+	if len(kept) != 1 || kept[0].Path != "/HOME/.ICEauthority" {
+		t.Fatalf("parsed %+v, want the .ICEauthority candidate: the space after the colon is optional in firejail's grammar", kept)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0", dropped)
+	}
+}
+
+// The AppArmor parser counts the same way, including the create-guards isCreateGuard
+// suppresses by design - its own doc concedes that drop is a narrowing of the diff, and a
+// count is what makes an upstream rewriting "foo/{,**}" as a bare "foo/ w" visible.
+func TestParseAppArmorCountsWhatItCouldNotRead(t *testing.T) {
+	const content = `# private files
+deny @{HOME}/.ssh/{,**} mrwkl,
+deny @{HOME}/.config/ w,
+deny @{HOME}/ w,
+deny @{XDG_DATA}/keyrings mrwkl,
+deny /etc/shadow mrwkl,
+deny @{HOME}/.netrc,
+`
+	kept, dropped := ParseAppArmor(content, "/HOME", "/run/user/1000")
+	if len(kept) != 1 || kept[0].Path != "/HOME/.ssh" {
+		t.Fatalf("parsed %+v, want only the .ssh candidate", kept)
+	}
+	// The create-guard, the rule that trims away to the home root, the unclassified
+	// variable, and the deny rule carrying no mode token - four the parser could not turn
+	// into a candidate. /etc/shadow is out of scope by design and not among them, and a
+	// line that is no deny rule at all was never this parser's to read.
+	if dropped != 4 {
+		t.Errorf("dropped = %d, want 4", dropped)
 	}
 }

@@ -59,15 +59,17 @@ import (
 // automatically invisible to the other. Their parser is ParseAppArmor, not ParseFirejail
 // - the formats share no syntax.
 var upstreamSources = []struct {
+	name          string
 	url           string
 	sentinel      string
 	minCandidates int
-	parse         func(content, home, runUser string) []audit.Candidate
+	maxDropRatio  float64
+	parse         func(content, home, runUser string) ([]audit.Candidate, int)
 }{
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh", 250, audit.ParseFirejail},
-	{"https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla", 1000, audit.ParseFirejail},
-	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", 20, audit.ParseAppArmor},
-	{"https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", 12, audit.ParseAppArmor},
+	{"disable-common.inc", "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh", 250, 0.05, audit.ParseFirejail},
+	{"disable-programs.inc", "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla", 1000, 0.05, audit.ParseFirejail},
+	{"private-files", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", 20, 0.5, audit.ParseAppArmor},
+	{"private-files-strict", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", 12, 0.5, audit.ParseAppArmor},
 }
 
 // The paths the parser expands firejail's variables to; any absolute value works,
@@ -163,11 +165,21 @@ func collect(fetch func(url string) (string, error), w io.Writer) ([]audit.Sourc
 		// check satisfied and the tail missing. Refusing on the count is the same
 		// judgement as refusing on the sentinel - this is not the corpus - so it shares
 		// the status.
-		if n := len(src.parse(content, home, runUser)); n < src.minCandidates {
-			fmt.Fprintf(w, "denylist-audit: %s parsed to %d in-scope directives, below the floor of %d; the body is not the whole profile, so refusing to report a pass\n", src.url, n, src.minCandidates)
+		kept, dropped := src.parse(content, home, runUser)
+		if len(kept) < src.minCandidates {
+			fmt.Fprintf(w, "denylist-audit: %s parsed to %d in-scope directives, below the floor of %d; the body is not the whole profile, so refusing to report a pass\n", src.url, len(kept), src.minCandidates)
 			return nil, exitContentRefused
 		}
-		sources = append(sources, audit.Source{Content: content, Parse: src.parse})
+		// The count floor above only catches a corpus that got SHORTER. A corpus that
+		// moved its entries behind a syntax this parser does not read keeps its length and
+		// loses them from the diff, which is the same "not the corpus" verdict reached
+		// from the other side: the ratio is what notices, since the parsers now report
+		// what they could not understand.
+		if r := float64(dropped) / float64(len(kept)+dropped); r > src.maxDropRatio {
+			fmt.Fprintf(w, "denylist-audit: %s left %d of %d directive(s) unparsed (%.0f%%, ceiling %.0f%%); the parser no longer reads this profile's syntax, so refusing to report a pass\n", src.url, dropped, len(kept)+dropped, r*100, src.maxDropRatio*100)
+			return nil, exitContentRefused
+		}
+		sources = append(sources, audit.Source{Name: src.name, Content: content, Parse: src.parse})
 	}
 	return sources, 0
 }
@@ -211,6 +223,17 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	stale := audit.StaleKeywords(sources, home, runUser)
 	if len(stale) > 0 {
 		fmt.Fprintf(w, "%d scope keyword(s) now match no upstream section, so the blocks they classified are no longer compared - retitled upstream? Re-point the keyword in inScopeSection or record it in DormantKeywords: %s\n\n", len(stale), strings.Join(stale, ", "))
+	}
+
+	// What each parser could not read, per profile and whatever the gate decides. The
+	// ratio ceiling in collect only fires on a collapse; a slice going quiet moves the
+	// count long before it moves the ratio, and a number an operator can compare against
+	// the last run is what makes that visible. A source with no name is a test corpus.
+	for _, s := range sources {
+		kept, dropped := s.Parse(s.Content, home, runUser)
+		if dropped > 0 && s.Name != "" {
+			fmt.Fprintf(w, "%s: %d of %d directive(s) were not understood by the parser and are absent from this diff\n", s.Name, dropped, len(kept)+dropped)
+		}
 	}
 
 	// A dormancy record claims a section exists upstream and holds no home-relative path.

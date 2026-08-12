@@ -865,10 +865,14 @@ func TestRelocatedNeverEmitsARuleInsideADenyAllTree(t *testing.T) {
 	t.Setenv("GNUPGHOME", home+"/.ssh/gpg")
 	t.Setenv("MISE_DATA_DIR", home+"/.aws/mise")
 
+	// Both halves of the guard: the DenyAll trees Home already emitted, and the ones this
+	// pass emits itself - a relocated store is as capable of enclosing a later rule as a
+	// default one is.
 	defaults := Home(home)
-	for _, r := range Relocated(defaults, []string{home}) {
-		for _, d := range defaults {
-			if d.Deny != DenyAll || !d.Dir {
+	relocated := Relocated(defaults, []string{home})
+	for _, r := range relocated {
+		for _, d := range slices.Concat(defaults, relocated) {
+			if d.Deny != DenyAll || !d.Dir || d.Path == r.Path {
 				continue
 			}
 			if strings.HasPrefix(r.Path, d.Path+"/") {

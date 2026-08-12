@@ -512,3 +512,37 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 		})
 	}
 }
+
+// The count floor only catches a corpus that got SHORTER. One that moved its entries
+// behind a syntax the parser does not read keeps its length and loses them from the diff,
+// which reads as "no gaps there" just the same - so the share each parser could not
+// understand has a ceiling of its own.
+func TestCollectRefusesACorpusItCannotRead(t *testing.T) {
+	var b bytes.Buffer
+	_, code := collect(func(url string) (string, error) {
+		for _, src := range upstreamSources {
+			if src.url != url {
+				continue
+			}
+			body := fullBody(src.sentinel, src.minCandidates)
+			// An unclassified variable: the directives are all still there, and every one
+			// of them is answered "out of scope" by a parser that has never seen the
+			// spelling.
+			for i := range src.minCandidates {
+				if strings.HasPrefix(src.sentinel, "blacklist") {
+					body += fmt.Sprintf("blacklist ${XDGDATA}/moved%d\n", i)
+				} else {
+					body += fmt.Sprintf("  deny @{XDG_DATA}/moved%d mrwkl,\n", i)
+				}
+			}
+			return body, nil
+		}
+		return "", nil
+	}, &b)
+	if code != exitContentRefused {
+		t.Errorf("a corpus the parser can no longer read must exit %d; got %d (%q)", exitContentRefused, code, b.String())
+	}
+	if !strings.Contains(b.String(), "unparsed") {
+		t.Errorf("the refusal must say what share went unread; got %q", b.String())
+	}
+}

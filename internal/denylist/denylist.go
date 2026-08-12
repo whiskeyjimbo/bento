@@ -244,9 +244,9 @@ func (h Holds) Exposure() string {
 // that anchor is the environment's. So HOME=/ is refused outright rather than accepted as
 // the anchor of last resort: an anchor at the root is not a home whose stores are covered
 // but a home whose rules land on /bin, /Applications and the mail spool - which the
-// degraded tier's Landlock enforces for real. Dropping it leaves the passwd entry as the
-// anchor where there is one, and no anchors at all where there is not, which is the
-// refusal below. Shieldable refuses "/" as a rule TARGET for the same reason; this is the
+// degraded tier's Landlock enforces for real. Both sources are held to it: dropping "/"
+// leaves the passwd entry as the anchor where that answers something else, and no anchors
+// at all where it does not, which is the refusal below. Shieldable refuses "/" as a rule TARGET for the same reason; this is the
 // same refusal one level up, at the anchor.
 //
 // It lives here, beside the rules it anchors, because every consumer has to agree on the
@@ -424,10 +424,11 @@ func Home(home string) []Rule {
 		".codeium/config.json",             // the Codeium/Windsurf plugin's API key
 		// goose keeps provider API keys in the OS keyring where there is one and falls back
 		// to this file where there is not - a headless host, or GOOSE_DISABLE_KEYRING, which
-		// is the shape a sandbox runs on. The tree around it is DenyWrite above.
+		// is the shape a sandbox runs on. The tree around it is DenyWrite with the other
+		// agent config trees, so the agent still reads its own settings.
 		".config/goose/secrets.yaml",
-		// opencode splits the two: the config is under .config/opencode, DenyWrite above,
-		// and the provider tokens land here.
+		// opencode splits the two: the config is under .config/opencode, DenyWrite with
+		// the other agent config trees, and the provider tokens land here.
 		".local/share/opencode/auth.json",
 		// Claude Code keeps its account/OAuth block in the SAME file as the global
 		// configuration, so the tree-DenyWrite/credential-DenyAll split above cannot
@@ -855,8 +856,8 @@ func Home(home string) []Rule {
 		".config/Cursor",
 		".config/VSCodium",
 		".config/Windsurf",
-		".config/zed", // tasks.json and the language-server settings name host command lines
-		".codeium",    // the plugin's own tree: the downloaded language server it execs (the API key inside is DenyAll below)
+		".config/zed",    // tasks.json and the language-server settings name host command lines
+		".codeium",       // the plugin's own tree: the language server it execs (its API key is a credential file, hidden)
 		".vscode-server", // Remote's extension host, with its own data/Machine/settings.json
 		".vscode-oss",
 		".vscode-insiders", // the home-level extension tree of the Insiders build
@@ -1029,7 +1030,7 @@ func Home(home string) []Rule {
 		// Archives are code mix loads on every invocation, not just on a bare command
 		// name, so a planted one runs under the developer's next mix command.
 		".mix/archives",
-		".local/share/pnpm",           // pnpm's global bindir
+		".local/share/pnpm", // pnpm's global bindir
 		// The per-user gem tree, taken whole the way .gem above is: the bindir under it
 		// carries the ruby ABI version in its name, so no concrete path reaches it.
 		".local/share/gem/ruby",
@@ -1146,8 +1147,9 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 					continue
 				}
 				// The same two guards every block below runs. sub is non-empty by
-				// construction, so no emitted path can be a home anchor and the shieldable
-				// half cannot fire today; covered can - an XDG base pointed at an
+				// construction, so an emitted path is never the base itself, and shieldable
+				// fires only on the contrived layouts that put an anchor under one;
+				// covered is the half a plausible host reaches - an XDG base pointed at an
 				// already-hidden tree (XDG_CACHE_HOME=$HOME/.ssh) puts an interior rule
 				// inside a DenyAll, which survives an opt-in matching only the enclosing
 				// rule. Held in common with the other blocks so a widening here inherits
@@ -1949,22 +1951,22 @@ var credentialAnchorDirs = []string{
 	// helper_binaries_dir/hooks_dir and registries.conf mirrors, which redirect a later
 	// host invocation to attacker binaries or registries; hiding it covers both.
 	".config/containers",
-	".gnupg",            // secret keyrings
-	".terraform.d",      // credentials.tfrc.json
-	".config/gh",        // GitHub CLI tokens
-	".local/share/gh",   // GitHub CLI tokens
-	".config/rclone",    // remote storage tokens
-	".oci",              // Oracle Cloud keys
-	".config/doctl",     // DigitalOcean tokens
-	".config/op",        // 1Password CLI
-	".config/keybase",   // Keybase keys and tokens
-	".pki",              // NSS certificate/key databases
-	".local/share/pki",  // XDG location for the same
-	".minisign",         // minisign secret keys
-	".config/mutt",      // XDG mutt config (imap_pass, exec knobs)
-	".config/msmtp",     // XDG msmtp config
-	".mutt",             // ~/.mutt/muttrc and sourced files
-	".subversion/auth",  // SVN stores plaintext passwords under auth/svn.simple/
+	".gnupg",           // secret keyrings
+	".terraform.d",     // credentials.tfrc.json
+	".config/gh",       // GitHub CLI tokens
+	".local/share/gh",  // GitHub CLI tokens
+	".config/rclone",   // remote storage tokens
+	".oci",             // Oracle Cloud keys
+	".config/doctl",    // DigitalOcean tokens
+	".config/op",       // 1Password CLI
+	".config/keybase",  // Keybase keys and tokens
+	".pki",             // NSS certificate/key databases
+	".local/share/pki", // XDG location for the same
+	".minisign",        // minisign secret keys
+	".config/mutt",     // XDG mutt config (imap_pass, exec knobs)
+	".config/msmtp",    // XDG msmtp config
+	".mutt",            // ~/.mutt/muttrc and sourced files
+	".subversion/auth", // SVN stores plaintext passwords under auth/svn.simple/
 	// step-cli keeps the CA and provisioner private keys here; the certificates and the
 	// config beside them under ~/.step are what a sandboxed step run reads, so only the
 	// secrets directory is taken - the .subversion/auth narrowing.

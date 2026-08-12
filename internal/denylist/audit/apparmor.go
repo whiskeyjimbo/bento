@@ -29,8 +29,15 @@ import (
 //     glob. ".{,z}log{in,out}" is four real files, and treating it as a wildcard would
 //     push four checkable paths into the review bucket that exists for the genuinely
 //     inexpressible.
-func ParseAppArmor(content, home, runUser string) []Candidate {
+//
+// The second return is the number of DENY RULES the parser could not turn into a
+// candidate. A line that is not a deny rule at all (a comment, an allow rule) is not one:
+// this counts the rules that were the parser's to read and were dropped anyway, including
+// the create-guards isCreateGuard suppresses by design, whose doc already concedes the
+// drop is a silent narrowing of the diff.
+func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 	var out []Candidate
+	dropped := 0
 	seen := map[string]int{}
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -43,6 +50,7 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 		}
 		path, modes, ok := splitRule(rule)
 		if !ok {
+			dropped++
 			continue
 		}
 		deny := denylist.DenyWrite
@@ -55,14 +63,23 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 		// entire corpus from the diff.
 		rooted, ok := substituteVars(path, home, runUser)
 		if !ok {
+			// A system path is out of scope by design. An unresolved VARIABLE is not the
+			// same thing: upstream introducing a spelling substituteVars does not know
+			// moves home-relative rules out of the diff under the same "out of scope"
+			// answer /etc gets.
+			if strings.HasPrefix(path, "@{") {
+				dropped++
+			}
 			continue
 		}
 		for _, expanded := range expandAlternation(rooted) {
 			if isCreateGuard(expanded, modes) {
+				dropped++
 				continue
 			}
 			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
 			if !ok {
+				dropped++
 				continue
 			}
 			// One rule can expand to both branches of foo{,/**}, the file first, and
@@ -94,7 +111,7 @@ func ParseAppArmor(content, home, runUser string) []Candidate {
 			})
 		}
 	}
-	return out
+	return out, dropped
 }
 
 // appArmorSection is the section stamped on every AppArmor candidate. The abstractions

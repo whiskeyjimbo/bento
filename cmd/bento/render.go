@@ -1551,7 +1551,7 @@ func writeShieldAnchors(w io.Writer) {
 	anchors, err := denylist.HomeAnchors()
 	if err != nil {
 		fmt.Fprintf(w, "Credential shields: %v, so they cannot be anchored at all and runs are refused.\n", err)
-		fmt.Fprintf(w, "Set $HOME to an absolute path, or give this uid a passwd entry.\n")
+		fmt.Fprintf(w, "Set $HOME to an absolute path other than /, or give this uid a passwd entry.\n")
 		// A passwd lookup made to fail is how an NSS build loses its anchor, so this is
 		// the branch where the caveat is the diagnosis rather than a caveat.
 		writeNSSCaveat(w)
@@ -1565,8 +1565,10 @@ func writeShieldAnchors(w io.Writer) {
 		quoted[i] = strconv.Quote(a)
 	}
 	fmt.Fprintf(w, "Credential shields anchor on: %s\n", strings.Join(quoted, ", "))
-	if denylist.PasswdHome() == "" {
-		fmt.Fprintf(w, "  No passwd entry for uid %d, so $HOME is the only anchor - whoever sets the\n", os.Getuid())
+	// A passwd home of "/" is refused as an anchor the same way $HOME=/ is, so the host
+	// fact this reports is "no USABLE passwd anchor", not "no passwd entry".
+	if pw := denylist.PasswdHome(); pw == "" || pw == "/" {
+		fmt.Fprintf(w, "  No usable passwd home for uid %d, so $HOME is the only anchor - whoever sets the\n", os.Getuid())
 		fmt.Fprintf(w, "  environment decides where the shields land. Normally the passwd home anchors\n")
 		fmt.Fprintf(w, "  them too, which is what a caller-chosen $HOME cannot move.\n")
 	}
