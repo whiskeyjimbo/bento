@@ -265,28 +265,44 @@ func sameFolded(a, b string) bool {
 	return err == nil
 }
 
-// FoldedPath is the file a case-folding mount reaches for path: the entry beside it whose
-// name matches ignoring case, or path itself where there is none. It is the corpus's
-// definition of the mount property Build cannot stage, so the three sites' seams - a
-// shield.FS.SameFile for two of them, the backend's identity seam for the third - agree
-// on which names collide without each emulating folding on its own.
+// FoldedPath is the file a case-folding mount reaches for path: at each component, the
+// entry beside it whose name matches ignoring case, or the component as written where
+// there is none. It is the corpus's definition of the mount property Build cannot stage,
+// so the three sites' seams - a shield.FS.SameFile for two of them, the backend's identity
+// seam for the third - agree on which names collide without each emulating folding on its
+// own.
 //
-// Only the last component is respelled, where a real folding mount folds every one. That
-// is the collision the shield logic asks about - it flips a shield's own base name and
-// nothing above it - so a caller comparing paths that differ higher up would need more
-// than this.
+// EVERY component is respelled, because that is what a whole-mount fold does. Folding only
+// the last one modelled a host that does not exist and answered false for the pair a
+// component-wise containment check asks about most - two spellings differing above the
+// leaf - so a shield reachable one directory up read as unreachable and the corpus went
+// green over it.
 func FoldedPath(path string) string {
-	dir, base := filepath.Split(path)
+	out := "/"
+	if !filepath.IsAbs(path) {
+		out = ""
+	}
+	for _, name := range strings.Split(filepath.Clean(path), "/") {
+		if name == "" {
+			continue
+		}
+		out = filepath.Join(out, foldedName(out, name))
+	}
+	return out
+}
+
+// foldedName is the entry in dir that name reaches on a folding mount, or name itself.
+func foldedName(dir, name string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return path
+		return name
 	}
 	for _, e := range entries {
-		if strings.EqualFold(e.Name(), base) {
-			return filepath.Join(dir, e.Name())
+		if strings.EqualFold(e.Name(), name) {
+			return e.Name()
 		}
 	}
-	return path
+	return name
 }
 
 // Build populates dir as the home the case is judged against and returns it. One layout

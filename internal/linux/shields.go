@@ -106,11 +106,15 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// on its resolved-shield key and createdShields has no such key, so a duplicate
 		// admitted here reaches only one of the two - and they are meant to select the
 		// same rules.
-		ws, root := workspaceShields(sb, w)
+		// The root is asked for BEFORE the shields, so a repeat costs a walk up the parent
+		// chain rather than a second gitDirShields descent through .git/modules - which is
+		// what a sandbox carrying no workspaceShieldCache would pay otherwise.
+		root := checkoutRoot(sb, w)
 		if seen[root] {
 			continue
 		}
 		seen[root] = true
+		ws, _ := workspaceShields(sb, w)
 		rules = append(rules, ws...)
 	}
 	return rules

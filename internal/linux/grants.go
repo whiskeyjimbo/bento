@@ -159,8 +159,16 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	// prepareWriteDirs create it, and refuse on the second pass with the artifact already
 	// on the host. checkoutRoot walks up regardless of what the grant itself is.
 	var workspace []denylist.Rule
+	// Deduplicated on the checkout the shields came from, as shieldRules is: grants
+	// sharing one derive a single set between them, and appending it per grant makes the
+	// comparison below grow with the square of how many grants a project names.
+	seen := map[string]bool{}
 	for _, w := range writes {
-		ws, _ := workspaceShields(sb, w)
+		ws, root := workspaceShields(sb, w)
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
 		workspace = append(workspace, ws...)
 	}
 	set := shields(sb)

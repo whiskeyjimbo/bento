@@ -185,6 +185,51 @@ func TestAFoldedWriteIntoAWorkspaceShieldIsRefused(t *testing.T) {
 	}
 }
 
+// The containment direction has to fold too, or the two halves of the same question
+// disagree. A write grant of ~/.CONFIG is above ~/.config/sops/age/keys.txt and reaches
+// the shielded key on a folding mount, while every byte-exact test says the two paths have
+// nothing to do with each other - and the grant is SHALLOWER than the shield, so the
+// inside-direction check cannot see it either.
+func TestAGrantAboveAShieldThroughARespelledAncestorIsRefused(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "sops", "age"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "sops", "age", "keys.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	grant := filepath.Join(home, ".CONFIG")
+
+	for _, kind := range []shield.Kind{shield.Read, shield.Write} {
+		set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+		if _, got := set.Contains(grant, kind, nil, nil); got == shield.Honored {
+			t.Errorf("grant %q above a shield on a folding mount must be refused; got Honored", grant)
+		}
+	}
+	// And on a mount that folds nothing it is an ordinary grant of a directory that does
+	// not exist, which nothing refuses.
+	set := shield.Assemble(folding(false), []string{home}, denylist.RuntimeDir(), nil)
+	if _, got := set.Contains(grant, shield.Write, nil, nil); got != shield.Honored {
+		t.Errorf("off a folding mount %q reaches no shield; got %v", grant, got)
+	}
+}
+
+// Two components respelled at once, which is what a whole-mount fold actually does. The
+// corpus's own folding seam answered false for this pair while it respelled only the last
+// component, so the case that needed the component walk was the one it could not express.
+func TestEveryRespelledComponentFolds(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	set := shield.Assemble(folding(true), []string{home}, denylist.RuntimeDir(), nil)
+
+	grant := filepath.Join(home, ".LOCAL", "BIN", "mytool")
+	if _, got := set.Contains(grant, shield.Write, nil, nil); got != shield.UnderWriteShield {
+		t.Errorf("write grant of %q: got %v, want UnderWriteShield", grant, got)
+	}
+}
+
 // A grant INSIDE a shield stays InsideShield on a folding mount: that refusal offers the
 // opt-in, and the folding one does not, so letting the later check win would withdraw a
 // remedy the run still honors.

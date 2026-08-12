@@ -120,7 +120,7 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		if a.Rule.Deny != denylist.DenyAll || slices.Contains(optIns, a.Resolved) {
 			continue
 		}
-		if policy.CoversResolved(grant, a.Resolved) && s.foldsCase(a.Resolved) {
+		if s.covers(grant, a.Resolved) && s.foldsCase(a.Resolved) {
 			return a.Rule, FoldedShield
 		}
 	}
@@ -158,7 +158,7 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// resolves to itself, so the two tests coincide everywhere else and the second
 		// costs nothing.
 		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
-		if policy.CoversResolved(grant, loc) || policy.CoversResolved(grant, a.Rule.Path) {
+		if s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveShield
 		}
 	}
@@ -175,7 +175,7 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// host's $PATH walks through stays inside a writable tree, so the run replaces the
 		// link with a directory of planted shims. That is the plant this refuses.
 		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
-		if policy.CoversResolved(grant, a.Resolved) || policy.CoversResolved(grant, loc) || policy.CoversResolved(grant, a.Rule.Path) {
+		if s.covers(grant, a.Resolved) || s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveWriteShield
 		}
 	}
@@ -202,23 +202,37 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 // EqualFold and not a lowercased comparison, because what is being modelled is the
 // filesystem's fold: ext4's casefold and vfat fold the whole Unicode range, where
 // lowercasing the Kelvin sign and lowercasing "k" do not meet.
-func (s Set) covers(shield, grant string) bool {
-	if policy.CoversResolved(shield, grant) {
+// It answers the containment question in both directions - a shield covering a grant and
+// a grant covering a shield - so the two are never widened apart. They were once, and the
+// gap was the whole of a refusal: a write grant of ~/.CONFIG on a folding mount is above
+// ~/.config/sops/age/keys.txt and reaches the shielded key, while every byte-exact test
+// says the two paths have nothing to do with each other.
+func (s Set) covers(above, below string) bool {
+	if policy.CoversResolved(above, below) {
 		return true
 	}
-	sp := strings.Split(filepath.Clean(shield), string(filepath.Separator))
-	gp := strings.Split(filepath.Clean(grant), string(filepath.Separator))
-	if len(gp) < len(sp) {
+	sep := string(filepath.Separator)
+	a, b := filepath.Clean(above), filepath.Clean(below)
+	ac, bc := strings.Split(a, sep), strings.Split(b, sep)
+	if len(bc) < len(ac) {
 		return false
 	}
-	for i, name := range sp {
-		if name == gp[i] {
+	// Offsets into the cleaned strings rather than a rejoin per component: the prefix
+	// through component i is already spelled there. A fold can change a name's LENGTH
+	// (the Kelvin sign folds onto one-byte "k"), so the two are tracked separately.
+	ai, bi := 0, 0
+	for i, name := range ac {
+		if i > 0 {
+			ai, bi = ai+1, bi+1
+		}
+		ai, bi = ai+len(name), bi+len(bc[i])
+		if name == bc[i] {
 			continue
 		}
-		if !strings.EqualFold(name, gp[i]) {
+		if !strings.EqualFold(name, bc[i]) {
 			return false
 		}
-		if !s.fs.SameFile(strings.Join(sp[:i+1], string(filepath.Separator)), strings.Join(gp[:i+1], string(filepath.Separator))) {
+		if !s.fs.SameFile(a[:ai], b[:bi]) {
 			return false
 		}
 	}
@@ -234,14 +248,12 @@ func (s Set) covers(shield, grant string) bool {
 // same inode under every mixture of cases, so there is no set of extra binds that would
 // contain it. That is why the caller's only move is to refuse the grant.
 //
-// Only path's OWN base name is flipped, which bounds what this detects. The whole-mount
-// cases fold every component, so the leaf is a sufficient detector for them. ext4's
-// casefold is per-directory, and although a new subdirectory inherits it, a deliberate
-// chattr -F on a child leaves a folding ancestor this answers false for: with +F on ~ but
-// not on ~/.config, ~/.CONFIG/gh reaches the store beside a byte-exact shield at
-// ~/.config/gh and no flip of gh says so. Widening it means walking every component
-// between the grant and the shield, which the corpus cannot express until its Folding flag
-// becomes per-component.
+// Only path's OWN base name is flipped, and that is the right question for this one
+// caller. It asks whether the shield ITSELF is unshieldable - whether the directory
+// holding it hands the same file out under a second name, which no set of binds can
+// contain - and that is a property of the shield's own parent, not of anything above it.
+// Whether a GRANT reaches the shield through a respelled ancestor is a different question,
+// and covers above answers it component by component.
 //
 // A name with no letters cannot be respelled, so it answers false without a syscall. A
 // shield that does not exist costs one and answers false too: it holds nothing to reach.
