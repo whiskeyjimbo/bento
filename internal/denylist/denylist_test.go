@@ -852,6 +852,32 @@ func TestHomeShieldsTheGopathBindir(t *testing.T) {
 	}
 }
 
+// An interior rule inside a DenyAll tree is worse than redundant: it survives an opt-in
+// that matches only the enclosing rule, and the reader gets a zero-byte file rather than
+// a refusal. Every block in Relocated guards against emitting one, so the property is
+// asserted over the whole pass rather than block by block - a new block that forgets the
+// guard fails here. XDG_CACHE_HOME at an already-hidden tree is the driver because the
+// XDG block derives its targets from the defaults instead of from a table of its own.
+func TestRelocatedNeverEmitsARuleInsideADenyAllTree(t *testing.T) {
+	home := "/home/u"
+	t.Setenv("XDG_CACHE_HOME", home+"/.ssh")
+	t.Setenv("XDG_CONFIG_HOME", home+"/.gnupg")
+	t.Setenv("GNUPGHOME", home+"/.ssh/gpg")
+	t.Setenv("MISE_DATA_DIR", home+"/.aws/mise")
+
+	defaults := Home(home)
+	for _, r := range Relocated(defaults, []string{home}) {
+		for _, d := range defaults {
+			if d.Deny != DenyAll || !d.Dir {
+				continue
+			}
+			if strings.HasPrefix(r.Path, d.Path+"/") {
+				t.Errorf("relocated rule %q (stamped $%s) sits inside the DenyAll tree %q", r.Path, r.Source, d.Path)
+			}
+		}
+	}
+}
+
 // STEPPATH moves step-cli's whole tree, but only the CA and provisioner keys under
 // secrets/ are shielded - the certificates and config beside them are what an in-sandbox
 // step reads, so the relocation must not take the tree whole either.

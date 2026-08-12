@@ -1145,8 +1145,15 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 				if base == "" || !filepath.IsAbs(base) || isDefault(filepath.Clean(base), b.def) {
 					continue
 				}
+				// The same two guards every block below runs. sub is non-empty by
+				// construction, so no emitted path can be a home anchor and the shieldable
+				// half cannot fire today; covered can - an XDG base pointed at an
+				// already-hidden tree (XDG_CACHE_HOME=$HOME/.ssh) puts an interior rule
+				// inside a DenyAll, which survives an opt-in matching only the enclosing
+				// rule. Held in common with the other blocks so a widening here inherits
+				// them rather than having to rediscover them.
 				p := filepath.Join(base, sub)
-				if seen[p] {
+				if seen[p] || covered(p) || !shieldable(p) {
 					continue
 				}
 				seen[p] = true
@@ -1167,7 +1174,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		if base == "" || !filepath.IsAbs(base) {
 			continue
 		}
-		if c := filepath.Clean(base); !isDefault(c, de.def) && shieldable(c) {
+		if c := filepath.Clean(base); !isDefault(c, de.def) && !covered(c) && shieldable(c) {
 			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
 		}
 	}
