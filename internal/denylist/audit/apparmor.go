@@ -30,11 +30,15 @@ import (
 //     push four checkable paths into the review bucket that exists for the genuinely
 //     inexpressible.
 //
-// The second return is the number of DENY RULES the parser could not turn into a
-// candidate. A line that is not a deny rule at all (a comment, an allow rule) is not one:
-// this counts the rules that were the parser's to read and were dropped anyway, including
-// the create-guards isCreateGuard suppresses by design, whose doc already concedes the
-// drop is a silent narrowing of the diff.
+// The second return is the number of DENY RULES that left the diff entirely - counted per
+// RULE, not per expanded branch, so it is the same unit as the firejail parser's and the
+// two can be gated the same way. A line that is not a deny rule at all (a comment, an
+// allow rule) is not the parser's to read and is not counted; neither is a rule that
+// yielded at least one candidate, which is what keeps the deliberate narrowings out of
+// the number. A rule whose every branch is a create-guard IS counted: isCreateGuard's own
+// doc names the upstream rewriting "foo/{,**}" as a bare "foo/ w" as the case where its
+// suppression stops being harmless, and that rewrite is exactly a rule with no branch
+// left.
 func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 	var out []Candidate
 	dropped := 0
@@ -46,6 +50,11 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 		}
 		rule, ok := denyRule(line)
 		if !ok {
+			// A "deny" with nothing after it is a rule this parser was meant to read; a
+			// line carrying no "deny" at all was never one.
+			if isBareDeny(line) {
+				dropped++
+			}
 			continue
 		}
 		path, modes, ok := splitRule(rule)
@@ -72,16 +81,19 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 			}
 			continue
 		}
+		// One rule can expand to several branches, and a branch dropped beside a branch
+		// kept is the narrowing this parser makes on purpose. Only a rule that ends with
+		// nothing in the diff is a rule that left it.
+		yielded := false
 		for _, expanded := range expandAlternation(rooted) {
 			if isCreateGuard(expanded, modes) {
-				dropped++
 				continue
 			}
 			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
 			if !ok {
-				dropped++
 				continue
 			}
+			yielded = true
 			// One rule can expand to both branches of foo{,/**}, the file first, and
 			// seen dedups across LINES as well, so the same path can arrive from two
 			// profile entries with different modes. Taking the first would record
@@ -110,8 +122,25 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 				Raw:     line,
 			})
 		}
+		if !yielded {
+			dropped++
+		}
 	}
 	return out, dropped
+}
+
+// isBareDeny reports whether a line is a deny rule carrying nothing for the parser to
+// read - the qualifiers and the keyword and no rule body.
+func isBareDeny(line string) bool {
+	for _, f := range strings.Fields(line) {
+		if f == "deny" {
+			return true
+		}
+		if f != "audit" && f != "owner" {
+			return false
+		}
+	}
+	return false
 }
 
 // appArmorSection is the section stamped on every AppArmor candidate. The abstractions

@@ -869,10 +869,18 @@ deny @{HOME}/.netrc,
 		t.Fatalf("parsed %+v, want only the .ssh candidate", kept)
 	}
 	// The create-guard, the rule that trims away to the home root, the unclassified
-	// variable, and the deny rule carrying no mode token - four the parser could not turn
-	// into a candidate. /etc/shadow is out of scope by design and not among them, and a
+	// variable, and the deny rule carrying no mode token - four rules that left the diff
+	// with nothing in it. /etc/shadow is out of scope by design and not among them, and a
 	// line that is no deny rule at all was never this parser's to read.
 	if dropped != 4 {
 		t.Errorf("dropped = %d, want 4", dropped)
+	}
+
+	// A rule with a branch KEPT is the deliberate narrowing, not a rule that left: the
+	// create-guard branch of "bin/{,**}" is dropped and the subtree branch is audited, so
+	// counting the branch would put a permanent floor under every ratchet built on this.
+	kept, dropped = ParseAppArmor("deny @{HOME}/bin/{,**} w,\n", "/HOME", "/run/user/1000")
+	if len(kept) != 1 || dropped != 0 {
+		t.Errorf("kept %d dropped %d, want 1 and 0: a rule half-dropped by design still reaches the diff", len(kept), dropped)
 	}
 }

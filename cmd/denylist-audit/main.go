@@ -52,6 +52,16 @@ import (
 // diff, which reads as "no gaps there". The values sit below the current counts with
 // headroom, so ordinary upstream churn does not trip them and a collapse does.
 //
+// maxDropRatio is the share of a profile's directives its parser may fail to read. The
+// count floor above only catches a corpus that got shorter; one that moved its entries
+// behind a syntax the parser does not know keeps its length and loses them from the diff
+// just the same. The firejail parsers read their corpus completely today (0 of 342 and 0
+// of 1301), so 0.05 is headroom over nothing. The AppArmor ones sit at 4 of 33 and 3 of
+// 22 - the rules whose every branch is a create-guard isCreateGuard drops by design, the
+// one deliberate narrowing counted because its own doc names the upstream rewrite that
+// makes it stop being harmless - so their ceiling is set over that floor rather than at
+// firejail's.
+//
 // The AppArmor abstractions are the second corpus, added because a single-source diff
 // can only ever establish parity with that source. They are deny-shaped like firejail's
 // (so the polarity matches bento's list), single-file, and maintained by an unrelated
@@ -68,8 +78,8 @@ var upstreamSources = []struct {
 }{
 	{"disable-common.inc", "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-common.inc", "blacklist ${HOME}/.ssh", 250, 0.05, audit.ParseFirejail},
 	{"disable-programs.inc", "https://raw.githubusercontent.com/netblue30/firejail/master/etc/inc/disable-programs.inc", "blacklist ${HOME}/.mozilla", 1000, 0.05, audit.ParseFirejail},
-	{"private-files", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", 20, 0.5, audit.ParseAppArmor},
-	{"private-files-strict", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", 12, 0.5, audit.ParseAppArmor},
+	{"private-files", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files", "deny @{HOME}/.*history mrwkl,", 20, 0.25, audit.ParseAppArmor},
+	{"private-files-strict", "https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/abstractions/private-files-strict", "audit deny @{HOME}/.ssh/{,**} mrwkl,", 12, 0.25, audit.ParseAppArmor},
 }
 
 // The paths the parser expands firejail's variables to; any absolute value works,
