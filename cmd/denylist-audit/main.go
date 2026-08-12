@@ -213,6 +213,15 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 		fmt.Fprintf(w, "%d scope keyword(s) now match no upstream section, so the blocks they classified are no longer compared - retitled upstream? Re-point the keyword in inScopeSection or record it in DormantKeywords: %s\n\n", len(stale), strings.Join(stale, ", "))
 	}
 
+	// A dormancy record claims a section exists upstream and holds no home-relative path.
+	// Once the word itself is gone from the upstream text the record certifies nothing,
+	// and the keyword is as silent as a stale one. A note rather than a gate failure:
+	// nothing is unshielded by it, and the operator's job is to re-point or drop the
+	// record, not to unbreak a build.
+	if gone := audit.VanishedDormantKeywords(sources); len(gone) > 0 {
+		fmt.Fprintf(w, "%d dormancy record(s) name a word that no longer appears upstream, so the recorded reason for their silence no longer certifies it - re-point or drop them in DormantKeywords: %s\n\n", len(gone), strings.Join(gone, ", "))
+	}
+
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.
 	for _, g := range globs {

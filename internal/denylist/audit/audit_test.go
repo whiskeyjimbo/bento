@@ -402,6 +402,38 @@ blacklist ${HOME}/.audit_test_privacy_app
 	}
 }
 
+// An AcceptedWeaker record accepts one thing: that bento shields the path DenyWrite where
+// firejail blacklists it. It says nothing about SHAPE, so a gap that is also Narrowed -
+// upstream giving one of those files a tree-shaped directive, which bento's file rule
+// leaves every child of exposed - has to survive the skip and be reported.
+func TestAcceptedWeakerDoesNotSwallowACoOccurringNarrowed(t *testing.T) {
+	const content = `# Top secret
+blacklist ${HOME}/.zshenv/
+`
+	unclassified, _, _ := Audit([]Source{{Content: content, Parse: ParseFirejail}}, "/HOME", "/run/user/1000")
+
+	var got *Gap
+	for i, g := range unclassified {
+		if g.Path == "/HOME/.zshenv" {
+			got = &unclassified[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf(".zshenv is accepted as weaker but not as narrowed; the tree-shaped directive must still surface, got %+v", unclassified)
+	}
+	if !got.Narrowed {
+		t.Errorf("gap %+v surfaced without Narrowed set; the reporter's weaker-and-narrowed branch reads it", *got)
+	}
+
+	// The weaker-only case is what the record accepts, and it must still be cleared.
+	weakerOnly, _, _ := Audit([]Source{{Content: "# Top secret\nblacklist ${HOME}/.zshenv\n", Parse: ParseFirejail}}, "/HOME", "/run/user/1000")
+	for _, g := range weakerOnly {
+		if g.Path == "/HOME/.zshenv" {
+			t.Errorf("a weaker-only gap at an AcceptedWeaker path must stay suppressed, got %+v", g)
+		}
+	}
+}
+
 // The live firejail-parity gate: diff bento's shield list against the firejail profiles
 // installed on this host (or FIREJAIL_DIR). It skips where firejail is absent - the
 // profile data is GPLv2 and read only as a dev-time diff input, never vendored - so on
@@ -711,6 +743,28 @@ func TestAppArmorCandidatesAreInScope(t *testing.T) {
 
 func keysOf(m map[string]Candidate) []string {
 	return slices.Sorted(maps.Keys(m))
+}
+
+// A dormancy record is a claim about a section that EXISTS upstream and holds no
+// home-relative path. StaleKeywords cannot check it - the keyword produces no candidate
+// either way - so a section deleted outright leaves the record certifying nothing and the
+// keyword silent forever, which is the state the ratchet exists to refuse.
+func TestVanishedDormantKeywordsNoticesADeletedSection(t *testing.T) {
+	var b strings.Builder
+	for kw := range DormantKeywords {
+		fmt.Fprintf(&b, "# %s\nblacklist /etc/%s\n\n", kw, strings.ReplaceAll(kw, " ", "-"))
+	}
+	live := b.String()
+
+	if gone := VanishedDormantKeywords(firejailSources([]string{live})); len(gone) > 0 {
+		t.Fatalf("VanishedDormantKeywords over a corpus carrying every dormant section = %v, want none - a section that is there is dormant, not vanished", gone)
+	}
+
+	deleted := strings.Replace(live, "# dm-crypt\nblacklist /etc/dm-crypt\n", "", 1)
+	gone := VanishedDormantKeywords(firejailSources([]string{deleted}))
+	if !slices.Contains(gone, "dm-crypt") {
+		t.Errorf("VanishedDormantKeywords after upstream deleted the dm-crypt block = %v, want it to name \"dm-crypt\": the recorded reason for its silence is no longer true and nothing else would say so", gone)
+	}
 }
 
 // inScopeSection fails open: a section whose title no longer matches any keyword bins its

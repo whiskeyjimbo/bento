@@ -160,6 +160,37 @@ func StaleKeywords(sources []Source, home, runUser string) []string {
 	return stale
 }
 
+// VanishedDormantKeywords reports the DormantKeywords whose word appears nowhere in the
+// raw upstream text, sorted.
+//
+// A dormancy record is a claim about an upstream section that exists and happens to hold
+// no home-relative path. It stops being self-certifying the moment upstream deletes or
+// retitles that section: the keyword then matches nothing for a reason the record does
+// not state, and the audit is exactly as quiet as it would be if the keyword had gone
+// stale - the state StaleKeywords exists to refuse. Dormancy through CANDIDATES is
+// unobservable, but through the raw text it is not.
+//
+// A note rather than a gate: nothing is unshielded when a record goes vague, and the
+// upstream word may legitimately survive in prose the classifier never reads. What the
+// operator needs is to be told the record is no longer certifying anything.
+func VanishedDormantKeywords(sources []Source) []string {
+	var gone []string
+	for kw := range DormantKeywords {
+		present := false
+		for _, s := range sources {
+			if strings.Contains(strings.ToLower(s.Content), kw) {
+				present = true
+				break
+			}
+		}
+		if !present {
+			gone = append(gone, kw)
+		}
+	}
+	sort.Strings(gone)
+	return gone
+}
+
 // inScopeSection reports whether a section is within bento's host-exec / secret-read
 // threat model - as opposed to an upstream's broader privacy, other-app, and
 // system-hardening scope, which bento's empty-root default already covers and
@@ -651,8 +682,12 @@ func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfSc
 			continue
 		}
 		// A recorded weaker-class decision clears only the Weaker report. If the same
-		// path later goes missing entirely, that is a different finding and still fails.
-		if g.Weaker && relLookup(g.Path, home, AcceptedWeaker) {
+		// path later goes missing entirely, that is a different finding and still fails -
+		// and so is a co-occurring Narrowed, which is why the skip requires the gap to be
+		// nothing BUT weaker. Upstream rewriting one of these files as a tree-shaped
+		// directive is the live shape: bento's file rule then leaves every child exposed,
+		// and the record that accepted the class says nothing about the shape.
+		if g.Weaker && !g.Narrowed && relLookup(g.Path, home, AcceptedWeaker) {
 			continue
 		}
 		if g.Glob && reviewedGlob(g.Path, home) {
