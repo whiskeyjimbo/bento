@@ -250,6 +250,13 @@ func run(manifestPath string, allowUnapproved bool) int {
 		for _, d := range res.Report.Degradations() {
 			fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Disclosure())
 		}
+		// And the auto-exec list, which survives this seam for the reason it is populated
+		// on the cancel path at all: a target killed partway is the one most likely to
+		// have rewritten a package.json, and on this arm nothing else says what the host
+		// now holds.
+		for _, f := range res.ChangedAutoExec {
+			fmt.Fprintf(os.Stderr, "embed: review %q before the next build: it runs on the host without being read\n", f)
+		}
 		return 125
 	}
 

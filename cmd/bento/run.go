@@ -293,7 +293,7 @@ func refuseStreamJSON(stdout io.Writer, asJSON bool, err error) error {
 		return err
 	}
 	reason, report := refusalDetail(err)
-	newEventStream(stdout).emitTerminal(streamRefusalJSON{"refusal", reason, report})
+	newEventStream(stdout).emitTerminal(streamRefusalJSON{Event: "refusal", Reason: reason, Report: report})
 	return &exitError{code: bentoFailed}
 }
 
@@ -321,6 +321,11 @@ type streamRefusalJSON struct {
 	Event  string     `json:"event"`
 	Reason string     `json:"reason"`
 	Report reportJSON `json:"report"`
+	// ChangedAutoExec is the failed event's alone - a refusal is a run that never began,
+	// so it has nothing to have changed. It is the same field the verdict carries, under
+	// the same name, because a consumer gating a merge on review has to find it in the
+	// same place whichever object ended the stream.
+	ChangedAutoExec []string `json:"changed_auto_exec,omitempty"`
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
@@ -343,7 +348,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report)})
+	stream.emitTerminal(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report), res.ChangedAutoExec})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -385,7 +390,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
-			stream.emitTerminal(streamRefusalJSON{"refusal", refusal.Reason, toReportJSON(refusal.Report)})
+			stream.emitTerminal(streamRefusalJSON{Event: "refusal", Reason: refusal.Reason, Report: toReportJSON(refusal.Report)})
 			return reportStreamed(stderr, stream, bentoFailed)
 		}
 		// Rendered here rather than returned to main's generic printer: the shortfall
@@ -398,6 +403,14 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// The target ran, so its output and report are reported exactly as a clean run's
 		// are; only the exit code differs, below.
 	case runErr != nil:
+		// The auto-exec notice rides the failure out. A run killed partway - a cancelled
+		// context, a teardown that died - is the one most likely to have rewritten a
+		// package.json and least likely to be looked at afterwards, and on this path
+		// nothing else says what the host now holds. In --json failJSON carries the same
+		// field; here it is the notice, before the error main renders.
+		if !asJSON {
+			writeChangedAutoExecNotice(stderr, res)
+		}
 		return failJSON(stderr, stream, asJSON, res, runErr)
 	}
 

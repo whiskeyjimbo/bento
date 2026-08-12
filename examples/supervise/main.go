@@ -294,10 +294,14 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// exit code, or an error from the teardown - describes the cancel, not the target.
 	// Checked before err so the interrupt is not reported as a sandbox failure.
 	if ctx.Err() != nil {
+		// The one field of the Result a cancelled run still owes the human: the summary
+		// below describes a run that finished, and this describes the host either way.
+		writeChangedAutoExec(os.Stderr, t, res)
 		return reportInterrupt()
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
+		writeChangedAutoExec(os.Stderr, t, res)
 		return 1
 	}
 
@@ -393,17 +397,7 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s %s\n", t.bold(strconv.Quote(a.Path)), t.dim("aliases"), t.bold(strconv.Quote(a.Credential)))
 		}
 	}
-	// The auto-executing files the run changed. bento does not shield these on purpose -
-	// a script doing dependency work has to be able to write a package.json - so the only
-	// guarantee is that nothing it wrote runs before someone could look, and this is the
-	// line that says where. The human just approved a run; leaving it out lets a planted
-	// postinstall script read as part of what they approved.
-	if len(res.ChangedAutoExec) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("the script changed these files, which run on the host later without being read:"))
-		for _, f := range res.ChangedAutoExec {
-			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(f)))
-		}
-	}
+	writeChangedAutoExec(w, t, res)
 	// The mirror of Shields, populated only by the tier that has no mount namespace and
 	// so applies no shields at all. Same contract as the grants above: bento does not
 	// refuse, so staying quiet is what would hide the exposure.
@@ -461,9 +455,32 @@ func setupReason(s enforce.SetupState) string {
 // use 130 - the target dies on the same Ctrl-C and can report 130 itself, so reusing it
 // here would make the two indistinguishable. The stderr line is what tells the human;
 // the code just keeps the run from being reported as clean.
+//
+// It does not carry the run's fields: two of its three callers interrupt before there is
+// a run to describe. The one that interrupts a run that already started writes the
+// auto-exec notice itself, just above the call.
 func reportInterrupt() int {
 	fmt.Fprintln(os.Stderr, "\nsupervise: interrupted - the answers given so far are being saved")
 	return 1
+}
+
+// writeChangedAutoExec names the auto-executing files the run changed. bento does not
+// shield these on purpose - a script doing dependency work has to be able to write a
+// package.json - so the only guarantee is that nothing it wrote runs before someone
+// could look, and this is the line that says where. The human just approved a run;
+// leaving it out lets a planted postinstall script read as part of what they approved.
+//
+// Reached from the cancel path as well as the summary, and that is the point: a target
+// killed partway is the run most likely to have rewritten a package.json and least
+// likely to be looked at afterwards.
+func writeChangedAutoExec(w io.Writer, t theme, res enforce.Result) {
+	if len(res.ChangedAutoExec) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%s\n", t.warn("the script changed these files, which run on the host later without being read:"))
+	for _, f := range res.ChangedAutoExec {
+		fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(f)))
+	}
 }
 
 // finalExitCode is the process exit code. It is the target's own code untouched,

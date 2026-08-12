@@ -166,6 +166,35 @@ func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
 	}
 }
 
+// The auto-exec list rides the failure out, in both modes. A run killed partway - a
+// cancelled context, a teardown that died - is the one most likely to have rewritten a
+// package.json and least likely to be looked at, and it is the one path where nothing
+// else says what the host now holds. It was computed on this path and then dropped by
+// every frontend, which made the backend pay for a value nobody read.
+func TestWriteRunResultMidFlightFailureCarriesTheAutoExecList(t *testing.T) {
+	planted := "/home/u/proj/package.json"
+	res := enforce.Result{ChangedAutoExec: []string{planted}}
+	runErr := errors.New("the run was cancelled before the target finished")
+
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	var env struct {
+		ChangedAutoExec []string `json:"changed_auto_exec"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("failure event is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !slices.Equal(env.ChangedAutoExec, []string{planted}) {
+		t.Errorf("changed_auto_exec = %v, want %v", env.ChangedAutoExec, []string{planted})
+	}
+
+	stderr.Reset()
+	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, runErr)
+	if !strings.Contains(stderr.String(), planted) {
+		t.Errorf("the human path must name the file too; got %q", stderr.String())
+	}
+}
+
 // A failure raised before any stage existed carries the zero Report, which must not be
 // rendered as a fully-enforced posture on a run that never had one.
 func TestWriteRunResultMidFlightFailureJSONNoReport(t *testing.T) {
