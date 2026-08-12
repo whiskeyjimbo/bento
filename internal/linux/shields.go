@@ -91,15 +91,27 @@ func shields(sb sandbox) shield.Set {
 // set - a divergence would either leak a host artifact or leave a path unshielded.
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	rules := shields(sb).Rules()
+	seen := map[string]bool{}
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
 		// exist yet - is not a checkout, and shielding a ".git/hooks" under it would
 		// force bwrap to create that path inside a file, or pre-create the target as
 		// a directory the script then cannot write as a file.
-		if sb.isDir(w) {
-			rules = append(rules, workspaceShields(sb, w)...)
+		if !sb.isDir(w) {
+			continue
 		}
+		// Grants sharing a checkout derive one set of shields between them, so the
+		// appends are collapsed here rather than per consumer. The cache hands the same
+		// slice back for the second grant, which is a rule list appended twice: denyArgs
+		// drops the copies on its resolved-shield key, createdShields has no such key,
+		// and the two are documented as selecting the same rules.
+		root := checkoutRoot(sb, w)
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		rules = append(rules, workspaceShields(sb, w)...)
 	}
 	return rules
 }

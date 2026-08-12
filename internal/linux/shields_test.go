@@ -115,6 +115,27 @@ func TestCreatedShieldsStopsAtANestedWriteGrant(t *testing.T) {
 	}
 }
 
+// Two write grants inside one checkout derive one set of workspace shields between them.
+// denyArgs would collapse a second copy on its resolved-shield key and createdShields has
+// no such key, so the duplicate reached the cleanup list - harmless, since rmdir and the
+// zero-length remove are both idempotent on an absent path, but the two are documented as
+// selecting the same rules and only one of them was doing so.
+func TestCreatedShieldsDoesNotRepeatAWorkspaceShield(t *testing.T) {
+	// The .git has to be there: it is what makes both grants anchor on one checkout root
+	// rather than each on itself.
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/build/out", "/home/u/proj/.git")
+	writes := []string{"/home/u/proj", "/home/u/proj/build"}
+	dirs, files := createdShields(sb, writes, writes, nil)
+
+	for _, got := range []([]string){dirs, files} {
+		for i, p := range got {
+			if slices.Index(got, p) != i {
+				t.Errorf("%s is scheduled twice; got %v", p, got)
+			}
+		}
+	}
+}
+
 // removeCreatedShields is the half that touches the host, and its safety rests on
 // what it refuses to remove: a file that has content, and a path that is no longer the
 // kind of thing bwrap created there.
