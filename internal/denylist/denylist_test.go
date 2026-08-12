@@ -852,6 +852,35 @@ func TestHomeShieldsTheGopathBindir(t *testing.T) {
 	}
 }
 
+// STEPPATH moves step-cli's whole tree, but only the CA and provisioner keys under
+// secrets/ are shielded - the certificates and config beside them are what an in-sandbox
+// step reads, so the relocation must not take the tree whole either.
+func TestHomeShieldsTheRelocatedStepSecrets(t *testing.T) {
+	t.Setenv("STEPPATH", "/srv/step")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	r, ok := byPath["/srv/step/secrets"]
+	if !ok {
+		t.Fatal("expected a shield at /srv/step/secrets, missing")
+	}
+	if r.Deny != DenyAll || !r.Dir || r.Source != "STEPPATH" {
+		t.Errorf("shield at /srv/step/secrets is %+v, want a DenyAll directory rule stamped STEPPATH", r)
+	}
+	if _, ok := byPath["/srv/step"]; ok {
+		t.Error("the whole relocated ~/.step is shielded; only secrets/ inside it should be")
+	}
+
+	t.Setenv("STEPPATH", "/home/u/.step")
+	for _, r := range allRules("/home/u") {
+		if r.Source == "STEPPATH" {
+			t.Errorf("a restatement of the default STEPPATH produced a rule at %q", r.Path)
+		}
+	}
+}
+
 // KUBECONFIG (a colon-separated list of files) and the AWS_*_FILE envs relocate individual
 // credential files off ~/.kube / ~/.aws. Each absolute target must be shielded at its own
 // path; relative and empty entries are ignored, like a relative directory relocation.

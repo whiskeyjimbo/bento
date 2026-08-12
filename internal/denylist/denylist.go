@@ -421,6 +421,14 @@ func Home(home string) []Rule {
 		".gemini/oauth_creds.json",         // Gemini CLI OAuth token
 		".gemini/google_accounts.json",     // the account identities beside it
 		".gemini/mcp-oauth-tokens-v2.json", // per-MCP-server OAuth tokens
+		".codeium/config.json",             // the Codeium/Windsurf plugin's API key
+		// goose keeps provider API keys in the OS keyring where there is one and falls back
+		// to this file where there is not - a headless host, or GOOSE_DISABLE_KEYRING, which
+		// is the shape a sandbox runs on. The tree around it is DenyWrite above.
+		".config/goose/secrets.yaml",
+		// opencode splits the two: the config is under .config/opencode, DenyWrite above,
+		// and the provider tokens land here.
+		".local/share/opencode/auth.json",
 		// Claude Code keeps its account/OAuth block in the SAME file as the global
 		// configuration, so the tree-DenyWrite/credential-DenyAll split above cannot
 		// separate them. Hidden rather than write-denied: the secret wins over the config
@@ -848,7 +856,7 @@ func Home(home string) []Rule {
 		".config/VSCodium",
 		".config/Windsurf",
 		".config/zed", // tasks.json and the language-server settings name host command lines
-		".codeium",    // the Codeium/Windsurf plugin's own tree, config and downloaded language server
+		".codeium",    // the plugin's own tree: the downloaded language server it execs (the API key inside is DenyAll below)
 		".vscode-server", // Remote's extension host, with its own data/Machine/settings.json
 		".vscode-oss",
 		".vscode-insiders", // the home-level extension tree of the Insiders build
@@ -1385,6 +1393,17 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			}
 		}
 	}
+	// STEPPATH moves step-cli's whole tree, but only secrets/ under it is shielded at the
+	// default - the certificates and config beside it are what an in-sandbox step reads.
+	// dirEnvs is the wrong table for that: its DenyAll takes the relocated tree whole and
+	// would hide the certificates the default deliberately spares.
+	if base := os.Getenv("STEPPATH"); filepath.IsAbs(base) {
+		if c := filepath.Clean(base); !isDefault(c, ".step") {
+			if p := filepath.Join(c, "secrets"); !covered(p) && shieldable(p) {
+				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "STEPPATH"})
+			}
+		}
+	}
 	// GOPATH is a colon-separated list, and only its FIRST element supplies the bindir
 	// `go install` writes - the one $PATH carries and the host's next bare tool name
 	// resolves to. GOBIN overrides it outright when set, and has its own row below, so the
@@ -1734,6 +1753,7 @@ var loneEnvs = []string{
 	"CARGO_HOME",
 	"HGRCPATH",
 	"GOPATH",
+	"STEPPATH",
 	"XDG_RUNTIME_DIR",
 }
 
@@ -1837,8 +1857,9 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	// interpreter a policy may legitimately write, and DenyWrite has no opt-in, so a root
 	// rule would refuse that grant outright.
 	//
-	// GOPATH is colon-separated and so cannot go through a filepath.Join of one base; it
-	// gets the SplitList shape HGRCPATH and MAILCAPS use, in the block above.
+	// GOPATH is colon-separated and so cannot go through a filepath.Join of one base. It
+	// gets a block of its own above: the SplitList that HGRCPATH and MAILCAPS use, but
+	// shielding the FIRST element only, because only that one supplies a bindir.
 	{"GOBIN", "go/bin", ""},
 	{"RUSTUP_HOME", ".rustup", ""},
 	{"NVM_DIR", ".nvm", ""},
