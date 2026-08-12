@@ -186,6 +186,17 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 //
 // checkWriteNotAboveShield handles the always-shields (HOME, runtime); this handles
 // the grant-relative workspace shields, which it does not cover.
+//
+// It refuses more than the plant, and knowingly. gitDirShields walks every real directory
+// under .git/modules and gives every symlinked child a rule, so a link under a submodule's
+// objects/ or logs/ - git-annex, an object store moved to another disk, a hand-relocated
+// pack directory - is refused as well, on a checkout whose author did nothing wrong and
+// may not own the link. Narrowing the rules to the entries that can carry a shield does
+// not work: identification reads a config FILE, which is attacker-writable content, so a
+// decoy config planted in a container directory would move a real submodule gitdir path
+// into the bucket that gets no rule and the plant would go unrefused - the lever the
+// unconditional walk exists to remove. So the refusal stays whole and the sentence says
+// what is actually true of a link the scan merely could not see behind.
 func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 	for _, w := range writes {
 		if w == "/" || !sb.isDir(w) {
@@ -193,7 +204,7 @@ func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
 		}
 		for _, r := range workspaceShields(sb, w) {
 			if real := sb.resolve(r.Path); real != r.Path {
-				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q, so the shield would protect the wrong path while the symlink stays writable; remove the symlink, or move the checkout out from under the grant", w, r.Path, real)
+				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q: the shield would bind on the target while the host keeps walking the link's own name, which stays writable inside the grant. A link covering part of a relocated git store is refused for the same reason, since the scan cannot see whether a gitdir lies behind it without walking a tree the run controls. Replace the symlink with a bind mount, so the path resolves to itself; or move the checkout out from under the grant", w, r.Path, real)
 			}
 		}
 	}

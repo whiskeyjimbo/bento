@@ -864,6 +864,42 @@ func TestGitDirShieldsDoesNotFollowSymlinkedChild(t *testing.T) {
 	}
 }
 
+// A symlink under a submodule's OBJECT STORE refuses the run too, and this pins that it
+// is deliberate rather than an oversight. git-annex and a pack directory moved to another
+// disk both produce one, and neither is the plant the check exists for - but the scan
+// cannot tell a relocated store from a planted gitdir without following the link into a
+// tree the run controls, and the narrowing that would let it (only shield-carrying entries
+// get a rule) is spoofable, since a decoy config file moves a real submodule's gitdir path
+// out of the covered set. So it fails closed, and the sentence has to carry a remedy that
+// exists for someone who cannot remove the link.
+func TestASymlinkedObjectStoreUnderAGitdirIsRefusedWithARemedyThatExists(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	sub := filepath.Join(root, ".git", "modules", "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The config FILE is what identifies sub as a real gitdir.
+	if err := os.WriteFile(filepath.Join(sub, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(sub, "objects", "pack")); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+
+	err := checkWorkspaceShieldNotRedirected(sb, []string{root})
+	if err == nil {
+		t.Fatal("a symlinked entry under a gitdir must be refused, whatever it holds")
+	}
+	if !strings.Contains(err.Error(), "bind mount") {
+		t.Errorf("the refusal must offer a remedy available to someone who does not own the link; got %q", err)
+	}
+}
+
 // A prior run can chmod a directory under .git/modules to mode 0111 - traversable
 // by name (so host git still reaches hooks inside it) but unlistable, so the scan
 // cannot enumerate the gitdirs within. The scan must not silently treat that as
