@@ -602,7 +602,7 @@ func runtimeTree(interp string) string {
 // homeContainers are the directories user home directories sit directly under. A tree
 // that is a home ($container/user) or a shallow child of one ($container/user/x) can
 // enclose that user's credential stores, so it is too broad to prefix-drop.
-var homeContainers = []string{"/home", "/var/home", "/Users"}
+var homeContainers = []string{"/home", "/var/home", "/export/home", "/Users"}
 
 // HomeContainers returns those directories, so a frontend deciding which home a grant
 // belongs to answers from the same list the write floors do. The two disagreeing is a

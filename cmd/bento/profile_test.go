@@ -245,6 +245,19 @@ func TestIsBroadDirResolves(t *testing.T) {
 	}
 }
 
+// The Solaris/NFS-automount layout, where homes live under /export/home. The enforcer's
+// prefixTooBroad already refuses that shape; the proposal side reads the same list, so a
+// grant of every account at once is refused here too, and the own-home logic recognises a
+// home under it. The two lists having diverged is what put the container outside both.
+func TestExportHomeIsAHomeContainerOnBothSides(t *testing.T) {
+	if !isBroadDir("/export/home") {
+		t.Error("isBroadDir(\"/export/home\") = false; the container holds every account on the host")
+	}
+	if root, ok := homeRoot("/export/home/u/work"); !ok || root != "/export/home/u" {
+		t.Errorf("homeRoot(\"/export/home/u/work\") = (%q, %v), want (\"/export/home/u\", true)", root, ok)
+	}
+}
+
 // The warning must name shields the enforced run actually carries. A KUBECONFIG under an
 // anchor's own ~/.kube is covered by that anchor's directory shield, so the enforcer emits
 // no interior file rule for it - and neither may this, or the reviewer is sent to check a

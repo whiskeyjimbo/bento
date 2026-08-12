@@ -244,7 +244,7 @@ func isBroadDir(path string) bool {
 	// home, which is precisely what this refuses to propose.
 	for _, spelling := range []string{path, pathresolve.Existing(path)} {
 		// A home container is every account at once, which /home and /Users happen to be
-		// caught by as top-level directories and /var/home is not.
+		// caught by as top-level directories and /var/home and /export/home are not.
 		if spelling == "/" || filepath.Dir(spelling) == "/" || slices.Contains(profile.HomeContainers(), spelling) {
 			return true
 		}

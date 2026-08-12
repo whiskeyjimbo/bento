@@ -691,9 +691,8 @@ func observeHomeTmpfs(proc enforce.Process, sb sandbox) string {
 	if !sb.observe {
 		return ""
 	}
-	// Cleaned before the guard, not in the return: "/." and "//" both name the root
-	// and "/tmp/" the base tmpfs, and comparing the raw spelling lets each through
-	// the very test named above.
+	// Cleaned before the guard: "/." and "//" both name the root and "/tmp/" the base
+	// tmpfs, and comparing the raw spelling lets each past the skip above.
 	home := filepath.Clean(proc.Env["HOME"])
 	if !filepath.IsAbs(home) || home == "/" || home == "/tmp" {
 		return ""
