@@ -228,12 +228,19 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	// What each parser could not read, per profile and whatever the gate decides. The
 	// ratio ceiling in collect only fires on a collapse; a slice going quiet moves the
 	// count long before it moves the ratio, and a number an operator can compare against
-	// the last run is what makes that visible. A source with no name is a test corpus.
-	for _, s := range sources {
+	// the last run is what makes that visible. An unnamed source still reports - a source
+	// added without a name losing its drop count silently is the failure this exists to
+	// refuse.
+	for i, s := range sources {
 		kept, dropped := s.Parse(s.Content, home, runUser)
-		if dropped > 0 && s.Name != "" {
-			fmt.Fprintf(w, "%s: %d of %d directive(s) were not understood by the parser and are absent from this diff\n", s.Name, dropped, len(kept)+dropped)
+		if dropped == 0 {
+			continue
 		}
+		name := s.Name
+		if name == "" {
+			name = fmt.Sprintf("source %d", i+1)
+		}
+		fmt.Fprintf(w, "%s: %d of %d directive(s) were not understood by the parser and are absent from this diff\n", name, dropped, len(kept)+dropped)
 	}
 
 	// A dormancy record claims a section exists upstream and holds no home-relative path.

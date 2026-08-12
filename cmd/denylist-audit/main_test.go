@@ -546,3 +546,18 @@ func TestCollectRefusesACorpusItCannotRead(t *testing.T) {
 		t.Errorf("the refusal must say what share went unread; got %q", b.String())
 	}
 }
+
+// The ratio ceiling in collect only fires on a collapse. A slice of a corpus going quiet
+// moves the count long before it moves the ratio, so the report says per profile what the
+// parser could not read - whether or not anything else about the run is interesting.
+func TestReportNamesWhatTheParserCouldNotRead(t *testing.T) {
+	content := liveSections() + "blacklist ${XDGDATA}/keyrings\n"
+
+	var b bytes.Buffer
+	if code := report(&b, []audit.Source{{Name: "disable-common.inc", Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
+		t.Fatalf("an unread directive is a note, not a gate failure; got %d (%q)", code, b.String())
+	}
+	if !strings.Contains(b.String(), "disable-common.inc: 1 of ") {
+		t.Errorf("the report must name the profile and the count; got %q", b.String())
+	}
+}
