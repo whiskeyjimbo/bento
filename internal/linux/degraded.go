@@ -112,11 +112,13 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// which auto-executing file a run changed matters most, so the snapshot is taken here
 	// too rather than only on the bwrap path - and after prepareWriteDirs, matching the
 	// full tier, so a directory created for a grant is in the baseline rather than reading
-	// as a change the target made.
-	autoExecBefore := baselineAutoExec(writes)
+	// as a change the target made. The ordering matters twice over now that the baseline
+	// also resolves core.hooksPath: run against a grant whose directory does not exist
+	// yet, git answers nothing and the empty answer would be the one frozen for the run.
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return enforce.Result{}, err
 	}
+	autoExecBefore := baselineAutoExec(writes)
 
 	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
 	// would carve are discovered), record which always-on shields a bwrap run would have
@@ -245,7 +247,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: autoExecBefore.changed(writes)}, nil
 	default:
-		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		// As on the cancel arm above: the target may already have run, so the list is the
+		// only thing on this path that says what the host now holds.
+		return enforce.Result{Report: report, ChangedAutoExec: autoExecBefore.changed(writes)}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
 }
 

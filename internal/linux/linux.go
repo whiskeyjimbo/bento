@@ -276,7 +276,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteProxyFault(&report, collected.faultCount())
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, nil
 	default:
-		return enforce.Result{Report: report}, fmt.Errorf("linux: running sandbox: %w", err)
+		// The auto-exec list for the same reason the cancel arm carries it: the target may
+		// already have run, and this is the arm where nothing else says what the host holds.
+		return enforce.Result{Report: report, ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 

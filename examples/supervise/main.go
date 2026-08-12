@@ -294,10 +294,11 @@ func supervised(ctx context.Context, s *store, script string) int {
 	// exit code, or an error from the teardown - describes the cancel, not the target.
 	// Checked before err so the interrupt is not reported as a sandbox failure.
 	if ctx.Err() != nil {
-		// The one field of the Result a cancelled run still owes the human: the summary
-		// below describes a run that finished, and this describes the host either way.
+		// After the interrupt line, not before it: the notice is about the run that was
+		// just stopped, and printing it first reads as belonging to whatever came before.
+		code := reportInterrupt()
 		writeChangedAutoExec(os.Stderr, t, res)
-		return reportInterrupt()
+		return code
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)

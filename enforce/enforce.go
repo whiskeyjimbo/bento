@@ -489,6 +489,15 @@ type Result struct {
 	// behind; empty is not evidence the target changed none, since a run that failed
 	// before the target started reports empty as well.
 	//
+	// One entry is a DIRECTORY rather than a file: a hook directory the run itself put in
+	// play, by pointing core.hooksPath somewhere it did not point when the run started.
+	// That happens where no shield holds .git/config down - a write grant with no
+	// enclosing checkout, or the degraded tier, which shields nothing - and the directory
+	// is named instead of its contents because the run's baseline never stamped it, so
+	// every file inside would otherwise read as one this run created. It says the run
+	// chose where the host's next commit executes from, which is worth knowing whether or
+	// not anything was planted there yet.
+	//
 	// Two blind spots, both deliberate, and both the reason a gap here is a missed hint
 	// rather than a hole. The names are a fixed list checked at the root of each write
 	// grant, so a nested package.json in a monorepo is not covered. And the comparison is

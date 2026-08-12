@@ -348,7 +348,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{"failed", runErr.Error(), toReportJSON(res.Report), res.ChangedAutoExec})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 

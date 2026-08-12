@@ -167,9 +167,15 @@ type autoExecBaseline struct {
 	hooks []string
 }
 
-// changed re-stamps the same paths the baseline stamped and names what the run altered.
+// changed re-stamps the same paths the baseline stamped and names what the run altered,
+// together with any hook directory the run itself put in play. The second question is
+// asked here rather than left to the frozen walk because freezing answers the noise and
+// not the silence: see redirectedHooks.
 func (b autoExecBaseline) changed(writes []string) []string {
-	return changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
+	changed := changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
+	changed = append(changed, redirectedHooks(b.hooks, hookRunnerDirs(writes))...)
+	slices.Sort(changed)
+	return slices.Compact(changed)
 }
 
 // snapshotAutoExec stats the auto-executing files under each write grant. Errors are
@@ -212,13 +218,43 @@ func snapshotAutoExec(writes, hooks []string) autoExecState {
 // baselineAutoExec is the preflight snapshot: the one that resolves core.hooksPath, per
 // grant, and keeps the answer for every snapshot after it.
 func baselineAutoExec(writes []string) autoExecBaseline {
+	hooks := hookRunnerDirs(writes)
+	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks}
+}
+
+// hookRunnerDirs is every hook directory the write grants resolve to, deduplicated. The
+// order follows the grants, so two snapshots of one run list them alike.
+func hookRunnerDirs(writes []string) []string {
 	var hooks []string
 	for _, w := range writes {
 		if h := hookRunnerDir(w, writes); h != "" && !slices.Contains(hooks, h) {
 			hooks = append(hooks, h)
 		}
 	}
-	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks}
+	return hooks
+}
+
+// redirectedHooks names a hook directory the run itself put in play - the answer git gives
+// after the target ran that it did not give before.
+//
+// The DIRECTORY is what gets named, not the files inside it, and that is the whole design.
+// The baseline never stamped it, so every file there would read as newly created and the
+// report would fill with a directory's existing contents; but saying nothing is worse,
+// because two real shapes reach here. A write grant with no enclosing checkout has no
+// .git for the shields to hold down, so the target can git init one and point hooks
+// wherever it likes. And the degraded tier applies no shields at all, so even an existing
+// checkout's .git/config is writable mid-run there. Either way the operator needs to know
+// the run chose where the host's next commit executes from, which is a fact about the
+// redirection rather than about any file - and it is true whether or not anything was
+// planted yet.
+func redirectedHooks(before, after []string) []string {
+	var out []string
+	for _, h := range after {
+		if !slices.Contains(before, h) {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // changedAutoExec names the files whose stamp the run changed, in either direction: a
