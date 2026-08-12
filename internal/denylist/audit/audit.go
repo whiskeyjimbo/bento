@@ -172,11 +172,19 @@ func StaleKeywords(sources []Source, home, runUser string) []string {
 // raw upstream text, sorted.
 //
 // A dormancy record is a claim about an upstream section that exists and happens to hold
-// no home-relative path. It stops being self-certifying the moment upstream deletes or
-// retitles that section: the keyword then matches nothing for a reason the record does
-// not state, and the audit is exactly as quiet as it would be if the keyword had gone
-// stale - the state StaleKeywords exists to refuse. Dormancy through CANDIDATES is
-// unobservable, but through the raw text it is not.
+// no home-relative path. It stops being self-certifying the moment upstream deletes that
+// section: the keyword then matches nothing for a reason the record does not state, and
+// the audit is exactly as quiet as it would be if the keyword had gone stale - the state
+// StaleKeywords exists to refuse. Dormancy through CANDIDATES is unobservable, but
+// through the raw text it is not.
+//
+// Deletion is what it catches, not a retitle: several of these words also appear in the
+// section's own directive paths (/etc/dm-crypt, /run/openrc), so the block can be renamed
+// with the word still present. StaleKeywords cannot see a dormant keyword either, so a
+// retitled dormant section is the residual - accepted because the record's own subject is
+// a section holding nothing bento would compare. Presence is checked across all sources
+// rather than the one the record names, for the same reason: what is being tested is
+// whether the word still means anything upstream, not which file carries it.
 //
 // A note rather than a gate: nothing is unshielded when a record goes vague, and the
 // upstream word may legitimately survive in prose the classifier never reads. What the
