@@ -583,3 +583,36 @@ func TestBothTiersDefaultHomeAndPath(t *testing.T) {
 		t.Errorf("declared values were overwritten: %v", got)
 	}
 }
+
+// The $HOME tmpfs a profiling run adds goes on before the grants, the system mounts and
+// the deny-list, so it undoes no shield - but a tmpfs over / or over the base /tmp makes
+// the run observe a host the operator did not think it was observing. Both are named as
+// skipped, and both are reachable by spelling HOME differently.
+func TestObserveHomeTmpfsSkipsRootAndBaseTmpfs(t *testing.T) {
+	for _, tc := range []struct {
+		home string
+		want string
+	}{
+		{"/home/u", "/home/u"},
+		{"/home/u/", "/home/u"},
+		{"/", ""},
+		{"/.", ""},
+		{"//", ""},
+		{"/tmp", ""},
+		{"/tmp/", ""},
+		{"", ""},
+		{"relative", ""},
+	} {
+		proc := enforce.Process{Env: map[string]string{"HOME": tc.home}}
+		if got := observeHomeTmpfs(proc, sandbox{observe: true}); got != tc.want {
+			t.Errorf("observeHomeTmpfs(HOME=%q) = %q, want %q", tc.home, got, tc.want)
+		}
+	}
+
+	// Only profiling adds it: an enforced run's HOME is the base /tmp or built from the
+	// grants, and an empty overlay would shadow the granted content.
+	proc := enforce.Process{Env: map[string]string{"HOME": "/home/u"}}
+	if got := observeHomeTmpfs(proc, sandbox{}); got != "" {
+		t.Errorf("an enforced run got a $HOME tmpfs at %q", got)
+	}
+}

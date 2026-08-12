@@ -425,6 +425,32 @@ func TestDegradedSystemPathsResolveThroughTheSeam(t *testing.T) {
 	}
 }
 
+// On NixOS the interpreter and its whole library closure live in the Nix store, so
+// whether the degraded tier's entire read set includes it is the difference between a
+// working run and an interpreter that cannot load its stdlib. The question goes through
+// the sandbox's host seam like every other one in the file, so the answer is testable on
+// a host that has no /nix - which is every CI host this runs on.
+func TestDegradedSystemPathsGrantTheNixStoreWhenPresent(t *testing.T) {
+	sb := testSandbox()
+	sb.exists = func(p string) bool { return p == "/nix" }
+	sb.resolve = func(p string) string {
+		if p == "/nix" {
+			return "/mnt/nix"
+		}
+		return p
+	}
+	reads, _ := degradedSystemPaths(sb)
+	if !slices.Contains(reads, "/mnt/nix") {
+		t.Errorf("reads = %v, want the resolved Nix store", reads)
+	}
+
+	sb.exists = func(string) bool { return false }
+	reads, _ = degradedSystemPaths(sb)
+	if slices.Contains(reads, "/mnt/nix") {
+		t.Errorf("reads = %v, want no Nix store on a host without one", reads)
+	}
+}
+
 // The host remedy a userns refusal leads with is a sysctl, which a CI engineer running
 // bento in a container cannot set - and inside docker the runtime's own seccomp and
 // AppArmor profiles block the namespace anyway. Which of the three userns branches this

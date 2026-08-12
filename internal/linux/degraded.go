@@ -329,7 +329,7 @@ func degradedSystemPaths(sb sandbox) (reads, writes []string) {
 		return out
 	}
 	reads = resolved(systemReadPaths...)
-	if _, err := os.Stat("/nix"); err == nil {
+	if sb.exists("/nix") {
 		reads = append(reads, sb.resolve("/nix"))
 	}
 	reads = append(reads, resolved("/dev/urandom", "/dev/random", "/dev/zero")...)
