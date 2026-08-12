@@ -1435,6 +1435,54 @@ func TestUnshieldableRuntimeDir(t *testing.T) {
 	}
 }
 
+// Every relocation table's def names the home-relative default the variable moves a
+// shield AWAY from, and isDefault compares against it to drop a value that only restates
+// it. A def naming a path Home() does not shield is therefore silent: isDefault never
+// matches, and the row emits a second rule at a path already covered - stamped with a
+// variable, which tells an operator a relocation put a shield where the default list
+// already had one.
+//
+// It is the direction TestRelocationVarsNamesEveryEnvRead does not run. That one proves
+// every env READ is declared; this one proves every declared row still points at a real
+// default, which is what a rename on the defaults side breaks. Coverage rather than an
+// exact path match: a def may name a file inside a directory shielded whole, which is the
+// shape MISE_GLOBAL_CONFIG_FILE has under .config/mise.
+func TestRelocationDefsNameAShieldedDefault(t *testing.T) {
+	const home = "/home/u"
+	rules := Home(home)
+	check := func(table, env, def, sub string) {
+		// An empty def means the variable names a home directory itself, so there is no
+		// home-relative default to compare against - the CURL_HOME and GEM_HOME shape.
+		if def == "" {
+			return
+		}
+		p := filepath.Join(home, def, sub)
+		if _, ok := Covers(p, rules); !ok {
+			t.Errorf("%s row $%s claims the default %q (%q), which Home() does not shield: isDefault can never match it, so the row restates a shield instead of following one", table, env, def, p)
+		}
+	}
+	for _, e := range writeOnlyDirEnvs {
+		check("writeOnlyDirEnvs", e.env, e.def, e.sub)
+	}
+	for _, e := range dirEnvs {
+		check("dirEnvs", e.env, e.def, "")
+	}
+	for _, e := range dirFileEnvs {
+		check("dirFileEnvs", e.env, e.def, e.file)
+	}
+	for _, e := range startupDefaultEnvs {
+		check("startupDefaultEnvs", e.env, e.def, "")
+	}
+	for _, e := range fileDenyAllEnvs {
+		check("fileDenyAllEnvs", e.env, e.def, "")
+	}
+	// fileEnvs names the STORE the default file sits in rather than the file itself,
+	// because that is what underStore keys the drop on.
+	for _, e := range fileEnvs {
+		check("fileEnvs", e.env, e.store, "")
+	}
+}
+
 // RelocationVars is what lets the completeness audit build a rule set that does not vary
 // with the environment of whoever runs it, so a variable this package reads but does not
 // name there re-opens exactly the hole it closes: a rule CI does not have, covering an
