@@ -51,6 +51,40 @@ func TestGrantContainingAShieldIsRefusedWhereTheMountFoldsCase(t *testing.T) {
 	}
 }
 
+// A DenyWrite shield is one byte-exact bind too, so on a folding mount a write spelled
+// ~/.local/BIN reaches the same directory the shield binds at ~/.local/bin. On the
+// degraded tier that leaves a plainly host-writable shim directory; under bwrap the shield
+// binds one spelling while the grant binds the other.
+func TestWriteUnderAReadOnlyShieldIsRefusedThroughAFoldedSpelling(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	grant := filepath.Join(home, ".local", "BIN", "mytool")
+
+	for _, tc := range []struct {
+		name string
+		fold bool
+		want shield.Verdict
+	}{
+		// Off a folding mount the respelling is a different directory and the shield has
+		// nothing to say about it.
+		{"case-sensitive mount", false, shield.Honored},
+		{"case-folding mount", true, shield.UnderWriteShield},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := shield.Assemble(folding(tc.fold), []string{home}, denylist.RuntimeDir(), nil)
+			r, got := set.Contains(grant, shield.Write, nil, nil)
+			if got != tc.want {
+				t.Fatalf("write grant of %q: got %v, want %v", grant, got, tc.want)
+			}
+			if tc.want == shield.UnderWriteShield && !strings.HasSuffix(r.Path, ".local/bin") {
+				t.Errorf("the refusal must name the shield it is about; got %q", r.Path)
+			}
+		})
+	}
+}
+
 // A grant INSIDE a shield stays InsideShield on a folding mount: that refusal offers the
 // opt-in, and the folding one does not, so letting the later check win would withdraw a
 // remedy the run still honors.

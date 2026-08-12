@@ -8,10 +8,13 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
-// maxLinkDepth bounds the symlinked-credential walk. It is the depth the backend's
-// git-directory scan uses, kept identical because the two walk the same host trees and a
-// shallower bound here would silently unshield a store the enforcer expands.
-const maxLinkDepth = 64
+// maxWalkDepth bounds how deep the symlinked-credential expansion descends into real
+// subdirectories. It bounds the walk, not any chain of links: a link's target is shielded
+// at its own path and never re-walked, so no link ever costs depth. It is the depth the
+// backend's git-directory scan uses, kept identical because the two walk the same host
+// trees at the same shape and a shallower bound here would silently unshield a store the
+// enforcer expands.
+const maxWalkDepth = 64
 
 // Set is the always-on shields for one run: assembled from the deny-list, expanded
 // through the symlinks a credential store points out along, resolved to where each would
@@ -161,7 +164,7 @@ func (s Set) credentialLinks(base []denylist.Rule) []denylist.Rule {
 }
 
 func (s Set) linksUnder(r denylist.Rule, dir string, depth int) []denylist.Rule {
-	if depth > maxLinkDepth || !s.fs.IsDir(dir) {
+	if depth > maxWalkDepth || !s.fs.IsDir(dir) {
 		return nil
 	}
 	if filepath.Base(dir) == ".git" {

@@ -123,13 +123,18 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		return denylist.Rule{}, Honored
 	}
 
+	// Asked of the folded spelling too, for the reason the FoldedShield loop above exists:
+	// a shield is one byte-exact bind, so where the mount folds case the same shim
+	// directory is reached by writing ~/.pyenv/SHIMS while the shield binds ~/.pyenv/shims.
+	// There is no opt-in to pass over here - a DenyWrite shield has none at all - so unlike
+	// that loop this one is not conditional on the grant.
 	for _, a := range s.applied {
-		if a.Rule.Deny == denylist.DenyWrite && policy.CoversResolved(a.Resolved, grant) {
+		if a.Rule.Deny == denylist.DenyWrite && s.covers(a.Resolved, grant) {
 			return a.Rule, UnderWriteShield
 		}
 	}
 	for _, r := range workspace {
-		if r.Deny == denylist.DenyWrite && policy.CoversResolved(s.fs.Resolve(r.Path), grant) {
+		if r.Deny == denylist.DenyWrite && s.covers(s.fs.Resolve(r.Path), grant) {
 			return r, UnderWriteShield
 		}
 	}
@@ -171,6 +176,21 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 	return denylist.Rule{}, Honored
 }
 
+// covers reports whether a shield at or above grant covers it, byte-exact or under the
+// respelling a case-folding mount admits. The folded arm is gated on foldsCase, so it
+// carries that detector's reach and no more: it answers for a whole-mount fold, where
+// every component folds, and for an ext4 casefold attribute on the shield's own parent.
+//
+// The case-blind comparison is the cheap half and runs first, because it is only ever a
+// prefilter - a host that does not fold reaches the syscall for two paths differing in
+// case alone, which the byte-exact test has already declined.
+func (s Set) covers(shield, grant string) bool {
+	if policy.CoversResolved(shield, grant) {
+		return true
+	}
+	return policy.CoversResolved(strings.ToLower(shield), strings.ToLower(grant)) && s.foldsCase(shield)
+}
+
 // foldsCase reports whether the directory holding path reaches path's content under a
 // different spelling of its name - a case-insensitive mount (vfat, exfat, ciopfs) or a
 // directory carrying ext4's casefold attribute. A shield is one byte-exact bind, so where
@@ -179,6 +199,15 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 // The flipped spelling is a DETECTOR, not an enumeration: a folding directory reaches the
 // same inode under every mixture of cases, so there is no set of extra binds that would
 // contain it. That is why the caller's only move is to refuse the grant.
+//
+// Only path's OWN base name is flipped, which bounds what this detects. The whole-mount
+// cases fold every component, so the leaf is a sufficient detector for them. ext4's
+// casefold is per-directory, and although a new subdirectory inherits it, a deliberate
+// chattr -F on a child leaves a folding ancestor this answers false for: with +F on ~ but
+// not on ~/.config, ~/.CONFIG/gh reaches the store beside a byte-exact shield at
+// ~/.config/gh and no flip of gh says so. Widening it means walking every component
+// between the grant and the shield, which the corpus cannot express until its Folding flag
+// becomes per-component.
 //
 // A name with no letters cannot be respelled, so it answers false without a syscall. A
 // shield that does not exist costs one and answers false too: it holds nothing to reach.
