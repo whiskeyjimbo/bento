@@ -139,7 +139,7 @@ extra=$(echo "$found" | while read -r dir; do
 done)
 
 if [ -n "$extra" ]; then
-	echo "layering: only internal/shield assembles the shields a run applies, but rules are built in:" >&2
+	echo "layering: internal/shield assembles the built-in shields a run applies, but rules are built in:" >&2
 	echo "$extra" | sed 's/^/  /' >&2
 	echo "  Route it through internal/shield, or add it to shield_assemblers in $0 with the reason it builds its own." >&2
 	status=1
