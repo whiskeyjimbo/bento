@@ -71,10 +71,14 @@ var autoExecDirs = []string{
 // so this asks git rather than parsing .git/config, which gets the worktree and relative
 // cases wrong. It is a fixed cost, not a tree walk: one resolution per grant.
 //
-// Running git against the grant is not a way in for the run. gitDirShields DenyWrites
+// Running git against the grant is not a way in for the run. Only the BASELINE resolves
+// it, and the after-snapshot walks that answer - see autoExecBaseline, which is where the
+// value is actually fixed for the run. The shields do most of it: gitDirShields DenyWrites
 // .git/config and every config.worktree, the workspace denylist covers ~/.gitconfig and
-// ~/.config/git/config, and /etc/gitconfig is under no write grant - so every file the
-// value could come from is fixed for the run. GIT_* is dropped below for the same reason
+// ~/.config/git/config, and /etc/gitconfig is under no write grant. What they do not cover
+// is a write grant with no enclosing checkout, where there is no .git to shield and the
+// target can git init one of its own; resolving once is what answers that case too.
+// GIT_* is dropped below for the same reason
 // from the other direction - notably GIT_CONFIG_GLOBAL, which would name a global config
 // no shield covers - and `rev-parse --git-path` only reads config, so none of git's
 // config-driven exec knobs (aliases, pager, fsmonitor, textconv) fire for it.
@@ -149,11 +153,33 @@ func resolved(path string) string {
 // modified or removed.
 type autoExecState map[string]string
 
+// autoExecBaseline is the preflight snapshot together with the hook directories that
+// resolved to, and the pairing is the point. core.hooksPath is only as fixed for the run
+// as the files it comes from, and a write grant with NO enclosing checkout has none of
+// them: nothing above it is a repo, so nothing is shielded, and the target can git init
+// inside the grant and set core.hooksPath to any other write-granted directory. Asking
+// again afterwards would walk wherever the run just pointed it and report every file
+// there as newly created - noise in a hint the operator is told to read, which is how a
+// hint stops being read. So the answer is taken once, before the target runs, and the
+// after-snapshot walks that.
+type autoExecBaseline struct {
+	state autoExecState
+	hooks []string
+}
+
+// changed re-stamps the same paths the baseline stamped and names what the run altered.
+func (b autoExecBaseline) changed(writes []string) []string {
+	return changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
+}
+
 // snapshotAutoExec stats the auto-executing files under each write grant. Errors are
 // dropped rather than surfaced: a path that cannot be stat'd is one this run also could
 // not have changed in a way the comparison would see, and a report is a hint - failing a
 // run over it would trade a fence's cost for a hint's benefit.
-func snapshotAutoExec(writes []string) autoExecState {
+//
+// hooks are the hook directories to stamp, which only the baseline discovers; every later
+// snapshot is handed the baseline's answer.
+func snapshotAutoExec(writes, hooks []string) autoExecState {
 	state := autoExecState{}
 	stamp := func(p string) {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
@@ -176,11 +202,23 @@ func snapshotAutoExec(writes []string) autoExecState {
 		for _, d := range autoExecDirs {
 			stampDir(filepath.Join(w, d))
 		}
-		if hooks := hookRunnerDir(w, writes); hooks != "" {
-			stampDir(hooks)
-		}
+	}
+	for _, h := range hooks {
+		stampDir(h)
 	}
 	return state
+}
+
+// baselineAutoExec is the preflight snapshot: the one that resolves core.hooksPath, per
+// grant, and keeps the answer for every snapshot after it.
+func baselineAutoExec(writes []string) autoExecBaseline {
+	var hooks []string
+	for _, w := range writes {
+		if h := hookRunnerDir(w, writes); h != "" && !slices.Contains(hooks, h) {
+			hooks = append(hooks, h)
+		}
+	}
+	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks}
 }
 
 // changedAutoExec names the files whose stamp the run changed, in either direction: a
