@@ -237,8 +237,17 @@ func (h Holds) Exposure() string {
 // credential stores just by exporting HOME=/ - the run still reports shields, they just
 // cover nothing. Anchoring on passwd alone breaks the hosts where $HOME is the truth:
 // containers, nix shells, sudo -H, CI images with no passwd entry for the uid. The union
-// costs a handful of extra bind mounts and neither anchor can be dodged by moving the
-// other.
+// costs a handful of extra bind mounts, and where both answer, neither anchor can be
+// dodged by moving the other.
+//
+// Where only one answers the union is one anchor wide, and on a host with no passwd entry
+// that anchor is the environment's. So HOME=/ is refused outright rather than accepted as
+// the anchor of last resort: an anchor at the root is not a home whose stores are covered
+// but a home whose rules land on /bin, /Applications and the mail spool - which the
+// degraded tier's Landlock enforces for real. Dropping it leaves the passwd entry as the
+// anchor where there is one, and no anchors at all where there is not, which is the
+// refusal below. Shieldable refuses "/" as a rule TARGET for the same reason; this is the
+// same refusal one level up, at the anchor.
 //
 // It lives here, beside the rules it anchors, because every consumer has to agree on the
 // answer: a profiler that clamps its proposal against a different home than the enforcer
@@ -254,11 +263,11 @@ func HomeAnchors() ([]string, error) {
 	// leaving the real credential dirs exposed - so an unusable value is dropped rather
 	// than shielding air.
 	home, err := os.UserHomeDir()
-	if err == nil && filepath.IsAbs(home) {
+	if err == nil && filepath.IsAbs(home) && filepath.Clean(home) != "/" {
 		homes = append(homes, filepath.Clean(home))
 	}
 
-	if pw := PasswdHome(); pw != "" && !slices.Contains(homes, pw) {
+	if pw := PasswdHome(); pw != "" && pw != "/" && !slices.Contains(homes, pw) {
 		homes = append(homes, pw)
 	}
 	if len(homes) == 0 {
@@ -266,7 +275,7 @@ func HomeAnchors() ([]string, error) {
 		// is the one case worth refusing over: a run with no shields is not the boundary
 		// bento claims, and it is indistinguishable at the report from a run whose grants
 		// simply reached none.
-		return nil, fmt.Errorf("denylist: no usable home directory: $HOME is %q and the passwd database has none for uid %d", home, os.Getuid())
+		return nil, fmt.Errorf("denylist: no usable home directory: $HOME is %q and the passwd database gives %q for uid %d", home, PasswdHome(), os.Getuid())
 	}
 	return homes, nil
 }

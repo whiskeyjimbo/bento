@@ -1670,7 +1670,7 @@ func TestHomeAnchorsKeepsPasswdHome(t *testing.T) {
 	if err != nil {
 		t.Skip("no passwd entry for this uid")
 	}
-	t.Setenv("HOME", "/")
+	t.Setenv("HOME", "/var/tmp")
 
 	homes, err := HomeAnchors()
 	if err != nil {
@@ -1679,7 +1679,7 @@ func TestHomeAnchorsKeepsPasswdHome(t *testing.T) {
 	if !slices.Contains(homes, filepath.Clean(u.HomeDir)) {
 		t.Errorf("HomeAnchors() = %v, want it to contain the passwd home %q whatever $HOME says", homes, u.HomeDir)
 	}
-	if !slices.Contains(homes, "/") {
+	if !slices.Contains(homes, "/var/tmp") {
 		t.Errorf("HomeAnchors() = %v, want it to contain $HOME", homes)
 	}
 }
@@ -1714,6 +1714,10 @@ func TestHomeAnchorsSurvivesAnUnusableHome(t *testing.T) {
 	for _, tc := range []struct{ name, home string }{
 		{"unset", ""},
 		{"relative", "rel/ative"},
+		// HOME=/ is the dodge the passwd anchor exists to defeat, and it is not harmless
+		// on its own: anchored at the root the rules land on /bin and the mail spool,
+		// which the degraded tier enforces for real.
+		{"root", "/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", tc.home)
@@ -1726,6 +1730,12 @@ func TestHomeAnchorsSurvivesAnUnusableHome(t *testing.T) {
 			}
 			if want := []string{pw}; !slices.Equal(homes, want) {
 				t.Errorf("HomeAnchors() = %v, want %v", homes, want)
+			}
+			// The same host without a passwd entry has nothing left to anchor on, and the
+			// len(homes) == 0 refusal is what it gets. That is only true while "/" never
+			// survives as an anchor here.
+			if slices.Contains(homes, "/") {
+				t.Error("HomeAnchors() returned / as an anchor; on a passwd-less host that anchors every rule at the root instead of refusing")
 			}
 		})
 	}
