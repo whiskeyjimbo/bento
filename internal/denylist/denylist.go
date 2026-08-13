@@ -1405,7 +1405,8 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// STEPPATH moves step-cli's whole tree, but only secrets/ under it is shielded at the
 	// default - the certificates and config beside it are what an in-sandbox step reads.
 	// dirEnvs is the wrong table for that: its DenyAll takes the relocated tree whole and
-	// would hide the certificates the default deliberately spares.
+	// would hide the certificates the default deliberately spares. The contexts layout
+	// recorded beside the default entry is the same residual once relocated.
 	if base := os.Getenv("STEPPATH"); filepath.IsAbs(base) {
 		if c := filepath.Clean(base); !isDefault(c, ".step") {
 			if p := filepath.Join(c, "secrets"); !covered(p) && shieldable(p) {
@@ -1418,6 +1419,14 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// resolves to. GOBIN overrides it outright when set, and has its own row below, so the
 	// GOPATH bindir is only a target where GOBIN is unset. The remaining elements hold
 	// module sources and caches an in-sandbox build legitimately writes.
+	//
+	// `go env -w` persists either variable to ~/.config/go/env, which the process
+	// environment does not carry, so a host that set them that way keeps the default
+	// go/bin shield while `go install` writes elsewhere - a recorded residual. Reading
+	// that file is what the .claude.json comment above rules out for every rule here:
+	// the clamp, the credential hunt and the firejail audit each derive these paths
+	// independently, and a host read would make them disagree. GOENV relocates the file
+	// in turn, so following it would be a read chased by another read.
 	if gobin := os.Getenv("GOBIN"); gobin == "" {
 		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && filepath.IsAbs(gopath[0]) {
 			if c := filepath.Clean(gopath[0]); !isDefault(c, "go") {
@@ -1970,6 +1979,11 @@ var credentialAnchorDirs = []string{
 	// step-cli keeps the CA and provisioner private keys here; the certificates and the
 	// config beside them under ~/.step are what a sandboxed step run reads, so only the
 	// secrets directory is taken - the .subversion/auth narrowing.
+	//
+	// With contexts enabled step keeps each authority's keys at authorities/<name>/secrets
+	// instead, under a name chosen at init time, so no concrete path reaches them and this
+	// is left as a residual - the sdkman candidates/*/current/bin class. Taking ~/.step
+	// whole would reach it and is what the narrowing above exists to avoid.
 	".step/secrets",
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
