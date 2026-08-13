@@ -12,6 +12,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -1504,4 +1505,80 @@ func TestGrantTargetsWithoutAHostAnswer(t *testing.T) {
 	if got := toGrantTargetsJSON([]string{"~/src", "/data"}, nil); got != nil {
 		t.Errorf("no resolution for this host must yield no targets; got %v", got)
 	}
+}
+
+// The memo is a cache over a DISK walk, so its lifetime is the whole of its correctness:
+// it is honest for one render pass over one manifest and no longer, which is why profile's
+// convergence loop drops it after each round has executed the target. Nothing exercised
+// that, and a memo that never re-walks passes every test that only asks it twice.
+//
+// The mutation is a symlink inside a credential store pointing at a dotfile farm in the
+// same home, which is what stow, chezmoi and home-manager leave: shield.Set expands it to
+// a second rule at the target's own path. It moves the set with the environment untouched,
+// which is the case that matters - the memo keys on the environment, so a test that
+// relocated HOME between the two asks would re-walk for that reason and prove nothing.
+func TestShieldSetMemoIsDroppedForTheNextRound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, d := range []string{".ssh", "farm"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "farm", "id_ed25519"), []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidateShieldSet()
+
+	before, err := commandShieldSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A dotfile manager linking the key into its farm: the store's entry is a symlink, and
+	// the target is shielded at its own path too or the store is reachable by naming where
+	// it points.
+	if err := os.Symlink(filepath.Join(home, "farm", "id_ed25519"), filepath.Join(home, ".ssh", "id_ed25519")); err != nil {
+		t.Fatal(err)
+	}
+
+	if held, err := commandShieldSet(); err != nil {
+		t.Fatal(err)
+	} else if len(held.Rules()) != len(before.Rules()) {
+		t.Fatalf("the memo must serve the same set within one render pass; %d rules became %d",
+			len(before.Rules()), len(held.Rules()))
+	}
+
+	invalidateShieldSet()
+	fresh, err := commandShieldSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Rules()) != len(before.Rules())+1 {
+		t.Errorf("a dropped memo must walk the stores again: %d rules before the link, %d after dropping it, want %d",
+			len(before.Rules()), len(fresh.Rules()), len(before.Rules())+1)
+	}
+}
+
+// The held flag, which is why the memo is not keyed on the environment alone: an empty
+// environment is a legitimate key, and a cache comparing keys would hand a run in one back
+// the zero Set forever - no rules, so no grant refused and no credential shielded.
+func TestShieldSetMemoWalksForAnEmptyEnvironment(t *testing.T) {
+	// The collision said directly, since an empty os.Environ() cannot be arranged from
+	// inside a test: nothing is held, and the key the next ask computes is the one already
+	// stored. A cache comparing keys alone answers that from an empty set.
+	invalidateShieldSet()
+	shieldSetCache.Lock()
+	shieldSetCache.key = strings.Join(os.Environ(), "\x00")
+	shieldSetCache.set = shield.Set{}
+	shieldSetCache.Unlock()
+
+	set, err := commandShieldSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Rules()) == 0 {
+		t.Error("an ask that matches the zero key must still walk; a set with no rules shields nothing")
+	}
+	t.Cleanup(invalidateShieldSet)
 }
