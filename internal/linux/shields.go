@@ -142,7 +142,15 @@ func workspaceShields(sb sandbox, dir string) ([]denylist.Rule, string) {
 	if rules, ok := sb.workspaceShieldCache[root]; ok {
 		return rules, root
 	}
-	rules := slices.Clip(append(denylist.Workspace(root), gitDirShields(sb, root)...))
+	// A gitfile checkout has no directory to walk, so gitDirShields is skipped with the
+	// .git children it would extend. Same test as the gitdir identification below: a
+	// regular file, never a directory that happens to be named .git.
+	var rules []denylist.Rule
+	if gitfile := filepath.Join(root, ".git"); sb.exists(gitfile) && !sb.isDir(gitfile) {
+		rules = slices.Clip(denylist.WorkspaceGitfile(root))
+	} else {
+		rules = slices.Clip(append(denylist.Workspace(root), gitDirShields(sb, root)...))
+	}
 	if sb.workspaceShieldCache != nil {
 		sb.workspaceShieldCache[root] = rules
 	}

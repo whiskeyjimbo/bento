@@ -1615,6 +1615,29 @@ func Workspace(dir string) []Rule {
 	}
 }
 
+// WorkspaceGitfile returns Workspace's rules for a checkout whose .git is a FILE rather
+// than a directory - a linked worktree or a submodule working tree, both of which keep
+// a "gitdir: <path>" pointer there instead. The hooks and config that execute on the
+// host live in the gitdir it names, which is outside the checkout and so outside the
+// write grant already. What is newly plantable is the gitfile itself: rewriting it
+// repoints the worktree at another gitdir, which the developer's next git command in
+// that worktree honors. So the .git children are dropped for a shield on .git.
+//
+// Dropping them is not just tidiness. bwrap shields by binding and cannot create a
+// mount point under a regular file, so emitting .git/hooks here kills sandbox setup and
+// the run refuses to attest. The children are found by prefix rather than listed, so a
+// .git rule added to Workspace later cannot leak through this path.
+func WorkspaceGitfile(dir string) []Rule {
+	gitfile := filepath.Join(dir, ".git")
+	rules := []Rule{{Path: gitfile, Deny: DenyWrite}}
+	for _, r := range Workspace(dir) {
+		if !strings.HasPrefix(r.Path, gitfile+string(filepath.Separator)) {
+			rules = append(rules, r)
+		}
+	}
+	return rules
+}
+
 // A relocated XDG base moves the real credential/config stores out from under the
 // default ~/.config etc., so a config/data/cache-relative entry is shielded at
 // BOTH its default location and the XDG one - a tool that honors XDG_CONFIG_HOME

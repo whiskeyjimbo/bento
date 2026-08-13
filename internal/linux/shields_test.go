@@ -91,8 +91,10 @@ func TestCreatedShieldsClaimsOnlyTheDirectoriesItCauses(t *testing.T) {
 		t.Errorf("the write grant itself is the user's directory and must never be scheduled; got %v", dirs)
 	}
 
-	// The same run against a host that already has an (empty) .git/.
-	existing := testSandbox("/home/u/proj/src", "/home/u/proj/.git")
+	// The same run against a host that already has a .git/ directory. It needs an
+	// entry to read as a directory rather than a gitfile in the fake filesystem, and
+	// HEAD is the one every real gitdir has and no shield names.
+	existing := testSandbox("/home/u/proj/src", "/home/u/proj/.git", "/home/u/proj/.git/HEAD")
 	dirs, _ = createdShields(existing, grants, grants, nil)
 	if containsStr(dirs, "/home/u/proj/.git") {
 		t.Errorf("a directory the user already had must never be scheduled for removal; got %v", dirs)
@@ -112,6 +114,35 @@ func TestCreatedShieldsStopsAtANestedWriteGrant(t *testing.T) {
 
 	if containsStr(dirs, "/home/u/proj/sub") {
 		t.Errorf("a nested write grant must never be scheduled for removal; got %v", dirs)
+	}
+}
+
+// A linked worktree and a submodule working tree keep a "gitdir:" pointer FILE at .git,
+// so a .git/hooks shield has no directory to mount into: bwrap dies during setup and the
+// run refuses to attest. The gitfile takes a shield of its own instead - repointing it
+// redirects the developer's next git command in that worktree - and the shields outside
+// .git are unaffected.
+func TestWorkspaceShieldsOverAGitfileCheckout(t *testing.T) {
+	sb := testSandbox("/home/u/wt/src", "/home/u/wt/.git")
+	rules, root := workspaceShields(sb, "/home/u/wt/src")
+
+	if root != "/home/u/wt" {
+		t.Errorf("the gitfile still anchors the checkout; got %q", root)
+	}
+	var paths []string
+	for _, r := range rules {
+		paths = append(paths, r.Path)
+	}
+	for _, p := range []string{"/home/u/wt/.git/hooks", "/home/u/wt/.git/config"} {
+		if containsStr(paths, p) {
+			t.Errorf("%s cannot be mounted under a file and must not be shielded; got %v", p, paths)
+		}
+	}
+	if !containsStr(paths, "/home/u/wt/.git") {
+		t.Errorf("the gitfile itself is what is plantable here; got %v", paths)
+	}
+	if !containsStr(paths, "/home/u/wt/.vscode") {
+		t.Errorf("the shields outside .git are unchanged; got %v", paths)
 	}
 }
 
