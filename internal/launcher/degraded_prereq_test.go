@@ -56,6 +56,9 @@ func TestRunDegradedRefusesRelativeConfinementPaths(t *testing.T) {
 		{"readable", DegradedConfig{Readable: []string{"etc"}}},
 		{"writable", DegradedConfig{Writable: []string{"../elsewhere"}}},
 		{"exec", DegradedConfig{ExecPaths: []string{"bin/sh"}}},
+		// Same wire, same flag, and it becomes TMPDIR: a relative one sends every temp
+		// file the target writes to a cwd-relative path the ruleset never granted.
+		{"scratch", DegradedConfig{Scratch: "../tmp"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := tc.cfg
@@ -70,6 +73,25 @@ func TestRunDegradedRefusesRelativeConfinementPaths(t *testing.T) {
 				t.Errorf("refusal %q does not name the relative path as the problem", err)
 			}
 		})
+	}
+}
+
+// DegradedConfig says Scratch is "already in Writable", and the environment override
+// below the check exports it as TMPDIR regardless. A scratch outside the write set is a
+// TMPDIR Landlock refuses on the target's first temp file - fail-closed, but as a
+// permission denied deep in the target rather than as the policy mismatch it is.
+func TestRunDegradedRefusesAScratchOutsideTheWriteSet(t *testing.T) {
+	cfg := DegradedConfig{
+		Writable: []string{"/granted"},
+		Scratch:  "/elsewhere",
+		Target:   []string{"/bin/true"},
+	}
+	_, err := RunDegraded(cfg)
+	if err == nil {
+		t.Fatal("ran with a scratch the write set does not grant instead of refusing")
+	}
+	if !strings.Contains(err.Error(), "not in the write set") {
+		t.Errorf("refusal %q does not name the ungranted scratch as the problem", err)
 	}
 }
 

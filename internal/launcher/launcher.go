@@ -86,6 +86,11 @@ type Config struct {
 	// streams, so an inherited AF_INET/AF_INET6 socket is warned about rather than
 	// refused. It waives no other family and nothing that is not a socket. Off by
 	// default, including for every CLI run.
+	//
+	// It reaches the bwrap tier only. The degraded tier runs a no-network manifest by
+	// definition, so a socket on its stdio contradicts the only policy that can get
+	// there; DegradedConfig carries no counterpart field and EncodeLaunchDegraded no
+	// flag, and refuseNetworkStdio refuses with that stated.
 	AllowNetworkStdio bool
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
@@ -524,14 +529,23 @@ const firstInheritableFD = 3
 //
 // So it runs whatever the policy's egress: with none granted an inherited socket
 // falsifies the claim outright, and with egress granted it bypasses the host proxy's
-// allowlist. The one deliberate case - the socket-activation pattern, where a server
-// passes a per-connection handler its accepted conn - opts in through
-// enforce.Process.AllowNetworkStdio, which no manifest and no CLI flag can set.
+// allowlist. On the bwrap tier the one deliberate case - the socket-activation pattern,
+// where a server passes a per-connection handler its accepted conn - opts in through
+// enforce.Process.AllowNetworkStdio, and Run applies that waiver itself.
+//
+// This wrapper is the degraded tier's caller, and there the waiver does not apply: that
+// tier runs a no-network manifest and nothing else, so a socket on stdio contradicts the
+// only policy that can reach it, and DegradedConfig deliberately carries no field and no
+// wire flag for the opt-in. The refusal says so, because an embedder that set the waiver
+// and got refused anyway is owed the reason rather than an unexplained repeat of the
+// bwrap tier's text. Every failing descriptor is named, not the first: with no waiver to
+// separate them there is no reason to report one and hide the rest.
 func refuseNetworkStdio() error {
-	if errs := networkStdioRefusals(); len(errs) > 0 {
-		return errs[0]
+	errs := networkStdioRefusals()
+	if len(errs) == 0 {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("launcher: refusing to run - %w; the degraded tier runs no-network manifests only, so enforce.Process.AllowNetworkStdio does not waive this here", errors.Join(errs...))
 }
 
 // networkStdioRefusals reports one error per standard descriptor that fails the check,

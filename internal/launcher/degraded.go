@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -123,6 +124,19 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 			if !filepath.IsAbs(p) {
 				return 0, fmt.Errorf("launcher: degraded confinement paths must be absolute, got %q", p)
 			}
+		}
+	}
+	// Scratch arrives off the same wire (--scratch) and is exported as TMPDIR below, so
+	// a relative one sends every temp file the target writes to a cwd-relative path the
+	// ruleset never granted. Membership is checked too, because a scratch outside the
+	// write set is a TMPDIR Landlock refuses - the struct's own invariant says it is
+	// already in Writable, and nothing but this enforces it.
+	if cfg.Scratch != "" {
+		if !filepath.IsAbs(cfg.Scratch) {
+			return 0, fmt.Errorf("launcher: degraded confinement paths must be absolute, got %q", cfg.Scratch)
+		}
+		if !slices.Contains(cfg.Writable, cfg.Scratch) {
+			return 0, fmt.Errorf("launcher: degraded scratch %q is not in the write set", cfg.Scratch)
 		}
 	}
 	if err := degradedPrerequisites(landlockAvailable(), seccompEgressSupported()); err != nil {

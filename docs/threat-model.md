@@ -246,7 +246,9 @@ the inode it names, outside every mount the sandbox built - and a device node li
 Both are refused, and neither is waivable by the socket-activation opt-in. Two kinds of
 character device still pass, on two different rationales. The memory devices the
 sandbox's own `/dev` provides (`null`, `zero`, `full`, `random`, `urandom`) grant
-nothing the target could not open by path. A terminal passes because refusing it would
+nothing the target could not open by path - judged against the bwrap `/dev`, and a
+superset of it on the degraded tier, whose Landlock set grants no `/dev/full`. A
+terminal passes because refusing it would
 refuse every run a human types - the check is whether the descriptor answers `TCGETS`,
 not a table of device numbers, since a pty, a system console and a VM serial console
 share no major. A host terminal on stdio is therefore an accepted residual of running

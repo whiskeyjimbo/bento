@@ -322,8 +322,7 @@ func runReportChild(mode string) {
 // The exec-block path writes the exec-record section before execveat, because after a
 // successful one there is no process left to write from. A transition that fails then
 // appends the unreached line behind the closed section, so both follow the marker on the
-// same report - the case the reader in internal/linux is built for, and the one the
-// section's own doc used to deny.
+// same report - the case the reader in internal/linux is built for.
 func TestRunTargetWritesBothSectionsWhenTheExecBlockCannotReachTheTarget(t *testing.T) {
 	rec := &execRecorder{}
 	rec.record(1, "/nonexistent", []string{"/nonexistent"})
