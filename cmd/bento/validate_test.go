@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -928,5 +929,45 @@ func assertApproveRefuses(t *testing.T, path string) {
 	}
 	if !strings.Contains(err.Error(), "stamp a permission that does not exist") {
 		t.Errorf("approve must refuse in the honorable-grants words; got %v", err)
+	}
+}
+
+// A host that cannot work out where its shields anchor answers half the question: the
+// grants are unknown, but whether the entrypoint resolves is a fact about the filesystem
+// that the shield set has no part in. Both halves must reach the report - the older shape
+// let the unknown one silence the answer this host was sure of.
+func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
+	r := gate.Runnability{
+		Unresolved:   true,
+		Problems:     []string{`entrypoint "/nope/missing.py": no such file or directory`},
+		MissingReads: []string{"/nope/nothere"},
+	}
+
+	var out strings.Builder
+	writeRunnability(&out, r)
+	for _, want := range []string{"runnable:     NO", `entrypoint "/nope/missing.py"`, "grants:       unknown", "names nothing on this host"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary missing %q; got:\n%s", want, out.String())
+		}
+	}
+
+	var o policyJSON
+	o.setRunnable(r)
+	if o.Runnable == nil || *o.Runnable {
+		t.Errorf("runnable = %v, want false", o.Runnable)
+	}
+	if len(o.RunnableProblems) != 1 || len(o.MissingReadGrants) != 1 {
+		t.Errorf("the answered half must reach the envelope; got %v %v", o.RunnableProblems, o.MissingReadGrants)
+	}
+	if o.RefusedGrants != nil || o.CredentialAliases != nil {
+		t.Errorf("the shield half is unknown and must stay absent; got %v %v", o.RefusedGrants, o.CredentialAliases)
+	}
+
+	// The other cause of the same flag: a caller that could not resolve the paths at all
+	// asked nothing, so the envelope must not answer - runnable is what a CI gate keys on.
+	var unasked policyJSON
+	unasked.setRunnable(gate.Runnability{Unresolved: true})
+	if unasked.Runnable != nil {
+		t.Errorf("runnable = %v, want absent on a host that answered nothing", unasked.Runnable)
 	}
 }

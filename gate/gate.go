@@ -84,11 +84,13 @@ type Runnability struct {
 	// the mount table - and only over the trees the manifest grants rather than everything
 	// the run binds. Both narrowings only miss a finding.
 	CredentialAliases []enforce.CredentialAlias
-	// Unresolved marks a host that could not answer at all: the caller could not resolve
-	// the manifest's paths and signals that by passing a nil policy, or this host cannot
-	// work out where its shields anchor. Reported as unknown rather than as a pass -
-	// either host refuses the run for that same reason, and an empty refusal set here is
-	// indistinguishable from a manifest a healthy host has nothing to refuse about.
+	// Unresolved marks the answer as incomplete: the caller could not resolve the
+	// manifest's paths and signals that by passing a nil policy, in which case nothing
+	// below is answered, or this host cannot work out where its shields anchor, in which
+	// case Refusals and CredentialAliases are unknown and the rest still stands. Reported
+	// as unknown rather than as a pass - either host refuses the run for that same reason,
+	// and an empty refusal set here is indistinguishable from a manifest a healthy host
+	// has nothing to refuse about.
 	Unresolved bool
 }
 
@@ -98,14 +100,6 @@ type Runnability struct {
 // approved manifest's policy in place makes it read as stale against its own stamp.
 func Check(resolved *policy.Policy) Runnability {
 	if resolved == nil {
-		return Runnability{Unresolved: true}
-	}
-	// A host that cannot anchor its shields refuses every run, and it cannot say which
-	// grants that run would have refused - so the answer is unknown rather than the empty
-	// refusal set a host with nothing to refuse yields, which is what the same manifest
-	// looks like on a healthy host.
-	set, err := ShieldSet()
-	if err != nil {
 		return Runnability{Unresolved: true}
 	}
 	var r Runnability
@@ -120,9 +114,19 @@ func Check(resolved *policy.Policy) Runnability {
 			r.Problems = append(r.Problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
-	r.Refusals = refusals(set, resolved)
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
+	// A host that cannot anchor its shields refuses every run, and it cannot say which
+	// grants that run would have refused - so those are unknown rather than the empty
+	// refusal set a host with nothing to refuse yields, which is what the same manifest
+	// looks like on a healthy host. Everything above is a fact about the manifest and the
+	// host's filesystem that the shield set has no part in, so it survives.
+	set, err := ShieldSet()
+	if err != nil {
+		r.Unresolved = true
+		return r
+	}
+	r.Refusals = refusals(set, resolved)
 	r.CredentialAliases = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
 }

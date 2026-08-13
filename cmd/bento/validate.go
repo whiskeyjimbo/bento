@@ -240,15 +240,22 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 // the count does not.
 func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
-	case r.Unresolved:
-		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer (it could not resolve the\n")
-		fmt.Fprintf(w, "              manifest's paths, or not work out where its shields anchor; the\n")
-		fmt.Fprintf(w, "              grants above and the footer below say which)\n")
 	case len(r.Problems) > 0:
 		fmt.Fprintf(w, "\nrunnable:     NO - this host cannot start what the manifest names\n")
 		for _, p := range r.Problems {
 			fmt.Fprintf(w, "              %s\n", p)
 		}
+		// A shield-anchor failure leaves the entrypoint verdict standing and only the
+		// grants unanswered, so both halves are said rather than the harder one silencing
+		// the one this host is sure of.
+		if r.Unresolved {
+			fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
+			fmt.Fprintf(w, "              so the grants above were not checked\n")
+		}
+	case r.Unresolved:
+		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer (it could not resolve the\n")
+		fmt.Fprintf(w, "              manifest's paths, or not work out where its shields anchor; the\n")
+		fmt.Fprintf(w, "              grants above and the footer below say which)\n")
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
 	}
@@ -461,19 +468,25 @@ func (o *policyJSON) setRelocatable(pinned []string) {
 }
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent
-// where the host could not answer.
+// where the host could not answer - which is per field rather than per call: a host that
+// cannot anchor its shields still knows whether the entrypoint resolves, and only the
+// grant half is unknown. A host that answered nothing (a nil policy, so no problems and no
+// entrypoint checked) emits nothing, since Runnable is what a CI gate keys on and an
+// unasked question must not read as a green one.
 func (o *policyJSON) setRunnable(r gate.Runnability) {
-	if r.Unresolved {
+	if r.Unresolved && len(r.Problems) == 0 {
 		return
 	}
 	ok := len(r.Problems) == 0
 	o.Runnable = &ok
 	o.RunnableProblems = r.Problems
-	o.RefusedGrants = r.Refusals
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
-	for _, a := range r.CredentialAliases {
-		o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})
+	if !r.Unresolved {
+		o.RefusedGrants = r.Refusals
+		for _, a := range r.CredentialAliases {
+			o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})
+		}
 	}
 	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
 }
