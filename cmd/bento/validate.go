@@ -241,8 +241,8 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
 	case r.Unresolved:
-		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer (it could not resolve the\n")
-		fmt.Fprintf(w, "              manifest's paths; the grants above and the footer below say which)\n")
+		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer: it could not resolve the\n")
+		fmt.Fprintf(w, "              manifest's paths, so nothing above is a clean bill either\n")
 	case len(r.Problems) > 0:
 		fmt.Fprintf(w, "\nrunnable:     NO - this host cannot start what the manifest names\n")
 		for _, p := range r.Problems {

@@ -972,8 +972,8 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 			healthy.Runnable, healthy.ShieldsUnknown, healthy.MissingReadGrants)
 	}
 
-	// The other cause of the same flag: a caller that could not resolve the paths at all
-	// asked nothing, so the envelope must not answer - runnable is what a CI gate keys on.
+	// The other flag: a caller that could not resolve the paths at all asked nothing, so
+	// the envelope must not answer - runnable is what a CI gate keys on.
 	var unasked policyJSON
 	unasked.setRunnable(gate.Runnability{Unresolved: true})
 	if unasked.Runnable != nil {
