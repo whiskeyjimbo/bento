@@ -133,10 +133,21 @@ var errAllowlistUnavailableABI = errors.New("landlock: kernel ABI unavailable, r
 // is in place. The target's own interpreter or entrypoint would need execute under the
 // very ruleset withholding it, which rules out every script run under an interpreter.
 //
-// It is deliberately NOT best-effort, and stays that way: were anything ever to call it,
-// this ruleset would be the entire mechanism rather than a backstop behind bwrap, so
-// applying it must succeed or the run must not happen.
+// Were anything ever to call it, this ruleset would be the entire mechanism rather than a
+// backstop behind bwrap, so applying it must succeed or the run must not happen. It is
+// best-effort plus an explicit ABI floor, for the reason RestrictDegraded is: the two
+// guards below are what make that fail-closed, not the BestEffort call, which succeeds
+// without error even where Landlock is absent entirely.
 func RestrictExecAllowlist(writable, execAllow []string) error {
+	// BestEffort silently restricts nothing on ABI 0 (an empty ruleset returns success),
+	// which for a mode where Landlock is the whole guarantee is a fail-open. Refuse on the
+	// same effective ABI the gate uses.
+	//
+	// BestEffort's second silent-success path - a config it cannot satisfy collapses to v0
+	// and returns nil - is out of reach for the same reason it is in RestrictDegraded:
+	// only refer makes a rule unsatisfiable rather than merely intersected down, and
+	// execAllowlistRules asks for it through withRefer, which asks only from ABI 2.
+	// handledFS stops at V8, so no resolve_unix rule enters this ruleset either.
 	if effectiveABI() < 1 {
 		return errAllowlistUnavailableABI
 	}

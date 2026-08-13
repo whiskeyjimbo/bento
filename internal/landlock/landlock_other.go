@@ -19,6 +19,15 @@ func RestrictDegraded(read, write, exec []string) error {
 	return errors.New("landlock: the degraded tier has no filesystem confinement off Linux")
 }
 
+// RestrictExecAllowlist refuses off Linux, on RestrictDegraded's reasoning rather than
+// Restrict's: the allowlist ruleset is the whole mechanism, so a nil no-op would report
+// execute withheld while withholding nothing. Its only caller is linux-tagged, so nothing
+// reaches this today; it exists so a darwin caller fails to run rather than fails to
+// compile.
+func RestrictExecAllowlist(writable, execAllow []string) error {
+	return errors.New("landlock: no exec allowlist off Linux")
+}
+
 // Available reports false: Landlock is Linux-only.
 func Available() bool { return false }
 
