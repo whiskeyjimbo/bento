@@ -616,6 +616,10 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	obs, err := backend.Profile(cfg.ctx, discovery,
 		enforce.Process{Stdin: cfg.targetStdin, Stdout: cfg.targetStdout, Stderr: os.Stderr, Env: cfg.env},
 		backend.ProfileOptions{AllowNetwork: cfg.allowNetwork, AcceptAliasesUnder: cfg.acceptAliases})
+	// A program ran between this round's clamp and the last one's, so a set memoized then
+	// describes a host that no longer exists. Dropped whether or not the round succeeded:
+	// a target killed partway through still ran.
+	invalidateShieldSet()
 	if err != nil {
 		return nil, roundStatus{}, err
 	}

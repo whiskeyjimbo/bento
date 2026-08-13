@@ -340,9 +340,10 @@ func toGrantTargetsJSON(literal, resolved []string) []grantTargetJSON {
 // shieldSetCache holds the memoized set described on commandShieldSet.
 var shieldSetCache struct {
 	sync.Mutex
-	key string
-	set shield.Set
-	err error
+	held bool
+	key  string
+	set  shield.Set
+	err  error
 }
 
 // commandShieldSet is gate.ShieldSet memoized for one command. The set walks the credential
@@ -352,9 +353,15 @@ var shieldSetCache struct {
 // against 4.7ms per walk on a developer home).
 //
 // It lives here and not in gate because a cache over a disk walk is only honest for as
-// long as the process, and a bento command is one render pass over one manifest, all of
-// it before any run starts. A library cannot promise that, which is why gate.ShieldSet
-// walks fresh - and why gate.Check's own walk is a second one this cannot serve, which
+// long as nothing bento launched has run in between: the set is walked off DISK, so a
+// credential store a sibling ssh-keygen creates, a checkout cloned under a write grant or
+// a relocation symlink repointed all move it with the environment untouched. Every report
+// path here is one render pass over one manifest before any run starts, which holds. The
+// one path that is not is profile's convergence loop, which clamps its proposal after each
+// round has executed the target - up to 25 times - so profileRound drops the set with
+// invalidateShieldSet and the next round walks fresh. A library can promise neither, which
+// is why gate.ShieldSet walks fresh - and why gate.Check's own walk is a second one this
+// cannot serve, which
 // costs validate 5ms (14ms to 20ms on the manifest above). Paid rather than reached
 // around with a set parameter on Check: an embedder would then be the one holding a
 // stale set, which is the bug this shape exists to remove.
@@ -367,11 +374,20 @@ func commandShieldSet() (shield.Set, error) {
 	key := strings.Join(os.Environ(), "\x00")
 	shieldSetCache.Lock()
 	defer shieldSetCache.Unlock()
-	if shieldSetCache.key != key {
+	if !shieldSetCache.held || shieldSetCache.key != key {
+		shieldSetCache.held = true
 		shieldSetCache.key = key
 		shieldSetCache.set, shieldSetCache.err = gate.ShieldSet()
 	}
 	return shieldSetCache.set, shieldSetCache.err
+}
+
+// invalidateShieldSet drops the memoized set, so the next ask walks the stores again. It
+// is held rather than compared because an empty environment is a legitimate key.
+func invalidateShieldSet() {
+	shieldSetCache.Lock()
+	defer shieldSetCache.Unlock()
+	shieldSetCache.held = false
 }
 
 // explicitShieldGrants reports the read grants that name a mandatory shield
