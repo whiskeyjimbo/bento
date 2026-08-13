@@ -14,22 +14,19 @@ import (
 
 // The memory/pids delegation gate is host-safety critical - an uncapped memory bomb
 // can OOM the host - and it fails closed: when the controllers are not delegated,
-// canCreateScope reports the whole limits layer Unavailable so admission refuses a
-// requested limit rather than run it unenforced. The pure function
-// (TestHostControllersDelegatedFailsClosed) is covered; this proves the WIRING through
+// Probe reports LayerLimits Unavailable so admission refuses a requested memory or pids
+// limit rather than run it unenforced. The pure function
+// (TestMemPidsDelegationStateFailsClosed) is covered; this proves the WIRING through
 // the real Probe, which a hardcoded LayerLimits=Enforced would otherwise satisfy while
 // silently reopening v1's fail-open.
 //
-// It runs in child processes because canCreateScope caches behind a sync.Once and reads
-// delegation inside it - so the delegatedControllers seam can only be overridden in a
-// process where that Once has not yet fired, which a fresh -test.run child gives us and
-// the parent (whose Once fired in the skip guard) cannot. The baseline child is the
-// positive control: same Probe path, no override, and it must report Enforced, so the
-// override child's Unavailable is caused by the delegation loss and nothing else.
+// It runs in child processes to keep the delegatedControllers override off every other
+// test in this package, and because a child is the only place the whole Probe path runs
+// from a clean cache. The baseline child is the positive control: same Probe path, no
+// override, and it must report Enforced, so the override child's Unavailable is caused
+// by the delegation loss and nothing else.
 func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
-	if ok, _ := canCreateScope(); !ok {
-		t.Skip("no usable systemd scope on this host; the limits layer is not enforced to begin with")
-	}
+	requireMemPidsLimits(t)
 
 	baseline := runMemPidsChild(t, "baseline")
 	if !strings.Contains(baseline, "STATE enforced") {

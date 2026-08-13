@@ -1122,6 +1122,23 @@ func TestRunIDRefusedWhenTheHostCannotScope(t *testing.T) {
 	}
 }
 
+// The screen reads the limits layers the policy actually required. A cpu-only manifest
+// does not require LayerLimits, and a missing layer reads as Unavailable, so keying on
+// that layer alone refused a reapable cpu-only run on a host that delivers the scope
+// perfectly well.
+func TestRunIDAdmittedForACPUOnlyLimit(t *testing.T) {
+	cpuOnly := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{CPU: "50%"}}
+	probe := fullyEnforced()
+	probe.Set(LayerLimits, Unavailable, "the memory/pids controllers are not delegated")
+	f := &fakeEnforcer{probe: probe}
+	if _, err := Run(context.Background(), f, cpuOnly, Process{}, Options{RunID: "job_17"}); err != nil {
+		t.Fatalf("a cpu-only limit gets a scope to reap through; got %v", err)
+	}
+	if f.gotRunID != "job_17" {
+		t.Errorf("backend got run id %q, want job_17", f.gotRunID)
+	}
+}
+
 func TestRunIDSpellingIsScreened(t *testing.T) {
 	// The id is interpolated into a unit name, where these select a different unit or
 	// come back systemd-escaped and unrecognizable to the caller that chose them.

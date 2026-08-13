@@ -444,11 +444,15 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 			Reason: "a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id",
 		}
 	}
-	if required.StateOf(LayerLimits) != Enforced {
+	// Read through the limits layers the policy actually required, not LayerLimits
+	// alone: a cpu-only manifest does not require it, and StateOf reports a missing
+	// layer as Unavailable, so keying on it refused a reapable cpu-only run on a host
+	// that could deliver the scope perfectly well.
+	if short := unenforcedRequestedLimits(required); len(short) > 0 {
 		return &Refusal{
 			Report: required,
 			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through",
-			Short:  unenforcedRequestedLimits(required),
+			Short:  short,
 		}
 	}
 	return nil

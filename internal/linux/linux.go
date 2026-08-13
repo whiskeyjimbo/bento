@@ -187,9 +187,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// --allow-degraded) - here it simply proceeds unwrapped, and the report says so
 	// without a second check. canCreateScope caches every definitive verdict, so where
 	// the probe above answered, this reads that same answer. Where it could not answer
-	// it recorded LayerLimits Unavailable and this re-probes, which can only go the
-	// harmless way: limits applied under a report that did not claim them. There is no
-	// window in which the report claims a limit nothing applied.
+	// it recorded the limits layers Unavailable and this re-probes, which can only go
+	// the harmless way: limits applied under a report that did not claim them. There is
+	// no window in which the report claims a limit nothing applied.
+	//
+	// The gate is scope creation alone, which is all the wrapping needs. A layer can
+	// also be Unavailable because its controllers are undelegated, on a host where a
+	// scope creates fine; wrapping there is the same harmless direction, since systemd
+	// ignores the property and the report already claims nothing.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(); ok {

@@ -977,32 +977,28 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 		t.Errorf("exec-block state = %v, want %v", states[enforce.LayerExec], wantExec)
 	}
 
-	// Limits ride a systemd scope, which both tiers wrap their command in, so the
-	// state tracks scope creation and nothing about the namespace.
-	wantLimits := enforce.Unavailable
-	if ok, _ := canCreateScope(); ok {
-		wantLimits = enforce.Enforced
+	// Limits ride a systemd scope, which both tiers wrap their command in, so the state
+	// tracks scope creation and the controllers each layer needs - nothing about the
+	// namespace. Each layer carries its own delegation verdict, so a host missing one
+	// controller must not drag the other layer down with it.
+	scopeOK, _ := canCreateScope()
+	ctrls, known := delegatedControllers()
+	wantLimits, wantCPU := enforce.Unavailable, enforce.Unavailable
+	if scopeOK {
+		wantLimits, _ = memPidsDelegationState(ctrls, known)
+		wantCPU, _ = cpuDelegationState(ctrls, known)
 	}
 	if states[enforce.LayerLimits] != wantLimits {
 		t.Errorf("limits state = %v, want %v", states[enforce.LayerLimits], wantLimits)
 	}
-
-	// The cpu-limits layer is a refinement reported only when a scope can be created
-	// (memory/pids delegated); when the whole limits layer is unavailable the cpu gap
-	// is subsumed by it and no separate limits-cpu entry is emitted.
-	_, cpuReported := states[enforce.LayerLimitsCPU]
-	if wantLimits == enforce.Unavailable {
-		if cpuReported {
-			t.Errorf("limits-cpu should not be reported when the scope is unavailable")
-		}
-	} else {
-		wantCPU := enforce.Enforced
-		if ctrls, known := delegatedControllers(); known && !ctrls["cpu"] {
-			wantCPU = enforce.Unavailable
-		}
-		if states[enforce.LayerLimitsCPU] != wantCPU {
-			t.Errorf("limits-cpu state = %v, want %v", states[enforce.LayerLimitsCPU], wantCPU)
-		}
+	// Always reported, including with no scope at all: the two limits layers are
+	// required per requested limit, so a cpu-only manifest whose report omitted this
+	// one would reach admission with nothing to refuse and run unbounded.
+	if _, ok := states[enforce.LayerLimitsCPU]; !ok {
+		t.Error("limits-cpu must always be reported; a cpu-only policy has nothing else to refuse on")
+	}
+	if states[enforce.LayerLimitsCPU] != wantCPU {
+		t.Errorf("limits-cpu state = %v, want %v", states[enforce.LayerLimitsCPU], wantCPU)
 	}
 }
 
