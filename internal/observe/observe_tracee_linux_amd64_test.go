@@ -784,8 +784,8 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var res Result
-			count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, tc.held, map[int]bool{}, &res)
+			count, release, forget := dropOnce(map[string]bool{}, dead, &res.Dropped)
+			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, forget, tc.held, map[int]bool{}, &res)
 			if res.Dropped != tc.want {
 				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
 			}
@@ -809,8 +809,8 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 	}
 
 	var res Result
-	count, release := dropOnce(map[string]bool{}, dead, &res.Dropped)
-	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, held, map[int]bool{}, &res)
+	count, release, forget := dropOnce(map[string]bool{}, dead, &res.Dropped)
+	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, forget, held, map[int]bool{}, &res)
 	res.Dropped += releaseHeldOf(held, dead)
 
 	if res.Dropped != 2 {
@@ -848,7 +848,7 @@ func TestAnUnreadableStopCountsItsHeldProbeOnce(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := unreadableStopLoss(tc.held, pid); got != 1 {
+			if got := unreadableStopLoss(tc.held, pid, func() {}); got != 1 {
 				t.Errorf("an unreadable stop %s counted %d, want 1 - the stop itself is the loss whatever it was holding", tc.name, got)
 			}
 			if n := heldBy(tc.held, pid); n != 0 {
@@ -858,6 +858,32 @@ func TestAnUnreadableStopCountsItsHeldProbeOnce(t *testing.T) {
 				t.Errorf("held has %d entries, want %d - releasing more than this pid's pair would drop a probe that is still live", len(tc.held), tc.want)
 			}
 		})
+	}
+}
+
+// The other half of an unreadable stop, and the one whose cost outlives it: the pair's
+// dedup key. Every other way a key is stranded is a tid that DIED, which the wait status
+// sweeps; here the thread is alive and goes straight back round the same libc call site,
+// rebuilding a key identical to the one whose exit stop never reached its release. Left in
+// place it dedups away every later drop at that site for the life of the tracee - an
+// undercount in the channel whose whole purpose is to prevent undercounts, and invisible,
+// because Dropped simply reads low.
+func TestAnUnreadableStopEndsItsPairsDedup(t *testing.T) {
+	const pid = 4242
+	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0xcafe}
+	drops := map[string]bool{}
+	held := map[string]heldPath{}
+
+	var counted int
+	count, _, forget := dropOnce(drops, pid, &counted)
+	count(&regs, 0)
+	// The exit stop of that pair is unreadable, so its release never runs.
+	counted += unreadableStopLoss(held, pid, forget)
+	// The next iteration of the same call site: same pid, same syscall, same Rip.
+	count(&regs, 0)
+
+	if counted != 3 {
+		t.Errorf("counted = %d, want 3 (a drop, the unreadable stop, then the next iteration's drop); 2 is the stranded key suppressing the second call site's loss", counted)
 	}
 }
 
@@ -894,7 +920,7 @@ func TestNativeSyscallResolvesADeadThreadsPhantomStops(t *testing.T) {
 				lastOp[dead] = op
 			}
 			dropped := 0
-			if _, native := nativeSyscall(dead, lastOp, tc.held, &dropped); native {
+			if _, native := nativeSyscall(dead, lastOp, tc.held, func() {}, &dropped); native {
 				t.Fatal("a failed read cannot report the stop as native")
 			}
 			if dropped != tc.want {
@@ -1193,7 +1219,7 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	// NEXT thread's drop at the same call site.
 	drops := map[string]bool{}
 	var counted int
-	count, _ := dropOnce(drops, tid, &counted)
+	count, _, _ := dropOnce(drops, tid, &counted)
 	count(&regs, 0)
 
 	if lost := forgetExitedTid(tid, tracees, lastOp, held, drops, map[int]bool{}); lost != 1 {

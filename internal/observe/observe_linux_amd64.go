@@ -397,9 +397,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// foreign ABI and the amd64 table would misread it. Recording on both entry
 			// and exit is deduplicated, so no enter/exit bookkeeping beyond the drop
 			// counter's own.
-			if op, native := nativeSyscall(wpid, lastOp, held, &res.Dropped); native {
-				count, release := dropOnce(drops, wpid, &res.Dropped)
-				inspect(wpid, op, record, recordProbe, openResult, count, release, held, execSpawn, &res)
+			count, release, forget := dropOnce(drops, wpid, &res.Dropped)
+			if op, native := nativeSyscall(wpid, lastOp, held, forget, &res.Dropped); native {
+				inspect(wpid, op, record, recordProbe, openResult, count, release, forget, held, execSpawn, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -502,7 +502,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 //
 // This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
 // and passes here, and inspect drops it on the tag its syscall numbers carry.
-func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropped *int) (op byte, native bool) {
+func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, forgetDrops func(), dropped *int) (op byte, native bool) {
 	op, arch, err := syscallInfo(pid)
 	if err != nil {
 		// A read that failed says nothing about which stop this was, so the parity it
@@ -513,7 +513,7 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, dropp
 		if errors.Is(err, syscall.ESRCH) {
 			*dropped += deadThreadLoss(nextStop(prev), held, pid)
 		} else {
-			*dropped += unreadableStopLoss(held, pid)
+			*dropped += unreadableStopLoss(held, pid, forgetDrops)
 		}
 		return 0, false
 	}
@@ -577,8 +577,16 @@ func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
 // pid is this pair's - a tid has at most one pair open (see releaseHeldOf) - so it is the
 // same loss, and left in place it would be counted again by the sweep at this tracee's exit
 // (releaseHeldOf) or at root's (len(held)).
-func unreadableStopLoss(held map[string]heldPath, pid int) int {
+//
+// forgetDrops ends the pair's dedup for the same reason, and it is the half with a cost
+// that outlives this stop. This count goes straight to the total rather than through
+// dropOnce, so the sweep loses nothing here - but the thread is ALIVE, unlike every other
+// caller of forgetDropsOf, and its next iteration of the same libc call site rebuilds the
+// identical key. Left in place, that key suppresses every later drop at that site for the
+// life of the tracee.
+func unreadableStopLoss(held map[string]heldPath, pid int, forgetDrops func()) int {
 	releaseHeldOf(held, pid)
+	forgetDrops()
 	return 1
 }
 
@@ -719,12 +727,15 @@ const dropSlots = 2
 // pathnames are unreadable from a loop reports one drop for N lost accesses, which is the
 // undercount this channel exists to prevent.
 //
-// A key outlives its pair whenever the exit stop never reaches the release: a failed
-// register read (which has no registers to key on, and so keys on the zero regs), and a
-// tracee that dies mid-pair. The first collapses its repeats into one drop. The second
-// would strand a key on a tid the kernel is free to reuse, where it dedups away a live
-// thread's real loss, so forgetDropsOf sweeps it as the wait status arrives.
-func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs)) {
+// A key outlives its pair whenever the exit stop never reaches the release: a stop this
+// tracer could not read at all, and a tracee that dies mid-pair. The second would strand a
+// key on a tid the kernel is free to reuse, so forgetDropsOf sweeps it as the wait status
+// arrives. The first leaves it on a tid that is still very much alive and still looping
+// through the same call site, where every later iteration dedups against a key whose pair
+// ended - the undercount this channel exists to prevent, and why forget is returned
+// alongside: unreadableStopLoss sweeps the pid there, the same way it releases the
+// pathname the pair was holding.
+func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs), forget func()) {
 	key := func(regs *syscall.PtraceRegs, slot int) string {
 		return fmt.Sprintf("%s\x00%d", stopKey(pid, regs), slot)
 	}
@@ -741,7 +752,8 @@ func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.Pt
 			delete(inFlight, key(regs, slot))
 		}
 	}
-	return count, release
+	forget = func() { forgetDropsOf(inFlight, pid) }
+	return count, release, forget
 }
 
 // stopKey identifies one syscall's entry/exit pair: the tracee, plus the syscall's number
@@ -901,7 +913,7 @@ func existenceHeld(held map[string]heldPath) int {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), held map[string]heldPath, execSpawn map[int]bool, res *Result) {
+func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), forgetDrops func(), held map[string]heldPath, execSpawn map[int]bool, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -921,7 +933,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 			res.Dropped += deadThreadLoss(op, held, pid)
 			return
 		}
-		res.Dropped += unreadableStopLoss(held, pid)
+		res.Dropped += unreadableStopLoss(held, pid, forgetDrops)
 		return
 	}
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
