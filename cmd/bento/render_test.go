@@ -1529,6 +1529,21 @@ func TestShieldSetMemoIsDroppedForTheNextRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalidateShieldSet()
+	t.Cleanup(invalidateShieldSet)
+
+	// Counted under the temp home alone. HomeAnchors also returns the passwd home, whose
+	// stores are walked on every ask too - and this is a shared checkout, so a sibling
+	// dropping a link into one of them between the two asks would move a whole-set count
+	// for a reason that has nothing to do with the memo.
+	underHome := func(set shield.Set) int {
+		n := 0
+		for _, r := range set.Rules() {
+			if strings.HasPrefix(r.Path, home+string(filepath.Separator)) {
+				n++
+			}
+		}
+		return n
+	}
 
 	before, err := commandShieldSet()
 	if err != nil {
@@ -1544,9 +1559,9 @@ func TestShieldSetMemoIsDroppedForTheNextRound(t *testing.T) {
 
 	if held, err := commandShieldSet(); err != nil {
 		t.Fatal(err)
-	} else if len(held.Rules()) != len(before.Rules()) {
+	} else if underHome(held) != underHome(before) {
 		t.Fatalf("the memo must serve the same set within one render pass; %d rules became %d",
-			len(before.Rules()), len(held.Rules()))
+			underHome(before), underHome(held))
 	}
 
 	invalidateShieldSet()
@@ -1554,9 +1569,9 @@ func TestShieldSetMemoIsDroppedForTheNextRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fresh.Rules()) != len(before.Rules())+1 {
+	if underHome(fresh) != underHome(before)+1 {
 		t.Errorf("a dropped memo must walk the stores again: %d rules before the link, %d after dropping it, want %d",
-			len(before.Rules()), len(fresh.Rules()), len(before.Rules())+1)
+			underHome(before), underHome(fresh), underHome(before)+1)
 	}
 }
 

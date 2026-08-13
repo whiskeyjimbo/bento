@@ -56,7 +56,8 @@ type fileID struct {
 // were not read to the end rather than a silence that reads as a clean bill. Bounding it
 // only misses a finding, which is the direction the package doc sanctions, and it is the
 // bound that fits the cost - the caller-held set the ponytail named amortizes a REPEATED
-// Check, and `bento validate` invoked once still paid the whole 3.6s.
+// Check, and `bento validate` invoked once still paid the whole of whichever row above it
+// landed on.
 //
 // Unreadable and unstattable paths are skipped rather than raising. The backend refuses
 // over one, because there a could-not-look reported as clean is the failure; here the
@@ -200,8 +201,9 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 // budget: a walk whose last entry spends the last of it read the whole tree, and calling
 // that partial would put a note in front of a reader with nothing behind it.
 //
-// Every entry counts, pruned subtrees included: what it bounds is the reading of
-// directories, which is what the walk spends its time on.
+// Every entry the walk is handed costs one, a pruned directory included. What is BELOW a
+// prune is never enumerated and never charged, which is the point of the device prune: it
+// buys back budget as well as time.
 func aliasesUnder(root string, want map[fileID]string, budget *int) ([]enforce.CredentialAlias, bool) {
 	devs := map[uint64]bool{}
 	for id := range want {
