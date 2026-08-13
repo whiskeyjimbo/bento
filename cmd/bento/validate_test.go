@@ -980,3 +980,36 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 		t.Errorf("runnable = %v, want absent on a host that answered nothing", unasked.Runnable)
 	}
 }
+
+// --strict is the CI gate, and a host that cannot anchor its shields refuses every run
+// whatever the manifest says - so a gate reading the exit code alone must not green-light
+// a manifest that host will not start. doctor already exits non-zero on this same fact.
+func TestStrictFailsOnAHostThatCannotAnchorItsShields(t *testing.T) {
+	err := strictRunnableError(gate.Runnability{ShieldsUnknown: true}, true)
+	if err == nil {
+		t.Fatal("--strict must fail on a host that refuses every run")
+	}
+	if !strings.Contains(err.Error(), "where its shields anchor") {
+		t.Errorf("the failure must name the host fact; got %v", err)
+	}
+
+	// The manifest's own problems are still the reader's to fix, so both halves are named
+	// rather than the host fact standing in for an entrypoint that does not exist.
+	both := strictRunnableError(gate.Runnability{
+		ShieldsUnknown: true,
+		Problems:       []string{`entrypoint "/nope/missing.py": no such file or directory`},
+	}, true)
+	if both == nil || !strings.Contains(both.Error(), "/nope/missing.py") || !strings.Contains(both.Error(), "where its shields anchor") {
+		t.Errorf("both halves must reach the strict failure; got %v", both)
+	}
+
+	// Without --strict it stays a warning, as every other verdict here does.
+	if err := strictRunnableError(gate.Runnability{ShieldsUnknown: true}, false); err != nil {
+		t.Errorf("without --strict this is a warning; got %v", err)
+	}
+	// And a host that could not resolve the paths at all still does not fail: the manifest
+	// was not shown to be wrong.
+	if err := strictRunnableError(gate.Runnability{Unresolved: true}, true); err != nil {
+		t.Errorf("an unresolved answer is not a failed manifest; got %v", err)
+	}
+}

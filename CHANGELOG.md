@@ -192,6 +192,16 @@ commits that built it - none of them were ever in a release.
 
 ### Reviewing a Manifest
 
+- **`validate --strict` now fails on a host that cannot anchor its shields.** A
+  host with no usable home anchor builds no credential shields at all, so
+  `newSandbox` refuses every run on both tiers - and `--strict` exited 0 there,
+  because it keyed on the refusal set and that set is exactly what such a host
+  cannot answer. A CI gate reading the exit code alone green-lit a manifest the
+  host runs none of. The failure names the host fact alongside whatever the
+  manifest's own problems were, `--json` already carried it as `shields_unknown`,
+  and `doctor` already exited non-zero on the same fact - so the two gates now
+  agree. The boundary did not move: enforcement always failed closed there, and
+  what was lost was the gate and the operator's diagnosis.
 - **`validate --relocatable` refuses a manifest whose paths pin it to one
   location.** The approval stamp attests the manifest as written and `run`
   checks it before resolving paths, so a manifest whose grants are all relative

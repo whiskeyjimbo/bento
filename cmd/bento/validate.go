@@ -35,8 +35,9 @@ func newValidateCmd() *cobra.Command {
 			"approved is reported. And it checks that the manifest can actually run here -\n" +
 			"that the entrypoint exists and the interpreter is on PATH - so the gate does not\n" +
 			"pass a manifest `run` refuses at its first step. --strict makes a stale or missing\n" +
-			"approval, or a manifest this host cannot start, a failure (exit non-zero), for use\n" +
-			"as a CI gate; without it they are only warnings. --json carries the same verdicts\n" +
+			"approval, a manifest this host cannot start, or a host that cannot anchor its\n" +
+			"shields and so refuses every run, a failure (exit non-zero), for use as a CI gate;\n" +
+			"without it they are only warnings. --json carries the same verdicts\n" +
 			"as `approval`, `runnable` and `refused_grants` fields and honors --strict too.\n" +
 			"A grant this host refuses leaves `runnable` true - nothing is unstartable - so a\n" +
 			"gate reading the fields rather than the exit code has to check both.\n\n" +
@@ -298,8 +299,22 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // --json paths for the same reason strictApprovalError is. A host that could not resolve
 // the paths does not fail: the manifest was not shown to be wrong, and validate's other
 // answers already degrade rather than refuse there.
+//
+// A host that could not anchor its shields does fail, which is the one verdict here that
+// is not about the manifest. --strict is the CI gate, and a run on that host is refused
+// whatever the manifest says - newSandbox returns the anchor error on both tiers, so
+// nothing is runnable there. Passing it would green-light every manifest on a host that
+// runs none of them, and doctor already exits non-zero on this same fact: a gate reading
+// either exit code now gets the same answer. shields_unknown carries it for a gate reading
+// fields, which the refusals it stands in for cannot be enumerated for.
 func strictRunnableError(r gate.Runnability, strict bool) error {
 	blocking := slices.Concat(r.Problems, r.Refusals)
+	// Said alongside the manifest's own problems rather than instead of them, for the
+	// reason writeRunnability prints both halves: the entrypoint verdict still stands, and
+	// a reader who fixes only what the harder failure named is left with the other one.
+	if r.ShieldsUnknown {
+		blocking = append(blocking, "this host could not work out where its shields anchor, so it refuses every run and the grants were not checked")
+	}
 	if !strict || len(blocking) == 0 {
 		return nil
 	}
@@ -438,6 +453,8 @@ type policyJSON struct {
 	// rather than because there was nothing to report. A gate reading the envelope has
 	// nothing else to tell those two apart, and the run there is refused for this same
 	// reason - so absent is the wrong reading of a manifest, and this is what says so.
+	// A verdict rather than a note, the only one here that is about the host: --strict
+	// fails on it, as doctor's exit code does on the same fact.
 	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
 	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
 	// runnable stays true beside them, and --strict does not fail on them.
