@@ -82,8 +82,16 @@ type Runnability struct {
 	//
 	// Empty is not a clean bill. Only the hardlink half is answered - a bind alias needs
 	// the mount table - and only over the trees the manifest grants rather than everything
-	// the run binds. Both narrowings only miss a finding.
+	// the run binds. Both narrowings only miss a finding, as does the entry budget
+	// CredentialAliasesPartial reports.
 	CredentialAliases []enforce.CredentialAlias
+	// CredentialAliasesPartial says the granted trees were not read to the end: the scan
+	// is bounded by an entry budget, because it is on `bento validate`'s default path and
+	// a granted module cache took it from 40ms to 1.14s on a host holding one hardlinked
+	// key. What is above still holds - a finding here is a finding - and what is not there
+	// was not looked for. Said out loud rather than left to the silence, which on every
+	// other host means the trees were read whole and nothing was found.
+	CredentialAliasesPartial bool
 	// Unresolved marks a question nothing here answered: the caller could not resolve the
 	// manifest's paths and signals that by passing a nil policy, so every field above is
 	// empty because none was asked. Reported as unknown rather than as a pass - that host
@@ -132,7 +140,7 @@ func Check(resolved *policy.Policy) Runnability {
 		return r
 	}
 	r.Refusals = refusals(set, resolved)
-	r.CredentialAliases = credentialAliases(set, resolved.Read, resolved.Write)
+	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
 }
 

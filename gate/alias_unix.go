@@ -51,24 +51,30 @@ type fileID struct {
 // every dotfile a second link by design - so it is per Check, and an embedder calling Check
 // in a loop pays it every time.
 //
-// ponytail: whole-tree walk per Check, bounded only by the grant, and Check is on
-// `bento validate`'s default path. The answer when that bites is a set the caller holds
-// across calls rather than a cache here, which is the shape ShieldSet just moved to and for
-// the same reason.
+// That is what aliasBudget bounds. The walk stops after that many directory entries and
+// the answer is reported as partial, which the caller passes on: a note that says the trees
+// were not read to the end rather than a silence that reads as a clean bill. Bounding it
+// only misses a finding, which is the direction the package doc sanctions, and it is the
+// bound that fits the cost - the caller-held set the ponytail named amortizes a REPEATED
+// Check, and `bento validate` invoked once still paid the whole 3.6s.
 //
 // Unreadable and unstattable paths are skipped rather than raising. The backend refuses
 // over one, because there a could-not-look reported as clean is the failure; here the
 // answer is a note beside a verdict that is already narrower than the run's, and the
 // caller is told that in as many words on Runnability.CredentialAliases.
-func credentialAliases(set shield.Set, reads, writes []string) []enforce.CredentialAlias {
+func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.CredentialAlias, bool) {
 	want, shielded := aliasableCredentials(set, reads)
 	// Nothing to compare against, so no tree is walked. On an ordinary host this is the
 	// answer - a credential with one directory entry cannot be hardlink-aliased - and it
 	// is what keeps the walk off the granted trees, which can be a whole checkout.
 	if len(want) == 0 {
-		return nil
+		return nil, false
 	}
 	var out []enforce.CredentialAlias
+	// One budget for the whole answer rather than one per grant: what the caller waits for
+	// is the sum, and a manifest granting ten trees would otherwise pay ten times the bound.
+	budget := aliasBudget
+	var partial bool
 	seen := map[string]bool{}
 	for _, g := range slices.Concat(reads, writes) {
 		root := pathresolve.Existing(filepath.Clean(g))
@@ -76,7 +82,9 @@ func credentialAliases(set shield.Set, reads, writes []string) []enforce.Credent
 			continue
 		}
 		seen[root] = true
-		for _, a := range aliasesUnder(root, want) {
+		found, stopped := aliasesUnder(root, want, &budget)
+		partial = partial || stopped
+		for _, a := range found {
 			// A grant containing the credential itself walks over the shielded path,
 			// whose identity is by definition wanted. The shield covers that path; only a
 			// second name is a leak.
@@ -92,8 +100,17 @@ func credentialAliases(set shield.Set, reads, writes []string) []enforce.Credent
 		return strings.Compare(a.Credential, b.Credential)
 	})
 	// Overlapping grants (read: ~ alongside read: ~/project) walk the same file twice.
-	return slices.Compact(out)
+	return slices.Compact(out), partial
 }
+
+// aliasBudget is how many directory entries the granted trees are walked for before the
+// answer is cut short. Cost tracks entries rather than bytes: on this host's warm cache a
+// 287k-entry module cache took `bento validate` from 40ms to 1.14s, so an entry is a few
+// microseconds warm and around five times that cold. The bound puts a walk that goes the
+// whole way at roughly 200ms warm - the cost of an answer a reader is waiting on, rather
+// than of a whole-tree scan - and a tree small enough to finish inside it, which is most of
+// them, is unaffected.
+const aliasBudget = 50_000
 
 // aliasableCredentials identifies the shielded credential files that COULD have a second
 // name - the ones carrying more than one directory entry - keyed by content identity, and
@@ -177,16 +194,30 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 // device a wanted credential lives on can hold an alias of one. A directory that cannot be
 // identified is descended into rather than pruned - the prune asserts nothing below can
 // hold a wanted inode, and a failed stat asserts nothing.
-func aliasesUnder(root string, want map[fileID]string) []enforce.CredentialAlias {
+//
+// budget is the caller's remaining entry allowance, spent here. The second return says
+// this stopped short of the tree's end, reported rather than inferred from an exhausted
+// budget: a walk whose last entry spends the last of it read the whole tree, and calling
+// that partial would put a note in front of a reader with nothing behind it.
+//
+// Every entry counts, pruned subtrees included: what it bounds is the reading of
+// directories, which is what the walk spends its time on.
+func aliasesUnder(root string, want map[fileID]string, budget *int) ([]enforce.CredentialAlias, bool) {
 	devs := map[uint64]bool{}
 	for id := range want {
 		devs[id.dev] = true
 	}
 	var out []enforce.CredentialAlias
+	var stopped bool
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // every error is handled in the callback; see credentialAliases
 		if err != nil {
 			return nil //nolint:nilerr // a subtree this cannot read is one the run cannot read either
 		}
+		if *budget <= 0 {
+			stopped = true
+			return fs.SkipAll
+		}
+		*budget--
 		if d.IsDir() {
 			if id, _, ok := identify(d); ok && !devs[id.dev] && p != root {
 				return fs.SkipDir
@@ -203,7 +234,7 @@ func aliasesUnder(root string, want map[fileID]string) []enforce.CredentialAlias
 		}
 		return nil
 	})
-	return out
+	return out, stopped
 }
 
 // identify returns a walk entry's content identity and link count. d.Info is a second

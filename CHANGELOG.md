@@ -192,6 +192,18 @@ commits that built it - none of them were ever in a release.
 
 ### Reviewing a Manifest
 
+- **The credential-alias scan is bounded, and says when it stopped short.** On a
+  host carrying any hardlinked shielded credential - a `cp -al` snapshot, a Nix
+  store, an `rsync --link-dest` backup - `gate.Check` walked every granted tree
+  whole, and `Check` is on `bento validate`'s default path: one hardlinked key in
+  `~/.ssh` took validate from 40ms to 1.14s over a 287k-entry module cache
+  (measured on the same host and manifest before and after). The walk now stops
+  after 50,000 directory entries - 1.14s to 0.23s on that manifest - and reports
+  the answer as partial, in the summary and as `credential_aliases_partial` in
+  `--json`, so an empty list on a bounded scan cannot read as a tree checked to
+  the end. The boundary did not move: the scan is a note beside a verdict, the
+  run's own alias refusal is unchanged, and bounding it can only miss a finding,
+  never invent one.
 - **`validate --strict` now fails on a host that cannot anchor its shields.** A
   host with no usable home anchor builds no credential shields at all, so
   `newSandbox` refuses every run on both tiers - and `--strict` exited 0 there,

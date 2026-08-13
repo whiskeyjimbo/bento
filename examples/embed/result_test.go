@@ -180,6 +180,7 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 		CredentialAliases: []enforce.CredentialAlias{
 			{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
+		CredentialAliasesPartial: true,
 	}
 	var out strings.Builder
 	writeRunnability(&out, printed)
@@ -206,6 +207,8 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			want = "could not answer"
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want = "where its shields anchor"
+		case f.Name == "CredentialAliasesPartial" && v.Bool():
+			want = "not read to the end"
 		default:
 			t.Errorf("gate.Runnability.%s is new: give it a value in the fixture above and teach this "+
 				"switch its shape, then print it in writeRunnability.", f.Name)

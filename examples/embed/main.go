@@ -315,6 +315,11 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	for _, a := range r.CredentialAliases {
 		fmt.Fprintf(w, "embed: note: this granted path is a second name for a shielded credential and reads straight past the shield: %q aliases %q; the run refuses unless RunOptions.AcceptAliasesUnder names a tree holding it\n", a.Path, a.Credential)
 	}
+	// Printed whether or not the list above is empty, for the reason every field here is:
+	// the bound is what tells an empty list apart from a tree read to the end.
+	if r.CredentialAliasesPartial {
+		fmt.Fprintf(w, "embed: note: the granted trees were not read to the end looking for those second names - the scan is bounded, so any listed above is real and there may be others\n")
+	}
 }
 
 // writeResult prints every honesty field of a Result. A frontend's job is not to

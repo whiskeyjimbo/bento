@@ -1013,3 +1013,31 @@ func TestStrictFailsOnAHostThatCannotAnchorItsShields(t *testing.T) {
 		t.Errorf("an unresolved answer is not a failed manifest; got %v", err)
 	}
 }
+
+// The alias scan is bounded by an entry budget, because it runs on validate's default
+// path. An empty list then means two different things - a tree read whole, or one the walk
+// left part way down - and both surfaces have to carry the difference or a reader takes the
+// bounded answer for the exhaustive one.
+func TestValidateSaysWhenTheAliasScanWasCutShort(t *testing.T) {
+	r := gate.Runnability{CredentialAliasesPartial: true}
+
+	var out strings.Builder
+	writeRunnability(&out, r)
+	if !strings.Contains(out.String(), "not read to the end") {
+		t.Errorf("the summary must say the trees were not read whole; got:\n%s", out.String())
+	}
+
+	var o policyJSON
+	o.setRunnable(r)
+	if !o.CredentialAliasesPartial {
+		t.Error("the envelope must carry the bound, or a gate reads an empty list as exhaustive")
+	}
+
+	// A host that could not anchor its shields never ran the scan at all, so the bound is
+	// not the thing to say there - shields_unknown already is.
+	var unanchored policyJSON
+	unanchored.setRunnable(gate.Runnability{ShieldsUnknown: true, CredentialAliasesPartial: true})
+	if unanchored.CredentialAliasesPartial {
+		t.Error("a scan that never ran is unknown, not partial")
+	}
+}
