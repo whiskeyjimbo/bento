@@ -8,6 +8,10 @@
 // location against that somebody; and a Flaw is data, so what to refuse over is the
 // caller's to say. The CLI treats them as advisory on a read and fatal on an approve, which
 // is one answer among several rather than the package's.
+//
+// One fact is not judged against that identity: whether a group-write bit reaches anybody,
+// which is owner-relative - see withGroup. It is settled at Inspect time, before the
+// identity is known, and cannot be re-parameterized afterwards.
 package trust
 
 import (
@@ -56,6 +60,17 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 // withGroup fills in group, and only where a group-write bit makes the answer matter:
 // the lookup reads the account database, and the modes that grant the group nothing have
 // no question to ask of it.
+//
+// Owner-relative, and deliberately not the observing identity: the reach is read here,
+// while the facts are gathered, and Flaws does not learn who is asking until later. The two
+// coincide for every caller today - the CLI passes os.Geteuid() throughout, and the process
+// that reads the directory is the one the manifest is judged for. They come apart for a
+// caller judging on somebody else's behalf, where a group holding only {owner, observer}
+// reads as reaching another writer even though the only other member is the observer: an
+// over-warning, never a missed one, since a group that reaches nobody but the two of them
+// cannot reach a third. Moving the lookup behind Flaws is what fixes it, and would also
+// have to stop counting the observer as another member; it waits for the caller that needs
+// it rather than being guessed at now.
 func withGroup(f fileFacts, gid uint32) fileFacts {
 	if f.mode.Perm()&0o020 != 0 {
 		f.group = groupReachOf(gid, f.uid)

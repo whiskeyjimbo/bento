@@ -162,6 +162,46 @@ func TestForeignHomeShieldsQuietOnAnOstreeOwnHome(t *testing.T) {
 	}
 }
 
+// The half of that quiet the test above cannot reach: on a stock ostree host the anchors
+// say /var/home/u while the /home -> /var/home symlink makes the same home /home/u, and a
+// grant spelled through the symlink resolves to a root that is not literally an anchor.
+// Without resolving the root too, every own-home grant on a Silverblue host warns as
+// foreign - and converge prompts per path for each one.
+//
+// Built at temporary paths, since /home is not a symlink here and a test cannot make it
+// one. Only the container list is stood in for; the symlink, the resolution and the
+// anchors are real.
+func TestForeignHomeShieldsQuietThroughAnOstreeHomeSymlink(t *testing.T) {
+	root := t.TempDir()
+	varHome, stockHome := filepath.Join(root, "var-home"), filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(varHome, "u", ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(varHome, stockHome); err != nil {
+		t.Fatal(err)
+	}
+	saved := homeContainers
+	homeContainers = func() []string { return []string{stockHome, varHome} }
+	t.Cleanup(func() { homeContainers = saved })
+	// What the anchors report on such a host: the resolved location, not the symlinked
+	// spelling the grant uses.
+	t.Setenv("HOME", filepath.Join(varHome, "u"))
+
+	throughLink := filepath.Join(stockHome, "u", ".ssh")
+	if warned := foreignHomeShields([]string{throughLink}); len(warned) != 0 {
+		t.Errorf("foreignHomeShields(%q) = %v, want none: it is this run's own home named through the /home symlink", throughLink, warned)
+	}
+	// The guard must not go quiet about everything it resolves: another user's store under
+	// the same symlinked container is still foreign.
+	other := filepath.Join(stockHome, "other", ".ssh")
+	if err := os.MkdirAll(filepath.Join(varHome, "other", ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if len(foreignHomeShields([]string{other})) == 0 {
+		t.Errorf("foreignHomeShields(%q) = none, want the grant back: it is another user's credential store", other)
+	}
+}
+
 // foreignHomeShields is the other half of the same consent gate, and it judges the same
 // way: a grant that names a link into another user's store belongs, as spelled, to no
 // home at all, and converge reads "no warning" as safe to auto-accept under [a]ll.

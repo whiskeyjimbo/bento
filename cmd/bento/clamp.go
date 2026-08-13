@@ -169,12 +169,18 @@ func foreignHomeShields(grants []string) []string {
 // warns on that answer - it decides whether a grant is auto-accepted under [a]ll and
 // whether a seeded grant is mounted on an approval stamp alone. A layout known to one
 // package and not the other is then a consent gap, not a missing line of output.
+// homeContainers is profile's list, behind a var so a test can stand a home layout up in a
+// temporary directory. The ostree case this exists for - a stock /home symlink pointing at
+// the /var/home the anchors name - cannot be built at the real paths by a test, and the
+// guard that reads through it decides whether an own-home grant prompts per path.
+var homeContainers = profile.HomeContainers
+
 func homeRoot(path string) (string, bool) {
 	clean := filepath.Clean(path)
 	if clean == "/root" || strings.HasPrefix(clean, "/root/") {
 		return "/root", true
 	}
-	for _, c := range profile.HomeContainers() {
+	for _, c := range homeContainers() {
 		rest, ok := strings.CutPrefix(clean, c+"/")
 		if !ok {
 			continue
