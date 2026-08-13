@@ -328,9 +328,14 @@ func aliasRefusal(aliases []credentialAlias, credentials []string) error {
 		fmt.Fprintf(&b, "\n  %s aliases %s", a.Path, a.Credential)
 	}
 	b.WriteString("\nremove the alias, or narrow the grant so it does not cover it.")
-	b.WriteString("\nif these are known to you - a snapshot or deduplicated backup - acknowledge the tree:")
-	for _, r := range acknowledgementRoots(aliases, credentials) {
-		fmt.Fprintf(&b, "\n  --accept-alias %s", r)
+	// No suggestion at all where every tree holding an alias also holds a credential store:
+	// naming one anyway would print a flag the run then refuses, and the two remedies above
+	// are the ones that actually apply there.
+	if roots := acknowledgementRoots(aliases, credentials); len(roots) > 0 {
+		b.WriteString("\nif these are known to you - a snapshot or deduplicated backup - acknowledge the tree:")
+		for _, r := range roots {
+			fmt.Fprintf(&b, "\n  --accept-alias %s", r)
+		}
 	}
 	return errors.New(b.String())
 }
@@ -346,6 +351,10 @@ func aliasRefusal(aliases []credentialAlias, credentials []string) error {
 // credential itself. That second guard is the one that matters: aliases scattered across
 // a home share the home as their ancestor, and suggesting it would turn a targeted
 // acknowledgement into an off-switch covering the credential stores too.
+//
+// Every root returned passes overbroadAcknowledgement, the predicate
+// checkAcknowledgementScope enforces, so nothing suggested here is refused when pasted.
+// The result is empty where no such tree exists.
 func acknowledgementRoots(aliases []credentialAlias, credentials []string) []string {
 	parents := make([]string, 0, len(aliases))
 	for _, a := range aliases {
@@ -358,10 +367,15 @@ func acknowledgementRoots(aliases []credentialAlias, credentials []string) []str
 	for _, p := range parents[1:] {
 		shared = commonAncestor(shared, p)
 	}
-	if overbroadAcknowledgement(shared, credentials) {
-		return parents
+	if !overbroadAcknowledgement(shared, credentials) {
+		return []string{shared}
 	}
-	return []string{shared}
+	// The same filter the shared tree just failed, applied to the fallback: an alias
+	// hardlinked beside its own credential store has a parent as wide as the tree that was
+	// just rejected, and suggesting it hands back a flag that checkAcknowledgementScope
+	// refuses. Dropping it can leave nothing to suggest, which is the honest answer - there
+	// is no tree that accepts that alias and nothing else.
+	return slices.DeleteFunc(parents, func(p string) bool { return overbroadAcknowledgement(p, credentials) })
 }
 
 // commonAncestor returns the deepest directory containing both paths.

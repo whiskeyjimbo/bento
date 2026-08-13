@@ -1032,6 +1032,52 @@ func TestAcknowledgementRootsNeverSuggestsTheFilesystemRoot(t *testing.T) {
 	}
 }
 
+// The invariant the two tests above only sample: whatever acknowledgementRoots suggests,
+// checkAcknowledgementScope accepts. A hardlink dropped beside the credential store itself
+// gives every alias the same parent the shared tree was rejected for, so the fallback used
+// to hand back a flag that the very next run refused.
+func TestAcknowledgementRootsSuggestsNothingItWouldRefuse(t *testing.T) {
+	credentials := []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"}
+	for name, aliases := range map[string][]credentialAlias{
+		"an alias beside the store": {
+			{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+		},
+		"one alias under a whole-filesystem grant": {
+			{Path: "/keybak", Credential: "/home/u/.ssh/id_rsa"},
+		},
+		"a narrow one and an overbroad one together": {
+			{Path: "/home/u/backups/key", Credential: "/home/u/.ssh/id_rsa"},
+			{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, r := range acknowledgementRoots(aliases, credentials) {
+				if err := checkAcknowledgementScope(r, credentials); err != nil {
+					t.Errorf("suggested --accept-alias %s, which the run then refuses: %v", r, err)
+				}
+			}
+		})
+	}
+}
+
+// Where no tree holds the aliases without also holding a credential store there is nothing
+// to suggest, and the refusal must say only what applies. Printing the header with no flag
+// under it, or a flag the run refuses, both send the reader nowhere.
+func TestAliasRefusalOmitsTheAcknowledgementWhenNoneWouldBeAccepted(t *testing.T) {
+	err := aliasRefusal([]credentialAlias{
+		{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+	}, []string{"/home/u/.ssh/id_rsa"})
+	if strings.Contains(err.Error(), "--accept-alias") {
+		t.Errorf("no acceptable tree exists, so the refusal must not offer one:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "acknowledge the tree") {
+		t.Errorf("the acknowledgement header must not stand alone:\n%s", err)
+	}
+	if !strings.Contains(err.Error(), "remove the alias") {
+		t.Errorf("the remedies that do apply must still be named:\n%s", err)
+	}
+}
+
 // An acknowledgement wide enough to hold a shielded credential is the mechanism switched
 // off, not an acknowledgement: every alias on the host falls inside it, including one
 // planted later in a directory the user never had in mind. Refuse it rather than silently
