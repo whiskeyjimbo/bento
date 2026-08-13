@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/whiskeyjimbo/bento/internal/i386"
 )
 
 // TestBlockTerminalInjection proves the filter refuses the terminal-injection ioctls
@@ -62,4 +65,65 @@ func TestBlockTerminalInjectionHelper(t *testing.T) {
 		os.Exit(6)
 	}
 	fmt.Println("TIOCSTI_OK")
+}
+
+// terminalInjectionFilter carries its own copy of the arch-and-x32 preamble - the same
+// hand-counted jump table as the egress and none-strict filters, tested separately
+// because an off-by-one in one copy says nothing about the others. Here the bypass is a
+// TIOCSTI issued through the i386 compat ABI or with an x32-tagged ioctl number, either
+// of which would miss nrIoctl and reach the trailing allow.
+//
+// As with those, SIGSYS is asserted without pinning the kill's scope;
+// TestKillProcessActionIsAvailable checks the host is on the KILL_PROCESS side.
+func TestTerminalFilterKillsForeignArchSyscall(t *testing.T) {
+	if !Supported() {
+		t.Skip("seccomp not supported on this kernel")
+	}
+	sig, out := runKilledHelper(t, "TestTerminalFilterKillsForeignArchSyscallHelper", "BENTO_TEST_TIOCSTI_ARCH=1")
+	if sig != syscall.SIGSYS {
+		t.Fatalf("an i386 syscall under the terminal filter died on %v, want SIGSYS from the arch check:\n%s", sig, out)
+	}
+}
+
+// TestTerminalFilterKillsForeignArchSyscallHelper is the child half: it installs the
+// filter and issues one i386 getpid, which must not return.
+func TestTerminalFilterKillsForeignArchSyscallHelper(t *testing.T) {
+	if os.Getenv("BENTO_TEST_TIOCSTI_ARCH") != "1" {
+		t.Skip("child helper for TestTerminalFilterKillsForeignArchSyscall")
+	}
+	if err := BlockTerminalInjection(); err != nil {
+		fmt.Println("BLOCKTIOCSTI_ERR", err)
+		os.Exit(3)
+	}
+	i386.Getpid()
+	fmt.Println("ARCH_SURVIVED")
+	os.Exit(4)
+}
+
+// The x32 arm, tested with a harmless getpid for the reason the egress and strict pairs
+// use one: the kill happens on the tag itself, before any per-syscall check, so a
+// regression shows as a surviving getpid rather than needing a real injection attempt.
+func TestTerminalFilterKillsX32Syscalls(t *testing.T) {
+	if !Supported() {
+		t.Skip("seccomp not supported on this kernel")
+	}
+	sig, out := runKilledHelper(t, "TestTerminalFilterKillsX32SyscallsHelper", "BENTO_TEST_TIOCSTI_X32=1")
+	if sig != syscall.SIGSYS {
+		t.Fatalf("an x32-tagged syscall under the terminal filter died on %v, want SIGSYS:\n%s", sig, out)
+	}
+}
+
+// TestTerminalFilterKillsX32SyscallsHelper is the child half: it installs the filter and
+// issues one x32-tagged syscall, which must not return.
+func TestTerminalFilterKillsX32SyscallsHelper(t *testing.T) {
+	if os.Getenv("BENTO_TEST_TIOCSTI_X32") != "1" {
+		t.Skip("child helper for TestTerminalFilterKillsX32Syscalls")
+	}
+	if err := BlockTerminalInjection(); err != nil {
+		fmt.Println("BLOCKTIOCSTI_ERR", err)
+		os.Exit(3)
+	}
+	_, _, _ = unix.RawSyscall(x32SyscallTag|unix.SYS_GETPID, 0, 0, 0)
+	fmt.Println("X32_SURVIVED")
+	os.Exit(4)
 }
