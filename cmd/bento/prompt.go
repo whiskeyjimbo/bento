@@ -88,6 +88,23 @@ func openTTY() (io.Reader, func()) {
 	return os.Stdin, func() {}
 }
 
+// profilePrompts is where the profiling session gets its answers: the line stream, whether
+// there is a human to answer at all, and the release. One seam rather than the two calls it
+// replaces, so a caller cannot end up holding a terminal it has no answer stream for.
+//
+// A var because the convergence loop is only reachable through it, and a test cannot get
+// there otherwise: a pty on stdin satisfies the terminal check but openTTY prefers
+// /dev/tty, so the answers would go to whatever terminal the `go test` invocation
+// inherited - or to none in CI. Everything downstream, including which paths the loop
+// mounts, is real.
+var profilePrompts = func() (answers <-chan string, interactive bool, done func()) {
+	if !interactiveStdin() {
+		return nil, false, func() {}
+	}
+	tty, closeTTY := openTTY()
+	return ttyLines(tty), true, closeTTY
+}
+
 // ttyLines reads the terminal a line at a time on its own goroutine, so a prompt can
 // give up on an answer that is not coming. A read of /dev/tty is not interruptible and
 // the CLI's SIGINT handler is released after the first Ctrl-C, so a prompt parked in

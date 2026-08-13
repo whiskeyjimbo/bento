@@ -181,7 +181,8 @@ func newProfileCmd() *cobra.Command {
 			// merge below.
 			var declined map[string]bool
 			stop := convergeDone
-			interactive := interactiveStdin()
+			answers, interactive, closePrompts := profilePrompts()
+			defer closePrompts()
 			if interactive {
 				// A content-branching target reads a config to decide what to do next; under
 				// default-deny that read fails and it never attempts the downstream paths, so
@@ -189,9 +190,6 @@ func newProfileCmd() *cobra.Command {
 				// target proceeds, until nothing new is attempted. The prompt is the consent
 				// gate - real content is mounted only for a path the user accepts.
 				cfg.targetStdin = nil // the human answers prompts on the tty; the target gets no interactive stdin
-				tty, closeTTY := openTTY()
-				defer closeTTY()
-				answers := ttyLines(tty)
 				if allowNetwork {
 					if err := confirmNetworkExfil(cmd.Context(), answers, os.Stderr); err != nil {
 						return refuse(err)
