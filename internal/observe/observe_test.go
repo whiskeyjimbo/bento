@@ -185,8 +185,12 @@ func TestTraceReapsRootOnInitialWaitError(t *testing.T) {
 		origReap(tracees)
 	}
 
-	if _, err := Trace([]string{sh, "-c", "sleep 30"}, os.Environ(), nil, nil, nil); err == nil {
-		t.Fatal("Trace should have returned the forced initial-wait error")
+	// The message is asserted, not just the failure: the loop's own wait reaches the same
+	// guard with the same single-root set, so a seam that stopped covering the initial
+	// wait would satisfy every other assertion here.
+	_, err = Trace([]string{sh, "-c", "sleep 30"}, os.Environ(), nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "initial wait") {
+		t.Fatalf("Trace = %v, want the forced initial-wait error", err)
 	}
 	if len(reaped) != 1 {
 		t.Fatalf("the guard was handed %v, want the single root tracee", reaped)

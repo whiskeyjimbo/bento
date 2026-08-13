@@ -655,7 +655,8 @@ func requireSyscallInfo(pid int) error {
 	return nil
 }
 
-// waitTracee is every wait this file makes on a tracee, indirected through a var so a test
+// waitTracee is both waits Trace makes - the initial one and the loop's - indirected
+// through a var so a test
 // can force the defensive error returns - otherwise effectively unreachable (EINTR is
 // retried, ECHILD cannot occur while root is unreaped) - and check that the tracees live at
 // that point are reaped, not leaked.
@@ -1188,8 +1189,9 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 		return
 	}
 	// A probe that failed for any reason OTHER than the path not being there still names a
-	// file the sandbox has to bind, and the errnos that say "not there" are the same two
-	// the open branch above tests. Everything else is a path that demonstrably exists and
+	// file the sandbox has to bind. ENOENT is the one answer enforcement reproduces
+	// unchanged; the open branch's other errno, ENOTDIR, does not belong here and is
+	// handled below. Everything else is a path that demonstrably exists and
 	// refused the probe on its own terms: access(W_OK) answering EACCES on a file that is
 	// present but not writable, a stat whose EACCES is a search permission missing on a
 	// component that exists, ELOOP on a symlink chain that is very much there, getxattr's
@@ -1206,7 +1208,14 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// probes faccessat2 before falling back - and the fallback call gets a real answer of
 	// its own. EBADF is a dirfd that names nothing, so no path was resolved against it;
 	// an absolute pathname ignores the dirfd and cannot answer EBADF, so skipping it
-	// hides no real file.
+	// hides no real file. ENOMEM is the same shape, rarer: the kernel gave up before it
+	// resolved anything.
+	//
+	// EINVAL is NOT in that set, though it looks like it - statx with a bad mask and
+	// faccessat2 with bad flags are both refused before the walk. It stays out because it
+	// is not always pre-resolution: readlink and readlinkat answer EINVAL for a file that
+	// is very much there and simply is not a symlink, and skipping that would drop a real
+	// access.
 	//
 	// EINTR and the restart pseudo-errnos are in that category too, and they are here
 	// because a TRACER is the only thing that sees four of them: the signal machinery
@@ -1219,9 +1228,25 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// a Go target, whose runtime preempts with a handled signal constantly.
 	if ret := int64(regs.Rax); ret < 0 {
 		switch syscall.Errno(-ret) {
-		case syscall.ENOENT, syscall.ENOTDIR, syscall.EFAULT, syscall.ENAMETOOLONG,
-			syscall.ENOSYS, syscall.EBADF, syscall.EINTR,
+		case syscall.ENOENT, syscall.EFAULT, syscall.ENAMETOOLONG,
+			syscall.ENOSYS, syscall.EBADF, syscall.EINTR, syscall.ENOMEM,
 			errRestartSys, errRestartNoIntr, errRestartNoHand, errRestartRestartBlock:
+			return
+		case syscall.ENOTDIR:
+			// Not the answer ENOENT is, though both mean the probed path is not there.
+			// ENOTDIR is the kernel reporting a component that IS there and is not a
+			// directory - stat("/etc/passwd/x") answers it only because /etc/passwd exists
+			// and is a regular file - so an unbound sandbox answers ENOENT instead, and a
+			// target branching on the two (which is the whole reason this decoder exists)
+			// takes a different branch under enforcement.
+			//
+			// What would settle it is the file that made the difference, and this pathname
+			// is not it: for stat("/etc/passwd/x/y") the offending component is two levels
+			// up, so naming any fixed ancestor would put a path the sandbox cannot bind in
+			// the manifest. That makes it an observation this decoder cannot make, counted
+			// rather than skipped - the answer is missing either way, and only Dropped
+			// says so.
+			drop()
 			return
 		default:
 			// Errno is not an enum with a fixed set; every other failure is a real

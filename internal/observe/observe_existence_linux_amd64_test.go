@@ -200,6 +200,83 @@ except PermissionError:
 	}
 }
 
+// negErrno is the exit stop's rax for a syscall that failed with errno: the kernel returns
+// the negated value, and the sign has to survive the trip through the unsigned register.
+func negErrno(errno syscall.Errno) uint64 {
+	return uint64(-int64(errno))
+}
+
+// ENOTDIR and ENOENT both mean the probed path is not there, and only one of them survives
+// enforcement. ENOTDIR is the kernel reporting a component that exists and is not a
+// directory, so an unbound sandbox answers the probe ENOENT instead - a different branch in
+// a target that tells the two apart, off a manifest that reported nothing missing.
+//
+// It is counted rather than recorded because the file that makes the difference is a
+// component of the pathname and not the pathname itself, and which component is not
+// knowable from the errno. An answer the decoder cannot give has to reach Dropped, or the
+// manifest reads complete.
+func TestHeldProbeCountsENOTDIRRatherThanSkippingIt(t *testing.T) {
+	const probed = "/etc/passwd/x"
+	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0x1000, Rax: negErrno(syscall.ENOTDIR)}
+	held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+
+	var recorded []string
+	dropped := 0
+	recordHeldExistence(1, &regs,
+		func(p string, _ bool) { recorded = append(recorded, p) },
+		func(string, bool) {},
+		func() { dropped++ }, held)
+
+	if len(recorded) != 0 {
+		t.Errorf("recorded %q, which the sandbox cannot bind - the path has a regular file as a component", recorded)
+	}
+	if dropped != 1 {
+		t.Errorf("counted %d drops for an ENOTDIR probe, want 1: enforcement answers this one ENOENT, and nothing else says so", dropped)
+	}
+	if len(held) != 0 {
+		t.Errorf("the held entry survived, and its key is one the next call at this site rebuilds: %v", held)
+	}
+}
+
+// ENOMEM belongs with the restart errnos below: the kernel gave up before it resolved
+// anything, so it says nothing about the path either way and must not widen the manifest.
+//
+// EINVAL looks like the same shape - statx with a bad mask and faccessat2 with bad flags
+// are both refused before the walk - but it is pinned as RECORDED, because it is not always
+// pre-resolution: readlink answers EINVAL for a file that is very much there and simply is
+// not a symlink. Skipping it would drop a real access, which is the more expensive of the
+// two mistakes; recording the pre-resolution cases costs one extra bind.
+func TestHeldProbeSkipsENOMEMButNotEINVAL(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		errno  syscall.Errno
+		record bool
+	}{
+		{"ENOMEM", syscall.ENOMEM, false},
+		{"EINVAL", syscall.EINVAL, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const probed = "/etc/hosts"
+			regs := syscall.PtraceRegs{Orig_rax: unix.SYS_READLINK, Rip: 0x1000, Rax: negErrno(tc.errno)}
+			held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+
+			var recorded []string
+			dropped := 0
+			recordHeldExistence(1, &regs,
+				func(p string, _ bool) { recorded = append(recorded, p) },
+				func(string, bool) {},
+				func() { dropped++ }, held)
+
+			if got := len(recorded) == 1; got != tc.record {
+				t.Errorf("recorded %q for a probe that failed %v, want recorded = %v", recorded, tc.errno, tc.record)
+			}
+			if dropped != 0 {
+				t.Errorf("counted %d drops for a probe whose answer the decoder read fine", dropped)
+			}
+		})
+	}
+}
+
 // The success filter turns on the errno, and the errnos a TRACER sees are not the ones a
 // program sees. A probe interrupted mid-call returns one of the kernel's restart signals,
 // which the signal machinery rewrites before userspace reads it - but the syscall-exit stop
