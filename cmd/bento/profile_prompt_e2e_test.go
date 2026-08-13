@@ -20,6 +20,10 @@ import (
 // answers repeat forever rather than coming from a fixed list: a stream that runs out
 // reads as EOF, which converge takes as [q]uit, so a test that supplied one line too few
 // would stop the session early and pass for a reason it never asserted.
+//
+// Process-wide while it runs - the profilePrompts var and both standard streams - so no
+// test in this package may call t.Parallel. Nothing here does; the same holds for the
+// homeContainers seam in clamp.go.
 func runProfileInteractively(t *testing.T, answer string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	answers := make(chan string)
