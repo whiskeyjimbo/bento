@@ -1983,7 +1983,7 @@ var credentialAnchorDirs = []string{
 	// With contexts enabled step keeps each authority's keys at authorities/<name>/secrets
 	// instead, under a name chosen at init time, so no concrete path reaches them and this
 	// is left as a residual - the sdkman candidates/*/current/bin class. Taking ~/.step
-	// whole would reach it and is what the narrowing above exists to avoid.
+	// whole would reach it, which is what the narrowing above exists to avoid.
 	".step/secrets",
 	".config/openstack", // clouds.yaml / secure.yaml hold passwords and app-cred secrets
 	".config/glab-cli",  // GitLab CLI host tokens, the .config/gh analog
