@@ -4,6 +4,8 @@ package observe
 
 import (
 	"bytes"
+	"debug/elf"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +105,63 @@ func TestExecImageReportsWhatItCouldNotSee(t *testing.T) {
 	if _, ok := execImage(filepath.Join(dir, "absent")); !ok {
 		t.Error("a path that is not there was counted as a lost observation; the exec fails the same way")
 	}
+}
+
+// The ELF an exec'd target names is untrusted input, and its PT_INTERP gets the same
+// absoluteness check the shebang branch has always applied: a relative loader is resolved
+// against the tracee's working directory, and recording it would name a file the sandbox
+// cannot bind and send the chain walk on to open it against the observer's own cwd.
+//
+// The absolute case is here too because the segment is a C string in a padded field, and a
+// guard that read past its NUL would refuse every ordinary dynamic binary.
+func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		interp string
+		want   string
+		ok     bool
+	}{
+		{name: "relative", interp: "lib/ld.so\x00", ok: false},
+		{name: "empty", interp: "\x00", ok: false},
+		{name: "newline", interp: "/lib/ld.so\nlib/evil.so\x00", ok: false},
+		{name: "padded", interp: "/lib64/ld.so\x00\x00\x00\x00", want: "/lib64/ld.so", ok: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := execImage(writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp))
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("execImage = %q %v, want %q %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// writeELFWithInterp builds the smallest ELF64 debug/elf will parse that carries one
+// PT_INTERP segment holding interp verbatim - including its NUL padding, which is what
+// distinguishes a well-formed loader name from a segment the decoder must refuse.
+func writeELFWithInterp(t *testing.T, path, interp string) string {
+	t.Helper()
+	const ehdrSize, phdrSize = 64, 56
+	var b bytes.Buffer
+	b.Write([]byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	put := func(vals ...any) {
+		for _, v := range vals {
+			if err := binary.Write(&b, binary.LittleEndian, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// ET_EXEC on EM_X86_64, with no section headers: Progs is all execImage reads.
+	put(uint16(elf.ET_EXEC), uint16(elf.EM_X86_64), uint32(1), uint64(0), uint64(ehdrSize), uint64(0),
+		uint32(0), uint16(ehdrSize), uint16(phdrSize), uint16(1), uint16(0), uint16(0), uint16(0))
+	put(uint32(elf.PT_INTERP), uint32(elf.PF_R), uint64(ehdrSize+phdrSize), uint64(0), uint64(0),
+		uint64(len(interp)), uint64(len(interp)), uint64(1))
+	b.WriteString(interp)
+
+	if err := os.WriteFile(path, b.Bytes(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // A #! chain is walked, not resolved once: the kernel opens the interpreter, then the

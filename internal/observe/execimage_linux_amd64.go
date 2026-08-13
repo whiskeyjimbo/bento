@@ -117,7 +117,20 @@ func execImage(path string) (string, bool) {
 		if _, err := p.ReadAt(name, 0); err != nil {
 			return "", false
 		}
-		return strings.TrimRight(string(name), "\x00"), true
+		// The kernel takes the segment as a C string, so it ends at the FIRST NUL and
+		// whatever pads the segment after it is not part of the name.
+		interp, _, _ := strings.Cut(string(name), "\x00")
+		// The same hostile input the bound above guards against, held to what the shebang
+		// branch already holds its own interpreter to: a relative path resolves against the
+		// tracee's working directory, and recording it would both put an unbindable name in
+		// the manifest and send the next loop iteration to open it against the OBSERVER's
+		// cwd. An empty or newline-bearing segment is a malformed image rather than one
+		// naming no interpreter, which is why this is a lost observation and not the
+		// shebang's ("", true).
+		if !filepath.IsAbs(interp) || strings.ContainsRune(interp, '\n') {
+			return "", false
+		}
+		return interp, true
 	}
 	return "", true
 }

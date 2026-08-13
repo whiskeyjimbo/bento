@@ -4,6 +4,7 @@ package observe
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,10 +120,10 @@ func TestTraceObservesOpensAndExec(t *testing.T) {
 // reapTracees is the cleanup Trace runs on an early error and on clean exit; it must
 // fully remove a ptrace-stopped tracee rather than leave a TASK_TRACED process (or an
 // unreaped zombie) behind. This exercises it directly against a real child driven
-// into that suspended state. The pre-resume setup paths (initial wait, set-options,
-// resume) still have no failure seam and are covered by review; the loop-wait path,
-// which the guard's descendant handling depends on, is driven end-to-end via the
-// waitTracee seam in TestTraceReapsDescendantOnLoopWaitError.
+// into that suspended state. The set-options and resume paths still have no failure
+// seam and are covered by review; both wait paths are driven end-to-end through the
+// waitTracee seam, by TestTraceReapsDescendantOnLoopWaitError and
+// TestTraceReapsRootOnInitialWaitError.
 func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -160,6 +161,40 @@ func TestReapTraceesRemovesStoppedTracee(t *testing.T) {
 	// (or an unreaped zombie) is still around.
 	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
 		t.Fatalf("tracee still present after reapTracees: kill(pid, 0) = %v, want ESRCH", err)
+	}
+}
+
+// The initial wait's error return is the one that fires before PtraceSetOptions, so the
+// child it abandons has no PTRACE_O_EXITKILL to fall back on: nothing but the cleanup
+// guard stands between a failure here and a TASK_TRACED process outliving the tracer.
+// Only root exists at that point, and the guard must be handed exactly it.
+func TestTraceReapsRootOnInitialWaitError(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+
+	origWait, origReap := waitTracee, reapTracees
+	defer func() { waitTracee, reapTracees = origWait, origReap }()
+	waitTracee = func(int, *syscall.WaitStatus, int, *syscall.Rusage) (int, error) {
+		return 0, syscall.ECHILD
+	}
+	var reaped map[int]bool
+	reapTracees = func(tracees map[int]bool) {
+		reaped = maps.Clone(tracees)
+		origReap(tracees)
+	}
+
+	if _, err := Trace([]string{sh, "-c", "sleep 30"}, os.Environ(), nil, nil, nil); err == nil {
+		t.Fatal("Trace should have returned the forced initial-wait error")
+	}
+	if len(reaped) != 1 {
+		t.Fatalf("the guard was handed %v, want the single root tracee", reaped)
+	}
+	for pid := range reaped {
+		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+			t.Errorf("root %d still present after the failed trace: kill(pid, 0) = %v, want ESRCH", pid, err)
+		}
 	}
 }
 

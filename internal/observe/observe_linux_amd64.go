@@ -225,7 +225,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// syscall stops distinctly, and to report each exec - the one event that names the tid
 	// an execve retires (see the PTRACE_EVENT_EXEC case) - then let it run.
 	var ws syscall.WaitStatus
-	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
+	if _, err := waitTracee(root, &ws, 0, nil); err != nil {
 		return Result{}, fmt.Errorf("observe: initial wait: %w", err)
 	}
 	if err := requireSyscallInfo(root); err != nil {
@@ -647,10 +647,14 @@ func requireSyscallInfo(pid int) error {
 	return nil
 }
 
-// waitTracee is the loop's wait syscall, indirected through a var so a test can
-// force the loop's defensive error return - otherwise effectively unreachable (EINTR
-// is retried, ECHILD cannot occur while root is unreaped) - and check that a
-// descendant attached by then is reaped, not leaked.
+// waitTracee is every wait this file makes on a tracee, indirected through a var so a test
+// can force the defensive error returns - otherwise effectively unreachable (EINTR is
+// retried, ECHILD cannot occur while root is unreaped) - and check that the tracees live at
+// that point are reaped, not leaked.
+//
+// The INITIAL wait goes through it as well as the loop's, and is the return with the most
+// to leak: it fires before PtraceSetOptions, so no PTRACE_O_EXITKILL is set and a child
+// left TASK_TRACED there survives the tracer entirely.
 var waitTracee = syscall.Wait4
 
 // reapTracees SIGKILLs every tracee and drains waits until all of them are gone, so
