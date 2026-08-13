@@ -1038,23 +1038,40 @@ func TestAcknowledgementRootsNeverSuggestsTheFilesystemRoot(t *testing.T) {
 // to hand back a flag that the very next run refused.
 func TestAcknowledgementRootsSuggestsNothingItWouldRefuse(t *testing.T) {
 	credentials := []string{"/home/u/.ssh/id_rsa", "/home/u/.aws/credentials"}
-	for name, aliases := range map[string][]credentialAlias{
+	// want is spelled out rather than only checked against the predicate: two of these
+	// cases have no acceptable tree, and asserting the invariant alone would pass over an
+	// empty result whatever produced it.
+	for name, tc := range map[string]struct {
+		aliases []credentialAlias
+		want    []string
+	}{
 		"an alias beside the store": {
-			{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+			aliases: []credentialAlias{{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"}},
+			want:    nil,
 		},
 		"one alias under a whole-filesystem grant": {
-			{Path: "/keybak", Credential: "/home/u/.ssh/id_rsa"},
+			aliases: []credentialAlias{{Path: "/keybak", Credential: "/home/u/.ssh/id_rsa"}},
+			want:    nil,
 		},
+		// A partial suggestion, not a dead end: the accepted tree covers one of the two
+		// aliases, so the run refuses again and then offers nothing.
 		"a narrow one and an overbroad one together": {
-			{Path: "/home/u/backups/key", Credential: "/home/u/.ssh/id_rsa"},
-			{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+			aliases: []credentialAlias{
+				{Path: "/home/u/backups/key", Credential: "/home/u/.ssh/id_rsa"},
+				{Path: "/home/u/keybackup", Credential: "/home/u/.ssh/id_rsa"},
+			},
+			want: []string{"/home/u/backups"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, r := range acknowledgementRoots(aliases, credentials) {
+			got := acknowledgementRoots(tc.aliases, credentials)
+			for _, r := range got {
 				if err := checkAcknowledgementScope(r, credentials); err != nil {
 					t.Errorf("suggested --accept-alias %s, which the run then refuses: %v", r, err)
 				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("acknowledgementRoots = %v, want %v", got, tc.want)
 			}
 		})
 	}

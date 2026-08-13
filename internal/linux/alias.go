@@ -317,7 +317,8 @@ func reportedAliases(accepted []credentialAlias) []enforce.CredentialAlias {
 // who can remove it, and telling them only that "an alias exists" leaves them nothing to
 // act on.
 //
-// It also prints the acknowledgement as a ready-to-paste flag. These alias paths are
+// It also prints the acknowledgement as a ready-to-paste flag, where a tree narrow enough
+// to be accepted exists at all - see acknowledgementRoots. These alias paths are
 // symlink-resolved, and one retyped by hand would not compare equal to what the scan
 // produced - so the message hands over the exact string the acknowledgement needs instead
 // of describing it.
