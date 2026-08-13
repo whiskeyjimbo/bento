@@ -265,20 +265,22 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 //
 // Only core layers outside strict, because that is what admission gates on: a
 // hardening layer the backend downgraded mid-run was never grounds to refuse the run,
-// so it is not grounds to fault the completed one either. That leaves the default
-// branch a narrower mirror of admit's than the other two: admit also refuses a
-// requested-but-unenforceable resource limit, and a limit the backend finds undelegated
-// only once the scope exists is the same unbounded target arriving late. It is left
-// alone here because TestRunPreservesBackendReportRefinement pins the current answer and
-// the question is its own - not because the two cases differ.
+// so it is not grounds to fault the completed one either. The requested-limits check is
+// the one exception, and it rides along with the default branch for the same reason it
+// refuses at admission: a limit the manifest asked for protects the *host*, and a
+// controller found undelegated only once the scope exists is the same unbounded target
+// arriving late. The identical state at admission refuses, so the completed run must
+// not pass merely because the backend learned of it second.
 func postRunShortfall(opts Options, r Report) []LayerStatus {
 	switch {
 	case opts.Strict:
 		return r.Degradations()
 	case opts.AllowDegraded:
+		// --allow-degraded waives the requested-limits bar at admission, so it is not
+		// re-applied here either: the operator took on running unbounded.
 		return r.shortfall(TierCore, Unavailable)
 	default:
-		return r.shortfall(TierCore, Degraded)
+		return append(r.shortfall(TierCore, Degraded), unenforcedRequestedLimits(r)...)
 	}
 }
 

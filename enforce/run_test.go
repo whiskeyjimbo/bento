@@ -309,9 +309,13 @@ func TestRunPreservesBackendReportRefinement(t *testing.T) {
 	refined.Set(LayerLimits, Degraded, "systemd reported the limited scope degraded")
 	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{Report: refined}}
 
+	// A requested limit the backend degraded mid-run is the state admission refuses, so
+	// the completed run is faulted - as a Shortfall, since the target already ran. The
+	// report still comes back with it, which is what this test is really about.
 	res, err := Run(context.Background(), f, limited, Process{}, Options{})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	var short *Shortfall
+	if !errors.As(err, &short) {
+		t.Fatalf("Run err = %v, want a Shortfall for a degraded requested limit", err)
 	}
 	if got := res.Report.StateOf(LayerLimits); got != Degraded {
 		t.Errorf("limits state = %v, want degraded (backend refinement was dropped)", got)
