@@ -65,10 +65,12 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 // while the facts are gathered, and Flaws does not learn who is asking until later. The two
 // coincide for every caller today - the CLI passes os.Geteuid() throughout, and the process
 // that reads the directory is the one the manifest is judged for. They come apart for a
-// caller judging on somebody else's behalf, where a group holding only {owner, observer}
-// reads as reaching another writer even though the only other member is the observer: an
-// over-warning, never a missed one, since a group that reaches nobody but the two of them
-// cannot reach a third. Moving the lookup behind Flaws is what fixes it, and would also
+// caller judging on somebody else's behalf. It reads both ways there: a group holding only
+// {owner, observer} warns about a second writer who is the observer, and a group holding
+// only a foreign owner reads as private where an observer-relative lookup would warn. The
+// second is the direction that would matter, and foreignOwner already answers it - a file
+// somebody else owns is a fatal flaw on its own, which is the same reason sharedWrite does
+// not count the owner. Moving the lookup behind Flaws is what fixes it, and would also
 // have to stop counting the observer as another member; it waits for the caller that needs
 // it rather than being guessed at now.
 func withGroup(f fileFacts, gid uint32) fileFacts {

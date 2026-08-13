@@ -191,8 +191,10 @@ func TestForeignHomeShieldsQuietThroughAnOstreeHomeSymlink(t *testing.T) {
 	if warned := foreignHomeShields([]string{throughLink}); len(warned) != 0 {
 		t.Errorf("foreignHomeShields(%q) = %v, want none: it is this run's own home named through the /home symlink", throughLink, warned)
 	}
-	// The guard must not go quiet about everything it resolves: another user's store under
-	// the same symlinked container is still foreign.
+	// The end-to-end contract converge reads: another user's store under the same
+	// symlinked container still warns. Weaker than the assertion above by construction -
+	// both spellings of it reach a shield, so it survives any guard that quiets only one -
+	// but "the layout is warnable at all" is what makes the quiet above meaningful.
 	other := filepath.Join(stockHome, "other", ".ssh")
 	if err := os.MkdirAll(filepath.Join(varHome, "other", ".ssh"), 0o700); err != nil {
 		t.Fatal(err)
