@@ -186,6 +186,9 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 			return ipHostReserved
 		case ipPrivate:
 			strictest = ipPrivate
+		case ipPublic:
+			// A public decode is what a Pref64 ordinarily wraps, and it cannot lower a
+			// verdict another prefix has already raised.
 		}
 	}
 	if matched {
