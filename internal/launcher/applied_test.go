@@ -318,3 +318,37 @@ func runReportChild(mode string) {
 	// the blocker, and the only way past it would be to widen the grant under test.
 	os.Exit(0)
 }
+
+// The exec-block path writes the exec-record section before execveat, because after a
+// successful one there is no process left to write from. A transition that fails then
+// appends the unreached line behind the closed section, so both follow the marker on the
+// same report - the case the reader in internal/linux is built for, and the one the
+// section's own doc used to deny.
+func TestRunTargetWritesBothSectionsWhenTheExecBlockCannotReachTheTarget(t *testing.T) {
+	rec := &execRecorder{}
+	rec.record(1, "/nonexistent", []string{"/nonexistent"})
+
+	got, err := reportOf(t, func(a *appliedReport) error {
+		if err := a.write(); err != nil {
+			return err
+		}
+		_, runErr := runTarget(true, []string{"/nonexistent"}, nil, a, rec)
+		return runErr
+	})
+	if err == nil {
+		t.Fatal("runTarget reported a reached target for an entrypoint that does not exist")
+	}
+	for _, want := range []string{AppliedMarker, AppliedExecRecorder + " " + AppliedAbsent, AppliedExecRecordMarker, AppliedTargetUnreached} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report %q is missing %q", got, want)
+		}
+	}
+	if strings.Index(got, AppliedExecRecordMarker) > strings.Index(got, AppliedTargetUnreached) {
+		t.Errorf("the unreached line did not land behind the closed exec-record section: %q", got)
+	}
+	// The seeded target entry is the exec that was about to happen and then did not;
+	// carrying it into a section written beforehand would report a run that never ran.
+	if strings.Contains(got, AppliedExecRan) {
+		t.Errorf("report %q records an exec on a target that was never reached", got)
+	}
+}

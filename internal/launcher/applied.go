@@ -88,8 +88,10 @@ const (
 	// appliedReport.targetUnreached for why nothing but a failed run can write this.
 	//
 	// It and the exec-record section are the two things that may follow the marker, and
-	// they are mutually exclusive by construction: a target that was never reached ran no
-	// execs to record, and targetUnreached closes the report.
+	// both can be present: the exec-block path writes the record BEFORE execveat, since
+	// after it there is no process left to write from, so a transition that fails appends
+	// this line behind an already-closed section. It is still the last line of the report
+	// either way - targetUnreached closes it - which is what the reader relies on.
 	AppliedTargetUnreached = "target-unreached"
 )
 

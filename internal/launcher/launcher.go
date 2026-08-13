@@ -751,9 +751,16 @@ func refuseKernelFileFD(fd int, st unix.Stat_t) error {
 //
 // The memory devices qualify on the other rationale: the sandbox's own /dev (bwrap's
 // --dev tmpfs, see args.go's pseudoFSFlags) provides them, so an inherited one grants
-// nothing the target could not open by path. They are enumerated by minor rather than by
-// major because /dev/mem (1:1), /dev/kmem (1:2) and /dev/port (1:4) share major 1 with
-// them and are direct physical-memory channels.
+// nothing the target could not open by path. That is judged against the bwrap /dev, and
+// on the degraded tier the allowance is a superset of it: internal/linux/degraded.go's
+// degradedSystemPaths grants null, zero, random and urandom but not /dev/full, so an
+// inherited one there is reach the ruleset does not name. Kept permitted anyway - the
+// device's whole behaviour is ENOSPC on write - rather than splitting the check per tier
+// over a descriptor a caller had to hand in deliberately.
+//
+// They are enumerated by minor rather than by major because /dev/mem (1:1), /dev/kmem
+// (1:2) and /dev/port (1:4) share major 1 with them and are direct physical-memory
+// channels.
 //
 // Everything else - /dev/kvm, /dev/net/tun, a raw disk - is neither, and refused.
 func permittedStdioDevice(fd int, rdev uint64) bool {
