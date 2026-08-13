@@ -159,8 +159,11 @@ func workspaceShields(sb sandbox, dir string) ([]denylist.Rule, string) {
 
 // checkoutRoot walks up from dir to the nearest directory holding a .git, or returns
 // dir where there is none. The walk is by name only - it never reads .git's content -
-// so a decoy planted under a write grant can at most anchor the shields higher, which
-// adds rules rather than removing them.
+// so a decoy planted under a write grant only moves where the shields anchor, never what
+// they can reach. A decoy above the grant anchors higher and adds rules; one at the grant
+// dir stops the walk there and drops the rules above it, which were unreachable anyway -
+// shieldNeeded skips a shield over a path outside every write grant, so the real
+// checkout's .git was never being shielded from this run to begin with.
 func checkoutRoot(sb sandbox, dir string) string {
 	for d := dir; ; {
 		if sb.exists(filepath.Join(d, ".git")) {
@@ -195,8 +198,18 @@ func checkoutRoot(sb sandbox, dir string) string {
 //
 // Not covered, because a concrete-path deny-list cannot express them (a documented
 // residual): independent nested repos created anywhere under the grant,
-// repos created during the run, and in-tree hook runners (husky, core.hooksPath
-// pointing at a tracked directory) whose hooks are ordinary project files.
+// repos created during the run, in-tree hook runners (husky, core.hooksPath
+// pointing at a tracked directory) whose hooks are ordinary project files, and the
+// gitfile of a linked worktree or submodule that sits INSIDE the granted checkout.
+//
+// That last one is the mirror of what WorkspaceGitfile shields. Where the grant IS the
+// worktree, its .git is the checkout root and takes a shield; where the worktree sits
+// under a granted main checkout, dir/.git is a real directory, so the walk takes this
+// branch and dir/<wt>/.git stays writable - a run can repoint it at a gitdir it
+// fabricates elsewhere under the grant, and the developer's next git command in that
+// worktree runs those hooks. Finding the worktrees to shield means reading
+// .git/worktrees/<n>/gitdir for a path, which is content, and checkoutRoot's whole
+// safety rests on never reading content. The shape is the nested-repo residual above.
 func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	gitDir := filepath.Join(dir, ".git")
 	var rules []denylist.Rule
