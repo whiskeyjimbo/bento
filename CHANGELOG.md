@@ -13,6 +13,18 @@ commits that built it - none of them were ever in a release.
 
 ### Boundary Hardening
 
+- **The egress guard no longer prefers the weaker verdict when a site publishes
+  more than one NAT64 prefix.** A synthesized IPv6 is re-checked against the
+  IPv4 each discovered Pref64 decodes out of it, and the per-prefix verdicts
+  were folded with `max()` over the class enum on the premise that the classes
+  run least to most restrictive. They do not: a host-reserved address is
+  refused outright, where a private one is still dialable under a matching
+  literal grant, so an address a `/96` decoded to `169.254.169.254` and a `/64`
+  decoded into RFC1918 was classified private - and a manifest naming that IPv6
+  literal reached the cloud metadata endpoint. The fold now answers
+  host-reserved as soon as any matching prefix decodes there, which is the
+  precedence the same file's `classifyRFC8215` already used. The boundary moved
+  inward, on a host that publishes more than one Pref64.
 - **A manifest can no longer lift a deny path its caller supplied.** An embedder
   passing `DenyPaths` is told a policy cannot lift one, and that held only while
   the caller's path was unrelated to a built-in shield. Both consumers of the
@@ -207,6 +219,18 @@ commits that built it - none of them were ever in a release.
   than the exit code must check both. Every refusal kind is marked beside its
   grant now, not only the shielded ones. The boundary did not move: `validate
   --strict` and `run` refuse exactly what they refused before.
+- **A host that cannot anchor its shields no longer answers `unknown` to the
+  questions it did answer.** `validate` on such a host - a container with
+  `HOME=/` and no passwd entry is the case that reaches it - reported nothing
+  but "this host could not answer", dropping a missing entrypoint, an
+  interpreter off PATH, a read grant naming nothing and a write grant spelled
+  like a file, none of which depend on the shields. Those are reported as
+  before, and only the grant half is marked unknown: `grants: unknown` in the
+  summary, `shields_unknown` in `--json`, where the refusal fields stay absent
+  because they could not be answered rather than because there was nothing to
+  say. `validate --strict` now fails on such a host over an entrypoint that does
+  not exist, which it previously passed over. The boundary did not move: this
+  reports on a manifest, and grants nothing.
 - **`approve` now names the permissions that changed since the last approval.**
   The stamp is a sha256 over the policy, so a drifted manifest could say only
   that something changed - every refusal that sent a reader back to re-review

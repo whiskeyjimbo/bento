@@ -168,12 +168,13 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 // completeness test over fields, can see.
 func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 	printed := gate.Runnability{
-		Unresolved:    true,
+		Unresolved:     true,
+		ShieldsUnknown: true,
 		// Problems and Refusals arrive already quoted - gate builds them with %q around
 		// the path - so only the two fields this file renders from a raw path carry an
 		// escape, which is what the scan below is watching.
-		Problems: []string{`entrypoint "/gone/run.sh": no such file or directory`},
-		Refusals: []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
+		Problems:      []string{`entrypoint "/gone/run.sh": no such file or directory`},
+		Refusals:      []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
 		MissingReads:  []string{"/data/\x1b[2Kabsent"},
 		FileishWrites: []string{"/out/\x1b[2Kreport.json"},
 		CredentialAliases: []enforce.CredentialAlias{
@@ -203,6 +204,8 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			want = v.Index(0).Field(0).String()
 		case f.Name == "Unresolved" && v.Bool():
 			want = "could not answer"
+		case f.Name == "ShieldsUnknown" && v.Bool():
+			want = "where its shields anchor"
 		default:
 			t.Errorf("gate.Runnability.%s is new: give it a value in the fixture above and teach this "+
 				"switch its shape, then print it in writeRunnability.", f.Name)

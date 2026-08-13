@@ -287,10 +287,13 @@ func run(manifestPath string, allowUnapproved bool) int {
 // mirrors a set the backend owns, and a check the backend adds to that set arrives here
 // as a shorter list, not as a new field.
 func writeRunnability(w io.Writer, r gate.Runnability) {
-	// The one field that is not a finding about the manifest: this host could not answer,
-	// so every empty list below is unknown rather than clean.
+	// The two fields that are not findings about the manifest but about what this host
+	// could not answer, so the empty lists they cover are unknown rather than clean.
 	if r.Unresolved {
 		fmt.Fprintf(w, "embed: note: this host could not answer what it makes of the manifest, so nothing below is a clean bill\n")
+	}
+	if r.ShieldsUnknown {
+		fmt.Fprintf(w, "embed: note: this host could not work out where its shields anchor, so the grants below were not checked - everything else stands\n")
 	}
 	for _, p := range r.Problems {
 		fmt.Fprintf(w, "embed: note: this host cannot start what the manifest names: %s\n", p)

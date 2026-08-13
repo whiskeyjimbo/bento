@@ -240,26 +240,26 @@ func strictApprovalError(doc *manifest.Document, strict bool) error {
 // the count does not.
 func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
+	case r.Unresolved:
+		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer (it could not resolve the\n")
+		fmt.Fprintf(w, "              manifest's paths; the grants above and the footer below say which)\n")
 	case len(r.Problems) > 0:
 		fmt.Fprintf(w, "\nrunnable:     NO - this host cannot start what the manifest names\n")
 		for _, p := range r.Problems {
 			fmt.Fprintf(w, "              %s\n", p)
 		}
-		// A shield-anchor failure leaves the entrypoint verdict standing and only the
-		// grants unanswered, so both halves are said rather than the harder one silencing
-		// the one this host is sure of.
-		if r.Unresolved {
-			fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
-			fmt.Fprintf(w, "              so the grants above were not checked\n")
-		}
-	case r.Unresolved:
-		fmt.Fprintf(w, "\nrunnable:     unknown - this host could not answer (it could not resolve the\n")
-		fmt.Fprintf(w, "              manifest's paths, or not work out where its shields anchor; the\n")
-		fmt.Fprintf(w, "              grants above and the footer below say which)\n")
 	default:
 		fmt.Fprintf(w, "\nrunnable:     yes (the entrypoint and interpreter resolve on this host)\n")
 	}
-	if len(r.Refusals) > 0 {
+	// A host that cannot anchor its shields still answered everything above, so the grant
+	// half is reported as the unknown it is rather than silencing the half this host is
+	// sure of - and rather than reading, in its silence, as a manifest with nothing to
+	// refuse.
+	switch {
+	case r.ShieldsUnknown:
+		fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
+		fmt.Fprintf(w, "              so the grants above were not checked\n")
+	case len(r.Refusals) > 0:
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
 	for _, g := range r.FileishWrites {
@@ -433,6 +433,12 @@ type policyJSON struct {
 	// not a note: --strict fails on one and run exits 125. Beside runnable rather than
 	// inside it, because a manifest can be perfectly startable and still hold one.
 	RefusedGrants []string `json:"refused_grants,omitempty"`
+	// ShieldsUnknown says this host could not work out where its shields anchor, so
+	// refused_grants and credential_aliases are absent because they could not be answered
+	// rather than because there was nothing to report. A gate reading the envelope has
+	// nothing else to tell those two apart, and the run there is refused for this same
+	// reason - so absent is the wrong reading of a manifest, and this is what says so.
+	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
 	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
 	// runnable stays true beside them, and --strict does not fail on them.
 	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
@@ -468,13 +474,13 @@ func (o *policyJSON) setRelocatable(pinned []string) {
 }
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent
-// where the host could not answer - which is per field rather than per call: a host that
-// cannot anchor its shields still knows whether the entrypoint resolves, and only the
-// grant half is unknown. A host that answered nothing (a nil policy, so no problems and no
-// entrypoint checked) emits nothing, since Runnable is what a CI gate keys on and an
-// unasked question must not read as a green one.
+// where the host could not answer. A host that answered nothing emits nothing, since
+// runnable is what a CI gate keys on and an unasked question must not read as a green one.
+// A host that could not anchor its shields answered everything but the grant half, so it
+// emits what it knows and marks that half unknown rather than leaving a gate to read the
+// absent fields as clean.
 func (o *policyJSON) setRunnable(r gate.Runnability) {
-	if r.Unresolved && len(r.Problems) == 0 {
+	if r.Unresolved {
 		return
 	}
 	ok := len(r.Problems) == 0
@@ -482,7 +488,8 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 	o.RunnableProblems = r.Problems
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
-	if !r.Unresolved {
+	o.ShieldsUnknown = r.ShieldsUnknown
+	if !r.ShieldsUnknown {
 		o.RefusedGrants = r.Refusals
 		for _, a := range r.CredentialAliases {
 			o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})

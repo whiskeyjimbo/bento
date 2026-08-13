@@ -84,14 +84,19 @@ type Runnability struct {
 	// the mount table - and only over the trees the manifest grants rather than everything
 	// the run binds. Both narrowings only miss a finding.
 	CredentialAliases []enforce.CredentialAlias
-	// Unresolved marks the answer as incomplete: the caller could not resolve the
-	// manifest's paths and signals that by passing a nil policy, in which case nothing
-	// below is answered, or this host cannot work out where its shields anchor, in which
-	// case Refusals and CredentialAliases are unknown and the rest still stands. Reported
-	// as unknown rather than as a pass - either host refuses the run for that same reason,
-	// and an empty refusal set here is indistinguishable from a manifest a healthy host
-	// has nothing to refuse about.
+	// Unresolved marks a question nothing here answered: the caller could not resolve the
+	// manifest's paths and signals that by passing a nil policy, so every field above is
+	// empty because none was asked. Reported as unknown rather than as a pass - that host
+	// refuses the run for the same reason, and an empty findings set here is
+	// indistinguishable from a manifest a healthy host has nothing to say about.
 	Unresolved bool
+	// ShieldsUnknown marks the narrower gap: this host cannot work out where its shields
+	// anchor, so Refusals and CredentialAliases could not be answered and are empty for
+	// that reason rather than for want of anything to report. Every other field above is a
+	// fact about the manifest and the filesystem that the shield set has no part in, and
+	// stands. Said separately from Unresolved because a consumer that folds them reports
+	// the half this host is sure of as unknown, or the half it is not as clean.
+	ShieldsUnknown bool
 }
 
 // Check asks the resolved policy - the one naming host paths - what run would find.
@@ -123,7 +128,7 @@ func Check(resolved *policy.Policy) Runnability {
 	// host's filesystem that the shield set has no part in, so it survives.
 	set, err := ShieldSet()
 	if err != nil {
-		r.Unresolved = true
+		r.ShieldsUnknown = true
 		return r
 	}
 	r.Refusals = refusals(set, resolved)

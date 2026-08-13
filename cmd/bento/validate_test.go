@@ -938,9 +938,9 @@ func assertApproveRefuses(t *testing.T, path string) {
 // let the unknown one silence the answer this host was sure of.
 func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 	r := gate.Runnability{
-		Unresolved:   true,
-		Problems:     []string{`entrypoint "/nope/missing.py": no such file or directory`},
-		MissingReads: []string{"/nope/nothere"},
+		ShieldsUnknown: true,
+		Problems:       []string{`entrypoint "/nope/missing.py": no such file or directory`},
+		MissingReads:   []string{"/nope/nothere"},
 	}
 
 	var out strings.Builder
@@ -959,8 +959,17 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 	if len(o.RunnableProblems) != 1 || len(o.MissingReadGrants) != 1 {
 		t.Errorf("the answered half must reach the envelope; got %v %v", o.RunnableProblems, o.MissingReadGrants)
 	}
-	if o.RefusedGrants != nil || o.CredentialAliases != nil {
-		t.Errorf("the shield half is unknown and must stay absent; got %v %v", o.RefusedGrants, o.CredentialAliases)
+	if o.RefusedGrants != nil || o.CredentialAliases != nil || !o.ShieldsUnknown {
+		t.Errorf("the shield half must stay absent and be marked unknown; got %v %v %v", o.RefusedGrants, o.CredentialAliases, o.ShieldsUnknown)
+	}
+
+	// The same host with a resolving entrypoint knows just as much, and the envelope must
+	// carry it rather than falling silent because the harder half is missing.
+	var healthy policyJSON
+	healthy.setRunnable(gate.Runnability{ShieldsUnknown: true, MissingReads: []string{"/nope/nothere"}})
+	if healthy.Runnable == nil || !*healthy.Runnable || !healthy.ShieldsUnknown || len(healthy.MissingReadGrants) != 1 {
+		t.Errorf("a shield-anchor failure must not silence the half this host answered; got %v %v %v",
+			healthy.Runnable, healthy.ShieldsUnknown, healthy.MissingReadGrants)
 	}
 
 	// The other cause of the same flag: a caller that could not resolve the paths at all
