@@ -170,14 +170,22 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 	// A site may publish more than one Pref64, and embeddedV4 matches on prefix bits
 	// alone, so a short prefix matches every address under it and decodes a different
 	// IPv4 than the specific one does. Taking the strictest verdict over all matches
-	// keeps the guard independent of the order discovery happened to append them; the
-	// classes are declared least to most restrictive, so that is max.
+	// keeps the guard independent of the order discovery happened to append them.
+	// Host-reserved is the strictest of the three: handle refuses it outright, where
+	// private is still reachable under a matching literal grant.
 	matched := false
 	strictest := c
 	for _, pfx := range p.nat64 {
-		if v4 := pfx.embeddedV4(ip); v4 != nil {
-			matched = true
-			strictest = max(strictest, classifyIP(v4))
+		v4 := pfx.embeddedV4(ip)
+		if v4 == nil {
+			continue
+		}
+		matched = true
+		switch classifyIP(v4) {
+		case ipHostReserved:
+			return ipHostReserved
+		case ipPrivate:
+			strictest = ipPrivate
 		}
 	}
 	if matched {

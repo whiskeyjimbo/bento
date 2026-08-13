@@ -83,9 +83,12 @@ func FuzzNAT64DiscoveryOnlyNarrows(f *testing.F) {
 			if classifyIP(private) != ipPublic {
 				continue
 			}
-			if c := p.classify(private); c != ipPrivate {
-				t.Errorf("192.168.1.1 synthesized under the discovered /%d prefix (%v) classified %d, want ipPrivate (%d)",
-					pfx.prefixLen, private, c, ipPrivate)
+			// Host-reserved rather than private is also a catch, and the stricter one:
+			// the companion /32 reads its own four bytes out of these same bits, and
+			// those may decode into this-network or link-local space.
+			if c := p.classify(private); c == ipPublic {
+				t.Errorf("192.168.1.1 synthesized under the discovered /%d prefix (%v) classified public, want it refused",
+					pfx.prefixLen, private)
 			}
 		}
 	})
