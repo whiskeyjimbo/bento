@@ -227,7 +227,10 @@ deliberately waives that through `enforce.Process.AllowNetworkStdio` - which is 
 field precisely so no downloaded manifest or copied command line can re-open the
 channel. The waiver covers AF_INET and AF_INET6 only: passing an accepted TCP
 connection is not a decision about an inherited netlink socket (host interface,
-address and route enumeration) or an AF_PACKET one.
+address and route enumeration) or an AF_PACKET one. It also covers the bwrap tier
+only: the degraded tier runs a no-network manifest by definition, so a socket on its
+stdio contradicts the only policy that can reach it and the refusal there names the
+waiver as not applying.
 
 **AF_UNIX on stdio is an accepted residual.** It is the one family the check still
 passes, and an inherited connected unix socket - the host's `docker.sock`, a session
