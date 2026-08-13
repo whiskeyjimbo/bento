@@ -1101,8 +1101,11 @@ func Home(home string) []Rule {
 // dropped rather than emitted - see underDenyAll.
 func Relocated(defaults []Rule, anchors []string) []Rule {
 	var rules []Rule
-	// Both halves: the defaults, and what this pass has already emitted. The blocks below
-	// are ordered so a DenyAll target lands before any DenyWrite that would sit under it.
+	// Both halves: the defaults, and what this pass has already emitted. It sees only what
+	// came before, and no block ordering makes that enough: the XDG restatement has to run
+	// first, because its rules were part of defaults when Home emitted them, yet dirEnvs'
+	// whole-tree DenyAll can land on top of what it just emitted. The sweep at the end of
+	// this function is what closes that, once every encloser is known.
 	covered := func(p string) bool { return underDenyAll(p, defaults) || underDenyAll(p, rules) }
 	shieldable := func(p string) bool { return Shieldable(p, anchors) }
 	// isDefault reports whether an absolute target is just a restatement of the
@@ -1395,7 +1398,9 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
 		if c := filepath.Clean(base); !isDefault(c, ".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
-				rules = append(rules, Rule{Path: filepath.Join(c, f), Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
+				if p := filepath.Join(c, f); !covered(p) && shieldable(p) {
+					rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
+				}
 			}
 			for _, f := range []string{"config.toml", "config", "env"} {
 				addWriteShield(filepath.Join(c, f), "CARGO_HOME")
@@ -1455,7 +1460,32 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: de.env})
 		}
 	}
-	return rules
+
+	// The rules an encloser emitted later than they were shields nothing further, and a
+	// DenyWrite or interior file rule among them survives an opt-in matching only the
+	// enclosing tree - see underDenyAll. Dropped here rather than by tightening covered(),
+	// which cannot see forward.
+	// A fresh slice: the screen reads the whole rule set, so filtering in place would let an
+	// already-written entry stand in for an encloser the tail still has to be tested against.
+	kept := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		if !insideDenyAllTree(r.Path, defaults) && !insideDenyAllTree(r.Path, rules) {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+// insideDenyAllTree reports whether a DenyAll DIRECTORY rule strictly encloses p. It
+// ignores a rule at p itself, which is what lets a set be screened against itself without
+// a pair of equal paths cancelling each other out.
+func insideDenyAllTree(p string, rules []Rule) bool {
+	for _, r := range rules {
+		if r.Deny == DenyAll && r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // underDenyAll reports whether an already-emitted DenyAll rule covers p. A rule landing

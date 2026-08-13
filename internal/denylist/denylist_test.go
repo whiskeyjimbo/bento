@@ -864,6 +864,16 @@ func TestRelocatedNeverEmitsARuleInsideADenyAllTree(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", home+"/.gnupg")
 	t.Setenv("GNUPGHOME", home+"/.ssh/gpg")
 	t.Setenv("MISE_DATA_DIR", home+"/.aws/mise")
+	// The blocks that emit by hand rather than from a table, each with its own guard to
+	// forget: CARGO_HOME's DenyAll half and STEPPATH's relocated secrets tree, the latter
+	// with a startup file planted under it.
+	t.Setenv("CARGO_HOME", home+"/.ssh")
+	t.Setenv("STEPPATH", "/srv/step")
+	t.Setenv("BASH_ENV", "/srv/step/secrets/init.sh")
+	// A store relocated ONTO a relocated XDG base, which no ordering of the blocks catches:
+	// the XDG restatement has to run first, and this DenyAll tree lands over what it emitted.
+	t.Setenv("XDG_DATA_HOME", "/srv/data")
+	t.Setenv("ATUIN_DATA_DIR", "/srv/data")
 
 	// Both halves of the guard: the DenyAll trees Home already emitted, and the ones this
 	// pass emits itself - a relocated store is as capable of enclosing a later rule as a
