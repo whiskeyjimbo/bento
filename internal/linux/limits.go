@@ -155,7 +155,15 @@ func preflightLimits(l policy.Limits, env []string) error {
 
 // runScopeProbe creates a transient scope with the given limits running /bin/true
 // and returns whether it succeeded.
+//
+// Zero limits are an error, not a pass: wrapWithLimits returns the command unchanged
+// when there is nothing to apply, so a zero-limit probe would run /bin/true bare,
+// never contact systemd, and report success - "the limits will bind" from a call that
+// proved nothing, in the seam the fail-closed limits story rests on.
 func runScopeProbe(l policy.Limits, env []string) error {
+	if l.IsZero() {
+		return fmt.Errorf("internal: the scope probe was asked to prove zero limits, which creates no scope")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

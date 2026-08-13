@@ -22,6 +22,15 @@ func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
 	}
 }
 
+// The probe's contract is that a nil return means systemd applied the limits. Zero
+// limits create no scope at all, so the only honest answer there is an error - a nil
+// would be the fail-open direction the whole delegation check exists to refuse.
+func TestScopeProbeRefusesZeroLimits(t *testing.T) {
+	if err := runScopeProbe(policy.Limits{}, nil); err == nil {
+		t.Error("runScopeProbe returned success for zero limits, which create no scope")
+	}
+}
+
 func TestWrapWithLimitsBuildsScope(t *testing.T) {
 	exe, args := wrapWithLimits("bwrap", []string{"--proc", "/proc"}, policy.Limits{
 		Memory: "128M", CPU: "100%", PIDs: 32,
