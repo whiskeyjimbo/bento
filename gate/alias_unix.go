@@ -43,15 +43,18 @@ type fileID struct {
 // where that first walk found a credential carrying a second directory entry. That gate is
 // the backend's too, and on a host with no such credential no grant is walked at all.
 //
-// Where it IS open, the granted trees are walked whole: a manifest granting a 287MB
-// checkout on a host holding one hardlinked key took validate from 20ms to 53ms. That is
-// the cost on exactly the hosts this exists for - a snapshot tool, a --link-dest backup, a
-// Nix store, all of which leave every dotfile a second link by design - so it is per
-// Check, and an embedder calling Check in a loop pays it every time.
+// Where it IS open, the granted trees are walked whole, and the cost is set by the number
+// of directory entries rather than by bytes. On a host holding one hardlinked key,
+// `bento validate` went from 40ms to 1.13s over a 287k-entry module cache and from 60ms to
+// 3.6s warm - 15.7s cold - over an 841k-entry home. That is the cost on exactly the hosts
+// this exists for - a snapshot tool, a --link-dest backup, a Nix store, all of which leave
+// every dotfile a second link by design - so it is per Check, and an embedder calling Check
+// in a loop pays it every time.
 //
-// ponytail: whole-tree walk per Check, bounded only by the grant. If that bites, the
-// answer is a set the caller holds across calls rather than a cache here, which is the
-// shape ShieldSet just moved to and for the same reason.
+// ponytail: whole-tree walk per Check, bounded only by the grant, and Check is on
+// `bento validate`'s default path. The answer when that bites is a set the caller holds
+// across calls rather than a cache here, which is the shape ShieldSet just moved to and for
+// the same reason.
 //
 // Unreadable and unstattable paths are skipped rather than raising. The backend refuses
 // over one, because there a could-not-look reported as clean is the failure; here the
