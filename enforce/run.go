@@ -316,7 +316,10 @@ func requiredLayers(p *policy.Policy, opts Options) []Layer {
 	if p.Exec == policy.ExecNoneStrict {
 		layers = append(layers, LayerExecStrict)
 	}
-	if !p.Limits.IsZero() {
+	// Per requested limit, not per "any limit set": the two limits layers rest on
+	// different controllers, so requiring both for any limit refused a cpu-only manifest
+	// on a host that delegates cpu but not memory, naming controllers it never asked for.
+	if p.Limits.Memory != "" || p.Limits.PIDs != 0 {
 		layers = append(layers, LayerLimits)
 	}
 	if p.Limits.CPU != "" {

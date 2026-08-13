@@ -75,14 +75,22 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		if ok, reason := canCreateScope(); !ok {
 			return profile.Observation{}, fmt.Errorf("the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 		}
-		// canCreateScope answers only for memory and pids, the host-safety controllers.
-		// A cpu limit needs its own answer: systemd-run accepts a CPUQuota for an
-		// undelegated cpu controller and silently does not enforce it, so gating on
-		// scope creation alone would profile with the requested cap absent and say
-		// nothing. Run survives that gap because enforce.Run admits LayerLimitsCPU from
-		// the probe; this path produces no Report, so the check has to be its own.
+		// A creatable scope is not enough: systemd-run accepts a property for an
+		// undelegated controller and silently does not enforce it, so gating on scope
+		// creation alone would profile with the requested cap absent and say nothing.
+		// Asked per requested limit, because the two rest on different controllers - a
+		// manifest that wants only a cpu cap must not be refused over memory delegation,
+		// which would send the operator to a Delegate= drop-in it never needed. Run
+		// reaches the same verdict through the probe's two layers; this path produces no
+		// Report, so the check has to be its own.
+		ctrls, known := delegatedControllers()
+		if p.Limits.Memory != "" || p.Limits.PIDs != 0 {
+			if state, reason := memPidsDelegationState(ctrls, known); state != enforce.Enforced {
+				return profile.Observation{}, fmt.Errorf("the policy requests a memory or pids limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+			}
+		}
 		if p.Limits.CPU != "" {
-			if state, reason := cpuDelegationState(delegatedControllers()); state != enforce.Enforced {
+			if state, reason := cpuDelegationState(ctrls, known); state != enforce.Enforced {
 				return profile.Observation{}, fmt.Errorf("the policy requests a cpu limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 			}
 		}

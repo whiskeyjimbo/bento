@@ -158,18 +158,34 @@ func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
 	}
 }
 
-// A limit is enforced by the systemd scope both tiers wrap their command in, so the
-// report must hang on scope creation alone - and must never claim Enforced without a
-// creatable scope, which would report a memory/pids/cpu cap that does not hold.
+// A limit is enforced by the systemd scope both tiers wrap their command in, plus the
+// controllers it needs delegated, so each layer must carry its own delegation state -
+// and neither may claim Enforced without a creatable scope, which would report a
+// memory/pids/cpu cap that does not hold.
 func TestLimitsLayersTrackScopeCreation(t *testing.T) {
-	ok := limitsLayers(true, "", enforce.Degraded, "cpu controller not delegated")
+	ok := limitsLayers(true, "", enforce.Enforced, "", enforce.Degraded, "cpu controller not delegated")
 	if len(ok) != 2 || ok[0].State != enforce.Enforced || ok[1].Layer != enforce.LayerLimitsCPU || ok[1].State != enforce.Degraded {
 		t.Fatalf("scope: got %+v, want LayerLimits=Enforced + LayerLimitsCPU=Degraded", ok)
 	}
 
-	no := limitsLayers(false, "no scope here", enforce.Enforced, "")
-	if len(no) != 1 || no[0].State != enforce.Unavailable || no[0].Reason != "no scope here" {
-		t.Fatalf("no scope: got %+v, want LayerLimits=Unavailable carrying the scope reason", no)
+	// Each layer states its own verdict: memory/pids undelegated must not drag the cpu
+	// layer down, or a cpu-only manifest is refused over a controller it never asked for.
+	memOnly := limitsLayers(true, "", enforce.Unavailable, "memory/pids not delegated", enforce.Enforced, "")
+	if len(memOnly) != 2 || memOnly[0].State != enforce.Unavailable || memOnly[1].State != enforce.Enforced {
+		t.Fatalf("memory undelegated: got %+v, want LayerLimits=Unavailable + LayerLimitsCPU=Enforced", memOnly)
+	}
+
+	// Both layers, not just LayerLimits: they are required per requested limit now, so a
+	// cpu-only manifest missing the cpu line would reach admission with an empty
+	// required report and run unbounded.
+	no := limitsLayers(false, "no scope here", enforce.Enforced, "", enforce.Enforced, "")
+	if len(no) != 2 {
+		t.Fatalf("no scope: got %+v, want both limits layers", no)
+	}
+	for _, l := range no {
+		if l.State != enforce.Unavailable || l.Reason != "no scope here" {
+			t.Errorf("no scope: %s = %+v, want Unavailable carrying the scope reason", l.Layer, l)
+		}
 	}
 }
 

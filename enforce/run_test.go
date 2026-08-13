@@ -208,17 +208,18 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 		t.Errorf("refusal should name the limits-cpu layer; short = %+v", refusal.Short)
 	}
 
-	// No scope at all: the limits layer is unavailable and subsumes cpu, so the
-	// cpu-limit policy is refused by that single layer, without a duplicate
-	// limits-cpu entry (the probe does not emit one when there is no scope).
+	// No scope at all: a cpu-limit policy requires only the cpu layer, so the refusal
+	// has to come from that layer and name it. A probe that reported the memory/pids
+	// layer alone must not let the run through - the required-filter synthesizes the
+	// missing cpu line as Unavailable rather than reading its absence as no shortfall.
 	var noScope Report
 	noScope.Add(LayerFilesystem, Enforced, "")
 	noScope.Add(LayerLimits, Unavailable, "no usable systemd user manager")
 	f = &fakeEnforcer{probe: noScope}
 	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); !errors.As(err, &refusal) {
 		t.Errorf("no-scope host should refuse a cpu-limit policy; got %v", err)
-	} else if hasLayer(refusal.Short, LayerLimitsCPU) {
-		t.Errorf("no-scope refusal should not duplicate a limits-cpu line; short = %+v", refusal.Short)
+	} else if !hasLayer(refusal.Short, LayerLimitsCPU) {
+		t.Errorf("no-scope refusal should name the limits-cpu layer the policy required; short = %+v", refusal.Short)
 	}
 
 	// --strict: also refuse.
@@ -248,6 +249,22 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	memOnly := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
 	if _, err := Run(context.Background(), f, memOnly, Process{}, Options{}); err != nil {
 		t.Errorf("a memory-only limit must not be refused for undelegated cpu; got %v", err)
+	}
+
+	// And the mirror: the two limits layers rest on different controllers, so a host
+	// that delegates cpu but not memory/pids must run a cpu-only manifest. Refusing it
+	// sent the operator to a Delegate=memory pids drop-in for controllers the manifest
+	// never named.
+	var cpuOnlyHost Report
+	cpuOnlyHost.Add(LayerFilesystem, Enforced, "")
+	cpuOnlyHost.Add(LayerLimits, Unavailable, "the memory/pids controllers are not delegated")
+	cpuOnlyHost.Add(LayerLimitsCPU, Enforced, "")
+	f = &fakeEnforcer{probe: cpuOnlyHost}
+	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); err != nil {
+		t.Errorf("a cpu-only limit must not be refused for undelegated memory/pids; got %v", err)
+	}
+	if !f.ran {
+		t.Error("a cpu-only limit on a cpu-delegated host should have run the target")
 	}
 }
 

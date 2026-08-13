@@ -82,21 +82,21 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	}
 
 	scopeOK, scopeReason := canCreateScope()
-	// Default Unavailable, not the zero value (Enforced): cpuState is measured only when
-	// a scope is creatable, and a host whose cpu delegation was never measured must not
-	// report the cpu limit as enforced - admission would then admit an unenforceable
-	// CPUQuota. limitsLayers emits LayerLimitsCPU only on that same scopeOK branch today,
-	// so the default is belt-and-suspenders against that coupling drifting.
-	cpuState := enforce.Unavailable
-	var cpuReason string
+	// Default Unavailable, not the zero value (Enforced): delegation is measured only
+	// when a scope is creatable, and a host whose controllers were never read must not
+	// report a limit as enforced - admission would then admit an unenforceable cap.
+	memState, cpuState := enforce.Unavailable, enforce.Unavailable
+	var memReason, cpuReason string
 	if scopeOK {
-		// cpu delegation is separate from scope creation: a scope can be created
-		// (memory/pids delegated) while systemd-run silently ignores a CPUQuota
-		// because the cpu controller is not delegated. Report it so admission can
-		// refuse a requested cpu limit this host cannot actually enforce.
-		cpuState, cpuReason = cpuDelegationState(delegatedControllers())
+		// Delegation is separate from scope creation, and separate per controller: a
+		// scope can be created while systemd-run silently ignores a property whose
+		// controller the manager does not delegate. Report each so admission can refuse
+		// exactly the limits this host cannot actually enforce.
+		ctrls, known := delegatedControllers()
+		memState, memReason = memPidsDelegationState(ctrls, known)
+		cpuState, cpuReason = cpuDelegationState(ctrls, known)
 	}
-	for _, ls := range limitsLayers(scopeOK, scopeReason, cpuState, cpuReason) {
+	for _, ls := range limitsLayers(scopeOK, scopeReason, memState, memReason, cpuState, cpuReason) {
 		r.AddStatus(ls)
 	}
 
@@ -144,22 +144,26 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 }
 
 // limitsLayers decides the resource-limit layers. Both tiers wrap their command in a
-// systemd scope (see wrapWithLimits), so the only question is whether a scope can be
-// created; the cpu sub-layer additionally needs the cpu controller delegated. The
-// tier does not enter into it: a scope is a cgroup, applied by systemd before the
-// command starts and independent of the user namespace the degraded tier lacks.
-func limitsLayers(scopeOK bool, scopeReason string, cpuState enforce.State, cpuReason string) []enforce.LayerStatus {
-	switch {
-	case !scopeOK:
-		// No scope at all: the cpu gap is subsumed by the whole limits layer being
-		// unavailable, which already refuses a cpu-limit policy. A separate
-		// LayerLimitsCPU here would only duplicate the refusal with the same reason.
-		return []enforce.LayerStatus{{Layer: enforce.LayerLimits, State: enforce.Unavailable, Reason: scopeReason}}
-	default:
+// systemd scope (see wrapWithLimits), so each layer needs a creatable scope plus its
+// own controllers delegated. The tier does not enter into it: a scope is a cgroup,
+// applied by systemd before the command starts and independent of the user namespace
+// the degraded tier lacks.
+//
+// Both layers are always emitted, including when no scope can be created at all. Each
+// is required only by a policy that asks for the limits it covers, so a cpu-only
+// manifest whose report omitted LayerLimitsCPU would reach admission with nothing
+// limits-related to refuse and run unbounded on exactly the host that can enforce
+// least.
+func limitsLayers(scopeOK bool, scopeReason string, memState enforce.State, memReason string, cpuState enforce.State, cpuReason string) []enforce.LayerStatus {
+	if !scopeOK {
 		return []enforce.LayerStatus{
-			{Layer: enforce.LayerLimits, State: enforce.Enforced},
-			{Layer: enforce.LayerLimitsCPU, State: cpuState, Reason: cpuReason},
+			{Layer: enforce.LayerLimits, State: enforce.Unavailable, Reason: scopeReason},
+			{Layer: enforce.LayerLimitsCPU, State: enforce.Unavailable, Reason: scopeReason},
 		}
+	}
+	return []enforce.LayerStatus{
+		{Layer: enforce.LayerLimits, State: memState, Reason: memReason},
+		{Layer: enforce.LayerLimitsCPU, State: cpuState, Reason: cpuReason},
 	}
 }
 

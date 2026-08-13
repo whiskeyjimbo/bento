@@ -13,11 +13,13 @@ const (
 	// blocking) on top of the execve block. A policy needs it only for exec:
 	// none-strict; a host that blocks execve but not fork reports it degraded.
 	LayerExecStrict Layer = "exec-strict"
-	// LayerLimits is the ability to run under a limited transient scope at all,
-	// which needs the host-safety controllers (memory, pids) delegated. LayerLimitsCPU
-	// is the separate ability to enforce a cpu limit: systemd-run accepts a CPUQuota
-	// even when the cpu controller is not delegated (a common default) and silently
-	// ignores it, so a policy that requests a cpu limit needs this layer specifically.
+	// LayerLimits is the ability to enforce a memory or pids cap: a transient scope
+	// plus the host-safety controllers (memory, pids) delegated. LayerLimitsCPU is the
+	// separate ability to enforce a cpu limit: systemd-run accepts a CPUQuota even when
+	// the cpu controller is not delegated (a common default) and silently ignores it.
+	// Each is required only by a policy that asks for the limits it covers, so a
+	// manifest requesting only a cpu cap is never held to a memory delegation it does
+	// not depend on.
 	LayerLimits    Layer = "limits"
 	LayerLimitsCPU Layer = "limits-cpu"
 )
@@ -237,17 +239,14 @@ func (r Report) forLayers(layers []Layer) Report {
 	// absent: admission scans the returned layers, so a missing entry would otherwise
 	// read as "no shortfall" and admit a run whose required guarantee was never
 	// actually evaluated. Fail-safe for a probe that forgets a layer.
+	//
+	// No layer's absence is subsumed by another's state. LayerLimitsCPU once was, on the
+	// grounds that a non-Enforced LayerLimits already carried the refusal - but the two
+	// limits layers are required independently now, so a cpu-only policy need not have
+	// LayerLimits in the report at all, and skipping the synthesis there would hand
+	// admission an empty required report and run the target unbounded.
 	for _, l := range layers {
 		if present[l] {
-			continue
-		}
-		// LayerLimitsCPU's absence is subsumed by LayerLimits only while LayerLimits is
-		// itself not Enforced - then LayerLimits already carries the refusal and a
-		// synthesized cpu line would just duplicate it. But if the probe reports
-		// LayerLimits=Enforced and merely drops the cpu refinement (a probe regression),
-		// nothing else refuses, and admitting the run would run it under an unenforced
-		// CPUQuota that systemd-run silently ignores. So synthesize it there.
-		if l == LayerLimitsCPU && r.StateOf(LayerLimits) != Enforced {
 			continue
 		}
 		out.Layers = append(out.Layers, LayerStatus{Layer: l, State: Unavailable, Reason: "not reported by the host probe"})

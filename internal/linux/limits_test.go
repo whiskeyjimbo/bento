@@ -123,24 +123,27 @@ func TestDelegatedControllers(t *testing.T) {
 // confirm the caps bind, so it must report unavailable, never enforced - the
 // fail-open bug was known=false taking the enforced/ok branch, letting a target run
 // unbounded under a report that said the limit held.
-func TestHostControllersDelegatedFailsClosed(t *testing.T) {
+func TestMemPidsDelegationStateFailsClosed(t *testing.T) {
 	cases := []struct {
 		name       string
 		ctrls      map[string]bool
 		known      bool
-		wantOK     bool
+		wantState  enforce.State
 		wantReason string // a substring that distinguishes the diagnosis
 	}{
-		{"unknown fails closed", nil, false, false, "could not read"},
-		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, true, ""},
-		{"memory missing", map[string]bool{"pids": true}, true, false, "not delegated"},
-		{"pids missing", map[string]bool{"memory": true}, true, false, "not delegated"},
+		{"unknown fails closed", nil, false, enforce.Unavailable, "could not read"},
+		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
+		{"memory missing", map[string]bool{"pids": true}, true, enforce.Unavailable, "not delegated"},
+		{"pids missing", map[string]bool{"memory": true}, true, enforce.Unavailable, "not delegated"},
+		// cpu delegation is a separate layer's business: it must not move this verdict,
+		// or a memory manifest is refused over a Delegate=cpu step it never needed.
+		{"cpu undelegated is irrelevant here", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, reason := hostControllersDelegated(tc.ctrls, tc.known)
-			if ok != tc.wantOK {
-				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			state, reason := memPidsDelegationState(tc.ctrls, tc.known)
+			if state != tc.wantState {
+				t.Errorf("state = %v, want %v", state, tc.wantState)
 			}
 			// The unknown case must be diagnosed as unreadable, not misdiagnosed as an
 			// undelegated controller (which would tell the user to run a Delegate= step
@@ -365,25 +368,22 @@ func TestWrapWithLimitsLeavesTheScopeUnnamedWithoutARunID(t *testing.T) {
 	}
 }
 
-// A host whose cgroup layout the delegation read can never reach is a permanent
-// non-answer, and measureScope must cache it. Left uncached, canCreateScope re-created
-// a real transient scope on every call - three times on one run, and it is called from
-// Probe, screenRunID, Run, the degraded path and Profile - on exactly the containerized
-// or hybrid-cgroup host class the fail-closed path exists for.
-func TestScopeVerdictCachesAStructurallyUnreadableLayout(t *testing.T) {
+// measureScope answers scope creatability and nothing else, so an unreadable delegated
+// set cannot turn its verdict into a non-answer. That independence is what keeps the
+// probe cached on the containerized and hybrid-cgroup hosts the fail-closed path exists
+// for: while the two were folded together, an unreadable delegation read left the
+// verdict uncached and canCreateScope re-created a real transient scope on every call -
+// three times on one run, from Probe, screenRunID, Run, the degraded path and Profile.
+func TestScopeVerdictIsIndependentOfTheDelegationRead(t *testing.T) {
 	if ok, _ := canCreateScope(); !ok {
-		t.Skip("no usable systemd scope on this host; measureScope cannot reach the delegation read")
+		t.Skip("no usable systemd scope on this host; measureScope cannot be exercised")
 	}
-	origCtrls, origLayout := delegatedControllers, unifiedCgroupReadable
+	orig := delegatedControllers
 	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
-	defer func() { delegatedControllers, unifiedCgroupReadable = origCtrls, origLayout }()
+	defer func() { delegatedControllers = orig }()
 
-	unifiedCgroupReadable = func() bool { return false }
-	if _, answered := measureScope(); !answered {
-		t.Error("measureScope did not answer on a structurally unreadable layout; the verdict is not cached and every call re-spawns a scope")
-	}
-	unifiedCgroupReadable = func() bool { return true }
-	if _, answered := measureScope(); answered {
-		t.Error("measureScope answered on a readable layout whose delegation read failed; a transient failure must not be cached")
+	v, answered := measureScope()
+	if !answered || !v.ok {
+		t.Errorf("measureScope = (%+v, %v) with delegation unreadable, want a cached yes: creatability does not depend on the delegated set", v, answered)
 	}
 }

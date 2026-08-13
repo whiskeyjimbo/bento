@@ -59,6 +59,12 @@ func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
 
 // canCreateScope reports whether this host can create a transient user scope at
 // all, and why not otherwise.
+//
+// It answers only that. Which controllers the manager delegates is a separate reading
+// (memPidsDelegationState, cpuDelegationState) because the two limits layers rest on
+// different ones: folding the memory/pids check in here made every caller refuse a
+// cpu-only manifest over a memory delegation it never depended on, and sent the
+// operator to a Delegate= drop-in for controllers the manifest never named.
 func canCreateScope() (bool, string) {
 	v, answered := scopeProbe()
 	if !answered {
@@ -89,48 +95,28 @@ func measureScope() (scopeVerdict, bool) {
 		// manager produces transiently: no verdict, so nothing is cached.
 		return scopeVerdict{reason: "no usable systemd user manager for resource limits: " + err.Error()}, false
 	}
-	// A scope can be *created*, but systemd-run silently accepts a property for
-	// an undelegated controller without enforcing it. memory and pids are the
-	// host-safety controllers (an uncapped memory bomb can OOM the host) and are
-	// delegated by default; if they are not, limits genuinely cannot protect the
-	// host, so report unavailable here - that is what lets admission refuse a
-	// requested memory limit rather than run unbounded. cpu, which commonly needs
-	// a Delegate=cpu drop-in, is reported separately by the probe as its own
-	// LayerLimitsCPU layer, so a requested cpu limit is likewise refused (not run
-	// unenforced) without gating scope creation on cpu delegation.
-	// An unreadable delegated set is the same non-verdict as an uncreatable scope, and
-	// must not be cached as a fact about the host; controllers it reports as
-	// undelegated are one.
-	ctrls, known := delegatedControllers()
-	if ok, reason := hostControllersDelegated(ctrls, known); !ok {
-		// A layout the delegated set can never be read from is a permanent fact about the
-		// host, not the transient non-answer a busy user manager gives, so it is cached
-		// like any other definitive verdict. Otherwise every canCreateScope call - three
-		// on one run, five across a bwrap-plus-profile invocation - re-ran the scope probe
-		// on exactly the host class this fail-closed path exists for.
-		return scopeVerdict{reason: reason}, known || !unifiedCgroupReadable()
-	}
 	return scopeVerdict{ok: true}, true
 }
 
-// hostControllersDelegated reports whether the memory and pids controllers - the
-// host-safety caps - are confirmed delegated, and why not otherwise.
+// memPidsDelegationState maps the delegated-controllers reading to the LayerLimits
+// state - the memory and pids controllers, the host-safety caps.
 //
-// Unknown fails CLOSED. When the delegated set could not be read (known is false),
-// bento cannot confirm the caps will bind, so it reports them unavailable rather
-// than claim an enforcement it cannot verify. Returning ok there was the fail-open
-// bug: systemd-run accepts a MemoryMax for an undelegated controller without
-// enforcing it, so the target would run unbounded under a report saying the limit
-// held. Reporting unavailable instead lets admission refuse a requested memory/pids
-// limit (or proceed under --allow-degraded), which is the loud-degradation contract.
-func hostControllersDelegated(ctrls map[string]bool, known bool) (bool, string) {
+// Unknown fails CLOSED, like cpuDelegationState. When the delegated set could not be
+// read (known is false), bento cannot confirm the caps will bind, so it reports them
+// unavailable rather than claim an enforcement it cannot verify. Returning Enforced
+// there was the fail-open bug: systemd-run accepts a MemoryMax for an undelegated
+// controller without enforcing it, so the target would run unbounded under a report
+// saying the limit held. Reporting unavailable instead lets admission refuse a
+// requested memory/pids limit (or proceed under --allow-degraded), which is the
+// loud-degradation contract.
+func memPidsDelegationState(ctrls map[string]bool, known bool) (enforce.State, string) {
 	if !known {
-		return false, "could not read which cgroup controllers your systemd user manager delegates, so resource limits cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); they are reported unavailable rather than claimed enforced"
+		return enforce.Unavailable, "could not read which cgroup controllers your systemd user manager delegates, so a requested memory or pids limit cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); it is reported unavailable rather than claimed enforced"
 	}
 	if !ctrls["memory"] || !ctrls["pids"] {
-		return false, "the memory/pids controllers are not delegated to your systemd user manager, so resource limits cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
+		return enforce.Unavailable, "the memory/pids controllers are not delegated to your systemd user manager, so a requested memory or pids limit cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
 	}
-	return true, ""
+	return enforce.Enforced, ""
 }
 
 // preflightLimits verifies the exact requested limits can be applied, by creating
