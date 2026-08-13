@@ -47,6 +47,11 @@ func newValidateCmd() *cobra.Command {
 			"and a single absolute or ~ path ends that. It is opt-in because plenty of manifests\n" +
 			"are meant for one machine; asking for it is the failure, so it does not need\n" +
 			"--strict. --json reports it as `relocatable` and `pinned_paths`.\n\n" +
+			"A deliberate pin is still a pin: a credential-shield opt-in names one user's home,\n" +
+			"and a toolchain outside the checkout names one install. Both are correct manifests\n" +
+			"and neither is relocatable, so a gate that wants \"portable apart from these\" reads\n" +
+			"`pinned_paths` and compares it against the set it expects rather than asking for\n" +
+			"--relocatable, which answers a narrower question than that.\n\n" +
 			"validate builds no sandbox, so it runs on a host bento cannot run a manifest on.\n" +
 			"Off Linux it cannot check who else can write an approved manifest, and says so\n" +
 			"rather than passing over the question - a warning, as every trust finding is.",
