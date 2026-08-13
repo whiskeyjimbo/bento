@@ -126,6 +126,11 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 		{name: "empty", interp: "\x00", ok: false},
 		{name: "newline", interp: "/lib/ld.so\nlib/evil.so\x00", ok: false},
 		{name: "padded", interp: "/lib64/ld.so\x00\x00\x00\x00", want: "/lib64/ld.so", ok: true},
+		// The segment ends at its first NUL and the kernel reads no further, so bytes
+		// planted past it are not part of the loader's name - and a check that only
+		// trimmed from the right would carry them into the manifest, absolute prefix and
+		// all.
+		{name: "junk after the NUL", interp: "/lib64/ld.so\x00/evil\x00", want: "/lib64/ld.so", ok: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := execImage(writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp))
