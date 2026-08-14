@@ -47,3 +47,22 @@ func TestAnAnchorNestedInsideAnotherAnchorIsStillShielded(t *testing.T) {
 		t.Errorf("nested anchor %s lost its shield", inner)
 	}
 }
+
+// The nested-anchor exemption is for the rule the deny-list built AT an anchor, not for
+// anything that merely resolves onto one. A relocation pointed at a symlink leading to the
+// inner home passes the emit-time guard (its own spelling is nobody's anchor) and would
+// otherwise inherit the exemption and hide that whole home.
+func TestARelocationResolvingOntoANestedAnchorIsNotShielded(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "work")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link(t, inner, filepath.Join(outer, "gnupg"))
+	t.Setenv("GNUPGHOME", filepath.Join(outer, "gnupg"))
+
+	set := shield.Assemble(shield.Host(), []string{outer, inner}, denylist.RuntimeDir(), nil)
+	if shielded(set, inner) {
+		t.Errorf("a relocation landed a DenyAll on the whole home %s", inner)
+	}
+}

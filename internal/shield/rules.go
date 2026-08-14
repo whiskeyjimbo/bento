@@ -28,6 +28,10 @@ type Set struct {
 	// homes are the run's anchors as the host's symlinks leave them, the form a moved
 	// shield is compared against.
 	homes []string
+	// configured are the same anchors as the run was given them, kept because it is the
+	// spelling that says a rule came from the deny-list's own anchor-relative pass rather
+	// than from a relocation that resolves to the same place - see nestedAnchor.
+	configured []string
 	// applied is the set as the enforcer really mounts it. Every verdict derives from
 	// this, so a rule the enforcer drops can never refuse a grant and blame a shield that
 	// was never there.
@@ -60,7 +64,7 @@ type Applied struct {
 // nix), runtimeDir the host's XDG runtime directory, and extraDeny the caller-supplied
 // shields an embedding program adds on top - empty for an ordinary run.
 func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rule) Set {
-	s := Set{fs: fs, homes: make([]string, len(homes))}
+	s := Set{fs: fs, configured: slices.Clone(homes), homes: make([]string, len(homes))}
 	for i, h := range homes {
 		s.homes[i] = fs.Resolve(h)
 	}
@@ -146,17 +150,21 @@ func (s Set) target(literal string) (string, bool) {
 	if rp == "/" {
 		return "", false
 	}
-	if !denylist.Shieldable(rp, s.homes) && !nestedAnchor(rp, s.homes) {
+	if !denylist.Shieldable(rp, s.homes) && !s.nestedAnchor(literal, rp) {
 		return "", false
 	}
 	return rp, true
 }
 
-// nestedAnchor reports whether path is one of the run's anchors while sitting strictly
-// inside another of them.
-func nestedAnchor(path string, homes []string) bool {
-	return slices.Contains(homes, path) && slices.ContainsFunc(homes, func(h string) bool {
-		return h != path && policy.CoversResolved(h, path)
+// nestedAnchor reports whether a rule stands on an anchor that sits strictly inside another
+// anchor. Keyed on the LITERAL being one of the run's anchors as configured, not on where
+// it resolves: only the deny-list's own rule at an anchor gets the exemption. Anything else
+// resolving onto that anchor - a relocation variable pointed at a symlink leading there -
+// is the whole-home DenyAll this guard exists to drop, and its own spelling is nobody's
+// anchor, so denylist.Relocated's emit-time guard never saw it either.
+func (s Set) nestedAnchor(literal, rp string) bool {
+	return slices.Contains(s.configured, literal) && slices.ContainsFunc(s.homes, func(h string) bool {
+		return h != rp && policy.CoversResolved(h, rp)
 	})
 }
 
