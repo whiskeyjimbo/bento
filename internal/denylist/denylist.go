@@ -1061,11 +1061,14 @@ func Home(home string) []Rule {
 		{HoldsServices, serviceFiles},
 	}
 
-	nFiles := 0
-	for _, g := range fileGroups {
-		nFiles += len(g.files)
+	n := len(writeOnly) + len(writeOnlyDirs)
+	for _, g := range dirGroups {
+		n += len(g.dirs)
 	}
-	rules := make([]Rule, 0, nFiles+len(writeOnly)+len(writeOnlyDirs))
+	for _, g := range fileGroups {
+		n += len(g.files)
+	}
+	rules := make([]Rule, 0, n)
 	emit := func(entry string, r Rule) {
 		r.Path = filepath.Join(home, entry)
 		rules = append(rules, r)
@@ -1112,18 +1115,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// this function is what closes that, once every encloser is known.
 	covered := func(p string) bool { return underDenyAll(p, defaults) || underDenyAll(p, rules) }
 	shieldable := func(p string) bool { return Shieldable(p, anchors) }
-	// isDefault reports whether an absolute target is just a restatement of the
-	// home-relative default, at any of the run's anchors. Keyed on one anchor it would
-	// call a sibling anchor's own default store a relocation, and the Source stamp would
-	// then tell an operator a variable put a shield where the anchor list already had one.
-	isDefault := func(p, rel string) bool {
-		for _, h := range anchors {
-			if p == filepath.Join(h, rel) {
-				return true
-			}
-		}
-		return false
-	}
+	isDefault := func(p, rel string) bool { return isDefaultAt(p, rel, anchors) }
 
 	// A relocated XDG base moves a whole class of entries at once, so it is derived from
 	// the defaults rather than from a list of its own: every rule Home placed under an
@@ -1682,6 +1674,20 @@ var xdgBases = []struct{ prefix, env, def string }{
 	{".cache/", "XDG_CACHE_HOME", ".cache"},
 }
 
+// isDefaultAt reports whether an absolute target is just a restatement of the home-relative
+// default rel, at any of the run's anchors. Keyed on one anchor it would call a sibling
+// anchor's own default store a relocation: the Source stamp would then tell an operator a
+// variable put a shield where the anchor list already had one, and the alias scan would
+// walk the same store once per anchor.
+func isDefaultAt(p, rel string, anchors []string) bool {
+	for _, h := range anchors {
+		if p == filepath.Join(h, rel) {
+			return true
+		}
+	}
+	return false
+}
+
 // location is one absolute path an entry must be shielded at, carrying the variable that
 // put it there so a relocated copy can be told apart from the default it sits beside.
 type location struct {
@@ -1692,7 +1698,7 @@ type location struct {
 // homeLocations expands a home-relative deny entry to every absolute path it must be
 // shielded at: its default location, plus the XDG one when the relevant base is
 // relocated.
-func homeLocations(home, entry string) []location {
+func homeLocations(home, entry string, anchors []string) []location {
 	join := func(p string) string { return filepath.Join(home, p) }
 	for _, b := range xdgBases {
 		if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
@@ -1701,7 +1707,7 @@ func homeLocations(home, entry string) []location {
 			// tools, which fall back to the default location - already shielded via
 			// join(entry). Emitting a relative Rule.Path here would shield nothing at
 			// the intended place, so drop it and rely on the default shield.
-			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && filepath.Clean(base) != join(b.def) {
+			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && !isDefaultAt(filepath.Clean(base), b.def, anchors) {
 				out = append(out, location{filepath.Join(base, rel), b.env})
 			}
 			return out
@@ -1725,7 +1731,7 @@ func AliasAnchors(homes ...string) []string {
 		for _, d := range anchors {
 			// An anchor is a place to look for a second readable name, so a relocated copy
 			// counts the same as the default and the variable that moved it does not.
-			for _, l := range homeLocations(home, d) {
+			for _, l := range homeLocations(home, d, homes) {
 				out = append(out, l.path)
 			}
 		}

@@ -921,6 +921,16 @@ func TestHomeShieldsTheRelocatedStepSecrets(t *testing.T) {
 	}
 }
 
+// Home pre-counts its groups to allocate exactly once. A group added to the emit loops but
+// not to the count is invisible - the result is identical, just reallocated - so the count
+// only stays honest if something asserts it.
+func TestHomeAllocatesItsRulesExactly(t *testing.T) {
+	rules := Home("/home/u")
+	if cap(rules) != len(rules) {
+		t.Errorf("Home() allocated cap %d for %d rules; a deny group is missing from the pre-count", cap(rules), len(rules))
+	}
+}
+
 // A store shielded only at its default is one variable away from unshielded, so each of
 // these was a shield the package already carried with no row to follow it. The severity
 // split matters as much as the coverage: the coding agents' trees are write-shielded so an
@@ -1464,6 +1474,26 @@ func TestAliasAnchorsFollowRelocatedStores(t *testing.T) {
 		if slices.Contains(anchors, unwanted) {
 			t.Errorf("%q must not anchor the alias scan", unwanted)
 		}
+	}
+}
+
+// An XDG base pointing at a SIBLING anchor's own .config is that anchor's default store,
+// not a relocation of this one, and Relocated tests every anchor for exactly that reason.
+// Keyed on the one home it was passed, the expansion calls it a relocation under every
+// other anchor too and the scan walks the same store once per anchor.
+func TestAliasAnchorsDoNotRestateASiblingAnchorsDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/data/u/.config")
+
+	anchors := AliasAnchors("/home/u", "/data/u")
+	seen := map[string]bool{}
+	for _, a := range anchors {
+		if seen[a] {
+			t.Errorf("alias anchor %q appears twice; got %v", a, anchors)
+		}
+		seen[a] = true
+	}
+	if !seen["/data/u/.config/gh"] {
+		t.Errorf("the sibling anchor's own store must still anchor the scan; got %v", anchors)
 	}
 }
 
