@@ -610,6 +610,19 @@ func TestDanglingSymlinkDenyFileBlocksPlantThrough(t *testing.T) {
 	if b, err := os.ReadFile(target); err == nil && strings.Contains(string(b), "MALICIOUS") {
 		t.Fatalf("a credential was planted through a dangling symlink: %q", b)
 	}
+
+	// The shield still has to MOUNT over a target that does not exist, which is the other
+	// half of this shape and the one the refusal above no longer reaches. Granted a write
+	// somewhere else, the run proceeds and the plant through the symlink is absorbed.
+	elsewhere := t.TempDir()
+	p = &policy.Policy{Read: []string{home}, Write: []string{elsewhere}}
+	_, out := runScript(t, p, "echo MALICIOUS > "+filepath.Join(home, ".netrc")+" 2>&1 || true\n")
+	if strings.Contains(out, "bwrap:") {
+		t.Fatalf("a dangling-symlink shield aborted the run: %s", out)
+	}
+	if b, err := os.ReadFile(target); err == nil && strings.Contains(string(b), "MALICIOUS") {
+		t.Fatalf("a credential was planted through a dangling symlink: %q", b)
+	}
 }
 
 // A deny-list dotfile symlinked to a target OUTSIDE every grant must not be bound

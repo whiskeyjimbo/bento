@@ -431,6 +431,37 @@ func TestDegradedRefusesWriteAboveWriteShield(t *testing.T) {
 	compileOrFail(t, &policy.Policy{Write: []string{pyenv}}, full)
 }
 
+// The workspace half of the same shape, pinned as it stands rather than as a refusal.
+//
+// A write grant on a checkout leaves that checkout's OWN git hooks and editor task files
+// writable on this tier, by the same Landlock-union mechanism that makes write: ~/.pyenv
+// refusable above - the same host-code-execution persistence surface, opposite verdict.
+// The asymmetry is deliberate and not free: a workspace shield sits strictly under the
+// grant it was derived from, so refusing a grant that contains one would refuse every
+// project write there is. What holds the line here is disclosure, so this asserts both
+// halves - the run is admitted, and the exposure is reported rather than swallowed.
+func TestDegradedAdmitsWriteGrantOverItsOwnWorkspaceShields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "project")
+	if err := os.MkdirAll(filepath.Join(repo, ".git", "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Write: []string{repo}, Exec: policy.ExecNone}
+	res, err := enforcerUsing("/bin/true").runDegraded(context.Background(), p, enforce.Process{}, "", nil)
+	if err != nil {
+		t.Fatalf("a write grant on a checkout must be admitted on the degraded tier; got %v", err)
+	}
+	hooks := filepath.Join(repo, ".git", "hooks")
+	if !slices.ContainsFunc(res.Exposed, func(s enforce.ShieldApplied) bool { return s.Path == hooks }) {
+		t.Errorf("the exposure is what stands in for the refusal, so it must be reported; Exposed=%v", res.Exposed)
+	}
+}
+
 // A grant onto a whole managed pseudo-filesystem is refused in the degraded tier too.
 // With no pid namespace and no fresh /proc, a read: /proc grant would serve the host's
 // process table (environ of same-uid processes: tokens, DB passwords), so the full
