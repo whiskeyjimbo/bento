@@ -221,10 +221,19 @@ vet: ## Run go vet checks
 # set: backend_other.go is tagged darwin, so windows and the BSDs do not build at all -
 # the untagged CLI files reach for syscall.Stat_t, SIGSYS, and unix.ENODATA, which they
 # have no answer for.
+#
+# landlocktsync is the third arm and a different kind of build: it is not another
+# platform but go-landlock's own tag, which raises the library's minimum ABI to 8. The
+# floor bento mirrors for it lives in a file nothing else compiles, so without this arm
+# neither the mirror nor the availability gate it feeds is ever executed, and a
+# go-landlock bump that moved the threshold would drift silently. Tested rather than
+# vetted: compiling proves the file parses, running proves the floor is the one the
+# library uses.
 crossbuild: ## Check the tree still compiles for darwin and linux/arm64
 	@printf "$(CYAN)$(BOLD)==> Cross-compiling for unsupported platforms...$(RESET)\n"
 	@GOWORK=off GOOS=darwin GOARCH=arm64 go vet ./...
 	@GOWORK=off GOOS=linux GOARCH=arm64 go vet ./...
+	@GOWORK=off go test -tags landlocktsync ./internal/landlock/...
 	@printf "$(GREEN)$(BOLD)✓ Cross-compile clean!$(RESET)\n"
 
 lint: ## Run golangci-lint (pinned; part of check)
