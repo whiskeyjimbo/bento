@@ -260,4 +260,18 @@ func TestMountGrantProblemsResolveDotDotPhysically(t *testing.T) {
 		t.Errorf("%q lands on %q for the run, which honors it; got %v", escaping, filepath.Dir(target), got)
 	}
 	assertProblem(t, gate.MountGrantProblems([]string{"/tmp"}, nil), "mounts fresh")
+
+	// RootWriteProblems asks the same question of the same spelling, and a lexical answer
+	// splits it both ways: this grant lands on the host root for the run - "/" is its own
+	// parent - and Clean pops it to the link's own directory instead, passing the one
+	// grant that defeats the sandbox outright.
+	toRoot := filepath.Join("/tmp", "bento-root-"+strconv.Itoa(os.Getpid()))
+	if err := os.Symlink("/", toRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(toRoot) })
+	assertProblem(t, gate.RootWriteProblems([]string{toRoot + "/.."}), "entire host root")
+	if got := gate.RootWriteProblems([]string{escaping}); len(got) != 0 {
+		t.Errorf("a write whose \"..\" lands inside a temp tree is not a grant of the host root; got %v", got)
+	}
 }

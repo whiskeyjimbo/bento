@@ -53,8 +53,9 @@ type fileID struct {
 // in a loop pays it every time.
 //
 // That is what aliasBudget bounds. The walk stops after that many directory entries and
-// the answer is reported as partial, which the caller passes on: a note that says the trees
-// were not read to the end rather than a silence that reads as a clean bill. Bounding it
+// the answer is reported as partial - the same flag an unread anchor raises, which the
+// caller passes on as a note that the scan did not cover everything, rather than a silence
+// that reads as a clean bill. Bounding it
 // only misses a finding, which is the direction the package doc sanctions, and it is the
 // bound that fits the cost - the caller-held set the ponytail named amortizes a REPEATED
 // Check, and `bento validate` invoked once still paid the whole of whichever row above it
