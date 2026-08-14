@@ -555,6 +555,66 @@ func TestAliasedCredentialsFindsABindMountedAboveTheGrant(t *testing.T) {
 	}
 }
 
+// A caller's own deny is a directory rule at a path denylist.AliasAnchors - a list of
+// home-relative names - can never contain, so selecting alias roots by shape alone gave an
+// embedder's DenyPaths zero alias coverage: a pre-existing hardlink out of it into a
+// granted tree was admitted, where the same shape over a built-in store is refused.
+func TestAliasedCredentialsScansACallerDeniedDirectory(t *testing.T) {
+	creds := map[string][]identifiedFile{
+		"/srv/secrets": {{path: "/srv/secrets/key", id: fileID{dev: 1, ino: 20}, links: 2}},
+	}
+	matches := map[string][]identifiedFile{
+		"/home/u/proj": {{path: "/home/u/proj/notes.txt", id: fileID{dev: 1, ino: 20}}},
+	}
+	sb := aliasSandbox(creds, matches)
+	sb.extraDeny = []denylist.Rule{{Path: "/srv/secrets", Deny: denylist.DenyAll, Dir: true}}
+
+	got := scanAliases(t, sb, []string{"/home/u/proj"}, nil)
+	want := []credentialAlias{{Path: "/home/u/proj/notes.txt", Credential: "/srv/secrets/key"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("a hardlink out of a caller's denied directory must be reported; got %v want %v", got, want)
+	}
+}
+
+// The other half of the same omission: the symlinked-credential expansion takes the kind of
+// the LINK'S TARGET, so a store entry pointing at a directory in a dotfile farm (what stow
+// and chezmoi produce for ~/.gnupg/private-keys-v1.d) emits a Dir rule where a file entry
+// emits a file rule. Nothing else reaches the farm copy - hostFileIDs walks the anchor
+// without following symlinks - so dropping the directory rule left the keys unscanned.
+func TestAliasedCredentialsScansADirectoryValuedCredentialLink(t *testing.T) {
+	const (
+		store = "/home/u/.gnupg"
+		link  = store + "/private-keys-v1.d"
+		farm  = "/home/u/dotfiles/gnupg/private-keys-v1.d"
+	)
+	creds := map[string][]identifiedFile{
+		farm: {{path: farm + "/key.key", id: fileID{dev: 1, ino: 21}, links: 2}},
+	}
+	matches := map[string][]identifiedFile{
+		"/home/u/proj": {{path: "/home/u/proj/notes.txt", id: fileID{dev: 1, ino: 21}}},
+	}
+	sb := aliasSandbox(creds, matches)
+	sb.listDir = func(p string) (names, links []string, ok bool) {
+		if p == store {
+			return nil, []string{filepath.Base(link)}, true
+		}
+		return nil, nil, p == farm
+	}
+	sb.isDir = func(p string) bool { return p == store || p == farm || p == "/home/u" }
+	sb.resolve = func(p string) string {
+		if p == link {
+			return farm
+		}
+		return p
+	}
+
+	got := scanAliases(t, sb, []string{"/home/u/proj"}, nil)
+	want := []credentialAlias{{Path: "/home/u/proj/notes.txt", Credential: farm + "/key.key"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("a directory-valued credential link must be scanned; got %v want %v", got, want)
+	}
+}
+
 // The counterpart that keeps the mechanism affordable: an ordinary, non-bind mount matches
 // the credential's own ancestor at that same path, so the alias it computes IS the
 // credential and drops out. Without this the root filesystem's own mount would report every

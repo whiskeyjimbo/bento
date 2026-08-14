@@ -45,6 +45,9 @@ type Set struct {
 	// - an opt-in names a rule by the path the deny-list built, while a refusal is decided
 	// at the path that rule lands on.
 	builtin []denylist.Rule
+	// links are the symlinked-credential expansion alone. Carried apart from rules for the
+	// alias scan, which selects roots by where a rule came from and not only by its shape.
+	links []denylist.Rule
 	// extraDeny are the caller's denies, paired with where each resolves. A grant inside
 	// one is refused in its own sentence and can never be opted into: it belongs to the
 	// trust domain of whoever launched the run, which the manifest being run must not be
@@ -102,6 +105,7 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// a read can opt into, so the two sets are the same set. A shield a policy cannot name
 	// is one it can only be refused over, with no remedy in the sentence.
 	links := s.credentialLinks(base)
+	s.links = links
 	s.builtin = append(slices.Clone(base), links...)
 
 	for _, r := range extraDeny {
@@ -128,6 +132,23 @@ func (s Set) Rules() []denylist.Rule { return s.rules }
 // Builtin is the assembled rules before the drops and before the caller's own denies:
 // what a read may opt into, and what a report naming relocated shields describes.
 func (s Set) Builtin() []denylist.Rule { return s.builtin }
+
+// CallerDenies is the caller's own denies, and CredentialLinks the symlinked-credential
+// expansion. Both are already inside Rules; they are named separately for the alias scan,
+// which decides what to walk by a rule's ORIGIN as well as its shape. The scan skips the
+// deny-list's own bulk directory stores (mail spools, browser profiles) by walking only the
+// anchors, and neither of these two sources can be an anchor: a caller's path is not a
+// home-relative name at all, and a link's target is wherever the farm put it.
+func (s Set) CallerDenies() []denylist.Rule {
+	out := make([]denylist.Rule, 0, len(s.extraDeny))
+	for _, a := range s.extraDeny {
+		out = append(out, a.Rule)
+	}
+	return out
+}
+
+// CredentialLinks is the symlinked-credential expansion; see CallerDenies.
+func (s Set) CredentialLinks() []denylist.Rule { return s.links }
 
 // Mount resolves a rule list the same way the assembled set was resolved, dropping the
 // rules that would mount nowhere. It exists for the one caller that shields more than the

@@ -404,8 +404,14 @@ func commonAncestor(a, b string) string {
 // rather than the host namespace (see mountPoint) - and it catches a bind whose mountpoint
 // sits ANYWHERE relative to the granted tree: inside it, equal to it, or above it. A
 // mountpoint above the grant is the case that matters most and is easiest to miss: a bind
-// of the whole home to /srv/backup, granted as "read: /srv/backup/project", exposes every
-// credential under a path the grant never mentions.
+// of the whole home to /srv/backup, granted as "read: /srv/backup/.ssh", exposes the
+// credential under a path the grant never mentions and no shield stands at.
+//
+// What the grant still has to reach is the ALIAS, not the mountpoint: the same bind granted
+// as "read: /srv/backup/project" is not reported, and correctly so - bwrap binds only
+// /srv/backup/project, and ~/.ssh is not exposed at /srv/backup/.ssh or anywhere else. That
+// is what the CoversResolved filter below decides, and it is a filter on the second name
+// rather than on the mount.
 //
 // It also costs no tree walk. For an ordinary, non-bind mount the mountpoint matches the
 // credential's own ancestor at that same path, so the alias it computes is the credential
@@ -482,12 +488,34 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 //
 // Two scope limits are deliberate. Only DenyAll shields qualify - a read-only shield
 // keeps its file readable by design, so a second readable name for it leaks nothing new.
-// And among the hidden directories only the key-bearing ones anchor the scan
-// (denylist.AliasAnchors); the bulk stores are shielded just as hard but enumerating a
-// mail spool or browser profile on every launch would cost more than the scan saves, and
+// And among the DENY-LIST's OWN hidden directories only the key-bearing ones anchor the
+// scan (denylist.AliasAnchors); the bulk stores are shielded just as hard but enumerating
+// a mail spool or browser profile on every launch would cost more than the scan saves, and
 // mail sync tools hardlink duplicate messages routinely enough that anchoring on them
 // would trip on mail rather than credentials. Hidden FILE rules all anchor it: a single
 // file is cheap to stat and is named because it holds a secret.
+//
+// That second limit is a filter on the deny-list's static tables, and it belongs only to
+// them. The other two sources of a DenyAll rule emit directories AliasAnchors - a list of
+// home-relative names - cannot contain, so selecting on shape alone dropped them whole:
+//
+//   - the caller's own denies (shield.Set.CallerDenies), which buildExtraDeny marks Dir for
+//     every Options.DenyPaths entry that is a directory or does not exist. An embedder's
+//     deny is a trust domain the manifest must not talk its way out of, and a pre-existing
+//     second name for a file inside it is exactly that;
+//   - the symlinked-credential expansion (shield.Set.CredentialLinks), whose rule takes the
+//     kind of the link's target. The file case (~/.ssh/id_ed25519 -> the farm) was scanned
+//     and the directory case (~/.gnupg/private-keys-v1.d -> the farm, which is the shape
+//     stow and chezmoi produce) was not, though nothing else reaches it: hostFileIDs walks
+//     the anchor without following symlinks.
+//
+// Both are narrow by construction - a caller names a handful of paths, and the expansion
+// only covers links out of a store already being walked - so neither reintroduces the
+// bulk-store cost the anchor limit exists to avoid. The cost they do carry is
+// hostFileIDs': a directory it cannot read is fatal, so an embedder denying a tree this
+// user cannot enter now refuses the launch rather than scanning around it. That is the
+// same answer a built-in store gets, and the reason is the same - unreadability is no
+// proof that no second name exists.
 //
 // The set is NOT restricted to paths under $HOME, and must not be: both sources already
 // follow relocation, and a credential store is no less a credential for living
@@ -522,8 +550,16 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 	for _, a := range denylist.AliasAnchors(sb.homes...) {
 		roots = append(roots, sb.resolve(a))
 	}
-	for _, r := range shields(sb).Rules() {
+	set := shields(sb)
+	for _, r := range set.Rules() {
 		if r.Deny == denylist.DenyAll && !r.Dir {
+			roots = append(roots, sb.resolve(r.Path))
+		}
+	}
+	// A hidden DIRECTORY anchors the scan only where the anchor list names it - except from
+	// these two sources, which the anchor list cannot reach at all. See credentialFiles.
+	for _, r := range slices.Concat(set.CallerDenies(), set.CredentialLinks()) {
+		if r.Deny == denylist.DenyAll && r.Dir {
 			roots = append(roots, sb.resolve(r.Path))
 		}
 	}
