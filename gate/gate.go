@@ -347,7 +347,7 @@ func ShieldSet() (shield.Set, error) {
 // RootWriteProblems, the process and managed-mount grants by MountGrantProblems, the
 // looped grant by LoopedGrantProblems.
 //
-// Five narrowings remain against a run, all in the direction that only misses a refusal.
+// Six narrowings remain against a run, all in the direction that only misses a refusal.
 // The set omits the caller-supplied denies an embedder passes in, which no manifest can be
 // checked against from here.
 //
@@ -362,6 +362,11 @@ func ShieldSet() (shield.Set, error) {
 // grant on a directory this uid cannot create the run's own shield mount points in (a
 // system tree such as /etc), which needs the same derivation plus the set of mount points
 // a run would carve.
+//
+// The fifth is AboveWriteShield, which the degraded tier alone refuses: the gate does not
+// know which tier will run, and raising it would refuse write: ~/.pyenv for every full-tier
+// run. Counted here for the same reason the credential alias below is - a run does refuse
+// it - and argued at the arm that declines it, in writeShieldProblem.
 //
 // And the credential-alias refusal is not in this set at all - the one narrowing that is
 // not a missing case but a missing check. preflightGrants runs checkGrants and then scans
