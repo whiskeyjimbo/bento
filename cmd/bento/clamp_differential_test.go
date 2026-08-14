@@ -22,7 +22,7 @@ import (
 // manifest that cannot run. Two documented departures, both carried on the case:
 // OptInRead, which the run honors but a draft manifest should not arrive holding, and
 // ClampKeeps for a grant that merely contains a shield, which the run re-shields the
-// interior of. WorkspaceDerived is NOT a third: the clamp derives the checkout shields
+// interior of. WorkspaceDerived is NOT one of them: the clamp derives the checkout shields
 // under its write grants itself, so a refusal the run raises from one is a drop here too.
 func TestShieldCorpusClampDrops(t *testing.T) {
 	for _, c := range shieldcorpus.Cases {
@@ -44,7 +44,11 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 			}
 			keptReads, keptWrites, dropped, writeShielded := clampShieldedGrants(set, reads, writes)
 
-			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) && !c.ClampKeeps
+			// WorkspaceRedirected is the third departure, and the one the clamp cannot
+			// close: the refusal never goes through Contains, so no clamp built on the
+			// shield set reaches it, and the grant is kept.
+			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) &&
+				!c.ClampKeeps && c.Verdict != shieldcorpus.WorkspaceRedirected
 			kept := append(append([]string{}, keptReads...), keptWrites...)
 			gotDropped := len(dropped) > 0 || len(writeShielded) > 0
 			if gotDropped != wantDropped {

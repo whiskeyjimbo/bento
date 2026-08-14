@@ -14,14 +14,14 @@
 // else, the case says so in a field and gives the reason; a divergence with no field is a
 // bug in that site, not a case to be edited.
 //
-// SCOPE, and it is narrower than "what a run does". Verdict models four of checkGrants'
-// checks on the FULL tier. Three refusals a run raises have no member here and no case
-// can express them: checkWriteNotRoot, which the shield checks are documented as relying
-// on; checkWorkspaceShieldNotRedirected, whose position between two of the modelled
-// checks is itself load-bearing; and checkWriteNotAboveWriteShield, which only the
-// degraded tier raises. So agreement across the three sites is agreement about the four,
-// and the gap runs in the UNDER-refusing direction: a shape this table calls Honored may
-// still be hard-refused by a run.
+// SCOPE, and it is narrower than "what a run does". Verdict models five of checkGrants'
+// checks on the FULL tier. Two refusals a run raises have no member here and no case can
+// express them: checkWriteNotRoot, which the shield checks are documented as relying on;
+// and checkWriteNotAboveWriteShield, which only the degraded tier raises - the corpus
+// harnesses drive the full tier, so the site that would be authoritative for it is not
+// reachable from here, and it is pinned beside the clamp instead. So agreement across the
+// three sites is agreement about the five, and the gap runs in the UNDER-refusing
+// direction: a shape this table calls Honored may still be hard-refused by a run.
 package shieldcorpus
 
 import (
@@ -53,6 +53,16 @@ const (
 	// case, refused by grantrefusal.FoldedShield for either kind. It is the one verdict
 	// no layout on disk produces (see Case.Folding).
 	FoldedShield
+	// WorkspaceRedirected means a write grant whose checkout-derived shield is redirected
+	// by a symlinked directory component, refused by checkWorkspaceShieldNotRedirected.
+	// Its position between the two DenyAll checks and the write-only ones is load-bearing,
+	// which is why it is judged in that order rather than appended to the end.
+	//
+	// It is the one verdict NO site outside the backend reproduces: the check does not go
+	// through Contains at all, so the shared verdict, the gate and the clamp each answer
+	// Honored, and the clamp keeps the grant. That divergence is carried on the verdict
+	// rather than on a per-case field because it holds for every case of this shape.
+	WorkspaceRedirected
 )
 
 func (v Verdict) String() string {
@@ -67,6 +77,8 @@ func (v Verdict) String() string {
 		return "above a DenyAll shield"
 	case FoldedShield:
 		return "above a DenyAll shield on a case-folding mount"
+	case WorkspaceRedirected:
+		return "shielding a checkout path a symlink redirects"
 	}
 	return fmt.Sprintf("Verdict(%d)", int(v))
 }
@@ -212,6 +224,21 @@ var Cases = []Case{
 		WorkspaceDerived: true,
 	},
 	{
+		Name:             "write to the .git file of a linked-worktree checkout",
+		Why:              "a checkout whose .git is a FILE has no .git directory to shield, so the shield lands on the file itself; a site treating it as an ordinary checkout derives rules at .git/hooks and .git/config and leaves the file - which repoints the worktree at any gitdir the run fabricates - writable",
+		Grant:            "worktree/.git",
+		Write:            true,
+		Verdict:          UnderWriteShield,
+		WorkspaceDerived: true,
+	},
+	{
+		Name:    "write over a checkout whose hooks directory is a symlink",
+		Why:     "the shield binds at the resolved path while the host's git opens the link's own name, which stays inside the writable grant for the run to delete and replace with real hooks; the refusal is the backend's alone, so this is the case that keeps the other two sites' silence about it stated rather than assumed",
+		Grant:   "redirected",
+		Write:   true,
+		Verdict: WorkspaceRedirected,
+	},
+	{
 		Name:       "write containing a shield",
 		Why:        "a write of the home itself would make ~/.ssh's own name replaceable; the clamp alone keeps it, because the run re-shields the interior",
 		Grant:      ".",
@@ -328,6 +355,13 @@ func Build(dir string, c Case) (string, error) {
 		// A git checkout, for the shields the backend derives from one. Nothing else in
 		// the layout sits under a .git, so it changes no other case's verdict.
 		"checkout/.git/hooks",
+		// A second checkout whose own hooks directory is a symlink, and a third whose .git
+		// is a FILE. Both are separate trees rather than variations of the first, because
+		// the layout is shared by every case: redirecting the first checkout's hooks would
+		// move that case's verdict onto the redirect refusal.
+		"redirected/.git",
+		"redirected/realhooks",
+		"worktree",
 		"farm/ssh",
 		"farm/keys",
 		"gnupg-target",
@@ -346,6 +380,13 @@ func Build(dir string, c Case) (string, error) {
 			return "", err
 		}
 	}
+	// The linked-worktree gitfile: .git is a regular file naming the real gitdir, so the
+	// checkout has no .git directory and the shield lands on the file itself. Its content
+	// is never read - every site identifies the shape by .git not being a directory - so
+	// the gitdir it names need not exist.
+	if err := os.WriteFile(filepath.Join(dir, "worktree", ".git"), []byte("gitdir: /nonexistent\n"), 0o600); err != nil {
+		return "", err
+	}
 	for _, l := range []struct{ from, to string }{
 		// A credential FILE linked out of the store, and a credential SUBDIRECTORY linked
 		// out of it. The expansion walks from the ~/.ssh directory rule, so both shapes
@@ -355,6 +396,10 @@ func Build(dir string, c Case) (string, error) {
 		{".ssh/keys", "../farm/keys"},
 		// Dangling on purpose: the target is never created.
 		{".ssh/pending", "../farm/pending"},
+		// The redirected workspace shield: the hooks directory the run would shield is a
+		// link, so the shield binds on realhooks while the host's git keeps walking the
+		// link's own name inside the writable grant.
+		{"redirected/.git/hooks", "../realhooks"},
 	} {
 		if err := os.Symlink(l.to, filepath.Join(dir, l.from)); err != nil {
 			return "", err

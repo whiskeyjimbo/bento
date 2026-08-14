@@ -20,7 +20,8 @@ import (
 // a refusal, never invents one - and for two reasons: it cannot see the caller-supplied
 // denies an embedder passes, and it passes no workspace shields, so a refusal derived from
 // the checkout under a grant is one it cannot reach. Nothing in this corpus uses the
-// former; the latter is carried on Case.WorkspaceDerived.
+// former; the latter is carried on Case.WorkspaceDerived, and on the WorkspaceRedirected
+// verdict for the one refusal that does not go through the shield set at all.
 
 // gateVerdict classifies the sentence the gate refuses a grant with. Matched on the
 // distinguishing clause rather than the whole sentence because the corpus records which
@@ -66,7 +67,13 @@ func TestShieldCorpusGateVerdicts(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := c.Verdict
-			if c.WorkspaceDerived {
+			if c.WorkspaceDerived || c.Verdict == shieldcorpus.WorkspaceRedirected {
+				// Asserted as a divergence rather than switched off: a case marked as
+				// diverging that the run also honors states nothing, and would go on
+				// stating nothing after the corpus verdict moved under it.
+				if c.Verdict == shieldcorpus.Honored {
+					t.Fatalf("%s is marked as diverging from the gate but the run honors it too, so there is no divergence to state", c.Path(home))
+				}
 				want = shieldcorpus.Honored
 			}
 			if got := gateVerdict(t, c, home); got != want {

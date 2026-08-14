@@ -93,6 +93,12 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 	if err := checkWriteNotShielded(sb, writes); err != nil {
 		return shieldedRefusal(err)
 	}
+	// Before checkWriteNotUnderReadOnlyShield, as in checkGrants: that check consults the
+	// same workspace shields at their RESOLVED paths, so a redirected one reaches it too
+	// and would answer with the wrong verdict.
+	if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+		return shieldcorpus.WorkspaceRedirected
+	}
 	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err != nil {
 		return shieldcorpus.UnderWriteShield
 	}

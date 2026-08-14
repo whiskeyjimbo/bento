@@ -35,9 +35,17 @@ func TestCorpusVerdicts(t *testing.T) {
 			// No workspace shields, as at the other two sites that call in here: they are
 			// derived from the checkout under a grant, through seams only the backend has.
 			// So a case whose refusal comes from one is Honored here, and the corpus says
-			// which those are rather than leaving the gap unstated.
+			// which those are rather than leaving the gap unstated. WorkspaceRedirected is
+			// the same gap reached differently - that refusal never goes through Contains -
+			// so it is read off the verdict rather than off a field.
 			wantV := want(c.Verdict)
-			if c.WorkspaceDerived {
+			if c.WorkspaceDerived || c.Verdict == shieldcorpus.WorkspaceRedirected {
+				// Asserted as a divergence rather than switched off: a case marked as
+				// diverging that the run also honors documents nothing, and the field
+				// silently covers a real disagreement the moment the corpus verdict moves.
+				if c.Verdict == shieldcorpus.Honored {
+					t.Fatalf("%s is marked as diverging here but the run honors it too, so there is no divergence to state", g)
+				}
 				wantV = shield.Honored
 			}
 			_, got := set.Contains(g, kind, optIns, nil)
@@ -61,7 +69,10 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 		return shield.AboveShield
 	case shieldcorpus.FoldedShield:
 		return shield.FoldedShield
-	case shieldcorpus.Honored:
+	// WorkspaceRedirected has no counterpart here on purpose: that refusal is raised
+	// outside the shield set, so this package's answer for it is the honored one the
+	// caller then overrides.
+	case shieldcorpus.Honored, shieldcorpus.WorkspaceRedirected:
 	}
 	return shield.Honored
 }
