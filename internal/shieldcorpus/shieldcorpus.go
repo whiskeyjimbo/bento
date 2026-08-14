@@ -104,13 +104,15 @@ type Case struct {
 	// divergence mask the rest.
 	Folding bool
 	// WorkspaceDerived marks a case whose refusal comes from a shield derived from the
-	// checkout under the grant rather than from the deny list. Only the backend can build
-	// one: the rules come from walking the grant's enclosing checkout through the
-	// sandbox's own filesystem seams, and the other two sites pass no workspace shields to
-	// Contains at all (gate.writeShieldProblem, clampWriteShieldedGrants), so both answer
-	// Honored. That divergence is deliberate and one-directional - they miss a refusal
-	// rather than invent one - and this field is where it is stated instead of being a
-	// hole in the corpus.
+	// checkout under the grant rather than from the deny list. The backend and the clamp
+	// both derive them; gate.writeShieldProblem passes none to Contains, because the gate
+	// judges a manifest without walking the grants, so it answers Honored. That divergence
+	// is deliberate and one-directional - it misses a refusal rather than inventing one -
+	// and this field is where it is stated instead of being a hole in the corpus.
+	//
+	// The clamp's derivation is the shallower of the two: it skips the recursive gitdir
+	// scan the backend runs for submodules and linked worktrees, so a case anchored there
+	// would diverge again.
 	WorkspaceDerived bool
 	// ShieldOntoHome adds a shield rule whose symlink lands on the home anchor itself.
 	// Only the case testing that shape gets it: a rule resolving onto the home covers

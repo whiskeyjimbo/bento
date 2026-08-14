@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -77,10 +78,11 @@ func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, kep
 // "write: the project directory" proposal with it. foreignHomeShields reports the case
 // where that reasoning does not hold.
 func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []string) {
+	workspace := workspaceShields(writes)
 	for _, g := range writes {
 		shielded := false
 		for _, spelling := range []string{g, pathresolve.Existing(g)} {
-			if _, v := set.Contains(spelling, shield.Write, nil, nil); v == shield.UnderWriteShield {
+			if _, v := set.Contains(spelling, shield.Write, nil, workspace); v == shield.UnderWriteShield {
 				shielded = true
 				break
 			}
@@ -92,6 +94,62 @@ func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []
 		}
 	}
 	return kept, dropped
+}
+
+// workspaceShields is the checkout-derived half of the shields the write grants will meet:
+// the code-execution surface (git hooks and config, editor task files) of the checkout each
+// grant lands in. The backend derives the same set per run, and refuses a grant at or under
+// one; a clamp that did not derive it proposed exactly those grants, which is the one thing
+// this clamp must never do.
+//
+// The UNION over every grant, not one set per grant, because that is what Contains is
+// documented to take: two grants where the second sits inside the first's checkout is the
+// shape a per-grant loop misses. And derived without gating on the grant existing, for the
+// reason stated there - gating admits a grant whose directory is still absent, lets the run
+// create it, and refuses on the next pass with the artifact already on the host.
+//
+// Two residuals against the backend's own derivation, both in the direction of missing a
+// refusal rather than inventing one, and both matching what the gate already misses: the
+// recursive gitdir scan for submodules and linked worktrees is not run (it needs the
+// sandbox's own directory seams), and neither is the redirected-workspace-shield refusal,
+// which does not go through Contains at all.
+func workspaceShields(writes []string) []denylist.Rule {
+	var rules []denylist.Rule
+	seen := map[string]bool{}
+	for _, w := range writes {
+		root := checkoutRoot(w)
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		// A gitfile checkout - a submodule or a linked worktree, where .git is a file
+		// pointing at the real gitdir - has no .git directory to shield, so its rules are
+		// the other set. Same test the backend makes: a regular file, never a directory
+		// that happens to be named .git.
+		if fi, err := os.Lstat(filepath.Join(root, ".git")); err == nil && fi.Mode().IsRegular() {
+			rules = append(rules, denylist.WorkspaceGitfile(root)...)
+		} else {
+			rules = append(rules, denylist.Workspace(root)...)
+		}
+	}
+	return rules
+}
+
+// checkoutRoot walks up from dir to the nearest directory holding a .git, or returns dir
+// where there is none - the backend's own anchor rule, so the two derive from the same
+// place. By name only: it never reads .git's content, so a decoy planted under a grant
+// moves where the shields anchor and never what they reach.
+func checkoutRoot(dir string) string {
+	for d := dir; ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return dir
+		}
+		d = parent
+	}
 }
 
 // foreignHomeShields returns the proposed grants that reach a shielded path under a home
