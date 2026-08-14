@@ -24,6 +24,33 @@ func allRules(anchors ...string) []Rule {
 	return append(home, Relocated(home, anchors)...)
 }
 
+// IsProcessPath backs a refusal in the run and in the CI gate that has to predict it, so
+// the two agree only as long as the predicate does one thing. Its contract is a RESOLVED
+// path: /proc/self is a symlink and reads false here, which is correct only because both
+// callers resolve first - the case a third caller would get silently wrong.
+func TestIsProcessPath(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/proc/1", true},
+		{"/proc/1234/environ", true},
+		{"/proc/1/task/2", true},
+		{"/proc", false},           // the mount itself, a ManagedMounts refusal instead
+		{"/proc/cpuinfo", false},   // system-wide, and it binds fine
+		{"/proc/self", false},      // a symlink: false BEFORE resolution, true after
+		{"/proc/1234extra", false}, // a name that merely starts with digits
+		{"/procfs/1", false},       // and a sibling of /proc that merely starts with it
+		{"/", false},
+		{"/etc/passwd", false},
+		{"proc/1", false}, // relative: filepath.Rel cannot compare it against /proc
+	} {
+		if got := IsProcessPath(tc.path); got != tc.want {
+			t.Errorf("IsProcessPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // The deny-list is a security invariant: dropping an entry silently re-exposes a
 // credential store. This guards the high-value stores that are easy to forget -
 // OS keyrings and browser profiles hold saved passwords and session tokens.
@@ -969,6 +996,18 @@ func TestHomeFollowsTheLateRelocationRows(t *testing.T) {
 			t.Errorf("shield at %q is %+v, want %+v", want.Path, got, want)
 		}
 	}
+	// .claude.json's default is at the home ROOT, so pointing the variable at the tidy
+	// ~/.claude relocates it - the case a def of ".claude" would have skipped as a
+	// restatement, leaving the OAuth block readable inside the write-shielded tree.
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/u/.claude")
+	byPath = map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	if r := byPath["/home/u/.claude/.claude.json"]; r.Deny != DenyAll || r.Dir {
+		t.Errorf("shield at /home/u/.claude/.claude.json is %+v, want a DenyAll file shield", r)
+	}
+
 	// The borg config dir keeps the repo caches beside keys/ readable, the way the default
 	// does; taking the tree whole is what dirEnvs would have done.
 	if _, ok := byPath["/srv/borg"]; ok {

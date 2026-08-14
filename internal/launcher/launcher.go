@@ -657,9 +657,10 @@ func refuseNetworkFD(fd int) error {
 }
 
 // refuseKernelFileFD refuses a regular-file descriptor that is really a kernel interface.
-// /proc/self/ns/net and its siblings open on nsfs, and every procfs file opens on procfs;
-// both carry S_IFREG inodes, so the kind allowlist above sees an ordinary redirected file
-// and waves one through. The type bits are not lying - there is nothing to fix in the
+// /proc/self/ns/net and its siblings open on nsfs, every procfs file opens on procfs, and
+// sysfs, debugfs, tracefs, cgroupfs, efivarfs and securityfs are the same again; all carry
+// S_IFREG inodes, so the kind allowlist above sees an ordinary redirected file and waves
+// one through. The type bits are not lying - there is nothing to fix in the
 // S_IFMT switch - which is why this is a second question asked of the same descriptor
 // rather than another case in it.
 //
@@ -686,6 +687,16 @@ func refuseNetworkFD(fd int) error {
 // answers NS_GET_USERNS/NS_GET_PARENT, and it pins them alive. Refusing costs nothing
 // either way, since a namespace handle is not a byte stream and no legitimate parent
 // passes one as stdio.
+//
+// The remaining magics are the kernel's other S_IFREG interfaces - sysfs, debugfs,
+// tracefs, cgroupfs, efivarfs, securityfs - and they take the mode-bit pair below rather
+// than an outright refusal, for procfs's reason: a descriptor on one can be an ordinary
+// world-readable read (/sys/class/net/*/address). Several carry channels strictly stronger
+// than the procfs entries the pair was written for - a path written into
+// /sys/kernel/uevent_helper (0644, root) is run as root on the next uevent, /sys/power/state
+// suspends the host, /sys/kernel/debug/tracing/* is system-wide tracing - which is what the
+// pair catches: the first condition on the root-only tracing entries, the second on the
+// 0644 ones a root parent could hand over already writable.
 //
 // procfs cannot be refused wholesale on that reasoning, because its files ARE byte
 // streams and a parent redirecting stdin from /proc/cpuinfo or /proc/self/status is an
@@ -718,8 +729,8 @@ func refuseNetworkFD(fd int) error {
 // descriptor does not evade the first condition either - Fstat and Fstatfs both answer
 // on one, so it is classified like any other.
 //
-// This narrows the residual rather than closing it: a world-readable procfs file on a
-// HOST process still passes, so /proc/<pid>/cmdline, maps, mountinfo, /proc/kallsyms and
+// This narrows the residual rather than closing it: a world-readable procfs or sysfs file
+// on a HOST process still passes, so /proc/<pid>/cmdline, maps, mountinfo, /proc/kallsyms and
 // /proc/net/* remain readable through an inherited descriptor - argv secrets, ASLR
 // layout, host mount topology, and the host network enumeration the AF_NETLINK refusal
 // above exists to deny (a /proc/net seq_file pins the netns of whoever opened it, so the
@@ -731,20 +742,36 @@ func refuseKernelFileFD(fd int, st unix.Stat_t) error {
 	if err := unix.Fstatfs(fd, &sf); err != nil {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a regular file whose filesystem could not be identified: %w", fd, err)
 	}
+	var fs string
 	switch sf.Type {
 	case unix.NSFS_MAGIC:
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited namespace handle; setns through it reaches the host namespaces the sandbox exists to leave", fd)
 	case unix.PROC_SUPER_MAGIC:
-		if st.Mode&unix.S_IROTH == 0 {
-			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited procfs file that is not world-readable (mode %#o); the restricted ones - /proc/<pid>/mem, /proc/kcore, /proc/<pid>/environ - reach host memory no fence bento installs revokes", fd, st.Mode&07777)
-		}
-		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-		if err != nil {
-			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a procfs file whose access mode could not be read: %w", fd, err)
-		}
-		if flags&unix.O_ACCMODE != unix.O_RDONLY {
-			return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited procfs file open for writing; writable procfs entries reconfigure the host and nothing legitimate redirects stdio into one", fd)
-		}
+		fs = "procfs"
+	case unix.SYSFS_MAGIC:
+		fs = "sysfs"
+	case unix.DEBUGFS_MAGIC:
+		fs = "debugfs"
+	case unix.TRACEFS_MAGIC:
+		fs = "tracefs"
+	case unix.CGROUP_SUPER_MAGIC, unix.CGROUP2_SUPER_MAGIC:
+		fs = "cgroupfs"
+	case unix.EFIVARFS_MAGIC:
+		fs = "efivarfs"
+	case unix.SECURITYFS_MAGIC:
+		fs = "securityfs"
+	default:
+		return nil
+	}
+	if st.Mode&unix.S_IROTH == 0 {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited %s file that is not world-readable (mode %#o); the restricted ones - /proc/<pid>/mem, /proc/kcore, /sys/kernel/debug/tracing/* - reach host memory and host tracing no fence bento installs revokes", fd, fs, st.Mode&07777)
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a %s file whose access mode could not be read: %w", fd, fs, err)
+	}
+	if flags&unix.O_ACCMODE != unix.O_RDONLY {
+		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited %s file open for writing; writable entries there reconfigure the host - /sys/kernel/uevent_helper alone runs a path of the writer's choosing as root - and nothing legitimate redirects stdio into one", fd, fs)
 	}
 	return nil
 }

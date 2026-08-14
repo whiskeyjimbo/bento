@@ -258,7 +258,7 @@ share no major. A host terminal on stdio is therefore an accepted residual of ru
 interactively: it is the user's own tty, and what it still permits (injecting into that
 terminal) is not something this layer can take away.
 
-A regular file is the ordinary redirect, but two pseudo-filesystems carry `S_IFREG`
+A regular file is the ordinary redirect, but several pseudo-filesystems carry `S_IFREG`
 inodes that are not ordinary files, so the descriptor's filesystem is screened as well.
 A namespace handle (`/proc/self/ns/net` and siblings, on nsfs) is refused outright:
 `setns` through it reaches the host namespaces the sandbox exists to leave, and no
@@ -269,6 +269,15 @@ procfs descriptor passes only if it is world-readable and open read-only. That r
 the writable entries (`uid_map`, `oom_score_adj`, `/proc/sys/*`) on the second. procfs
 rejects `chmod` even from the inode's owner, so the mode bits are not a hostile parent's
 to forge.
+
+sysfs, debugfs, tracefs, cgroupfs, efivarfs and securityfs are the same shape and get
+the same pair. Several of their entries are stronger channels than the procfs ones the
+conditions were written for: writing a path into `/sys/kernel/uevent_helper` (0644, root)
+makes the kernel run it as root on the next uevent, `/sys/power/state` suspends the host,
+and `/sys/kernel/debug/tracing/*` is system-wide kernel tracing. They are screened rather
+than refused outright for procfs's reason: a descriptor on one can be an ordinary
+world-readable read (`/sys/class/net/*/address`), and refusing the filesystem wholesale
+would be the path denylist this check declines to build.
 
 **World-readable procfs on stdio is an accepted residual.** The narrowing shrinks the
 channel, it does not close it, in two ways. The read-only half only bites where the

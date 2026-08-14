@@ -316,6 +316,36 @@ func TestRefuseNetworkFD(t *testing.T) {
 		}
 	})
 
+	// sysfs and its siblings carry S_IFREG inodes too, and several of their entries are
+	// stronger channels than the procfs ones the mode-bit pair was written for -
+	// /sys/kernel/uevent_helper runs a path of the writer's choosing as root. The
+	// restricted ones want root to open, so the screen is driven directly with the stat
+	// the caller would have passed: a real sysfs descriptor, once with its own mode and
+	// once with the world-readable bit cleared.
+	t.Run("a restricted sysfs file is refused", func(t *testing.T) {
+		f, err := os.Open("/sys/kernel/profiling")
+		if err != nil {
+			t.Skipf("no sysfs file available: %v", err)
+		}
+		defer f.Close()
+		fd := int(f.Fd())
+		var st unix.Stat_t
+		if err := unix.Fstat(fd, &st); err != nil {
+			t.Fatal(err)
+		}
+		if err := refuseKernelFileFD(fd, st); err != nil {
+			t.Errorf("a world-readable sysfs file opened read-only was refused: %v", err)
+		}
+		st.Mode &^= unix.S_IROTH
+		err = refuseKernelFileFD(fd, st)
+		if err == nil {
+			t.Fatal("a sysfs file that is not world-readable was accepted")
+		}
+		if !strings.Contains(err.Error(), "not world-readable") || !strings.Contains(err.Error(), "sysfs") {
+			t.Errorf("wrong refusal for a restricted sysfs file: %v", err)
+		}
+	})
+
 	t.Run("a closed descriptor is allowed", func(t *testing.T) {
 		// Nothing was inherited there, so the target sees the same EBADF the check does.
 		if err := refuseNetworkFD(9999); err != nil {

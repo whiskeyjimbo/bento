@@ -1916,8 +1916,13 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// that reason, and it would arrive inside the DenyWrite tree above readable otherwise.
 	// The backup is the one concrete sibling name; the epoch-suffixed ones are the same
 	// residual as at the default.
-	{"CLAUDE_CONFIG_DIR", ".claude", ".claude.json"},
-	{"CLAUDE_CONFIG_DIR", ".claude", ".claude.json.backup"},
+	//
+	// The empty def, where the row above names .claude: this file's default is ~/.claude.json
+	// at the home ROOT, so CLAUDE_CONFIG_DIR=$HOME/.claude is a real relocation of it and
+	// must emit. Only the variable set to an anchor itself restates the default, which the
+	// empty def is exactly what skips.
+	{"CLAUDE_CONFIG_DIR", "", ".claude.json"},
+	{"CLAUDE_CONFIG_DIR", "", ".claude.json.backup"},
 	{"CODEX_HOME", ".codex", "auth.json"},
 }
 
