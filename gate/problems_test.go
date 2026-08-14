@@ -182,3 +182,36 @@ func TestACallerDeniedReadIsNotOfferedTheBuiltInOptIn(t *testing.T) {
 		t.Errorf("refusal must name the embedder's shield, not the built-in opt-in; got %q", problems[0])
 	}
 }
+
+// A write inside a caller's deny is refused for the reason the read is, and the backend
+// words it the same way for both kinds (checkNotShielded's InsideCallerShield arm is
+// unconditional on kind). The built-in write sentence calls the path "always-shielded"
+// and explains the missing opt-in as the credential plant, and neither is true of an
+// embedder's deny - whose reason is a trust domain the manifest cannot argue with.
+func TestACallerDeniedWriteIsRefusedInTheCallersWords(t *testing.T) {
+	home := t.TempDir()
+	denied := filepath.Join(home, "vault")
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(),
+		[]denylist.Rule{{Path: denied, Deny: denylist.DenyAll, Dir: true}})
+
+	problems := gate.ShieldedWriteProblems(set, []string{filepath.Join(denied, "keys")})
+	if len(problems) != 1 {
+		t.Fatalf("a write inside a caller-supplied deny must be refused; got %v", problems)
+	}
+	if !strings.Contains(problems[0], "the program running bento shields") {
+		t.Errorf("refusal must name the embedder's shield rather than a built-in; got %q", problems[0])
+	}
+}
+
+// The shield mirrors skip a write of "/" so RootWriteProblems can refuse it in a sentence
+// naming the whole filesystem, and the backend makes that skip on grants resolveGrants has
+// already made symlink-free. Asked of the spelling alone, a link into the root reaches
+// Contains and comes back AboveShield - a true sentence about whichever dotfile sorts
+// first, printed ahead of the one about the grant that hands over the filesystem.
+func TestASymlinkedRootWriteIsLeftToTheRootRefusal(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "everything")
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	assertProblem(t, gate.ShieldedWriteProblems(hostShieldSet(t), []string{link}), "")
+}

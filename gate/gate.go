@@ -225,11 +225,18 @@ func FileWriteGrantProblems(write []string) []string {
 // there, and testing the spelling alone here would let that one through.
 func RootWriteProblems(write []string) []string {
 	for _, g := range write {
-		if g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/" {
+		if isRootWrite(g) {
 			return []string{grantrefusal.WriteIsRoot().Error()}
 		}
 	}
 	return nil
+}
+
+// isRootWrite reports whether a write grant lands on the host root. One function because
+// the shield mirrors skip exactly what this refuses: a grant either kind answers
+// differently about is one refused in nobody's words or in the wrong ones.
+func isRootWrite(g string) bool {
+	return g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/"
 }
 
 // MountGrantProblems reports the grants that land on a host process's /proc/<pid>
@@ -373,8 +380,10 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 	for _, g := range writes {
 		// Skipped for the reason the backend skips it: a write of "/" is refused by
 		// checkWriteNotRoot first, in a sentence that names the whole filesystem rather
-		// than whichever dotfile happens to sort first.
-		if g == "/" {
+		// than whichever dotfile happens to sort first. Asked of where the grant LANDS,
+		// as RootWriteProblems asks it - the backend's own skip reads a grant resolveGrants
+		// has already made symlink-free, and the gate's has not been.
+		if isRootWrite(g) {
 			continue
 		}
 		if p, ok := writeShieldProblem(set, g); ok {
@@ -440,8 +449,14 @@ func FileishWrites(write []string) []string {
 func writeShieldProblem(set shield.Set, g string) (string, bool) {
 	r, v := set.Contains(pathresolve.Existing(g), shield.Write, nil, nil)
 	switch v {
-	case shield.InsideShield, shield.InsideCallerShield:
+	case shield.InsideShield:
 		return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
+	case shield.InsideCallerShield:
+		// The caller's sentence for both kinds, as the backend's checkNotShielded words it:
+		// the write sentence calls the path always-shielded and explains the missing opt-in
+		// as the credential plant, and an embedder's deny is neither - its reason is a trust
+		// domain the manifest must not talk its way out of.
+		return grantrefusal.InsideCallerShield(g, r.Path).Error(), true
 	case shield.UnderWriteShield:
 		return grantrefusal.WriteUnderReadOnlyShield(g, r.Path).Error(), true
 	case shield.AboveShield:
