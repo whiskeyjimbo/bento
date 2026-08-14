@@ -337,6 +337,10 @@ type streamRefusalJSON struct {
 	Exposed         []shieldJSON        `json:"exposed,omitempty"`
 	ShieldedGrants  []shieldedGrantJSON `json:"shielded_grants,omitempty"`
 	AcceptedAliases []aliasJSON         `json:"accepted_aliases,omitempty"`
+	// ShadowedPathDirs is the failed event's as well, under the verdict's name and read
+	// the same way: a run that died for another reason still ran whatever the box
+	// resolved, and the wrong toolchain is a candidate explanation for the failure.
+	ShadowedPathDirs []string `json:"shadowed_path_dirs,omitempty"`
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
@@ -352,14 +356,14 @@ type streamRefusalJSON struct {
 // nothing about where the target got to. Whatever the target printed before it went
 // wrong is already on the stream above, which is what the buffered envelope could not
 // do: it dropped the captured streams on this path entirely.
-func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Result, runErr error) error {
+func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Result, shadowed []string, runErr error) error {
 	if !asJSON {
 		return runErr
 	}
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases)})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -432,7 +436,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			writeChangedAutoExecNotice(stderr, res)
 			writeRedirectedHooksNotice(stderr, res)
 		}
-		return failJSON(stderr, stream, asJSON, res, runErr)
+		return failJSON(stderr, stream, asJSON, res, shadowedPathDirs(p, env), runErr)
 	}
 
 	if asJSON {
@@ -508,7 +512,14 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads})
+			// ShadowedPathDirs are the PATH directories nothing carried into the box, so a
+			// bare command name resolved to whatever the box had instead. A note beside
+			// missing_read_grants and read the same way: the run proceeds, and this is what
+			// connects a card that came out wrong - built by the base image's toolchain
+			// rather than the operator's - to the read grant that would have fixed it. On
+			// stderr it is prose; a lane harness can only gate on it here.
+			ShadowedPathDirs []string `json:"shadowed_path_dirs,omitempty"`
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads, shadowedPathDirs(p, env)})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)

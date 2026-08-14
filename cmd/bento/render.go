@@ -1093,13 +1093,13 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
 }
 
-// writeSandboxPathShadow reports the PATH directories under the caller's home that no
-// grant covers. It is the inverse of writeSandboxPathMiss and the reason it does not live
-// in the failure chain: the manifest DOES pass PATH through, the box carries none of those
-// directories, and a bare command name therefore resolves to the base image's copy
-// instead. Where the base image has one the run exits 0 with a different binary than the
-// operator's, and nothing anywhere says so - not a denial, not a missing file, not an
-// error. bento holds both halves here, so it is the only thing that can.
+// writeSandboxPathShadow reports the PATH directories nothing carries into the box. It is
+// the inverse of writeSandboxPathMiss and the reason it does not live in the failure
+// chain: the manifest DOES pass PATH through, so a bare command name is searched for in
+// directories the box does not have and resolves to whatever it does have instead. Where
+// the box has a copy the run exits 0 with a different binary than the operator's, and
+// nothing anywhere says so - not a denial, not a missing file, not an error. bento holds
+// both halves here, so it is the only thing that can.
 //
 // The predicate is "on PATH, exists here, and nothing carries it into the box" rather than
 // "ungranted": /usr/bin and /bin are ungranted on every run and the box carries them, so
@@ -1115,9 +1115,28 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // env carries the same meaning it does for writeSandboxHomeMiss above, and its PATH is the
 // caller's own value: the sandbox default is filled in further down, past this.
 func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string) {
+	shadowed := shadowedPathDirs(p, env)
+	if len(shadowed) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] note: PATH is passed through, but the box does not carry these")
+	fmt.Fprintf(w, "[bento] directories on it and no grant covers them: %s\n", strings.Join(shadowed, ", "))
+	fmt.Fprintln(w, "[bento] A bare command name therefore resolved to whatever the box does carry")
+	fmt.Fprintln(w, "[bento] instead - a different build, or a different tool,")
+	fmt.Fprintln(w, "[bento] with no denial and no error to say so. Grant each in read: so the")
+	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
+}
+
+// shadowedPathDirs is the answer both renderings of that note are built from: the human
+// lines above and run's verdict envelope, which carries the same list under
+// shadowed_path_dirs. The consumer that most needs it is a machine one - a lane harness
+// reading the envelope is what can gate on the shadow before a card built with the wrong
+// toolchain lands - so the two must not be able to disagree about which directories are
+// meant.
+func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
 	search, passed := env["PATH"]
 	if !passed {
-		return
+		return nil
 	}
 	var shadowed []string
 	for _, dir := range filepath.SplitList(search) {
@@ -1134,15 +1153,7 @@ func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string
 			shadowed = append(shadowed, dir)
 		}
 	}
-	if len(shadowed) == 0 {
-		return
-	}
-	fmt.Fprintln(w, "[bento] note: PATH is passed through, but the box does not carry these")
-	fmt.Fprintf(w, "[bento] directories on it and no grant covers them: %s\n", strings.Join(shadowed, ", "))
-	fmt.Fprintln(w, "[bento] A bare command name therefore resolved to whatever the box does carry")
-	fmt.Fprintln(w, "[bento] instead - a different build, or a different tool,")
-	fmt.Fprintln(w, "[bento] with no denial and no error to say so. Grant each in read: so the")
-	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
+	return shadowed
 }
 
 // granted reports whether any read or write grant covers dir. Both sides are compared as

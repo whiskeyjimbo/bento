@@ -485,6 +485,58 @@ func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	}
 }
 
+// The shadowed-PATH note's consumer is a machine one: a lane harness reading the envelope
+// is the only thing that can gate on a card built by the base image's toolchain rather
+// than the operator's, and the P0 this warning exists to prevent was diagnosed by a human
+// comparing version strings. So the field has to carry the same directories the stderr
+// prose names, on both endings of the stream - a run that died for another reason ran
+// whatever the box resolved too.
+func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	toolchain := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(toolchain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"PATH": toolchain}
+
+	for _, tc := range []struct {
+		name   string
+		runErr error
+	}{
+		{"the verdict", nil},
+		{"the failed event", errors.New("backend died")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			_ = writeRunResult(&stderr, true, validPolicy(), env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), tc.runErr)
+			var got struct {
+				ShadowedPathDirs []string `json:"shadowed_path_dirs"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("not JSON: %v", err)
+			}
+			if !slices.Equal(got.ShadowedPathDirs, []string{toolchain}) {
+				t.Errorf("shadowed_path_dirs = %v, want the ungranted toolchain %q", got.ShadowedPathDirs, toolchain)
+			}
+		})
+	}
+
+	// The manifest that grants it is the fixed state, and a field present on every run is
+	// one a harness learns to ignore.
+	var stdout, stderr bytes.Buffer
+	granted := validPolicy()
+	granted.Read = append(granted.Read, toolchain)
+	_ = writeRunResult(&stderr, true, granted, env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	var raw map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := raw["shadowed_path_dirs"]; present {
+		t.Error("shadowed_path_dirs must be omitted when a grant covers every entry (omitempty)")
+	}
+}
+
 // A read grant naming nothing on this host is the failure hardest to diagnose from the
 // script's own output - an approved manifest whose data directory was since deleted, and
 // a FileNotFoundError with nothing connecting it back. It is said on stderr on the way
