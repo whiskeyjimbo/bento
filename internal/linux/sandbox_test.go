@@ -581,9 +581,11 @@ func TestSymlinkedDenyDirIsShieldedWithoutCrashing(t *testing.T) {
 }
 
 // A deny-list dotfile that is a DANGLING symlink (target not created yet - the
-// half-populated home-manager / stow layout) must still be shielded: the shield
-// follows the symlink to its target and blocks a write through it, rather than
-// silently no-opping (letting a credential be planted) or aborting the run.
+// half-populated home-manager / stow layout) must still be shielded where the write
+// grant is the target's own directory. The grant contains the store the shield resolves
+// to, which is the above-shield refusal: on the full tier the shield's bind lands after
+// the grant's and absorbs the plant, but the degraded tier has no bind, so the run
+// refuses on both rather than depending on the tier.
 func TestDanglingSymlinkDenyFileBlocksPlantThrough(t *testing.T) {
 	requireSandbox(t)
 
@@ -597,14 +599,13 @@ func TestDanglingSymlinkDenyFileBlocksPlantThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read $HOME to reach the ~/.netrc symlink and write its target directory (a
-	// write grant of $HOME itself is refused). ~/.netrc's shield resolves to
-	// store/netrc, so a write through the symlink into the granted dir is absorbed.
 	p := &policy.Policy{Read: []string{home}, Write: []string{filepath.Join(home, "store")}}
-	_, out := runScript(t, p, "echo MALICIOUS > "+filepath.Join(home, ".netrc")+" 2>&1 || true\n")
-
-	if strings.Contains(out, "bwrap:") {
-		t.Fatalf("a dangling-symlink shield aborted the run: %s", out)
+	err := runScriptExpectingRefusal(t, p, "echo MALICIOUS > "+filepath.Join(home, ".netrc")+" 2>&1 || true\n")
+	if err == nil {
+		t.Fatal("a write grant containing the store a dangling deny-list symlink points at was honored")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(home, ".netrc")) {
+		t.Errorf("the refusal must name the shield it is about; got %v", err)
 	}
 	if b, err := os.ReadFile(target); err == nil && strings.Contains(string(b), "MALICIOUS") {
 		t.Fatalf("a credential was planted through a dangling symlink: %q", b)

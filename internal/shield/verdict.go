@@ -157,8 +157,13 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// containment is visible in no other namespace. A shield with no symlink above it
 		// resolves to itself, so the two tests coincide everywhere else and the second
 		// costs nothing.
+		//
+		// And of the resolved spelling, for the dotfiles-farm shape credentialLinks exists
+		// for: ~/.aws is a link into a farm directory the grant names, so the store itself
+		// sits inside the grant while neither spelling of the link's own name does. On the
+		// degraded tier that leaves the real credentials read-write.
 		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
-		if s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
+		if s.covers(grant, a.Resolved) || s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveShield
 		}
 	}
