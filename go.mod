@@ -1,6 +1,6 @@
 module github.com/whiskeyjimbo/bento
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/elastic/go-seccomp-bpf v1.6.0

@@ -6,7 +6,7 @@
 // so the isolation holds.
 module bentoembed
 
-go 1.26.5
+go 1.26.6
 
 require github.com/whiskeyjimbo/bento v0.0.0
 
