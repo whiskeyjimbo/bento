@@ -625,6 +625,40 @@ func TestClassifyUnshareSeparatesBlockedFromUnanswered(t *testing.T) {
 	}
 }
 
+// A hardened CI runner sets user.max_user_namespaces to zero, and bwrap then dies with
+// "nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)". That was read as
+// an unclassified probe failure - the operator got "unknown" and no next action at all,
+// on the one host condition with a one-line remedy. It is a namespace refusal: the kernel
+// is declining to create one, permanently and for this user.
+//
+// The allowance is what makes the call, not the wording. bwrap words genuine exhaustion -
+// nesting depth, or load - with the same sentence, and that measures nothing about the
+// host, so it must keep falling through to unknown rather than costing a user the full
+// sandbox on a machine that supports it.
+func TestExhaustedAllowanceIsARefusalOnlyAtZero(t *testing.T) {
+	const out = "bwrap: Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)"
+
+	reason := exhaustedAllowanceReason(out, true)
+	if reason == "" {
+		t.Fatal("ENOSPC with the allowance at zero is the kernel refusing, not an unclassified failure")
+	}
+	for _, want := range []string{"user.max_user_namespaces", "sysctl -w"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason %q does not name %q; a CI engineer has to be able to tell their platform team what to change", reason, want)
+		}
+	}
+
+	if got := exhaustedAllowanceReason(out, false); got != "" {
+		t.Errorf("exhaustion under a nonzero allowance is transient and measures nothing about the host; got %q", got)
+	}
+	// A refusal shape that is not exhaustion at all must not be diverted into this branch
+	// even on a host whose allowance happens to be zero: the AppArmor diagnosis below is
+	// the one that names the cause there.
+	if got := exhaustedAllowanceReason("bwrap: No permissions to create new user namespace", true); got != "" {
+		t.Errorf("only the exhaustion wording belongs to this branch; got %q", got)
+	}
+}
+
 // The systempaths remedy is the whole value of the procfs diagnosis to a CI engineer,
 // and it is read at the head of a block that runs past twenty lines once the degraded
 // tier's consequences follow it. Present is not enough at that length: a flag below

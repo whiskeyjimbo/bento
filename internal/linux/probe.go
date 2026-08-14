@@ -478,7 +478,8 @@ const containerUsernsRemedy = " If bento is running inside a container, the host
 // A namespace word alone is not: bwrap words exhaustion the same way it words a refusal
 // ("Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces
 // exceeded (ENOSPC)", or an EAGAIN under load), and that is transient rather than a fact
-// about the host. An errno alone is not either: canUnshare execs a canary INSIDE the
+// about the host - unless the allowance is zero, which is a permanent refusal wearing the
+// exhaustion wording, and is classified before this is consulted. An errno alone is not either: canUnshare execs a canary INSIDE the
 // sandbox, so a noexec mount, mode 000 or an AppArmor exec denial yields "bwrap: execvp
 // true: Permission denied", which says nothing about the namespace at all.
 //
@@ -498,6 +499,27 @@ func usernsRefused(out string) bool {
 	// identity in it either way.
 	named := strings.Contains(out, "namespace") || strings.Contains(out, "setting up uid map")
 	return named && (strings.Contains(out, "Permission denied") || strings.Contains(out, "Operation not permitted"))
+}
+
+// maxUserNamespaces is the per-user-namespace ucount limiting how many user namespaces
+// a uid may create. A hardened CI runner sets it to zero, and it can also be written
+// inside a nested user namespace, which scopes the zero to that namespace alone.
+const maxUserNamespaces = "/proc/sys/user/max_user_namespaces"
+
+// exhaustedAllowanceReason returns the diagnosis for a probe bwrap failed with ENOSPC on
+// a host whose namespace allowance is zero, or "" when this is not that. The allowance is
+// what separates the two things bwrap words identically: at zero the kernel refuses every
+// user namespace this uid asks for and there is a sysctl to name, while a nonzero
+// allowance exhausted by nesting depth or by load is transient and measures nothing about
+// the host - which is why that case falls through to the unknown verdict rather than
+// costing a user the full sandbox on a machine that supports it.
+func exhaustedAllowanceReason(out string, allowanceZero bool) string {
+	if !allowanceZero || !strings.Contains(out, "ENOSPC") || !strings.Contains(out, "namespace") {
+		return ""
+	}
+	return ": this user's namespace allowance is zero (user.max_user_namespaces=0), so the kernel " +
+		"refuses every one it is asked for. Raise it - sysctl -w user.max_user_namespaces=15000, or " +
+		"user.max_user_namespaces=15000 in /etc/sysctl.d to persist it."
 }
 
 func classifyUnshare(err error) (namespaceProbe, string) {
@@ -541,6 +563,13 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	const unknownBase = "the user-namespace probe failed for a reason that is not a namespace refusal, so whether " +
 		"bubblewrap can isolate anything on this host is unknown; it is reported unavailable rather than guessed"
 
+	// Checked before usernsRefused, which deliberately reads bwrap's ENOSPC wording as
+	// transient exhaustion rather than as a fact about the host. With the allowance at
+	// zero it is neither transient nor unknown: the kernel is declining, permanently and
+	// for this user, the same way the AppArmor branch's sysctl declines.
+	if reason := exhaustedAllowanceReason(out, restricted(maxUserNamespaces, "0")); reason != "" {
+		return namespacesBlocked, base + reason + containerUsernsRemedy
+	}
 	if !usernsRefused(out) {
 		if out != "" {
 			return namespacesUnknown, unknownBase + ": " + strings.TrimSpace(out)
