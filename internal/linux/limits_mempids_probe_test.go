@@ -14,10 +14,10 @@ import (
 
 // The memory/pids delegation gate is host-safety critical - an uncapped memory bomb
 // can OOM the host - and it fails closed: when the controllers are not delegated,
-// Probe reports LayerLimits Unavailable so admission refuses a requested memory or pids
+// Probe reports LayerLimitsMemory Unavailable so admission refuses a requested memory
 // limit rather than run it unenforced. The pure function
-// (TestMemPidsDelegationStateFailsClosed) is covered; this proves the WIRING through
-// the real Probe, which a hardcoded LayerLimits=Enforced would otherwise satisfy while
+// (TestHostSafetyDelegationStateFailsClosed) is covered; this proves the WIRING through
+// the real Probe, which a hardcoded LayerLimitsMemory=Enforced would otherwise satisfy while
 // silently reopening v1's fail-open.
 //
 // It runs in child processes to keep the delegatedControllers override off every other
@@ -29,13 +29,25 @@ func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
 	requireMemPidsLimits(t)
 
 	baseline := runMemPidsChild(t, "baseline")
-	if !strings.Contains(baseline, "STATE enforced") {
-		t.Fatalf("positive control failed: baseline child did not report LayerLimits enforced: %q", baseline)
+	if !strings.Contains(baseline, "STATE enforced") || !strings.Contains(baseline, "PIDSSTATE enforced") {
+		t.Fatalf("positive control failed: baseline child did not report both host-safety layers enforced: %q", baseline)
+	}
+
+	// The two host-safety layers read their own controller through Probe, not one reading
+	// shared by both: a wiring that asked for "memory" twice would leave LayerLimitsPIDs
+	// Enforced whatever the host delegates, which is the fail-open direction this file
+	// exists to refuse, and every other test in the tree would still pass.
+	split := runMemPidsChild(t, "pidsonly")
+	if !strings.Contains(split, "STATE unavailable") || !strings.Contains(split, "PIDSSTATE enforced") {
+		t.Errorf("with pids delegated and memory not, want memory Unavailable and pids Enforced; got %q", split)
 	}
 
 	override := runMemPidsChild(t, "undelegated")
 	if !strings.Contains(override, "STATE unavailable") {
-		t.Errorf("with memory/pids undelegated LayerLimits is not Unavailable: %q - Probe is not reading the delegation check", override)
+		t.Errorf("with memory/pids undelegated LayerLimitsMemory is not Unavailable: %q - Probe is not reading the delegation check", override)
+	}
+	if !strings.Contains(override, "PIDSSTATE unavailable") {
+		t.Errorf("with memory/pids undelegated LayerLimitsPIDs is not Unavailable: %q", override)
 	}
 	if !strings.Contains(override, "not delegated") {
 		t.Errorf("the unavailable reason does not blame delegation: %q", override)
@@ -58,24 +70,31 @@ func runMemPidsChild(t *testing.T, mode string) string {
 // TestProbeMemPidsLayerHelper is the child half: in "undelegated" mode it forces the
 // delegation read to a confirmed-undelegated memory/pids set (known=true, so it is
 // provably the delegation branch and not the unreadable-delegation one) before the Once
-// fires, then reports the real Probe's LayerLimits state and reason. Inert unless the
+// fires, then reports the real Probe's LayerLimitsMemory state and reason. Inert unless the
 // parent set the trigger.
 func TestProbeMemPidsLayerHelper(t *testing.T) {
 	mode := os.Getenv("BENTO_TEST_MEMPIDS")
 	if mode == "" {
 		t.Skip("child helper for TestProbeMemPidsLayerFailsClosedThroughRealProbe")
 	}
-	if mode == "undelegated" {
+	switch mode {
+	case "undelegated":
 		delegatedControllers = func(context.Context) (map[string]bool, bool) {
 			return map[string]bool{"memory": false, "pids": false}, true
+		}
+	case "pidsonly":
+		delegatedControllers = func(context.Context) (map[string]bool, bool) {
+			return map[string]bool{"memory": false, "pids": true}, true
 		}
 	}
 	r := New().Probe(context.Background())
 	var reason string
 	for _, l := range r.Layers {
-		if l.Layer == enforce.LayerLimits {
+		if l.Layer == enforce.LayerLimitsMemory {
 			reason = l.Reason
 		}
 	}
-	os.Stdout.WriteString("STATE " + r.StateOf(enforce.LayerLimits).String() + " REASON " + reason + "\n")
+	os.Stdout.WriteString("STATE " + r.StateOf(enforce.LayerLimitsMemory).String() +
+		" PIDSSTATE " + r.StateOf(enforce.LayerLimitsPIDs).String() +
+		" REASON " + reason + "\n")
 }

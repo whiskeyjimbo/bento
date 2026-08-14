@@ -340,11 +340,15 @@ func requiredLayers(p *policy.Policy, opts Options) []Layer {
 	if p.Exec == policy.ExecNoneStrict {
 		layers = append(layers, LayerExecStrict)
 	}
-	// Per requested limit, not per "any limit set": the two limits layers rest on
-	// different controllers, so requiring both for any limit refused a cpu-only manifest
-	// on a host that delegates cpu but not memory, naming controllers it never asked for.
-	if p.Limits.Memory != "" || p.Limits.PIDs != 0 {
-		layers = append(layers, LayerLimits)
+	// Per requested limit, not per "any limit set": the three limits layers rest on
+	// different controllers, so requiring more than one for any limit refuses a manifest
+	// over a controller it never asked for - which is what a pids-only manifest hit on a
+	// host delegating pids but not memory.
+	if p.Limits.Memory != "" {
+		layers = append(layers, LayerLimitsMemory)
+	}
+	if p.Limits.PIDs != 0 {
+		layers = append(layers, LayerLimitsPIDs)
 	}
 	if p.Limits.CPU != "" {
 		layers = append(layers, LayerLimitsCPU)
@@ -468,10 +472,10 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 			Reason: "a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id",
 		}
 	}
-	// Read through the limits layers the policy actually required, not LayerLimits
-	// alone: a cpu-only manifest does not require it, and StateOf reports a missing
-	// layer as Unavailable, so keying on it refused a reapable cpu-only run on a host
-	// that could deliver the scope perfectly well.
+	// Read through the limits layers the policy actually required, not one of them
+	// alone: a cpu-only manifest requires neither of the others, and StateOf reports a
+	// missing layer as Unavailable, so keying on one refused a reapable cpu-only run on a
+	// host that could deliver the scope perfectly well.
 	if short := unenforcedRequestedLimits(required); len(short) > 0 {
 		return &Refusal{
 			Report: required,
@@ -487,7 +491,7 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 func unenforcedRequestedLimits(r Report) []LayerStatus {
 	var out []LayerStatus
 	for _, l := range r.Layers {
-		if (l.Layer == LayerLimits || l.Layer == LayerLimitsCPU) && l.State != Enforced {
+		if (l.Layer == LayerLimitsMemory || l.Layer == LayerLimitsPIDs || l.Layer == LayerLimitsCPU) && l.State != Enforced {
 			out = append(out, l)
 		}
 	}

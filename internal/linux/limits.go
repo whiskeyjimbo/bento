@@ -68,10 +68,10 @@ func cacheProbe[T any](measure func(context.Context) (T, bool)) func(context.Con
 // all, and why not otherwise.
 //
 // It answers only that. Which controllers the manager delegates is a separate reading
-// (memPidsDelegationState, cpuDelegationState) because the two limits layers rest on
-// different ones: folding the memory/pids check in here made every caller refuse a
-// cpu-only manifest over a memory delegation it never depended on, and sent the
-// operator to a Delegate= drop-in for controllers the manifest never named.
+// (hostSafetyDelegationState, cpuDelegationState) because the three limits layers rest
+// on different ones: folding a controller check in here made every caller refuse a
+// manifest over a delegation it never depended on, and sent the operator to a Delegate=
+// drop-in for controllers the manifest never named.
 func canCreateScope(ctx context.Context) (bool, string) {
 	v, answered := scopeProbe(ctx)
 	if !answered {
@@ -111,8 +111,8 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	return scopeVerdict{ok: true}, true
 }
 
-// memPidsDelegationState maps the delegated-controllers reading to the LayerLimits
-// state - the memory and pids controllers, the host-safety caps.
+// hostSafetyDelegationState maps the delegated-controllers reading to the state of one
+// host-safety limits layer - controller is "memory" or "pids", each its own layer.
 //
 // Unknown fails CLOSED, like cpuDelegationState. When the delegated set could not be
 // read (known is false), bento cannot confirm the caps will bind, so it reports them
@@ -122,27 +122,12 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 // saying the limit held. Reporting unavailable instead lets admission refuse a
 // requested memory/pids limit (or proceed under --allow-degraded), which is the
 // loud-degradation contract.
-func memPidsDelegationState(ctrls map[string]bool, known bool) (enforce.State, string) {
+func hostSafetyDelegationState(ctrls map[string]bool, known bool, controller string) (enforce.State, string) {
 	if !known {
-		return enforce.Unavailable, "could not read which cgroup controllers your systemd user manager delegates, so a requested memory or pids limit cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); it is reported unavailable rather than claimed enforced"
+		return enforce.Unavailable, "could not read which cgroup controllers your systemd user manager delegates, so a requested " + controller + " limit cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); it is reported unavailable rather than claimed enforced"
 	}
-	// Named singly where only one is missing. The pair share a layer - enforce.LayerLimits
-	// is defined as the ability to enforce a memory OR pids cap, and requiredLayers adds
-	// the one layer for either - so the VERDICT cannot be split without a third layer. The
-	// sentence can be, and must: a drop-in carrying Delegate=pids alone was told both
-	// controllers were undelegated and sent to add the one it already had.
-	var missing []string
-	for _, c := range []string{"memory", "pids"} {
-		if !ctrls[c] {
-			missing = append(missing, c)
-		}
-	}
-	if len(missing) > 0 {
-		subject, verb := "the "+missing[0]+" controller is", missing[0]
-		if len(missing) == 2 {
-			subject, verb = "the memory and pids controllers are", "memory pids"
-		}
-		return enforce.Unavailable, subject + " not delegated to your systemd user manager, so a requested memory or pids limit cannot be enforced (a one-time admin step: Delegate=" + verb + " on user@.service)"
+	if !ctrls[controller] {
+		return enforce.Unavailable, "the " + controller + " controller is not delegated to your systemd user manager, so a requested " + controller + " limit cannot be enforced (a one-time admin step: Delegate=" + controller + " on user@.service)"
 	}
 	return enforce.Enforced, ""
 }

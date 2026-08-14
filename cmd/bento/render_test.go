@@ -127,7 +127,7 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 // offered the edit without it rather than left with a diagnosis and no way past.
 func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 	limits := enforce.LayerStatus{
-		Layer: enforce.LayerLimits, State: enforce.Unavailable,
+		Layer: enforce.LayerLimitsMemory, State: enforce.Unavailable,
 		Reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged",
 	}
 	filesystem := enforce.LayerStatus{
@@ -166,7 +166,7 @@ func TestWriteReportTableRelocatesAnOversizedDetail(t *testing.T) {
 	long := "the degraded tier discloses a great deal " + strings.Repeat("and keeps going ", 40) + "to the end"
 	var r enforce.Report
 	r.Add(enforce.LayerFilesystem, enforce.Degraded, long)
-	r.Add(enforce.LayerLimits, enforce.Enforced, "")
+	r.Add(enforce.LayerLimitsMemory, enforce.Enforced, "")
 
 	var b bytes.Buffer
 	writeReportTable(&b, r)

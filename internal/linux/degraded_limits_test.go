@@ -67,7 +67,7 @@ func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 		}
 	}
 
-	if s := res.Report.StateOf(enforce.LayerLimits); s != enforce.Enforced {
+	if s := res.Report.StateOf(enforce.LayerLimitsMemory); s != enforce.Enforced {
 		t.Errorf("limits layer = %v, want Enforced now that the degraded tier applies them", s)
 	}
 }
@@ -77,7 +77,7 @@ func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 // touches far more memory than the limit allows and must be OOM-killed by the cgroup;
 // unwrapped it would allocate happily and exit 7. This is the assertion that fails if
 // the degraded tier ever goes back to running the target directly while still reporting
-// LayerLimits=Enforced.
+// LayerLimitsMemory=Enforced.
 func TestDegradedRunMemoryLimitActuallyBinds(t *testing.T) {
 	requireDegraded(t)
 	requireMemPidsLimits(t)

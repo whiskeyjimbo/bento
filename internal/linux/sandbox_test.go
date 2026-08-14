@@ -997,15 +997,19 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	// controller must not drag the other layer down with it.
 	scopeOK, _ := canCreateScope(t.Context())
 	ctrls, known := delegatedControllers(t.Context())
-	wantLimits, wantCPU := enforce.Unavailable, enforce.Unavailable
+	wantMem, wantPIDs, wantCPU := enforce.Unavailable, enforce.Unavailable, enforce.Unavailable
 	if scopeOK {
-		wantLimits, _ = memPidsDelegationState(ctrls, known)
+		wantMem, _ = hostSafetyDelegationState(ctrls, known, "memory")
+		wantPIDs, _ = hostSafetyDelegationState(ctrls, known, "pids")
 		wantCPU, _ = cpuDelegationState(ctrls, known)
 	}
-	if states[enforce.LayerLimits] != wantLimits {
-		t.Errorf("limits state = %v, want %v", states[enforce.LayerLimits], wantLimits)
+	if states[enforce.LayerLimitsMemory] != wantMem {
+		t.Errorf("limits-memory state = %v, want %v", states[enforce.LayerLimitsMemory], wantMem)
 	}
-	// Always reported, including with no scope at all: the two limits layers are
+	if states[enforce.LayerLimitsPIDs] != wantPIDs {
+		t.Errorf("limits-pids state = %v, want %v", states[enforce.LayerLimitsPIDs], wantPIDs)
+	}
+	// Always reported, including with no scope at all: the three limits layers are
 	// required per requested limit, so a cpu-only manifest whose report omitted this
 	// one would reach admission with nothing to refuse and run unbounded.
 	if _, ok := states[enforce.LayerLimitsCPU]; !ok {

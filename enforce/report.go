@@ -13,15 +13,16 @@ const (
 	// blocking) on top of the execve block. A policy needs it only for exec:
 	// none-strict; a host that blocks execve but not fork reports it degraded.
 	LayerExecStrict Layer = "exec-strict"
-	// LayerLimits is the ability to enforce a memory or pids cap: a transient scope
-	// plus the host-safety controllers (memory, pids) delegated. LayerLimitsCPU is the
-	// separate ability to enforce a cpu limit: systemd-run accepts a CPUQuota even when
-	// the cpu controller is not delegated (a common default) and silently ignores it.
-	// Each is required only by a policy that asks for the limits it covers, so a
-	// manifest requesting only a cpu cap is never held to a memory delegation it does
-	// not depend on.
-	LayerLimits    Layer = "limits"
-	LayerLimitsCPU Layer = "limits-cpu"
+	// The three limits layers are one per cgroup controller, because that is the grain
+	// the host delegates at: a transient scope plus that controller delegated. systemd-run
+	// accepts a property whose controller the manager does not delegate (a common default
+	// for cpu) and silently ignores it, so each has to be measured on its own. Each is
+	// required only by a policy that asks for the limit it covers, so a manifest
+	// requesting only a pids cap is never held to a memory delegation it does not depend
+	// on.
+	LayerLimitsMemory Layer = "limits-memory"
+	LayerLimitsPIDs   Layer = "limits-pids"
+	LayerLimitsCPU    Layer = "limits-cpu"
 )
 
 // Tier separates the guarantees Bento makes on every supported platform from
@@ -50,7 +51,7 @@ func (t Tier) String() string {
 // Tier reports which tier a layer belongs to.
 func (l Layer) Tier() Tier {
 	switch l {
-	case LayerExec, LayerExecStrict, LayerLimits, LayerLimitsCPU:
+	case LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsPIDs, LayerLimitsCPU:
 		return TierHardening
 	case LayerFilesystem, LayerNetwork:
 	}
@@ -253,10 +254,10 @@ func (r Report) forLayers(layers []Layer) Report {
 	// actually evaluated. Fail-safe for a probe that forgets a layer.
 	//
 	// No layer's absence is subsumed by another's state. LayerLimitsCPU once was, on the
-	// grounds that a non-Enforced LayerLimits already carried the refusal - but the two
-	// limits layers are required independently now, so a cpu-only policy need not have
-	// LayerLimits in the report at all, and skipping the synthesis there would hand
-	// admission an empty required report and run the target unbounded.
+	// grounds that a non-Enforced memory/pids layer already carried the refusal - but the
+	// three limits layers are required independently now, so a cpu-only policy need not
+	// have either of the others in the report at all, and skipping the synthesis there
+	// would hand admission an empty required report and run the target unbounded.
 	for _, l := range layers {
 		if present[l] {
 			continue

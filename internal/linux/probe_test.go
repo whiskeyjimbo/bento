@@ -165,24 +165,33 @@ func TestFilesystemLayerJoinsASentenceReasonCleanly(t *testing.T) {
 // and neither may claim Enforced without a creatable scope, which would report a
 // memory/pids/cpu cap that does not hold.
 func TestLimitsLayersTrackScopeCreation(t *testing.T) {
-	ok := limitsLayers(true, "", enforce.Enforced, "", enforce.Degraded, "cpu controller not delegated")
-	if len(ok) != 2 || ok[0].State != enforce.Enforced || ok[1].Layer != enforce.LayerLimitsCPU || ok[1].State != enforce.Degraded {
-		t.Fatalf("scope: got %+v, want LayerLimits=Enforced + LayerLimitsCPU=Degraded", ok)
+	per := func(mem, pids, cpu enforce.State) []enforce.LayerStatus {
+		return []enforce.LayerStatus{
+			{Layer: enforce.LayerLimitsMemory, State: mem},
+			{Layer: enforce.LayerLimitsPIDs, State: pids},
+			{Layer: enforce.LayerLimitsCPU, State: cpu},
+		}
 	}
 
-	// Each layer states its own verdict: memory/pids undelegated must not drag the cpu
-	// layer down, or a cpu-only manifest is refused over a controller it never asked for.
-	memOnly := limitsLayers(true, "", enforce.Unavailable, "memory/pids not delegated", enforce.Enforced, "")
-	if len(memOnly) != 2 || memOnly[0].State != enforce.Unavailable || memOnly[1].State != enforce.Enforced {
-		t.Fatalf("memory undelegated: got %+v, want LayerLimits=Unavailable + LayerLimitsCPU=Enforced", memOnly)
+	ok := limitsLayers(true, "", per(enforce.Enforced, enforce.Enforced, enforce.Degraded))
+	if len(ok) != 3 || ok[0].State != enforce.Enforced || ok[2].Layer != enforce.LayerLimitsCPU || ok[2].State != enforce.Degraded {
+		t.Fatalf("scope: got %+v, want the per-controller verdicts passed through", ok)
 	}
 
-	// Both layers, not just LayerLimits: they are required per requested limit now, so a
+	// Each layer states its own verdict: an undelegated memory controller must not drag
+	// the pids or cpu layer down, or a pids-only manifest is refused over a controller it
+	// never asked for.
+	memOnly := limitsLayers(true, "", per(enforce.Unavailable, enforce.Enforced, enforce.Enforced))
+	if memOnly[0].State != enforce.Unavailable || memOnly[1].State != enforce.Enforced || memOnly[2].State != enforce.Enforced {
+		t.Fatalf("memory undelegated: got %+v, want only the memory layer Unavailable", memOnly)
+	}
+
+	// Every layer, not just one: they are required per requested limit now, so a
 	// cpu-only manifest missing the cpu line would reach admission with an empty
 	// required report and run unbounded.
-	no := limitsLayers(false, "no scope here", enforce.Enforced, "", enforce.Enforced, "")
-	if len(no) != 2 {
-		t.Fatalf("no scope: got %+v, want both limits layers", no)
+	no := limitsLayers(false, "no scope here", per(enforce.Enforced, enforce.Enforced, enforce.Enforced))
+	if len(no) != 3 {
+		t.Fatalf("no scope: got %+v, want every limits layer", no)
 	}
 	for _, l := range no {
 		if l.State != enforce.Unavailable || l.Reason != "no scope here" {

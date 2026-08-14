@@ -33,8 +33,11 @@ func requireMemPidsLimits(t *testing.T) {
 	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope on this host: " + reason)
 	}
-	if state, reason := memPidsDelegationState(delegatedControllers(t.Context())); state != enforce.Enforced {
-		t.Skip("memory/pids limits cannot bind on this host: " + reason)
+	ctrls, known := delegatedControllers(t.Context())
+	for _, c := range []string{"memory", "pids"} {
+		if state, reason := hostSafetyDelegationState(ctrls, known, c); state != enforce.Enforced {
+			t.Skip("memory/pids limits cannot bind on this host: " + reason)
+		}
 	}
 }
 
@@ -163,7 +166,7 @@ func TestDelegatedControllers(t *testing.T) {
 		t.Skip("could not create a probe scope to measure delegation on this host")
 	}
 	// A systemd user session delegates at least memory and pids by default; those
-	// are the host-safety controllers the probe's LayerLimits capability depends on.
+	// are the host-safety controllers the probe's LayerLimitsMemory capability depends on.
 	if !ctrls["memory"] || !ctrls["pids"] {
 		t.Errorf("expected memory and pids delegated, got %v", ctrls)
 	}
@@ -174,29 +177,30 @@ func TestDelegatedControllers(t *testing.T) {
 // confirm the caps bind, so it must report unavailable, never enforced - the
 // fail-open bug was known=false taking the enforced/ok branch, letting a target run
 // unbounded under a report that said the limit held.
-func TestMemPidsDelegationStateFailsClosed(t *testing.T) {
+func TestHostSafetyDelegationStateFailsClosed(t *testing.T) {
 	cases := []struct {
 		name       string
+		controller string
 		ctrls      map[string]bool
 		known      bool
 		wantState  enforce.State
 		wantReason string // a substring that distinguishes the diagnosis
 	}{
-		{"unknown fails closed", nil, false, enforce.Unavailable, "could not read"},
-		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
-		// Named singly. A drop-in with Delegate=pids alone came back naming BOTH
-		// controllers and telling the admin to delegate the one they already have, which
-		// sends them to change a setting that is already correct.
-		{"memory missing", map[string]bool{"pids": true}, true, enforce.Unavailable, "the memory controller is not delegated"},
-		{"pids missing", map[string]bool{"memory": true}, true, enforce.Unavailable, "the pids controller is not delegated"},
-		{"both missing", map[string]bool{}, true, enforce.Unavailable, "the memory and pids controllers are not delegated"},
-		// cpu delegation is a separate layer's business: it must not move this verdict,
-		// or a memory manifest is refused over a Delegate=cpu step it never needed.
-		{"cpu undelegated is irrelevant here", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
+		{"unknown fails closed", "memory", nil, false, enforce.Unavailable, "could not read"},
+		{"memory delegated", "memory", map[string]bool{"memory": true}, true, enforce.Enforced, ""},
+		{"pids delegated", "pids", map[string]bool{"pids": true}, true, enforce.Enforced, ""},
+		{"memory missing", "memory", map[string]bool{"pids": true}, true, enforce.Unavailable, "the memory controller is not delegated"},
+		{"pids missing", "pids", map[string]bool{"memory": true}, true, enforce.Unavailable, "the pids controller is not delegated"},
+		// The other host-safety controller is a separate layer's business now, as cpu
+		// already was: a pids-only manifest must not be refused over memory delegation,
+		// which is a Delegate= step it never needed.
+		{"memory undelegated does not move the pids verdict", "pids", map[string]bool{"pids": true}, true, enforce.Enforced, ""},
+		{"pids undelegated does not move the memory verdict", "memory", map[string]bool{"memory": true}, true, enforce.Enforced, ""},
+		{"cpu undelegated is irrelevant here", "memory", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, reason := memPidsDelegationState(tc.ctrls, tc.known)
+			state, reason := hostSafetyDelegationState(tc.ctrls, tc.known, tc.controller)
 			if state != tc.wantState {
 				t.Errorf("state = %v, want %v", state, tc.wantState)
 			}

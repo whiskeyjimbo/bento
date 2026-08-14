@@ -78,15 +78,18 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		// A creatable scope is not enough: systemd-run accepts a property for an
 		// undelegated controller and silently does not enforce it, so gating on scope
 		// creation alone would profile with the requested cap absent and say nothing.
-		// Asked per requested limit, because the two rest on different controllers - a
+		// Asked per requested limit, because the three rest on different controllers - a
 		// manifest that wants only a cpu cap must not be refused over memory delegation,
 		// which would send the operator to a Delegate= drop-in it never needed. Run
-		// reaches the same verdict through the probe's two layers; this path produces no
+		// reaches the same verdict through the probe's three layers; this path produces no
 		// Report, so the check has to be its own.
 		ctrls, known := delegatedControllers(ctx)
-		if p.Limits.Memory != "" || p.Limits.PIDs != 0 {
-			if state, reason := memPidsDelegationState(ctrls, known); state != enforce.Enforced {
-				return profile.Observation{}, fmt.Errorf("the policy requests a memory or pids limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
+		for _, c := range []string{"memory", "pids"} {
+			if (c == "memory" && p.Limits.Memory == "") || (c == "pids" && p.Limits.PIDs == 0) {
+				continue
+			}
+			if state, reason := hostSafetyDelegationState(ctrls, known, c); state != enforce.Enforced {
+				return profile.Observation{}, fmt.Errorf("the policy requests a %s limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", c, reason)
 			}
 		}
 		if p.Limits.CPU != "" {

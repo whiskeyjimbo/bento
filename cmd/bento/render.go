@@ -984,7 +984,7 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 // uninstalled systemd-run and an undelegated controller do not have the same answer.
 func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
 	isLimits := func(l enforce.LayerStatus) bool {
-		return l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU
+		return l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU
 	}
 	if !slices.ContainsFunc(r.Short, isLimits) {
 		return
@@ -1532,7 +1532,7 @@ func writeDegradedSummary(w io.Writer, short []enforce.LayerStatus) {
 		// The two halves of admit(): a core layer refuses when the manifest needs it, and
 		// so does a requested limit - unlike the other hardening layers, a limit protects
 		// the host, so running unbounded is not an option the run gets to take.
-		if l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimits || l.Layer == enforce.LayerLimitsCPU {
+		if l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU {
 			refused = append(refused, string(l.Layer))
 		} else {
 			reported = append(reported, string(l.Layer))

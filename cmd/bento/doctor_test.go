@@ -109,19 +109,19 @@ func TestShieldAnchorsCarryTheNSSCaveat(t *testing.T) {
 // name what actually fell short and nothing else.
 func TestDegradedSummaryNamesOnlyTheLayersThatFellShort(t *testing.T) {
 	var limitsOnly enforce.Report
-	limitsOnly.Add(enforce.LayerLimits, enforce.Unavailable, "systemd-run is not installed")
+	limitsOnly.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "systemd-run is not installed")
 
 	var b strings.Builder
 	writeDegradedSummary(&b, limitsOnly.Degradations())
 	// The summary is wrapped to the report width, so assert against it unwrapped.
 	got := strings.Join(strings.Fields(b.String()), " ")
-	if !strings.Contains(got, "One layer below falls short (limits)") {
+	if !strings.Contains(got, "One layer below falls short (limits-memory)") {
 		t.Errorf("a lone shortfall must be counted and named; got %q", got)
 	}
 	if strings.Contains(got, "network") || strings.Contains(got, "Egress") {
 		t.Errorf("a layer this host enforces must not appear; got %q", got)
 	}
-	if !strings.Contains(got, "needs limits is refused by default") {
+	if !strings.Contains(got, "needs limits-memory is refused by default") {
 		t.Errorf("a requested limit this host cannot enforce refuses; got %q", got)
 	}
 	if strings.Contains(got, "runs with the gap reported") {
@@ -222,5 +222,28 @@ func TestDoctorJSONReportsAnUnanchorableHost(t *testing.T) {
 	}
 	if got := toDoctorJSON(clean, nil); got.ShieldAnchors != "" {
 		t.Errorf("a host that anchors must carry no reason; got %q", got.ShieldAnchors)
+	}
+}
+
+// The three limits layers are separate now, so a host delegating none of the three
+// controllers produces three shortfall entries where it once produced two. The summary
+// counts and names them from that list, so it has to read as a plural sentence naming
+// each one - and all three refuse rather than run with the gap reported, because a
+// requested limit protects the host.
+func TestDegradedSummaryNamesEveryLimitsLayer(t *testing.T) {
+	var noLimits enforce.Report
+	noLimits.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "systemd-run is not installed")
+	noLimits.Add(enforce.LayerLimitsPIDs, enforce.Unavailable, "systemd-run is not installed")
+	noLimits.Add(enforce.LayerLimitsCPU, enforce.Unavailable, "systemd-run is not installed")
+
+	var b strings.Builder
+	writeDegradedSummary(&b, noLimits.Degradations())
+	got := strings.Join(strings.Fields(b.String()), " ")
+
+	if !strings.Contains(got, "3 layers below fall short (limits-memory, limits-pids, limits-cpu)") {
+		t.Errorf("the summary must count and name all three limits layers; got %q", got)
+	}
+	if strings.Contains(got, "runs with the gap reported") {
+		t.Errorf("every limits layer refuses, so nothing runs with a gap; got %q", got)
 	}
 }

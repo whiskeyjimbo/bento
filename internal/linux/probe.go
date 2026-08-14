@@ -86,18 +86,22 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// Default Unavailable, not the zero value (Enforced): delegation is measured only
 	// when a scope is creatable, and a host whose controllers were never read must not
 	// report a limit as enforced - admission would then admit an unenforceable cap.
-	memState, cpuState := enforce.Unavailable, enforce.Unavailable
-	var memReason, cpuReason string
+	per := []enforce.LayerStatus{
+		{Layer: enforce.LayerLimitsMemory, State: enforce.Unavailable},
+		{Layer: enforce.LayerLimitsPIDs, State: enforce.Unavailable},
+		{Layer: enforce.LayerLimitsCPU, State: enforce.Unavailable},
+	}
 	if scopeOK {
 		// Delegation is separate from scope creation, and separate per controller: a
 		// scope can be created while systemd-run silently ignores a property whose
 		// controller the manager does not delegate. Report each so admission can refuse
 		// exactly the limits this host cannot actually enforce.
 		ctrls, known := delegatedControllers(ctx)
-		memState, memReason = memPidsDelegationState(ctrls, known)
-		cpuState, cpuReason = cpuDelegationState(ctrls, known)
+		per[0].State, per[0].Reason = hostSafetyDelegationState(ctrls, known, "memory")
+		per[1].State, per[1].Reason = hostSafetyDelegationState(ctrls, known, "pids")
+		per[2].State, per[2].Reason = cpuDelegationState(ctrls, known)
 	}
-	for _, ls := range limitsLayers(scopeOK, scopeReason, memState, memReason, cpuState, cpuReason) {
+	for _, ls := range limitsLayers(scopeOK, scopeReason, per) {
 		r.AddStatus(ls)
 	}
 
@@ -150,22 +154,24 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 // applied by systemd before the command starts and independent of the user namespace
 // the degraded tier lacks.
 //
-// Both layers are always emitted, including when no scope can be created at all. Each
-// is required only by a policy that asks for the limits it covers, so a cpu-only
+// Every layer is always emitted, including when no scope can be created at all. Each
+// is required only by a policy that asks for the limit it covers, so a cpu-only
 // manifest whose report omitted LayerLimitsCPU would reach admission with nothing
 // limits-related to refuse and run unbounded on exactly the host that can enforce
 // least.
-func limitsLayers(scopeOK bool, scopeReason string, memState enforce.State, memReason string, cpuState enforce.State, cpuReason string) []enforce.LayerStatus {
-	if !scopeOK {
-		return []enforce.LayerStatus{
-			{Layer: enforce.LayerLimits, State: enforce.Unavailable, Reason: scopeReason},
-			{Layer: enforce.LayerLimitsCPU, State: enforce.Unavailable, Reason: scopeReason},
-		}
+//
+// No creatable scope is one verdict about all of them - there is no cgroup to carry any
+// property - so it overwrites the per-controller states rather than being folded into
+// each.
+func limitsLayers(scopeOK bool, scopeReason string, per []enforce.LayerStatus) []enforce.LayerStatus {
+	if scopeOK {
+		return per
 	}
-	return []enforce.LayerStatus{
-		{Layer: enforce.LayerLimits, State: memState, Reason: memReason},
-		{Layer: enforce.LayerLimitsCPU, State: cpuState, Reason: cpuReason},
+	out := make([]enforce.LayerStatus, 0, len(per))
+	for _, l := range per {
+		out = append(out, enforce.LayerStatus{Layer: l.Layer, State: enforce.Unavailable, Reason: scopeReason})
 	}
+	return out
 }
 
 // filesystemLayer decides the filesystem-confinement state from namespace and

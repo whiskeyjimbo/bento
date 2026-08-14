@@ -75,7 +75,7 @@ func hasLayer(short []LayerStatus, layer Layer) bool {
 // fullyEnforced is a probe reporting every layer as enforced.
 func fullyEnforced() Report {
 	var r Report
-	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimits, LayerLimitsCPU} {
+	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsCPU} {
 		r.Add(l, Enforced, "")
 	}
 	return r
@@ -214,7 +214,7 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	// missing cpu line as Unavailable rather than reading its absence as no shortfall.
 	var noScope Report
 	noScope.Add(LayerFilesystem, Enforced, "")
-	noScope.Add(LayerLimits, Unavailable, "no usable systemd user manager")
+	noScope.Add(LayerLimitsMemory, Unavailable, "no usable systemd user manager")
 	f = &fakeEnforcer{probe: noScope}
 	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); !errors.As(err, &refusal) {
 		t.Errorf("no-scope host should refuse a cpu-limit policy; got %v", err)
@@ -257,7 +257,8 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	// never named.
 	var cpuOnlyHost Report
 	cpuOnlyHost.Add(LayerFilesystem, Enforced, "")
-	cpuOnlyHost.Add(LayerLimits, Unavailable, "the memory/pids controllers are not delegated")
+	cpuOnlyHost.Add(LayerLimitsMemory, Unavailable, "the memory controller is not delegated")
+	cpuOnlyHost.Add(LayerLimitsPIDs, Unavailable, "the pids controller is not delegated")
 	cpuOnlyHost.Add(LayerLimitsCPU, Enforced, "")
 	f = &fakeEnforcer{probe: cpuOnlyHost}
 	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); err != nil {
@@ -278,7 +279,7 @@ func TestCPULimitLayerOmittedByProbeRefused(t *testing.T) {
 
 	var probe Report
 	probe.Add(LayerFilesystem, Enforced, "")
-	probe.Add(LayerLimits, Enforced, "") // limits-cpu deliberately omitted
+	probe.Add(LayerLimitsMemory, Enforced, "") // limits-cpu deliberately omitted
 	f := &fakeEnforcer{probe: probe}
 
 	_, err := Run(context.Background(), f, cpuLimited, Process{}, Options{})
@@ -323,7 +324,7 @@ func TestRunPreservesBackendReportRefinement(t *testing.T) {
 	// The pre-run probe says limits are enforceable, but the backend's Run refines
 	// the limits layer to degraded. The result must reflect the backend's view.
 	refined := fullyEnforced()
-	refined.Set(LayerLimits, Degraded, "systemd reported the limited scope degraded")
+	refined.Set(LayerLimitsMemory, Degraded, "systemd reported the limited scope degraded")
 	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{Report: refined}}
 
 	// A requested limit the backend degraded mid-run is the state admission refuses, so
@@ -334,7 +335,7 @@ func TestRunPreservesBackendReportRefinement(t *testing.T) {
 	if !errors.As(err, &short) {
 		t.Fatalf("Run err = %v, want a Shortfall for a degraded requested limit", err)
 	}
-	if got := res.Report.StateOf(LayerLimits); got != Degraded {
+	if got := res.Report.StateOf(LayerLimitsMemory); got != Degraded {
 		t.Errorf("limits state = %v, want degraded (backend refinement was dropped)", got)
 	}
 	// And the report is still filtered to what the policy required (no network rules,
@@ -572,7 +573,7 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 	newProbe := func() Report {
 		var r Report
 		r.Add(LayerFilesystem, Enforced, "")
-		r.Add(LayerLimits, Unavailable, "no systemd user manager")
+		r.Add(LayerLimitsMemory, Unavailable, "no systemd user manager")
 		return r
 	}
 	limited := func() *policy.Policy {
@@ -620,7 +621,7 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 func TestUnrequestedLimitDoesNotRefuse(t *testing.T) {
 	f := &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
-	f.probe.Add(LayerLimits, Unavailable, "no systemd user manager")
+	f.probe.Add(LayerLimitsMemory, Unavailable, "no systemd user manager")
 
 	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
 		t.Errorf("a policy that requests no limits must not be blocked by unavailable limits: %v", err)
@@ -683,11 +684,11 @@ func TestBaselineLayersIsFilesystemOnly(t *testing.T) {
 
 func TestLayerTiers(t *testing.T) {
 	for layer, want := range map[Layer]Tier{
-		LayerFilesystem: TierCore,
-		LayerNetwork:    TierCore,
-		LayerExec:       TierHardening,
-		LayerLimits:     TierHardening,
-		LayerLimitsCPU:  TierHardening,
+		LayerFilesystem:   TierCore,
+		LayerNetwork:      TierCore,
+		LayerExec:         TierHardening,
+		LayerLimitsMemory: TierHardening,
+		LayerLimitsCPU:    TierHardening,
 	} {
 		if got := layer.Tier(); got != want {
 			t.Errorf("%s.Tier() = %s, want %s", layer, got, want)
@@ -735,8 +736,8 @@ func TestStateString(t *testing.T) {
 
 func TestReportSetReplacesOrAdds(t *testing.T) {
 	var r Report
-	r.Add(LayerLimits, Enforced, "")
-	r.Set(LayerLimits, Degraded, "scope degraded")
+	r.Add(LayerLimitsMemory, Enforced, "")
+	r.Set(LayerLimitsMemory, Degraded, "scope degraded")
 	if len(r.Layers) != 1 || r.Layers[0].State != Degraded || r.Layers[0].Reason != "scope degraded" {
 		t.Errorf("Set should replace an existing layer in place; got %+v", r.Layers)
 	}
@@ -1114,7 +1115,7 @@ func TestRunIDRefusedWhenTheHostCannotScope(t *testing.T) {
 	// --allow-degraded waives an unenforceable limit, but it must not silently waive
 	// the supervisor's ability to kill the target along with it.
 	probe := fullyEnforced()
-	probe.Set(LayerLimits, Unavailable, "no usable systemd user manager")
+	probe.Set(LayerLimitsMemory, Unavailable, "no usable systemd user manager")
 	f := &fakeEnforcer{probe: probe}
 	_, err := Run(context.Background(), f, runIDPolicy(), Process{}, Options{RunID: "job_17", AllowDegraded: true})
 	var refusal *Refusal
@@ -1124,19 +1125,19 @@ func TestRunIDRefusedWhenTheHostCannotScope(t *testing.T) {
 	if f.ran {
 		t.Error("the run reached the backend despite being refused")
 	}
-	if !hasLayer(refusal.Short, LayerLimits) {
+	if !hasLayer(refusal.Short, LayerLimitsMemory) {
 		t.Errorf("refusal does not name the limits layer: %+v", refusal.Short)
 	}
 }
 
 // The screen reads the limits layers the policy actually required. A cpu-only manifest
-// does not require LayerLimits, and a missing layer reads as Unavailable, so keying on
+// does not require LayerLimitsMemory, and a missing layer reads as Unavailable, so keying on
 // that layer alone refused a reapable cpu-only run on a host that delivers the scope
 // perfectly well.
 func TestRunIDAdmittedForACPUOnlyLimit(t *testing.T) {
 	cpuOnly := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{CPU: "50%"}}
 	probe := fullyEnforced()
-	probe.Set(LayerLimits, Unavailable, "the memory/pids controllers are not delegated")
+	probe.Set(LayerLimitsMemory, Unavailable, "the memory/pids controllers are not delegated")
 	f := &fakeEnforcer{probe: probe}
 	if _, err := Run(context.Background(), f, cpuOnly, Process{}, Options{RunID: "job_17"}); err != nil {
 		t.Fatalf("a cpu-only limit gets a scope to reap through; got %v", err)
@@ -1199,5 +1200,42 @@ func TestZeroRuleManifestRefusesAHostWithNoNetworkFence(t *testing.T) {
 				t.Error("the enforcer ran despite the refusal")
 			}
 		})
+	}
+}
+
+// The same rule one controller further in: memory and pids were one layer, so a host
+// delegating pids but not memory refused a pids-only manifest over a cap it never asked
+// for. Each controller is its own layer now, so only the one the manifest names can
+// refuse it.
+func TestPIDsOnlyLimitNotRefusedForUndelegatedMemory(t *testing.T) {
+	pidsLimited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{PIDs: 64}}
+
+	var pidsOnlyHost Report
+	pidsOnlyHost.Add(LayerFilesystem, Enforced, "")
+	pidsOnlyHost.Add(LayerLimitsMemory, Unavailable, "the memory controller is not delegated")
+	pidsOnlyHost.Add(LayerLimitsPIDs, Enforced, "")
+	pidsOnlyHost.Add(LayerLimitsCPU, Unavailable, "the cpu controller is not delegated")
+
+	f := &fakeEnforcer{probe: pidsOnlyHost}
+	if _, err := Run(context.Background(), f, pidsLimited, Process{}, Options{}); err != nil {
+		t.Errorf("a pids-only limit must not be refused for an undelegated memory controller; got %v", err)
+	}
+	if !f.ran {
+		t.Error("a pids-only limit on a pids-delegated host should have run the target")
+	}
+
+	// The other direction still refuses, so the split did not open a hole: the layer the
+	// manifest does name is the one that must stop it.
+	memLimited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "256M"}}
+	f = &fakeEnforcer{probe: pidsOnlyHost}
+	var refusal *Refusal
+	if _, err := Run(context.Background(), f, memLimited, Process{}, Options{}); !errors.As(err, &refusal) {
+		t.Fatalf("a memory limit on a host with no memory delegation must refuse; got %v", err)
+	}
+	if !hasLayer(refusal.Short, LayerLimitsMemory) {
+		t.Errorf("refusal should name the limits-memory layer; short = %+v", refusal.Short)
+	}
+	if f.ran {
+		t.Error("a refused memory limit must not reach the enforcer")
 	}
 }
