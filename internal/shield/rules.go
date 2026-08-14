@@ -126,20 +126,38 @@ func (s Set) Mount(rules []denylist.Rule) []Applied {
 //
 //   - the root, which a deny dotfile symlinked to "/" reaches: shielding it would swallow
 //     the whole sandbox;
-//   - a path that moved onto a home or an ancestor of one, where the shield would hide
-//     everything the policy granted rather than one store. Only where resolution MOVED
-//     it: denylist.Shieldable already guarded what it chose to emit and deliberately
-//     exempts a store that IS an anchor ($HOME=/home/u/.aws beside a passwd home of
-//     /home/u), which a blanket test here would silently unshield.
+//   - a path that lands on a home or an ancestor of one, where the shield would hide
+//     everything the policy granted rather than one store.
+//
+// The second test runs at every path, not only the ones resolution moved. Gating it on
+// having moved deferred to denylist.Shieldable's emit-time guard, which does not compose
+// with this one: that guard compares the anchors AS CONFIGURED while s.homes are resolved,
+// so on a host spelling a home two ways (/home -> /var/home) a relocation naming the other
+// spelling passes there, moves nowhere here, and lands a DenyAll on the whole home. Some
+// of what it defers to never ran at all - denylist.Home is anchor-relative and calls
+// Shieldable on nothing.
+//
+// nestedAnchor is what the deferral was really protecting: an anchor inside another anchor
+// ($HOME=/home/u/.aws beside a passwd home of /home/u). Shieldable refuses it for equalling
+// an anchor, but the outer anchor's tree stays reachable, so it is not the swallow-
+// everything case - and unshielding it would open the credential store itself.
 func (s Set) target(literal string) (string, bool) {
 	rp := s.fs.Resolve(literal)
 	if rp == "/" {
 		return "", false
 	}
-	if rp != literal && !denylist.Shieldable(rp, s.homes) {
+	if !denylist.Shieldable(rp, s.homes) && !nestedAnchor(rp, s.homes) {
 		return "", false
 	}
 	return rp, true
+}
+
+// nestedAnchor reports whether path is one of the run's anchors while sitting strictly
+// inside another of them.
+func nestedAnchor(path string, homes []string) bool {
+	return slices.Contains(homes, path) && slices.ContainsFunc(homes, func(h string) bool {
+		return h != path && policy.CoversResolved(h, path)
+	})
 }
 
 // credentialLinks is the symlinked-credential expansion: where a credential store's entry
