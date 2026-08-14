@@ -59,8 +59,9 @@ func TestAssembledPolicyForcesX32ToENOSYS(t *testing.T) {
 			// itself denies would be indistinguishable from the policy's own errno.
 			const nrGetpid = 39
 			// The control. Without it a program that answered ENOSYS to everything -
-			// a wrong arch gate, an assembler that emitted only the prepend - would
-			// satisfy the x32 case while denying every native syscall too.
+			// an assembler that emitted only the prepend, an arch gate that never
+			// reached the allow path - would satisfy the x32 case while denying every
+			// native syscall too.
 			if got := runProgram(t, vm, nrGetpid); got != retAllow {
 				t.Errorf("native getpid under the %s program returned %#x, want RET_ALLOW %#x", tc.what, got, retAllow)
 			}
@@ -87,8 +88,9 @@ const (
 //
 // Big-endian, unlike the little-endian struct the kernel actually hands the filter: this
 // interpreter is a packet filter, so its absolute loads read network byte order. Writing
-// the words the way the kernel lays them out makes the arch gate miss and every verdict
-// comes back RET_ALLOW - which the control above is what catches.
+// the words the way the kernel lays them out makes the arch gate miss, and the assembler
+// sends a foreign arch to the policy's default action - allow - so the x32 assertion is
+// what fails and says so.
 func runProgram(t *testing.T, vm *bpf.VM, nr uint32) int {
 	t.Helper()
 	data := make([]byte, 64)
