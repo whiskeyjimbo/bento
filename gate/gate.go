@@ -347,12 +347,21 @@ func ShieldSet() (shield.Set, error) {
 // RootWriteProblems, the process and managed-mount grants by MountGrantProblems, the
 // looped grant by LoopedGrantProblems.
 //
-// Three narrowings remain against a run, all in the direction that only misses a refusal.
+// Five narrowings remain against a run, all in the direction that only misses a refusal.
 // The set omits the caller-supplied denies an embedder passes in, which no manifest can be
-// checked against from here. The redirected-workspace-shield refusal is not raised at
-// all: those shields are derived per write grant from the checkout under it, which is
-// state the gate would have to walk the grant to reconstruct, and the refusal is about a
-// symlink on this host rather than anything the manifest says.
+// checked against from here.
+//
+// Three come of the gate passing no workspace shields - the ones derived per write grant
+// from the checkout under it, which is state the gate would have to walk the grant to
+// reconstruct, and which internal/linux computes off host facts a cross-platform package
+// cannot reach. Two are refusals over those shields: the redirected-workspace-shield one
+// (checkWorkspaceShieldNotRedirected), which is about a symlink on this host rather than
+// anything the manifest says; and the UnderWriteShield a SECOND grant earns by naming one
+// of them, which the manifest does say - `write: /proj` alongside `write: /proj/.git/hooks`
+// is refused by the run and reported Honored here. The third is ShieldNotCarvable: a write
+// grant on a directory this uid cannot create the run's own shield mount points in (a
+// system tree such as /etc), which needs the same derivation plus the set of mount points
+// a run would carve.
 //
 // And the credential-alias refusal is not in this set at all - the one narrowing that is
 // not a missing case but a missing check. preflightGrants runs checkGrants and then scans
@@ -459,8 +468,12 @@ func FileishWrites(write []string) []string {
 
 // writeShieldProblem reports the refusal a write grant trips, or ok false where it trips
 // none. The workspace shields are not passed: they are derived per write grant from the
-// checkout under it, which is state the gate would have to walk the grant to reconstruct,
-// so that one refusal stays unmirrored - in the direction that only misses one.
+// checkout under it, which is state the gate would have to walk the grant to reconstruct.
+// Two refusals stay unmirrored for it, not one - the redirected-workspace-shield refusal,
+// which never goes through Contains at all, and the UnderWriteShield a second grant
+// spelled at or inside one of those shields earns from the workspace loop inside it. Both
+// only miss a refusal; the second is the one a manifest alone can trigger, so it is the
+// one a reader of a clean verdict here has to know is unanswered.
 func writeShieldProblem(set shield.Set, g string) (string, bool) {
 	r, v := set.Contains(pathresolve.Existing(g), shield.Write, nil, nil)
 	switch v {
