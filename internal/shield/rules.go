@@ -79,9 +79,16 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// of /home/u derives its .aws store as /home/u/.aws while the run configures that same
 	// store as /var/home/u/.aws - so membership is decided where they do agree, at the
 	// resolved path, and remembered against the spelling the rule carries.
-	for _, r := range base {
-		if slices.Contains(s.homes, fs.Resolve(r.Path)) {
-			s.atAnchor[r.Path] = true
+	//
+	// Skipped entirely unless the run HAS a nested anchor, which is the only shape
+	// nestedAnchor can exempt. That is not an optimisation of a rare path: it is a resolve
+	// per deny-list rule, and leaving it unconditional doubled Assemble (5.6ms -> 11.0ms on
+	// an ordinary single-anchor home) for a map every such run then never reads.
+	if slices.ContainsFunc(s.homes, func(h string) bool { return coveredByAnother(h, s.homes) }) {
+		for _, r := range base {
+			if slices.Contains(s.homes, fs.Resolve(r.Path)) {
+				s.atAnchor[r.Path] = true
+			}
 		}
 	}
 	// Once over the whole anchor set, not once per anchor: an env relocation names one
@@ -174,9 +181,18 @@ func (s Set) target(literal string) (string, bool) {
 // exists to drop - and its own spelling is nobody's anchor, so denylist.Relocated's
 // emit-time guard never saw it either. Spelling cannot separate the two; where the rule came
 // from can.
+// The rp tests are what atAnchor already implies - it holds only paths resolving onto an
+// anchor - restated so the function is true on its own terms rather than by the discipline
+// of its three callers.
 func (s Set) nestedAnchor(literal, rp string) bool {
-	return s.atAnchor[literal] && slices.ContainsFunc(s.homes, func(h string) bool {
-		return h != rp && policy.CoversResolved(h, rp)
+	return s.atAnchor[literal] && slices.Contains(s.homes, rp) && coveredByAnother(rp, s.homes)
+}
+
+// coveredByAnother reports whether path sits strictly inside one of roots that is not
+// itself.
+func coveredByAnother(path string, roots []string) bool {
+	return slices.ContainsFunc(roots, func(r string) bool {
+		return r != path && policy.CoversResolved(r, path)
 	})
 }
 
