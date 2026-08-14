@@ -75,7 +75,7 @@ func hasLayer(short []LayerStatus, layer Layer) bool {
 // fullyEnforced is a probe reporting every layer as enforced.
 func fullyEnforced() Report {
 	var r Report
-	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsCPU} {
+	for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsPIDs, LayerLimitsCPU} {
 		r.Add(l, Enforced, "")
 	}
 	return r
