@@ -691,9 +691,15 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		if e.path == "" {
 			continue
 		}
-		if r, v := set.Contains(e.path, shield.Read, optIns, nil); v == shield.InsideShield || v == shield.InsideCallerShield {
+		// Every verdict but Honored, rather than the two Inside ones: under shield.Read
+		// Contains answers Honored, InsideShield, InsideCallerShield or FoldedShield, and
+		// naming a subset left the fourth admitted by omission. This site is a consumer of
+		// shield.Verdict that no corpus case and no exhaustive-lint-checked switch reaches,
+		// so a new read verdict would be admitted here the same silent way; asking for
+		// Honored is the only form that cannot be.
+		if r, v := set.Contains(e.path, shield.Read, optIns, nil); v != shield.Honored {
 			cleanup()
-			return sandbox{}, noop, fmt.Errorf("linux: %s %q is inside the shielded path %q, which the sandbox may not expose", e.kind, e.path, r.Path)
+			return sandbox{}, noop, fmt.Errorf("linux: %s %q would expose the shielded path %q, which the sandbox may not lift", e.kind, e.path, r.Path)
 		}
 	}
 	return sb, cleanup, nil

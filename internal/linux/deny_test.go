@@ -608,3 +608,39 @@ func TestHomeGrantRefusedWhereTheMountFoldsCase(t *testing.T) {
 		t.Errorf("the refusal must name the folding mount and the shield; got %v", err)
 	}
 }
+
+// A caller deny anchors the alias scan, and hostFileIDs treats a directory it cannot read
+// as fatal. The answer for a CALLER deny is the same as for a built-in store, and this
+// pins it: the embedder's deny is a trust domain the manifest must not talk its way out
+// of, so a tree bento cannot enter cannot be declared free of a second name for the files
+// inside it. There is deliberately no escape hatch - a caller that does not want its deny
+// scanned can stop denying it, and one that cannot open the tree is asking bento to
+// vouch for what it was not allowed to look at.
+func TestCallerDenyOnAnUnreadableDirectoryRefusesTheLaunch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root is not refused by directory permissions, so there is no EACCES to raise")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store := filepath.Join(home, "store")
+	if err := os.Mkdir(store, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store, 0o700) })
+
+	script := filepath.Join(home, "run.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if _, _, _, err := credentialFiles(sb, nil); err == nil || !strings.Contains(err.Error(), store) {
+		t.Fatalf("credentialFiles over an unreadable caller deny = %v, want a refusal naming %q", err, store)
+	}
+}
