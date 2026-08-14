@@ -167,6 +167,20 @@ func TestObserveTraceeHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
 			os.Exit(7)
 		}
+	case "refusedexecve":
+		// An execve of a file that IS there and refuses: a plain regular file with no
+		// execute bit, which answers EACCES. One spawn syscall, no subprocess, and a path
+		// the sandbox must still be able to reach - the half of a failed exec that a grant
+		// can actually change.
+		refused := filepath.Join(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"), refusedExecName)
+		if err := os.WriteFile(refused, []byte("not executable\n"), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_WRITE_ERR", err)
+			os.Exit(7)
+		}
+		if err := syscall.Exec(refused, []string{refused}, nil); !errors.Is(err, syscall.EACCES) {
+			fmt.Fprintln(os.Stderr, "TRACEE_EXECVE_ERR", err)
+			os.Exit(7)
+		}
 	case "execthread":
 		// execve from a thread that is NOT the thread-group leader: the kernel kills the
 		// other threads and hands the execing one the leader's pid, so its own tid
@@ -641,6 +655,10 @@ const traceeExecTarget = "/bin/true"
 // fails on the final component rather than on a missing directory a host might supply.
 const traceeAbsentExecTarget = "/proc/bento-observe-no-such-helper"
 
+// refusedExecName is what the refused-exec mode spawns: a regular file with no execute
+// bit, so the execve fails on a path that is very much there.
+const refusedExecName = "refused-exec-target"
+
 // execLinkName is the symlink the fexecve tracee opens its exec target through, so that
 // the only route to the real target's path is resolving the descriptor.
 const execLinkName = "exec-target-link"
@@ -1005,6 +1023,12 @@ func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
 // and a script reaching for a helper that is absent inside the profiling sandbox produces
 // exactly one failed execve.
 //
+// A failed spawn's target is recorded whatever the errno - the script meant to run it, and
+// a grant is what makes it reachable - but whether anything was FOUND there is answered
+// from the return value, exactly as a failed open's is. Without that, a target nothing was
+// ever found at read back as resolved, which is a positive false claim about the one thing
+// this decoder can settle from inside the sandbox.
+//
 // The two syscalls are told apart only at the syscall ENTRY stop (after a successful
 // execveat the kernel reports the EXIT stop as execve's own number), and whether the call
 // ran is only known at the exec event, so a flag set from either alone gets one of these
@@ -1015,21 +1039,30 @@ func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 		mode   string
 		want   bool
 		target string
+		absent bool
 	}{
-		{"execve", true, traceeExecTarget},
-		{"execveat", false, traceeExecTarget},
-		{"failedexecve", false, traceeAbsentExecTarget},
+		{"execve", true, traceeExecTarget, false},
+		{"execveat", false, traceeExecTarget, false},
+		{"refusedexecve", false, "", false},
+		{"failedexecve", false, traceeAbsentExecTarget, true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			res := traceHelper(t, tc.mode, t.TempDir(), 0)
+			dir := t.TempDir()
+			target := tc.target
+			if target == "" {
+				target = filepath.Join(dir, refusedExecName)
+			}
+			res := traceHelper(t, tc.mode, dir, 0)
 			if res.Execed != tc.want {
 				t.Errorf("Execed = %v after a %s spawn, want %v", res.Execed, tc.mode, tc.want)
 			}
 			// The named binary is a file the sandbox must be able to read - the failed
-			// spawn included, because the script meant to run it - and these paths are
-			// absolute, so no PATH search stats one into the record incidentally.
-			if !slices.Contains(res.Accesses, Access{Path: tc.target}) {
-				t.Errorf("%s named %s and it is absent from the recorded accesses: %v", tc.mode, tc.target, res.Accesses)
+			// spawns included, because the script meant to run each one - and these paths
+			// are absolute, so no PATH search stats one into the record incidentally.
+			// Whether anything was found there is the second fact, and only the target
+			// that is not there may claim absence: a refused exec is a file that exists.
+			if !slices.Contains(res.Accesses, Access{Path: target, Absent: tc.absent}) {
+				t.Errorf("%s named %s, want it recorded with Absent = %v: %v", tc.mode, target, tc.absent, res.Accesses)
 			}
 		})
 	}
@@ -1058,6 +1091,19 @@ func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 	defer func() { reapTracees = orig }()
 
 	res := traceHelper(t, "execthread", t.TempDir(), 0)
+
+	// The exec target is recorded from this event, and the retiring tid means two tids
+	// name the same held entry. Recorded twice it would be deduped and invisible, so the
+	// count is asserted rather than the presence.
+	named := 0
+	for _, a := range res.Accesses {
+		if a.Path == traceeExecTarget {
+			named++
+		}
+	}
+	if named != 1 {
+		t.Errorf("the exec'd image appears %d times in %v, want exactly once", named, res.Accesses)
+	}
 	if !res.Execed {
 		t.Fatal("the tracee did not exec, so no tid was retired and the sweep is not exercised")
 	}

@@ -458,8 +458,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 				spawner := wpid
 				if old, err := syscall.PtraceGetEventMsg(wpid); err == nil {
 					spawner = int(old)
+					// Before the sweep below, which would count the exec this event is
+					// reporting as an observation lost with the retired tid.
+					res.Dropped += recordExecOf(held, spawner, record)
 					res.Dropped += forgetRetiredTid(wpid, spawner, tracees, lastOp, held, drops)
 				}
+				res.Dropped += recordExecOf(held, wpid, record)
 				if execSpawn[spawner] {
 					res.Execed = true
 				}
@@ -926,10 +930,19 @@ func releaseHeldOf(held map[string]heldPath, pid int) int {
 // stop, and the exit stop only says whether the open found a file. Losing that answer
 // costs a reporting nuance rather than an access, which is why the sweeps below count
 // existence probes and not opens.
+// An exec holds for a third reason: the image it names is only worth recording if the
+// call did not answer that nothing is there. execvp and dash's tryexec issue a real
+// execve per PATH element and read the ENOENT, so without the filter every miss enters
+// the manifest as a resolved read of a path no file was ever found at. images and
+// complete are the kernel's own opens for that image, resolved at the entry stop with the
+// rest of it, and recorded with it or not at all.
 type heldPath struct {
-	path   string
-	readOK bool
-	open   bool
+	path     string
+	readOK   bool
+	open     bool
+	exec     bool
+	images   []string
+	complete bool
 }
 
 // existenceHeld counts the held pathnames whose loss is a lost access. See heldPath.
@@ -1020,7 +1033,12 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	// inside that window instead of across the whole syscall, and one a planted path only
 	// converts into a recorded access when the call the kernel then ran also found a file.
 	if atExit {
-		recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
+		// The exec release runs first and on its own: an exec is an open of the image, so
+		// it is attributed like one rather than like an existence probe, and recordProbe
+		// below is the existence decoder's alone.
+		if !releaseHeldExec(pid, &regs, record, openResult, drop, held) {
+			recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
+		}
 		return
 	}
 	switch regs.Orig_rax {
@@ -1093,13 +1111,13 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		// weaker flag set here carries.
 		execSpawn[pid] = true
 		res.ExecAttempted = true
-		recordExecTarget(pid, atFdCwd, uintptr(regs.Rdi), false, record, drop)
+		holdExecTarget(pid, &regs, atFdCwd, uintptr(regs.Rdi), false, held, drop)
 	case sysExecveat:
 		// Recorded as not-an-execve rather than left alone: a failed execve on this tid
 		// parked a true above, and the exec event this execveat may be about to fire has no
 		// way of its own to tell whose answer it is reading.
 		execSpawn[pid] = false
-		recordExecTarget(pid, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, record, drop)
+		holdExecTarget(pid, &regs, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, held, drop)
 	default:
 		inspectMutating(pid, &regs, record, dropSlot)
 		inspectExistence(pid, &regs, recordProbe, drop, held)
@@ -1601,7 +1619,7 @@ const unixPtraceExitKill = 0x00100000
 // is, which also settles the memfd case honestly: its link reads "… (deleted)", resolveAt
 // refuses it, and a drop says the observation is short rather than naming a pseudo-path
 // the sandbox could never bind.
-func recordExecTarget(pid int, dirfd int32, addr uintptr, emptyPath bool, record func(string, bool), drop func()) {
+func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr, emptyPath bool, held map[string]heldPath, drop func()) {
 	path, ok := readPathAt(pid, dirfd, addr)
 	if !ok {
 		drop()
@@ -1622,12 +1640,76 @@ func recordExecTarget(pid int, dirfd int32, addr uintptr, emptyPath bool, record
 			return
 		}
 	}
-	record(path, false)
 	images, complete := execImageChain(path)
-	for _, image := range images {
+	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, exec: true, images: images, complete: complete}
+}
+
+// recordExecHeld records an exec target and the images the kernel opens for it, and
+// reports whether the chain was short. The pair is recorded together or not at all: the
+// images are the kernel's opens for THIS image, so naming them off a call that resolved
+// nothing would put a loader in the manifest for an exec that never happened.
+func recordExecHeld(h heldPath, record func(string, bool)) int {
+	record(h.path, false)
+	for _, image := range h.images {
 		record(image, false)
 	}
-	if !complete {
+	if !h.complete {
+		return 1
+	}
+	return 0
+}
+
+// releaseHeldExec answers the exit stop of an exec that FAILED - a successful one was
+// recorded at its exec event, which arrives before this stop - and reports whether this
+// stop was one.
+//
+// The access is recorded either way, exactly as a failed open's is: the target meant to
+// run that file, and a grant is what makes it reachable. What the return value settles is
+// the same thing it settles for an open - whether anything was found there - and it is
+// answered by the open branch's rule, because it is the same question. Without it every
+// exec target read back as resolved, including the ones nothing was ever found at:
+// glibc's execvp and dash's tryexec search PATH with a real execve per element rather
+// than a stat, so the existence decoder's own filter never sees those misses, and each
+// entered the manifest as a positive claim that the path was there.
+//
+// Whether such a path is worth PROPOSING is not decidable here. The observer runs inside
+// the sandbox, where a tool the host has and the run did not bind answers the same ENOENT
+// a search miss does; only the host can tell the two apart, and the read that gets it
+// mounted next round is the whole point of profiling it.
+func releaseHeldExec(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[string]heldPath) bool {
+	key := stopKey(pid, regs)
+	h, ok := held[key]
+	if !ok || !h.exec {
+		return false
+	}
+	delete(held, key)
+	if ret := int64(regs.Rax); ret < 0 && (syscall.Errno(-ret) == syscall.ENOENT || syscall.Errno(-ret) == syscall.ENOTDIR) {
+		openResult(h.path, false)
+	} else {
+		openResult(h.path, true)
+	}
+	if lost := recordExecHeld(h, record); lost > 0 {
 		drop()
 	}
+	return true
+}
+
+// recordExecOf records the exec a tid was holding, because the exec EVENT says it ran.
+// That event is the only report a successful execve gets - its exit stop carries the new
+// image's registers, so the key the entry stop parked under cannot be rebuilt there - and
+// it arrives before that exit stop, which is what leaves the exit stop to the calls that
+// failed. It sweeps by tid for the same reason releaseHeldOf does, and every other way a
+// held exec can end (the tid dying, an unreadable stop) still counts it as the lost
+// observation it is.
+func recordExecOf(held map[string]heldPath, pid int, record func(string, bool)) int {
+	prefix := fmt.Sprintf("%d\x00", pid)
+	lost := 0
+	for key, h := range held {
+		if !strings.HasPrefix(key, prefix) || !h.exec {
+			continue
+		}
+		delete(held, key)
+		lost += recordExecHeld(h, record)
+	}
+	return lost
 }
