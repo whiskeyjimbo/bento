@@ -56,7 +56,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err := p.RequireExpanded(); err != nil {
 		return enforce.Result{}, err
 	}
-	if err := e.screenRunID(p, opts.RunID); err != nil {
+	if err := e.screenRunID(ctx, p, opts.RunID); err != nil {
 		return enforce.Result{}, err
 	}
 	// A degraded run cannot use bubblewrap (user namespaces are blocked); take the
@@ -197,11 +197,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// ignores the property and the report already claims nothing.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
-		if ok, _ := canCreateScope(); ok {
+		if ok, _ := canCreateScope(ctx); ok {
 			// Preflight the exact limits so a scope-creation failure surfaces as a
 			// clear error, never as the target's exit code for a target that never
 			// ran.
-			if err := preflightLimits(p.Limits, nil); err != nil {
+			if err := preflightLimits(ctx, p.Limits, nil); err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
 			exe, cargs = wrapWithLimits(bwrap, args, p.Limits, opts.RunID)
@@ -272,7 +272,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// cancel itself.
 		serveErr := stopProxy()
 		a := parseApplied(appliedReport)
-		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
+		// The wrapper's real status, not a literal 0: reconcile stamps it into the reason
+		// for a stage that reported nothing, and a SIGKILLed child did not end with exit
+		// code 0. killedByCancel above already established this one was signalled.
+		cancelCode, _, _ := exitStatusOf(cmd.ProcessState)
+		setup := a.reconcile(&report, blockWanted, strictWanted, true, cancelCode)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
