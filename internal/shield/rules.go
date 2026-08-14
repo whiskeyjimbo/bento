@@ -161,9 +161,15 @@ func nestedAnchor(path string, homes []string) bool {
 }
 
 // credentialLinks is the symlinked-credential expansion: where a credential store's entry
-// is a link into a dotfile farm (stow, chezmoi and home-manager all produce these), the
-// target is shielded at its own path too, so the store cannot be reached by naming where
-// it points.
+// is a link into a dotfile farm IN THE HOME (stow, chezmoi and yadm all produce these),
+// the target is shielded at its own path too, so the store cannot be reached by naming
+// where it points.
+//
+// home-manager is EXCLUDED, not covered: its links point into /nix/store, outside every
+// anchor by construction, so linksUnder's own skip takes every one of them. That is the
+// right answer for a different reason than the skip's - a /nix/store path is world-readable
+// and immutable, so shielding the target buys nothing the store's own DenyAll does not
+// already have - but a reader auditing coverage on a nix host must not read it as handled.
 func (s Set) credentialLinks(base []denylist.Rule) []denylist.Rule {
 	var out []denylist.Rule
 	for _, r := range base {
