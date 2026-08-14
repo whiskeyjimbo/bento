@@ -323,6 +323,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// failed on its way out.
 		serveErr := stopProxy()
 		noteDeadListener(&report, serveErr)
+		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
 		return enforce.Result{Report: report, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
 	}

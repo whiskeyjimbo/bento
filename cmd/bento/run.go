@@ -420,10 +420,11 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// nothing else says what the host now holds. In --json failJSON carries the same
 		// field; here it is the notice, before the error main renders.
 		if !asJSON {
-			// The shield audit rides out here for the same reason, and ahead of the notices so
-			// the ordering matches the clean path's: an operator reading two runs side by side
-			// must not have to find the exposure warning in a different place because one of
-			// them failed.
+			// The shield audit rides out here for the same reason, and in the clean path's
+			// relative order so an operator reading two runs side by side does not find the
+			// exposure warning in a different place because one of them failed. The clean
+			// path's shield summary stays out: it says what the boundary held, which the error
+			// beneath it is already the answer to.
 			writeAcceptedAliasWarning(stderr, res)
 			writeShieldedGrantWarning(stderr, res)
 			writeExposedWarning(stderr, res)
