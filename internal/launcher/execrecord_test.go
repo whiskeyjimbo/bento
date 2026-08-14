@@ -172,6 +172,9 @@ func TestATargetThatDiesBeforeAttachKeepsItsExitCode(t *testing.T) {
 		t.Skipf("this host refuses the attach: %v", err)
 	}
 	root := cmd.Process.Pid
+	// The target blocks for a minute, so an early t.Fatal or skip below - before the kill
+	// lands - would otherwise leave it behind.
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	var ws syscall.WaitStatus
 	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
 		t.Fatal(err)

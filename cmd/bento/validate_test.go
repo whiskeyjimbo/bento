@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1057,5 +1058,119 @@ func TestValidateNotesABroadGrant(t *testing.T) {
 	}
 	if strings.Contains(out, `"/srv/app/data" is a whole home`) {
 		t.Errorf("an ordinary grant must not be called broad; got:\n%s", out)
+	}
+}
+
+// examples/embed reflects over gate.Runnability and fails when a new field goes unprinted;
+// the shipping CLI had no equivalent, so a new degradation flag would reach the reference
+// embedder's test and not the product's. Both halves are guarded here, because a field can
+// be dropped by either: writeRunnability is what a human reads, setRunnable is what a CI
+// gate keys on.
+//
+// What it does NOT cover, so it is not read as more than it is: a field whose CONTENTS are
+// incomplete. Refusals mirrors a set the backend owns, and a check the backend adds there
+// arrives as a shorter list, which no completeness test over FIELDS can see.
+func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
+	// Unresolved is left false: it is the one field that SUPPRESSES the rest, in both
+	// halves, so seeding it would empty the output this scans. Its own arm below asserts
+	// what it prints instead.
+	printed := gate.Runnability{
+		ShieldsUnknown: true,
+		Problems:       []string{`entrypoint "/gone/run.sh": no such file or directory`},
+		Refusals:       []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
+		MissingReads:   []string{"/data/absent"},
+		FileishWrites:  []string{"/out/report.json"},
+		CredentialAliases: []enforce.CredentialAlias{
+			{Path: "/backup/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
+		},
+		CredentialAliasesPartial: true,
+	}
+	render := func(r gate.Runnability) string {
+		var out strings.Builder
+		writeRunnability(&out, r)
+		return out.String()
+	}
+
+	// The envelope is built from a host that COULD anchor its shields: setRunnable
+	// deliberately withholds the grant half under ShieldsUnknown, so seeding both at once
+	// would let a field that never reaches --json pass as one that was withheld on purpose.
+	// The flag itself is asserted from its own envelope below.
+	marshal := func(r gate.Runnability) string {
+		t.Helper()
+		var envelope policyJSON
+		envelope.setRunnable(r)
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	anchored := printed
+	anchored.ShieldsUnknown = false
+	human, machine := render(anchored), marshal(anchored)
+
+	for _, f := range reflect.VisibleFields(reflect.TypeFor[gate.Runnability]()) {
+		if !f.IsExported() {
+			continue
+		}
+		v := reflect.ValueOf(printed).FieldByIndex(f.Index)
+		// Only the shapes the fixture above seeds. A field of another kind is not waved
+		// through on a sentence that is in the output for a different reason - which is how
+		// a completeness guard passes over the very field it was added for.
+		var want, key string
+		// The text the key is looked for in: the anchored envelope for every field but the
+		// unknown-shields flag, which only a host that could not anchor them emits.
+		humanFor, machineFor := human, machine
+		switch {
+		// Named before the shapes below, because what reaches the reader is not the field's
+		// own text: the refusal paragraph is already printed beside the grant it refuses, so
+		// this line counts them rather than repeating them forty words later.
+		case f.Name == "Refusals" && v.Len() > 0:
+			want, key = "cannot be honored", `"refused_grants"`
+		case v.Kind() == reflect.Slice && v.Len() > 0 && v.Type().Elem().Kind() == reflect.String:
+			want = v.Index(0).String()
+		// A slice of a struct is asserted on its first field, the path in every case there
+		// is: a finding that does not name the path it is about is not actionable.
+		case v.Kind() == reflect.Slice && v.Len() > 0 && v.Type().Elem().Kind() == reflect.Struct:
+			want = v.Index(0).Field(0).String()
+			key = `"credential_aliases"`
+		case f.Name == "ShieldsUnknown" && v.Bool():
+			want, key = "where its shields anchor", `"shields_unknown":true`
+			humanFor, machineFor = render(printed), marshal(printed)
+		case f.Name == "CredentialAliasesPartial" && v.Bool():
+			want, key = "the scan for second names", `"credential_aliases_partial":true`
+		// The suppressing field, asserted on its own rather than from the fixture: the
+		// human half says the host could not answer, and the envelope says nothing at all,
+		// because runnable is what a gate keys on and an unasked question must not read as
+		// a green one.
+		case f.Name == "Unresolved":
+			if got := render(gate.Runnability{Unresolved: true}); !strings.Contains(got, "could not answer") {
+				t.Errorf("an unresolved host prints no verdict of its own:\n%s", got)
+			}
+			var suppressed policyJSON
+			suppressed.setRunnable(gate.Runnability{Unresolved: true, Problems: []string{"x"}})
+			if suppressed.Runnable != nil || suppressed.RunnableProblems != nil {
+				t.Errorf("an unresolved host filled the envelope: %+v", suppressed)
+			}
+			continue
+		default:
+			t.Errorf("gate.Runnability.%s is new: give it a value in the fixture above and teach this "+
+				"switch its shape, then print it in writeRunnability and carry it in setRunnable.", f.Name)
+			continue
+		}
+		// Either spelling counts in the human half: a raw path is quoted on its way out and
+		// an already-quoted sentence is not, and which of the two a field is does not change
+		// what the guard asks - that it reached the reader at all.
+		if !strings.Contains(humanFor, want) && !strings.Contains(humanFor, strconv.Quote(want)) {
+			t.Errorf("gate.Runnability.%s is unprinted: print it in writeRunnability. A pre-flight field "+
+				"no frontend reads is the silence it exists to close.\ngot:\n%s", f.Name, humanFor)
+		}
+		if key == "" {
+			key = strconv.Quote(want)
+		}
+		if !strings.Contains(machineFor, key) {
+			t.Errorf("gate.Runnability.%s does not reach --json: carry it in setRunnable, so a CI gate "+
+				"reads the same answer the summary prints.\ngot:\n%s", f.Name, machineFor)
+		}
 	}
 }
