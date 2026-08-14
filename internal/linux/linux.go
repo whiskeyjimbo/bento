@@ -451,6 +451,13 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 		return preflighted{}, err
 	}
 
+	// Before prepareWriteDirs, so a grant this refuses leaves no host directory behind,
+	// and before the launch, which reports a bwrap that could not carve a shield as a
+	// silent stage that names no grant at all.
+	if err := checkShieldsCarvable(sb, exposedPaths(sb, reads, writes), writes, shield.Targets(optIns)); err != nil {
+		return preflighted{}, err
+	}
+
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return preflighted{}, err
 	}
@@ -565,6 +572,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		interpreter:     interp,
 		interpreterName: interpName,
 		exists:          hostExists,
+		writable:        hostWritable,
 		isDir:           hostIsDir,
 		rootDirs:        hostRootDirs,
 		resolve:         hostResolve,

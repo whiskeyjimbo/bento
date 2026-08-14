@@ -30,6 +30,8 @@ func testSandbox(existing ...string) sandbox {
 		emptyFile:  "/tmp/shield",
 		entrypoint: "/work/run.py",
 		exists:     func(p string) bool { return set[p] },
+		// The hypothetical filesystem is the invoking user's own throughout.
+		writable: func(string) bool { return true },
 		// A path is a directory if the fake filesystem has an entry strictly under
 		// it; a leaf entry is a file. This lets a write grant that is a project
 		// directory get its workspace shields while a plain-file grant does not.

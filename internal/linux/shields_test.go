@@ -1208,3 +1208,65 @@ func TestWorkspaceCargoRegistryStaysWritable(t *testing.T) {
 		t.Error("the workspace .cargo directory must not be shielded whole")
 	}
 }
+
+// A write grant whose tree this uid cannot create entries in - a system tree such as
+// /etc or /opt, drwxr-xr-x root root - cannot have the run's shields carved into it:
+// bwrap dies during setup with "Can't mkdir parents for /etc/.git/hooks" and reports
+// nothing, so the run comes back as an unattested silent stage whose sentence offers the
+// embedder's DispatchReexec placement as the cause. That sends a manifest author hunting
+// for a bug in bento or in its embedding when the fix is one line of their own manifest.
+// The refusal has to name the grant, before the launch.
+func TestWriteGrantWhoseShieldCannotBeCarvedNamesTheGrant(t *testing.T) {
+	grant := t.TempDir()
+	// A gitdir with no hooks/ yet: the .git/hooks shield has to be created, and its
+	// parent is the directory the mkdir needs write permission on. Anchoring the checkout
+	// inside the grant also keeps the test off whatever the host happens to have above
+	// its temp directory.
+	gitDir := filepath.Join(grant, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(grant, "run.sh")
+	if err := os.WriteFile(entry, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Interpreter: "sh", Write: []string{grant}}
+
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// r-x, the mode every system tree the audit reproduced on carries. Restored so the
+	// temp directory can be reclaimed however this test leaves.
+	if err := os.Chmod(gitDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o700) })
+
+	_, err = preflightGrants(sb, p, nil)
+	if err == nil {
+		t.Fatal("a write grant whose shields cannot be carved must be refused before the launch")
+	}
+	for _, want := range []string{grant, gitDir, "remove the grant"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q so the author can act on their own manifest; got %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "DispatchReexec") {
+		t.Errorf("the embedder API is not a manifest author's remedy; got %v", err)
+	}
+
+	// The discriminator is write permission, not ownership: /var/tmp is root-owned and
+	// world-writable, and a grant on it carves its shields and runs.
+	if err := os.Chmod(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := preflightGrants(sb, p, nil); err != nil {
+		t.Fatalf("a writable grant must still be honored; got %v", err)
+	}
+}

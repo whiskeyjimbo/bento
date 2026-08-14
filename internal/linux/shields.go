@@ -11,6 +11,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -500,6 +501,39 @@ func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []
 	// gone. Sorting by length is enough: a parent is a strict prefix of its children.
 	slices.SortStableFunc(dirs, func(a, b string) int { return len(b) - len(a) })
 	return dirs, files
+}
+
+// checkShieldsCarvable refuses a write grant whose tree bwrap cannot carve this run's
+// shield mount points into. A grant on a directory this uid cannot create entries in (a
+// system tree such as /etc or /opt, drwxr-xr-x root root) makes bwrap die during setup
+// with "Can't mkdir parents for /etc/.git/hooks", and the launcher then reports nothing:
+// the run comes back as an unattested silent stage, whose sentence offers the embedder's
+// DispatchReexec placement as the cause. A manifest author has no relationship with that
+// API, so the one thing they can act on - their own write: line - has to be named here,
+// before the launch, while the grant behind the mount point is still known.
+//
+// Writability, not ownership: /var/tmp is root-owned and world-writable, and a grant on
+// it carves its shields fine.
+func checkShieldsCarvable(sb sandbox, grants, writes, optIns []string) error {
+	dirs, files := createdShields(sb, grants, writes, optIns)
+	for _, mount := range slices.Concat(dirs, files) {
+		// bwrap makes the whole missing chain, so the directory that has to accept the
+		// mkdir is the deepest ancestor that is already there. The walk terminates at "/",
+		// which exists on every host.
+		parent := filepath.Dir(mount)
+		for !sb.exists(parent) {
+			parent = filepath.Dir(parent)
+		}
+		if sb.writable(parent) {
+			continue
+		}
+		for _, w := range writes {
+			if policy.CoversResolved(w, mount) {
+				return grantrefusal.ShieldNotCarvable(w, mount, parent)
+			}
+		}
+	}
+	return nil
 }
 
 // insideAWriteGrant reports whether path is STRICTLY inside a write grant and is not

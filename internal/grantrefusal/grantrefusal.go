@@ -110,6 +110,14 @@ func GrantIsManagedMount(grant, resolved, mount string) error {
 	return fmt.Errorf("grant %q resolves to %q, a pseudo-filesystem the sandbox mounts fresh; granting it whole would overmount the sandbox's hardened %s with the host's and re-expose host process environs, device nodes, or other processes' temp files; %s is always mounted - grant a specific path inside it instead", grant, resolved, mount, mount)
 }
 
+// ShieldNotCarvable refuses a write grant on a directory this uid cannot create entries
+// in, where the run's own shields have to be carved. It names the directory that refused
+// rather than the grant alone: the grant can be a whole tree and only one directory
+// inside it is the one the mkdir needs.
+func ShieldNotCarvable(grant, shield, dir string) error {
+	return fmt.Errorf("write grant %q cannot be honored: bento shields %q inside it, and creating that mount point needs write permission on %q, which your user does not have; remove the grant, or write somewhere your user owns", grant, shield, dir)
+}
+
 // Looped refuses a grant whose symlinks loop. Read and write alike: bwrap's --ro-bind-try
 // tolerates only a missing source, not ELOOP, so a looping grant of either kind aborts
 // the run naming bwrap rather than the grant.

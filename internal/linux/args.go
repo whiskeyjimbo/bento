@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
@@ -97,6 +99,11 @@ type sandbox struct {
 	// alongside exists; used to decide whether a write grant is a workspace (a
 	// project checkout gets git-hook/editor-task shields) rather than a plain file.
 	isDir func(string) bool
+	// writable reports whether this uid may create entries in an existing host
+	// directory. Injected alongside exists; used to refuse a write grant whose tree
+	// bwrap cannot carve a shield mount point into before the launch turns that into
+	// an unattributed setup failure.
+	writable func(string) bool
 	// rootDirs lists the host's top-level entries to bind individually when a
 	// read grant is "/". Injected alongside exists so the expansion is testable
 	// against a hypothetical root. It must exclude the mounts baseFlags manages
@@ -762,6 +769,13 @@ func hostResolve(path string) string {
 		return resolved
 	}
 	return path
+}
+
+// hostWritable reports whether this uid may create entries in a directory. It asks the
+// kernel rather than comparing mode bits against the uid, so an ACL or a group grant
+// answers the same way the mkdir bwrap is about to attempt will.
+func hostWritable(dir string) bool {
+	return unix.Access(dir, unix.W_OK) == nil
 }
 
 // hostRootDirs lists the host's top-level entries to bind for a "/" read grant,
