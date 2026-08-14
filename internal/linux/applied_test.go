@@ -1011,8 +1011,9 @@ func TestATornRecordLineDoesNotVoidTheAttestation(t *testing.T) {
 		t.Errorf("setup state = %v, want SetupAttested", got)
 	}
 
-	// The tolerance is scoped to the record section: an unknown line after the marker but
-	// BEFORE any exec-recorder line is still the tampering it always was.
+	// The tolerance is scoped to the record section: after the marker but before any
+	// exec-recorder line, the only line forgiven is a torn prefix of that key, and anything
+	// else is still the tampering it always was.
 	other := filepath.Join(t.TempDir(), "applied")
 	if err := os.WriteFile(other, []byte("exec-filter none\nlandlock yes\nAPPLIED\nnot-a-record yes\n"), 0o600); err != nil {
 		t.Fatal(err)
