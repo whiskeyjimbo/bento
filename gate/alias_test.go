@@ -56,6 +56,12 @@ func TestCheckReportsAHardlinkedCredential(t *testing.T) {
 	if got := r.CredentialAliases[0]; got.Path != alias || got.Credential != key {
 		t.Errorf("the finding must name the alias and the credential it reaches; got %+v", got)
 	}
+	// Most anchors are absent on any given home, and an anchor that is not there is not one
+	// this could not read - counting those would report every ordinary run partial, which
+	// is a note an operator learns to skim.
+	if r.CredentialAliasesPartial {
+		t.Error("a home whose anchors are merely absent is not a partial scan")
+	}
 	// Reported beside the verdict, never as it: the run's refusal is lifted by
 	// --accept-alias, which is not in the manifest and so cannot be checked from here.
 	if len(r.Refusals) != 0 {

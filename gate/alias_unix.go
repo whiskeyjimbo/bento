@@ -3,6 +3,7 @@
 package gate
 
 import (
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -166,7 +167,12 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 		// and following the link would make an extra link the normal case.
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // every error is handled in the callback; see the docstring
 			if err != nil {
-				unread = true
+				// A store this host does not have is not a store it could not look at:
+				// most anchors are absent on any given home, and counting those would
+				// report every ordinary run partial.
+				if !nothingBehind(err) {
+					unread = true
+				}
 				return nil //nolint:nilerr // an anchor bento cannot walk yields no finding, reported partial rather than raised
 			}
 			// Skipped for the reason the backend skips it: a password store keeps its
@@ -181,9 +187,11 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 			if !d.Type().IsRegular() {
 				return nil
 			}
-			id, links, ok := identify(d)
-			if !ok {
-				unread = true
+			id, links, err := identify(d)
+			if err != nil {
+				if !nothingBehind(err) {
+					unread = true
+				}
 				return nil
 			}
 			if links < 2 {
@@ -233,7 +241,7 @@ func aliasesUnder(root string, want map[fileID]string, budget *int) ([]enforce.C
 		}
 		*budget--
 		if d.IsDir() {
-			if id, _, ok := identify(d); ok && !devs[id.dev] && p != root {
+			if id, _, err := identify(d); err == nil && !devs[id.dev] && p != root {
 				return fs.SkipDir
 			}
 			return nil
@@ -241,7 +249,7 @@ func aliasesUnder(root string, want map[fileID]string, budget *int) ([]enforce.C
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if id, _, ok := identify(d); ok {
+		if id, _, err := identify(d); err == nil {
 			if cred, hit := want[id]; hit {
 				out = append(out, enforce.CredentialAlias{Path: p, Credential: cred})
 			}
@@ -253,15 +261,32 @@ func aliasesUnder(root string, want map[fileID]string, budget *int) ([]enforce.C
 
 // identify returns a walk entry's content identity and link count. d.Info is a second
 // lstat for an entry read from a directory listing, so it fails on its own account - a
-// store rewritten mid-scan (an `ssh-keygen`, an `aws sso login`) is enough.
-func identify(d fs.DirEntry) (fileID, uint64, bool) {
+// store rewritten mid-scan (an `ssh-keygen`, an `aws sso login`) is enough. The error is
+// returned rather than a bare false because the anchor scan reports a could-not-look and
+// has to tell that from an entry that is simply gone.
+func identify(d fs.DirEntry) (fileID, uint64, error) {
 	fi, err := d.Info()
 	if err != nil {
-		return fileID{}, 0, false
+		return fileID{}, 0, err
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fileID{}, 0, false
+		return fileID{}, 0, errNoFileID
 	}
-	return fileID{dev: uint64(st.Dev), ino: st.Ino}, uint64(st.Nlink), true
+	return fileID{dev: uint64(st.Dev), ino: st.Ino}, uint64(st.Nlink), nil
+}
+
+// errNoFileID is a stat this platform answers without the (device, inode) pair a hardlink
+// is identified by. Not "nothing behind it": the file is there and its identity is
+// unreadable, which is the could-not-look the anchor scan reports.
+var errNoFileID = errors.New("no file identity on this platform")
+
+// nothingBehind reports an error that says the path is not there, as against one that says
+// bento could not look. Mirrors internal/linux's predicate of the same name, which the
+// backend's credential walk raises on: the gate and the run have to agree on which errors
+// are an absence, or one reports a store as clean that the other refuses over.
+func nothingBehind(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP)
 }
