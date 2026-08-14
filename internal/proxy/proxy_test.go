@@ -794,8 +794,9 @@ func TestServeReturnsAcceptErrorThatPrecededCancellation(t *testing.T) {
 
 // dyingListener delegates the first Accept and then fails on its own, standing in
 // for a listener that stops accepting mid-run.
-// died, when non-nil, is closed as the terminal error is handed back, so a caller can
-// order its own teardown after the death instead of guessing at it.
+// died is closed as the terminal error is handed back, so a caller can order its own
+// teardown after the death instead of guessing at it. The once is for the accept loop
+// asking a second time, which it does when the caller does not stop on the first error.
 type dyingListener struct {
 	net.Listener
 	err      error
@@ -806,11 +807,7 @@ type dyingListener struct {
 
 func (l *dyingListener) Accept() (net.Conn, error) {
 	if l.accepted {
-		l.dies.Do(func() {
-			if l.died != nil {
-				close(l.died)
-			}
-		})
+		l.dies.Do(func() { close(l.died) })
 		return nil, l.err
 	}
 	l.accepted = true
