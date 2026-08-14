@@ -232,6 +232,14 @@ func partitionBroad(paths []string) (kept, dropped []string) {
 	return kept, dropped
 }
 
+// broadGrantNote is the sentence both review commands raise over a grant isBroadDir calls
+// too broad. One sentence because they are read one after the other on the same manifest -
+// validate on every edit, approve once at the end - and a reader who met two wordings for
+// one judgement would read the second as a new finding.
+func broadGrantNote(kind, grant string) string {
+	return fmt.Sprintf("%s: %q is a whole home or top-level directory, far more than a script needs.", kind, grant)
+}
+
 // isBroadDir reports whether path is too broad to bind as a whole: the root, a
 // top-level directory (a direct child of "/", such as /etc or /home), or the user's
 // home directory itself. Binding any of these exposes far more than a profiled script

@@ -292,7 +292,7 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
 			for _, g := range grants {
 				if isBroadDir(g) {
-					notes = append(notes, fmt.Sprintf("%s: %q is a whole home or top-level directory, far more than a script needs.", kind, g))
+					notes = append(notes, broadGrantNote(kind, g))
 				}
 			}
 		}

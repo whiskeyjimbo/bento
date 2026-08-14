@@ -1041,3 +1041,21 @@ func TestValidateSaysWhenTheAliasScanWasCutShort(t *testing.T) {
 		t.Error("a scan that never ran is unknown, not partial")
 	}
 }
+
+// The breadth judgement existed on approve alone, and the edit-run loop spins on
+// validate: an author who validates twenty times and approves once meets the sentence
+// about `write: /etc` after the loop that would have acted on it. Both commands raise it
+// in one sentence (broadGrantNote) so the two cannot come to differ about what is broad.
+func TestValidateNotesABroadGrant(t *testing.T) {
+	var buf bytes.Buffer
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/app/data"}, Write: []string{"/etc"}}
+	writePolicySummary(&buf, "m.yaml", p, resolvedGrants(p, "m.yaml"), nil)
+
+	out := buf.String()
+	if !strings.Contains(out, `write: "/etc" is a whole home or top-level directory`) {
+		t.Errorf("validate must say a top-level write grant is broader than a script needs; got:\n%s", out)
+	}
+	if strings.Contains(out, `"/srv/app/data" is a whole home`) {
+		t.Errorf("an ordinary grant must not be called broad; got:\n%s", out)
+	}
+}

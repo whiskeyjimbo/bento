@@ -646,6 +646,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	writeResolvedGrants(w, p.Read, resolvedRead)
+	writeBroadGrantNotes(w, "read", resolvedRead)
 	shieldGrants, shieldErr := explicitShieldGrants(resolvedRead)
 	for _, g := range shieldGrants {
 		fmt.Fprintf(w, "  note: this grant names a %s bento shields on every run, exactly\n", g.Holds.Noun())
@@ -661,6 +662,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
+	writeBroadGrantNotes(w, "write", resolvedWrite)
 	writeRefusals := gate.ShieldedWriteProblems(shieldSet, resolvedWrite)
 	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
 		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
@@ -732,6 +734,22 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "\nEverything not listed above is denied. Credentials, SSH keys, and shell\n")
 	fmt.Fprintf(w, "profiles are shielded even if a path above would otherwise expose them.\n")
+}
+
+// writeBroadGrantNotes marks the grants that name a whole home or a top-level directory,
+// beside the list they were spelled in. approve raises the same sentence at the stamp, and
+// that is too late to be the only place: the edit-run loop spins on validate, so the
+// judgement arrives after the loop that would have acted on it.
+//
+// Asked of the resolved grants, as approve asks it: isBroadDir judges where a path lands,
+// and a grant still spelled `~` or `./data` answers about the wrong directory. Where this
+// host could not resolve them there is nothing to ask, and the summary already says so.
+func writeBroadGrantNotes(w io.Writer, kind string, grants []string) {
+	for _, g := range grants {
+		if isBroadDir(g) {
+			fmt.Fprintf(w, "  note: %s\n", broadGrantNote(kind, g))
+		}
+	}
 }
 
 // writeGrantRefusals prints the grants a run will not honor, beside the list they were
