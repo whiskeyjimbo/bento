@@ -1779,3 +1779,27 @@ func TestSearchMissesAreNotProposedAsReads(t *testing.T) {
 		t.Errorf("the observation was mutated: %v", obs.Reads)
 	}
 }
+
+// The above-write-shield note is about a grant the proposal KEEPS - it tells the reviewer
+// that an ordinary run honors it while a degraded one refuses it. Raised over a grant one
+// of the clamps then dropped, it names a grant the manifest does not hold, and reads as a
+// second finding about a path the reviewer was just told was withheld. It is the LAST
+// thing clampProposal computes for that reason, so the property is stated over whatever
+// the clamps leave rather than over the one shape that reaches it today.
+func TestEveryDegradedTierNoteNamesASurvivingGrant(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory to build broad grants from")
+	}
+	p := &policy.Policy{Write: []string{"/", home, "/etc", filepath.Join(home, ".pyenv")}}
+	_, _, aboveWriteShield, _, broadWrites := clampProposal(p)
+
+	if len(broadWrites) == 0 {
+		t.Fatal("the root, the home and /etc must all be dropped as too broad; nothing was")
+	}
+	for _, g := range aboveWriteShield {
+		if !slices.Contains(p.Write, g) {
+			t.Errorf("%q is flagged as degraded-tier-refused but is not in the proposal (kept=%v, broad=%v)", g, p.Write, broadWrites)
+		}
+	}
+}

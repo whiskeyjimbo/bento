@@ -152,15 +152,26 @@ func workspaceShields(writes []string) []denylist.Rule {
 		seen[root] = true
 		// A gitfile checkout - a submodule or a linked worktree, where .git is a file
 		// pointing at the real gitdir - has no .git directory to shield, so its rules are
-		// the other set. Same test the backend makes: a regular file, never a directory
-		// that happens to be named .git.
-		if fi, err := os.Lstat(filepath.Join(root, ".git")); err == nil && fi.Mode().IsRegular() {
+		// the other set. Spelled as the backend's two seams are, existence without
+		// following and directory-ness with: a .git SYMLINK to a regular file is a gitfile
+		// checkout to the run, and a single Lstat here would read it as an ordinary one and
+		// derive a different rule set than the run refuses on.
+		gitfile := filepath.Join(root, ".git")
+		if _, err := os.Lstat(gitfile); err == nil && !isDirFollowingLinks(gitfile) {
 			rules = append(rules, denylist.WorkspaceGitfile(root)...)
 		} else {
 			rules = append(rules, denylist.Workspace(root)...)
 		}
 	}
 	return rules
+}
+
+// isDirFollowingLinks is the backend's isDir seam: a symlink to a directory is a
+// directory, which is what decides whether a .git entry is a checkout's own or a gitfile
+// pointing at one.
+func isDirFollowingLinks(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // checkoutRoot walks up from dir to the nearest directory holding a .git, or returns dir
@@ -299,11 +310,17 @@ func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, abo
 	// against, and the run this proposal feeds would be refused for that same reason.
 	if set, err := commandShieldSet(); err == nil {
 		p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(set, p.Read, p.Write)
-		aboveWriteShield = aboveWriteShieldGrants(set, p.Write)
 	}
 	p.Write, broadWrites = partitionBroad(p.Write)
 	p.Read, broadReads = partitionBroad(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
+	// Last, over the grants that SURVIVED: this one is a note about a grant the proposal
+	// keeps, and raised over a dropped one it would tell the reviewer to narrow a grant
+	// they were just told was withheld. The set is asked again rather than carried down
+	// because the clamps above are what decide which grants there are left to say it of.
+	if set, err := commandShieldSet(); err == nil {
+		aboveWriteShield = aboveWriteShieldGrants(set, p.Write)
+	}
 	return shielded, writeShielded, aboveWriteShield, broadReads, broadWrites
 }
 

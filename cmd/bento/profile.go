@@ -1102,13 +1102,6 @@ func printSocketAccesses(out io.Writer, obs profile.Observation) []accessNoteJSO
 	return notes
 }
 
-// printUnrepresentable names the observations Synthesize withheld because a manifest
-// cannot hold them: a path carrying a character the policy grammar refuses in a path
-// field, or a CONNECT host that is not a hostname, a canonical address, or a wildcard.
-// Both are values the TARGET chose - a filename it created, a host it dialed - so a
-// hostile or merely sloppy one can produce them, and proposing one would fail the
-// marshal that ends the run. Like the floored writes above, they are dropped inside
-// Synthesize, so without this the reviewer has no trace of the access at all.
 // withoutSearchMisses returns obs with the reads dropped that a $PATH search invented: a
 // path nothing was found at during the run AND nothing is at on the host either. glibc's
 // execvp and dash's tryexec walk $PATH with a real execve per element rather than a stat,
@@ -1124,9 +1117,14 @@ func printSocketAccesses(out io.Writer, obs profile.Observation) []accessNoteJSO
 // round - TestProfileWarnsOnlyWhenTheSearchPathLostTheTool pins it. Only the host can tell
 // the two apart, so both conditions are load-bearing.
 //
-// Only the PROPOSAL is filtered. The observation itself is returned unchanged to every
-// warning below, because the access was real and the reviewer should still see what the
-// run reached for; what is withheld is a grant that would mean nothing.
+// Only the PROPOSAL is filtered. The caller passes the original observation to every
+// warning it prints, because the access was real and the reviewer should still see what
+// the run reached for; what is withheld is a grant that would mean nothing.
+//
+// Reads alone. A write that never resolved is collapsed to its parent directory before
+// anything judges it, and the parent's existence is not what the observation records, so
+// there is no equivalent fact to key on - and the search that produces these is execvp's,
+// which is a read.
 func withoutSearchMisses(obs profile.Observation) profile.Observation {
 	absent := map[string]bool{}
 	for _, p := range obs.Absent {
@@ -1145,6 +1143,13 @@ func withoutSearchMisses(obs profile.Observation) profile.Observation {
 	return obs
 }
 
+// printUnrepresentable names the observations Synthesize withheld because a manifest
+// cannot hold them: a path carrying a character the policy grammar refuses in a path
+// field, or a CONNECT host that is not a hostname, a canonical address, or a wildcard.
+// Both are values the TARGET chose - a filename it created, a host it dialed - so a
+// hostile or merely sloppy one can produce them, and proposing one would fail the
+// marshal that ends the run. Like the floored writes above, they are dropped inside
+// Synthesize, so without this the reviewer has no trace of the access at all.
 func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJSON {
 	var notes []accessNoteJSON
 	// A write collapses to its parent before Synthesize screens it, so the write side is
