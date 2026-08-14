@@ -32,6 +32,7 @@ var (
 	seccompStrictExecSupported    = seccomp.StrictExecSupported
 	seccompEgressSupported        = seccomp.EgressSupported
 	landlockScopedIPCRestricted   = landlock.ScopedIPCRestricted
+	landlockNetTCPRestricted      = landlock.NetTCPRestricted
 )
 
 // Probe reports what this host can actually enforce.
@@ -53,7 +54,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// with a seccomp egress and cross-process block, so its viability - not just
 	// Landlock's - decides whether a degraded run is offered.
 	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), landlockScopedIPCRestricted(), degradedFencesOK))
+	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), landlockScopedIPCRestricted(), landlockNetTCPRestricted(), degradedFencesOK))
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
 	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
@@ -193,7 +194,7 @@ func limitsLayers(scopeOK bool, scopeReason string, memState enforce.State, memR
 // does not confine - the same paragraph on every degraded host - is Consequences. A
 // refusal prints the first and sends the reader to a fuller report for the second;
 // doctor prints both. Nothing is dropped, only moved out from on top of the remedy.
-func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, scopedIPCRestricted, degradedFencesOK bool) enforce.LayerStatus {
+func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, scopedIPCRestricted, netTCPRestricted, degradedFencesOK bool) enforce.LayerStatus {
 	status := func(state enforce.State, reason string) enforce.LayerStatus {
 		return enforce.LayerStatus{Layer: enforce.LayerFilesystem, State: state, Reason: reason}
 	}
@@ -229,9 +230,8 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			" - though seccomp blocks the cross-process memory read/write and ptrace injection " +
 			"that would let it take one over - and a background process it leaves is swept only best-effort by " +
 			"killing the run's process group, which a setsid() escapes and which also stops a target that reads " +
-			"an interactive terminal), and no network namespace (seccomp blocks IP egress and Landlock denies " +
-			"TCP connect on a descriptor the filter cannot revoke, but neither reaches netlink " +
-			"interface enumeration, nor " + unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
+			"an interactive terminal), and no network namespace (" + netFenceClause(netTCPRestricted) +
+			unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted)
 		return l
@@ -276,6 +276,26 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 	return ". This kernel's Landlock ABI is also below 5, which cannot restrict ioctl on device files, so " +
 		"any ioctl on any device node the target can open - the host's whole /dev, since this tier has no " +
 		"mount namespace - is available beyond the terminal-injection set seccomp blocks"
+}
+
+// netFenceClause is the IP half of the degraded tier's "no network namespace"
+// disclosure, up to the unix-socket clause that follows it. Landlock has no network
+// access set before ABI 4, where BestEffort downgrades the tier's net domain to an empty
+// config that restricts nothing - so on every Landlock kernel from 5.13 to 6.6 the
+// seccomp egress filter is the whole fence, and the residual it structurally cannot
+// close stays open. That residual is the reason the domain exists: the filter governs
+// socket CREATION, so it cannot revoke an AF_INET descriptor the target is handed over
+// SCM_RIGHTS, while Landlock's connect(2) hook evaluates the calling task's domain and
+// denies it whatever its origin.
+func netFenceClause(netTCPRestricted bool) string {
+	if netTCPRestricted {
+		return "seccomp blocks IP egress and Landlock denies TCP connect on a descriptor the filter " +
+			"cannot revoke, but neither reaches netlink interface enumeration, nor "
+	}
+	return "seccomp blocks IP egress, but this kernel's Landlock ABI is below 4 and cannot restrict TCP " +
+		"connect, so an already-created AF_INET descriptor passed to the target over SCM_RIGHTS stays " +
+		"usable - the filter governs socket creation, not use, and has nothing behind it here. Nor does " +
+		"it reach netlink interface enumeration, or "
 }
 
 // unixSocketClause is the unix-socket half of the degraded tier's "no network namespace"

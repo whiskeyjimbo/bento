@@ -551,17 +551,12 @@ func TestNetTCPCarriesBindAndConnect(t *testing.T) {
 	}
 }
 
-// NetTCPRestricted reports whether this kernel's Landlock ABI (>= 4) can restrict TCP
-// bind and connect. The degraded tier's network domain is a second fence behind the
-// seccomp egress filter; below this ABI BestEffort restricts nothing and the filter is
-// the whole of it.
-//
-// The fence exists for the case the filter structurally cannot reach. The filter governs
-// socket CREATION, so it cannot revoke a socket the target already holds, and it names an
-// SCM_RIGHTS pass over an allowed AF_UNIX socket as an accepted residual. Landlock's net
-// hooks are on connect(2) and evaluate the calling task's domain, so a passed AF_INET
-// descriptor is still denied - which is what the pre-domain arm below observes on a real
-// kernel rather than asserting.
+// The net domain denies a TCP connect on a descriptor created before it was applied,
+// which is the residual the seccomp egress filter structurally cannot close: the filter
+// governs socket creation, so an AF_INET fd passed in over SCM_RIGHTS is beyond it, while
+// Landlock's connect(2) hook evaluates the calling task's domain whatever the socket's
+// origin. The pre-domain arm observes that on a real kernel rather than asserting it, and
+// the ABI branch below is the same one NetTCPRestricted reports to the degraded report.
 func TestRestrictDegradedFencesTCPConnect(t *testing.T) {
 	if !Available() {
 		t.Skip("Landlock not present on this kernel")

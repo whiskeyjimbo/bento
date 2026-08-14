@@ -40,5 +40,8 @@ func IoctlDevRestricted() bool { return false }
 // ResolveUnixRestricted reports false: Landlock is Linux-only.
 func ResolveUnixRestricted() bool { return false }
 
+// NetTCPRestricted reports false: Landlock is Linux-only.
+func NetTCPRestricted() bool { return false }
+
 // ScopedIPCRestricted reports false: Landlock is Linux-only.
 func ScopedIPCRestricted() bool { return false }

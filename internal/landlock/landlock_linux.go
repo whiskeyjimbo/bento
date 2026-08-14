@@ -634,6 +634,21 @@ func ResolveUnixRestricted() bool {
 	return effectiveABI() >= 9
 }
 
+// NetTCPRestricted reports whether this kernel's Landlock ABI (>= 4) can restrict TCP
+// bind and connect. The degraded tier's network domain is a second fence behind the
+// seccomp egress filter; below this ABI BestEffort restricts nothing and the filter is
+// the whole of it.
+//
+// The fence exists for the case the filter structurally cannot reach. The filter governs
+// socket CREATION, so it cannot revoke a socket the target already holds, and it names an
+// SCM_RIGHTS pass over an allowed AF_UNIX socket as an accepted residual. Landlock's net
+// hooks are on connect(2) and evaluate the calling task's domain, so a passed AF_INET
+// descriptor is still denied - which is why the degraded run report names this alongside
+// truncate, ioctl_dev and resolve_unix rather than claiming the fence unconditionally.
+func NetTCPRestricted() bool {
+	return effectiveABI() >= 4
+}
+
 // ScopedIPCRestricted reports whether this kernel's Landlock ABI (>= 6, and past the
 // signal-scoping errata effectiveABI already floors for) can scope IPC. Two residuals
 // of the degraded tier close with it: an abstract-namespace unix socket to a host
