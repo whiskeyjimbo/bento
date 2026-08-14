@@ -691,6 +691,15 @@ func Home(home string) []Rule {
 		// `go env -w GOFLAGS=-toolexec=...` writes this file, and every later host `go
 		// build` then execs the named binary. No script and no approval record in between.
 		".config/go/env",
+		// bin-dir and vendor-dir in composer's config name the directory it installs
+		// package binaries into, so a write repoints the next `composer global require`
+		// at a $PATH-resident path of the writer's choosing - the plant the vendor/bin
+		// shield stops at the default location. Both spellings of composer's home, as
+		// auth.json beside it. `composer config` rewrites this file, so an in-sandbox
+		// composer that reconfigures itself is refused: the .config/go/env fork, taken
+		// the same way, because reading it is what composer actually needs.
+		".config/composer/config.json",
+		".composer/config.json",
 		".vimrc",               // sourced when vim opens a file
 		".exrc",                // vim also sources this (ex/vi rc) on startup
 		".gvimrc",              // gvim rc, sourced on gvim startup
@@ -1411,6 +1420,15 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			for _, f := range []string{"config.toml", "config", "env"} {
 				addWriteShield(filepath.Join(c, f), "CARGO_HOME")
 			}
+		}
+	}
+	// COMPOSER_HOME's third rule, file-shaped so neither table above can carry it: the
+	// auth.json half is DenyAll in dirFileEnvs and the vendor/bin half is a directory in
+	// writeOnlyDirEnvs, and this is the DenyWrite file between them. The CARGO_HOME split
+	// again, one variable further.
+	if base := os.Getenv("COMPOSER_HOME"); filepath.IsAbs(base) {
+		if c := filepath.Clean(base); !isDefault(c, ".config/composer") {
+			addWriteShield(filepath.Join(c, "config.json"), "COMPOSER_HOME")
 		}
 	}
 	for _, de := range dirSubEnvs {

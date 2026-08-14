@@ -2199,3 +2199,31 @@ func TestEveryRelocationBlockHoldsItsGuardColumns(t *testing.T) {
 		})
 	}
 }
+
+// composer's config.json carries bin-dir and vendor-dir: both name a directory composer
+// installs package binaries into, so a write there redirects the next `composer global
+// require` onto a $PATH-resident path of the target's choosing - the same plant the
+// vendor/bin shield stops at the default. Shielded at both homes and under the
+// relocation, the way auth.json beside it already is.
+func TestHomeShieldsTheComposerBinDirKnob(t *testing.T) {
+	t.Setenv("COMPOSER_HOME", "/srv/composer")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{
+		"/home/u/.composer/config.json",
+		"/home/u/.config/composer/config.json",
+		"/srv/composer/config.json",
+	} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("no shield at %q, so bin-dir can be repointed", p)
+			continue
+		}
+		if r.Deny != DenyWrite || r.Dir {
+			t.Errorf("shield at %q is %+v, want a DenyWrite file rule", p, r)
+		}
+	}
+}
