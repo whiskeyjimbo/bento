@@ -84,6 +84,13 @@ var (
 // taking the Go runtime's own signal handling with it - and it is the one dispatch
 // failure that must NOT be reported as a target that never ran, since by then it has.
 //
+// restrictDegraded is here for a fourth reason, the mirror of that one: it DOES have a
+// line in the applied report, and that line is trustworthy only because the call above it
+// is fatal - nothing about the record independently attests the fence. A regression
+// turning it into warn-and-proceed would produce a complete, marker-bearing report
+// describing Landlock as applied for a degraded run with no filesystem confinement at all,
+// which is the tier's primary layer and the one with no mount namespace behind it.
+//
 // blockEgress, blockProcessReach and blockTerminalInjection are here for a third reason,
 // specific to the degraded tier: none of the three has a line in the applied report, so
 // the only thing attesting them to the host is that the marker was written at all - the
@@ -100,6 +107,7 @@ var (
 	blockEgress            = seccomp.BlockEgress
 	blockProcessReach      = seccomp.BlockProcessReach
 	blockTerminalInjection = seccomp.BlockTerminalInjection
+	restrictDegraded       = landlock.RestrictDegraded
 )
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
@@ -215,7 +223,7 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 
 	// Landlock last, so the setup above (which does not touch confined paths) is not
 	// itself restricted. A failure is fatal - this is the primary FS confinement.
-	if err := landlock.RestrictDegraded(cfg.Readable, cfg.Writable, cfg.ExecPaths); err != nil {
+	if err := restrictDegraded(cfg.Readable, cfg.Writable, cfg.ExecPaths); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not apply the Landlock confinement: %w", err)
 	}
 	applied.record(AppliedLandlock, AppliedYes, nil)

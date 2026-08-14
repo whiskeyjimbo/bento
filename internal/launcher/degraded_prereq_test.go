@@ -131,6 +131,7 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 		{"egress-install", "could not install the egress filter"},
 		{"process-reach", "could not install the cross-process block"},
 		{"terminal-injection", "could not install the terminal-injection block"},
+		{"landlock-install", "could not apply the Landlock confinement"},
 	} {
 		t.Run(tc.fence, func(t *testing.T) {
 			report := filepath.Join(t.TempDir(), "applied")
@@ -188,6 +189,8 @@ func runDegradedChild(fence string) {
 		blockProcessReach = failed
 	case "terminal-injection":
 		blockTerminalInjection = failed
+	case "landlock-install":
+		restrictDegraded = func([]string, []string, []string) error { return failed() }
 	}
 	if _, err := RunDegraded(DegradedConfig{AppliedFD: 3, Target: []string{"/bin/true"}}); err != nil {
 		os.Stdout.WriteString("REFUSED: " + err.Error() + "\n")
