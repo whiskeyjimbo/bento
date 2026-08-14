@@ -249,6 +249,14 @@ func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	var walk func(d string, depth int)
 	walk = func(d string, depth int) {
 		if depth > maxGitdirDepth {
+			// Past the bound this scan stops seeing, which is the same condition as the
+			// unreadable directory below and takes the same answer: fail closed, so a tree
+			// planted deep enough to truncate the walk is shielded whole rather than
+			// dropped. Returning nothing here would make depth the lever the paragraph
+			// above says attacker-writable content must not have.
+			if sb.isDir(d) {
+				rules = append(rules, denylist.Rule{Path: d, Deny: denylist.DenyWrite, Dir: true})
+			}
 			return
 		}
 		// A gitdir is identified by a regular config FILE (not a directory named
@@ -314,8 +322,13 @@ func redirectedPath(sb sandbox, path string) []denylist.Rule {
 	return []denylist.Rule{{Path: path, Deny: denylist.DenyWrite, Dir: true}}
 }
 
-// maxGitdirDepth bounds the .git/modules recursion so a symlink loop a prior run
-// could plant cannot spin setup forever. Real submodule nesting is a handful deep.
+// maxGitdirDepth bounds how deep the .git/modules recursion descends into real
+// subdirectories. It bounds the walk, not any chain of links: a symlinked entry gets a
+// rule instead of being descended (see redirectedEntries), so no link ever costs depth and
+// no planted loop can drive this recursion. What it bounds is a deeply-nested real tree a
+// prior run could plant to spin setup, and reaching it is not a reason to stop shielding -
+// the cutoff fails closed on the subtree. Real submodule nesting is a handful deep. Kept
+// identical to internal/shield's maxWalkDepth, which walks the same host trees.
 const maxGitdirDepth = 64
 
 // denyArgs shields every deny-list rule that a grant could otherwise expose.

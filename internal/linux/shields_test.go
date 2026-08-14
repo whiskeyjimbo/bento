@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -1009,28 +1008,44 @@ func TestGitDirShieldsFailsClosedOnUnreadableWorktrees(t *testing.T) {
 	}
 }
 
-// A prior write-grant run can plant a symlink loop under .git/modules (which is not
-// itself shielded); the scan on the next launch must not recurse forever. The depth
-// bound makes gitDirShields return instead of spinning until the path overflows.
-func TestGitDirShieldsTerminatesOnSymlinkLoop(t *testing.T) {
+// .git/modules is writable and unshielded across runs, so a prior run can nest a tree
+// deeper than the walk descends and plant its gitdir past the cutoff. The depth bound is
+// a bound on the walk, not a licence to drop what it did not reach: the cutoff shields the
+// truncation point read-only, exactly as the unreadable-directory branch does.
+//
+// This is what pins maxGitdirDepth to a number: the rule lands at the path the bound picks
+// out, so a different bound puts it somewhere else and this fails.
+func TestGitDirShieldsFailsClosedAtTheDepthCutoff(t *testing.T) {
 	root := t.TempDir()
-	modules := filepath.Join(root, ".git", "modules")
-	if err := os.MkdirAll(modules, 0o755); err != nil {
+	deep := filepath.Join(root, ".git", "modules")
+	// One level past the last the walk descends into, which is where the cutoff bites.
+	cutoff := ""
+	for i := 0; i <= maxGitdirDepth; i++ {
+		deep = filepath.Join(deep, "d")
+		if i == maxGitdirDepth {
+			cutoff = deep
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(deep, "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(modules, filepath.Join(modules, "loop")); err != nil {
+	if err := os.WriteFile(filepath.Join(deep, "config"), []byte("[core]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	sb := sandbox{
 		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
 		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
 	}
-	done := make(chan struct{})
-	go func() { gitDirShields(sb, root); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("gitDirShields did not terminate on a symlink loop under .git/modules")
+	rules := gitDirShields(sb, root)
+	shielded := false
+	for _, r := range rules {
+		if r.Path == cutoff && r.Deny == denylist.DenyWrite && r.Dir {
+			shielded = true
+		}
+	}
+	if !shielded {
+		t.Errorf("a tree nested past the depth bound must be shielded read-only at %q (fail closed), not dropped; rules=%v", cutoff, rules)
 	}
 }
 
