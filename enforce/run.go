@@ -156,9 +156,10 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// gate - the target gets strictly LESS network than declared, since runDegraded never
 	// listens on the proxy socket newSandbox sets and the launcher blocks egress outright
 	// - so what breaks is the attestation: Result.Report would assert LayerNetwork
-	// Enforced for a run in
-	// which no proxy listened and no allowlist was consulted, and nothing downstream
-	// corrects it (reconcile never touches LayerNetwork, and the overlay only worsens).
+	// Enforced for a run in which no proxy listened and no allowlist was consulted. The
+	// Linux backend does now correct that layer itself, but the refusal cannot rest on a
+	// backend doing so: Run takes any Enforcer, and the overlay here only ever worsens,
+	// so a backend that claims Enforced is believed.
 	if degraded {
 		if len(opts.DenyPaths) > 0 {
 			return Result{}, &Refusal{

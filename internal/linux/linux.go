@@ -274,8 +274,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		a := parseApplied(appliedReport)
 		// The wrapper's real status, not a literal 0: reconcile stamps it into the reason
 		// for a stage that reported nothing, and a SIGKILLed child did not end with exit
-		// code 0. killedByCancel above already established this one was signalled.
-		cancelCode, _, _ := exitStatusOf(cmd.ProcessState)
+		// code 0. A cancel landing before the wrapper started leaves no status at all -
+		// killedByCancel reads a nil ProcessState as the cancel, which is how a context
+		// already cancelled when Run was called arrives here - and -1 is what os reports
+		// for a process with no exit code of its own.
+		cancelCode := -1
+		if cmd.ProcessState != nil {
+			cancelCode, _, _ = exitStatusOf(cmd.ProcessState)
+		}
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, cancelCode)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)

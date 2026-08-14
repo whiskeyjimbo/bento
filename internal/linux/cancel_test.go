@@ -145,6 +145,29 @@ func TestCancelledRunStillReportsWhatItObserved(t *testing.T) {
 	}
 }
 
+// A context already cancelled when Run is called never starts the wrapper at all, so
+// cmd.ProcessState is nil - and killedByCancel deliberately reads that as the cancel
+// ("the command never started"), which puts the nil straight into the cancel arm. The
+// arm must still come back with the cancellation error rather than crashing on it.
+func TestRunOnAnAlreadyCancelledContextDoesNotCrash(t *testing.T) {
+	requireSandbox(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "noop.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecAll}
+
+	_, err := sandboxEnforcer(t).Run(ctx, p, enforce.Process{}, enforce.RunOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v, want an error wrapping context.Canceled", err)
+	}
+}
+
 func TestRunDegradedReportsACancelledContextAsAnError(t *testing.T) {
 	requireDegraded(t)
 
