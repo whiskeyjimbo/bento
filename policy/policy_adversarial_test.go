@@ -1,7 +1,10 @@
 package policy
 
 import (
+	"fmt"
 	"math"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -487,6 +490,19 @@ func FuzzPolicyValidation(f *testing.F) {
 	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10)
 	f.Add("", "", "", "", "", "", "", "", "", -1)
 	f.Add("\x00", "\x1b[31m", "1ENV", "\u202E", "\ufeff", "127.1", "70000", "invalid", "NaN%", math.MinInt)
+	// One bad field each, on an otherwise valid policy. The all-bad seed above reaches
+	// the refusal on whichever check runs first, so it proves nothing about the rest;
+	// these are what drive the acceptance side of the oracle at all.
+	f.Add("/bin/app\u202E", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "", "api.com", "443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "~", "api.com", "443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "~operator/keys", "api.com", "443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "0443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "500-100", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", -1)
+	// Surrounding whitespace is legal in a path, so this one is accepted - it is here to
+	// give the non-mutation check something a normalising trim would visibly change.
+	f.Add(" /bin/app ", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10)
 
 	f.Fuzz(func(t *testing.T, entry, interp, env, read, write, host, port, mem, cpu string, pids int) {
 		p := Policy{
@@ -498,9 +514,82 @@ func FuzzPolicyValidation(f *testing.F) {
 			Network:     []NetworkRule{{Host: host, Port: port}},
 			Limits:      Limits{Memory: mem, CPU: cpu, PIDs: pids},
 		}
-		// Validate must never panic on fuzz input.
-		_ = p.Validate()
+		before := fmt.Sprintf("%#v", p)
+		err := p.Validate()
+
+		// Validate is Problems' first element and nothing else, so a check that only one
+		// of them runs cannot hide behind the other.
+		probs := p.Problems()
+		if (err != nil) != (len(probs) > 0) {
+			t.Fatalf("Validate returned %v but Problems returned %d problems", err, len(probs))
+		}
+		if err != nil && err.Error() != probs[0].Error() {
+			t.Fatalf("Validate returned %q, Problems' first is %q", err, probs[0])
+		}
+		// A normalising write would let a policy validate once and refuse the second time,
+		// which is what every caller revalidating past the parse gate would then hit.
+		if again := p.Validate(); (again != nil) != (err != nil) {
+			t.Fatalf("Validate is not idempotent: first %v, second %v", err, again)
+		}
+		if after := fmt.Sprintf("%#v", p); after != before {
+			t.Fatalf("Validate mutated the policy:\nbefore %s\nafter  %s", before, after)
+		}
+		if err != nil {
+			return
+		}
+		// Past here the policy was ACCEPTED, which is the direction that matters: a
+		// refusal that should have been an acceptance costs a run, an acceptance that
+		// should have been a refusal is what the screens exist to stop. Each check below
+		// is one the package documents as unconditional.
+		for _, field := range []string{entry, interp, read, write} {
+			if r, ok := FirstUnsafeRune(field); ok {
+				t.Fatalf("accepted %q, which carries %s - the same rune the frontends echo verbatim", field, DescribeUnsafeRune(r))
+			}
+		}
+		if entry == "" {
+			t.Fatal("accepted an empty entrypoint")
+		}
+		for _, g := range []string{read, write} {
+			if g == "" {
+				t.Fatal("accepted an empty path grant, which resolves to the whole working directory")
+			}
+			if NamesOtherUserHome(g) {
+				t.Fatalf("accepted grant %q, which names another user's home", g)
+			}
+		}
+		if rest, ok := strings.CutPrefix(write, "~"); ok && filepath.Clean("/"+rest) == "/" {
+			t.Fatalf("accepted write grant %q, which puts the shielded stores' parent in reach", write)
+		}
+		if pids < 0 {
+			t.Fatalf("accepted limits.pids %d", pids)
+		}
+		if !wellFormedRulePort(port) {
+			t.Fatalf("accepted network port %q, which is not \"*\", a plain decimal 1-65535, or an uninverted range of two", port)
+		}
 	})
+}
+
+// wellFormedRulePort is the rule-side port grammar validatePort defines, spelled here so
+// the fuzz target measures Validate against the grammar rather than against itself.
+func wellFormedRulePort(port string) bool {
+	if port == "*" {
+		return true
+	}
+	if lo, hi, ok := strings.Cut(port, "-"); ok {
+		l, lok := canonicalPortNum(lo)
+		h, hok := canonicalPortNum(hi)
+		return lok && hok && l <= h
+	}
+	_, ok := canonicalPortNum(port)
+	return ok
+}
+
+// canonicalPortNum accepts the plain-decimal 1-65535 spelling a rule must use. A
+// non-canonical one ("+443", "08080") validates nowhere: it would match no CONNECT target
+// the proxy admits, which is a dead allowlist entry rather than an error.
+func canonicalPortNum(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil && n >= 1 && n <= 65535 && s == strconv.Itoa(n)
 }
 
 func FuzzPortMatches(f *testing.F) {
@@ -510,8 +599,64 @@ func FuzzPortMatches(f *testing.F) {
 	f.Add("100-200", "300")
 	f.Add("invalid", "-1")
 	f.Add("\x00", "9999999999999")
+	// Both range bounds, which no other seed reaches: an inclusive bound flipped to
+	// exclusive is a rule that silently stops authorizing its own endpoint.
+	f.Add("80-90", "90")
+	f.Add("80-90", "80")
+	f.Add("90-80", "85")
+	// A range with an unparseable bound, which every other seed misses: a parser whose
+	// failure does not reach the verdict turns "80-x" into an open-ended allow.
+	f.Add("80-x", "85")
 
 	f.Fuzz(func(t *testing.T, pattern, port string) {
-		_ = PortMatches(pattern, port)
+		got := PortMatches(pattern, port)
+
+		// The resolved-IP guard and the ordinary egress path have to apply one rule's port
+		// the same way, or an IP-literal rule means two different things depending on which
+		// of them judges the connection.
+		if via := Allows([]NetworkRule{{Host: "host.example", Port: pattern}}, "host.example", port); via != got {
+			t.Fatalf("PortMatches(%q, %q) = %v but Allows over the same rule = %v", pattern, port, got, via)
+		}
+
+		lo, hi, isRange := strings.Cut(pattern, "-")
+		n, nok := lenientPortNum(port)
+		l, lok := lenientPortNum(lo)
+		h, hok := lenientPortNum(hi)
+
+		switch {
+		case pattern == "*":
+			if !got {
+				t.Fatalf("the wildcard pattern refused port %q", port)
+			}
+		case isRange:
+			// The sound direction, asserted whatever the input's spelling: a wrong true
+			// here is an egress hole, so a range may only ever admit a port that really
+			// parses inside it.
+			inside := nok && lok && hok && l <= n && n <= h
+			if got && !inside {
+				t.Fatalf("range %q admitted port %q, which is not a port inside [%q,%q]", pattern, port, lo, hi)
+			}
+			// The completing direction needs both sides parseable, which validatePort
+			// guarantees for the rule and the proxy's CONNECT screen for the target.
+			if !got && inside {
+				t.Fatalf("range %q refused port %q, which is inside it", pattern, port)
+			}
+		default:
+			if got != (pattern == port) {
+				t.Fatalf("literal pattern %q against port %q = %v; a literal matches its own spelling and nothing else", pattern, port, got)
+			}
+		}
 	})
+}
+
+// lenientPortNum is what the range branch's own parser documents itself as accepting:
+// digits only, no sign, no more than 65535. Deliberately looser than canonicalPortNum -
+// the hot path takes "0443" as 443, which is safe only because both sides were screened
+// before they got there, and an oracle demanding canonical spelling would fire on it.
+func lenientPortNum(s string) (int, bool) {
+	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return r < '0' || r > '9' }) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil && n <= 65535
 }
