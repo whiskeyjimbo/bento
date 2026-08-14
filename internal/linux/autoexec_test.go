@@ -314,3 +314,33 @@ func TestDegradedRunReportsTheAutoExecFilesTheTargetChanged(t *testing.T) {
 		t.Errorf("%s was untouched but is reported; ChangedAutoExec=%v", left, res.ChangedAutoExec)
 	}
 }
+
+// git printing an empty answer for the hooks path. The value decides which directory the
+// snapshot walks, and joining an empty one against the grant would make the grant root
+// itself the hook directory - a whole checkout reported as auto-executing files.
+func TestAnEmptyGitAnswerNamesNoHookDir(t *testing.T) {
+	shim := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\necho\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	grant := t.TempDir()
+	if got := hookRunnerDir(grant, []string{grant}); got != "" {
+		t.Errorf("hookRunnerDir = %q, want no answer; an empty git answer named a directory", got)
+	}
+}
+
+// A path that cannot be walked is compared as written, whatever the reason. EvalSymlinks
+// needs the same traversal the stamping ReadDir needs, so a name it cannot resolve is one
+// nothing else walks either - and answering "" there would collapse the containment test
+// onto the grant root.
+func TestAnUnresolvablePathIsComparedAsWritten(t *testing.T) {
+	dir := t.TempDir()
+	dangling := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(dir, "nothing-here"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved(dangling); got != dangling {
+		t.Errorf("resolved = %q, want the path as written", got)
+	}
+}

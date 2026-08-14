@@ -1075,3 +1075,84 @@ func TestAProfiledRunCannotAlsoBeReportedOn(t *testing.T) {
 		t.Errorf("a run that asked for no report claimed a report descriptor: %v", args)
 	}
 }
+
+// parseExecRun's rejections are the record section's whole defense against a forged or
+// mangled line, and each shape has to be refused on its own: a decoder that accepts a
+// half-parsed record puts an exec nothing observed inside a section reported as whole.
+//
+// Two of the function's returns are not here. strconv.Unquote cannot fail on a prefix
+// strconv.QuotedPrefix already accepted, so those two errors are unreachable by
+// construction rather than untested.
+func TestAMangledExecRunIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rest string
+	}{
+		{"no space after the pid", "7"},
+		{"a pid that is not a number", `x "/bin/true" "true"`},
+		{"an unquoted image", `7 /bin/true "true"`},
+		{"no separator after the image", `7 "/bin/true""true"`},
+		{"an unquoted argv", `7 "/bin/true" true`},
+		{"an unrecognized trailer", `7 "/bin/true" "true" something-else`},
+	} {
+		if run, ok := parseExecRun(tc.rest); ok {
+			t.Errorf("%s: accepted %q as the record %+v", tc.name, tc.rest, run)
+		}
+	}
+}
+
+// The state that says the stage never answered the question, as opposed to answering it
+// with an empty record. A run that asked for a record and got no exec-recorder line back
+// has to read as nothing having watched, or a record of zero execs passes for a run that
+// exec'd nothing.
+func TestARecorderTheStageNeverReportedIsNotAnEmptyRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := parseApplied(openReport(t, path)).execRecord(true)
+	if rec.Watched {
+		t.Fatal("a run the stage said nothing about was reported as watched")
+	}
+	// Distinguished from a recorder the stage reported with an unrecognized value, which
+	// gets the reason naming that value: the absence is the fact this state carries.
+	if rec.Reason != "the sandboxed launcher reported nothing about the exec recorder" {
+		t.Errorf("reason = %q, want the one that says the stage answered nothing", rec.Reason)
+	}
+}
+
+// A recorder reported as not watching, whose reason the host cannot read: the quoting is
+// what stops a newline in the reason from forging a record, so an unquotable one is
+// dropped - and the record still has to say the recorder did not watch, with a reason
+// naming the value the stage did report.
+func TestAReasonlessRecorderFailureStillNamesTheValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder no unquotable\nEXEC-RECORD\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := parseApplied(openReport(t, path)).execRecord(true)
+	if rec.Watched {
+		t.Fatal("a recorder the stage reported as not watching was reported as watching")
+	}
+	if !strings.Contains(rec.Reason, `"no"`) {
+		t.Errorf("reason = %q, want the value the stage reported", rec.Reason)
+	}
+}
+
+// Same shape one layer down, where it decides enforcement rather than a diagnostic: a
+// Landlock failure whose reason will not unquote is still a failure, and reconcile judges
+// the value rather than the reason.
+func TestAnUnreadableLandlockReasonIsStillAFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte("exec-filter none\nlandlock no unquotable\nAPPLIED\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if a.landlock != launcher.AppliedNo {
+		t.Fatalf("landlock = %q, want the failure the stage reported", a.landlock)
+	}
+	if a.landlockErr == "" {
+		t.Error("a Landlock failure whose reason was unreadable carried no failure reason at all")
+	}
+}
