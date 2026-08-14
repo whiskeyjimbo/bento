@@ -234,7 +234,10 @@ func FileWriteGrantProblems(write []string) []string {
 //
 // Asked of where the grant LANDS, as the backend asks it: checkWriteNotRoot runs on grants
 // resolveGrants has already made symlink-free, so a write naming a link into "/" is refused
-// there, and testing the spelling alone here would let that one through.
+// there, and testing the spelling alone here would let that one through. Resolved without
+// a filepath.Clean first: Clean pops ".." lexically, over a symlink, and the run pops it
+// physically - a gate that Cleans refuses a grant the run lands somewhere else entirely
+// and honors.
 func RootWriteProblems(write []string) []string {
 	for _, g := range write {
 		if isRootWrite(g) {
@@ -248,7 +251,7 @@ func RootWriteProblems(write []string) []string {
 // the shield mirrors skip exactly what RootWriteProblems refuses: a grant the two answer
 // differently about is refused in nobody's words, or in the wrong ones.
 func isRootWrite(g string) bool {
-	return g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/"
+	return g == "/" || pathresolve.Existing(g) == "/"
 }
 
 // MountGrantProblems reports the grants that land on a host process's /proc/<pid>
@@ -272,7 +275,7 @@ func MountGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		lands := pathresolve.Existing(filepath.Clean(g))
+		lands := pathresolve.Existing(g)
 		if i := slices.Index(denylist.ManagedMounts, lands); i >= 0 {
 			problems = append(problems, grantrefusal.GrantIsManagedMount(g, lands, denylist.ManagedMounts[i]).Error())
 			continue

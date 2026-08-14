@@ -236,3 +236,28 @@ func TestASymlinkedRootWriteIsLeftToTheRootRefusal(t *testing.T) {
 	}
 	assertProblem(t, gate.ShieldedWriteProblems(hostShieldSet(t), []string{link}), "")
 }
+
+// filepath.Clean pops ".." lexically, over a symlink; the backend resolves the grant
+// physically and lands somewhere else entirely. The gate refusing on the lexical answer is
+// the one direction this package rules out - a refusal the run does not make - so the
+// managed-mount and root checkers ask where the grant lands, not how it is spelled. The
+// link has to sit directly under /tmp: only a landing inside denylist.ManagedMounts
+// reaches the refusal at all, which is what the second half asserts still fires.
+func TestMountGrantProblemsResolveDotDotPhysically(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "work")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join("/tmp", "bento-gate-"+strconv.Itoa(os.Getpid()))
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(link) })
+
+	// Not filepath.Join, which cleans the ".." away before the gate ever sees it.
+	escaping := link + "/.."
+	if got := gate.MountGrantProblems(nil, []string{escaping}); len(got) != 0 {
+		t.Errorf("%q lands on %q for the run, which honors it; got %v", escaping, filepath.Dir(target), got)
+	}
+	assertProblem(t, gate.MountGrantProblems([]string{"/tmp"}, nil), "mounts fresh")
+}
