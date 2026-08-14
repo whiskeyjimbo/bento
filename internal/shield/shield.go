@@ -48,9 +48,11 @@ type FS struct {
 	SameFile func(a, b string) bool
 	// ListDir returns a directory's immediate children, split into real subdirectories
 	// the scan may descend into and symlinked entries it may not, plus whether it was
-	// read at all. ok false means the directory could not be enumerated, which is not the
-	// same as empty: a store nothing can see into exposes nothing, while an empty one
-	// might still be linked out tomorrow.
+	// read WHOLE. ok false means the read did not complete, which is not the same as
+	// empty: a store nothing can see into exposes nothing, while an empty one might still
+	// be linked out tomorrow. Entries may still come back with ok false - a read that
+	// fails part way through returns what it got - and they are real entries a caller
+	// failing closed on the remainder must still cover.
 	ListDir func(string) (names, links []string, ok bool)
 }
 
@@ -85,11 +87,11 @@ func hostIsDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+// hostListDir reports ok false on any read error, but still returns whatever os.ReadDir
+// managed to read first: a truncated read on a network home hands back real entries, and
+// a link among them points at a farm target no caller can rediscover any other way.
 func hostListDir(path string) (names, links []string, ok bool) {
 	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, nil, false
-	}
 	for _, e := range entries {
 		switch {
 		case e.IsDir(): // DirEntry.IsDir is false for a symlink, even one to a directory
@@ -98,5 +100,5 @@ func hostListDir(path string) (names, links []string, ok bool) {
 			links = append(links, e.Name())
 		}
 	}
-	return names, links, true
+	return names, links, err == nil
 }

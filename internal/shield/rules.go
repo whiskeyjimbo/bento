@@ -171,9 +171,13 @@ func (s Set) linksUnder(r denylist.Rule, dir string, depth int) []denylist.Rule 
 		return nil
 	}
 	names, links, ok := s.fs.ListDir(dir)
-	if !ok {
-		// Nothing to enumerate and nothing exposed either: the whole directory is hidden
-		// by the DenyAll shield this is expanding.
+	if !ok && len(names)+len(links) == 0 {
+		// Nothing came back, and unlike the backend's git walk there is no rule that fails
+		// closed here. What an unreadable store exposes is its links' TARGETS, which live
+		// OUTSIDE it - a farm path a read grant reaches - and they cannot be named without
+		// reading the directory. Shielding the directory itself adds nothing: the DenyAll
+		// being expanded already hides it. A partial read is not this case, and the
+		// entries it did hand back are expanded below.
 		return nil
 	}
 	var out []denylist.Rule

@@ -113,10 +113,12 @@ type sandbox struct {
 	resolve func(string) string
 	// listDir returns a directory's immediate children, split into the real
 	// subdirectories the scan may descend into and the symlinked entries it may not,
-	// plus whether it was read successfully. ok is false when the path is not a
-	// directory OR cannot be enumerated (e.g. an unreadable dir): the caller must
+	// plus whether it was read WHOLE. ok is false when the path is not a directory OR
+	// could not be enumerated to the end (e.g. an unreadable dir): the caller must
 	// distinguish an enumerated empty directory from one it could not see into, so a
-	// chmod cannot silently hide gitdirs from the scan. The links are reported rather
+	// chmod cannot silently hide gitdirs from the scan. A read that fails part way
+	// through still returns the entries it got, so a caller failing closed on the
+	// remainder can cover them too. The links are reported rather
 	// than dropped because a name the scan skips is a name no rule covers, and the
 	// checks that refuse a redirected shield only inspect the rules it returned.
 	// Injected alongside exists so the git-directory scan (gitDirShields) is testable
@@ -732,14 +734,14 @@ func hostIsDir(path string) bool {
 // (DirEntry.Type reports it without a follow) must not be traversed or it could escape
 // .git/modules or loop; it is reported as a link instead so the caller can still cover
 // the name. Regular files are neither.
+//
+// ok=false means the read did not complete - not a directory, or one we cannot read (e.g.
+// mode 0111, still traversable-by-name so host git reaches hooks inside it) - and lets the
+// caller fail closed rather than treat it as empty. The entries read before the error come
+// back anyway: a truncated read on a network home has real names in it, and the credential
+// expansion covers link targets it can rediscover no other way.
 func hostListDir(path string) (names, links []string, ok bool) {
 	entries, err := os.ReadDir(path)
-	if err != nil {
-		// Not a directory, or a directory we cannot read (e.g. mode 0111, still
-		// traversable-by-name so host git reaches hooks inside it). ok=false lets the
-		// caller fail closed rather than treat it as empty.
-		return nil, nil, false
-	}
 	for _, e := range entries {
 		switch {
 		case e.IsDir(): // DirEntry.IsDir is false for a symlink (even to a directory)
@@ -748,7 +750,7 @@ func hostListDir(path string) (names, links []string, ok bool) {
 			links = append(links, e.Name())
 		}
 	}
-	return names, links, true
+	return names, links, err == nil
 }
 
 // hostResolve resolves a deny-list path the same way grants are resolved, so the
