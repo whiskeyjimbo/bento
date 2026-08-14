@@ -568,7 +568,7 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 			// looping read grant gets rather than leaking a bare stat error.
 			return grantrefusal.Looped(w)
 		default:
-			return fmt.Errorf("checking write grant %q: %w", w, err)
+			return grantrefusal.WriteUnstattable(w, err)
 		}
 	}
 	return nil

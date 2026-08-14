@@ -163,6 +163,27 @@ func TestMountAndRootGrantProblems(t *testing.T) {
 	})
 }
 
+// A write grant the invoking user cannot stat refuses the run - prepareWriteDirs' default
+// arm - so the gate has to name it. The narrowing that makes an unstattable READ silence
+// here does not carry: the sandbox binds a read tree as another user's view, while the
+// write grant is statted by the invoker before any sandbox exists.
+func TestAnUnstattableWriteGrantIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses a directory with no permissions, so the grant stats fine")
+	}
+	parent := filepath.Join(t.TempDir(), "closed")
+	grant := filepath.Join(parent, "out")
+	if err := os.MkdirAll(grant, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	assertProblem(t, gate.FileWriteGrantProblems([]string{grant}), "cannot be checked on this host")
+}
+
 // A caller-denied read has to be refused in its own sentence: the InsideShield wording
 // offers the read opt-in, and an embedder's deny has none, so one sentence for every
 // non-Honored verdict points this grant at an escape that does not exist for it.

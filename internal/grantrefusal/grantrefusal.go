@@ -118,6 +118,15 @@ func ShieldNotCarvable(grant, shield, dir string) error {
 	return fmt.Errorf("write grant %q cannot be honored: bento shields %q inside it, and creating that mount point needs write permission on %q, which your user does not have; remove the grant, or write somewhere your user owns", grant, shield, dir)
 }
 
+// WriteUnstattable refuses a write grant the invoking user cannot stat for any reason but
+// absence or a loop - a directory above it their user cannot traverse being the ordinary
+// one. Unlike a read grant, the answer is not narrowed by the sandbox seeing the tree as
+// another user's view: the run stats it as the invoker, before the sandbox exists, and
+// refuses on what it finds there.
+func WriteUnstattable(grant string, err error) error {
+	return fmt.Errorf("write grant %q cannot be checked on this host: %w; the run stats it as your own user before the sandbox exists, so a directory above it that your user cannot traverse refuses the run - grant a path your user can reach", grant, err)
+}
+
 // Looped refuses a grant whose symlinks loop. Read and write alike: bwrap's --ro-bind-try
 // tolerates only a missing source, not ELOOP, so a looping grant of either kind aborts
 // the run naming bwrap rather than the grant.

@@ -205,11 +205,23 @@ func LoopedGrantProblems(read, write []string) []string {
 // Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
 // otherwise be neither a problem nor a note - while run resolves the trailing slash away
 // and refuses it as the file it is.
+//
+// A stat that fails for anything but absence or a loop is a refusal too, in the same
+// sentence prepareWriteDirs' default arm refuses it with. It is asked here and not narrowed
+// away as an unstattable READ is (MissingReads): a read grant is one the sandbox binds as
+// another user's view of the tree, while a write grant is statted by the invoking user
+// before any sandbox exists, so what fails here is exactly what fails there. Absence is
+// not a problem - the backend creates the directory - and a loop is LoopedGrantProblems'
+// sentence, which the backend also words for itself.
 func FileWriteGrantProblems(write []string) []string {
 	var problems []string
 	for _, g := range write {
-		if fi, err := os.Stat(filepath.Clean(g)); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(filepath.Clean(g))
+		switch {
+		case err == nil && !fi.IsDir():
 			problems = append(problems, grantrefusal.WriteIsFile(g).Error())
+		case err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ELOOP):
+			problems = append(problems, grantrefusal.WriteUnstattable(g, err).Error())
 		}
 	}
 	return problems
@@ -233,8 +245,8 @@ func RootWriteProblems(write []string) []string {
 }
 
 // isRootWrite reports whether a write grant lands on the host root. One function because
-// the shield mirrors skip exactly what this refuses: a grant either kind answers
-// differently about is one refused in nobody's words or in the wrong ones.
+// the shield mirrors skip exactly what RootWriteProblems refuses: a grant the two answer
+// differently about is refused in nobody's words, or in the wrong ones.
 func isRootWrite(g string) bool {
 	return g == "/" || pathresolve.Existing(filepath.Clean(g)) == "/"
 }
