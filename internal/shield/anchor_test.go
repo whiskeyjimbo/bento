@@ -31,6 +31,26 @@ func TestARelocationOntoAHomesOtherSpellingIsNotShielded(t *testing.T) {
 	}
 }
 
+// The nested anchor keeps its shield even where the two anchors are spelled against
+// different halves of a /home -> /var/home symlink, so the deny-list derives the inner one
+// under the outer's spelling and the two strings never match. Losing it here is fail-OPEN:
+// .aws anchors with no per-file rules inside it, so nothing else covers ~/.aws/credentials.
+func TestANestedAnchorSpelledTheOtherWayKeepsItsShield(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "var", "home")
+	inner := filepath.Join(real, "u", ".aws")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link(t, real, filepath.Join(root, "home"))
+
+	outer := filepath.Join(root, "home", "u")
+	set := shield.Assemble(shield.Host(), []string{outer, inner}, denylist.RuntimeDir(), nil)
+	if !shielded(set, inner) {
+		t.Errorf("nested anchor %s lost its shield", inner)
+	}
+}
+
 // The other side of the same test: a store that IS one anchor while sitting inside another
 // (HOME=/home/u/.aws beside a passwd home of /home/u) still carries its shield. The outer
 // anchor's tree stays reachable, so this is not the swallow-everything case above, and

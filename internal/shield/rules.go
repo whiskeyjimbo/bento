@@ -28,10 +28,11 @@ type Set struct {
 	// homes are the run's anchors as the host's symlinks leave them, the form a moved
 	// shield is compared against.
 	homes []string
-	// configured are the same anchors as the run was given them, kept because it is the
-	// spelling that says a rule came from the deny-list's own anchor-relative pass rather
-	// than from a relocation that resolves to the same place - see nestedAnchor.
-	configured []string
+	// atAnchor are the paths of the deny-list's own anchor-relative rules that stand on
+	// one of the run's anchors, keyed by the path as the deny-list spelled it. It is a
+	// provenance record, not a set of places: a relocation resolving onto the same anchor
+	// must NOT inherit the exemption those rules get - see nestedAnchor.
+	atAnchor map[string]bool
 	// applied is the set as the enforcer really mounts it. Every verdict derives from
 	// this, so a rule the enforcer drops can never refuse a grant and blame a shield that
 	// was never there.
@@ -64,7 +65,7 @@ type Applied struct {
 // nix), runtimeDir the host's XDG runtime directory, and extraDeny the caller-supplied
 // shields an embedding program adds on top - empty for an ordinary run.
 func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rule) Set {
-	s := Set{fs: fs, configured: slices.Clone(homes), homes: make([]string, len(homes))}
+	s := Set{fs: fs, homes: make([]string, len(homes)), atAnchor: map[string]bool{}}
 	for i, h := range homes {
 		s.homes[i] = fs.Resolve(h)
 	}
@@ -72,6 +73,16 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	var base []denylist.Rule
 	for _, h := range homes {
 		base = append(base, denylist.Home(h)...)
+	}
+	// Recorded over the anchor-relative pass ALONE, before any relocation exists to be
+	// mistaken for one. The two spellings of a nested anchor need not match - a passwd home
+	// of /home/u derives its .aws store as /home/u/.aws while the run configures that same
+	// store as /var/home/u/.aws - so membership is decided where they do agree, at the
+	// resolved path, and remembered against the spelling the rule carries.
+	for _, r := range base {
+		if slices.Contains(s.homes, fs.Resolve(r.Path)) {
+			s.atAnchor[r.Path] = true
+		}
 	}
 	// Once over the whole anchor set, not once per anchor: an env relocation names one
 	// absolute path, so a per-anchor call would emit it twice and stamp the copies with
@@ -157,13 +168,14 @@ func (s Set) target(literal string) (string, bool) {
 }
 
 // nestedAnchor reports whether a rule stands on an anchor that sits strictly inside another
-// anchor. Keyed on the LITERAL being one of the run's anchors as configured, not on where
-// it resolves: only the deny-list's own rule at an anchor gets the exemption. Anything else
-// resolving onto that anchor - a relocation variable pointed at a symlink leading there -
-// is the whole-home DenyAll this guard exists to drop, and its own spelling is nobody's
-// anchor, so denylist.Relocated's emit-time guard never saw it either.
+// anchor. Keyed on PROVENANCE, not on where the path resolves: only the deny-list's own
+// anchor-relative rule gets the exemption. A relocation variable pointed at a symlink
+// leading to that same anchor resolves identically and is the whole-home DenyAll this guard
+// exists to drop - and its own spelling is nobody's anchor, so denylist.Relocated's
+// emit-time guard never saw it either. Spelling cannot separate the two; where the rule came
+// from can.
 func (s Set) nestedAnchor(literal, rp string) bool {
-	return slices.Contains(s.configured, literal) && slices.ContainsFunc(s.homes, func(h string) bool {
+	return s.atAnchor[literal] && slices.ContainsFunc(s.homes, func(h string) bool {
 		return h != rp && policy.CoversResolved(h, rp)
 	})
 }
