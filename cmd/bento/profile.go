@@ -628,7 +628,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	// contradicts it: a SIGSYS kill also sets Signaled and Dropped, and telling the user
 	// twice to profile again, then that profiling again is pointless, is worse than the
 	// refusal alone.
-	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, cfg.interpreterArgs, obs)
+	proposed, err := profile.Synthesize(cfg.script, cfg.interpreter, cfg.interpreterArgs, withoutSearchMisses(obs))
 	if err != nil {
 		return nil, roundStatus{}, err
 	}
@@ -1109,6 +1109,42 @@ func printSocketAccesses(out io.Writer, obs profile.Observation) []accessNoteJSO
 // hostile or merely sloppy one can produce them, and proposing one would fail the
 // marshal that ends the run. Like the floored writes above, they are dropped inside
 // Synthesize, so without this the reviewer has no trace of the access at all.
+// withoutSearchMisses returns obs with the reads dropped that a $PATH search invented: a
+// path nothing was found at during the run AND nothing is at on the host either. glibc's
+// execvp and dash's tryexec walk $PATH with a real execve per element rather than a stat,
+// so each element before the one holding the tool becomes an access on a path no file ever
+// existed at - one per PATH element, and proposed as a read grant that can never be
+// satisfied. isSystemPath swallows the FHS elements, so a stock host hides this and a nix
+// profile, a version-manager shim directory or ~/.local/bin does not.
+//
+// The host stat is why this is here and not in internal/observe, which is where the
+// dishonest half was fixed: the observer runs INSIDE the sandbox, where a tool the host
+// has and the run did not bind answers the same ENOENT a search miss does. Dropping there
+// would take the case where the read grant is exactly what mounts the tool for the next
+// round - TestProfileWarnsOnlyWhenTheSearchPathLostTheTool pins it. Only the host can tell
+// the two apart, so both conditions are load-bearing.
+//
+// Only the PROPOSAL is filtered. The observation itself is returned unchanged to every
+// warning below, because the access was real and the reviewer should still see what the
+// run reached for; what is withheld is a grant that would mean nothing.
+func withoutSearchMisses(obs profile.Observation) profile.Observation {
+	absent := map[string]bool{}
+	for _, p := range obs.Absent {
+		absent[p] = true
+	}
+	reads := make([]string, 0, len(obs.Reads))
+	for _, r := range obs.Reads {
+		if absent[r] {
+			if _, err := os.Lstat(r); errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+		}
+		reads = append(reads, r)
+	}
+	obs.Reads = reads
+	return obs
+}
+
 func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJSON {
 	var notes []accessNoteJSON
 	// A write collapses to its parent before Synthesize screens it, so the write side is

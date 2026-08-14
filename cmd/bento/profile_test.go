@@ -1738,3 +1738,44 @@ func TestForeignHomeShieldsResolvesDanglingAnchor(t *testing.T) {
 		t.Errorf("%q is the profiler's own home reached through a dangling link and must not be warned about as foreign; got %v", own, warned)
 	}
 }
+
+// glibc's execvp and dash's tryexec walk $PATH with a real execve per element rather than
+// a stat, so every element before the one holding the tool is recorded as an access on a
+// path no file was ever found at. isSystemPath eats the FHS elements, so a stock host hides
+// it; on a nix profile, a mise/asdf shim dir or ~/.local/bin the misses survive and are
+// proposed as read grants nothing can ever satisfy.
+//
+// The filter cannot live in the observer - it runs INSIDE the sandbox, where a tool the
+// host has and the run did not bind answers the same ENOENT a search miss does. Only the
+// host can tell the two apart, which is why this is keyed on Absent AND a host stat.
+func TestSearchMissesAreNotProposedAsReads(t *testing.T) {
+	dir := t.TempDir()
+	onHost := filepath.Join(dir, "tool")
+	if err := os.WriteFile(onHost, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	miss := filepath.Join(dir, "nowhere", "tool")
+	real := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(real, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	obs := profile.Observation{
+		Reads: []string{miss, onHost, real},
+		// onHost is the case the filter must NOT take: the run failed to open it because
+		// nothing mounted it, and the read grant is exactly what mounts it next round.
+		Absent: []string{miss, onHost},
+	}
+	got := withoutSearchMisses(obs).Reads
+	if slices.Contains(got, miss) {
+		t.Errorf("the search miss %q is still proposed; no grant can make a file appear where none exists", miss)
+	}
+	for _, want := range []string{onHost, real} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%q was dropped; it exists on the host, so the grant is what mounts it next round (kept: %v)", want, got)
+		}
+	}
+	if len(obs.Reads) != 3 {
+		t.Errorf("the observation was mutated: %v", obs.Reads)
+	}
+}
