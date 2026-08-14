@@ -163,11 +163,14 @@ func (s Set) credentialLinks(base []denylist.Rule) []denylist.Rule {
 	return out
 }
 
+// linksUnder walks a shielded store for entries that are links out of it. Every real
+// subdirectory is descended into, .git included: pass(1)'s store is a git repository by
+// design, so its object store is the credential history under a second name and a link
+// relocating it out of the store is exactly what this expansion exists to cover. The cost
+// is walking the fanout directories, which hold no links and are bounded and setup-time -
+// the same trade the backend's git-directory scan already makes.
 func (s Set) linksUnder(r denylist.Rule, dir string, depth int) []denylist.Rule {
 	if depth > maxWalkDepth || !s.fs.IsDir(dir) {
-		return nil
-	}
-	if filepath.Base(dir) == ".git" {
 		return nil
 	}
 	names, links, ok := s.fs.ListDir(dir)

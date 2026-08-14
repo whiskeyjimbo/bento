@@ -60,3 +60,20 @@ func TestAPartiallyReadCredentialDirStillExpandsTheLinksItSaw(t *testing.T) {
 		t.Errorf("farm target %s got no shield from a partially-read %s", target, store)
 	}
 }
+
+// pass(1)'s store is a git repository by design, and a relocated object store is the
+// repository's whole history at a second path. Nothing about a .git makes the link out of
+// it harmless, so the walk covers it like any other subdirectory.
+func TestARelocatedObjectStoreUnderACredentialRepoIsShielded(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "backup", "objects")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link(t, target, filepath.Join(home, ".password-store", ".git", "objects"))
+
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), nil)
+	if !shielded(set, target) {
+		t.Errorf("relocated object store %s got no shield", target)
+	}
+}
