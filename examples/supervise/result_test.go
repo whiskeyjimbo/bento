@@ -40,6 +40,9 @@ func populatedResult() enforce.Result {
 		// Host-enumerated under a directory the script could write, so a filename it chose
 		// reaches the summary.
 		ChangedAutoExec: []string{"/repo/\x1b[2Kpackage.json"},
+		// A directory the run pointed the checkout's hooks at, which it need never have
+		// written in - a different claim from the list above, and named separately.
+		RedirectedHooks: []string{"/repo/\x1b[2Khooks"},
 	}
 }
 
@@ -114,7 +117,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
-		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true,
+		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

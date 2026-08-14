@@ -298,11 +298,13 @@ func supervised(ctx context.Context, s *store, script string) int {
 		// just stopped, and printing it first reads as belonging to whatever came before.
 		code := reportInterrupt()
 		writeChangedAutoExec(os.Stderr, t, res)
+		writeRedirectedHooks(os.Stderr, t, res)
 		return code
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise: %v\n", err)
 		writeChangedAutoExec(os.Stderr, t, res)
+		writeRedirectedHooks(os.Stderr, t, res)
 		return 1
 	}
 
@@ -399,6 +401,7 @@ func writeSummary(w io.Writer, t theme, res enforce.Result) {
 		}
 	}
 	writeChangedAutoExec(w, t, res)
+	writeRedirectedHooks(w, t, res)
 	// The mirror of Shields, populated only by the tier that has no mount namespace and
 	// so applies no shields at all. Same contract as the grants above: bento does not
 	// refuse, so staying quiet is what would hide the exposure.
@@ -481,6 +484,20 @@ func writeChangedAutoExec(w io.Writer, t theme, res enforce.Result) {
 	fmt.Fprintf(w, "\n%s\n", t.warn("the script changed these files, which run on the host later without being read:"))
 	for _, f := range res.ChangedAutoExec {
 		fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(f)))
+	}
+}
+
+// writeRedirectedHooks names where the run pointed this checkout's hooks. Separate from
+// the list above because it is a different claim: the run need not have planted anything
+// there yet, and what the human just approved did not include choosing where their next
+// commit executes from.
+func writeRedirectedHooks(w io.Writer, t theme, res enforce.Result) {
+	if len(res.RedirectedHooks) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%s\n", t.warn("the script pointed this checkout's hooks here - whatever they hold runs at your next commit:"))
+	for _, d := range res.RedirectedHooks {
+		fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(d)))
 	}
 }
 

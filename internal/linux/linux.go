@@ -250,11 +250,15 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// command failed, and only for that signalled status: bwrap reports a signalled
 	// target as 128+signal of its own, so an ordinary exit code here is one the target
 	// ran to completion for, and a late cancel does not unmake that.
+	// Stamped once for every arm below: the target has finished on all of them, so the
+	// answer is the same whichever one returns.
+	changedAuto, redirected := autoExecBefore.changed(preflight.writes)
+
 	if runErr != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
 		// The auto-exec report rides the cancel out. A target killed partway is the run
 		// most likely to have rewritten a package.json and least likely to be looked at,
 		// and it is the one path where nothing else says what the host now holds.
-		return enforce.Result{Report: report, ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 
 	switch err := runErr; {
@@ -265,7 +269,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -279,11 +283,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
 	default:
 		// The auto-exec list for the same reason the cancel arm carries it: the target may
 		// already have run, and this is the arm where nothing else says what the host holds.
-		return enforce.Result{Report: report, ChangedAutoExec: autoExecBefore.changed(preflight.writes)}, fmt.Errorf("linux: running sandbox: %w", err)
+		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 

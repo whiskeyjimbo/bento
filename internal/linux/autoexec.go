@@ -168,14 +168,17 @@ type autoExecBaseline struct {
 }
 
 // changed re-stamps the same paths the baseline stamped and names what the run altered,
-// together with any hook directory the run itself put in play. The second question is
+// and separately any hook directory the run itself put in play. The second question is
 // asked here rather than left to the frozen walk because freezing answers the noise and
-// not the silence: see redirectedHooks.
-func (b autoExecBaseline) changed(writes []string) []string {
-	changed := changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
-	changed = append(changed, redirectedHooks(b.hooks, hookRunnerDirs(writes))...)
+// not the silence: see redirectedHooks. The two answers stay apart because they are
+// different claims - one is a file this run wrote, the other a directory it may never have
+// touched - and a caller with one flat list can only word them alike.
+func (b autoExecBaseline) changed(writes []string) (changed, redirected []string) {
+	changed = changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
 	slices.Sort(changed)
-	return slices.Compact(changed)
+	redirected = redirectedHooks(b.hooks, hookRunnerDirs(writes))
+	slices.Sort(redirected)
+	return slices.Compact(changed), slices.Compact(redirected)
 }
 
 // snapshotAutoExec stats the auto-executing files under each write grant. Errors are

@@ -326,6 +326,9 @@ type streamRefusalJSON struct {
 	// the same name, because a consumer gating a merge on review has to find it in the
 	// same place whichever object ended the stream.
 	ChangedAutoExec []string `json:"changed_auto_exec,omitempty"`
+	// RedirectedHooks travels beside it for the same reason, and separately from it because
+	// it is a different claim; see enforce.Result.
+	RedirectedHooks []string `json:"redirected_hooks,omitempty"`
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
@@ -348,7 +351,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -410,6 +413,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// field; here it is the notice, before the error main renders.
 		if !asJSON {
 			writeChangedAutoExecNotice(stderr, res)
+			writeRedirectedHooksNotice(stderr, res)
 		}
 		return failJSON(stderr, stream, asJSON, res, runErr)
 	}
@@ -466,6 +470,9 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// The auto-executing files the run changed, for a consumer that gates a merge
 			// on review rather than reading the stderr notice.
 			ChangedAutoExec []string `json:"changed_auto_exec,omitempty"`
+			// The hook directories the run pointed the checkout at. Separate from the list
+			// above because it is a different claim; see enforce.Result.RedirectedHooks.
+			RedirectedHooks []string `json:"redirected_hooks,omitempty"`
 			// ExecRecord is present only for a run that asked with --record-exec, and is
 			// then present whatever came back: a run the recorder could not watch reports
 			// that and why, which is the answer an empty list would misreport as "nothing
@@ -484,7 +491,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// not open to the manifest grant that no longer resolves, which is otherwise only
 			// prose on stderr and unreadable to the gate --help sends here.
 			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
@@ -495,6 +502,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// run touched on the host, and it is a place to review rather than a failure to
 		// explain, so it must not sit among the lines diagnosing a nonzero exit.
 		writeChangedAutoExecNotice(stderr, res)
+		writeRedirectedHooksNotice(stderr, res)
 		// Before the bypass hint: each is a connection that DID reach the proxy, so it
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)

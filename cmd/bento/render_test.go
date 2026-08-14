@@ -1130,6 +1130,40 @@ func TestWriteChangedAutoExecNoticeNamesAndQuotesEachFile(t *testing.T) {
 	}
 }
 
+// A redirected hook directory is not a file the run changed, and printing it as one is
+// wrong in both directions: the operator reviews an untouched directory of legitimate
+// hooks and finds nothing, while the fact that actually matters - the run chose where the
+// host's next commit executes from - reads as routine editing. The two notices are
+// separate, and the redirection's says what the run did rather than what it wrote.
+func TestWriteRedirectedHooksNoticeIsNotWordedAsAChangedFile(t *testing.T) {
+	res := enforce.Result{
+		ChangedAutoExec: []string{"/repo/package.json"},
+		RedirectedHooks: []string{"/repo/other\nhooks"},
+	}
+	var b bytes.Buffer
+	writeChangedAutoExecNotice(&b, res)
+	writeRedirectedHooksNotice(&b, res)
+
+	if !strings.Contains(b.String(), `"/repo/other\nhooks"`) {
+		t.Errorf("the redirected directory must be named and quoted; got:\n%s", b.String())
+	}
+	// The changed-files notice asserts the run changed what it lists, which is false of a
+	// directory the run only pointed at.
+	changed, _, _ := strings.Cut(b.String(), "[bento] note: the run pointed")
+	if strings.Contains(changed, "other") {
+		t.Errorf("the redirected directory must not appear in the changed-files notice; got:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "/repo/package.json") {
+		t.Errorf("the changed file is still reported; got:\n%s", b.String())
+	}
+
+	var empty bytes.Buffer
+	writeRedirectedHooksNotice(&empty, enforce.Result{ChangedAutoExec: []string{"/repo/package.json"}})
+	if empty.Len() != 0 {
+		t.Errorf("a run that redirected no hooks must print nothing; got %q", empty.String())
+	}
+}
+
 // The degraded tier runs the same credential-alias scan and makes the same refusal as
 // the full tier, so the degradation block must not claim an alias exposure the run would
 // never have performed. What that tier does expose - the shields it cannot apply - is

@@ -257,6 +257,9 @@ func run(manifestPath string, allowUnapproved bool) int {
 		for _, f := range res.ChangedAutoExec {
 			fmt.Fprintf(os.Stderr, "embed: review %q before the next build: it runs on the host without being read\n", f)
 		}
+		for _, d := range res.RedirectedHooks {
+			fmt.Fprintf(os.Stderr, "embed: the run pointed this checkout's hooks at %q: whatever it holds runs at the next commit\n", d)
+		}
 		return 125
 	}
 
@@ -417,6 +420,12 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	// nothing having pointed at it.
 	for _, f := range res.ChangedAutoExec {
 		fmt.Fprintf(w, "embed: review %q before the next build: it runs on the host without being read\n", f)
+	}
+	// RedirectedHooks: where the run pointed this checkout's hooks. Its own line because
+	// the run need never have written anything in there - the fact is that it chose where
+	// the host's next commit executes from, which a "review this file" wording would lose.
+	for _, d := range res.RedirectedHooks {
+		fmt.Fprintf(w, "embed: the run pointed this checkout's hooks at %q: whatever it holds runs at the next commit\n", d)
 	}
 	// Exposed: what a full run would have shielded but this tier could not (the degraded,
 	// no-mount-namespace tier). The mirror image of Shields, and the same contract as

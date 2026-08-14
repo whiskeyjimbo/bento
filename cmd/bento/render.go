@@ -1376,6 +1376,22 @@ func writeChangedAutoExecNotice(w io.Writer, res enforce.Result) {
 	}
 }
 
+// writeRedirectedHooksNotice names the hook directories the run itself put in play. It is
+// its own notice rather than a line in the one above because the claim is different: the
+// run did not necessarily change anything in there, it chose where the host's next commit
+// executes from - which is worth knowing on its own, and reads as routine noise mixed into
+// a list of edited files.
+func writeRedirectedHooksNotice(w io.Writer, res enforce.Result) {
+	if len(res.RedirectedHooks) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] note: the run pointed this checkout's hooks at these directories,")
+	fmt.Fprintln(w, "[bento] so whatever they hold runs at your next commit - check where they point:")
+	for _, p := range res.RedirectedHooks {
+		fmt.Fprintf(w, "[bento]   %q\n", p)
+	}
+}
+
 // execRunJSON is one exec an enforced run performed, for the --json envelope; see
 // enforce.ExecRun.
 type execRunJSON struct {

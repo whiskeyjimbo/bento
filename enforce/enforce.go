@@ -490,14 +490,8 @@ type Result struct {
 	// behind; empty is not evidence the target changed none, since a run that failed
 	// before the target started reports empty as well.
 	//
-	// One entry is a DIRECTORY rather than a file: a hook directory the run itself put in
-	// play, by pointing core.hooksPath somewhere it did not point when the run started.
-	// That happens where no shield holds .git/config down - a write grant with no
-	// enclosing checkout, or the degraded tier, which shields nothing - and the directory
-	// is named instead of its contents because the run's baseline never stamped it, so
-	// every file inside would otherwise read as one this run created. It says the run
-	// chose where the host's next commit executes from, which is worth knowing whether or
-	// not anything was planted there yet.
+	// Every entry is a file the run really changed; a hook directory the run REDIRECTED is
+	// a different fact and travels in RedirectedHooks.
 	//
 	// Two blind spots, both deliberate, and both the reason a gap here is a missed hint
 	// rather than a hole. The names are a fixed list checked at the root of each write
@@ -508,6 +502,22 @@ type Result struct {
 	// Path can carry bytes a prior run chose (a workflow filename), so a consumer
 	// rendering it to a terminal must quote it.
 	ChangedAutoExec []string
+	// RedirectedHooks names the hook DIRECTORIES this run put in play, by pointing
+	// core.hooksPath somewhere it did not point when the run started. That happens where
+	// no shield holds .git/config down - a write grant with no enclosing checkout, or the
+	// degraded tier, which shields nothing.
+	//
+	// It is separate from ChangedAutoExec because it is a different claim, in both
+	// directions. The directory is named instead of its contents, since the run's baseline
+	// never stamped it and every file inside would otherwise read as one this run created -
+	// so as a "changed file" each entry is a false positive the reviewer finds nothing in.
+	// And the fact itself is worth more than the ones beside it: the run chose where the
+	// host's next commit executes from, whether or not anything was planted there yet, and
+	// flattened into a list of edited files it reads as routine.
+	//
+	// Sorted, and carried on the same arms as ChangedAutoExec, the cancel path included.
+	// The same quoting caveat applies: a directory name can carry bytes a prior run chose.
+	RedirectedHooks []string
 }
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path
