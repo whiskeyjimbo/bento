@@ -4,6 +4,7 @@ package launcher
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"strings"
 	"syscall"
@@ -294,5 +295,66 @@ func TestNonDumpableExecHelper(t *testing.T) {
 	}
 	if err := syscall.Exec("/bin/true", []string{"/bin/true"}, nil); err != nil {
 		t.Fatalf("exec: %v", err)
+	}
+}
+
+// The loop's error returns hold the same invariant its clean exit does. A lost trace is
+// precisely when a descendant is likeliest to be sitting at a stop, and a tracer that
+// keeps running - an embedder driving Run in-process - is the one that never releases it.
+func TestALostTraceStillReleasesItsTracees(t *testing.T) {
+	cmd, err := startTarget([]string{"/bin/true"}, os.Environ(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cmd.Process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	dead := cmd.Process.Pid
+
+	var released map[int]bool
+	prev := releaseTracees
+	releaseTracees = func(tracees map[int]bool) { released = maps.Clone(tracees) }
+	t.Cleanup(func() { releaseTracees = prev })
+
+	if _, err := traceExecs(dead, &execRecorder{}); !errors.Is(err, syscall.ESRCH) {
+		t.Skipf("pid %d does not answer ESRCH (%v), so it cannot stand in for a dead root", dead, err)
+	}
+	if !released[dead] {
+		t.Errorf("released %v; the loop's error return left its tracees attached", released)
+	}
+}
+
+// A target killed between the fork and its own exec never reached the exec the seed entry
+// stands for, so the record may not carry it: the --json consumer reads runs whatever the
+// watched flag says, and an exec that provably never retired is the record lying about
+// what ran.
+func TestATargetThatDiesBeforeAttachRecordsNoExec(t *testing.T) {
+	const killed = 128 + int(syscall.SIGKILL)
+	prev := attachRecorder
+	attachRecorder = func(root int) (int, bool, error) {
+		// What the real attach does when its first wait dequeues a death instead of the
+		// initial stop, staged rather than raced: the target is killed and reaped here, so
+		// the caller has nothing left to trace and no tracee is left behind.
+		_ = syscall.Kill(root, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		_, _ = syscall.Wait4(root, &ws, 0, nil)
+		return killed, true, errors.New("launcher: the target ended before the exec recorder could attach")
+	}
+	t.Cleanup(func() { attachRecorder = prev })
+
+	// Seeded the way the launcher seeds it, since the seed is what must be dropped.
+	rec := &execRecorder{runs: []execRun{{exe: "/bin/sleep", argv: []string{"/bin/sleep", "30"}}}}
+	code, err := superviseTraced([]string{"/bin/sleep", "30"}, os.Environ(), rec)
+	if err != nil {
+		t.Fatalf("superviseTraced: %v", err)
+	}
+	if code != killed {
+		t.Errorf("exit code %d, want %d: the recorder changed the run's outcome", code, killed)
+	}
+	if rec.failed == nil {
+		t.Fatal("a recorder that never attached did not say so")
+	}
+	if len(rec.runs) != 0 {
+		t.Errorf("runs = %+v; a target that died before its exec was reported as having exec'd", rec.runs)
 	}
 }

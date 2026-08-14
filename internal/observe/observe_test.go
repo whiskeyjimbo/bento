@@ -838,3 +838,15 @@ func TestTraceOutlivesASelfStoppingTarget(t *testing.T) {
 		})
 	}
 }
+
+// The third exec path in the tree, held to the rule the other two state. exec.Command
+// resolves a bare name against the target's own PATH, so a profile of "sh" would be a
+// profile of whichever sh that PATH names - and the manifest it synthesizes names a
+// binary the enforced run may resolve differently.
+func TestTraceRefusesARelativeTarget(t *testing.T) {
+	for _, argv0 := range []string{"sh", "./sh", "bin/sh"} {
+		if _, err := Trace([]string{argv0}, os.Environ(), nil, nil, nil); err == nil {
+			t.Errorf("Trace(%q) was accepted, so the profile resolved argv[0] against the target's PATH", argv0)
+		}
+	}
+}

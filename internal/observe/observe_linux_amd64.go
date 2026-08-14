@@ -169,6 +169,14 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	if len(argv) == 0 {
 		return Result{}, fmt.Errorf("observe: empty argv")
 	}
+	// exec.Command below does a $PATH lookup when argv[0] has no slash, resolving against
+	// the target's own policy-supplied PATH - a different binary than the one named, and
+	// profiled as if it were that one. The launcher's other two exec paths refuse a
+	// relative argv[0] for the same reason, and the guarantee they state is only true if
+	// this one refuses it too.
+	if !filepath.IsAbs(argv[0]) {
+		return Result{}, fmt.Errorf("observe: target command must be an absolute path, got %q", argv[0])
+	}
 	traceCalls.Lock()
 	defer traceCalls.Unlock()
 

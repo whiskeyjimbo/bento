@@ -90,6 +90,11 @@ func superviseTraced(target, env []string, rec *execRecorder) (int, error) {
 		// superviseTarget reports exactly this code, and the recorder may not turn it into
 		// a failed run.
 		rec.failed = err
+		// The seed goes with it, for the reason the exec-block path drops its own: the
+		// target died before it reached the exec the seed stands for, so keeping the entry
+		// would report an exec that provably never retired - the record lying about what
+		// ran, behind a marker saying only that nothing watched.
+		rec.runs = nil
 		return code, nil
 	}
 	if err != nil {
@@ -126,7 +131,12 @@ func superviseTraced(target, env []string, rec *execRecorder) (int, error) {
 // is what the record section's own marker exists to make legible.
 // done reports that the target ended instead of stopping, in which case code is its
 // outcome and the caller has nothing left to trace or detach.
-func attachRecorder(root int) (code int, done bool, err error) {
+//
+// Indirected through a var so a test can stage that death: it is a race against the
+// target's own exec, and the caller's handling of it decides what the record claims ran.
+var attachRecorder = attachRecorderImpl
+
+func attachRecorderImpl(root int) (code int, done bool, err error) {
 	var ws syscall.WaitStatus
 	if _, err := syscall.Wait4(root, &ws, 0, nil); err != nil {
 		return 0, false, fmt.Errorf("launcher: waiting for the target's initial stop: %w", err)
@@ -151,16 +161,22 @@ func attachRecorder(root int) (code int, done bool, err error) {
 // prevent. The likeliest shape is the very first resume answering ESRCH, a root SIGKILLed
 // between the attach and here, which leaves nothing recorded but the seed entry.
 func traceExecs(root int, rec *execRecorder) (int, error) {
+	// Every tracee seen and not yet reaped: root, plus each descendant auto-attached at
+	// its fork. They are tracked so a descendant the target backgrounded is resumed when
+	// the loop ends rather than left stopped under a tracer that has stopped listening.
+	//
+	// Released on a defer so the two error returns below - a lost trace, which is
+	// precisely when a descendant is likeliest to be mid-stop - hold the same invariant
+	// as the clean exit. The kernel detaches every tracee when the tracer exits, so for
+	// the launcher's own process this is belt-and-braces; it is load-bearing only for a
+	// tracer that keeps running, which is what an embedder driving Run in-process is.
+	tracees := map[int]bool{root: true}
+	defer func() { releaseTracees(tracees) }()
+
 	if err := syscall.PtraceCont(root, 0); err != nil {
 		rec.failed = fmt.Errorf("launcher: resuming the target: %w", err)
 		return 0, rec.failed
 	}
-
-	// Every tracee seen and not yet reaped: root, plus each descendant auto-attached at
-	// its fork. They are tracked so a descendant the target backgrounded is resumed when
-	// the loop ends rather than left stopped under a tracer that has stopped listening -
-	// without PTRACE_O_EXITKILL nothing else releases it.
-	tracees := map[int]bool{root: true}
 
 	var ws syscall.WaitStatus
 	for {
@@ -177,7 +193,6 @@ func traceExecs(root int, rec *execRecorder) (int, error) {
 		switch {
 		case wpid == root && (ws.Exited() || ws.Signaled()):
 			delete(tracees, root)
-			releaseTracees(tracees)
 			return waitExitCode(ws), nil
 		case ws.Exited() || ws.Signaled():
 			// A descendant ended and this wait reaped it; nothing to resume.
@@ -253,7 +268,12 @@ func recordExec(pid int, rec *execRecorder) {
 // Detach rather than kill: these are the target's own processes, and the recorder is a
 // diagnostic that may not end anything the run would have left running. Under bwrap they
 // are inside the run's pid namespace, which is torn down with it either way.
-func releaseTracees(tracees map[int]bool) {
+//
+// Indirected through a var so a test can see that the loop's error returns release too:
+// a detach the loop skips leaves nothing else about the trace showing it.
+var releaseTracees = releaseTraceesImpl
+
+func releaseTraceesImpl(tracees map[int]bool) {
 	for pid := range tracees {
 		_ = syscall.PtraceDetach(pid)
 	}
