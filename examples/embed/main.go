@@ -321,7 +321,7 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	// Printed whether or not the list above is empty, for the reason every field here is:
 	// the bound is what tells an empty list apart from a tree read to the end.
 	if r.CredentialAliasesPartial {
-		fmt.Fprintf(w, "embed: note: the granted trees were not read to the end looking for those second names - the scan is bounded, so any listed above is real and there may be others\n")
+		fmt.Fprintf(w, "embed: note: the scan for those second names did not cover everything - a granted tree ran past the scan's bound, or a credential store could not be read - so any listed above is real and there may be others\n")
 	}
 }
 

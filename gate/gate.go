@@ -85,12 +85,15 @@ type Runnability struct {
 	// the run binds. Both narrowings only miss a finding, as does the entry budget
 	// CredentialAliasesPartial reports.
 	CredentialAliases []enforce.CredentialAlias
-	// CredentialAliasesPartial says the granted trees were not read to the end: the scan
-	// is bounded by an entry budget, because it is on `bento validate`'s default path and
-	// a granted module cache took it from 40ms to 1.14s on a host holding one hardlinked
-	// key. What is above still holds - a finding here is a finding - and what is not there
-	// was not looked for. Said out loud rather than left to the silence, which on every
-	// other host means the trees were read whole and nothing was found.
+	// CredentialAliasesPartial says the scan did not look everywhere it would have to for
+	// an empty list to be a clean bill. Three things set it: the entry budget, because the
+	// scan is on `bento validate`'s default path and a granted module cache took it from
+	// 40ms to 1.14s on a host holding one hardlinked key; a credential anchor this host
+	// could not read or stat, which is a could-not-look and not an absence; and a platform
+	// with no hardlink identity to read at all, where no tree is walked. What is above
+	// still holds - a finding here is a finding - and what is not there was not looked
+	// for. Said out loud rather than left to the silence, which otherwise means the trees
+	// were read whole and nothing was found.
 	CredentialAliasesPartial bool
 	// Unresolved marks a question nothing here answered: the caller could not resolve the
 	// manifest's paths and signals that by passing a nil policy, so every field above is

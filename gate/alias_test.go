@@ -158,3 +158,27 @@ func TestCheckIsQuietWithoutAReachableAlias(t *testing.T) {
 		}
 	})
 }
+
+// An anchor bento cannot read yields no credential, and a scan with no credential walks no
+// granted tree and returns an empty answer - the same answer a host holding no aliasable
+// credential gets. That is the failure class the package names: nothing found where
+// nothing was looked for. The backend refuses in this situation; here the answer is a note
+// beside a narrower verdict, so it reports partial instead.
+func TestCheckReportsAnUnreadableCredentialAnchorAsPartial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory with no permissions, so the anchor walks fine")
+	}
+	home, key := aliasHome(t)
+	if err := os.Chmod(filepath.Join(home, ".ssh"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(home, ".ssh"), 0o700) })
+
+	r := runnableOver(t, key, []string{filepath.Dir(home)})
+	if len(r.CredentialAliases) != 0 {
+		t.Fatalf("an anchor that cannot be read yields no finding; got %+v", r.CredentialAliases)
+	}
+	if !r.CredentialAliasesPartial {
+		t.Error("an empty answer over an anchor nothing could read is a could-not-look, not a clean bill")
+	}
+}

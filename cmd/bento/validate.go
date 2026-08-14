@@ -290,13 +290,14 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "        why this is a note and not a refusal: nothing in the manifest decides it.\n")
 	}
 	// Said whether or not an alias was found above: with one it bounds what the list is
-	// worth, and with none it is the difference between a tree read whole and a tree the
-	// scan stopped part way down.
+	// worth, and with none it is the difference between a tree read whole and a scan that
+	// never looked at part of what it had to.
 	if r.CredentialAliasesPartial {
-		fmt.Fprintf(w, "  note: the granted trees were not read to the end when looking for second names\n")
-		fmt.Fprintf(w, "        for a shielded credential - they hold more entries than that scan is given,\n")
-		fmt.Fprintf(w, "        since it runs on every validate. Any alias listed above is real; there may\n")
-		fmt.Fprintf(w, "        be others. Narrow the grant to check a tree exhaustively.\n")
+		fmt.Fprintf(w, "  note: the scan for second names of a shielded credential did not cover\n")
+		fmt.Fprintf(w, "        everything - a granted tree holds more entries than the scan is given,\n")
+		fmt.Fprintf(w, "        since it runs on every validate, or a credential store could not be read.\n")
+		fmt.Fprintf(w, "        Any alias listed above is real; there may be others. Narrow the grant to\n")
+		fmt.Fprintf(w, "        check a tree exhaustively.\n")
 	}
 	// A property of the host rather than of the manifest, said here because the grants
 	// above are what a reader is weighing and this is the one thing about the shields that
@@ -483,10 +484,11 @@ type policyJSON struct {
 	// manifest carries, so --strict does not fail on one and runnable stays true. A gate
 	// that wants an alias to block has to decide that itself, knowing its own run's flags.
 	CredentialAliases []credentialAliasJSON `json:"credential_aliases,omitempty"`
-	// CredentialAliasesPartial says the granted trees were not read to the end, so
+	// CredentialAliasesPartial says the scan did not cover everything it had to, so
 	// credential_aliases is bounded rather than complete. A gate reading the field has
 	// nothing else to tell a tree that was read whole from one the scan stopped part way
-	// down, and the two mean different things about an empty list.
+	// down - or from an anchor it could not read - and the two mean different things about
+	// an empty list.
 	CredentialAliasesPartial bool `json:"credential_aliases_partial,omitempty"`
 	// UnshieldableRuntimeDir is XDG_RUNTIME_DIR as this host spells it when no shield can
 	// follow it there, and absent otherwise. The degraded rule set is byte-identical to a

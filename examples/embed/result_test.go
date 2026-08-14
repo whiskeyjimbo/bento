@@ -211,7 +211,7 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want = "where its shields anchor"
 		case f.Name == "CredentialAliasesPartial" && v.Bool():
-			want = "not read to the end"
+			want = "did not cover everything"
 		default:
 			t.Errorf("gate.Runnability.%s is new: give it a value in the fixture above and teach this "+
 				"switch its shape, then print it in writeRunnability.", f.Name)

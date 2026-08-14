@@ -1023,7 +1023,7 @@ func TestValidateSaysWhenTheAliasScanWasCutShort(t *testing.T) {
 
 	var out strings.Builder
 	writeRunnability(&out, r)
-	if !strings.Contains(out.String(), "not read to the end") {
+	if !strings.Contains(out.String(), "did not cover") {
 		t.Errorf("the summary must say the trees were not read whole; got:\n%s", out.String())
 	}
 

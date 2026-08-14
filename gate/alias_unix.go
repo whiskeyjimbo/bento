@@ -61,21 +61,25 @@ type fileID struct {
 //
 // Unreadable and unstattable paths are skipped rather than raising. The backend refuses
 // over one, because there a could-not-look reported as clean is the failure; here the
-// answer is a note beside a verdict that is already narrower than the run's, and the
-// caller is told that in as many words on Runnability.CredentialAliases.
+// answer is a note beside a verdict that is already narrower than the run's. Skipped, but
+// not silently: an anchor that went unread reports the answer partial, since an anchor
+// nothing could look at yields no credential and would otherwise render as a host holding
+// none.
 func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.CredentialAlias, bool) {
-	want, shielded := aliasableCredentials(set, reads)
+	want, shielded, unread := aliasableCredentials(set, reads)
 	// Nothing to compare against, so no tree is walked. On an ordinary host this is the
 	// answer - a credential with one directory entry cannot be hardlink-aliased - and it
-	// is what keeps the walk off the granted trees, which can be a whole checkout.
+	// is what keeps the walk off the granted trees, which can be a whole checkout. Not a
+	// clean bill where an anchor went unread: nothing was found there because nothing was
+	// looked at.
 	if len(want) == 0 {
-		return nil, false
+		return nil, unread
 	}
 	var out []enforce.CredentialAlias
 	// One budget for the whole answer rather than one per grant: what the caller waits for
 	// is the sum, and a manifest granting ten trees would otherwise pay ten times the bound.
 	budget := aliasBudget
-	var partial bool
+	partial := unread
 	seen := map[string]bool{}
 	for _, g := range slices.Concat(reads, writes) {
 		root := pathresolve.Existing(filepath.Clean(g))
@@ -124,7 +128,9 @@ const aliasBudget = 50_000
 // A store a read grant opts back in is skipped, because its shield never engages - the run
 // honors that grant as a deliberate exception, so there is no shield for a second name to
 // read past.
-func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, map[string]bool) {
+// The third return says an anchor went unread - a walk error, or a stat that failed - so
+// the empty answer that follows is a could-not-look rather than an absence.
+func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, map[string]bool, bool) {
 	// A host with no anchors shields nothing at all, which Check reports as unknown before
 	// this runs; the empty set here is that same answer said again rather than a claim.
 	homes, _ := denylist.HomeAnchors()
@@ -144,6 +150,7 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 	want := map[fileID]string{}
 	shielded := map[string]bool{}
 	seen := map[string]bool{}
+	var unread bool
 	for _, root := range roots {
 		// Covering rather than equal, as the backend asks it: an anchor NESTED in an
 		// opted-in store is opted in too, and skipping only the exact match would report an
@@ -159,7 +166,8 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 		// and following the link would make an extra link the normal case.
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // every error is handled in the callback; see the docstring
 			if err != nil {
-				return nil //nolint:nilerr // an anchor bento cannot walk yields no finding, which is this answer's stated direction
+				unread = true
+				return nil //nolint:nilerr // an anchor bento cannot walk yields no finding, reported partial rather than raised
 			}
 			// Skipped for the reason the backend skips it: a password store keeps its
 			// history as content-addressed blobs, and `git clone --local` hardlinks every
@@ -174,7 +182,11 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 				return nil
 			}
 			id, links, ok := identify(d)
-			if !ok || links < 2 {
+			if !ok {
+				unread = true
+				return nil
+			}
+			if links < 2 {
 				return nil
 			}
 			shielded[p] = true
@@ -186,7 +198,7 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 			return nil
 		})
 	}
-	return want, shielded
+	return want, shielded, unread
 }
 
 // aliasesUnder returns the files under a granted tree whose content is one of want's.
