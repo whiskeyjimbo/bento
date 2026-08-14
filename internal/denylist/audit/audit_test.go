@@ -461,6 +461,23 @@ const (
 	gateRunUser = "/run/user/1000"
 )
 
+// The gate is a comparison only while its home is somewhere the rule set does not already
+// shield wholesale. Runtime carries unconditional DenyAll DIRECTORY rules for /run and
+// /var/run, so a home under either covers every expanded candidate whatever the corpora
+// say, and the gate reports parity over a comparison it never made - 1926 directives, zero
+// gaps, on any rootless or container session whose $HOME sits there.
+//
+// This pins the property rather than the constant, because the constant is not what went
+// wrong: the home was read from the environment, where a value under /run is ordinary. A
+// gateHome pointed back at an ambient read fails here instead of greening the gate.
+func TestGateHomeIsNotShieldedWholesale(t *testing.T) {
+	probe := filepath.Join(gateHome, ".audit-gate-probe")
+	rules := append(denylist.Home(gateHome), denylist.Runtime(gateRunUser, gateHome)...)
+	if r, ok := denylist.Covers(probe, rules); ok {
+		t.Errorf("every candidate under the gate's home %s is already covered by %s (%v); the diff can only report parity, so the gate proves nothing", gateHome, r.Path, r.Deny)
+	}
+}
+
 // hostCorpora are the upstream profiles the in-tree gate diffs against, read from this
 // host: both projects' data is GPLv2 and used as a dev-time diff input only, never
 // vendored to testdata. Each carries the same two health checks `make audit` applies to
