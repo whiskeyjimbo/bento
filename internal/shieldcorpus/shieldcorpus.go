@@ -9,10 +9,19 @@
 // is asserted the only way left: each site is tested against this table in its own
 // package, and a site that answers differently goes red on its own.
 //
-// The backend is authoritative. Verdict is what a RUN does, and the other two are
-// measured against it, because the run is the thing that actually refuses. Where a site
-// deliberately answers something else, the case says so in a field and gives the reason;
-// a divergence with no field is a bug in that site, not a case to be edited.
+// The backend is authoritative, and the other two are measured against it, because the
+// run is the thing that actually refuses. Where a site deliberately answers something
+// else, the case says so in a field and gives the reason; a divergence with no field is a
+// bug in that site, not a case to be edited.
+//
+// SCOPE, and it is narrower than "what a run does". Verdict models four of checkGrants'
+// checks on the FULL tier. Three refusals a run raises have no member here and no case
+// can express them: checkWriteNotRoot, which the shield checks are documented as relying
+// on; checkWorkspaceShieldNotRedirected, whose position between two of the modelled
+// checks is itself load-bearing; and checkWriteNotAboveWriteShield, which only the
+// degraded tier raises. So agreement across the three sites is agreement about the four,
+// and the gap runs in the UNDER-refusing direction: a shape this table calls Honored may
+// still be hard-refused by a run.
 package shieldcorpus
 
 import (

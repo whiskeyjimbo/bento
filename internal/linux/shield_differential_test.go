@@ -68,10 +68,14 @@ func corpusSandbox(home string, c shieldcorpus.Case) sandbox {
 	}
 }
 
-// corpusVerdict runs the shield checks in the order checkGrants runs them and reports
-// which one refused, so the corpus records a verdict rather than a sentence. The
-// sentences themselves are asserted by the tests that own each refusal; what the corpus
-// is for is the three sites agreeing on WHICH grants are refusable at all.
+// corpusVerdict runs the shield checks the corpus models, in the order checkGrants runs
+// them, and reports which one refused, so the corpus records a verdict rather than a
+// sentence. The sentences themselves are asserted by the tests that own each refusal;
+// what the corpus is for is the three sites agreeing on WHICH grants are refusable at all.
+//
+// It is a subset of what checkGrants does, and the package doc says which checks are left
+// out and why that gap runs in the under-refusing direction. Adding one here means adding
+// a Verdict member alongside it, or the corpus cannot express the shape at all.
 func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.Verdict {
 	t.Helper()
 	g := c.Path(sb.homes[0])
