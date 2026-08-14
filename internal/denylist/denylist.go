@@ -475,7 +475,11 @@ func Home(home string) []Rule {
 		".terraformrc",              // credentials blocks with Terraform Cloud/Enterprise tokens
 		".m2/settings.xml",          // Maven <server> passwords, often plaintext
 		".gradle/gradle.properties", // signing keys and repository credentials
-		".composer/auth.json",       // Composer registry/VCS tokens
+		// Composer registry/VCS tokens, at both spellings of its home: ~/.composer is the
+		// legacy root it prefers when it exists, ~/.config/composer the default everywhere
+		// else, which is where the file actually sits on a host that never had the legacy one.
+		".composer/auth.json",
+		".config/composer/auth.json",
 		".bundle/config",            // bundler stores gem-source and push credentials here
 		".nuget/NuGet/NuGet.Config", // NuGet apikeys (the ~/.nuget/packages cache stays readable)
 		".ivy2/.credentials",        // Ivy resolver credentials (the ~/.ivy2 cache stays readable)
@@ -1407,15 +1411,14 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			}
 		}
 	}
-	// STEPPATH moves step-cli's whole tree, but only secrets/ under it is shielded at the
-	// default - the certificates and config beside it are what an in-sandbox step reads.
-	// dirEnvs is the wrong table for that: its DenyAll takes the relocated tree whole and
-	// would hide the certificates the default deliberately spares. The contexts layout
-	// recorded beside the default entry is the same residual once relocated.
-	if base := os.Getenv("STEPPATH"); filepath.IsAbs(base) {
-		if c := filepath.Clean(base); !isDefault(c, ".step") {
-			if p := filepath.Join(c, "secrets"); !covered(p) && shieldable(p) {
-				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "STEPPATH"})
+	for _, de := range dirSubEnvs {
+		base := os.Getenv(de.env)
+		if !filepath.IsAbs(base) {
+			continue
+		}
+		if c := filepath.Clean(base); !isDefault(c, de.def) {
+			if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
+				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
 			}
 		}
 	}
@@ -1782,6 +1785,9 @@ var fileDenyAllEnvs = []struct {
 	{"WGETRC", ".wgetrc", HoldsCredentials},
 	{"ANSIBLE_CONFIG", ".ansible.cfg", HoldsCredentials},
 	{"SOPS_AGE_KEY_FILE", ".config/sops/age/keys.txt", HoldsCredentials},
+	// rclone.conf holds every remote's tokens and obscured passwords, and the variable names
+	// the file rather than the ~/.config/rclone directory shielded around it.
+	{"RCLONE_CONFIG", ".config/rclone/rclone.conf", HoldsCredentials},
 }
 
 // The single startup files a variable designates with no default path to compare against.
@@ -1824,7 +1830,6 @@ var loneEnvs = []string{
 	"CARGO_HOME",
 	"HGRCPATH",
 	"GOPATH",
-	"STEPPATH",
 	"XDG_RUNTIME_DIR",
 }
 
@@ -1846,6 +1851,9 @@ func RelocationVars() []string {
 		out = append(out, b.env)
 	}
 	for _, e := range dirEnvs {
+		out = append(out, e.env)
+	}
+	for _, e := range dirSubEnvs {
 		out = append(out, e.env)
 	}
 	for _, e := range dirFileEnvs {
@@ -1886,6 +1894,17 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// wrapper distributions beside it are what an in-sandbox build reads. init.d under the
 	// same variable is write-shielded in writeOnlyDirEnvs, the other half of the split.
 	{"GRADLE_USER_HOME", ".gradle", "gradle.properties"},
+	// auth.json holds the Packagist/private-registry and GitHub OAuth tokens; the vendor
+	// tree and the package cache beside it are what an in-sandbox composer reads. vendor/bin
+	// under the same variable is write-shielded in writeOnlyDirEnvs, the GRADLE_USER_HOME
+	// split again.
+	{"COMPOSER_HOME", ".config/composer", "auth.json"},
+	// The coding agents' OAuth tokens. The tree around each is write-shielded rather than
+	// hidden so the agent can still read its own configuration in-sandbox, and that half
+	// follows the same variable from writeOnlyDirEnvs - the CARGO_HOME severity split, in
+	// the two tables that can express it.
+	{"CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"},
+	{"CODEX_HOME", ".codex", "auth.json"},
 }
 
 // The tool-specific variables that move a whole write-shielded DIRECTORY off its default
@@ -1917,6 +1936,11 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"MISE_CACHE_DIR", ".cache/mise", ""},
 	// The cloned hook repos the host executes at the next commit.
 	{"PRE_COMMIT_HOME", ".cache/pre-commit", ""},
+	// The coding agents' configuration trees, whose settings declare hooks and MCP servers -
+	// command lines the agent runs on the HOST later. The credential inside each follows the
+	// same variable from dirFileEnvs, the other half of the split.
+	{"CLAUDE_CONFIG_DIR", ".claude", ""},
+	{"CODEX_HOME", ".codex", ""},
 
 	// The $PATH-resident binary and shim directories Home shields at their defaults. Each
 	// variable is the tool's own documented relocation, so a shield left at the default
@@ -1973,6 +1997,20 @@ var writeOnlyDirEnvs = []struct{ env, def, sub string }{
 	{"DOTNET_CLI_HOME", "", ".dotnet/tools"},
 }
 
+// The tool-specific variables that relocate a directory of which only one SUBDIRECTORY is
+// shielded at the default - dirEnvs' whole-tree DenyAll would hide the content beside it
+// that the default deliberately spares, and dirFileEnvs is file-shaped.
+var dirSubEnvs = []struct{ env, def, sub string }{
+	// step-cli's whole tree moves, but the certificates and config beside secrets/ are what
+	// an in-sandbox step reads. The contexts layout recorded beside the default entry is the
+	// same residual once relocated.
+	{"STEPPATH", ".step", "secrets"},
+	// borg's repository keys sit under keys/ in its config dir; the repo caches and the
+	// known-repos list beside them stay readable, as at the default. BORG_KEYS_DIR moves the
+	// keys alone and is a dirEnvs row.
+	{"BORG_CONFIG_DIR", ".config/borg", "keys"},
+}
+
 // The tool-specific variables that move a whole credential directory off its default path.
 // Shared between the rule that follows the shield there and the alias scan that anchors on
 // it: a store the two disagree about is one that is hidden but whose second readable name
@@ -1990,6 +2028,9 @@ var dirEnvs = []struct{ env, def string }{
 	{"LXD_CONF", ".config/lxc"},
 	// The sync encryption key and the shell history it decrypts move together.
 	{"ATUIN_DATA_DIR", ".local/share/atuin"},
+	// The borg repository keys alone; BORG_CONFIG_DIR moves the directory above them and is
+	// a dirSubEnvs row, because only keys/ under it is shielded.
+	{"BORG_KEYS_DIR", ".config/borg/keys"},
 }
 
 // The hidden home directories, split by what the contents ARE. Every bucket is shielded

@@ -921,6 +921,49 @@ func TestHomeShieldsTheRelocatedStepSecrets(t *testing.T) {
 	}
 }
 
+// A store shielded only at its default is one variable away from unshielded, so each of
+// these was a shield the package already carried with no row to follow it. The severity
+// split matters as much as the coverage: the coding agents' trees are write-shielded so an
+// agent in the sandbox can still read its own configuration, and only the token inside is
+// hidden - the relocation has to reproduce both halves, not collapse them.
+func TestHomeFollowsTheLateRelocationRows(t *testing.T) {
+	t.Setenv("COMPOSER_HOME", "/srv/composer")
+	t.Setenv("RCLONE_CONFIG", "/srv/rclone.conf")
+	t.Setenv("BORG_CONFIG_DIR", "/srv/borg")
+	t.Setenv("BORG_KEYS_DIR", "/srv/borg-keys")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/srv/claude")
+	t.Setenv("CODEX_HOME", "/srv/codex")
+
+	byPath := map[string]Rule{}
+	for _, r := range allRules("/home/u") {
+		byPath[r.Path] = r
+	}
+	for _, want := range []Rule{
+		{Path: "/srv/composer/auth.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "COMPOSER_HOME"},
+		{Path: "/srv/rclone.conf", Deny: DenyAll, Holds: HoldsCredentials, Source: "RCLONE_CONFIG"},
+		{Path: "/srv/borg/keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_CONFIG_DIR"},
+		{Path: "/srv/borg-keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_KEYS_DIR"},
+		{Path: "/srv/claude/.credentials.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
+		{Path: "/srv/claude", Deny: DenyWrite, Dir: true, Source: "CLAUDE_CONFIG_DIR"},
+		{Path: "/srv/codex/auth.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CODEX_HOME"},
+		{Path: "/srv/codex", Deny: DenyWrite, Dir: true, Source: "CODEX_HOME"},
+	} {
+		got, ok := byPath[want.Path]
+		if !ok {
+			t.Errorf("expected a shield at %q, missing", want.Path)
+			continue
+		}
+		if got != want {
+			t.Errorf("shield at %q is %+v, want %+v", want.Path, got, want)
+		}
+	}
+	// The borg config dir keeps the repo caches beside keys/ readable, the way the default
+	// does; taking the tree whole is what dirEnvs would have done.
+	if _, ok := byPath["/srv/borg"]; ok {
+		t.Error("the whole relocated borg config dir is shielded; only keys/ inside it should be")
+	}
+}
+
 // KUBECONFIG (a colon-separated list of files) and the AWS_*_FILE envs relocate individual
 // credential files off ~/.kube / ~/.aws. Each absolute target must be shielded at its own
 // path; relative and empty entries are ignored, like a relative directory relocation.
@@ -1477,6 +1520,9 @@ func TestRelocationDefsNameAShieldedDefault(t *testing.T) {
 	for _, e := range dirEnvs {
 		check("dirEnvs", e.env, e.def, "")
 	}
+	for _, e := range dirSubEnvs {
+		check("dirSubEnvs", e.env, e.def, e.sub)
+	}
 	for _, e := range dirFileEnvs {
 		check("dirFileEnvs", e.env, e.def, e.file)
 	}
@@ -1574,7 +1620,10 @@ func TestHomeShieldsPathsFirejailDoesNotList(t *testing.T) {
 		"/home/u/.terraformrc",              // Terraform Cloud tokens; .terraform.d is an anchor
 		"/home/u/.m2/settings.xml",          // Maven server passwords
 		"/home/u/.gradle/gradle.properties", // signing keys and repo credentials
-		"/home/u/.composer/auth.json",       // Composer registry tokens
+		"/home/u/.composer/auth.json",       // Composer registry tokens, legacy root
+		// The same tokens at the default home composer uses on a host that never had the
+		// legacy root, which is most of them.
+		"/home/u/.config/composer/auth.json",
 		"/home/u/.bundle/config",            // bundler gem-source credentials
 		"/home/u/.nuget/NuGet/NuGet.Config", // NuGet apikeys
 		"/home/u/.claude/.credentials.json", // coding-agent OAuth token
