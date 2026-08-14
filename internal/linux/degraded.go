@@ -230,13 +230,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// launcher execveats the target over itself and there is nothing left to convert, so
 	// a target that dies of its own signal inside the cancel window is read as the
 	// cancel - the same conservative direction the guard takes everywhere else.
-	// Stamped once for every arm below; see the full tier's copy.
-	changedAuto, redirected := autoExecBefore.changed(writes)
-
 	if err != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
 		// Carried out through the cancel for the reason the full tier's is: a target killed
 		// partway is the run least likely to be looked at and most likely to have left an
 		// auto-executing file behind.
+		changedAuto, redirected := autoExecBefore.changed(writes)
 		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
@@ -248,10 +246,12 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
+		changedAuto, redirected := autoExecBefore.changed(writes)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
 	default:
 		// As on the cancel arm above: the target may already have run, so the list is the
 		// only thing on this path that says what the host now holds.
+		changedAuto, redirected := autoExecBefore.changed(writes)
 		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
 }
