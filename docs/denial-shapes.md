@@ -57,7 +57,9 @@ away from it, and a run that hit every shield can exit 0.
 `enforce.Result` carries what the run actually did:
 
 - `Shields []ShieldApplied` - every shield the run engaged, each with a `Path`
-  and a `Kind` of `"hidden"` or `"read-only"`. This is the recovery: after a run
+  and a `Kind` of `"hidden"`, `"read-only"`, or `"discarded"` (an empty scratch
+  directory for a shielded path the host does not have - writable, but nothing
+  written there survives the run). This is the recovery: after a run
   that produced a suspicious result, the embedder can name the shielded paths
   rather than leaving the user to guess why their agent vendored a config.
 - `ShieldedGrants` - shields a grant deliberately lifted (see

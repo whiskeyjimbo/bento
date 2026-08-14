@@ -421,7 +421,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		Target:     command(p, sb),
 	}
 	args = append(args, sandboxBentoPath)
-	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(appliedShields), nil
+	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(sb, appliedShields), nil
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on

@@ -471,7 +471,8 @@ type Result struct {
 	// namespace and therefore applies no shields at all: a home read grant that reached
 	// a credential store makes it readable to the target here, where the full tier would
 	// have hidden it. Each record names the path and the Kind the full tier would have
-	// applied ("hidden"/"read-only") - it is the protection this tier did NOT deliver,
+	// applied ("hidden"/"read-only"/"discarded") - it is the protection this tier did NOT
+	// deliver,
 	// the mirror image of Shields, not evidence anything was hidden. Opt-ins are excluded
 	// (they are a deliberate exposure the full tier makes too, reported via
 	// ShieldedGrants). Sorted by path, empty for the full tier and for a degraded run
@@ -511,8 +512,13 @@ type Result struct {
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path
 // is absent - a credential store the sandbox tmpfs'd or overmounted with an empty
-// file) or "read-only" (the path stays readable but cannot be written - a
-// code-execution surface like a git hooks dir). Path can carry bytes influenced by a
+// file), "read-only" (the path stays readable but cannot be written - a
+// code-execution surface like a git hooks dir), or "discarded" (the path did not exist
+// on the host, so it is an empty scratch directory the target may write and nothing it
+// writes there survives the run - what a shield on an absent git hooks dir does).
+// A consumer must not treat these as two values: "discarded" is a directory the target
+// CAN write, so a check for whether a write can fail belongs on "read-only" alone.
+// Path can carry bytes influenced by a
 // prior run (a git submodule directory name), so a consumer that renders it to a
 // terminal must quote it; the built-in surfaces do (JSON-encoded, or counts only).
 type ShieldApplied struct {

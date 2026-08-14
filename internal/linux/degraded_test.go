@@ -76,7 +76,10 @@ func TestExposedShieldsNamesReachableUnappliedShields(t *testing.T) {
 	// task dirs - which the full tier would make read-only. This exercises the DenyWrite ->
 	// "read-only" kind, distinct from the hidden credential stores above, so a regression
 	// that flattened every exposed record to "hidden" is caught.
-	proj := testSandbox("/home/u/proj/.git/config", "/home/u/proj/.git/hooks/pre-commit")
+	// The hooks directory itself is an entry, not only the file under it: the kind is read
+	// off the mount, and a shield on a directory the host does not have is a tmpfs the
+	// target can write rather than a read-only bind.
+	proj := testSandbox("/home/u/proj/.git/config", "/home/u/proj/.git/hooks", "/home/u/proj/.git/hooks/pre-commit")
 	writes := []string{"/home/u/proj"}
 	wOptIns := shield.Targets(explicitShieldOptIns(proj, nil))
 	if got := exposedShields(proj, writes, writes, wOptIns); !has(got, "/home/u/proj/.git/hooks", "read-only") {

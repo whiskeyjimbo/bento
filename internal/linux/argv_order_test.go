@@ -200,8 +200,8 @@ func TestHiddenCredentialLandsAfterTheReadableTreeThatHoldsIt(t *testing.T) {
 		}
 		return last
 	}
-	if !hasShield(shieldsApplied(applied), tree, "read-only") || !hasShield(shieldsApplied(applied), secret, "hidden") {
-		t.Fatalf("expected a read-only %s holding a hidden %s; got %v", tree, secret, shieldsApplied(applied))
+	if !hasShield(shieldsApplied(sb, applied), tree, "read-only") || !hasShield(shieldsApplied(sb, applied), secret, "hidden") {
+		t.Fatalf("expected a read-only %s holding a hidden %s; got %v", tree, secret, shieldsApplied(sb, applied))
 	}
 	if at(secret) < at(tree) {
 		t.Errorf("the hidden credential is bound at argv %d, before the readable tree at %d, so the tree re-exposes it", at(secret), at(tree))

@@ -315,6 +315,27 @@ func TestCompileReportsAppliedShields(t *testing.T) {
 	}
 }
 
+// A DenyWrite shield on a directory that is not on the host is mounted as a tmpfs, which
+// the target can create and write files in for the whole run - they just never persist.
+// Reporting that as "read-only" names a protection other than the one applied, and it is
+// the ordinary case: a write grant on a plain directory shields a .git/hooks that does not
+// exist. The kind has to be read off what the mount really is, so an existing directory in
+// the same run still reports read-only.
+func TestCompileReportsAnAbsentDirectoryShieldAsDiscarded(t *testing.T) {
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/.vscode", "/home/u/proj/.vscode/tasks.json")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
+	_, shields, err := compile(p, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasShield(shields, "/home/u/proj/.git/hooks", "discarded") {
+		t.Errorf("an absent directory shield is a writable tmpfs and must not be reported read-only; got %v", shields)
+	}
+	if !hasShield(shields, "/home/u/proj/.vscode", "read-only") {
+		t.Errorf("a directory shield the host really has is bound read-only; got %v", shields)
+	}
+}
+
 func hasShield(shields []enforce.ShieldApplied, path, kind string) bool {
 	for _, s := range shields {
 		if s.Path == path && s.Kind == kind {

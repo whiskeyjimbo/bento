@@ -215,7 +215,7 @@ type mergeJSON struct {
 }
 
 // shieldJSON is one always-on shield a run engaged, for the --json envelope. Kind is
-// "hidden" or "read-only"; see enforce.ShieldApplied.
+// "hidden", "read-only" or "discarded"; see enforce.ShieldApplied.
 type shieldJSON struct {
 	Path   string `json:"path"`
 	Kind   string `json:"kind"`
@@ -456,17 +456,18 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 	if len(res.Shields) == 0 {
 		return
 	}
-	// The backend emits exactly two kinds, so the read-only count determines the other.
-	readonly := 0
+	// Counted per kind rather than deriving one from the total: hidden is not the
+	// complement of read-only, since a shield on a path that does not exist yet discards
+	// writes instead of rejecting them.
+	byKind := map[string]int{}
 	for _, s := range res.Shields {
-		if s.Kind == "read-only" {
-			readonly++
-		}
+		byKind[s.Kind]++
 	}
-	hidden := len(res.Shields) - readonly
-	msg := fmt.Sprintf("%d hidden", hidden)
-	if readonly > 0 {
-		msg += fmt.Sprintf(", %d read-only", readonly)
+	msg := fmt.Sprintf("%d hidden", byKind["hidden"])
+	for _, kind := range []string{"read-only", "discarded"} {
+		if byKind[kind] > 0 {
+			msg += fmt.Sprintf(", %d %s", byKind[kind], kind)
+		}
 	}
 	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg)
 

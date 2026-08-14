@@ -19,7 +19,15 @@ import (
 // audit record: one entry per shielded path, sorted, with the kind of shield. A
 // DenyAll rule (credential stores, ~/.ssh) reports hidden; a DenyWrite rule (shell rc
 // files, git hooks, editor config trees) reports read-only.
-func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
+//
+// The kind is read off what shieldMount really emits, not off the rule alone, which is
+// why the host is consulted here. A DenyWrite on a directory that does not exist yet gets
+// a tmpfs rather than a read-only bind, and a tmpfs is writable: the target can create
+// files in it for the whole run and they simply never reach the host. That is the common
+// case, not an exotic one - a write grant on a plain directory shields a .git/hooks that
+// is not there - and calling it read-only would name a protection other than the one
+// applied. It reports discarded instead.
+func shieldsApplied(sb sandbox, rules []denylist.Rule) []enforce.ShieldApplied {
 	if len(rules) == 0 {
 		return nil
 	}
@@ -28,6 +36,9 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 		kind := "hidden"
 		if r.Deny == denylist.DenyWrite {
 			kind = "read-only"
+			if r.Dir && !sb.exists(r.Path) {
+				kind = "discarded"
+			}
 		}
 		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind, Source: r.Source})
 	}
@@ -45,7 +56,7 @@ func shieldsApplied(rules []denylist.Rule) []enforce.ShieldApplied {
 // not exposed here and must not be reported as if it were. Opt-ins are dropped by denyArgs.
 func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.ShieldApplied {
 	_, applied := denyArgs(sb, visible, writes, optIns)
-	return shieldsApplied(applied)
+	return shieldsApplied(sb, applied)
 }
 
 // shields is the run's assembled shield set: the built-in credential and runtime rules,
