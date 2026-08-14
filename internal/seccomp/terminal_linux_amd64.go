@@ -72,6 +72,11 @@ func terminalInjectionFilter() []unix.SockFilter {
 // would also cover this via its ioctl_dev right, but only at ABI 5 (kernel 6.10) and
 // above. The tier is entered for a missing bwrap or unprivileged userns, not for an old
 // kernel, so its hosts span both sides of that line and the guarantee cannot rest on it.
+// TerminalInjectionSupported reports whether this build can install the terminal-injection
+// filter. Like the egress and none-strict filters, the program is hand-rolled amd64 BPF,
+// so the answer is a build fact rather than a kernel one.
+func TerminalInjectionSupported() bool { return true }
+
 func BlockTerminalInjection() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)

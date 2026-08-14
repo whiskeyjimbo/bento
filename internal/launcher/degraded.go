@@ -69,6 +69,7 @@ var (
 	landlockAvailable      = landlock.Available
 	seccompEgressSupported = seccomp.EgressSupported
 	strictExecSupported    = seccomp.StrictExecSupported
+	terminalFenceSupported = seccomp.TerminalInjectionSupported
 )
 
 // The installs themselves, for the same reason: a seccomp install fails only on a kernel
@@ -111,15 +112,20 @@ var (
 )
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
-// supply. Both layers are the ONLY one of their kind in this tier - there is no
-// mount namespace behind them - so a missing one means running the target with the
-// host filesystem or network exposed, never a quieter downgrade.
-func degradedPrerequisites(landlockOK, egressOK bool) error {
+// supply. Each fence is the ONLY one of its kind in this tier - there is no mount
+// namespace behind Landlock, no netns behind the egress block, and no --new-session
+// detaching the target from the caller's terminal - so a missing one means running the
+// target with the host filesystem, network or terminal exposed, never a quieter
+// downgrade.
+func degradedPrerequisites(landlockOK, egressOK, terminalOK bool) error {
 	if !landlockOK {
 		return fmt.Errorf("launcher: refusing to run - the degraded tier needs Landlock and this kernel has none")
 	}
 	if !egressOK {
 		return fmt.Errorf("launcher: refusing to run - the degraded tier needs the seccomp egress block, unavailable on this architecture")
+	}
+	if !terminalOK {
+		return fmt.Errorf("launcher: refusing to run - the degraded tier needs the seccomp terminal-injection block, unavailable on this architecture")
 	}
 	return nil
 }
@@ -159,7 +165,7 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 			return 0, fmt.Errorf("launcher: degraded scratch %q is not in the write set", cfg.Scratch)
 		}
 	}
-	if err := degradedPrerequisites(landlockAvailable(), seccompEgressSupported()); err != nil {
+	if err := degradedPrerequisites(landlockAvailable(), seccompEgressSupported(), terminalFenceSupported()); err != nil {
 		return 0, err
 	}
 

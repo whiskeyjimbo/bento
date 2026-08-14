@@ -11,24 +11,32 @@ import (
 	"testing"
 )
 
-// The degraded tier has no mount namespace behind Landlock and the seccomp egress
-// block, so each is the ONLY fence of its kind: a host missing one must be refused,
-// never run with the host filesystem or network reachable.
+// The degraded tier has no mount namespace behind Landlock, no netns behind the seccomp
+// egress block and no new session between the target and the caller's terminal, so each
+// fence is the ONLY one of its kind: a host missing one must be refused, never run with
+// the host filesystem, network or terminal reachable.
+//
+// The terminal case is its own term rather than a consequence of the egress one. Both
+// filters are amd64-only today, so on every real host the two answers agree - which is
+// exactly why a gate that read only egress would look correct while the terminal fence's
+// availability went unasked.
 func TestDegradedPrerequisites(t *testing.T) {
 	cases := []struct {
 		name       string
 		landlockOK bool
 		egressOK   bool
+		terminalOK bool
 		wantHas    string
 	}{
-		{"both present", true, true, ""},
-		{"no landlock", false, true, "needs Landlock"},
-		{"no egress filter", true, false, "needs the seccomp egress block"},
-		{"neither", false, false, "needs Landlock"},
+		{"all present", true, true, true, ""},
+		{"no landlock", false, true, true, "needs Landlock"},
+		{"no egress filter", true, false, true, "needs the seccomp egress block"},
+		{"no terminal filter", true, true, false, "needs the seccomp terminal-injection block"},
+		{"neither", false, false, true, "needs Landlock"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := degradedPrerequisites(tc.landlockOK, tc.egressOK)
+			err := degradedPrerequisites(tc.landlockOK, tc.egressOK, tc.terminalOK)
 			if tc.wantHas == "" {
 				if err != nil {
 					t.Fatalf("refused a host that has both fences: %v", err)
@@ -128,6 +136,7 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 	}{
 		{"landlock", "needs Landlock"},
 		{"egress", "needs the seccomp egress block"},
+		{"terminal", "needs the seccomp terminal-injection block"},
 		{"egress-install", "could not install the egress filter"},
 		{"process-reach", "could not install the cross-process block"},
 		{"terminal-injection", "could not install the terminal-injection block"},
@@ -183,6 +192,8 @@ func runDegradedChild(fence string) {
 		landlockAvailable = func() bool { return false }
 	case "egress":
 		seccompEgressSupported = func() bool { return false }
+	case "terminal":
+		terminalFenceSupported = func() bool { return false }
 	case "egress-install":
 		blockEgress = failed
 	case "process-reach":
