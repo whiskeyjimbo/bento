@@ -207,13 +207,23 @@ func TestEveryHandledRightIsGrantedBySomeRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The allowlist tier is the third hand-written builder over handledFS, and the one
+	// whose rights are a copy of go-landlock's helpers rather than the helpers themselves.
+	// It withholds execute from its read and write rules and grants it back only on the
+	// allowlisted file, so it satisfies the invariant only when that entry is present -
+	// which the caller is refused for omitting.
+	allowlist, err := execAllowlistRules(paths, paths, []string{f})
+	if err != nil {
+		t.Fatal(err)
+	}
 	tiers := []struct {
 		name    string
 		handled ll.AccessFSSet
 		rules   []ll.Rule
 	}{
-		{"bwrap backstop", ll.AccessFSSet(1<<16 - 1), backstop}, // handledFS = ll.V8
-		{"degraded", ll.AccessFSSet(1<<17 - 1), degraded},       // degradedFS = ll.V9
+		{"bwrap backstop", ll.AccessFSSet(1<<16 - 1), backstop},  // handledFS = ll.V8
+		{"degraded", ll.AccessFSSet(1<<17 - 1), degraded},        // degradedFS = ll.V9
+		{"exec allowlist", ll.AccessFSSet(1<<16 - 1), allowlist}, // handledFS = ll.V8
 	}
 
 	for _, tier := range tiers {

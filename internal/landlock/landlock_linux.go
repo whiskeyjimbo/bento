@@ -219,10 +219,12 @@ func execAllowFiles(paths []string) ([]string, error) {
 // The rights the exec allowlist's read and write rules grant: exactly what
 // go-landlock's RODirs/ROFiles/RWDirs/RWFiles grant, minus AccessFSExecute.
 //
-// Landlock resolves an access against the rule for the most specific matching path
-// rather than the union along the hierarchy, so a narrow execute rule on one file still
-// wins over the broad no-execute rule above it. That is what lets the allowlist be a
-// subtraction plus a small addition rather than an enumeration of every readable path.
+// Landlock UNIONS the rights of every matching rule along the hierarchy rather than
+// resolving against the most specific one, so a narrower rule can only ADD a right, never
+// carve one back out. That is why the subtraction has to live in these sets: the execute
+// right is withheld by the read and write rules themselves, and the allowlisted file's own
+// rule then adds it back on that one path. A narrow no-execute rule under a broad
+// executable grant would restrict nothing at all.
 //
 // Spelled out rather than derived because go-landlock keeps a rule's access set
 // unexported, so there is no way to ask a helper what it grants and take one right away.
