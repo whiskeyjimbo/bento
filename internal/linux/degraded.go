@@ -32,7 +32,7 @@ import (
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
 func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string, acceptAliasesUnder []string) (enforce.Result, error) {
-	report := e.Probe(ctx)
+	report := e.degradedProbe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
 	// seams) along with the entrypoint and interpreter. gated is false: the degraded
@@ -290,6 +290,40 @@ func exitStatusOf(st *os.ProcessState) (code int, signaled bool, sig int) {
 	}
 	return st.ExitCode(), false, 0
 }
+
+// degradedProbe is the host probe corrected to what THIS TIER can enforce. The probe
+// answers what the host supports, and on a host where bwrap works it answers a full
+// sandbox - which this tier is not, whichever way it was selected. Reporting the probe
+// raw attested LayerFilesystem Enforced and LayerNetwork Enforced for a run with no mount
+// namespace, no netns and no shields, and reconcile only worsens, so nothing downstream
+// caught it. The CLI reaches this tier only on a userns-blocked host, where the probe
+// already says both; Run is exported and an embedder can set Degraded on any host, which
+// is the same reason screenRunID re-screens what admission already checked.
+//
+// Only these two layers. The exec and limits layers are measurements of the host that
+// hold on this tier too - the launcher installs the same seccomp filters and wraps the
+// same systemd scope - and are left as the probe found them.
+func (e *Enforcer) degradedProbe(ctx context.Context) enforce.Report {
+	r := e.Probe(ctx)
+	// Rebuilt through filesystemLayer rather than patched, so this tier's verdict and its
+	// disclosure of what it does not confine are the same text the userns-blocked host
+	// gets - one account of the tier, not two that can drift.
+	if r.StateOf(enforce.LayerFilesystem) < enforce.Degraded {
+		r.SetStatus(filesystemLayer(namespacesBlocked, degradedTierReason, landlockAvailable(),
+			landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(),
+			landlockScopedIPCRestricted(), seccompSupported() && seccompEgressSupported()))
+	}
+	if r.StateOf(enforce.LayerNetwork) < enforce.Unavailable {
+		r.Set(enforce.LayerNetwork, enforce.Unavailable, degradedTierReason+
+			", so there is no network namespace to fence egress into; the launcher blocks IP egress with seccomp instead, which does not confine what a netns confines")
+	}
+	return r
+}
+
+// degradedTierReason opens both corrected layers. It states the selection rather than a
+// host defect, because on the path this correction exists for the host has no defect: the
+// caller asked for this tier.
+const degradedTierReason = "this run was launched on the reduced-confinement tier, which uses no namespaces at all"
 
 // killProcessGroup SIGKILLs every process still in the launcher's group. The
 // negative pid targets the group (the launcher is its leader via Setpgid). ESRCH -

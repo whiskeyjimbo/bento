@@ -805,3 +805,50 @@ func TestRunDegradedRefusesAnAliasedCredential(t *testing.T) {
 		t.Errorf("the refused run left %s behind on the host", out)
 	}
 }
+
+// runDegraded reported the HOST's posture, not the TIER's. It called Probe afresh and
+// handed that report back on every arm, so on a userns-capable host - which is every dev
+// machine and every test in this package, since they all drive runDegraded directly - the
+// tier attested LayerFilesystem Enforced ("Landlock backstop active") and LayerNetwork
+// Enforced for a run with no mount namespace, no netns, no deny-list binds and no
+// shields, whose Exposed list sits in the same struct. applied.reconcile only ever
+// worsens a layer, so nothing downstream corrected it.
+//
+// The CLI is not the path at risk: enforce.Run overwrites res.Report with the admission
+// probe. This is the exposed backend API, which screenRunID's own doc establishes as a
+// path this package defends - an embedder can call Run with Degraded set on any host.
+func TestDegradedTierReportsItsOwnPostureNotTheHosts(t *testing.T) {
+	requireDegraded(t)
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+	p := &policy.Policy{Entrypoint: sh, Args: []string{"-c", "exit 0"}, Exec: policy.ExecNone}
+
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{}, "", nil)
+	if err != nil {
+		t.Fatalf("runDegraded: %v", err)
+	}
+	// Degraded, not Enforced: this tier has no mount namespace whatever the host can do,
+	// so the deny-list carves nothing and a granted /proc is the host's.
+	if got := res.Report.StateOf(enforce.LayerFilesystem); got != enforce.Degraded {
+		t.Errorf("StateOf(filesystem) = %v, want degraded: the tier applies Landlock alone, whatever the host supports", got)
+	}
+	// Unavailable, not Enforced: there is no network namespace to fence egress into. The
+	// tier blocks IP egress with seccomp, which is not the same guarantee.
+	if got := res.Report.StateOf(enforce.LayerNetwork); got != enforce.Unavailable {
+		t.Errorf("StateOf(network) = %v, want unavailable: this tier has no network namespace", got)
+	}
+	// The disclosure the tier owes an operator rides on the filesystem layer, and is what
+	// makes the Degraded verdict actionable rather than a bare word.
+	var fs enforce.LayerStatus
+	for _, l := range res.Report.Layers {
+		if l.Layer == enforce.LayerFilesystem {
+			fs = l
+		}
+	}
+	if !strings.Contains(fs.Consequences, "no mount namespace") {
+		t.Errorf("the filesystem layer carries no account of what this tier does not confine; got %q", fs.Consequences)
+	}
+}
