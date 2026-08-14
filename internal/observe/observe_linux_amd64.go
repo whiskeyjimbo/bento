@@ -468,6 +468,16 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 					res.Execed = true
 				}
 				delete(execSpawn, spawner)
+				// The tid this event retired took the leader's pid, and a leader parked
+				// mid-execve of its own leaves that answer under the surviving pid with
+				// nothing left to retire it. The next spawn's entry stop normally overwrites
+				// it, but one this decoder could not read does not - and the stale true then
+				// credits an execveat with an execve, which is the ExecAll over-grant a
+				// single misattribution buys. The same sweep forgetExitedTid makes for the
+				// same reason.
+				if spawner != wpid {
+					delete(execSpawn, wpid)
+				}
 			}
 
 			// A group-stop, a ptrace event (a new child), or a genuine
@@ -1666,11 +1676,18 @@ func recordExecHeld(h heldPath, record func(string, bool)) int {
 // The access is recorded either way, exactly as a failed open's is: the target meant to
 // run that file, and a grant is what makes it reachable. What the return value settles is
 // the same thing it settles for an open - whether anything was found there - and it is
-// answered by the open branch's rule, because it is the same question. Without it every
-// exec target read back as resolved, including the ones nothing was ever found at:
-// glibc's execvp and dash's tryexec search PATH with a real execve per element rather
-// than a stat, so the existence decoder's own filter never sees those misses, and each
-// entered the manifest as a positive claim that the path was there.
+// answered on the open branch's three-valued rule, because it is the same question. Only
+// ENOENT and ENOTDIR say the path is not there, only a spawn that ran says it is, and
+// every other outcome leaves the question open rather than answering it either way. The
+// restart pseudo-errnos are why that third case has to exist here and not just for opens:
+// execve returns ERESTARTNOINTR raw at this stop when a signal lands during de_thread, and
+// calling that "found" would let a PATH-search miss claim the path resolved - resolved
+// beats missed, so the re-issue's real ENOENT could not correct it afterwards.
+//
+// Without the answer at all, every exec target read back as resolved, including the ones
+// nothing was ever found at: glibc's execvp and dash's tryexec search PATH with a real
+// execve per element rather than a stat, so the existence decoder's own filter never sees
+// those misses, and each entered the manifest as a positive claim that the path was there.
 //
 // Whether such a path is worth PROPOSING is not decidable here. The observer runs inside
 // the sandbox, where a tool the host has and the run did not bind answers the same ENOENT
@@ -1683,10 +1700,12 @@ func releaseHeldExec(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		return false
 	}
 	delete(held, key)
-	if ret := int64(regs.Rax); ret < 0 && (syscall.Errno(-ret) == syscall.ENOENT || syscall.Errno(-ret) == syscall.ENOTDIR) {
-		openResult(h.path, false)
-	} else {
+	ret := int64(regs.Rax)
+	switch {
+	case ret >= 0:
 		openResult(h.path, true)
+	case syscall.Errno(-ret) == syscall.ENOENT || syscall.Errno(-ret) == syscall.ENOTDIR:
+		openResult(h.path, false)
 	}
 	if lost := recordExecHeld(h, record); lost > 0 {
 		drop()

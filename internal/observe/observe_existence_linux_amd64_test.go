@@ -360,3 +360,40 @@ func TestAnInterruptedProbeIsCountedRatherThanSkipped(t *testing.T) {
 		t.Errorf("the held entry survived: %v", held)
 	}
 }
+
+// An exec's exit stop carries the raw restart pseudo-errnos too - execve returns
+// ERESTARTNOINTR when a signal lands during de_thread - and they say nothing about the
+// path. Answered as "found", a PATH-search miss would claim its target resolved, and the
+// re-issue's real ENOENT could not correct it: resolved beats missed when one path is
+// reached both ways, so the manifest would carry a positive false claim about a name
+// nothing was ever found at.
+func TestARestartedExecDoesNotClaimItsTargetResolved(t *testing.T) {
+	const target = "/opt/toolchain/bin/cc"
+	for _, ret := range []int64{-int64(errRestartNoIntr), -int64(syscall.EINTR)} {
+		regs := syscall.PtraceRegs{Orig_rax: unix.SYS_EXECVE, Rip: 0x2000, Rax: uint64(ret)}
+		held := map[string]heldPath{
+			stopKey(1, &regs): {path: target, readOK: true, exec: true, complete: true},
+		}
+
+		var recorded []string
+		var answered []bool
+		dropped := 0
+		if !releaseHeldExec(1, &regs,
+			func(p string, _ bool) { recorded = append(recorded, p) },
+			func(_ string, found bool) { answered = append(answered, found) },
+			func() { dropped++ }, held) {
+			t.Fatalf("errno %d: the held exec was not recognized at its own exit stop", -ret)
+		}
+		// The access itself still stands: the target meant to run that file whatever the
+		// call went on to answer.
+		if len(recorded) != 1 || recorded[0] != target {
+			t.Errorf("errno %d: recorded %q, want the exec target", -ret, recorded)
+		}
+		if len(answered) != 0 {
+			t.Errorf("errno %d: answered whether %q resolved (%v) off a call that never got that far", -ret, target, answered)
+		}
+		if dropped != 0 {
+			t.Errorf("errno %d: counted %d drops for an exec whose image chain was whole", -ret, dropped)
+		}
+	}
+}
