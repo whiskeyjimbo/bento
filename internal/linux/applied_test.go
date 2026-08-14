@@ -137,7 +137,7 @@ func TestDegradedRunReportRestsOnWhatTheChildApplied(t *testing.T) {
 
 	var out strings.Builder
 	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"GRANTED": filepath.Join(granted, "ok.txt"), "UNGRANTED": filepath.Join(t.TempDir(), "absent")}}, "", nil)
+		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"GRANTED": filepath.Join(granted, "ok.txt"), "UNGRANTED": filepath.Join(t.TempDir(), "absent")}}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("runDegraded: %v\noutput:\n%s", err, out.String())
 	}

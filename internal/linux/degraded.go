@@ -31,7 +31,7 @@ import (
 // CA bundle (systemReadPaths), the granted reads, and the entrypoint/interpreter as
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
-func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, runID string, acceptAliasesUnder []string) (enforce.Result, error) {
+func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (enforce.Result, error) {
 	report := e.degradedProbe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
@@ -94,7 +94,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// before they exist, as the bwrap tier's does: a directory that has just been
 	// created holds no alias, so the verdict is the same either way, and refusing first
 	// is what keeps a refused run from leaving one behind.
-	accepted, err := checkAliasedCredentials(sb, visible, optInPaths(optIns), acceptAliasesUnder)
+	accepted, err := checkAliasedCredentials(sb, visible, optInPaths(optIns), opts.AcceptAliasesUnder)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -195,7 +195,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// set below and the process-group sweep still reaches anything it leaks.
 	exe, cargs := sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)
 	if scoped {
-		exe, cargs = wrapWithLimits(exe, cargs, p.Limits, runID)
+		exe, cargs = wrapWithLimits(exe, cargs, p.Limits, opts.RunID)
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return enforce.Result{}, err
@@ -235,11 +235,26 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// partway is the run least likely to be looked at and most likely to have left an
 		// auto-executing file behind.
 		changedAuto, redirected := autoExecBefore.changed(writes)
+		// A cancel that lands before the launcher ever started leaves no status at all -
+		// killedByCancel reads a nil ProcessState as the cancel, which is how a context
+		// already cancelled when runDegraded was called arrives here - and -1 is what os
+		// reports for a process with no exit code of its own. That same nil is what says
+		// the launcher was never dispatched, so there is nothing for it to have applied
+		// and nothing it could have watched.
+		cancelCode, dispatched := -1, cmd.ProcessState != nil
+		if dispatched {
+			cancelCode, _, _ = exitStatusOf(cmd.ProcessState)
+		}
+		// Reconciled for the reason the full tier's cancel arm is: the probe says what the
+		// host CAN enforce, and only the launcher's report says what this run did. Returning
+		// the probe raw attests the tier's fences to a run that may have installed none of
+		// them, on the tier whose whole value is disclosure.
+		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, cancelCode)
 		// The exposure audit is carried out with them: this tier's whole honesty rests on
 		// Exposed naming what it could not shield, and the target reached those credentials
 		// whether or not it lived to finish. Dropping the list here reports a cancelled run
 		// as having exposed nothing.
-		return enforce.Result{Report: report, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec && dispatched), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
 	case cmd.ProcessState == nil:
@@ -251,12 +266,43 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
 		changedAuto, redirected := autoExecBefore.changed(writes)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
 	default:
 		// As on the cancel arm above: the target may already have run, so these are the only
 		// things on this path that say what the host now holds and what it was left reachable.
+		// The reconcile and the record ride out with them for the same reason - the launcher
+		// was dispatched (the nil-ProcessState arm above caught the runs where it was not),
+		// so what it reported applying is the only account of this run there is.
 		changedAuto, redirected := autoExecBefore.changed(writes)
-		return enforce.Result{Report: report, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		code, _, _ := exitStatusOf(cmd.ProcessState)
+		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+	}
+}
+
+// degradedExecRecord is what a run that asked for an exec record gets from this tier.
+// Unlike the gate and the caller deny paths, asking here is not a refusal: the record is
+// a diagnostic, and refusing a run because a diagnostic is unavailable would let it
+// decide what runs. This tier installs a seccomp filter denying ptrace process-wide
+// before the target is dispatched, so the launcher's own attach would be refused by its
+// own filter - and that filter is load-bearing, since with no pid namespace the target
+// shares the host's process table. Reported as nothing having watched, which is what it
+// is.
+//
+// It is stamped on every arm where the launcher was dispatched, not only on success: nil
+// means the run did not ASK, so a cancelled --record-exec run returning nil is
+// byte-identical to one that never asked - absent-because-unasked standing in for
+// absent-because-nothing-could-watch, which is the one direction this field must not go.
+func degradedExecRecord(asked bool) *enforce.ExecRecord {
+	if !asked {
+		return nil
+	}
+	return &enforce.ExecRecord{
+		// Complete, like the other mode that structurally cannot be watched: there was no
+		// record to truncate, and the two must not disagree on a field a frontend reads as
+		// "trust what is here".
+		Complete: true,
+		Reason:   "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
 	}
 }
 

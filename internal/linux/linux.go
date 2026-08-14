@@ -87,24 +87,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
-		res, err := e.runDegraded(ctx, p, proc, opts.RunID, opts.AcceptAliasesUnder)
-		// Unlike the gate and the deny paths above, asking for an exec record here is not
-		// a refusal: the record is a diagnostic, and refusing a run because a diagnostic
-		// is unavailable would let it decide what runs. This tier installs a seccomp
-		// filter denying ptrace process-wide before the target is dispatched, so the
-		// launcher's own attach would be refused by its own filter - and that filter is
-		// load-bearing, since with no pid namespace the target shares the host's process
-		// table. Reported as nothing having watched, which is what it is.
-		if err == nil && opts.RecordExec {
-			res.ExecRecord = &enforce.ExecRecord{
-				// Complete, like the other mode that structurally cannot be watched: there
-				// was no record to truncate, and the two must not disagree on a field a
-				// frontend reads as "trust what is here".
-				Complete: true,
-				Reason:   "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
-			}
-		}
-		return res, err
+		// The record itself is stamped inside runDegraded, on every arm where the launcher
+		// was dispatched: which arms those are is only knowable there.
+		return e.runDegraded(ctx, p, proc, opts)
 	}
 
 	report := e.Probe(ctx)

@@ -43,7 +43,7 @@ func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 
 	var out strings.Builder
 	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out, Env: env}, "", nil)
+		enforce.Process{Stdout: &out, Stderr: &out, Env: env}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("scoped degraded run failed: %v\noutput:\n%s", err, out.String())
 	}
@@ -89,7 +89,7 @@ func TestDegradedRunMemoryLimitActuallyBinds(t *testing.T) {
 	}
 	var out strings.Builder
 	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
-		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"BENTO_ALLOC": "512"}}, "", nil)
+		enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"BENTO_ALLOC": "512"}}, enforce.RunOptions{})
 	if err != nil {
 		t.Fatalf("scoped degraded run failed: %v\noutput:\n%s", err, out.String())
 	}

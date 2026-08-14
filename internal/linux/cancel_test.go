@@ -196,7 +196,7 @@ func TestRunDegradedReportsACancelledContextAsAnError(t *testing.T) {
 	}
 
 	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p,
-		enforce.Process{Stdin: stdin, Stdout: cancelOnFirstWrite(cancel)}, "", nil)
+		enforce.Process{Stdin: stdin, Stdout: cancelOnFirstWrite(cancel)}, enforce.RunOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runDegraded on a cancelled context = (%+v, %v), want an error wrapping context.Canceled", res, err)
 	}
