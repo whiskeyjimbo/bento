@@ -226,3 +226,39 @@ func TestCheckReportsAnAliasOfARelocatedStoreSubdirectory(t *testing.T) {
 		t.Fatalf("the run anchors on the relocated store and refuses over this alias; got %+v", r.CredentialAliases)
 	}
 }
+
+// The self-report suppression compares two walks by the strings they emit: `shielded` is
+// keyed by paths walked from the ANCHOR, and the candidate's path comes from a walk rooted
+// at the GRANT. They agree only because both roots are canonicalized before the walk, and
+// a mismatch does not fail loudly - it reports a shielded credential as an alias of
+// itself, the invented finding gate.go rules out.
+//
+// The divergence is staged with a symlinked HOME: the anchor side reaches ~/.ssh through
+// the link and the grant side names the real directory, so anything that stops
+// canonicalizing an anchor root makes the two spellings differ here.
+func TestAnchorAndGrantWalksSpellAShieldedCredentialTheSameWay(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real-home")
+	if err := os.MkdirAll(filepath.Join(real, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(real, ".ssh", "id_ed25519")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A second name INSIDE the store, so the credential carries the link count that makes
+	// it aliasable and both of its names are shielded.
+	if err := os.Link(key, filepath.Join(real, ".ssh", "id_ed25519.bak")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+
+	r := runnableOver(t, key, []string{filepath.Join(real, ".ssh")})
+	if len(r.CredentialAliases) != 0 {
+		t.Errorf("both names are inside the shielded store, so neither is a second name reaching past a shield; got %+v", r.CredentialAliases)
+	}
+}

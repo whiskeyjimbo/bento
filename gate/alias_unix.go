@@ -95,6 +95,14 @@ func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.Creden
 			// A grant containing the credential itself walks over the shielded path,
 			// whose identity is by definition wanted. The shield covers that path; only a
 			// second name is a leak.
+			//
+			// The comparison is by string, across two walks rooted differently - shielded
+			// from the anchor, a.Path from the grant - so it holds on two properties.
+			// Both roots are canonicalized before the walk (pathresolve.Existing above and
+			// at the anchor roots), and WalkDir descends only into a real directory, so
+			// every component below either root is one too and the two walks spell the
+			// same file identically. Break either and this suppression misses, reporting a
+			// shielded credential as an alias of itself.
 			if !shielded[a.Path] {
 				out = append(out, a)
 			}
