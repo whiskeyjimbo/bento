@@ -530,6 +530,42 @@ func TestInterpreterReadPathRefusesABroadPrefix(t *testing.T) {
 	})
 }
 
+// The one arm of the too-broad floor that binds nothing at all: the interpreter itself
+// is gone by the time compile asks. newSandbox already LookPath'd and resolved it, and
+// compile re-guards with sb.exists, so this needs the file to vanish between the two -
+// real, and the safe direction (bind nothing rather than fall back to the broad prefix
+// the floor just refused), but until now unmeasured.
+func TestInterpreterReadPathBindsNothingWhenTheInterpreterVanished(t *testing.T) {
+	// The broad prefix is on the fake filesystem and the interpreter is not, which is
+	// exactly the ordering that would let a regression bind /srv.
+	sb := testSandbox("/srv")
+	sb.interpreter = "/srv/bin/python3"
+	if got := interpreterReadPath(sb); got != "" {
+		t.Errorf("interpreterReadPath = %q, want nothing bound: the floor refused the prefix and the interpreter is no longer there", got)
+	}
+}
+
+// prefixTooBroad compares the prefix against each home run through sb.resolve, and used
+// to carry a guard for that seam answering empty. It cannot: hostResolve returns its
+// input unchanged on any resolution error, so a non-empty path in is a non-empty path
+// out. The guard was fail-closed and cost only a reader's time, but it invited the
+// belief that the seam can answer empty - and a later caller acting on that belief is
+// the real cost. This is what makes deleting it safe, so it is pinned rather than
+// argued.
+func TestHostResolveNeverAnswersEmpty(t *testing.T) {
+	for _, p := range []string{
+		"/nonexistent-" + t.Name(),
+		"/nonexistent-" + t.Name() + "/deeper/still",
+		"/",
+		"relative/path",
+		"/proc/self/root",
+	} {
+		if got := hostResolve(p); got == "" {
+			t.Errorf("hostResolve(%q) = \"\": the resolve seam must answer a path or the input, never nothing", p)
+		}
+	}
+}
+
 // The interpreter's own options go before the entrypoint, which is the only place the
 // interpreter reads them: after it they would be the script's argv, and `python3 -u`
 // would become `python3 script -u`.

@@ -609,10 +609,9 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 		return true
 	}
 	for _, h := range sb.homes {
+		// resolve answers the input unchanged when it cannot resolve, so a non-empty home
+		// is always a non-empty comparison (TestHostResolveNeverAnswersEmpty pins it).
 		home := sb.resolve(h)
-		if home == "" {
-			return true
-		}
 		// This user's own home, or any tree containing it: a ~/bin/python3 wrapper puts the
 		// prefix at the home directory itself, which would bind every file in it into a
 		// sandbox whose policy granted none of them. A prefix INSIDE the home (a pyenv or
