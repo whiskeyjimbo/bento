@@ -289,13 +289,10 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 		for _, g := range shieldGrants {
 			notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
 		}
-		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
-			for _, g := range grants {
-				if isBroadDir(g) {
-					notes = append(notes, broadGrantNote(kind, g))
-				}
-			}
-		}
+		// The breadth judgement is not raised here: writePolicySummary, which approve prints
+		// directly above this block, now marks a broad grant beside the list it was spelled
+		// in - and saying it twice on one screen teaches the reader to skim the block, which
+		// is the same reason the blocked-host note is raised on one side only.
 	}
 	// Sorted because the map walk above is not, and an approval prompt that reorders
 	// itself between runs of the same manifest cannot be read as a diff.
