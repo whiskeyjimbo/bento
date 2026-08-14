@@ -19,12 +19,15 @@ func TestBuildStagesTheLayoutTheCasesAreWrittenAgainst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, d := range []string{".ssh", ".local/bin", "checkout/.git/hooks", "farm/ssh", "farm/keys", "gnupg-target"} {
+	for _, d := range []string{".ssh", ".local/bin", "checkout/.git/hooks", "redirected/.git", "redirected/realhooks", "worktree", "farm/ssh", "farm/keys", "gnupg-target"} {
 		if fi, err := os.Stat(filepath.Join(home, d)); err != nil || !fi.IsDir() {
 			t.Errorf("%s must be a directory: %v", d, err)
 		}
 	}
-	for _, f := range []string{".ssh/config", "farm/ssh/known_hosts", "farm/keys/id_ed25519", "gnupg-target/notes"} {
+	// worktree/.git is here for its type and nothing else: a checkout is a gitfile one
+	// exactly when .git is not a directory, so a Build that made it one would turn that
+	// case into an ordinary checkout and quietly stop measuring the shape it names.
+	for _, f := range []string{".ssh/config", "farm/ssh/known_hosts", "farm/keys/id_ed25519", "gnupg-target/notes", "worktree/.git"} {
 		if fi, err := os.Stat(filepath.Join(home, f)); err != nil || fi.IsDir() {
 			t.Errorf("%s must be a regular file: %v", f, err)
 		}
@@ -37,6 +40,10 @@ func TestBuildStagesTheLayoutTheCasesAreWrittenAgainst(t *testing.T) {
 		".ssh/known_hosts": true,
 		".ssh/keys":        true,
 		".ssh/pending":     false,
+		// The redirected workspace shield. A Build that made it a real directory would
+		// leave its case measuring an ordinary checkout, which every site already agrees
+		// on, and the divergence the case exists to state would go untested.
+		"redirected/.git/hooks": true,
 	} {
 		p := filepath.Join(home, name)
 		if _, err := os.Lstat(p); err != nil {
