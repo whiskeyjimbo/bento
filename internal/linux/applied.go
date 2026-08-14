@@ -129,6 +129,10 @@ func parseApplied(f *os.File) applied {
 	// would let "landlock" then "landlock yes" through, which is the case the guard exists
 	// for.
 	var execFilterSeen, landlockSeen bool
+	// The same for the one key the record section writes once. It is what marks the section
+	// as open, so it is tracked apart from execRecorder's value: a bare "exec-recorder"
+	// opens the section without naming a recorder.
+	var recorderSeen bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
@@ -159,7 +163,8 @@ func parseApplied(f *os.File) applied {
 				// writes, and this is the section where accepting it would put an exec that
 				// was never observed inside a record reported as complete.
 				return applied{}
-			case key == launcher.AppliedExecRecorder:
+			case key == launcher.AppliedExecRecorder && !recorderSeen:
+				recorderSeen = true
 				a.execRecorder = value
 				if v, err := strconv.Unquote(detail); err == nil {
 					a.execRecorderErr = v
@@ -177,15 +182,30 @@ func parseApplied(f *os.File) applied {
 					garbled = true
 				}
 			case line == launcher.AppliedExecRecordMarker:
-				a.execRecordComplete = !garbled
+				// The marker means the section is whole, and a section that never named a
+				// recorder is not: the recorder line is the first thing the stage writes, so
+				// its absence is the section's own first line lost. Keyed on the value rather
+				// than on recorderSeen because a bare "exec-recorder" line names no recorder
+				// either, and execRecord would report {watched:false, complete:true} for it.
+				a.execRecordComplete = !garbled && a.execRecorder != ""
 				recordClosed = true
-			case a.execRecorder != "":
+			case recorderSeen:
 				// Inside the record section, an unrecognized line is the section's problem
 				// and not the report's. The stage writes it in one call after the run, so a
 				// short write - a full run directory, the launcher killed mid-write - can end
 				// a line inside its own key, and "exec-ra" would otherwise hit the tampering
 				// stance below and void an attestation the first marker already made. Same
-				// rule as the undecodable record above, one token earlier.
+				// rule as the undecodable record above, one token earlier. A second
+				// exec-recorder line lands here too: the first value stands, and the section
+				// reads untrustworthy rather than voiding the report, because past the marker
+				// the record is a diagnostic and cannot be allowed to retract a layer.
+				garbled = true
+			case line != "" && strings.HasPrefix(launcher.AppliedExecRecorder, line):
+				// The same short write, one line earlier: the recorder line is the first thing
+				// writeExecRecord emits, so a cut inside it - "exec-reco" - leaves nothing to
+				// mark the section as open and would otherwise void an attestation the first
+				// marker already made. Only a strict prefix of the key reaches here, since the
+				// whole key is matched above, so it stays as narrow as the case it exists for.
 				garbled = true
 			case line != "":
 				return applied{}

@@ -1157,6 +1157,91 @@ func TestAnUnreadableLandlockReasonIsStillAFailure(t *testing.T) {
 	}
 }
 
+// A second exec-recorder line must not overwrite the first: "no" then "yes" would report
+// a run nothing watched as watched. It garbles the section rather than voiding the report,
+// because past the marker the record is a diagnostic and may never retract a layer.
+func TestADuplicateExecRecorderLineCannotClaimTheRunWasWatched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\n" +
+		"exec-recorder no \"attach refused\"\nexec-recorder yes\nEXEC-RECORD\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete || a.landlock != launcher.AppliedYes {
+		t.Fatalf("a duplicate record line retracted the layer facts: %+v", a)
+	}
+	rec := a.execRecord(true)
+	if rec.Watched {
+		t.Error("a run whose recorder reported an attach failure was reported as watched")
+	}
+	if rec.Reason != "attach refused" {
+		t.Errorf("reason = %q, want the failure the stage reported first", rec.Reason)
+	}
+	if rec.Complete {
+		t.Error("an edited record section was reported as whole")
+	}
+}
+
+// The marker means the section is whole. A section that never named a recorder is not, and
+// render.go's JSON path emits Complete verbatim, so an unconditional marker published
+// {watched:false, complete:true} for a record with no recorder behind it.
+func TestAnExecRecordWithNoRecorderLineIsNotComplete(t *testing.T) {
+	for _, tc := range []struct{ name, section string }{
+		{"no recorder line at all", "EXEC-RECORD\n"},
+		{"a recorder line with no value", "exec-recorder\nEXEC-RECORD\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\n"+tc.section), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a := parseApplied(openReport(t, path))
+			if !a.complete {
+				t.Fatalf("the layer facts did not survive: %+v", a)
+			}
+			if rec := a.execRecord(true); rec.Complete {
+				t.Error("a section that named no recorder was reported as whole")
+			}
+		})
+	}
+}
+
+// The tolerance ea3381c gave lines after the recorder line belongs to the recorder line
+// too: writeExecRecord emits it first, so a write cut at "exec-reco" is a short write on a
+// fully fenced run, and voiding there refuses the run with three Unavailable layers.
+func TestATornRecorderLineDoesNotVoidTheAttestation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\nexec-reco"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatal("a recorder line torn inside its key discarded the whole report")
+	}
+	var r enforce.Report
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+	if got := a.reconcile(&r, false, false, true, 0); got != enforce.SetupAttested {
+		t.Errorf("setup state = %v, want SetupAttested; a short write refused a fenced run", got)
+	}
+	if st := r.StateOf(enforce.LayerFilesystem); st != enforce.Enforced {
+		t.Errorf("filesystem layer = %v; a short write downgraded an enforced layer", st)
+	}
+	if rec := a.execRecord(true); rec.Watched || rec.Complete {
+		t.Errorf("a record whose first line was lost was not reported as lost: %+v", rec)
+	}
+
+	// Narrow to a prefix of that one key: anything else after the marker with no section
+	// open is the tampering it always was.
+	other := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(other, []byte("exec-filter none\nlandlock yes\nAPPLIED\nexec-recorder-x yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := parseApplied(openReport(t, other)); b.complete {
+		t.Error("a line the stage never writes was accepted after the marker")
+	}
+}
+
 // A second line for a key the stage writes once is the report being edited, and the
 // pre-marker half is where that decides a layer: last-write-wins would let a reported
 // Landlock failure be overwritten with success and reconcile would leave the filesystem
