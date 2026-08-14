@@ -146,6 +146,16 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 			roots = append(roots, pathresolve.Existing(r.Path))
 		}
 	}
+	// A hidden DIRECTORY anchors only where the anchor list names it - except from these
+	// two sources, which the anchor list cannot reach, exactly as the backend takes them.
+	// A store whose SUBDIRECTORY is relocated into a dotfile farm (the stow/chezmoi/yadm
+	// shape) is the case: resolving the anchor covers a whole store moved out from under
+	// its own name, and nothing covers the half of one moved out from inside it.
+	for _, r := range slices.Concat(set.CallerDenies(), set.CredentialLinks()) {
+		if r.Deny == denylist.DenyAll && r.Dir {
+			roots = append(roots, pathresolve.Existing(r.Path))
+		}
+	}
 	optIns := shield.Targets(set.OptIns(reads))
 
 	want := map[fileID]string{}
@@ -162,9 +172,11 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 		}
 		seen[root] = true
 		// Walked without following symlinks, so a symlink planted in a credential
-		// directory cannot redirect the walk or loop it. A symlinked store's target is not
-		// chased either: a deduplicating store (Nix) hardlinks identical files by design,
-		// and following the link would make an extra link the normal case.
+		// directory cannot redirect the walk or loop it. A link out of a store is reached
+		// as an anchor of its own instead, and only where the shield set already followed
+		// it: CredentialLinks keeps to targets inside a home, so a home-manager link into
+		// /nix/store - where a deduplicating store hardlinks identical files by design, and
+		// an extra link is the normal case - is not chased here either.
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // every error is handled in the callback; see the docstring
 			if err != nil {
 				// A store this host does not have is not a store it could not look at:

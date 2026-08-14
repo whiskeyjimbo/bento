@@ -188,3 +188,41 @@ func TestCheckReportsAnUnreadableCredentialAnchorAsPartial(t *testing.T) {
 		t.Error("an empty answer over an anchor nothing could read is a could-not-look, not a clean bill")
 	}
 }
+
+// A credential store kept in a dotfile farm - the stow/chezmoi/yadm shape - is shielded at
+// the target the link points to, and the scan has to anchor there or the key it holds
+// identifies nothing. Resolving the anchor covers a whole store moved out from under its
+// own name; a store whose SUBDIRECTORY is relocated is reachable only through the shield
+// set's own link expansion, which is what the backend anchors on and this mirrors.
+func TestCheckReportsAnAliasOfARelocatedStoreSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	farm := filepath.Join(home, "dotfiles", "ssh")
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(farm, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(farm, filepath.Join(home, ".ssh", "keys")); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(farm, "id_ed25519")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(root, "backup")
+	if err := os.MkdirAll(backup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(backup, "id_ed25519")
+	if err := os.Link(key, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	r := runnableOver(t, key, []string{backup})
+	if len(r.CredentialAliases) != 1 || r.CredentialAliases[0].Path != alias {
+		t.Fatalf("the run anchors on the relocated store and refuses over this alias; got %+v", r.CredentialAliases)
+	}
+}
