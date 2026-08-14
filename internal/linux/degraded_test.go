@@ -916,6 +916,77 @@ func TestDegradedCancelReconcilesAndCarriesTheExecRecord(t *testing.T) {
 	}
 }
 
+// The other end of the same arm: a context already cancelled when the run starts leaves
+// no launcher at all. The record is still owed, because its reason is a property of the
+// TIER - this tier blocks ptrace whatever the launcher did - so withholding it there
+// would report the run as never having asked.
+func TestDegradedCancelBeforeDispatchStillCarriesTheExecRecord(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecNone}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out strings.Builder
+	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p,
+		enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{RecordExec: true})
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("want the cancel arm, got err=%v\noutput:\n%s", err, out.String())
+	}
+	if res.ExecRecord == nil {
+		t.Fatal("a run that asked for an exec record and was cancelled before its launcher started got nil, which is what a run that never asked gets")
+	}
+	// Nothing attested anything, and the two fields must say so together: a silent setup
+	// alongside a record claiming a watcher would be the report contradicting itself.
+	if res.Setup != enforce.SetupSilent {
+		t.Errorf("Setup = %v for a run whose launcher never reported", res.Setup)
+	}
+	if res.ExecRecord.Watched {
+		t.Error("no launcher ran, and the record claims something watched")
+	}
+}
+
+// The arm neither the cancel nor the exit-status path covers: cmd.Run returns the
+// stdio-copy error rather than an *ExitError, after the target has already run to
+// completion. The launcher attested its layers and the target's execs are as unwatchable
+// as on any other arm, so the report and the record are owed here exactly as they are on
+// the success arm - this used to be the arm that dropped both.
+func TestDegradedStdioFailureStillReportsWhatTheLauncherApplied(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("echo hello\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecNone}
+
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
+		enforce.Process{Stdout: brokenPipe{}, Stderr: brokenPipe{}}, enforce.RunOptions{RecordExec: true})
+	if err == nil || !strings.Contains(err.Error(), "stdout is gone") {
+		t.Fatalf("want the stdio-copy failure arm, got %v", err)
+	}
+	if res.Setup != enforce.SetupAttested {
+		t.Errorf("Setup = %v; the launcher wrote its marker and reached the target, and this arm returned the probe unreconciled", res.Setup)
+	}
+	if res.ExecRecord == nil {
+		t.Fatal("a run that asked for an exec record got nil, which is what a run that never asked gets")
+	}
+}
+
+// brokenPipe stands in for a consumer that goes away mid-run - a closed pipe, a client
+// that hung up. exec.Cmd copies to it in a goroutine and surfaces the failure from Wait
+// as something that is not an *ExitError, which is the only way into runDegraded's
+// default arm.
+type brokenPipe struct{}
+
+func (brokenPipe) Write([]byte) (int, error) { return 0, errors.New("stdout is gone") }
+
 func TestDegradedCancelCarriesTheExposureAudit(t *testing.T) {
 	requireDegraded(t)
 	sleepBin, err := exec.LookPath("sleep")

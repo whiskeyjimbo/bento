@@ -238,11 +238,9 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// A cancel that lands before the launcher ever started leaves no status at all -
 		// killedByCancel reads a nil ProcessState as the cancel, which is how a context
 		// already cancelled when runDegraded was called arrives here - and -1 is what os
-		// reports for a process with no exit code of its own. That same nil is what says
-		// the launcher was never dispatched, so there is nothing for it to have applied
-		// and nothing it could have watched.
-		cancelCode, dispatched := -1, cmd.ProcessState != nil
-		if dispatched {
+		// reports for a process with no exit code of its own.
+		cancelCode := -1
+		if cmd.ProcessState != nil {
 			cancelCode, _, _ = exitStatusOf(cmd.ProcessState)
 		}
 		// Reconciled for the reason the full tier's cancel arm is: the probe says what the
@@ -254,12 +252,12 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// Exposed naming what it could not shield, and the target reached those credentials
 		// whether or not it lived to finish. Dropping the list here reports a cancelled run
 		// as having exposed nothing.
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec && dispatched), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
 	case cmd.ProcessState == nil:
 		// The launcher never started or exec failed - a genuine setup failure.
-		return enforce.Result{Report: report}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		return enforce.Result{Report: report, ExecRecord: degradedExecRecord(opts.RecordExec)}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.
@@ -289,10 +287,14 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 // shares the host's process table. Reported as nothing having watched, which is what it
 // is.
 //
-// It is stamped on every arm where the launcher was dispatched, not only on success: nil
-// means the run did not ASK, so a cancelled --record-exec run returning nil is
-// byte-identical to one that never asked - absent-because-unasked standing in for
+// It is stamped on every arm that returns a report, not only on success: nil means the
+// run did not ASK, so a cancelled --record-exec run returning nil is byte-identical to
+// one that never asked - absent-because-unasked standing in for
 // absent-because-nothing-could-watch, which is the one direction this field must not go.
+// The reason it carries is a property of the TIER, not of the launcher, so it holds for a
+// run whose launcher never started as much as for one that ran the target - which is also
+// why the full tier's cancel arm stamps its own record without asking whether anything
+// was dispatched.
 func degradedExecRecord(asked bool) *enforce.ExecRecord {
 	if !asked {
 		return nil
@@ -300,7 +302,10 @@ func degradedExecRecord(asked bool) *enforce.ExecRecord {
 	return &enforce.ExecRecord{
 		// Complete, like the other mode that structurally cannot be watched: there was no
 		// record to truncate, and the two must not disagree on a field a frontend reads as
-		// "trust what is here".
+		// "trust what is here". It holds on the arms where the launcher attested nothing
+		// too - Complete answers whether an exec was lost, and a run whose target never
+		// started lost none. What that run does not attest is disclosed by Setup, which
+		// reads silent there.
 		Complete: true,
 		Reason:   "the degraded tier blocks ptrace for the whole run, so nothing could record its execs",
 	}
