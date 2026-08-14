@@ -862,6 +862,7 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 		"/usr/lib/thing.so", // a system tree the write floor knows only as a read path
 		"relative/path",     // no absolute anchor, nothing to name
 		"/work/ok.txt",      // an ordinary grant, reported by the clamps instead
+		"/0",                // a file at the root: the collapse names "/", every tree at once
 	})
 	got := buf.String()
 
@@ -870,12 +871,13 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 		{Kind: "write", Path: "/var/lib/app", Reason: "system-tree"},
 		{Kind: "write", Path: "/home/other", Reason: "system-tree"},
 		{Kind: "write", Path: "/usr/lib", Reason: "system-tree"},
+		{Kind: "write", Path: "/", Reason: "system-tree"},
 	}
 	if !slices.Equal(notes, want) {
 		t.Errorf("notes = %+v, want %+v", notes, want)
 	}
 
-	for _, want := range []string{`"/var/lib/app"`, `"/home/other"`} {
+	for _, want := range []string{`"/var/lib/app"`, `"/home/other"`, `"/"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output does not name the withheld grant %s:\n%s", want, got)
 		}
@@ -883,8 +885,8 @@ func TestFlooredWritesAreReportedNotSilent(t *testing.T) {
 	if strings.Contains(got, "/work") {
 		t.Errorf("an ordinary grant must not be reported as floored:\n%s", got)
 	}
-	if n := strings.Count(got, "not proposing write access"); n != 3 {
-		t.Errorf("printed %d messages, want 3 (the duplicate directory is reported once):\n%s", n, got)
+	if n := strings.Count(got, "not proposing write access"); n != 4 {
+		t.Errorf("printed %d messages, want 4 (the duplicate directory is reported once):\n%s", n, got)
 	}
 }
 

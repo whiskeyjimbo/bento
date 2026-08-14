@@ -351,6 +351,14 @@ func broadGrantNote(kind, grant string) string {
 // needs - as an automatic read or write grant (partitionBroad), as the discovery run's own
 // script-directory grant (discoveryPolicy), or as one a human is about to accept, which is
 // what the review commands raise broadGrantNote over.
+//
+// Two framings meet on one manifest and both are meant. profile withholds and explains
+// the CLASS of path - a system tree or a foreign home is a privilege-escalation vector,
+// and the reviewer is being told why bento will not write it down for them. The review
+// commands annotate a grant a human already wrote, where the class is not the point: the
+// grant is legal and the reader is being told it is wider than the script's own need.
+// Saying "privilege escalation" there would refuse in prose what validate and approve do
+// not refuse. The overlap (write:/etc, which is both) reads correctly under either.
 func isBroadDir(path string) bool {
 	// Every anchor counts, since either can be the home the script actually walked -
 	// under sudo -H a proposal of the passwd home is just as broad as one of $HOME. The
