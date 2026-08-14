@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -103,6 +104,33 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 		if len(line) > textWidth {
 			t.Errorf("refusal line is %d columns, want at most %d: %q", len(line), textWidth, line)
 		}
+	}
+}
+
+// The shadowed-PATH note has to reach the run it is about, and that run exits 0 - the
+// whole complaint is a lane that finished cleanly on the wrong binary. It rides a failed
+// run out too, in the same relative place, so two runs read side by side do not put it
+// somewhere different because one of them failed.
+func TestWriteRunResultReportsShadowedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	env := map[string]string{"PATH": filepath.Join(home, ".local", "bin")}
+
+	for _, tc := range []struct {
+		name   string
+		res    enforce.Result
+		runErr error
+	}{
+		{"a clean run", enforce.Result{ExitCode: 0}, nil},
+		{"a run that failed for another reason", enforce.Result{ExitCode: 1}, errors.New("backend died")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_ = writeRunResult(&stderr, false, validPolicy(), env, tc.res, nil, nil, tc.runErr)
+			if !strings.Contains(stderr.String(), "no grant covers them") {
+				t.Errorf("shadowed PATH note missing; got %q", stderr.String())
+			}
+		})
 	}
 }
 

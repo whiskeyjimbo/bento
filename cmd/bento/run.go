@@ -428,6 +428,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			writeAcceptedAliasWarning(stderr, res)
 			writeShieldedGrantWarning(stderr, res)
 			writeExposedWarning(stderr, res)
+			writeSandboxPathShadow(stderr, p, env)
 			writeChangedAutoExecNotice(stderr, res)
 			writeRedirectedHooksNotice(stderr, res)
 		}
@@ -513,6 +514,10 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		writeShieldSummary(stderr, res)
 		writeShieldedGrantWarning(stderr, res)
 		writeExposedWarning(stderr, res)
+		// Not in the failure chain below with its cousin writeSandboxPathMiss: the run it
+		// describes exits 0, so a placement keyed on a nonzero exit would be silent in
+		// exactly the case it exists for.
+		writeSandboxPathShadow(stderr, p, env)
 		writeDegradations(stderr, res.Report)
 		// After the shield block and before the network half: it belongs with what the
 		// run touched on the host, and it is a place to review rather than a failure to

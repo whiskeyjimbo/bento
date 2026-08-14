@@ -1093,6 +1093,77 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 	fmt.Fprintln(w, "[bento] there too, or change the script to call it by absolute path.")
 }
 
+// writeSandboxPathShadow reports the PATH directories under the caller's home that no
+// grant covers. It is the inverse of writeSandboxPathMiss and the reason it does not live
+// in the failure chain: the manifest DOES pass PATH through, the box carries none of those
+// directories, and a bare command name therefore resolves to the base image's copy
+// instead. Where the base image has one the run exits 0 with a different binary than the
+// operator's, and nothing anywhere says so - not a denial, not a missing file, not an
+// error. bento holds both halves here, so it is the only thing that can.
+//
+// Gated on the home tree rather than on ungranted entries generally: /usr/bin and /bin are
+// ungranted on every run and present in the box, so warning on those fires always and
+// teaches a reader that [bento] lines are noise. A per-user toolchain reached through home
+// - a nix profile, ~/.local/bin, a version-manager shim - is the shape that actually
+// shadows, and it is quiet on a host that has none.
+//
+// Known ceiling: a multi-user nix install puts /nix/var/nix/profiles/default/bin on PATH,
+// which is outside home and outside the base image, and this does not see it.
+//
+// env carries the same meaning it does for writeSandboxHomeMiss above, and its PATH is the
+// caller's own value: the sandbox default is filled in further down, past this.
+func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string) {
+	search, passed := env["PATH"]
+	if !passed {
+		return
+	}
+	// As in writeSandboxHomeMiss: a relative or unset HOME names no tree to be under.
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return
+	}
+	home = filepath.Clean(home)
+	var shadowed []string
+	for _, dir := range filepath.SplitList(search) {
+		// Matched on the spelling, before resolution: ~/.nix-profile/bin is a symlink out
+		// of the home tree by design, and resolving first would drop the very entries this
+		// exists for.
+		if !filepath.IsAbs(dir) || !underHome(filepath.Clean(dir), home) || slices.Contains(shadowed, dir) {
+			continue
+		}
+		if !granted(p, dir) {
+			shadowed = append(shadowed, dir)
+		}
+	}
+	if len(shadowed) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] note: PATH is passed through, but these directories on it are under")
+	fmt.Fprintf(w, "[bento] your home and no grant covers them: %s\n", strings.Join(shadowed, ", "))
+	fmt.Fprintln(w, "[bento] The box does not carry them, so a bare command name resolved to the")
+	fmt.Fprintln(w, "[bento] base image's copy instead - a different build, or a different tool,")
+	fmt.Fprintln(w, "[bento] with no denial and no error to say so. Grant each in read: so the")
+	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
+}
+
+// granted reports whether any read or write grant covers dir. Both sides are compared as
+// spelled and as resolved, the way clamp.go compares a grant against a boundary: the
+// grants a policy carries are not resolved yet here, and a per-user toolchain directory is
+// usually reached through a symlink, so either side alone misses a real match.
+func granted(p *policy.Policy, dir string) bool {
+	dirs := []string{dir, pathresolve.Existing(dir)}
+	return slices.ContainsFunc(slices.Concat(p.Read, p.Write), func(g string) bool {
+		for _, gs := range []string{g, pathresolve.Existing(g)} {
+			for _, ds := range dirs {
+				if policy.CoversResolved(gs, ds) {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
+
 // underHome reports whether an already-resolved grant lies in the host home tree.
 func underHome(grant, home string) bool {
 	rel, err := filepath.Rel(home, grant)

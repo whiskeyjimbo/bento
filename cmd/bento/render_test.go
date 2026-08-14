@@ -1356,6 +1356,61 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// The shadow note's whole point is a run that exits 0 with a different binary than the
+// operator's, so the gate is what it fires on rather than what exit code it saw. The
+// negative half matters as much: an ordinary PATH of system directories is ungranted on
+// every run and must stay silent, or the note is noise by the second day.
+func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profile := filepath.Join(home, ".nix-profile", "bin")
+	if err := os.MkdirAll(profile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The greenboard shape: the PATH entry is under home, but resolves out of it, so a
+	// grant naming either spelling covers it.
+	store := filepath.Join(t.TempDir(), "nix-store-bin")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(home, ".mise", "shims")
+	if err := os.MkdirAll(filepath.Dir(linked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, linked); err != nil {
+		t.Fatal(err)
+	}
+	withPath := func(v string) map[string]string { return map[string]string{"PATH": v} }
+
+	cases := []struct {
+		name string
+		p    *policy.Policy
+		env  map[string]string
+		want bool
+	}{
+		{"a home toolchain directory no grant covers", &policy.Policy{}, withPath(profile + ":/usr/bin"), true},
+		{"system directories alone are not a shadow", &policy.Policy{}, withPath("/usr/bin:/bin:/usr/local/bin"), false},
+		{"the directory itself is granted", &policy.Policy{Read: []string{profile}}, withPath(profile), false},
+		{"a parent grant covers it", &policy.Policy{Read: []string{home}}, withPath(profile), false},
+		{"a write grant covers it too", &policy.Policy{Write: []string{profile}}, withPath(profile), false},
+		{"a sibling grant does not cover it", &policy.Policy{Read: []string{profile + "-old"}}, withPath(profile), true},
+		{"granted by where the entry resolves to", &policy.Policy{Read: []string{store}}, withPath(linked), false},
+		{"a symlinked entry with no grant still shadows", &policy.Policy{}, withPath(linked), true},
+		{"PATH is not passed through, so the box never searched it", &policy.Policy{}, nil, false},
+		{"a relative entry names no tree to be under", &policy.Policy{}, withPath("bin"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			writeSandboxPathShadow(&b, tc.p, tc.env)
+			got := strings.Contains(b.String(), "no grant covers them")
+			if got != tc.want {
+				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
+			}
+		})
+	}
+}
+
 func TestToReportJSONEmptyReportIsNotACleanPosture(t *testing.T) {
 	// A refusal raised before anything was probed - a malformed run id, an invalid
 	// policy - carries the zero Report. Reporting it as fully enforced would claim a
