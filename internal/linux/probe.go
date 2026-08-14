@@ -229,7 +229,8 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			" - though seccomp blocks the cross-process memory read/write and ptrace injection " +
 			"that would let it take one over - and a background process it leaves is swept only best-effort by " +
 			"killing the run's process group, which a setsid() escapes and which also stops a target that reads " +
-			"an interactive terminal), and no network namespace (seccomp blocks IP egress but not netlink " +
+			"an interactive terminal), and no network namespace (seccomp blocks IP egress and Landlock denies " +
+			"TCP connect on a descriptor the filter cannot revoke, but neither reaches netlink " +
 			"interface enumeration, nor " + unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted)
