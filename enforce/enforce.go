@@ -29,6 +29,11 @@ import (
 type Enforcer interface {
 	// Probe reports what this host can enforce, per layer, without running a
 	// target. It backs both `doctor` and strict-mode's pre-run refusal.
+	//
+	// It must report every core layer, LayerNetwork included, whatever the manifest
+	// asks for. A layer left out is read as Unavailable, which is the only reading that
+	// fails safe: Run cannot tell "this host has no netns" from "the probe was not
+	// written to say so", and the second must not be the shape that runs unfenced.
 	Probe(ctx context.Context) Report
 
 	// Run enforces p around proc, runs it to completion, and reports what was

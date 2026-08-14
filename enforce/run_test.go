@@ -72,6 +72,18 @@ func hasLayer(short []LayerStatus, layer Layer) bool {
 	return false
 }
 
+// confinedHost is the probe a test builds on when the layer under test is something
+// else: the two core layers every run needs, fenced. Run refuses a probe that leaves
+// LayerNetwork out (a missing layer reads Unavailable, see Enforcer.Probe), so a test
+// about cgroup delegation or env validation would otherwise refuse for a reason it is
+// not about.
+func confinedHost() Report {
+	var r Report
+	r.Add(LayerFilesystem, Enforced, "")
+	r.Add(LayerNetwork, Enforced, "")
+	return r
+}
+
 // fullyEnforced is a probe reporting every layer as enforced.
 func fullyEnforced() Report {
 	var r Report
@@ -255,8 +267,7 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	// that delegates cpu but not memory/pids must run a cpu-only manifest. Refusing it
 	// sent the operator to a Delegate=memory pids drop-in for controllers the manifest
 	// never named.
-	var cpuOnlyHost Report
-	cpuOnlyHost.Add(LayerFilesystem, Enforced, "")
+	cpuOnlyHost := confinedHost()
 	cpuOnlyHost.Add(LayerLimitsMemory, Unavailable, "the memory controller is not delegated")
 	cpuOnlyHost.Add(LayerLimitsPIDs, Unavailable, "the pids controller is not delegated")
 	cpuOnlyHost.Add(LayerLimitsCPU, Enforced, "")
@@ -489,8 +500,7 @@ func TestRequiredLayerBlocksRun(t *testing.T) {
 // does not refuse the run by default - that is the macOS reality.
 func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	newProbe := func() Report {
-		var r Report
-		r.Add(LayerFilesystem, Enforced, "")
+		r := confinedHost()
 		r.Add(LayerExec, Unavailable, "no seccomp on this platform")
 		return r
 	}
@@ -571,8 +581,7 @@ func TestAllowDegradedStillRefusesUnavailableCore(t *testing.T) {
 // which is worse than a merely weaker sandbox. --allow-degraded overrides.
 func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 	newProbe := func() Report {
-		var r Report
-		r.Add(LayerFilesystem, Enforced, "")
+		r := confinedHost()
 		r.Add(LayerLimitsMemory, Unavailable, "no systemd user manager")
 		return r
 	}
@@ -619,8 +628,7 @@ func TestUnenforceableRequestedLimitRefusesByDefault(t *testing.T) {
 // A limit that is NOT requested (no limits in the policy) must not affect
 // admission - the limits layer is only relevant when the manifest asks for it.
 func TestUnrequestedLimitDoesNotRefuse(t *testing.T) {
-	f := &fakeEnforcer{}
-	f.probe.Add(LayerFilesystem, Enforced, "")
+	f := &fakeEnforcer{probe: confinedHost()}
 	f.probe.Add(LayerLimitsMemory, Unavailable, "no systemd user manager")
 
 	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
@@ -658,8 +666,7 @@ func TestRunRefusesUndeclaredEnv(t *testing.T) {
 
 	// The empty map ResolveEnv returns when the host set none of the declared names is
 	// the subset case, and must admit.
-	f = &fakeEnforcer{}
-	f.probe.Add(LayerFilesystem, Enforced, "")
+	f = &fakeEnforcer{probe: confinedHost()}
 	if _, err := Run(context.Background(), f, p, Process{Env: map[string]string{}}, Options{}); err != nil {
 		t.Fatalf("Run with an env the policy covers: %v", err)
 	}
@@ -1179,17 +1186,26 @@ func TestZeroRuleManifestRefusesAHostWithNoNetworkFence(t *testing.T) {
 	netPolicy := validPolicy()
 	netPolicy.Network = []policy.NetworkRule{{Host: "example.com", Port: "443"}}
 
+	// A probe that never mentions the layer reaches the same state by a shorter road, and
+	// it is the road a third-party Enforcer takes: nothing in the interface made reporting
+	// the layer an obligation, so an omission ran unfenced while an honest Unavailable
+	// refused. Run reads absent as Unavailable, the fail-safe StateOf already applies.
 	for _, tc := range []struct {
-		name string
-		p    *policy.Policy
+		name    string
+		p       *policy.Policy
+		omitNet bool
 	}{
-		{"zero-rule manifest", validPolicy()},
-		{"network manifest", netPolicy},
+		{name: "zero-rule manifest", p: validPolicy()},
+		{name: "network manifest", p: netPolicy},
+		{name: "zero-rule manifest, layer omitted", p: validPolicy(), omitNet: true},
+		{name: "network manifest, layer omitted", p: netPolicy, omitNet: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeEnforcer{}
 			f.probe.Add(LayerFilesystem, Enforced, "")
-			f.probe.Add(LayerNetwork, Unavailable, "no network namespace")
+			if !tc.omitNet {
+				f.probe.Add(LayerNetwork, Unavailable, "no network namespace")
+			}
 
 			_, err := Run(context.Background(), f, tc.p, Process{}, Options{})
 			var refusal *Refusal
@@ -1210,8 +1226,7 @@ func TestZeroRuleManifestRefusesAHostWithNoNetworkFence(t *testing.T) {
 func TestPIDsOnlyLimitNotRefusedForUndelegatedMemory(t *testing.T) {
 	pidsLimited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{PIDs: 64}}
 
-	var pidsOnlyHost Report
-	pidsOnlyHost.Add(LayerFilesystem, Enforced, "")
+	pidsOnlyHost := confinedHost()
 	pidsOnlyHost.Add(LayerLimitsMemory, Unavailable, "the memory controller is not delegated")
 	pidsOnlyHost.Add(LayerLimitsPIDs, Enforced, "")
 	pidsOnlyHost.Add(LayerLimitsCPU, Unavailable, "the cpu controller is not delegated")

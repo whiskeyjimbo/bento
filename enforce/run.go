@@ -153,7 +153,13 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// same missing namespace that degrades the filesystem layer, so `degraded` is already
 	// true. But that is an invariant of one backend's probe, and Run takes any Enforcer -
 	// the same reason the gate and network-rule refusals above do not rest on it either.
-	if netState, probedNet := probed.probedState(LayerNetwork); !degraded && probedNet && netState == Unavailable {
+	//
+	// Read with StateOf, so a probe that never mentions the layer refuses alongside one
+	// that reports it Unavailable. The two say the same thing about the run - there is no
+	// netns and nothing else will fence egress - and telling them apart here would make
+	// the guarantee rest on an Enforcer remembering to declare a layer. See Enforcer for
+	// the obligation that follows from it.
+	if !degraded && probed.StateOf(LayerNetwork) == Unavailable {
 		return Result{}, &Refusal{
 			Report: required,
 			Reason: "this host has no network namespace to fence egress into, and only the degraded tier substitutes a seccomp egress block for one",
