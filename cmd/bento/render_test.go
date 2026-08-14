@@ -613,6 +613,32 @@ func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
 	}
 }
 
+// A discarded shield is the quietest of the three: the target's write to it SUCCEEDS and
+// then vanishes with the run's scratch mount, so there is no errno for the legend's other
+// lines to explain. A reader given only those lines concludes the write landed on the host.
+func TestDenialLegendNamesADiscardedShield(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}
+	const vanished = "reached a scratch mount"
+
+	discarded := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "discarded"}}}
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, discarded, false)
+	if out := b.String(); !strings.Contains(out, vanished) {
+		t.Errorf("a discarded shield engaged, so the write that vanishes must be named: %q", out)
+	}
+
+	// Gated like the other two: a run whose shields could not produce this shape must not
+	// be told a write of its vanished.
+	b.Reset()
+	writeDenialLegend(&b, p, enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}, false)
+	if strings.Contains(b.String(), vanished) {
+		t.Errorf("no discarded shield engaged, so nothing vanished: %q", b.String())
+	}
+}
+
 // A cgroup kill is not a script failure, and the two shapes it arrives in - the
 // wrapper signaled, or the kill relayed outward as 128+signal - must both be named as
 // one. The relayed shape is the common one, and is hedged because a script can exit

@@ -623,20 +623,13 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
-// shieldsReadOnly reports whether any shield was bound read-only rather than hidden,
-// which is the only shield kind that can answer EROFS from inside a write grant.
-func shieldsReadOnly(res enforce.Result) bool {
+// shieldsApplied reports whether the run bound a shield of one kind. Each kind fails its
+// own way - read-only answers EROFS from inside a write grant, hidden reports nothing at
+// all, discarded takes the write and drops it - so the legend's lines are gated on the
+// kind that produced the shape they describe.
+func shieldsApplied(res enforce.Result, kind string) bool {
 	for _, s := range res.Shields {
-		if s.Kind == "read-only" {
-			return true
-		}
-	}
-	return false
-}
-
-func shieldsHidden(res enforce.Result) bool {
-	for _, s := range res.Shields {
-		if s.Kind == "hidden" {
+		if s.Kind == kind {
 			return true
 		}
 	}
@@ -764,7 +757,7 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 			// No write grant also means no read-only shield engaged: with the whole tree
 			// bound read-only there is nothing for one to carve out of.
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
-		case shieldsReadOnly(res):
+		case shieldsApplied(res, "read-only"):
 			// A shield inside a write grant answers EROFS from a path the grant plainly
 			// covers, so naming only the grants would send a reader to check a manifest
 			// line that is correct and conclude the sandbox is broken. This one bento does
@@ -788,8 +781,15 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// above already accounts for - so a reader who took the errno lines as the whole list
 	// would read that silence as access. Gated on one actually engaging, so it never names
 	// a shape this run could not have produced.
-	if mountNSConfines && shieldsHidden(res) {
+	if mountNSConfines && shieldsApplied(res, "hidden") {
 		fmt.Fprintln(w, "[bento] a hidden shield reports no error either: the directory stats as empty, the file reads as zero bytes")
+	}
+	// The quietest kind, and the only one with no failure to explain: the write SUCCEEDS.
+	// It lands on the scratch mount bound over the path and goes with it at the run's end,
+	// so a reader working from the errno lines alone concludes it reached the host.
+	if mountNSConfines && shieldsApplied(res, "discarded") {
+		fmt.Fprintln(w, "[bento] a discarded shield reports no error at all: the write succeeds, and")
+		fmt.Fprintln(w, "[bento] reached a scratch mount that goes away with the run, not the host")
 	}
 }
 
