@@ -75,6 +75,15 @@ type Candidate struct {
 	Glob bool
 	// Dir reports that the upstream directive was directory-shaped - firejail's trailing
 	// slash, AppArmor's {,**} tail - so covering it takes a rule that shields the tree.
+	//
+	// In practice only AppArmor sets it: firejail writes its directory entries without a
+	// trailing slash (blacklist ${HOME}/.gnupg), so 0 of the 1643 directives its two
+	// profiles carry are dir-shaped and the Narrowed arm below is reachable from the
+	// AppArmor half alone. That is the half the completeness gate now reads too. The
+	// firejail branch stays because the syntax is legal and a slash appearing upstream must
+	// not read as a file; what the format cannot express is not recoverable here, and the
+	// regression it would otherwise miss - a bento DIRECTORY rule flipped to a file rule -
+	// is pinned per store by the denylist package's own shape tests.
 	// Carried because denylist.Covers answers an exact path match whatever the rule's
 	// Dir is, which is right for enforcement and blind here: it is what lets the same
 	// entry move from a directory list to the flat file list, narrowing the shield from
@@ -733,12 +742,18 @@ func reviewedGlob(path, home string) bool {
 	return relLookup(path, home, ReviewedGlobs)
 }
 
-// homeRel returns the ${HOME}-relative remainder of a path, or the path itself when it is
-// not under home. A runtime path is the only thing that reaches the fallback: runUser is
-// /run/user/<uid>, whose components carry no classifier token, so there is nothing above
-// it worth stripping and no home component to misread.
+// homeRel returns the ${HOME}-relative remainder of a path. The home itself has no
+// remainder to classify - a bare "blacklist ${HOME}" expands to it - and returning the
+// path there would classify the home by its own directory name, the bug this exists to
+// close. What is left for the fallback is a runtime path: runUser is /run/user/<uid>,
+// whose components carry no classifier token, so there is nothing above it worth
+// stripping.
 func homeRel(path, home string) string {
-	if rel, ok := strings.CutPrefix(path, strings.TrimSuffix(home, "/")+"/"); ok {
+	home = strings.TrimSuffix(home, "/")
+	if path == home {
+		return ""
+	}
+	if rel, ok := strings.CutPrefix(path, home+"/"); ok {
 		return rel
 	}
 	return path

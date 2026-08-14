@@ -450,11 +450,6 @@ blacklist ${HOME}/.zshenv/
 	}
 }
 
-// The live firejail-parity gate: diff bento's shield list against the firejail profiles
-// installed on this host (or FIREJAIL_DIR). It skips where firejail is absent - the
-// profile data is GPLv2 and read only as a dev-time diff input, never vendored - so on
-// a host with firejail it fails loudly listing any upstream in-scope path bento neither
-// shields nor excludes, turning "remember to re-run the diff" into an enforced check.
 // The roots the gate expands the corpora's variables to. Both are constants, matching
 // cmd/denylist-audit, because the rules are built from them and the audit only means
 // something when the same host cannot reach a different verdict: the real $HOME is an
@@ -466,50 +461,125 @@ const (
 	gateRunUser = "/run/user/1000"
 )
 
-func TestFirejailCompleteness(t *testing.T) {
-	// An explicitly set FIREJAIL_DIR is a caller asserting the profiles are there, so a
-	// missing one is their error and fails. Only the implicit default may skip: firejail
-	// is genuinely absent on plenty of dev boxes and CI images, the profile data is GPLv2
-	// and cannot be vendored to testdata, so there is nothing to diff against and no
-	// honest verdict to reach. The enforced gate is `make audit`, which fetches upstream
-	// rather than reading the host.
-	dir, explicit := os.LookupEnv("FIREJAIL_DIR")
-	if !explicit {
-		dir = "/etc/firejail"
-	}
+// hostCorpora are the upstream profiles the in-tree gate diffs against, read from this
+// host: both projects' data is GPLv2 and used as a dev-time diff input only, never
+// vendored to testdata. Each carries the same two health checks `make audit` applies to
+// the fetched copy, because a corpus that arrives empty or stops parsing produces the
+// identical green as a corpus with nothing left to find - and here it is a distro package
+// rather than a fetch, so a partial or stale layout is the ordinary case rather than the
+// exotic one.
+//
+// minCandidates and maxDropRatio duplicate cmd/denylist-audit's values rather than sharing
+// them: those floor MASTER, these floor whatever the distro packaged, and a snapshot that
+// legitimately carries fewer entries has to be lowerable here without weakening the
+// fetching gate. The current Debian/Ubuntu packages parse to 342, 1301, 29 and 19
+// candidates, so every floor has a third of its value in headroom.
+var hostCorpora = []struct {
+	dirEnv        string
+	defaultDir    string
+	file          string
+	parse         func(content, home, runUser string) ([]Candidate, int)
+	minCandidates int
+	maxDropRatio  float64
+}{
 	// disable-common.inc carries the section headers the scope classification keys off;
-	// disable-programs.inc is a flat per-application list with no headers, where the
-	// name classifier is what picks the credential stores out of ~1300 ordinary app dirs.
-	// disable-common.inc is the gate's floor - without it there is nothing to diff.
-	// disable-programs.inc is additive: a partial install that lacks it still gets the
-	// headed profile audited rather than losing the gate entirely.
-	var contents []string
-	for i, name := range []string{"disable-common.inc", "disable-programs.inc"} {
-		path := filepath.Join(dir, name)
+	// disable-programs.inc is a flat per-application list with no headers, where the name
+	// classifier is what picks the credential stores out of ~1300 ordinary app dirs.
+	{"FIREJAIL_DIR", "/etc/firejail", "disable-common.inc", ParseFirejail, 250, 0.05},
+	{"FIREJAIL_DIR", "/etc/firejail", "disable-programs.inc", ParseFirejail, 1000, 0.05},
+	// The second corpus, and the only one whose directive shape reaches Diff's Narrowed
+	// arm: firejail writes no trailing slash on a directory entry, so every one of its
+	// candidates is file-shaped, while AppArmor's {,**} tail is explicit. Auditing it only
+	// from the network-fetching `make audit` left that arm - and ParseAppArmor's behaviour
+	// against a real abstraction - unexercised by every in-tree run.
+	{"APPARMOR_DIR", "/etc/apparmor.d/abstractions", "private-files", ParseAppArmor, 20, 0.25},
+	{"APPARMOR_DIR", "/etc/apparmor.d/abstractions", "private-files-strict", ParseAppArmor, 12, 0.25},
+}
+
+// corpusHealth reports why a parsed corpus cannot be diffed against, or nil when it can.
+// Both halves say the same thing - this is not the corpus - about the two ways one goes
+// quiet: it got shorter, or it kept its length behind a syntax the parser stopped
+// reading. Either leaves entries out of the diff, which reads exactly like a corpus with
+// nothing left to find.
+//
+// Order is load-bearing. An empty corpus divides zero by zero and NaN clears every
+// ceiling, so the ratio alone waves through the one case the floor exists for.
+func corpusHealth(kept []Candidate, dropped, minCandidates int, maxDropRatio float64) error {
+	if len(kept) < minCandidates {
+		return fmt.Errorf("parsed to %d in-scope directives, below the floor of %d; this is not the whole profile, so a green gate would be a comparison never made", len(kept), minCandidates)
+	}
+	if r := float64(dropped) / float64(len(kept)+dropped); r > maxDropRatio {
+		return fmt.Errorf("left %d of %d directive(s) unparsed (%.0f%%, ceiling %.0f%%); the parser no longer reads this profile's syntax, so those entries left the diff without being compared", dropped, len(kept)+dropped, r*100, maxDropRatio*100)
+	}
+	return nil
+}
+
+// The floor is the check that has to hold for the empty corpus, and it is the one an
+// ordering slip disables: NaN compares false against any ceiling, so a ratio-first
+// version passes a file that parsed to nothing - the exact state the in-tree gate used to
+// report as "0 out-of-scope entries in 0 section(s)".
+func TestCorpusHealthRefusesAnEmptyCorpus(t *testing.T) {
+	if err := corpusHealth(nil, 0, 250, 0.05); err == nil {
+		t.Error("a corpus that parsed to nothing must be refused, not diffed against")
+	}
+	if err := corpusHealth(make([]Candidate, 300), 100, 250, 0.05); err == nil {
+		t.Error("a corpus a quarter of which the parser could not read must be refused")
+	}
+	if err := corpusHealth(make([]Candidate, 300), 5, 250, 0.05); err != nil {
+		t.Errorf("a healthy corpus must pass: %v", err)
+	}
+}
+
+// The live parity gate: diff bento's shield list against the firejail and AppArmor
+// profiles installed on this host. It skips where they are absent - the profile data is
+// GPLv2 and cannot be vendored, so there is nothing to diff against and no honest verdict
+// to reach - so on a host that has them it fails loudly listing any upstream in-scope path
+// bento neither shields nor excludes, turning "remember to re-run the diff" into an
+// enforced check. The enforced-everywhere gate is `make audit`, which fetches upstream.
+func TestUpstreamCompleteness(t *testing.T) {
+	var sources []Source
+	var missing []string
+	for _, c := range hostCorpora {
+		dir, explicit := os.LookupEnv(c.dirEnv)
+		if !explicit {
+			dir = c.defaultDir
+		}
+		path := filepath.Join(dir, c.file)
 		content, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
-			if i == 0 {
-				if explicit {
-					t.Fatalf("FIREJAIL_DIR names %s but it has no %s; the completeness gate cannot run against the directory you pointed it at", dir, name)
-				}
-				// A skipped completeness gate is a pass that proved nothing.
-				// BENTO_REQUIRE_TEST_DEPS is how a host that is supposed to have the
-				// corpus installed - CI, and `make test` - says so.
-				if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
-					t.Fatalf("no firejail profile at %s and BENTO_REQUIRE_TEST_DEPS is set; the completeness gate cannot run without the corpus", path)
-				}
-				t.Skipf("no firejail profile at %s (set FIREJAIL_DIR); the completeness gate needs firejail as a diff input", path)
+			// An explicitly set dir is a caller asserting the profiles are there, so a
+			// missing one is their error. Only the implicit default may go missing.
+			if explicit {
+				t.Fatalf("$%s names %s but it has no %s; the completeness gate cannot run against the directory you pointed it at", c.dirEnv, dir, c.file)
 			}
-			t.Logf("no profile at %s; auditing the profiles present", path)
+			missing = append(missing, path)
 			continue
 		}
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
 		}
-		contents = append(contents, string(content))
+		kept, dropped := c.parse(string(content), gateHome, gateRunUser)
+		if err := corpusHealth(kept, dropped, c.minCandidates, c.maxDropRatio); err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		t.Logf("%s: %d candidates, %d unparsed", path, len(kept), dropped)
+		sources = append(sources, Source{Name: c.file, Content: string(content), Parse: c.parse})
+	}
+	// A skipped completeness gate is a pass that proved nothing, and so is one run over
+	// half its corpora: each is here because the other overlooks entries it catches.
+	// BENTO_REQUIRE_TEST_DEPS is how a host that is supposed to have them installed - CI,
+	// and `make test` - says so.
+	if len(missing) > 0 {
+		if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+			t.Fatalf("no upstream profile at %v and BENTO_REQUIRE_TEST_DEPS is set; the completeness gate cannot run without every corpus", missing)
+		}
+		t.Logf("no upstream profile at %v (set $FIREJAIL_DIR/$APPARMOR_DIR); auditing the corpora present", missing)
+	}
+	if len(sources) == 0 {
+		t.Skip("none of the upstream profiles are installed; the completeness gate needs at least one as a diff input")
 	}
 
-	sources := firejailSources(contents)
 	unclassified, globs, outOfScope := Audit(sources, gateHome, gateRunUser)
 
 	// Stale keywords are reported here, not failed on: the host corpus is whatever the
@@ -528,7 +598,7 @@ func TestFirejailCompleteness(t *testing.T) {
 	for _, g := range globs {
 		t.Logf("glob for review (bento covers by named instance - verify the set is current): %s [%s]", g.Path, g.Section)
 	}
-	t.Logf("%d out-of-scope firejail entries in %d section(s) (firejail's privacy/other-app/system scope, not enumerated by bento)", len(outOfScope), len(bySection(outOfScope)))
+	t.Logf("%d out-of-scope upstream entries in %d section(s) (the upstreams' privacy/other-app/system scope, not enumerated by bento)", len(outOfScope), len(bySection(outOfScope)))
 
 	if len(unclassified) == 0 {
 		return
@@ -537,11 +607,11 @@ func TestFirejailCompleteness(t *testing.T) {
 	for _, g := range unclassified {
 		weak := ""
 		if g.Weaker {
-			weak = " (bento has it DenyWrite; firejail blacklists it)"
+			weak = " (bento has it DenyWrite; upstream denies reads)"
 		}
 		b.WriteString("\n  " + g.Path + " [" + g.Section + "]" + weak)
 	}
-	t.Errorf("firejail shields %d in-scope path(s) bento neither shields nor excludes - classify each (shield in denylist.go or add to IntentionalExclusions):%s", len(unclassified), b.String())
+	t.Errorf("the upstream corpora shield %d in-scope path(s) bento neither shields nor excludes - classify each (shield in denylist.go or add to IntentionalExclusions):%s", len(unclassified), b.String())
 }
 
 // The audit is a comparison of two lists and only means something when its own list is
