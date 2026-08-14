@@ -123,6 +123,12 @@ func parseApplied(f *os.File) applied {
 	// the marker be decoded, appended to the record, and reported as part of a complete
 	// one, which is forged content silently ACCEPTED rather than merely tolerated.
 	var recordClosed bool
+	// Whether each pre-marker key has already been written. Tracked apart from the values
+	// they set because the writer emits a value with every one of them, so a bare key is
+	// already a line the stage did not write: keying the guard on the value being empty
+	// would let "landlock" then "landlock yes" through, which is the case the guard exists
+	// for.
+	var execFilterSeen, landlockSeen bool
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
@@ -189,9 +195,18 @@ func parseApplied(f *os.File) applied {
 		switch {
 		case line == launcher.AppliedMarker:
 			a.complete = true
-		case key == launcher.AppliedExecFilter:
+		// The stage writes each of these once, so a second one is the report being edited
+		// rather than written - the rule the post-marker switch already states for
+		// target-unreached. It matters more here than there: a repeat past the marker can
+		// only worsen the report, while these two decide the layers, and "landlock no" then
+		// "landlock yes" would claim a kernel confinement the stage said it could not apply.
+		// A duplicate falls to the tampering stance below, like any other line the stage
+		// does not write.
+		case key == launcher.AppliedExecFilter && !execFilterSeen:
+			execFilterSeen = true
 			a.execFilter = value
-		case key == launcher.AppliedLandlock:
+		case key == launcher.AppliedLandlock && !landlockSeen:
+			landlockSeen = true
 			// The value is kept whatever it is, including one this host does not recognize:
 			// reconcile judges it against what was asked for rather than reading a failure
 			// reason, so a record whose reason is empty or unreadable cannot pass as success.

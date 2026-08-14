@@ -1156,3 +1156,39 @@ func TestAnUnreadableLandlockReasonIsStillAFailure(t *testing.T) {
 		t.Error("a Landlock failure whose reason was unreadable carried no failure reason at all")
 	}
 }
+
+// A second line for a key the stage writes once is the report being edited, and the
+// pre-marker half is where that decides a layer: last-write-wins would let a reported
+// Landlock failure be overwritten with success and reconcile would leave the filesystem
+// Enforced. A bare key counts as the first write, so the guard cannot be stepped around
+// by writing the key with no value.
+func TestADuplicatePreMarkerLineVoidsTheReport(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		written string
+	}{
+		{"landlock failure overwritten with success", "exec-filter none\nlandlock no \"denied\"\nlandlock yes\nAPPLIED\n"},
+		{"valueless landlock line first", "exec-filter none\nlandlock\nlandlock yes\nAPPLIED\n"},
+		{"exec-filter none overwritten with strict", "exec-filter none\nexec-filter strict\nlandlock yes\nAPPLIED\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "applied")
+			if err := os.WriteFile(path, []byte(tc.written), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a := parseApplied(openReport(t, path))
+			if a.complete || a.landlock == launcher.AppliedYes || a.execFilter == launcher.AppliedExecStrict {
+				t.Fatalf("an edited report was read as the stage's own: %+v", a)
+			}
+
+			var r enforce.Report
+			r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+			if got := a.reconcile(&r, false, false, true, 0); got != enforce.SetupSilent {
+				t.Errorf("setup state = %v, want SetupSilent", got)
+			}
+			if st := r.StateOf(enforce.LayerFilesystem); st != enforce.Unavailable {
+				t.Errorf("filesystem layer = %v; an edited report claimed a kernel confinement", st)
+			}
+		})
+	}
+}
