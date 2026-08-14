@@ -23,12 +23,12 @@ func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
 	}
 }
 
-// requireMemPidsLimits skips unless this host can actually bind a memory or pids cap.
+// requireHostSafetyLimits skips unless this host can actually bind a memory or pids cap.
 // canCreateScope answers only whether a scope can be created; since the delegation
 // split it no longer implies the host-safety controllers are delegated, so a test that
 // asserts a real memory kill has to ask for both or it fails on a host that delegates
 // cpu alone.
-func requireMemPidsLimits(t *testing.T) {
+func requireHostSafetyLimits(t *testing.T) {
 	t.Helper()
 	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope on this host: " + reason)
@@ -128,7 +128,7 @@ func TestWrapWithLimitsOnlySetsWhatIsAsked(t *testing.T) {
 // succeeds when unbounded, so the kill is the limit and not a broken script.
 func TestMemoryLimitEnforced(t *testing.T) {
 	requireSandbox(t)
-	requireMemPidsLimits(t)
+	requireHostSafetyLimits(t)
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
 	}

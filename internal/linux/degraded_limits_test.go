@@ -24,7 +24,7 @@ import (
 // variables added for systemd-run are stripped again before the target sees them.
 func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 	requireDegraded(t)
-	requireMemPidsLimits(t)
+	requireHostSafetyLimits(t)
 	if _, added := withScopeBusVars(nil, nil); len(added) == 0 {
 		t.Skip("host sets no session bus variables; the sanitized-env case cannot be exercised")
 	}
@@ -80,7 +80,7 @@ func TestDegradedRunAppliesLimitsWithSanitizedEnv(t *testing.T) {
 // LayerLimitsMemory=Enforced.
 func TestDegradedRunMemoryLimitActuallyBinds(t *testing.T) {
 	requireDegraded(t)
-	requireMemPidsLimits(t)
+	requireHostSafetyLimits(t)
 
 	p := &policy.Policy{
 		Entrypoint: buildEnvDumpProbe(t),

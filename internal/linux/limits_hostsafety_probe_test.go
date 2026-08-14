@@ -25,10 +25,10 @@ import (
 // from a clean cache. The baseline child is the positive control: same Probe path, no
 // override, and it must report Enforced, so the override child's Unavailable is caused
 // by the delegation loss and nothing else.
-func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
-	requireMemPidsLimits(t)
+func TestProbeHostSafetyLayersFailClosedThroughRealProbe(t *testing.T) {
+	requireHostSafetyLimits(t)
 
-	baseline := runMemPidsChild(t, "baseline")
+	baseline := runHostSafetyChild(t, "baseline")
 	if !strings.Contains(baseline, "STATE enforced") || !strings.Contains(baseline, "PIDSSTATE enforced") {
 		t.Fatalf("positive control failed: baseline child did not report both host-safety layers enforced: %q", baseline)
 	}
@@ -37,12 +37,12 @@ func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
 	// shared by both: a wiring that asked for "memory" twice would leave LayerLimitsPIDs
 	// Enforced whatever the host delegates, which is the fail-open direction this file
 	// exists to refuse, and every other test in the tree would still pass.
-	split := runMemPidsChild(t, "pidsonly")
+	split := runHostSafetyChild(t, "pidsonly")
 	if !strings.Contains(split, "STATE unavailable") || !strings.Contains(split, "PIDSSTATE enforced") {
 		t.Errorf("with pids delegated and memory not, want memory Unavailable and pids Enforced; got %q", split)
 	}
 
-	override := runMemPidsChild(t, "undelegated")
+	override := runHostSafetyChild(t, "undelegated")
 	if !strings.Contains(override, "STATE unavailable") {
 		t.Errorf("with memory/pids undelegated LayerLimitsMemory is not Unavailable: %q - Probe is not reading the delegation check", override)
 	}
@@ -54,12 +54,12 @@ func TestProbeMemPidsLayerFailsClosedThroughRealProbe(t *testing.T) {
 	}
 }
 
-// runMemPidsChild re-execs this test binary to run the helper below in a fresh process
+// runHostSafetyChild re-execs this test binary to run the helper below in a fresh process
 // (un-fired sync.Once) and returns its one reported line.
-func runMemPidsChild(t *testing.T, mode string) string {
+func runHostSafetyChild(t *testing.T, mode string) string {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=TestProbeMemPidsLayerHelper")
-	cmd.Env = append(os.Environ(), "BENTO_TEST_MEMPIDS="+mode)
+	cmd := exec.Command(os.Args[0], "-test.run=TestProbeHostSafetyLayersHelper")
+	cmd.Env = append(os.Environ(), "BENTO_TEST_HOSTSAFETY="+mode)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s child failed: %v\n%s", mode, err, out)
@@ -67,15 +67,15 @@ func runMemPidsChild(t *testing.T, mode string) string {
 	return string(out)
 }
 
-// TestProbeMemPidsLayerHelper is the child half: in "undelegated" mode it forces the
+// TestProbeHostSafetyLayersHelper is the child half: in "undelegated" mode it forces the
 // delegation read to a confirmed-undelegated memory/pids set (known=true, so it is
 // provably the delegation branch and not the unreadable-delegation one) before the Once
 // fires, then reports the real Probe's LayerLimitsMemory state and reason. Inert unless the
 // parent set the trigger.
-func TestProbeMemPidsLayerHelper(t *testing.T) {
-	mode := os.Getenv("BENTO_TEST_MEMPIDS")
+func TestProbeHostSafetyLayersHelper(t *testing.T) {
+	mode := os.Getenv("BENTO_TEST_HOSTSAFETY")
 	if mode == "" {
-		t.Skip("child helper for TestProbeMemPidsLayerFailsClosedThroughRealProbe")
+		t.Skip("child helper for TestProbeHostSafetyLayersFailClosedThroughRealProbe")
 	}
 	switch mode {
 	case "undelegated":
