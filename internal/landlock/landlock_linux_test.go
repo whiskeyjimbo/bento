@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -533,5 +534,73 @@ func TestScopedIPCCarriesBothScopes(t *testing.T) {
 	}
 	if strings.Contains(empty, "Scoped: all") {
 		t.Fatalf("V5 = %s: this assertion cannot tell a full scoped set from an empty one", empty)
+	}
+}
+
+// The TCP fence rests on the V4 preset carrying a non-empty network set, for the reason
+// the scoped one does: RestrictNet keeps only that field, and an empty one restricts
+// nothing and returns success. V3 is the last ABI before Landlock had network access at
+// all, so it is what an empty set looks like from here.
+func TestNetTCPCarriesBindAndConnect(t *testing.T) {
+	got, empty := netTCP.String(), ll.V3.String()
+	if !strings.Contains(got, "Net: all") {
+		t.Errorf("netTCP = %s, want a full network set (bind + connect)", got)
+	}
+	if strings.Contains(empty, "Net: all") {
+		t.Fatalf("V3 = %s: this assertion cannot tell a full network set from an empty one", empty)
+	}
+}
+
+// NetTCPRestricted reports whether this kernel's Landlock ABI (>= 4) can restrict TCP
+// bind and connect. The degraded tier's network domain is a second fence behind the
+// seccomp egress filter; below this ABI BestEffort restricts nothing and the filter is
+// the whole of it.
+//
+// The fence exists for the case the filter structurally cannot reach. The filter governs
+// socket CREATION, so it cannot revoke a socket the target already holds, and it names an
+// SCM_RIGHTS pass over an allowed AF_UNIX socket as an accepted residual. Landlock's net
+// hooks are on connect(2) and evaluate the calling task's domain, so a passed AF_INET
+// descriptor is still denied - which is what the pre-domain arm below observes on a real
+// kernel rather than asserting.
+func TestRestrictDegradedFencesTCPConnect(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+
+	out, err := exec.Command(bin, "degradednet", t.TempDir(), port).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	// The control: without it a host that simply cannot reach loopback would report the
+	// denials below and credit Landlock with them.
+	if !strings.Contains(got, "net_baseline=OK") {
+		t.Fatalf("the port did not answer before the ruleset was applied, so the denials below prove nothing: %q", got)
+	}
+	want := "OK"
+	if effectiveABI() >= 4 {
+		want = "DENIED"
+	}
+	for _, arm := range []string{"net_predomain", "net_fresh"} {
+		if !strings.Contains(got, arm+"="+want) {
+			t.Errorf("%s: got %q, want %s=%s (ABI %d)", arm, got, arm, want, effectiveABI())
+		}
 	}
 }

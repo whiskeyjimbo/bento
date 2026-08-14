@@ -50,6 +50,12 @@ var handledFS = ll.V8
 // namespace, and its PID namespace hides every process it could signal.
 var scopedIPC = ll.V6
 
+// netTCP is the network set the degraded tier restricts: ABI 4's bind and connect for TCP
+// ports, which is every network access Landlock defines through ABI 9. The bwrap tier
+// needs none of it - its network namespace already fences egress, and a manifest that
+// permits egress reaches the wire through the proxy's own bridge, which this would deny.
+var netTCP = ll.V4
+
 // degradedFS is the handled set for the degraded tier: handledFS plus ABI 9's
 // resolve_unix (V9's handled_access_fs is V8's plus exactly that right). The tiers
 // differ because their exposure does.
@@ -420,6 +426,26 @@ func RestrictDegraded(read, write, exec []string) error {
 	// affected.
 	if err := scopedIPC.BestEffort().RestrictScoped(); err != nil {
 		return fmt.Errorf("landlock: applying degraded IPC scoping: %w", err)
+	}
+	// A third domain for the same structural reason, and with no rules at all: this tier
+	// only ever runs a no-network manifest, so handled-with-nothing-granted IS the intended
+	// posture and there is no blanket-denial-inside-the-grants hazard of the kind
+	// withIoctlDev and withRefer exist to avoid.
+	//
+	// It fences what seccomp structurally cannot. The egress filter governs socket
+	// CREATION, so it cannot revoke a socket the target already holds - it names SCM_RIGHTS
+	// fd-passing over an allowed AF_UNIX socket as an accepted residual. Landlock's net
+	// hooks are on bind(2) and connect(2), which is USE, and they evaluate the CALLING
+	// task's domain rather than the socket's origin: a probe that creates a TCP socket
+	// before this call and connects after it is denied, so an unconnected AF_INET fd handed
+	// to the target over a unix socket buys it nothing.
+	//
+	// Partial, like every other backstop here. An already-CONNECTED passed fd needs no
+	// further connect and is not fenced; Landlock's net hooks are TCP-only, so UDP, raw and
+	// AF_PACKET rest on the egress filter killing them at socket(2); and MPTCP escapes the
+	// hooks entirely.
+	if err := netTCP.BestEffort().RestrictNet(); err != nil {
+		return fmt.Errorf("landlock: applying degraded network confinement: %w", err)
 	}
 	return nil
 }

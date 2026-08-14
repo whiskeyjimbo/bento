@@ -44,6 +44,16 @@
 // ruleset instead of intersecting the right away would return no error while confining
 // nothing.
 //
+// Usage: probe degradednet <read-dir> <port>
+// Opens a TCP socket BEFORE applying the degraded ruleset, connects a second one to prove
+// the port answers, then applies the ruleset and connects the pre-existing socket. Prints
+// "net_baseline=OK|DENIED net_predomain=OK|DENIED net_fresh=OK|DENIED". The pre-existing
+// arm is the load-bearing one: Landlock's net hooks are on connect(2) and evaluate the
+// CALLING task's domain, not the domain in force when the socket was created - which is
+// what makes this fence the SCM_RIGHTS-passed AF_INET descriptor the seccomp egress
+// filter structurally cannot revoke. Were it keyed on creation instead, that arm would
+// print OK and the fence would buy nothing.
+//
 // Usage: probe procmem <read-dir>
 // Starts a child, reaches into its /proc/<pid>/mem and /proc/<pid>/fd once unrestricted,
 // then applies the DEGRADED ruleset with read-dir as the sole read grant and reaches
@@ -90,6 +100,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
@@ -114,6 +126,10 @@ func main() {
 		// A bare select{} would trip the runtime's deadlock detector and abort, leaving
 		// the parent reading a process that has already died.
 		time.Sleep(time.Hour)
+		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == "degradednet" {
+		degradedNet(os.Args[2], os.Args[3])
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "procmem" {
@@ -247,6 +263,51 @@ func degraded(read, write, outside, ungranted, granted string) {
 	}
 	fmt.Printf("degraded_outside=%s degraded_unixconnect=%s degraded_grantedsocket=%s\n",
 		readable(outside), dial(ungranted), dial(granted))
+}
+
+// degradedNet reports whether the degraded ruleset's network domain denies TCP connect,
+// including on a socket that existed before the domain did. See the usage note above for
+// why that arm is the one under test.
+func degradedNet(read, port string) {
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "port:", err)
+		os.Exit(2)
+	}
+	pre, err := tcpSocket()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "socket:", err)
+		os.Exit(2)
+	}
+	baseline, err := tcpSocket()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "socket:", err)
+		os.Exit(2)
+	}
+	base := connectLoopback(baseline, p)
+	if err := landlock.RestrictDegraded([]string{read}, nil, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	fresh, err := tcpSocket()
+	if err != nil {
+		// socket(2) itself is not what this fences, so a failure here is a broken probe.
+		fmt.Fprintln(os.Stderr, "socket:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("net_baseline=%s net_predomain=%s net_fresh=%s\n",
+		base, connectLoopback(pre, p), connectLoopback(fresh, p))
+}
+
+func tcpSocket() (int, error) {
+	return unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+}
+
+// connectLoopback connects fd to 127.0.0.1:port and closes it either way, so a caller can
+// run several arms without leaking descriptors into the restricted domain.
+func connectLoopback(fd, port int) string {
+	defer unix.Close(fd)
+	return verdict(unix.Connect(fd, &unix.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}))
 }
 
 // procMem reads a child's /proc/<pid>/mem before and after the degraded ruleset is
