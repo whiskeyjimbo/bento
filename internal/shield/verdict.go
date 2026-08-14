@@ -102,8 +102,13 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// the store only by respelling it is not one and is refused - which is the right
 		// way round, the opt-in being a path the author named deliberately.
 		if s.covers(a.Resolved, grant) && !slices.Contains(optIns, a.Resolved) {
-			if s.callerDenied(a.Resolved) {
-				return a.Rule, InsideCallerShield
+			// Blamed on the CALLER's own path, not this rule's. The loop reaches the
+			// built-ins first, so a built-in nested inside a caller deny would otherwise be
+			// named in a sentence that tells the embedder to take it up with their deny list
+			// while pointing at a dotfile they never mentioned - which is the one thing
+			// Assemble's rule order says the blame must not do.
+			if r, ok := s.callerDenied(a.Resolved); ok {
+				return r, InsideCallerShield
 			}
 			return a.Rule, InsideShield
 		}
@@ -276,13 +281,18 @@ func (s Set) foldsCase(path string) bool {
 	return s.fs.SameFile(path, filepath.Join(filepath.Dir(path), flipped))
 }
 
-// callerDenied reports whether a caller-supplied deny covers a resolved host path. Both
-// sides are resolved because a caller names its store in its own spelling and the shield
-// binds where that lands.
-func (s Set) callerDenied(onHost string) bool {
-	return slices.ContainsFunc(s.extraDeny, func(rp string) bool {
-		return onHost == rp || policy.CoversResolved(rp, onHost)
+// callerDenied reports the caller-supplied deny covering a resolved host path, and
+// whether there is one. Both sides are resolved because a caller names its store in its
+// own spelling and the shield binds where that lands; the rule comes back because the
+// refusal names that spelling.
+func (s Set) callerDenied(onHost string) (denylist.Rule, bool) {
+	i := slices.IndexFunc(s.extraDeny, func(a Applied) bool {
+		return onHost == a.Resolved || policy.CoversResolved(a.Resolved, onHost)
 	})
+	if i < 0 {
+		return denylist.Rule{}, false
+	}
+	return s.extraDeny[i].Rule, true
 }
 
 // OptIn is one shield a policy lifted by reading it: the grant's literal spelling, the
@@ -319,7 +329,7 @@ func (s Set) OptIns(literalReads []string) []OptIn {
 			continue
 		}
 		onHost := s.fs.Resolve(r.Path)
-		if s.callerDenied(onHost) {
+		if _, ok := s.callerDenied(onHost); ok {
 			continue
 		}
 		out = append(out, OptIn{Path: r.Path, OnHost: onHost, Holds: r.Holds})

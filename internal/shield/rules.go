@@ -45,11 +45,12 @@ type Set struct {
 	// - an opt-in names a rule by the path the deny-list built, while a refusal is decided
 	// at the path that rule lands on.
 	builtin []denylist.Rule
-	// extraDeny are the caller's denies, resolved. A grant inside one is refused in its
-	// own sentence and can never be opted into: it belongs to the trust domain of whoever
-	// launched the run, which the manifest being run must not be able to talk its way out
-	// of.
-	extraDeny []string
+	// extraDeny are the caller's denies, paired with where each resolves. A grant inside
+	// one is refused in its own sentence and can never be opted into: it belongs to the
+	// trust domain of whoever launched the run, which the manifest being run must not be
+	// able to talk its way out of. The rule is kept beside the resolved path because that
+	// sentence names the caller's own spelling.
+	extraDeny []Applied
 }
 
 // Applied is a rule paired with where its shield actually mounts. The rule is kept whole
@@ -104,7 +105,7 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	s.builtin = append(slices.Clone(base), links...)
 
 	for _, r := range extraDeny {
-		s.extraDeny = append(s.extraDeny, fs.Resolve(r.Path))
+		s.extraDeny = append(s.extraDeny, Applied{Rule: r, Resolved: fs.Resolve(r.Path)})
 	}
 	// Caller denies sit between the built-ins and the expansion, which is the order the
 	// enforcer assembles them in. It decides blame, not outcome: where a caller deny and
