@@ -75,6 +75,10 @@ type Candidate struct {
 	Glob bool
 	// Dir reports that the upstream directive was directory-shaped - firejail's trailing
 	// slash, AppArmor's {,**} tail - so covering it takes a rule that shields the tree.
+	// Carried because denylist.Covers answers an exact path match whatever the rule's
+	// Dir is, which is right for enforcement and blind here: it is what lets the same
+	// entry move from a directory list to the flat file list, narrowing the shield from
+	// the whole tree to one inode with the ratchet still green.
 	//
 	// In practice only AppArmor sets it: firejail writes its directory entries without a
 	// trailing slash (blacklist ${HOME}/.gnupg), so 0 of the 1643 directives its two
@@ -84,10 +88,6 @@ type Candidate struct {
 	// not read as a file; what the format cannot express is not recoverable here, and the
 	// regression it would otherwise miss - a bento DIRECTORY rule flipped to a file rule -
 	// is pinned per store by the denylist package's own shape tests.
-	// Carried because denylist.Covers answers an exact path match whatever the rule's
-	// Dir is, which is right for enforcement and blind here: it is what lets the same
-	// entry move from a directory list to the flat file list, narrowing the shield from
-	// the whole tree to one inode with the ratchet still green.
 	Dir bool
 	// Section is what scope classification keys off: firejail's section-header comment
 	// for a headed profile, or a constant naming the source where the format has no

@@ -519,8 +519,10 @@ var hostCorpora = []struct {
 // reading. Either leaves entries out of the diff, which reads exactly like a corpus with
 // nothing left to find.
 //
-// Order is load-bearing. An empty corpus divides zero by zero and NaN clears every
-// ceiling, so the ratio alone waves through the one case the floor exists for.
+// The floor is not the ratio's weaker cousin: an empty corpus divides zero by zero, and
+// NaN compares false against every ceiling, so a ratio on its own cannot see the one case
+// that matters most - the corpus that arrived with nothing in it. Order between the two is
+// only which sentence the operator reads first.
 func corpusHealth(kept []Candidate, dropped, minCandidates int, maxDropRatio float64) error {
 	if len(kept) < minCandidates {
 		return fmt.Errorf("parsed to %d in-scope directives, below the floor of %d; this is not the whole profile, so a green gate would be a comparison never made", len(kept), minCandidates)
@@ -531,10 +533,10 @@ func corpusHealth(kept []Candidate, dropped, minCandidates int, maxDropRatio flo
 	return nil
 }
 
-// The floor is the check that has to hold for the empty corpus, and it is the one an
-// ordering slip disables: NaN compares false against any ceiling, so a ratio-first
-// version passes a file that parsed to nothing - the exact state the in-tree gate used to
-// report as "0 out-of-scope entries in 0 section(s)".
+// The floor is the check that has to hold for the empty corpus, and no ceiling can stand
+// in for it: 0/0 is NaN and clears any ceiling. A gate with the ratio alone reports what
+// this one used to - "0 out-of-scope entries in 0 section(s)", green over a file it never
+// read.
 func TestCorpusHealthRefusesAnEmptyCorpus(t *testing.T) {
 	if err := corpusHealth(nil, 0, 250, 0.05); err == nil {
 		t.Error("a corpus that parsed to nothing must be refused, not diffed against")
