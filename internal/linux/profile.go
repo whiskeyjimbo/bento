@@ -72,7 +72,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// nothing is launched first; canCreateScope memoizes a usable host, so asking early is
 	// free on every host that will go on to profile.
 	if !p.Limits.IsZero() {
-		if ok, reason := canCreateScope(); !ok {
+		if ok, reason := canCreateScope(ctx); !ok {
 			return profile.Observation{}, fmt.Errorf("the policy requests resource limits this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
 		}
 		// A creatable scope is not enough: systemd-run accepts a property for an
@@ -83,7 +83,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		// which would send the operator to a Delegate= drop-in it never needed. Run
 		// reaches the same verdict through the probe's two layers; this path produces no
 		// Report, so the check has to be its own.
-		ctrls, known := delegatedControllers()
+		ctrls, known := delegatedControllers(ctx)
 		if p.Limits.Memory != "" || p.Limits.PIDs != 0 {
 			if state, reason := memPidsDelegationState(ctrls, known); state != enforce.Enforced {
 				return profile.Observation{}, fmt.Errorf("the policy requests a memory or pids limit this host cannot enforce, and profiling untrusted code unbounded could exhaust host resources: %s", reason)
@@ -188,7 +188,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// the profiling command inherits bento's environment.
 	exe, cargs := bwrap, args
 	if !p.Limits.IsZero() {
-		if err := preflightLimits(p.Limits, nil); err != nil {
+		if err := preflightLimits(ctx, p.Limits, nil); err != nil {
 			return profile.Observation{}, fmt.Errorf("linux: %w", err)
 		}
 		// Unnamed: profiling is an operator watching one run to learn what it touches,

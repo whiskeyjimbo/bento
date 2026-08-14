@@ -228,7 +228,7 @@ func TestParseObservationsCarriesDroppedAccesses(t *testing.T) {
 // a wrapper that broke profiling outright - which, on its own, would look identical.
 func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
 	requireSandbox(t)
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 
@@ -293,7 +293,7 @@ func TestProfileRunsUnderTheRequestedLimits(t *testing.T) {
 // dropping the cap silently here would be the one place an unreviewed target runs with
 // no ceiling on the host's memory.
 func TestProfileRefusesLimitsItCannotEnforce(t *testing.T) {
-	if ok, _ := canCreateScope(); ok {
+	if ok, _ := canCreateScope(t.Context()); ok {
 		t.Skip("this host can create a transient scope; the refusal is unreachable here")
 	}
 	p := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{Memory: "256M"}}
@@ -416,13 +416,13 @@ func TestParseObservationsReadsAbsentAnnotations(t *testing.T) {
 // probe; Profile produces no Report, so it owes the check directly.
 func TestProfileRefusesACPULimitTheHostCannotEnforce(t *testing.T) {
 	requireSandbox(t)
-	if ok, _ := canCreateScope(); !ok {
+	if ok, _ := canCreateScope(t.Context()); !ok {
 		t.Skip("this host cannot create a transient scope; the scope refusal fires first")
 	}
 	// canCreateScope memoized its own reading above, so this override reaches only the
 	// per-controller cpu check - the undelegated cpu controller is the sole difference.
 	orig := delegatedControllers
-	delegatedControllers = func() (map[string]bool, bool) {
+	delegatedControllers = func(context.Context) (map[string]bool, bool) {
 		return map[string]bool{"memory": true, "pids": true}, true
 	}
 	t.Cleanup(func() { delegatedControllers = orig })

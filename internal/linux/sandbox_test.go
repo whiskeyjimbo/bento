@@ -995,8 +995,8 @@ func TestProbeReportsLayersHonestly(t *testing.T) {
 	// tracks scope creation and the controllers each layer needs - nothing about the
 	// namespace. Each layer carries its own delegation verdict, so a host missing one
 	// controller must not drag the other layer down with it.
-	scopeOK, _ := canCreateScope()
-	ctrls, known := delegatedControllers()
+	scopeOK, _ := canCreateScope(t.Context())
+	ctrls, known := delegatedControllers(t.Context())
 	wantLimits, wantCPU := enforce.Unavailable, enforce.Unavailable
 	if scopeOK {
 		wantLimits, _ = memPidsDelegationState(ctrls, known)

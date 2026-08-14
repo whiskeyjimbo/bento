@@ -39,7 +39,7 @@ func TestWithScopeBusVarsSkipsUnsetHostVars(t *testing.T) {
 	// Prime the scope check before unsetting: it caches behind a sync.Once, and if it
 	// first fired here it would cache "no bus" and every later scope test in the
 	// package would silently skip while still reporting PASS.
-	canCreateScope()
+	canCreateScope(t.Context())
 	for _, name := range scopeBusVars {
 		// t.Setenv cannot unset, but it registers the restore this test needs: without
 		// it the unset leaks into every later test in the package, and the ones that
@@ -61,7 +61,7 @@ func TestWithScopeBusVarsSkipsUnsetHostVars(t *testing.T) {
 // added bus vars, NOT the host environment - and proves the scope is created, the
 // target actually runs, and it sees the policy environment.
 func TestScopedCommandRunsWithSanitizedPolicyEnv(t *testing.T) {
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 	dir := t.TempDir()

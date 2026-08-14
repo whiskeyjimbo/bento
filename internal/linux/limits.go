@@ -29,6 +29,13 @@ import (
 // manager is reachable, limits cannot be enforced unprivileged, and that is
 // reported rather than silently ignored (v1's actual failure).
 
+// scopeProbeTimeout bounds each systemd-run subprocess probe. It is a backstop against a
+// user manager that never answers, not a pacing knob, and it is layered UNDER the
+// caller's context rather than over a fresh one: Probe runs on the hot path of every Run
+// and every doctor, and a caller that has already given up must not be held for the full
+// bound of each remaining probe.
+const scopeProbeTimeout = 5 * time.Second
+
 // cacheProbe memoizes a host measurement, but only once it has ANSWERED: measure's
 // bool reports whether the probe reached a verdict, not whether the verdict was yes,
 // and a probe that reached none is re-run on the next call.
@@ -41,17 +48,17 @@ import (
 // no, is a fact about the host and is cached either way, so the host with no
 // systemd-run and the host with undelegated controllers both pay one probe, not one
 // per call.
-func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
+func cacheProbe[T any](measure func(context.Context) (T, bool)) func(context.Context) (T, bool) {
 	var (
 		mu       sync.Mutex
 		val      T
 		answered bool
 	)
-	return func() (T, bool) {
+	return func(ctx context.Context) (T, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if !answered {
-			val, answered = measure()
+			val, answered = measure(ctx)
 		}
 		return val, answered
 	}
@@ -65,8 +72,8 @@ func cacheProbe[T any](measure func() (T, bool)) func() (T, bool) {
 // different ones: folding the memory/pids check in here made every caller refuse a
 // cpu-only manifest over a memory delegation it never depended on, and sent the
 // operator to a Delegate= drop-in for controllers the manifest never named.
-func canCreateScope() (bool, string) {
-	v, answered := scopeProbe()
+func canCreateScope(ctx context.Context) (bool, string) {
+	v, answered := scopeProbe(ctx)
 	if !answered {
 		return false, v.reason
 	}
@@ -86,11 +93,17 @@ type scopeVerdict struct {
 
 // measureScope answers by actually creating a throwaway scope - a stat of a runtime
 // directory does not prove the manager will answer.
-func measureScope() (scopeVerdict, bool) {
+func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
-	if err := runScopeProbe(policy.Limits{Memory: "64M"}, nil); err != nil {
+	if err := runScopeProbe(ctx, policy.Limits{Memory: "64M"}, nil); err != nil {
+		// A caller that gave up measured nothing about this host, and must not leave a
+		// verdict behind that says it did: the reason names the abandonment rather than
+		// blaming the user manager, and nothing is cached either way.
+		if ctx.Err() != nil {
+			return scopeVerdict{reason: "the resource-limit probe did not finish (" + ctx.Err().Error() + "), so whether this host can enforce limits is unknown"}, false
+		}
 		// The scope could not be created, which is the failure a busy or restarting user
 		// manager produces transiently: no verdict, so nothing is cached.
 		return scopeVerdict{reason: "no usable systemd user manager for resource limits: " + err.Error()}, false
@@ -129,11 +142,11 @@ func memPidsDelegationState(ctrls map[string]bool, known bool) (enforce.State, s
 // the sanitized policy env: systemd-run needs the session bus variables to reach the
 // user manager, and a probe that inherited the host env would pass while the real run
 // died with the scope never created and the target never started.
-func preflightLimits(l policy.Limits, env []string) error {
+func preflightLimits(ctx context.Context, l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return nil
 	}
-	if err := runScopeProbe(l, env); err != nil {
+	if err := runScopeProbe(ctx, l, env); err != nil {
 		return fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
 	}
 	return nil
@@ -146,11 +159,11 @@ func preflightLimits(l policy.Limits, env []string) error {
 // when there is nothing to apply, so a zero-limit probe would run /bin/true bare,
 // never contact systemd, and report success - "the limits will bind" from a call that
 // proved nothing, in the seam the fail-closed limits story rests on.
-func runScopeProbe(l policy.Limits, env []string) error {
+func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return fmt.Errorf("internal: the scope probe was asked to prove zero limits, which creates no scope")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, scopeProbeTimeout)
 	defer cancel()
 
 	// Deliberately unnamed even when the run it preflights has an id: this scope and
@@ -208,14 +221,14 @@ const cpuUndelegatedReason = "the cpu controller is not delegated to your system
 // Only a reading that answered is cached (see cacheProbe): known==false means the
 // probe scope could not be created or read at all, which a busy or restarting user
 // manager causes transiently.
-var delegatedControllers = func() (map[string]bool, bool) {
+var delegatedControllers = func(ctx context.Context) (map[string]bool, bool) {
 	// Screened first so the host class that can never answer stops paying for a scope
 	// per call: cacheProbe deliberately does not memoize a non-answer, and here the
 	// non-answer is permanent.
 	if !unifiedCgroupReadable() {
 		return nil, false
 	}
-	return cachedDelegatedControllers()
+	return cachedDelegatedControllers(ctx)
 }
 
 var cachedDelegatedControllers = cacheProbe(measureDelegatedControllers)
@@ -275,8 +288,8 @@ var unifiedCgroupReadable = sync.OnceValue(func() bool {
 //
 // known is false only when the probe scope could not be created or read at all
 // (no systemd user manager, or the read failed): that is the fail-closed signal.
-func measureDelegatedControllers() (map[string]bool, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
+	ctx, cancel := context.WithTimeout(ctx, scopeProbeTimeout)
 	defer cancel()
 
 	// Read the scope's own cgroup.controllers - the set systemd actually enabled on
@@ -368,7 +381,7 @@ func scopeUnitName(runID string) string { return "bento-run-" + runID + ".scope"
 // each is a mistake in what the caller asked for, and a frontend that sorts refusals
 // from failures would otherwise file two of them under the runs that failed for reasons
 // out of the caller's hands. The Report is empty because nothing has been probed yet.
-func (e *Enforcer) screenRunID(p *policy.Policy, runID string) error {
+func (e *Enforcer) screenRunID(ctx context.Context, p *policy.Policy, runID string) error {
 	if runID == "" {
 		return nil
 	}
@@ -378,7 +391,7 @@ func (e *Enforcer) screenRunID(p *policy.Policy, runID string) error {
 	if p.Limits.IsZero() {
 		return &enforce.Refusal{Reason: "a run id asks for a reapable scope, but this manifest sets no resource limits and a run without them is not wrapped in one; set a limit (memory, cpu, or pids) or drop the run id"}
 	}
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(ctx); !ok {
 		return &enforce.Refusal{Reason: "a run id asks for a reapable scope, but this host cannot create one, so there would be nothing to reap through: " + reason}
 	}
 	return nil

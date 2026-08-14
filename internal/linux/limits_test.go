@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -29,10 +30,10 @@ func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
 // cpu alone.
 func requireMemPidsLimits(t *testing.T) {
 	t.Helper()
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope on this host: " + reason)
 	}
-	if state, reason := memPidsDelegationState(delegatedControllers()); state != enforce.Enforced {
+	if state, reason := memPidsDelegationState(delegatedControllers(t.Context())); state != enforce.Enforced {
 		t.Skip("memory/pids limits cannot bind on this host: " + reason)
 	}
 }
@@ -41,8 +42,45 @@ func requireMemPidsLimits(t *testing.T) {
 // limits create no scope at all, so the only honest answer there is an error - a nil
 // would be the fail-open direction the whole delegation check exists to refuse.
 func TestScopeProbeRefusesZeroLimits(t *testing.T) {
-	if err := runScopeProbe(policy.Limits{}, nil); err == nil {
+	if err := runScopeProbe(t.Context(), policy.Limits{}, nil); err == nil {
 		t.Error("runScopeProbe returned success for zero limits, which create no scope")
+	}
+}
+
+// Probe runs on the hot path of every Run and every doctor, and two of its three
+// subprocess probes used to derive their 5s bound from context.Background(): a caller
+// that had already given up was held for ~10s more, serially, measuring a host nobody
+// was waiting on. Both now layer their bound under the caller's context.
+//
+// The cache is the sharp edge. A probe abandoned mid-flight measured nothing, so it must
+// leave no verdict behind - one cancelled run would otherwise pin the limits layers
+// Unavailable for the lifetime of the process, which under --allow-degraded runs targets
+// unbounded on a host whose caps bind. That is the same fail-safe cacheProbe already
+// makes for a busy user manager, extended to the caller giving up.
+func TestTheLimitsProbesHonorTheCallersContext(t *testing.T) {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		t.Skip("systemd-run is not installed, so these probes never reach a subprocess")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	if err := runScopeProbe(ctx, policy.Limits{Memory: "64M"}, nil); err == nil {
+		t.Error("a cancelled probe must not report that the limits will bind")
+	}
+	if _, known := measureDelegatedControllers(ctx); known {
+		t.Error("a cancelled delegation probe must not report a reading it never took")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the probes took %v on a cancelled context; they are bounded by their own 5s deadline, not the caller's", elapsed)
+	}
+
+	v, answered := measureScope(ctx)
+	if answered {
+		t.Error("a cancelled scope probe must leave no verdict to cache; one cancelled run would pin the limits layers Unavailable for the process")
+	}
+	if !strings.Contains(v.reason, "did not finish") {
+		t.Errorf("reason = %q, want it to name the abandonment rather than blame the user manager", v.reason)
 	}
 }
 
@@ -120,7 +158,7 @@ func TestMemoryLimitEnforced(t *testing.T) {
 }
 
 func TestDelegatedControllers(t *testing.T) {
-	ctrls, ok := delegatedControllers()
+	ctrls, ok := delegatedControllers(t.Context())
 	if !ok {
 		t.Skip("could not create a probe scope to measure delegation on this host")
 	}
@@ -175,11 +213,11 @@ func TestMemPidsDelegationStateFailsClosed(t *testing.T) {
 // that: without one the whole limits layer is Unavailable and no cpu sub-layer is
 // emitted at all.
 func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
-	if ok, _ := canCreateScope(); !ok {
+	if ok, _ := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd scope on this host; the cpu limits layer is not emitted")
 	}
 	orig := delegatedControllers
-	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	delegatedControllers = func(context.Context) (map[string]bool, bool) { return nil, false }
 	defer func() { delegatedControllers = orig }()
 
 	r := New().Probe(context.Background())
@@ -201,7 +239,7 @@ func TestProbeCpuLayerFailsClosedOnUnknownDelegation(t *testing.T) {
 func TestRealProbeDrivesStrictAndDefaultRefusalAndDegradedRun(t *testing.T) {
 	requireSandbox(t)
 	ns, _ := usableNamespaces(context.Background())
-	if ok, _ := canCreateScope(); ns != namespacesUsable || !ok {
+	if ok, _ := canCreateScope(t.Context()); ns != namespacesUsable || !ok {
 		t.Skip("no bwrap tier with a usable systemd scope on this host; the cpu limits layer is not emitted")
 	}
 	// Overriding AFTER the guard above is deliberate and load-bearing. canCreateScope
@@ -211,7 +249,7 @@ func TestRealProbeDrivesStrictAndDefaultRefusalAndDegradedRun(t *testing.T) {
 	// refuses instead, limitsLayers emits no cpu sub-layer at all, and this test
 	// silently SKIPS forever while still reporting PASS.
 	orig := delegatedControllers
-	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	delegatedControllers = func(context.Context) (map[string]bool, bool) { return nil, false }
 	defer func() { delegatedControllers = orig }()
 
 	dir := t.TempDir()
@@ -303,7 +341,7 @@ func TestMeasuredDelegationMatchesActualBinding(t *testing.T) {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		t.Skip("systemd-run not available")
 	}
-	ctrls, known := measureDelegatedControllers()
+	ctrls, known := measureDelegatedControllers(t.Context())
 	if !known {
 		t.Skip("no usable systemd user manager on this host")
 	}
@@ -342,24 +380,24 @@ func TestMeasuredDelegationMatchesActualBinding(t *testing.T) {
 func TestCacheProbeMemoizesOnlyAnsweredMeasurements(t *testing.T) {
 	calls := 0
 	answers := []bool{false, false, true}
-	probe := cacheProbe(func() (int, bool) {
+	probe := cacheProbe(func(context.Context) (int, bool) {
 		i := calls
 		calls++
 		return i, answers[min(i, len(answers)-1)]
 	})
 
-	if _, ok := probe(); ok || calls != 1 {
+	if _, ok := probe(t.Context()); ok || calls != 1 {
 		t.Fatalf("first call: ok=%v calls=%d, want a failed measurement after 1 call", ok, calls)
 	}
-	if _, ok := probe(); ok || calls != 2 {
+	if _, ok := probe(t.Context()); ok || calls != 2 {
 		t.Errorf("second call: ok=%v calls=%d, want the failure re-measured", ok, calls)
 	}
-	v, ok := probe()
+	v, ok := probe(t.Context())
 	if !ok || v != 2 || calls != 3 {
 		t.Fatalf("third call: v=%d ok=%v calls=%d, want the recovered answer", v, ok, calls)
 	}
 	// The capability, once proven, is stable: every later caller is free.
-	if v, ok := probe(); !ok || v != 2 || calls != 3 {
+	if v, ok := probe(t.Context()); !ok || v != 2 || calls != 3 {
 		t.Errorf("fourth call: v=%d ok=%v calls=%d, want the cached answer with no re-measure", v, ok, calls)
 	}
 }
@@ -388,14 +426,14 @@ func TestWrapWithLimitsLeavesTheScopeUnnamedWithoutARunID(t *testing.T) {
 // verdict uncached and canCreateScope re-created a real transient scope on every call -
 // three times on one run, from Probe, screenRunID, Run, the degraded path and Profile.
 func TestScopeVerdictIsIndependentOfTheDelegationRead(t *testing.T) {
-	if ok, _ := canCreateScope(); !ok {
+	if ok, _ := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd scope on this host; measureScope cannot be exercised")
 	}
 	orig := delegatedControllers
-	delegatedControllers = func() (map[string]bool, bool) { return nil, false }
+	delegatedControllers = func(context.Context) (map[string]bool, bool) { return nil, false }
 	defer func() { delegatedControllers = orig }()
 
-	v, answered := measureScope()
+	v, answered := measureScope(t.Context())
 	if !answered || !v.ok {
 		t.Errorf("measureScope = (%+v, %v) with delegation unreadable, want a cached yes: creatability does not depend on the delegated set", v, answered)
 	}

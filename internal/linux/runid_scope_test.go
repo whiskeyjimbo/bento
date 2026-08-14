@@ -59,7 +59,7 @@ func awaitScope(t *testing.T, unit string) string {
 }
 
 func TestRunIDNamesTheScopeOnTheFullTier(t *testing.T) {
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 	if _, err := exec.LookPath("bwrap"); err != nil {
@@ -95,7 +95,7 @@ func TestRunIDNamesTheScopeOnTheFullTier(t *testing.T) {
 
 func TestRunIDNamesTheScopeOnTheDegradedTier(t *testing.T) {
 	requireDegraded(t)
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 	p := sleepPolicy(t)
@@ -132,16 +132,16 @@ func TestRunScreensTheRunIDAtTheBackendEntryPoint(t *testing.T) {
 	e := New()
 	limited := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone, Limits: policy.Limits{Memory: "128M"}}
 	for _, id := range []string{"job.17", "job-17", "a/b", strings.Repeat("a", 65)} {
-		if err := e.screenRunID(limited, id); err == nil {
+		if err := e.screenRunID(t.Context(), limited, id); err == nil {
 			t.Errorf("run id %q reached the unit name unscreened", id)
 		}
 	}
-	if err := e.screenRunID(limited, "job_17"); err != nil && !strings.Contains(err.Error(), "cannot create one") {
+	if err := e.screenRunID(t.Context(), limited, "job_17"); err != nil && !strings.Contains(err.Error(), "cannot create one") {
 		t.Errorf("a well-spelled id on a limited manifest must pass: %v", err)
 	}
 
 	unlimited := &policy.Policy{Entrypoint: "/bin/true", Exec: policy.ExecNone}
-	err := e.screenRunID(unlimited, "job_17")
+	err := e.screenRunID(t.Context(), unlimited, "job_17")
 	if err == nil || !strings.Contains(err.Error(), "sets no resource limits") {
 		t.Errorf("a run id on a manifest with no limits must be refused, not silently unscoped; got %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRunScreensTheRunIDAtTheBackendEntryPoint(t *testing.T) {
 	if !errors.As(err, &refusal) {
 		t.Errorf("a run id with no limits behind it must be an *enforce.Refusal, got %T", err)
 	}
-	if err := e.screenRunID(unlimited, ""); err != nil {
+	if err := e.screenRunID(t.Context(), unlimited, ""); err != nil {
 		t.Errorf("no run id must stay unaffected: %v", err)
 	}
 }

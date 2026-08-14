@@ -21,7 +21,7 @@ import (
 // command in a new cgroup, not a new process group - so a backgrounded descendant of
 // the scoped command is still killed.
 func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
-	if ok, reason := canCreateScope(); !ok {
+	if ok, reason := canCreateScope(t.Context()); !ok {
 		t.Skip("no usable systemd user scope: " + reason)
 	}
 	pidFile := filepath.Join(t.TempDir(), "sleeper.pid")

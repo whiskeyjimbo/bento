@@ -66,7 +66,7 @@ func TestProbeMemPidsLayerHelper(t *testing.T) {
 		t.Skip("child helper for TestProbeMemPidsLayerFailsClosedThroughRealProbe")
 	}
 	if mode == "undelegated" {
-		delegatedControllers = func() (map[string]bool, bool) {
+		delegatedControllers = func(context.Context) (map[string]bool, bool) {
 			return map[string]bool{"memory": false, "pids": false}, true
 		}
 	}

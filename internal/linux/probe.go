@@ -81,7 +81,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		r.AddStatus(ls)
 	}
 
-	scopeOK, scopeReason := canCreateScope()
+	scopeOK, scopeReason := canCreateScope(ctx)
 	// Default Unavailable, not the zero value (Enforced): delegation is measured only
 	// when a scope is creatable, and a host whose controllers were never read must not
 	// report a limit as enforced - admission would then admit an unenforceable cap.
@@ -92,7 +92,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		// scope can be created while systemd-run silently ignores a property whose
 		// controller the manager does not delegate. Report each so admission can refuse
 		// exactly the limits this host cannot actually enforce.
-		ctrls, known := delegatedControllers()
+		ctrls, known := delegatedControllers(ctx)
 		memState, memReason = memPidsDelegationState(ctrls, known)
 		cpuState, cpuReason = cpuDelegationState(ctrls, known)
 	}
@@ -379,8 +379,10 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// Bound the probe like every sibling (runScopeProbe, measureDelegatedControllers):
 	// it runs on the hot path of every Run, and a bwrap that hangs - a wedged canary, a
 	// stuck mount - would otherwise stall admission for as long as the caller's context
-	// allows, which for the CLI is forever. The deadline is a probe failure, not a host
-	// finding, and classifyUnshare reports it as one.
+	// allows, which for the CLI is forever. Layered UNDER the caller's context, as the
+	// siblings are, so a caller that has already given up is not held for the bound of
+	// each remaining probe. The deadline is a probe failure, not a host finding, and
+	// classifyUnshare reports it as one.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

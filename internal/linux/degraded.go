@@ -155,13 +155,13 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	var stripEnv []string
 	scoped := false
 	if !p.Limits.IsZero() {
-		if ok, _ := canCreateScope(); ok {
+		if ok, _ := canCreateScope(ctx); ok {
 			env, stripEnv = withScopeBusVars(env, proc.Env)
 			// Preflight with the environment the real command will get: a probe run with
 			// the enforcer's own environment would find the bus even when the sanitized
 			// one cannot, and the failure would then surface as systemd-run's exit code
 			// for a target that never ran.
-			if err := preflightLimits(p.Limits, env); err != nil {
+			if err := preflightLimits(ctx, p.Limits, env); err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
 			scoped = true
