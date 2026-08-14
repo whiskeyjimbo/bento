@@ -101,6 +101,21 @@ commits that built it - none of them were ever in a release.
 
 ### What a Run Tells You
 
+- **A run names the PATH directories the box does not carry.** A manifest that
+  passes `PATH` through has the sandbox search the caller's own directories, but
+  only the ones something brought into the box are there - a grant, the base
+  image, or the interpreter's own install prefix. A per-user or system-wide
+  toolchain on PATH that nothing carries is skipped, and a bare command name
+  resolves to whatever the box does have instead: a different build of the same
+  tool, with no denial, no missing file, and an exit code of zero. That once read
+  as bento corrupting repositories, when the lane's `git` and the host's `git`
+  were different versions and nothing in the run said so. Now the run says which
+  directories those are, on stderr and as `shadowed_path_dirs` in the JSON
+  verdict and the `failed` event, so a harness can gate on it rather than a human
+  comparing version strings. The boundary did not move: this denies nothing. It
+  is quiet about `/usr`, `/bin` and their kin, which every sandbox carries from
+  the host, and about a directory the host itself does not have.
+
 - **A run reports the auto-executing files it changed.** A `package.json`'s
   install scripts, a `conftest.py`, a `build.rs`, an `eslint.config.js`, a
   `.pre-commit-config.yaml`, a `.github/workflows` entry: each runs on the host
