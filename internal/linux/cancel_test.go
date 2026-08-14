@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,66 @@ func TestRunReportsACancelledContextAsAnError(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run on a cancelled context = (%+v, %v), want an error wrapping context.Canceled", res, err)
 	}
+	if res.Signaled || res.ExitCode != 0 {
+		t.Errorf("cancelled run also reported a target outcome: ExitCode=%d Signaled=%v", res.ExitCode, res.Signaled)
+	}
+}
+
+// Everything the cancel arm computed before the cancel is still true of the run, and it
+// was being thrown away: the arm returned a Result carrying only the report and the
+// auto-exec fields, so every egress, shield and alias field came back zero. A supervisor
+// that timed out a run then read GateAdmitted got the empty value whose documented
+// meaning is "no destination was admitted beyond the manifest" - a wrong-and-quiet answer
+// about a run that did reach the proxy. stopProxy has to be called before the collector is
+// read, the way the two completing arms do it, or the drain is only partial.
+func TestCancelledRunStillReportsWhatItObserved(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("curl"); err != nil {
+		skipMissingDep(t, "curl not available")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := cancelOnceRunning(t, cancel)
+
+	// Link-local, so the upstream guard refuses it on every host and the observation is
+	// deterministic without touching the network. The connection is made and recorded
+	// BEFORE the target signals it is up, so the cancel lands after the proxy has seen it.
+	const target = "169.254.254.254:1"
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	body := "curl -sS --proxytunnel -o /dev/null --max-time 5 http://" + target + "/ >/dev/null 2>&1\n" +
+		"touch " + ready + "\nsleep 30\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{
+		Entrypoint:  script,
+		Interpreter: "sh",
+		Read:        []string{dir},
+		Write:       []string{filepath.Dir(ready)},
+		Exec:        policy.ExecAll,
+	}
+
+	gate := func(context.Context, string, string) bool { return true }
+	res, err := sandboxEnforcer(t).Run(ctx, p, enforce.Process{}, enforce.RunOptions{Gate: gate, RecordExec: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run on a cancelled context = %v, want an error wrapping context.Canceled", err)
+	}
+	if res.EgressConnections == 0 {
+		t.Error("EgressConnections = 0: the connection the proxy handled before the cancel is part of this run")
+	}
+	want := []enforce.HostPort{{Host: "169.254.254.254", Port: "1"}}
+	if !slices.Equal(res.GuardBlocked, want) {
+		t.Errorf("GuardBlocked = %v, want %v: the guard's refusal is what the run did, cancelled or not", res.GuardBlocked, want)
+	}
+	// The other half of the arm: what the sandboxed stage itself reported. A nil record
+	// for a caller that asked to record execs reads as a run nobody watched.
+	if res.ExecRecord == nil {
+		t.Error("ExecRecord is nil though the run asked for one; the cancel arm dropped what the launcher reported")
+	}
+	// The cancel arm still withholds the target's own outcome, which is the one thing a
+	// SIGKILLed target cannot be said to have produced.
 	if res.Signaled || res.ExitCode != 0 {
 		t.Errorf("cancelled run also reported a target outcome: ExitCode=%d Signaled=%v", res.ExitCode, res.Signaled)
 	}

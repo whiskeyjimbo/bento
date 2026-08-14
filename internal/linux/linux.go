@@ -255,10 +255,31 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	changedAuto, redirected := autoExecBefore.changed(preflight.writes)
 
 	if runErr != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {
-		// The auto-exec report rides the cancel out. A target killed partway is the run
-		// most likely to have rewritten a package.json and least likely to be looked at,
-		// and it is the one path where nothing else says what the host now holds.
-		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		// Everything the run computed before the cancel is still true of it, and is
+		// assembled the same way the two completing arms assemble it: a supervised run
+		// timed out after a human admitted a host reached the proxy, and a Result that
+		// dropped GateAdmitted would report the empty value whose documented meaning is
+		// that nothing was admitted beyond the manifest. The auto-exec report rides out
+		// here for a reason of its own: a target killed partway is the run most likely to
+		// have rewritten a package.json and least likely to be looked at.
+		//
+		// stopProxy before the collector is read, not the deferred one, for the reason the
+		// success arm gives: Serve's wg.Wait is what drains a decision landing during
+		// teardown, and returning first would read a partially-drained collector - a
+		// wrong-and-quiet result rather than an empty-and-quiet one. It reports nil on a
+		// cancelled run (Serve returns nil when the run had already ended when accepting
+		// stopped), so noteDeadListener does not manufacture a dead listener out of the
+		// cancel itself.
+		serveErr := stopProxy()
+		a := parseApplied(appliedReport)
+		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
+		noteDeadListener(&report, serveErr)
+		noteDeadBridge(&report, bridgeDied)
+		noteProxyFault(&report, collected.faultCount())
+		// No ExitCode or Signaled: the kill was the cancel's, and a SIGKILLed target has
+		// no outcome of its own to report. That separation is what tells an operator who
+		// aborted a run apart from a policy that killed it.
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 
 	switch err := runErr; {
