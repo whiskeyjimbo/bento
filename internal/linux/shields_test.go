@@ -1270,3 +1270,43 @@ func TestWriteGrantWhoseShieldCannotBeCarvedNamesTheGrant(t *testing.T) {
 		t.Fatalf("a writable grant must still be honored; got %v", err)
 	}
 }
+
+// A write grant AT a redirected workspace shield is the shape both checks fire on, and
+// the order between them decides which sentence the author gets. It has to be the
+// redirect one: checkWriteNotUnderReadOnlyShield matches the shield at its RESOLVED path,
+// so it names a directory the grant does not contain and tells the author to drop a grant
+// that is not the problem, while the remedies that work - take the link out of the path,
+// or make it resolve to itself - belong to the redirect sentence alone.
+func TestAGrantAtARedirectedShieldGetsTheRedirectSentence(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "realhooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(root, ".git", "hooks")
+	if err := os.Symlink(filepath.Join(root, "realhooks"), hooks); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{
+		homes: []string{"/home/u"}, emptyFile: "/tmp/shield",
+		exists: hostExists, isDir: hostIsDir, listDir: hostListDir, resolve: hostResolve,
+	}
+	// The resolved grant, which is what checkGrants receives: resolveGrants follows the
+	// link, so the write lands on realhooks while the shield still stands at the link's
+	// own name inside the checkout.
+	writes := []string{filepath.Join(root, "realhooks")}
+
+	// Both fire, which is what makes the order observable at all.
+	if err := checkWriteNotUnderReadOnlyShield(sb, writes); err == nil {
+		t.Fatal("the grant sits at a DenyWrite workspace shield, so this check must fire too - without it the order below proves nothing")
+	}
+	err := checkGrants(sb, &policy.Policy{Entrypoint: "/work/run.py"}, nil, writes)
+	if err == nil {
+		t.Fatal("a write grant at a redirected workspace shield must be refused")
+	}
+	if !strings.Contains(err.Error(), "symlinked directory component redirects it") {
+		t.Errorf("the run refused with the wrong sentence, so the redirect check no longer runs first: %v", err)
+	}
+}
