@@ -348,8 +348,8 @@ func TestInterpreterPrefix(t *testing.T) {
 		"":                                    "",
 	}
 	for in, want := range cases {
-		if got := interpreterPrefix(in); got != want {
-			t.Errorf("interpreterPrefix(%q) = %q, want %q", in, got, want)
+		if got := enforce.InterpreterPrefix(in); got != want {
+			t.Errorf("enforce.InterpreterPrefix(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

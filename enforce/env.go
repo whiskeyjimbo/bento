@@ -2,7 +2,9 @@ package enforce
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -33,6 +35,35 @@ const SandboxHome = "/tmp"
 // SandboxHome is: a frontend has to be able to say so before a run, because the shell's
 // own "not found" names the command and never the search path that lost it.
 const SandboxPath = "/usr/bin:/bin"
+
+// InterpreterPrefix returns the install root of an interpreter that lives outside the
+// system paths (e.g. ~/.pyenv/versions/3.12/bin/python3 → ~/.pyenv/versions/3.12), so its
+// stdlib comes along. System interpreters are already covered by the backend's system read
+// paths and return "".
+//
+// Here rather than in the backend that binds it, for the reason SandboxPath is: a frontend
+// has to be able to state what the box carries before and after a run. A run naming its
+// interpreter under the caller's home gets that prefix bound with no grant naming it, so a
+// frontend warning about an ungranted directory has to know not to warn about this one -
+// and answering that with a second copy of this rule is how the warning and the bind come
+// to disagree. The backend still decides whether to bind it (a prefix too broad to hand
+// over gets the file alone); this answers only where the interpreter's install root is.
+func InterpreterPrefix(interp string) string {
+	if interp == "" {
+		return ""
+	}
+	for _, sys := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
+		if strings.HasPrefix(interp, sys) {
+			return ""
+		}
+	}
+	// .../bin/python3 → ...
+	dir := filepath.Dir(interp)
+	if filepath.Base(dir) == "bin" {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
 
 // ResolveEnv turns the policy's allowlist of variable NAMES into the concrete
 // values the target will see.

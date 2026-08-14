@@ -1107,6 +1107,10 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // - a nix profile, ~/.local/bin, a version-manager shim - is the shape that actually
 // shadows, and it is quiet on a host that has none.
 //
+// A grant is not the only way a directory reaches the box, so carriesInterpreter answers
+// the other one; a note that fires on a manifest which is already correct is the same
+// attention cost as one that fires on every run.
+//
 // Known ceiling: a multi-user nix install puts /nix/var/nix/profiles/default/bin on PATH,
 // which is outside home and outside the base image, and this does not see it.
 //
@@ -1122,16 +1126,20 @@ func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string
 	if err != nil || !filepath.IsAbs(home) {
 		return
 	}
-	home = filepath.Clean(home)
+	// Both spellings of home, because only one side of the comparison can be resolved: a
+	// host whose /home is a link to /var/home has PATH entries spelled through the target
+	// while $HOME names the link, and a single-spelling test then finds nothing under home
+	// on exactly the layout it should fire on.
+	homes := []string{filepath.Clean(home), pathresolve.Existing(home)}
 	var shadowed []string
 	for _, dir := range filepath.SplitList(search) {
-		// Matched on the spelling, before resolution: ~/.nix-profile/bin is a symlink out
-		// of the home tree by design, and resolving first would drop the very entries this
-		// exists for.
-		if !filepath.IsAbs(dir) || !underHome(filepath.Clean(dir), home) || slices.Contains(shadowed, dir) {
+		// Matched on the entry's spelling, before resolution: ~/.nix-profile/bin is a
+		// symlink out of the home tree by design, and resolving it would drop the very
+		// entries this exists for.
+		if !filepath.IsAbs(dir) || !slices.ContainsFunc(homes, func(h string) bool { return underHome(filepath.Clean(dir), h) }) || slices.Contains(shadowed, dir) {
 			continue
 		}
-		if !granted(p, dir) {
+		if !granted(p, dir) && !carriesInterpreter(p, dir) {
 			shadowed = append(shadowed, dir)
 		}
 	}
@@ -1164,7 +1172,30 @@ func granted(p *policy.Policy, dir string) bool {
 	})
 }
 
-// underHome reports whether an already-resolved grant lies in the host home tree.
+// carriesInterpreter reports whether dir comes into the box on the interpreter's back
+// rather than on a grant. A manifest naming its interpreter under the caller's home -
+// ~/.pyenv/versions/3.12/bin/python3, a mise-managed runtime - gets that install prefix
+// bound with nothing in read: naming it, so the bin directory on PATH resolves correctly
+// and a note telling the operator to grant it is wrong. enforce.InterpreterPrefix is the
+// backend's own answer to where that root is, not a second copy of the rule.
+//
+// The backend may still decline to bind a prefix it judges too broad, in which case the
+// directory really is absent and this suppresses a true note. That is the safe direction:
+// a warning that is occasionally silent costs a debugging session, and one that fires on
+// a correct manifest costs every reader's attention to every later [bento] line.
+func carriesInterpreter(p *policy.Policy, dir string) bool {
+	prefix := enforce.InterpreterPrefix(p.Interpreter)
+	if prefix == "" {
+		return false
+	}
+	return policy.CoversResolved(prefix, dir) || policy.CoversResolved(pathresolve.Existing(prefix), pathresolve.Existing(dir))
+}
+
+// underHome reports whether a path lies in the host home tree. Both callers pass an
+// absolute path, but only writeSandboxHomeMiss's is symlink-resolved: writeSandboxPathShadow
+// deliberately asks about a PATH entry AS SPELLED, because ~/.nix-profile/bin resolves out
+// of the home tree by design and resolving first would drop the entries it exists for. So
+// this must stay a lexical test on whatever spelling it is handed.
 func underHome(grant, home string) bool {
 	rel, err := filepath.Rel(home, grant)
 	if err != nil {

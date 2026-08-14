@@ -1380,6 +1380,7 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 	if err := os.Symlink(store, linked); err != nil {
 		t.Fatal(err)
 	}
+	runtime := filepath.Join(home, ".pyenv", "versions", "3.12")
 	withPath := func(v string) map[string]string { return map[string]string{"PATH": v} }
 
 	cases := []struct {
@@ -1398,6 +1399,12 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		{"a symlinked entry with no grant still shadows", &policy.Policy{}, withPath(linked), true},
 		{"PATH is not passed through, so the box never searched it", &policy.Policy{}, nil, false},
 		{"a relative entry names no tree to be under", &policy.Policy{}, withPath("bin"), false},
+		// The interpreter's install prefix is bound on the interpreter's back, with
+		// nothing in read: naming it, so warning about it tells the operator to grant a
+		// directory the box already resolves.
+		{"the interpreter's own bin directory arrives without a grant", &policy.Policy{Interpreter: filepath.Join(runtime, "bin", "python3")}, withPath(filepath.Join(runtime, "bin")), false},
+		{"a sibling of the interpreter's prefix still shadows", &policy.Policy{Interpreter: filepath.Join(runtime, "bin", "python3")}, withPath(profile), true},
+		{"a system interpreter carries no prefix at all", &policy.Policy{Interpreter: "/usr/bin/python3"}, withPath(profile), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1408,6 +1415,28 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
 			}
 		})
+	}
+}
+
+// A host whose home base is a symlink - /home -> /var/home, the ostree layout - spells
+// $HOME one way and the PATH entries the shell built another. Comparing one spelling
+// finds nothing under home and the note goes quiet on a layout it should fire on.
+func TestSandboxPathShadowSeesThroughASymlinkedHome(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "var-home")
+	if err := os.MkdirAll(filepath.Join(real, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+
+	var b bytes.Buffer
+	writeSandboxPathShadow(&b, &policy.Policy{}, map[string]string{"PATH": filepath.Join(real, "bin")})
+	if !strings.Contains(b.String(), "no grant covers them") {
+		t.Errorf("an entry spelled through the resolved home is still under it; got %q", b.String())
 	}
 }
 

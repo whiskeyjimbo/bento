@@ -539,7 +539,7 @@ func interpreterReadPath(sb sandbox) string {
 
 	// Otherwise the interpreter may still live outside the system paths (pyenv,
 	// mise). Bind its install prefix so its stdlib and shared objects resolve.
-	prefix := interpreterPrefix(sb.interpreter)
+	prefix := enforce.InterpreterPrefix(sb.interpreter)
 	if prefix == "" {
 		return ""
 	}
@@ -628,27 +628,6 @@ func prefixTooBroad(sb sandbox, prefix string) bool {
 		}
 	}
 	return false
-}
-
-// interpreterPrefix returns the install root of an interpreter that lives
-// outside the system paths (e.g. ~/.pyenv/versions/3.12/bin/python3 →
-// ~/.pyenv/versions/3.12), so its stdlib comes along. System interpreters are
-// already covered by systemReadPaths and return "".
-func interpreterPrefix(interp string) string {
-	if interp == "" {
-		return ""
-	}
-	for _, sys := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
-		if strings.HasPrefix(interp, sys) {
-			return ""
-		}
-	}
-	// .../bin/python3 → ...
-	dir := filepath.Dir(interp)
-	if filepath.Base(dir) == "bin" {
-		return filepath.Dir(dir)
-	}
-	return dir
 }
 
 // envArgs clears the inherited environment and sets only what the policy allowed
