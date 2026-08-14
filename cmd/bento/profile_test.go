@@ -46,7 +46,7 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
 		Write: []string{"/srv/app", "/etc"}, // /srv/app is narrow (kept); /etc is top-level (dropped)
 	}
-	_, _, _, broadWrites := clampProposal(p)
+	_, _, _, _, broadWrites := clampProposal(p)
 
 	if !slices.Contains(broadWrites, "/etc") {
 		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broadWrites)
@@ -76,7 +76,7 @@ func TestClampProposalDropsBroadReads(t *testing.T) {
 	underHome := home + "/.config/app/config" // a specific path the script really read
 	p := &policy.Policy{Read: []string{home, "/", "/etc", underHome, "/srv/app/data"}}
 
-	_, _, broadReads, _ := clampProposal(p)
+	_, _, _, broadReads, _ := clampProposal(p)
 
 	for _, want := range []string{home, "/", "/etc"} {
 		if !slices.Contains(broadReads, want) {

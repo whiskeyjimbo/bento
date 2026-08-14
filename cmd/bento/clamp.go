@@ -73,10 +73,12 @@ func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, kep
 // Unlike clampShieldedGrants this is not merely a proposal-quality filter - it is what
 // keeps the profiler's output and the enforcer's refusal from disagreeing.
 //
-// A grant that merely CONTAINS a shield is kept, which the run refuses: the enforced run
-// re-shields the interior, and dropping every enclosing grant would take the ordinary
-// "write: the project directory" proposal with it. foreignHomeShields reports the case
-// where that reasoning does not hold.
+// A grant that merely CONTAINS a shield is kept, which the run refuses: on the FULL tier
+// the enforced run re-shields the interior, bwrap re-binding the shield read-only after
+// the grant, last wins. Dropping every enclosing grant would take the ordinary "write: the
+// project directory" proposal with it. That reasoning is tier-specific and the clamp knows
+// no tier, so where it does not hold the grant is reported rather than dropped:
+// foreignHomeShields for another home, aboveWriteShieldGrants for the degraded tier.
 func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []string) {
 	workspace := workspaceShields(writes)
 	for _, g := range writes {
@@ -94,6 +96,32 @@ func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []
 		}
 	}
 	return kept, dropped
+}
+
+// aboveWriteShieldGrants returns the kept write grants that CONTAIN a DenyWrite shield -
+// write: ~/.pyenv over the ~/.pyenv/shims shield. checkWriteNotAboveWriteShield hard-refuses
+// one on the degraded tier, where there is no bind to re-shield the interior with and
+// Landlock takes the union of the rules that match, so a manifest holding it dies at its
+// first step under --allow-degraded.
+//
+// Reported, not dropped, and for the reason the gate declines to raise it at all: which
+// tier runs is not knowable here, and refusing would withhold write: ~/.pyenv from every
+// full-tier proposal, where the run honors it. The reviewer is the one who knows whether
+// this manifest will ever run degraded.
+func aboveWriteShieldGrants(set shield.Set, writes []string) []string {
+	var above []string
+	for _, g := range writes {
+		// Both spellings, as the clamps above: the observer records where a grant lands
+		// while the manifest may name the link, and a shield under one and not the other is
+		// still a shield the degraded run refuses over.
+		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+			if _, v := set.Contains(spelling, shield.Write, nil, nil); v == shield.AboveWriteShield {
+				above = append(above, g)
+				break
+			}
+		}
+	}
+	return above
 }
 
 // workspaceShields is the checkout-derived half of the shields the write grants will meet:
@@ -263,18 +291,20 @@ func homeRoot(path string) (string, bool) {
 // approved, bind the whole tree minus only the enumerated shields, re-exposing every
 // credential the deny-list misses; the specific sub-paths the script read are proposed
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
-// the shielded, over-broad read, and over-broad write paths to warn about.
-func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, broadReads, broadWrites []string) {
+// the shielded, degraded-tier-refused, over-broad read, and over-broad write paths to
+// warn about.
+func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, aboveWriteShield, broadReads, broadWrites []string) {
 	// A set the host cannot anchor at all - not merely an unusable $HOME, which drops to
 	// the passwd home - leaves the proposal unclamped: there are no shields to clamp
 	// against, and the run this proposal feeds would be refused for that same reason.
 	if set, err := commandShieldSet(); err == nil {
 		p.Read, p.Write, shielded, writeShielded = clampShieldedGrants(set, p.Read, p.Write)
+		aboveWriteShield = aboveWriteShieldGrants(set, p.Write)
 	}
 	p.Write, broadWrites = partitionBroad(p.Write)
 	p.Read, broadReads = partitionBroad(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
-	return shielded, writeShielded, broadReads, broadWrites
+	return shielded, writeShielded, aboveWriteShield, broadReads, broadWrites
 }
 
 // partitionBroad splits grants into those safe to bind whole and those too broad

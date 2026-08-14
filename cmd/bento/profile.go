@@ -1185,7 +1185,7 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 // over-broad grants from the auto-proposal) and prints why each was withheld, so a
 // path the tool wants but bento will not auto-grant is never silently missing.
 func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged []accessNoteJSON) {
-	shielded, writeShielded, broadReads, broadWrites := clampProposal(p)
+	shielded, writeShielded, aboveWriteShield, broadReads, broadWrites := clampProposal(p)
 	for _, d := range shielded {
 		// The reason is bucket-neutral, matching its write sibling below; what the shield
 		// holds rides beside it so a consumer switching on the reason keeps one code to
@@ -1204,6 +1204,10 @@ func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged [
 	for _, d := range broadWrites {
 		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "too-broad"})
 		fmt.Fprintf(out, "[bento] not proposing write access to %q%s - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d, resolvedNote(d))
+	}
+	for _, d := range aboveWriteShield {
+		flagged = append(flagged, accessNoteJSON{Kind: "write", Path: d, Reason: "above-write-shield"})
+		fmt.Fprintf(out, "[bento] proposing %q - it contains a path bento write-shields, so a run under --allow-degraded refuses this grant outright (that tier has no mount to re-shield the interior with). An ordinary run honors it and keeps the interior read-only. Narrow the grant if this manifest has to run degraded.\n", d)
 	}
 	for _, d := range foreignHomeShields(append(append([]string{}, p.Read...), p.Write...)) {
 		flagged = append(flagged, grantKinds(p, d, "foreign-home-shield")...)

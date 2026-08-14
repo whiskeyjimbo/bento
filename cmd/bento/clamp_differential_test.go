@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -49,5 +52,31 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 					g, c.Verdict, wantDropped, gotDropped, kept, shieldGrantPaths(dropped), writeShielded, c.Why)
 			}
 		})
+	}
+}
+
+// A write grant that CONTAINS a DenyWrite shield - write: ~/.pyenv over the ~/.pyenv/shims
+// shield - is refused by checkWriteNotAboveWriteShield on the degraded tier, where there is
+// no bind to re-shield the interior with and Landlock takes the union of matching rules.
+// The clamp cannot know which tier will run, so it keeps the grant (dropping it would take
+// write: ~/.pyenv out of every full-tier proposal, which is the direction the gate rules out
+// for itself) and reports it instead - the foreignHomeShields stance, for the same reason.
+func TestClampReportsAWriteGrantContainingAWriteShield(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".pyenv", "shims"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), nil)
+	grant := filepath.Join(home, ".pyenv")
+
+	_, kept, _, writeShielded := clampShieldedGrants(set, nil, []string{grant})
+	if !slices.Contains(kept, grant) {
+		t.Errorf("the clamp dropped %q; a grant containing a write shield is honored on the full tier, so dropping it withholds an ordinary proposal", grant)
+	}
+	if len(writeShielded) != 0 {
+		t.Errorf("the grant was reported as dropped (%v), but it is kept", writeShielded)
+	}
+	if got := aboveWriteShieldGrants(set, kept); !slices.Contains(got, grant) {
+		t.Errorf("the clamp keeps %q without reporting it; a degraded run refuses it, so the reviewer approves a manifest that dies at its first step (reported: %v)", grant, got)
 	}
 }
