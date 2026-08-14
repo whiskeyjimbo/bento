@@ -620,14 +620,23 @@ func ScopedIPCRestricted() bool {
 // kernel's ABI ≥ 6 has an unfixed signal-scoping bug, so go-landlock enforces only v5.
 const signalScopeErratum = 0x2
 
-// effectiveABI is the Landlock ABI this build will actually enforce: the kernel's
+// effectiveABI is a var for the reason internal/linux/probe.go and
+// internal/launcher/degraded.go hoist their capability checks: it is a direct kernel query
+// with no override, so on a host that HAS Landlock the two fail-closed refusal branches
+// below (RestrictDegraded's and RestrictExecAllowlist's) are otherwise unreachable, and a
+// regression that dropped either guard entirely would look identical under test. Every
+// caller reads it, not the function, so a test that builds an ABI-0 host gets a coherent
+// one - Available and the guards must never disagree about the same kernel.
+var effectiveABI = detectedABI
+
+// detectedABI is the Landlock ABI this build will actually enforce: the kernel's
 // version, or 0 when the kernel lacks Landlock or reports a version below the floor
 // go-landlock requires (raised to 8 by the landlocktsync build tag). It mirrors
 // go-landlock's DetectedABIVersion - including its errata downgrade of an ABI ≥ 6 with
 // the signal-scoping fix absent to v5 - so Available and RestrictDegraded gate on the
 // same version BestEffort enforces; the raw syscall alone would accept a version
 // BestEffort then turns into a silent no-op.
-func effectiveABI() int {
+func detectedABI() int {
 	v, err := llsys.LandlockGetABIVersion()
 	if err == nil && v >= 6 {
 		// A failed errata read is treated as "not fixed", matching go-landlock.

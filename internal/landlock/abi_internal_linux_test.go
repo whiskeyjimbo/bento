@@ -117,17 +117,34 @@ func TestExistingRefusesADirectory(t *testing.T) {
 }
 
 // The degraded tier's sole filesystem guarantee is Landlock, so it must refuse rather
-// than run unconfined when the effective ABI is unavailable. Only the refusal branch is
-// exercised here: applying a real ruleset would irreversibly Landlock the test process
-// and poison every later test. The probe binary covers RestrictTo only, so the
-// confinement half of RestrictDegraded is reached solely through the end-to-end
-// degraded-tier runs, never from this package.
-func TestRestrictDegradedRefusesWithoutABI(t *testing.T) {
-	if effectiveABI() >= 1 {
-		t.Skip("Landlock available; the refusal guard fires only when it is not")
+// than run unconfined when the effective ABI is unavailable. RestrictExecAllowlist takes
+// the same stance for the same reason: under an allowlist Landlock IS the mechanism, so a
+// kernel that cannot apply the ruleset must refuse rather than fall through to
+// unrestricted spawn.
+//
+// Only the refusal branches are exercised here: applying a real ruleset would irreversibly
+// Landlock the test process and poison every later test. The confinement half of
+// RestrictDegraded is covered from this package by the probe's degraded and procmem modes,
+// and end to end by the degraded-tier runs.
+//
+// The detection is swapped out because a host that HAS Landlock never takes either branch,
+// so on every real kernel a regression that deleted both guards would look identical to
+// this passing. Both callers read the same var, so the ABI-0 host built here is a coherent
+// one: Available() reports false in step, rather than a gate that admits what enforcement
+// then refuses.
+func TestRestrictRefusesWithoutABI(t *testing.T) {
+	real := effectiveABI
+	t.Cleanup(func() { effectiveABI = real })
+	effectiveABI = func() int { return 0 }
+
+	if Available() {
+		t.Fatal("Available() must report false on a host with no usable ABI, or the gate admits a run enforcement will refuse")
 	}
 	if err := RestrictDegraded([]string{"/"}, nil, nil); !errors.Is(err, errUnavailableABI) {
 		t.Errorf("RestrictDegraded must refuse with errUnavailableABI when ABI is unavailable; got %v", err)
+	}
+	if err := RestrictExecAllowlist(nil, []string{"/opt/tool"}); !errors.Is(err, errAllowlistUnavailableABI) {
+		t.Errorf("RestrictExecAllowlist must refuse with errAllowlistUnavailableABI when ABI is unavailable; got %v", err)
 	}
 }
 
@@ -151,20 +168,6 @@ func TestExecAllowlistRefusesADirectoryAndAMissingEntry(t *testing.T) {
 	}
 	if _, err := execAllowlistRules([]string{"/"}, nil, []string{file}); err != nil {
 		t.Errorf("a regular file is the one shape an entry may take: %v", err)
-	}
-}
-
-// exec: allowlist installs no exec-block filter, so this ruleset is the only thing
-// bounding what the target spawns. A kernel that cannot apply it must refuse the run
-// rather than fall through to unrestricted spawn under a report claiming an allowlist -
-// the same stance RestrictDegraded takes, and for the same reason: in both cases
-// Landlock is not a backstop behind something else, it IS the mechanism.
-func TestRestrictExecAllowlistRefusesWithoutABI(t *testing.T) {
-	if effectiveABI() >= 1 {
-		t.Skip("Landlock available; the refusal guard fires only when it is not")
-	}
-	if err := RestrictExecAllowlist(nil, []string{"/opt/tool"}); !errors.Is(err, errAllowlistUnavailableABI) {
-		t.Errorf("RestrictExecAllowlist must refuse with errAllowlistUnavailableABI when ABI is unavailable; got %v", err)
 	}
 }
 
