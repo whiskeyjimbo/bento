@@ -63,7 +63,7 @@ credentials shielded even under a grant that covers them.
 
 ### Requirements
 - **OS:** Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled.
-- **Build Toolchain:** Go 1.26.5 or later.
+- **Build Toolchain:** Go 1.26.6 or later.
 - **Optional:** `systemd` user manager with delegated `memory`, `pids`, and `cpu` controllers for resource limits.
 
 ### Build from Source

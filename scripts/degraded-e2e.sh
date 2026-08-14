@@ -26,6 +26,6 @@ exec docker run --rm \
 	-e "GOFLAGS=-mod=readonly -buildvcs=false" \
 	-e HOME=/tmp \
 	-w /src \
-	golang:1.26.5 \
+	golang:1.26.6 \
 	sh -c 'apt-get update >/dev/null 2>&1 && apt-get install -y bubblewrap >/dev/null 2>&1; \
 		go test ./internal/linux/ -run TestDegradedEndToEndOnClampedHost -count=1 -v'
