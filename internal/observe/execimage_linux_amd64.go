@@ -3,6 +3,7 @@ package observe
 import (
 	"debug/elf"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -64,10 +65,36 @@ func execImageChain(path string) (paths []string, complete bool) {
 // matters - the kernel execs a mode-0111 binary the observer cannot read - and reporting
 // it complete would put the loader back out of the manifest with Dropped at 0, which is
 // the failure this file exists to stop.
+//
+// The path is a TARGET-CHOSEN name and this runs at the exec's ENTRY stop, before the
+// kernel has validated anything, so the exec need not even be able to succeed. A plain
+// open of it would have the OBSERVER actuate whatever the name points at: open(2) on a
+// writer-less FIFO blocks inside the syscall with the tracee frozen at its stop and no
+// timeout anywhere on this path, and an open-time-side-effect device node is armed by
+// being looked at. O_PATH resolves the name without opening the file at all, and the
+// image is reopened through /proc only once the fstat says it is a regular file - which
+// is also open_exec's own rule, so anything else is an exec that fails with nothing
+// opened and no image to name.
 func execImage(path string) (string, bool) {
-	f, err := os.Open(path)
+	pathFD, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return "", errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+	}
+	defer unix.Close(pathFD)
+	var st unix.Stat_t
+	if err := unix.Fstat(pathFD, &st); err != nil {
+		return "", false
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return "", true
+	}
+	// An O_PATH descriptor is reopened by its /proc name, which is what keeps this read on
+	// the file the fstat above answered for rather than on whatever the name resolves to
+	// now. A mode-0111 image the observer cannot read fails here, which is the EACCES case
+	// above: a lost observation, not an absent file.
+	f, err := os.Open(fmt.Sprintf("/proc/self/fd/%d", pathFD))
+	if err != nil {
+		return "", false
 	}
 	defer f.Close()
 

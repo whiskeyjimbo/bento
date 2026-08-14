@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The kernel opens a script's #! interpreter and a dynamic binary's PT_INTERP loader
@@ -187,5 +189,37 @@ func TestExecImageChainWalksToTheLoader(t *testing.T) {
 	}
 	if len(paths) < 2 || paths[0] != sh {
 		t.Errorf("chain = %v, want %s followed by its ELF interpreter", paths, sh)
+	}
+}
+
+// The path is chosen by the target and this decode runs at the exec's ENTRY stop, so the
+// exec need not be able to succeed - it only has to be issued. A plain open of a
+// writer-less FIFO blocks inside the syscall, with the tracee frozen at its stop, the
+// trace lock held, and no timeout anywhere on the path: an interactive profile recovers
+// only by cancelling the sandbox, and an unattended one hangs with no diagnostic.
+//
+// The answer is that there is no image and nothing was lost: open_exec refuses anything
+// that is not a regular file, so the exec fails with the kernel having opened nothing.
+func TestExecImageDoesNotBlockOnAFifo(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "f")
+	if err := syscall.Mkfifo(fifo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		image string
+		ok    bool
+	}
+	done := make(chan answer, 1)
+	go func() {
+		image, ok := execImage(fifo)
+		done <- answer{image, ok}
+	}()
+	select {
+	case got := <-done:
+		if got.image != "" || !got.ok {
+			t.Errorf("execImage = %q, %v; a FIFO names no image and loses no observation", got.image, got.ok)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("execImage did not return for a writer-less FIFO: the observer is blocked inside its own open, holding the tracee at its entry stop")
 	}
 }
