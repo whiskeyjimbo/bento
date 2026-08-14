@@ -221,7 +221,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		cmd.ExtraFiles = append(cmd.ExtraFiles, w)
 	}
 
-	runErr := cmd.Run()
+	runErr := runCmd(cmd)
 	// Dropping the host's write end before reading: while the host holds one the read
 	// below would block past the sandbox's exit waiting for an EOF only it can send.
 	if bridgeLivenessW != nil {
@@ -307,10 +307,15 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// boundary engaged and what went through it is no less true for the run having
 		// failed on its way out.
 		serveErr := stopProxy()
+		// The applied report is on disk for the same reason - the launcher wrote it before
+		// the wait failed. Only the exec record is taken from it: reconcile would let a
+		// report written by a stage this arm cannot vouch for rewrite the layer verdicts,
+		// and the failure here says nothing about which of them the run reached.
+		a := parseApplied(appliedReport)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		return enforce.Result{Report: report, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
+		return enforce.Result{Report: report, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 
@@ -760,6 +765,13 @@ func bentoSelfPath(selfPath string) (string, error) {
 // re-execing the suite inside the sandbox - a failure mode that otherwise passes
 // green after minutes of wall clock and a leaked sandbox.
 var launchGuard func(bentoPath string) error
+
+// runCmd runs the wrapper and waits for it, as cmd.Run does. It is a seam over that
+// one call so a test can produce the failure the post-run default arm exists for: an
+// error that is neither nil nor an *exec.ExitError - a vanished wrapper binary, a fork
+// failure, an I/O error on the pipes. Nothing else in the suite can manufacture one,
+// and that arm carries the whole audit out for a target that may already have run.
+var runCmd = func(c *exec.Cmd) error { return c.Run() }
 
 // checkLauncher rules on the binary about to be launched as the in-sandbox
 // launcher. It is a no-op unless launchGuard is installed.
