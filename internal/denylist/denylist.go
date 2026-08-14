@@ -370,8 +370,8 @@ func Shieldable(p string, homes []string) bool {
 	// shield overmounts the sandbox's own /dev/null with a read-only empty file and every
 	// "> /dev/null" inside the sandbox then fails EROFS. Tested here rather than at the
 	// emitters because every block already routes through this, and closing them one at a
-	// time is what left four of them open. A caller-supplied deny naming it is dropped for
-	// the same reason.
+	// time is what left four of them open. A caller-supplied deny naming it is refused by
+	// the backend before it reaches here, in its own sentence.
 	if p == "/dev/null" {
 		return false
 	}
@@ -1426,8 +1426,12 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// auth.json half is DenyAll in dirFileEnvs and the vendor/bin half is a directory in
 	// writeOnlyDirEnvs, and this is the DenyWrite file between them. The CARGO_HOME split
 	// again, one variable further.
+	// Both defaults, unlike the auth.json row this sits beside: that one is DenyAll, and
+	// underDenyAll drops a restatement of one for it, while covered() cannot see a
+	// DenyWrite duplicate at all - so a COMPOSER_HOME pointed at the legacy root would
+	// emit the same rule twice.
 	if base := os.Getenv("COMPOSER_HOME"); filepath.IsAbs(base) {
-		if c := filepath.Clean(base); !isDefault(c, ".config/composer") {
+		if c := filepath.Clean(base); !isDefault(c, ".config/composer") && !isDefault(c, ".composer") {
 			addWriteShield(filepath.Join(c, "config.json"), "COMPOSER_HOME")
 		}
 	}

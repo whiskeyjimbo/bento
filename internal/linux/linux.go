@@ -740,6 +740,9 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		// resolving once and carrying the result, which costs the shield machinery its
 		// own late resolution of grants; the residue is an unenforced CALLER deny, never
 		// an exposure of anything bento shields itself.
+		if rp == "/dev/null" {
+			return nil, fmt.Errorf("deny path %q resolves to %q, which every program in the sandbox needs writable as its stream sink", p, rp)
+		}
 		if !denylist.Shieldable(rp, homes) {
 			return nil, fmt.Errorf("deny path %q resolves to %q, which is a home directory or contains one, so shielding it would hide everything the policy grants", p, rp)
 		}

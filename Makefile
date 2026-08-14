@@ -225,10 +225,10 @@ vet: ## Run go vet checks
 # landlocktsync is the third arm and a different kind of build: it is not another
 # platform but go-landlock's own tag, which raises the library's minimum ABI to 8. The
 # floor bento mirrors for it lives in a file nothing else compiles, so without this arm
-# neither the mirror nor the availability gate it feeds is ever executed, and a
-# go-landlock bump that moved the threshold would drift silently. Tested rather than
-# vetted: compiling proves the file parses, running proves the floor is the one the
-# library uses.
+# neither that file nor the availability gate it feeds is ever built. Tested rather than
+# vetted, because the whole landlock suite then runs against the raised floor: what this
+# cannot check is go-landlock's own threshold, which is transcribed here rather than
+# imported (the library keeps it in an internal package).
 crossbuild: ## Check the tree still compiles for darwin and linux/arm64
 	@printf "$(CYAN)$(BOLD)==> Cross-compiling for unsupported platforms...$(RESET)\n"
 	@GOWORK=off GOOS=darwin GOARCH=arm64 go vet ./...

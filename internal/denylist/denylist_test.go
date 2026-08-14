@@ -2226,4 +2226,18 @@ func TestHomeShieldsTheComposerBinDirKnob(t *testing.T) {
 			t.Errorf("shield at %q is %+v, want a DenyWrite file rule", p, r)
 		}
 	}
+
+	// covered() sees a DenyAll restatement (underDenyAll) but not a DenyWrite one, so the
+	// relocation has to decline BOTH of composer's default homes itself or a COMPOSER_HOME
+	// pointed at the legacy root emits the rule the writeOnly list already carries.
+	t.Setenv("COMPOSER_HOME", "/home/u/.composer")
+	n := 0
+	for _, r := range allRules("/home/u") {
+		if r.Path == "/home/u/.composer/config.json" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("COMPOSER_HOME at the legacy default emits the config.json shield %d times, want 1", n)
+	}
 }
