@@ -760,7 +760,7 @@ func TestServeReturnsAcceptErrorThatPrecededCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := fmt.Errorf("listener is gone")
-	l := &dyingListener{Listener: real, err: want}
+	l := &dyingListener{Listener: real, err: want, died: make(chan struct{})}
 
 	// An upstream that stays open, so the handler is still in the tunnel - and still
 	// counted by wg - when the listener dies.
@@ -781,7 +781,11 @@ func TestServeReturnsAcceptErrorThatPrecededCancellation(t *testing.T) {
 	if status, _ := connect(t, c, "example.com:443"); !strings.Contains(status, "200") {
 		t.Fatalf("status = %q, want the tunnel established", status)
 	}
-	// The tunnel is up and the listener has failed on its own; only now does the run end.
+	// The tunnel is up; wait for the listener to have failed on its own before ending the
+	// run, so the two orderings this test distinguishes are staged rather than timed. A
+	// cancel that beats the accept error makes Serve report a clean end and the assertion
+	// below fails for the wrong reason.
+	<-l.died
 	cancel()
 	if err := <-served; !errors.Is(err, want) {
 		t.Errorf("Serve() = %v, want the listener's terminal error %v", err, want)
@@ -790,14 +794,23 @@ func TestServeReturnsAcceptErrorThatPrecededCancellation(t *testing.T) {
 
 // dyingListener delegates the first Accept and then fails on its own, standing in
 // for a listener that stops accepting mid-run.
+// died, when non-nil, is closed as the terminal error is handed back, so a caller can
+// order its own teardown after the death instead of guessing at it.
 type dyingListener struct {
 	net.Listener
 	err      error
 	accepted bool
+	died     chan struct{}
+	dies     sync.Once
 }
 
 func (l *dyingListener) Accept() (net.Conn, error) {
 	if l.accepted {
+		l.dies.Do(func() {
+			if l.died != nil {
+				close(l.died)
+			}
+		})
 		return nil, l.err
 	}
 	l.accepted = true
