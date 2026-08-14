@@ -184,8 +184,12 @@ func TestMemPidsDelegationStateFailsClosed(t *testing.T) {
 	}{
 		{"unknown fails closed", nil, false, enforce.Unavailable, "could not read"},
 		{"memory and pids delegated", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
-		{"memory missing", map[string]bool{"pids": true}, true, enforce.Unavailable, "not delegated"},
-		{"pids missing", map[string]bool{"memory": true}, true, enforce.Unavailable, "not delegated"},
+		// Named singly. A drop-in with Delegate=pids alone came back naming BOTH
+		// controllers and telling the admin to delegate the one they already have, which
+		// sends them to change a setting that is already correct.
+		{"memory missing", map[string]bool{"pids": true}, true, enforce.Unavailable, "the memory controller is not delegated"},
+		{"pids missing", map[string]bool{"memory": true}, true, enforce.Unavailable, "the pids controller is not delegated"},
+		{"both missing", map[string]bool{}, true, enforce.Unavailable, "the memory and pids controllers are not delegated"},
 		// cpu delegation is a separate layer's business: it must not move this verdict,
 		// or a memory manifest is refused over a Delegate=cpu step it never needed.
 		{"cpu undelegated is irrelevant here", map[string]bool{"memory": true, "pids": true}, true, enforce.Enforced, ""},
@@ -201,6 +205,16 @@ func TestMemPidsDelegationStateFailsClosed(t *testing.T) {
 			// that does not address an unreadable path).
 			if !strings.Contains(reason, tc.wantReason) {
 				t.Errorf("reason = %q, want it to contain %q", reason, tc.wantReason)
+			}
+			// The REMEDY must name only what is actually missing - the clause before it
+			// names both because the layer covers both, and that stays true. Telling an
+			// admin to delegate a controller they already have sends them to change a
+			// setting that is already correct.
+			remedy, _, _ := strings.Cut(reason[max(strings.Index(reason, "Delegate="), 0):], " on user@")
+			for c, delegated := range tc.ctrls {
+				if delegated && strings.Contains(remedy, c) {
+					t.Errorf("the remedy %q names %q, which this host already delegates", remedy, c)
+				}
 			}
 		})
 	}

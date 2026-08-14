@@ -126,8 +126,23 @@ func memPidsDelegationState(ctrls map[string]bool, known bool) (enforce.State, s
 	if !known {
 		return enforce.Unavailable, "could not read which cgroup controllers your systemd user manager delegates, so a requested memory or pids limit cannot be confirmed to protect the host (a non-standard, containerized, or hybrid-cgroup layout); it is reported unavailable rather than claimed enforced"
 	}
-	if !ctrls["memory"] || !ctrls["pids"] {
-		return enforce.Unavailable, "the memory/pids controllers are not delegated to your systemd user manager, so a requested memory or pids limit cannot be enforced (a one-time admin step: Delegate=memory pids on user@.service)"
+	// Named singly where only one is missing. The pair share a layer - enforce.LayerLimits
+	// is defined as the ability to enforce a memory OR pids cap, and requiredLayers adds
+	// the one layer for either - so the VERDICT cannot be split without a third layer. The
+	// sentence can be, and must: a drop-in carrying Delegate=pids alone was told both
+	// controllers were undelegated and sent to add the one it already had.
+	var missing []string
+	for _, c := range []string{"memory", "pids"} {
+		if !ctrls[c] {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) > 0 {
+		subject, verb := "the "+missing[0]+" controller is", missing[0]
+		if len(missing) == 2 {
+			subject, verb = "the memory and pids controllers are", "memory pids"
+		}
+		return enforce.Unavailable, subject + " not delegated to your systemd user manager, so a requested memory or pids limit cannot be enforced (a one-time admin step: Delegate=" + verb + " on user@.service)"
 	}
 	return enforce.Enforced, ""
 }
