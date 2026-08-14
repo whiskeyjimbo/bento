@@ -75,7 +75,7 @@ func newApproveCmd() *cobra.Command {
 			// earlier bento - or by this one on a host whose shields anchor elsewhere -
 			// otherwise reports as approved for permissions run refuses outright, which is
 			// the disagreement between the gate and the enforcement this check exists to end.
-			if err := requireHonorableGrants(resolved); err != nil {
+			if err := requireHonorableGrants(os.Stdout, resolved); err != nil {
 				return err
 			}
 			// The stamp is an unkeyed sha256 that travels inside the manifest, so on its own
@@ -171,8 +171,10 @@ func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval trust.Approva
 //
 // A host that could not resolve the grants, or could not anchor the shields, stamps as
 // before. The verdict approve exists to give is a property of the manifest and must not
-// start depending on where it is checked - writeApprovalCallouts already says in words
-// that nothing was checked there.
+// start depending on where it is checked. It says so in words instead, and from here
+// rather than from the callouts: the stamp is durable and portable, and the already-
+// approved shortcut returns before the callouts are ever written - so a re-approval on an
+// unanchored host used to exit green with the note nowhere.
 //
 // An empty set is not a promise that the run honors every grant, and this gate must not be
 // read as closed: the run also refuses on a credential alias, which gate.Refusals does not
@@ -181,12 +183,18 @@ func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval trust.Approva
 // first step by the host it is stamped on. Nothing to do about it from here; what would
 // make it worse is a check added to the run's set and not to gate's, which is the drift
 // this function exists to catch.
-func requireHonorableGrants(resolved *policy.Policy) error {
+func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
 	if resolved == nil {
 		return nil
 	}
-	// A host that could not anchor the shields yields no problems rather than an error,
-	// which is the degradation described above.
+	// gate.Refusals answers four of its six classes off the manifest and the filesystem
+	// alone, so an unanchored host returns a set that is quietly short of the two shielded
+	// ones rather than an empty one - a refusal list that reads as complete. The note is
+	// the only thing that tells them apart, and it is said here because this runs on every
+	// path through approve.
+	if _, err := commandShieldSet(); err != nil {
+		fmt.Fprintf(w, "note: bento could not work out where the shields anchor on this host (%v), so the grants were not checked against them - and a run here is refused for the same reason.\n", err)
+	}
 	problems := gate.Refusals(resolved)
 	if len(problems) == 0 {
 		return nil
@@ -282,10 +290,10 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 		// run, and a grant naming one exactly is the only way to lift that shield. The
 		// run-time warning comes after the target has already printed whatever it read,
 		// so this prompt is where the exposure can still be declined.
-		shieldGrants, err := explicitShieldGrants(resolved.Read)
-		if err != nil {
-			notes = append(notes, fmt.Sprintf("bento could not work out where the shields anchor on this host (%v), so the grants above were not checked against them - and a run here is refused for the same reason.", err))
-		}
+		// The error arm is requireHonorableGrants', which runs on every path through approve
+		// including the already-approved shortcut that returns before these callouts. Said
+		// twice it would be a note a reader learns to skim.
+		shieldGrants, _ := explicitShieldGrants(resolved.Read)
 		for _, g := range shieldGrants {
 			notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
 		}

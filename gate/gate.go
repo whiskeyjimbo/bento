@@ -156,9 +156,13 @@ func Check(resolved *policy.Policy) Runnability {
 // approval, an embedder's preflight - has to agree on the set, and a check added to only
 // one of them is how a manifest gets stamped for a permission that does not exist.
 //
-// A host that cannot work out where the shields anchor yields no problems rather than an
-// error: a run there is refused for that same reason, so failing here would only rename
-// it. Callers that need to distinguish the two ask ShieldSet, which reports the error.
+// A host that cannot work out where the shields anchor answers against a zero shield set
+// rather than raising: a run there is refused for that same reason, so failing here would
+// only rename it. What comes back is not empty, though - four of the six classes are facts
+// about the manifest and the filesystem that the set has no part in, and only the two
+// shielded ones go quiet. So the list is quietly SHORT of the shield refusals rather than
+// absent, and nothing in it says so. A caller whose answer is durable - a stamp a later
+// gate trusts - has to ask ShieldSet, which reports the error, and say what it found.
 func Refusals(resolved *policy.Policy) []string {
 	set, _ := ShieldSet()
 	return refusals(set, resolved)

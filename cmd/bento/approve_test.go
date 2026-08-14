@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/trust"
@@ -709,5 +711,48 @@ func TestApprovalCalloutsSeeAnEntrypointReachedThroughASymlink(t *testing.T) {
 	writeApprovalCallouts(&buf, manifestPath, leafNamePath(manifestPath), p, resolvedGrants(p, manifestPath), nil)
 	if !strings.Contains(buf.String(), "covers the entrypoint") {
 		t.Errorf("a grant covering the name that reaches the entrypoint must be called out; got:\n%s", buf.String())
+	}
+}
+
+// unanchorShields makes the memoized set answer the way a host with no usable home does,
+// for as long as the environment stays put. HOME cannot be taken away in-process here: the
+// passwd database answers for this uid whatever $HOME says, which is the degradation
+// HomeAnchors exists to make - so the failure is seeded at the memo instead.
+func unanchorShields(t *testing.T) {
+	t.Helper()
+	shieldSetCache.Lock()
+	shieldSetCache.held = true
+	shieldSetCache.key = strings.Join(os.Environ(), "\x00")
+	shieldSetCache.set, shieldSetCache.err = shield.Set{}, errors.New("denylist: no usable home directory")
+	shieldSetCache.Unlock()
+	t.Cleanup(invalidateShieldSet)
+}
+
+// The stamp approve writes is durable and portable, and a CI gate on a healthy host later
+// trusts it - so a host that could not anchor its shields has to say that it checked the
+// grants against nothing. gate.Refusals answers four of its six classes without the shield
+// set, so what comes back there is a short list rather than an empty one, and nothing else
+// tells the two apart. The already-approved shortcut returns before the callouts, which
+// used to be the note's only home: a re-approval there exited green with it nowhere.
+func TestApproveSaysTheShieldsWereNotAnchoredOnEveryPath(t *testing.T) {
+	stateHome(t)
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x", Read: []string{"~/.ssh"}}, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+	unanchorShields(t)
+
+	out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	if err != nil {
+		t.Fatalf("approve on an unanchored host stamps as before: %v", err)
+	}
+	if !strings.Contains(out, "is already approved") {
+		t.Fatalf("this is the shortcut's own case; got:\n%s", out)
+	}
+	if !strings.Contains(out, "could not work out where the shields anchor") {
+		t.Errorf("the shortcut must carry the note too, or the stamp reads as reviewed against the shields; got:\n%s", out)
+	}
+	if strings.Count(out, "could not work out where the shields anchor") != 1 {
+		t.Errorf("said once, or a reader learns to skim it; got:\n%s", out)
 	}
 }
