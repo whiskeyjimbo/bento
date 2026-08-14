@@ -743,7 +743,9 @@ func refuseKernelFileFD(fd int, st unix.Stat_t) error {
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is a regular file whose filesystem could not be identified: %w", fd, err)
 	}
 	var fs string
-	switch sf.Type {
+	// Widened before the compare: Statfs_t.Type is int32 on 32-bit linux, where EFIVARFS_MAGIC
+	// does not fit and the case would not compile.
+	switch uint32(sf.Type) {
 	case unix.NSFS_MAGIC:
 		return fmt.Errorf("launcher: refusing to run - standard descriptor %d is an inherited namespace handle; setns through it reaches the host namespaces the sandbox exists to leave", fd)
 	case unix.PROC_SUPER_MAGIC:

@@ -1000,11 +1000,11 @@ func TestHomeFollowsTheLateRelocationRows(t *testing.T) {
 	// ~/.claude relocates it - the case a def of ".claude" would have skipped as a
 	// restatement, leaving the OAuth block readable inside the write-shielded tree.
 	t.Setenv("CLAUDE_CONFIG_DIR", "/home/u/.claude")
-	byPath = map[string]Rule{}
+	tidied := map[string]Rule{}
 	for _, r := range allRules("/home/u") {
-		byPath[r.Path] = r
+		tidied[r.Path] = r
 	}
-	if r := byPath["/home/u/.claude/.claude.json"]; r.Deny != DenyAll || r.Dir {
+	if r := tidied["/home/u/.claude/.claude.json"]; r.Deny != DenyAll || r.Dir {
 		t.Errorf("shield at /home/u/.claude/.claude.json is %+v, want a DenyAll file shield", r)
 	}
 
