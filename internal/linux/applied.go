@@ -169,6 +169,12 @@ func parseApplied(f *os.File) applied {
 				if v, err := strconv.Unquote(detail); err == nil {
 					a.execRecorderErr = v
 				}
+			case key == launcher.AppliedExecRan && !recorderSeen:
+				// The recorder line is the first thing writeExecRecord emits, so an exec-ran
+				// ahead of one is not content the stage wrote here. Appending it would put an
+				// exec nothing observed into the record's Runs. Marked untrustworthy rather
+				// than voiding the report, the same stance as every arm below.
+				garbled = true
 			case key == launcher.AppliedExecRan:
 				// A line that will not decode drops that one exec and nothing else. The
 				// record is a diagnostic and the layer verdicts above the marker are not

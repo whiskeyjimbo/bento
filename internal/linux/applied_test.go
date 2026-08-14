@@ -1278,3 +1278,30 @@ func TestADuplicatePreMarkerLineVoidsTheReport(t *testing.T) {
 		})
 	}
 }
+
+// writeExecRecord emits the recorder line first, so an exec-ran line with nothing ahead of
+// it is content the stage never wrote in that position. It must not reach execRuns: the
+// section that would vouch for those execs never opened, and a record whose Runs name
+// execs nothing observed is the one thing a diagnostic can still get wrong. Dropped rather
+// than raised, for the reason every other arm past the marker drops - the layer verdicts
+// above it are not the record's to touch.
+func TestAnExecRanWithNoRecorderAheadOfItIsNotRecorded(t *testing.T) {
+	report := "exec-filter none\nlandlock yes\nAPPLIED\n" +
+		`exec-ran 41 "/usr/bin/true" "/bin/true"` + "\n" +
+		"EXEC-RECORD\n"
+
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if len(a.execRuns) != 0 {
+		t.Errorf("execRuns = %+v, want none - no recorder line opened the section", a.execRuns)
+	}
+	if a.execRecordComplete {
+		t.Error("a section that never named a recorder was reported as whole")
+	}
+	if !a.complete || a.landlock != launcher.AppliedYes {
+		t.Errorf("the layer verdicts above the marker did not survive: %+v", a)
+	}
+}
