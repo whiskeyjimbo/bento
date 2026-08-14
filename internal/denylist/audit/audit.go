@@ -241,7 +241,8 @@ const credentialSection = "credential store (name-classified)"
 // bin real credential stores (keepassxc, Bitwarden, 1Password) with the browser and
 // media-player dirs that make up the rest of the file.
 //
-// Matching is per path component and case-insensitive, so a token catches an app's
+// Matching is per component of the ${HOME}-relative path and case-insensitive, so a token
+// catches an app's
 // variants and its future spellings (keepass -> .keepassx, .config/keepassxc,
 // .local/share/KeePass) without enumerating paths. The vocabulary mirrors the classes
 // inScopeSection already admits for a headed profile - password/top-secret stores, mail
@@ -281,8 +282,8 @@ const credentialSection = "credential store (name-classified)"
 // ~/Nextcloud plus ~/Nextcloud/Notes (user documents, which bento does not shield). Those
 // config trees are therefore shielded by name in the denylist and given no token here,
 // which keeps the documents out of scope instead of forcing a decision on them.
-func credentialName(path string) bool {
-	for comp := range strings.SplitSeq(strings.ToLower(path), "/") {
+func credentialName(rel string) bool {
+	for comp := range strings.SplitSeq(strings.ToLower(rel), "/") {
 		for _, tok := range []string{
 			// password managers and secret stores
 			"keepass", "bitwarden", "1password", "lastpass", "enpass", "gopass",
@@ -582,17 +583,20 @@ func Diff(candidates []Candidate, rules []denylist.Rule) []Gap {
 // SplitByScope partitions gaps into the ones inside bento's secret/exec threat model and
 // the rest - firejail's privacy/other-app/system scope, which bento does not enumerate.
 // A gap is in scope by its firejail section, or - for the header-less profiles where that
-// says nothing - by naming a known secret store. The out-of-scope set is returned in full
+// says nothing - by naming a known secret store. home is what the name classifier reads
+// against: a token in the home DIRECTORY's own name says nothing about the paths beneath
+// it, and classifying the absolute path put every gap under a /home/mailuser in the
+// hard-fail set. The out-of-scope set is returned in full
 // rather than counted, because a count cannot be read: the great majority of it is
 // attributed to one file-header comment that classifies nothing, so a newly-added
 // credential path there moves a number by one and is invisible even against a previous
 // run. Both halves come back sorted by section then path so two runs diff.
-func SplitByScope(gaps []Gap) (inScope, outOfScope []Gap) {
+func SplitByScope(gaps []Gap, home string) (inScope, outOfScope []Gap) {
 	for _, g := range gaps {
 		switch {
 		case inScopeSection(g.Section):
 			inScope = append(inScope, g)
-		case credentialName(g.Path):
+		case credentialName(homeRel(g.Path, home)):
 			g.Section = credentialSection
 			inScope = append(inScope, g)
 		default:
@@ -729,6 +733,17 @@ func reviewedGlob(path, home string) bool {
 	return relLookup(path, home, ReviewedGlobs)
 }
 
+// homeRel returns the ${HOME}-relative remainder of a path, or the path itself when it is
+// not under home. A runtime path is the only thing that reaches the fallback: runUser is
+// /run/user/<uid>, whose components carry no classifier token, so there is nothing above
+// it worth stripping and no home component to misread.
+func homeRel(path, home string) string {
+	if rel, ok := strings.CutPrefix(path, strings.TrimSuffix(home, "/")+"/"); ok {
+		return rel
+	}
+	return path
+}
+
 func relLookup(path, home string, m map[string]string) bool {
 	rel, ok := strings.CutPrefix(path, strings.TrimSuffix(home, "/")+"/")
 	if !ok {
@@ -756,7 +771,7 @@ func Audit(sources []Source, home, runUser string) (unclassified, globs, outOfSc
 		candidates = append(candidates, parsed...)
 	}
 	rules := append(denylist.Home(home), denylist.Runtime(runUser, home)...)
-	inScope, outOfScope := SplitByScope(Diff(candidates, rules))
+	inScope, outOfScope := SplitByScope(Diff(candidates, rules), home)
 	for _, g := range inScope {
 		if excluded(g.Path, home) {
 			continue

@@ -220,7 +220,7 @@ func TestSplitByScopeClassifiesHeaderlessProfileByName(t *testing.T) {
 		{Candidate: Candidate{Path: "/HOME/.keepassxc", Section: "This file is overwritten during software install."}},
 		{Candidate: Candidate{Path: "/HOME/.Atom", Section: "This file is overwritten during software install."}},
 	}
-	inScope, out := SplitByScope(gaps)
+	inScope, out := SplitByScope(gaps, "/HOME")
 	if len(inScope) != 1 || inScope[0].Path != "/HOME/.keepassxc" {
 		t.Fatalf("the credential store must be in scope, got %+v", inScope)
 	}
@@ -291,7 +291,7 @@ func TestSplitByScopeUsesFirejailSections(t *testing.T) {
 		{Candidate: Candidate{Path: "/HOME/.local/share/Trash", Section: "var"}},        // out
 		{Candidate: Candidate{Path: "/HOME/.cargo/credentials", Section: "top secret"}}, // in
 	}
-	inScope, out := SplitByScope(gaps)
+	inScope, out := SplitByScope(gaps, "/HOME")
 	if len(inScope) != 3 {
 		t.Fatalf("in-scope = %d, want 3: %+v", len(inScope), inScope)
 	}
@@ -318,6 +318,22 @@ func bySection(gaps []Gap) map[string]int {
 	return counts
 }
 
+// The name classifier reads the ${HOME}-relative remainder, not the absolute path. A home
+// whose own directory name carries a token - /home/mailuser, a coin-something build agent -
+// otherwise matches on every path beneath it, and the whole ~1300-entry privacy bucket
+// moves into the hard-fail set with the gate reporting each as a credential store.
+func TestSplitByScopeIgnoresTokensInTheHomeDirectoryName(t *testing.T) {
+	gaps := []Gap{{Candidate: Candidate{Path: "/home/mailuser/.Atom", Section: "This file is overwritten during software install."}}}
+	inScope, out := SplitByScope(gaps, "/home/mailuser")
+	if len(inScope) != 0 || len(out) != 1 {
+		t.Errorf("an ordinary app dir under a token-named home must stay out of scope; got inScope=%+v out=%+v", inScope, out)
+	}
+	// The classifier itself still has to work at that home.
+	if in, _ := SplitByScope([]Gap{{Candidate: Candidate{Path: "/home/mailuser/.thunderbird", Section: "n/a"}}}, "/home/mailuser"); len(in) != 1 {
+		t.Errorf("a real mail store under the same home must still classify in scope, got %+v", in)
+	}
+}
+
 // The out-of-scope bucket is what a human diffs two runs of the audit on to notice a new
 // upstream entry, so it has to carry the paths and come back in a stable order. Map
 // iteration would reorder the sections on every run and bury the one line that changed.
@@ -327,7 +343,7 @@ func TestSplitByScopeOrdersOutOfScopeForDiffing(t *testing.T) {
 		{Candidate: Candidate{Path: "/HOME/.mozilla", Section: "gnome"}},
 		{Candidate: Candidate{Path: "/HOME/.aaa", Section: "var"}},
 	}
-	_, out := SplitByScope(gaps)
+	_, out := SplitByScope(gaps, "/HOME")
 	var got []string
 	for _, g := range out {
 		got = append(got, g.Section+" "+g.Path)
@@ -439,6 +455,17 @@ blacklist ${HOME}/.zshenv/
 // profile data is GPLv2 and read only as a dev-time diff input, never vendored - so on
 // a host with firejail it fails loudly listing any upstream in-scope path bento neither
 // shields nor excludes, turning "remember to re-run the diff" into an enforced check.
+// The roots the gate expands the corpora's variables to. Both are constants, matching
+// cmd/denylist-audit, because the rules are built from them and the audit only means
+// something when the same host cannot reach a different verdict: the real $HOME is an
+// ambient value that can COLLIDE with the runtime root, and Runtime's unconditional /run
+// and /var/run directory rules then cover every expanded candidate. A home under /run -
+// an ordinary rootless or container session - turned the whole comparison green.
+const (
+	gateHome    = "/home/u"
+	gateRunUser = "/run/user/1000"
+)
+
 func TestFirejailCompleteness(t *testing.T) {
 	// An explicitly set FIREJAIL_DIR is a caller asserting the profiles are there, so a
 	// missing one is their error and fails. Only the implicit default may skip: firejail
@@ -482,12 +509,8 @@ func TestFirejailCompleteness(t *testing.T) {
 		contents = append(contents, string(content))
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	sources := firejailSources(contents)
-	unclassified, globs, outOfScope := Audit(sources, home, "/run/user/1000")
+	unclassified, globs, outOfScope := Audit(sources, gateHome, gateRunUser)
 
 	// Stale keywords are reported here, not failed on: the host corpus is whatever the
 	// distro packaged, and in an older snapshot a section bento's keywords name may simply
@@ -496,7 +519,7 @@ func TestFirejailCompleteness(t *testing.T) {
 	// master. Against a downstream snapshot a missing section is indistinguishable from a
 	// retitle, so only a current corpus can tell the two apart: the enforced ratchet is
 	// `make audit`, which fetches master and exits nonzero on a stale keyword.
-	if stale := StaleKeywords(sources, home, "/run/user/1000"); len(stale) > 0 {
+	if stale := StaleKeywords(sources, gateHome, gateRunUser); len(stale) > 0 {
 		t.Logf("scope keyword(s) %v match no section in this corpus - expected on an older snapshot; `make audit` decides staleness against master", stale)
 	}
 
@@ -735,7 +758,7 @@ func TestParseAppArmorMergesTheStrongestClaimAcrossLines(t *testing.T) {
 // lands in the out-of-scope summary and the second corpus contributes nothing.
 func TestAppArmorCandidatesAreInScope(t *testing.T) {
 	gaps := []Gap{{Candidate: Candidate{Path: "/HOME/.newthing", Section: appArmorSection}}}
-	inScope, out := SplitByScope(gaps)
+	inScope, out := SplitByScope(gaps, "/HOME")
 	if len(inScope) != 1 {
 		t.Errorf("an AppArmor candidate must be in scope; got inScope=%v out=%v", inScope, out)
 	}
