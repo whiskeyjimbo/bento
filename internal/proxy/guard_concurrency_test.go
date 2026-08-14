@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // The gate-concurrency test replaces p.dial wholesale, so guardUpstream never runs in
@@ -23,12 +25,13 @@ import (
 // avoid a real connect; the verdict itself comes from the production guardUpstream and
 // its error is propagated verbatim, so what the handler sees is what production returns.
 //
-// Note what this is and is not. guardUpstream today reads only p.rules and p.nat64,
-// both fixed before Serve, so there is no per-connection state to cross yet: this is a
-// tripwire for a refactor that introduces some. Unlike the gate test, it does not lean
-// on the race detector - parking the verdict on the Proxy struct and reusing it fails
-// this test under plain go test, because the wrong verdict opens a real tunnel the
-// assertions count.
+// Note what this is and is not. It admits every host and carries no rules, so the guard
+// here reads only p.rules and p.nat64, both fixed before Serve: what it covers is the
+// address classification under load, not the per-connection state. That state - the
+// literal grant, and the blocked flag beside it - is what the test below holds many
+// connections against. Unlike the gate test, neither leans on the race detector: parking
+// a verdict on the Proxy struct and reusing it fails under plain go test, because the
+// wrong verdict opens a real tunnel the assertions count.
 func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	const conns = 64 // half public, half not, all held at the guard at once
 
@@ -201,6 +204,106 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	for _, host := range dialed {
 		if strings.HasPrefix(host, "priv") {
 			t.Errorf("opened a tunnel to %q, which resolves to the non-public address %s", host, resolved[host])
+		}
+	}
+}
+
+// The half of the guard that IS per-connection state: the private-IP literal grant, which
+// handle decides per connection (proxy.go) and carries in the dial context. The test above
+// runs with an admit-all gatekeeper and no rules, so literalGrantFor never returns one and
+// no grant is ever in flight - the leak that matters is not exercised there.
+//
+// Here half the connections carry a grant for 10.0.0.5 and half do not, and every one of
+// them resolves to that same address. A refactor that parks the grant on the Proxy struct
+// rather than the context - the exact refactor the tripwire above exists for - opens a
+// tunnel for a hostname the allowlist admits and the guard must refuse, which the tunnel
+// count catches under plain go test.
+func TestLiteralGrantUnderConcurrencyDoesNotCrossConnections(t *testing.T) {
+	const conns = 64 // half literal (granted), half hostname (not), all held at the guard
+
+	const target = "10.0.0.5"
+	var (
+		mu       sync.Mutex
+		tunneled []string
+		refused  []string
+	)
+	arrived := make(chan struct{}, conns)
+	release := make(chan struct{})
+
+	var p *Proxy
+	p = New(
+		[]policy.NetworkRule{{Host: ".example.com", Port: "*"}, {Host: target, Port: "443"}},
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			// Every name resolves onto the granted literal, so nothing but the
+			// connection's own grant can tell the two halves apart.
+			arrived <- struct{}{}
+			<-release
+			if err := p.guardUpstream(ctx, network, net.JoinHostPort(target, port), nil); err != nil {
+				mu.Lock()
+				refused = append(refused, host)
+				mu.Unlock()
+				return nil, err
+			}
+			mu.Lock()
+			tunneled = append(tunneled, host)
+			mu.Unlock()
+			return fakeDialer("tunnel")(ctx, network, addr)
+		}),
+	)
+	dialProxy, stop := startProxy(t, p)
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer func() { unblock(); stop() }()
+
+	for i := range conns {
+		host := target
+		if i%2 == 1 {
+			host = fmt.Sprintf("x%d.example.com", i)
+		}
+		c := dialProxy()
+		defer c.Close()
+		go func() {
+			c.SetDeadline(time.Now().Add(30 * time.Second))
+			fmt.Fprintf(c, "CONNECT %s:443 HTTP/1.1\r\n\r\n", host)
+			io.Copy(io.Discard, c) //nolint:errcheck // the verdict is read from the guard below
+		}()
+	}
+	for range conns {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			t.Fatal("not every connection reached the guard; a handler is stuck before the dial")
+		}
+	}
+	unblock()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		mu.Lock()
+		done := len(tunneled)+len(refused) == conns
+		mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tunneled) != conns/2 {
+		t.Errorf("opened %d tunnels, want one per literal CONNECT (%d): %v", len(tunneled), conns/2, tunneled)
+	}
+	for _, host := range tunneled {
+		if host != target {
+			t.Errorf("opened a tunnel for %q, which named no literal and so carried no grant - a grant crossed connections", host)
+		}
+	}
+	for _, host := range refused {
+		if host == target {
+			t.Errorf("refused %q, which named the granted literal - a missing grant crossed connections", host)
 		}
 	}
 }
