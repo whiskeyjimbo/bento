@@ -106,10 +106,15 @@ func egressFilter() []unix.SockFilter {
 // passing - a documented residual, since the filter allows AF_UNIX by design.
 //
 // That launcher check's family allowlist is deliberately STRICTER than this one, and the
-// two must not be conflated: this filter governs creation inside the sandbox's fresh
-// netns, where a new AF_NETLINK socket binds to that netns and sees nothing of the host's,
-// so the family is permitted here. A netlink socket inherited on stdio was created in the
-// host's netns and stays bound to it, so refuseNetworkFD refuses the family outright.
+// reason is NOT containment: the only tier that installs this filter creates no namespaces,
+// so a netlink socket opened under it binds to the HOST's netns exactly as an inherited one
+// does. AF_NETLINK passes here because it cannot egress - which is this filter's whole
+// guarantee - and because denying the family would break every runtime that enumerates
+// interfaces through it. What it leaves open is host reconnaissance rather than egress:
+// interfaces, addresses, routes and, via NETLINK_SOCK_DIAG, the host's sockets. That is a
+// real residual, and internal/linux/probe.go discloses it in the degraded run report.
+// refuseNetworkFD refuses the family outright because stdio has no legitimate netlink use,
+// so refusing costs it nothing.
 func BlockEgress() error {
 	if _, _, e := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); e != 0 {
 		return fmt.Errorf("seccomp: setting no_new_privs: %w", e)

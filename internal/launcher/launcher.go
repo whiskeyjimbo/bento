@@ -587,18 +587,22 @@ func networkStdioRefusals() []error {
 // and reaches nothing outside.
 //
 // This allowlist is NOT egressFilter's, though it once borrowed its shape, and the
-// difference is why AF_NETLINK passes there and is refused here. That filter governs
-// socket CREATION inside the sandbox's own namespaces, where a new netlink socket binds
-// to the fresh network namespace and sees nothing of the host's. A descriptor inherited
-// on stdio was created before any of that, in the HOST's netns, and a netlink socket
-// binds to a netns at creation - so it still speaks to the host's. Nothing revokes it:
-// dropInheritedFDs skips 0-2 by design, bwrap's netns binds only new sockets, the seccomp
-// filter screens socket(2) (creation again), and Landlock governs paths, not open
-// descriptions. What it buys a target is enumeration of the host's interfaces, addresses
+// difference is why AF_NETLINK passes there and is refused here. It is not a containment
+// difference: that filter runs only in the degraded tier, which creates no namespaces at
+// all, so a netlink socket made under it is in the HOST's netns exactly as an inherited
+// one is. The difference is what each check can afford to refuse. That filter's guarantee
+// is no IP egress, and netlink cannot egress, while denying the family would break the
+// runtimes that enumerate interfaces through it - so it permits netlink and the degraded
+// run report discloses the host-enumeration residual to the operator. Stdio has no
+// legitimate netlink use, so refusing it here costs nothing and is taken.
+//
+// What either one leaves a target is enumeration of the host's interfaces, addresses
 // and routes (RTM_GETLINK/GETADDR/GETROUTE) and a stream of host device events
 // (NETLINK_KOBJECT_UEVENT) - an information leak rather than reconfiguration, which wants
 // CAP_NET_ADMIN the target does not hold, but the sandbox is supposed to show it none of
-// that.
+// that. Nothing revokes an inherited one: dropInheritedFDs skips 0-2 by design, bwrap's
+// netns binds only new sockets, the seccomp filter screens socket(2) (creation, not I/O),
+// and Landlock governs paths, not open descriptions.
 //
 // AF_UNIX passing is an ACCEPTED RESIDUAL, not a finding that it is safe. An inherited,
 // already-connected unix socket - the host's docker.sock, a session bus, an agent socket -

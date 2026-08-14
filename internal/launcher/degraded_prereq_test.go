@@ -3,8 +3,10 @@
 package launcher
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -108,6 +110,13 @@ const sentinelPrereq = "BENTO_TEST_DEGRADED_PREREQ"
 // that dropped the guard would destroy an in-process test and could exec a target
 // that exits 0, reading as a pass. The child is sacrificial, and the parent
 // asserts on the refusal text it must print, which nothing but the guard produces.
+//
+// The three seccomp installs are covered here rather than by a predicate, and the report
+// half is the point of them. None of the three has a line in the applied report, so the
+// only thing attesting them to the host is that the marker was written at all. A failed
+// install must therefore leave the report EMPTY: a run that got as far as the marker with
+// one of them missing is reconciled into an enforced network layer for a tier that has
+// neither a netns nor an egress filter.
 func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 	if v := os.Getenv(sentinelPrereq); v != "" {
 		runDegradedChild(v)
@@ -119,10 +128,22 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 	}{
 		{"landlock", "needs Landlock"},
 		{"egress", "needs the seccomp egress block"},
+		{"egress-install", "could not install the egress filter"},
+		{"process-reach", "could not install the cross-process block"},
+		{"terminal-injection", "could not install the terminal-injection block"},
 	} {
 		t.Run(tc.fence, func(t *testing.T) {
+			report := filepath.Join(t.TempDir(), "applied")
+			f, err := os.Create(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
 			cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()[:strings.Index(t.Name(), "/")]+"$")
 			cmd.Env = append(os.Environ(), sentinelPrereq+"="+tc.fence)
+			// Inherited as fd 3, the number the child passes as AppliedFD.
+			cmd.ExtraFiles = []*os.File{f}
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("child failed: %v\n%s", err, out)
@@ -135,6 +156,14 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 				t.Errorf("with %s absent the child printed %q; want a refusal naming %q - RunDegraded is not reading the check",
 					tc.fence, got, tc.wantHas)
 			}
+			written, err := os.ReadFile(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(written) > 0 {
+				t.Errorf("with %s absent the child still wrote an applied report (%q); the host reconciles a marker-bearing report into enforced layers",
+					tc.fence, written)
+			}
 		})
 	}
 }
@@ -142,14 +171,25 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 // runDegradedChild loses one fence and reports what RunDegraded did. It prints
 // nothing on the paths that must not happen (a nil error, or never returning at
 // all because the target was exec'd), so the parent's assertion fails.
+//
+// It writes its applied report to the descriptor the parent passed as fd 3, so the parent
+// can assert the report stayed empty as well as the refusal - which for the three installs
+// below is the whole finding.
 func runDegradedChild(fence string) {
+	failed := func() error { return fmt.Errorf("kernel refused the filter") }
 	switch fence {
 	case "landlock":
 		landlockAvailable = func() bool { return false }
 	case "egress":
 		seccompEgressSupported = func() bool { return false }
+	case "egress-install":
+		blockEgress = failed
+	case "process-reach":
+		blockProcessReach = failed
+	case "terminal-injection":
+		blockTerminalInjection = failed
 	}
-	if _, err := RunDegraded(DegradedConfig{Target: []string{"/bin/true"}}); err != nil {
+	if _, err := RunDegraded(DegradedConfig{AppliedFD: 3, Target: []string{"/bin/true"}}); err != nil {
 		os.Stdout.WriteString("REFUSED: " + err.Error() + "\n")
 	}
 }

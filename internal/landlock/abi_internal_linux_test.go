@@ -133,8 +133,8 @@ func TestExistingRefusesADirectory(t *testing.T) {
 // one: Available() reports false in step, rather than a gate that admits what enforcement
 // then refuses.
 func TestRestrictRefusesWithoutABI(t *testing.T) {
-	real := effectiveABI
-	t.Cleanup(func() { effectiveABI = real })
+	detected := effectiveABI
+	t.Cleanup(func() { effectiveABI = detected })
 	effectiveABI = func() int { return 0 }
 
 	if Available() {

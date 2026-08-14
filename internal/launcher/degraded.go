@@ -83,11 +83,23 @@ var (
 // SIGCHLD=SIG_IGN has it auto-reaping children), which no test can produce without
 // taking the Go runtime's own signal handling with it - and it is the one dispatch
 // failure that must NOT be reported as a target that never ran, since by then it has.
+//
+// blockEgress, blockProcessReach and blockTerminalInjection are here for a third reason,
+// specific to the degraded tier: none of the three has a line in the applied report, so
+// the only thing attesting them to the host is that the marker was written at all - the
+// fatality of these calls IS the guarantee. A regression turning any of them into
+// warn-and-proceed would produce a complete, marker-bearing report the host reconciles
+// into an enforced network layer for a run with no netns and no egress filter. The
+// coupling is the same one internal/linux/applied.go already flags for Landlock, so the
+// three are seamed and pinned rather than left to fatality alone.
 var (
-	installExecBlock = seccomp.BlockExec
-	blockExecStrict  = seccomp.BlockExecStrict
-	landlockRestrict = landlock.Restrict
-	reapChildren     = reapUntil
+	installExecBlock       = seccomp.BlockExec
+	blockExecStrict        = seccomp.BlockExecStrict
+	landlockRestrict       = landlock.Restrict
+	reapChildren           = reapUntil
+	blockEgress            = seccomp.BlockEgress
+	blockProcessReach      = seccomp.BlockProcessReach
+	blockTerminalInjection = seccomp.BlockTerminalInjection
 )
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
@@ -180,14 +192,14 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	// requires LayerNetwork, which is Unavailable without a netns, so it refuses at
 	// admission). So egress is always blocked here, giving even a static binary a real
 	// no-egress guarantee in place of the netns.
-	if err := seccomp.BlockEgress(); err != nil {
+	if err := blockEgress(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the egress filter: %w", err)
 	}
 	// With no PID namespace the target shares the host's process table, so block the
 	// syscalls that reach into another process (ptrace inject, cross-process memory,
 	// pidfd fd-theft) - a same-user process the target injects into or steals a socket
 	// fd from would otherwise defeat both the Landlock and the egress confinement.
-	if err := seccomp.BlockProcessReach(); err != nil {
+	if err := blockProcessReach(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the cross-process block: %w", err)
 	}
 	// The target inherits the parent's controlling terminal on stdin (this tier execs
@@ -197,7 +209,7 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	// cover this, but only at ABI 5 (kernel 6.10+). The tier is entered for a missing
 	// bwrap or unprivileged userns rather than for an old kernel, so its hosts span both
 	// sides of that line and the block cannot rest on Landlock.
-	if err := seccomp.BlockTerminalInjection(); err != nil {
+	if err := blockTerminalInjection(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the terminal-injection block: %w", err)
 	}
 
