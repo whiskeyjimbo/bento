@@ -953,3 +953,32 @@ func TestEventStreamDropsOutputAfterTheTerminalObject(t *testing.T) {
 		t.Errorf("output written after the verdict landed on the stream:\n%s", stdout.String())
 	}
 }
+
+// The exposure audit rides the failure out too, in both modes. The degraded tier applies
+// no shields, so Exposed is the only record that a run made a credential store reachable
+// - and a run that was cancelled or torn down is exactly the one nobody looks at again.
+// The backend computes it on this path; a frontend that renders it only on the clean path
+// reports the exposure as never having happened.
+func TestWriteRunResultMidFlightFailureCarriesTheExposureAudit(t *testing.T) {
+	reachable := "/home/u/.ssh"
+	res := enforce.Result{Exposed: []enforce.ShieldApplied{{Path: reachable, Kind: "hidden"}}}
+	runErr := errors.New("the run was cancelled before the target finished")
+
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	var env struct {
+		Exposed []shieldJSON `json:"exposed"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("failure event is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if len(env.Exposed) != 1 || env.Exposed[0].Path != reachable {
+		t.Errorf("exposed = %v, want the reachable store %q", env.Exposed, reachable)
+	}
+
+	stderr.Reset()
+	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, runErr)
+	if !strings.Contains(stderr.String(), reachable) {
+		t.Errorf("the human path must name the exposed store too; got %q", stderr.String())
+	}
+}

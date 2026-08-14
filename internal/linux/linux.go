@@ -318,7 +318,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	default:
 		// The auto-exec list for the same reason the cancel arm carries it: the target may
 		// already have run, and this is the arm where nothing else says what the host holds.
-		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
+		// The shield and egress audit rides out beside it on the same reasoning - what the
+		// boundary engaged and what went through it is no less true for the run having
+		// failed on its way out.
+		serveErr := stopProxy()
+		noteDeadListener(&report, serveErr)
+		noteProxyFault(&report, collected.faultCount())
+		return enforce.Result{Report: report, EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 

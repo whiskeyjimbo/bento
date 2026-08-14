@@ -329,6 +329,14 @@ type streamRefusalJSON struct {
 	// RedirectedHooks travels beside it for the same reason, and separately from it because
 	// it is a different claim; see enforce.Result.
 	RedirectedHooks []string `json:"redirected_hooks,omitempty"`
+	// The shield audit is the failed event's alone as well, and under the verdict's names.
+	// A run that began engaged its boundary, and on the degraded tier left credentials
+	// reachable; dropping the record because the run then failed reports the exposure as
+	// never having happened, which is the one claim this tier must never make.
+	Shields         []shieldJSON        `json:"shields,omitempty"`
+	Exposed         []shieldJSON        `json:"exposed,omitempty"`
+	ShieldedGrants  []shieldedGrantJSON `json:"shielded_grants,omitempty"`
+	AcceptedAliases []aliasJSON         `json:"accepted_aliases,omitempty"`
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
@@ -351,7 +359,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases)})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -412,6 +420,13 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// nothing else says what the host now holds. In --json failJSON carries the same
 		// field; here it is the notice, before the error main renders.
 		if !asJSON {
+			// The shield audit rides out here for the same reason, and ahead of the notices so
+			// the ordering matches the clean path's: an operator reading two runs side by side
+			// must not have to find the exposure warning in a different place because one of
+			// them failed.
+			writeAcceptedAliasWarning(stderr, res)
+			writeShieldedGrantWarning(stderr, res)
+			writeExposedWarning(stderr, res)
 			writeChangedAutoExecNotice(stderr, res)
 			writeRedirectedHooksNotice(stderr, res)
 		}
