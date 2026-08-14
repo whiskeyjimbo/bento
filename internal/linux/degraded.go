@@ -256,8 +256,17 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	}
 	switch {
 	case cmd.ProcessState == nil:
-		// The launcher never started or exec failed - a genuine setup failure.
-		return enforce.Result{Report: report, ExecRecord: degradedExecRecord(opts.RecordExec)}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		// The launcher never started or exec failed - a genuine setup failure. Reconciled
+		// like the cancel arm's own undispatched case, and for the same reason: the probe
+		// describes a tier whose fences this run never installed, and only the reconcile
+		// turns that into the layer having no proof behind it. -1 for the same reason
+		// again, there being no status to report.
+		//
+		// No exposure audit, unlike every arm below: those carry it because the target may
+		// have run and read what this tier could not shield. Here the launcher itself never
+		// started, so nothing was ever exposed to report.
+		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, -1)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec)}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	case err == nil, isExitError(err), errors.Is(err, exec.ErrWaitDelay):
 		// The target ran to completion; its exit code is authoritative even when a
 		// leaked descendant held the pipes past WaitDelay.

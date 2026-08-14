@@ -951,6 +951,42 @@ func TestDegradedCancelBeforeDispatchStillCarriesTheExecRecord(t *testing.T) {
 	}
 }
 
+// The launcher that never started at all. The probe describes a tier with Landlock
+// confinement and a seccomp egress block, and none of it was installed for this run - so
+// the report owes the same reconcile the arms that did dispatch get, or it attests fences
+// to a process that never existed.
+func TestDegradedLauncherThatNeverStartedClaimsNoFences(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Executable, so the launcher check passes, but its interpreter does not exist: exec
+	// fails at Start, which is the only way to a run with no ProcessState and no cancel.
+	bento := filepath.Join(dir, "bento")
+	if err := os.WriteFile(bento, []byte("#!/nonexistent/interpreter\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Exec: policy.ExecNone}
+
+	res, err := enforcerUsing(bento).runDegraded(context.Background(), p,
+		enforce.Process{}, enforce.RunOptions{RecordExec: true})
+	if err == nil {
+		t.Fatal("a launcher that could not be exec'd returned no error")
+	}
+	if st := res.Report.StateOf(enforce.LayerFilesystem); st != enforce.Unavailable {
+		t.Errorf("filesystem layer = %v for a run whose launcher never started; the report is the probe's, and no Landlock ruleset was ever applied", st)
+	}
+	if res.Setup != enforce.SetupSilent {
+		t.Errorf("Setup = %v; nothing reported anything on this arm", res.Setup)
+	}
+	if res.ExecRecord == nil {
+		t.Fatal("a run that asked for an exec record got nil, which is what a run that never asked gets")
+	}
+}
+
 // The arm neither the cancel nor the exit-status path covers: cmd.Run returns the
 // stdio-copy error rather than an *ExitError, after the target has already run to
 // completion. The launcher attested its layers and the target's execs are as unwatchable

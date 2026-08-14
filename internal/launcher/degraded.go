@@ -84,13 +84,6 @@ var (
 // taking the Go runtime's own signal handling with it - and it is the one dispatch
 // failure that must NOT be reported as a target that never ran, since by then it has.
 //
-// restrictDegraded is here for a fourth reason, the mirror of that one: it DOES have a
-// line in the applied report, and that line is trustworthy only because the call above it
-// is fatal - nothing about the record independently attests the fence. A regression
-// turning it into warn-and-proceed would produce a complete, marker-bearing report
-// describing Landlock as applied for a degraded run with no filesystem confinement at all,
-// which is the tier's primary layer and the one with no mount namespace behind it.
-//
 // blockEgress, blockProcessReach and blockTerminalInjection are here for a third reason,
 // specific to the degraded tier: none of the three has a line in the applied report, so
 // the only thing attesting them to the host is that the marker was written at all - the
@@ -99,6 +92,13 @@ var (
 // into an enforced network layer for a run with no netns and no egress filter. The
 // coupling is the same one internal/linux/applied.go already flags for Landlock, so the
 // three are seamed and pinned rather than left to fatality alone.
+//
+// restrictDegraded is the mirror of those three: it DOES have a line in the applied
+// report, and that line is trustworthy only because the call above it is fatal - nothing
+// about the record independently attests the fence. Warn-and-proceed there would produce
+// the same marker-bearing report describing Landlock as applied, for a degraded run with
+// no filesystem confinement at all - the tier's primary layer, and the one with no mount
+// namespace behind it.
 var (
 	installExecBlock       = seccomp.BlockExec
 	blockExecStrict        = seccomp.BlockExecStrict
