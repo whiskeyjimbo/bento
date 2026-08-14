@@ -381,7 +381,10 @@ func ShieldedReadProblems(set shield.Set, reads []string) []string {
 			problems = append(problems, grantrefusal.FoldedShield(g, r.Path).Error())
 		case shield.Honored:
 		case shield.UnderWriteShield, shield.AboveShield, shield.AboveWriteShield:
-			// Write-only verdicts: Contains cannot reach any of them under shield.Read.
+			// Write-only verdicts: Contains cannot reach any of them under shield.Read. It is
+			// one early return in Contains that makes that true, and nothing here would stop
+			// compiling if it moved, so the property is pinned where it lives -
+			// internal/shield's TestAReadGrantEarnsNoWriteOnlyVerdict.
 		}
 	}
 	return problems
