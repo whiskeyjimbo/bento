@@ -302,6 +302,21 @@ func TestSynthesizeDropsSystemWriteGrants(t *testing.T) {
 	}
 }
 
+// A write to a file sitting directly at the filesystem root collapses through
+// filepath.Dir to "/", a grant of the whole host. cmd/bento's broad clamp drops it, but
+// profile is public: an embedder calling Synthesize gets whatever it proposes, so the
+// floor has to be here. FlooredWrite must agree, or the frontend reports the withheld
+// write as kept.
+func TestWriteAtTheFilesystemRootIsFloored(t *testing.T) {
+	p := mustSynthesize(t, "/work/run.py", "python3", Observation{Writes: []string{"/0"}})
+	if len(p.Write) != 0 {
+		t.Errorf("write /0 proposed the grant %v, want none (a writable / is the whole host)", p.Write)
+	}
+	if !FlooredWrite("/") {
+		t.Error("FlooredWrite(/) = false, want true - the frontend cannot report a withheld write it does not recognize")
+	}
+}
+
 // The floors match a tree and what is under it, never a sibling that shares a name
 // stem. /vartmp and /etcetera are ordinary paths, and silently dropping a write to one
 // would hide from the reviewer a grant the run actually needs - the same rule

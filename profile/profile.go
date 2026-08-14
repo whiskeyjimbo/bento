@@ -460,8 +460,8 @@ func SandboxScratch(p string) bool {
 }
 
 // FlooredWrite reports whether a collapsed write-grant directory is one Synthesize
-// withholds from a proposal: a system tree, the container every user's home sits in, or
-// another user's home. It is exported so a frontend can tell the reviewer which
+// withholds from a proposal: the filesystem root, a system tree, the container every
+// user's home sits in, or another user's home. It is exported so a frontend can tell the reviewer which
 // observed writes were withheld and why - a grant that vanishes with no message leaves
 // the script failing EACCES at enforce time with nothing to read.
 //
@@ -496,6 +496,11 @@ func ScratchWrite(dir string) bool {
 }
 
 func flooredWrite(dir string) bool {
+	// A write to a file directly at the root collapses to a grant of "/" - every system
+	// tree at once, and shield.Contains refuses to reason about it at all.
+	if dir == "/" {
+		return true
+	}
 	// A home container that lives under a system root (/var/home on an ostree layout,
 	// where the user's own home IS /var/home/u) holds accounts, not system state, so the
 	// home rules judge what is inside it rather than the system floor - which would
