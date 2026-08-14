@@ -328,18 +328,21 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 		t.Errorf("callouts missing the entrypoint warning; got:\n%s", got)
 	}
 
-	// A whole home is the other thing worth stopping on, and the summary approve prints
-	// directly above this block is where it is said - once, beside the grant it is about.
+	// A whole home is the other thing worth stopping on, and it is a read grant that
+	// nothing else here would flag.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	broad := &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}
-	if got = callouts(broad); strings.Contains(got, "whole home or top-level directory") {
-		t.Errorf("the broad-grant warning belongs to the summary alone; got:\n%s", got)
+	if got = callouts(broad); !strings.Contains(got, "whole home or top-level directory") {
+		t.Errorf("callouts missing the broad-grant warning; got:\n%s", got)
 	}
+	// Said here and not also in the summary approve prints above it: validate raises it
+	// there, where there is no callouts block to carry it, and one screen saying it twice
+	// teaches the reader to skim the block that asks for a decision.
 	var summary bytes.Buffer
-	writePolicySummary(&summary, "m.yaml", broad, resolvedGrants(broad, "m.yaml"), nil)
-	if !strings.Contains(summary.String(), "whole home or top-level directory") {
-		t.Errorf("summary missing the broad-grant warning; got:\n%s", summary.String())
+	writePolicySummary(&summary, "m.yaml", broad, resolvedGrants(broad, "m.yaml"), nil, false)
+	if strings.Contains(summary.String(), "whole home or top-level directory") {
+		t.Errorf("approve's summary must leave the breadth note to its callouts; got:\n%s", summary.String())
 	}
 
 	// A ~ entrypoint is legal and manifest.Resolve expands it against $HOME, so a second

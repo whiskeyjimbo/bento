@@ -243,8 +243,9 @@ func broadGrantNote(kind, grant string) string {
 // isBroadDir reports whether path is too broad to bind as a whole: the root, a
 // top-level directory (a direct child of "/", such as /etc or /home), or the user's
 // home directory itself. Binding any of these exposes far more than a profiled script
-// needs - as an automatic read or write grant (partitionBroad) or as the discovery run's own
-// script-directory grant (discoveryPolicy).
+// needs - as an automatic read or write grant (partitionBroad), as the discovery run's own
+// script-directory grant (discoveryPolicy), or as one a human is about to accept, which is
+// what the review commands raise broadGrantNote over.
 func isBroadDir(path string) bool {
 	// Every anchor counts, since either can be the home the script actually walked -
 	// under sudo -H a proposal of the passwd home is just as broad as one of $HOME. The

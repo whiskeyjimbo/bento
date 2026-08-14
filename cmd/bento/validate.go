@@ -86,7 +86,7 @@ func newValidateCmd() *cobra.Command {
 				}
 				return relocatableError(relocatable, pinned)
 			}
-			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts, true)
 			writeRunnability(os.Stdout, run)
 			if relocatable {
 				writeRelocatable(os.Stdout, pinned)
@@ -626,7 +626,12 @@ func resolvedGrants(p *policy.Policy, manifestPath string) *policy.Policy {
 // guard refused (provenance, not permission), used to mark the network rules that cover
 // one. approve passes nil: writeApprovalCallouts raises the same rules where the reader
 // is deciding, and printing it twice on one screen teaches them to skim the block.
-func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, blockedHosts []string) {
+//
+// noteBreadth is off for the same caller and for the same reason - approve raises the
+// breadth judgement in its callouts, under the header that asks for a decision. It is a
+// switch rather than an absent input because breadth is read off the grants already here,
+// so there is nothing for a caller to withhold.
+func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, blockedHosts []string, noteBreadth bool) {
 	var resolvedRead, resolvedWrite []string
 	if resolved != nil {
 		resolvedRead, resolvedWrite = resolved.Read, resolved.Write
@@ -646,7 +651,9 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	writeResolvedGrants(w, p.Read, resolvedRead)
-	writeBroadGrantNotes(w, "read", resolvedRead)
+	if noteBreadth {
+		writeBroadGrantNotes(w, "read", resolvedRead)
+	}
 	shieldGrants, shieldErr := explicitShieldGrants(resolvedRead)
 	for _, g := range shieldGrants {
 		fmt.Fprintf(w, "  note: this grant names a %s bento shields on every run, exactly\n", g.Holds.Noun())
@@ -662,7 +669,9 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
-	writeBroadGrantNotes(w, "write", resolvedWrite)
+	if noteBreadth {
+		writeBroadGrantNotes(w, "write", resolvedWrite)
+	}
 	writeRefusals := gate.ShieldedWriteProblems(shieldSet, resolvedWrite)
 	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
 		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
