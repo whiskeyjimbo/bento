@@ -162,7 +162,12 @@ func TestCappedArgv(t *testing.T) {
 func TestATargetThatDiesBeforeAttachKeepsItsExitCode(t *testing.T) {
 	// The child is stopped at its initial exec and killed from outside, which is the shape
 	// an OOM kill or an external SIGKILL takes.
-	cmd, err := startTarget([]string{"/bin/true"}, os.Environ(), true)
+	//
+	// A target that blocks rather than one that exits, because the detach below resumes it:
+	// /bin/true would race the kill to its own exit 0 and the assertion would read a status
+	// the staging did not produce - rare when the machine is idle, and a coin flip under a
+	// whole-tree run.
+	cmd, err := startTarget([]string{"/bin/sleep", "60"}, os.Environ(), true)
 	if err != nil {
 		t.Skipf("this host refuses the attach: %v", err)
 	}
@@ -175,6 +180,11 @@ func TestATargetThatDiesBeforeAttachKeepsItsExitCode(t *testing.T) {
 		t.Skipf("could not stage the race: %v", err)
 	}
 	_ = cmd.Process.Kill()
+	// Nothing has reaped it, so the kill having landed IS the zombie state: waiting for it
+	// puts attachRecorder past the race rather than inside it.
+	if err := awaitZombie(root); err != nil {
+		t.Skipf("could not stage the race: %v", err)
+	}
 
 	code, done, err := attachRecorder(root)
 	if !done {
