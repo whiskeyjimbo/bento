@@ -88,11 +88,18 @@ if [ -n "$offenders" ]; then
 	status=1
 fi
 
-# Every way a rule reaches a run's shield set: the built-in constructors, and a Rule
-# written out by hand - which is how the whole grant-derived family is built, and was
+# Every way a rule reaches a run's shield set: any exported call on the deny-list, and a
+# Rule written out by hand - which is how the whole grant-derived family is built, and was
 # invisible here while only the constructors were matched. Assembling any of them is
 # internal/shield's job; the exceptions below say what else does and why.
-assemblers='denylist\.Home\(|denylist\.Relocated\(|denylist\.Runtime\(|denylist\.Workspace\(|denylist\.Rule\{'
+#
+# The match is by shape rather than by enumeration, because an enumeration is only ever
+# current: the list named the five constructors that existed the day it was widened, and a
+# sixth (WorkspaceGitfile) landed three days later unseen. The read-as-data helpers below
+# are subtracted from it instead, so a NEW constructor fails here by default and excusing
+# one is a deliberate edit to this file.
+assemblers='denylist\.[A-Z][A-Za-z]*\(|denylist\.Rule\{'
+readers='denylist\.(Covers|Shieldable|HomeAnchors|RuntimeDir|IsProcessPath|HoldsByCode|RelocationVars|AliasAnchors|PasswdHome|UnshieldableRuntimeDir|NewIndex)\('
 
 shield_assemblers='internal/shield
 internal/linux
@@ -126,7 +133,9 @@ found=$(grep -rEln --include='*.go' "$assemblers" . | while read -r f; do
 	# A constructor named in prose is not an assembly site. Line comments and the body of a
 	# block comment are dropped; a block comment written without leading stars still reads
 	# as a call here, which is the direction that fails loudly rather than quietly.
-	if grep -E "$assemblers" "$f" | grep -qvE '^[[:space:]]*(//|/\*|\*)'; then
+	# Reading the deny-list as data is not assembly either: the helper call is erased from
+	# the line rather than the line dropped, so a line doing both still counts.
+	if sed -E "s/$readers//g" "$f" | grep -E "$assemblers" | grep -qvE '^[[:space:]]*(//|/\*|\*)'; then
 		dirname "$f"
 	fi
 done | sort -u)
