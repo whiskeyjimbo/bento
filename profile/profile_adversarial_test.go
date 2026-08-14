@@ -1,8 +1,10 @@
 package profile
 
 import (
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -220,6 +222,70 @@ func FuzzProfileSynthesize(f *testing.F) {
 		p := mustSynthesize(t, entry, interp, obs)
 		if p == nil {
 			t.Fatal("Synthesize returned nil Policy")
+		}
+
+		// Soundness, the narrowing half of the one-sided invariant: approve stamps this
+		// proposal, so a grant the observation does not justify is a permission nobody
+		// asked for. Ancestor-or-equal rather than membership, because a write collapses
+		// to its directory - the observed /data/out.txt is proposed as /data.
+		// The root is spelled with its own separator, so the ordinary prefix test would
+		// read "/" as justifying nothing at all - and a grant of "/" is the one this most
+		// has to judge on its merits rather than on a string artifact.
+		justified := func(grant string, observed ...string) bool {
+			prefix := strings.TrimSuffix(grant, "/") + "/"
+			for _, o := range observed {
+				// Cleaned, because the grant is: "//0/" is observed and "/0" proposed, and
+				// the difference is spelling rather than reach.
+				if !filepath.IsAbs(o) {
+					continue
+				}
+				o = filepath.Clean(o)
+				if o == grant || strings.HasPrefix(o, prefix) {
+					return true
+				}
+			}
+			return false
+		}
+		for _, g := range p.Read {
+			if !justified(g, read) {
+				t.Errorf("read grant %q is not justified by the observed read %q", g, read)
+			}
+		}
+		for _, g := range p.Write {
+			if !justified(g, write) {
+				t.Errorf("write grant %q is not justified by the observed write %q", g, write)
+			}
+		}
+
+		// A path carrying a deceiving rune is what Unrepresentable withholds, and the
+		// seeds feed one as a host and /etc/cron.d/job as a write. A grant that round-trips
+		// one unflagged is a manifest whose text does not read as what it grants.
+		for _, g := range slices.Concat(p.Read, p.Write) {
+			if Unrepresentable(g) {
+				t.Errorf("grant %q carries a deceiving rune and was proposed anyway", g)
+			}
+		}
+
+		// A proposal the validator refuses is one nobody can approve, and the two are
+		// separately maintained - the network rules are already screened against it here,
+		// the paths are not.
+		//
+		// The entrypoint and interpreter are swapped for real ones first. Synthesize passes
+		// both through verbatim from its caller, which has a resolved path for each, so a
+		// fuzzed entrypoint only ever proves that Validate rejects the fuzzer's own string -
+		// it says nothing about what Synthesize derived.
+		grants := *p
+		grants.Entrypoint, grants.Interpreter = "/bin/app", "python3"
+		if err := grants.Validate(); err != nil {
+			t.Errorf("the synthesized grants do not validate: %v", err)
+		}
+
+		// The observation is the whole input, so synthesizing twice must agree: a
+		// proposal that moves between rounds invalidates the approval stamped on the
+		// first one.
+		again := mustSynthesize(t, entry, interp, obs)
+		if !slices.Equal(p.Read, again.Read) || !slices.Equal(p.Write, again.Write) || !slices.Equal(p.Network, again.Network) {
+			t.Errorf("Synthesize is not idempotent over one observation:\n first: %+v\n again: %+v", p, again)
 		}
 	})
 }
