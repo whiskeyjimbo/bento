@@ -673,6 +673,31 @@ func TestMountinfoPathsFiltersByDevice(t *testing.T) {
 	}
 }
 
+// The decoder's edge arms, which the mountinfo table above does not reach: a backslash
+// that is not an octal escape, and one at the very end of a mountpoint. Both must come
+// back as the bytes the kernel wrote. The mount half of the alias scan turns entirely on
+// the decoded mountpoint comparing byte-equal to a host path, and a decoder that drops or
+// mangles a byte silently LOSES the bind detection rather than failing - the exact shape
+// hostMountpoints' doc says the scan must never produce.
+func TestUnescapeMountLeavesNonEscapesAlone(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/mnt/plain", "/mnt/plain"},
+		{`/mnt/My\040Backup`, "/mnt/My Backup"},
+		{`/mnt/a\040b\011c`, "/mnt/a b\tc"},
+		// \ is not one of the four escapes the kernel writes, and 8 is not an octal
+		// digit: both stay literal rather than eating the bytes after them.
+		{`/mnt/back\\slash`, `/mnt/back\\slash`},
+		{`/mnt/x\888y`, `/mnt/x\888y`},
+		// A truncated escape at the end of the string: the decoder must not read past it.
+		{`/mnt/trail\04`, `/mnt/trail\04`},
+		{`/mnt/trail\`, `/mnt/trail\`},
+	} {
+		if got := unescapeMount(tc.in); got != tc.want {
+			t.Errorf("unescapeMount(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // A mountinfo line past the Scanner's buffer stops the scan early. Reporting that as an
 // error is what keeps a partial mount list from being read as the whole one.
 func TestMountinfoPathsRefusesATruncatedScan(t *testing.T) {
