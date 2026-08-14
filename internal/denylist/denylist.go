@@ -363,6 +363,18 @@ func Shieldable(p string, homes []string) bool {
 	if p == "/" {
 		return false
 	}
+	// /dev/null is the documented "no config" idiom for a whole family of the variables
+	// this package follows - KUBECONFIG, GIT_CONFIG_GLOBAL, INPUTRC, MAILCAPS, HISTFILE -
+	// and there is nothing to plant in or read out of a device node. A rule over it is
+	// enforced rather than inert: the backend's deny args land after bwrap's --dev, so the
+	// shield overmounts the sandbox's own /dev/null with a read-only empty file and every
+	// "> /dev/null" inside the sandbox then fails EROFS. Tested here rather than at the
+	// emitters because every block already routes through this, and closing them one at a
+	// time is what left four of them open. A caller-supplied deny naming it is dropped for
+	// the same reason.
+	if p == "/dev/null" {
+		return false
+	}
 	for _, h := range homes {
 		if p == h || strings.HasPrefix(h, p+string(filepath.Separator)) {
 			return false
@@ -1272,7 +1284,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		// only catches the DEFAULT spelling, so a target inside an already-hidden tree
 		// (a relocated store, or plain ~/.ssh) would get an interior rule that survives an
 		// opt-in on that tree and hands back a zero-byte file.
-		if c == "/dev/null" || (fe.def != "" && isDefault(c, fe.def)) || covered(c) || !shieldable(c) {
+		if (fe.def != "" && isDefault(c, fe.def)) || covered(c) || !shieldable(c) {
 			continue
 		}
 		rules = append(rules, Rule{Path: c, Deny: DenyAll, Holds: fe.holds, Source: fe.env})
@@ -1313,13 +1325,10 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// already hides the whole subtree, so a DenyWrite there grants nothing further and
 	// only adds a redundant rule for a backend to enforce and a reader to reconcile.
 	//
-	// /dev/null is skipped for every source rather than at the call sites that remembered
-	// to: INPUTRC=/dev/null and MAILCAPS=/dev/null are documented ways to disable a config,
-	// and there is nothing to plant in a device node. The rule is inert under bwrap, where
-	// a ro-bind does not deny writes to one, but the Landlock-only degraded tier enforces
-	// it - and every "> /dev/null" inside the sandbox then fails.
+	// /dev/null is dropped by shieldable, for every block at once rather than at the call
+	// sites that remembered to.
 	addWriteShield := func(p, source string) {
-		if p != "/dev/null" && !covered(p) && shieldable(p) {
+		if !covered(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
@@ -1439,10 +1448,8 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	}
 	// The write-shielded directories a tool-specific variable relocates. addWriteShield is
 	// the wrong emitter here - it produces a file rule, which would bind an empty file over
-	// a directory and leave every entry beside it plantable. Same guards otherwise,
-	// /dev/null included (nothing is plantable in a device node, and the degraded tier
-	// enforces the rule it would otherwise emit), and last so a DenyAll target from any
-	// block above already sits in covered().
+	// a directory and leave every entry beside it plantable. Same guards otherwise, and
+	// last so a DenyAll target from any block above already sits in covered().
 	for _, de := range writeOnlyDirEnvs {
 		base := os.Getenv(de.env)
 		if !filepath.IsAbs(base) {
@@ -1452,7 +1459,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		if isDefault(c, de.def) {
 			continue
 		}
-		if p := filepath.Join(c, de.sub); p != "/dev/null" && !covered(p) && shieldable(p) {
+		if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: de.env})
 		}
 	}

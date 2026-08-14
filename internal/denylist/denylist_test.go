@@ -2155,3 +2155,47 @@ func TestRelocationKeepsTheSameClassification(t *testing.T) {
 		})
 	}
 }
+
+// The two guard columns every relocation block has to hold, driven per BLOCK rather than
+// from a hand-picked set of drivers: RelocationVars names every variable the package
+// reads, so a block added later inherits both columns without anyone remembering to.
+//
+// One variable is set at a time. A block whose guard is missing is otherwise masked by a
+// neighbour - covered() drops a target another block already shielded - and the point of
+// driving it per variable is to name the block that failed.
+func TestEveryRelocationBlockHoldsItsGuardColumns(t *testing.T) {
+	const home = "/home/u"
+	for _, v := range RelocationVars() {
+		t.Run(v, func(t *testing.T) {
+			// /dev/null is the documented "no config" idiom for several of these
+			// (KUBECONFIG, GIT_CONFIG_GLOBAL, INPUTRC, HISTFILE), and a rule over it is
+			// enforced: the deny args land after bwrap's --dev, so the shield overmounts
+			// the sandbox's own /dev/null and every "> /dev/null" inside then fails.
+			for _, other := range RelocationVars() {
+				t.Setenv(other, "")
+			}
+			t.Setenv(v, "/dev/null")
+			for _, r := range Relocated(Home(home), []string{home}) {
+				if r.Path == "/dev/null" {
+					t.Errorf("$%s emits a rule over /dev/null, which the sandbox needs writable", v)
+				}
+			}
+
+			// An interior rule inside a DenyAll tree survives an opt-in matching only the
+			// enclosing rule, and hands the reader a zero-byte file instead of a refusal.
+			t.Setenv(v, home+"/.ssh/relocated")
+			defaults := Home(home)
+			relocated := Relocated(defaults, []string{home})
+			for _, r := range relocated {
+				for _, d := range slices.Concat(defaults, relocated) {
+					if d.Deny != DenyAll || !d.Dir || d.Path == r.Path {
+						continue
+					}
+					if strings.HasPrefix(r.Path, d.Path+"/") {
+						t.Errorf("$%s emits %q inside the DenyAll tree %q", v, r.Path, d.Path)
+					}
+				}
+			}
+		})
+	}
+}
