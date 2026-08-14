@@ -14,13 +14,13 @@
 // else, the case says so in a field and gives the reason; a divergence with no field is a
 // bug in that site, not a case to be edited.
 //
-// SCOPE, and it is narrower than "what a run does". Verdict models five of checkGrants'
-// checks on the FULL tier. Two refusals a run raises have no member here and no case can
-// express them: checkWriteNotRoot, which the shield checks are documented as relying on;
-// and checkWriteNotAboveWriteShield, which only the degraded tier raises - the corpus
-// harnesses drive the full tier, so the site that would be authoritative for it is not
-// reachable from here, and it is pinned beside the clamp instead. So agreement across the
-// three sites is agreement about the five, and the gap runs in the UNDER-refusing
+// SCOPE, and it is narrower than "what a run does". Verdict models six of checkGrants'
+// checks. Five are the full tier's; the sixth, AboveWriteShield, is the one refusal only a
+// degraded run raises, and the tier it belongs to is carried on the verdict rather than on
+// the case - which tier refuses is a property of the check, not something a case chooses.
+// One refusal a run raises still has no member here and no case can express it:
+// checkWriteNotRoot, which the shield checks are documented as relying on. So agreement
+// across the three sites is agreement about the six, and the gap runs in the UNDER-refusing
 // direction: a shape this table calls Honored may still be hard-refused by a run.
 package shieldcorpus
 
@@ -49,6 +49,19 @@ const (
 	// AboveShield means a write that CONTAINS a DenyAll shield, refused by
 	// grantrefusal.WriteAboveShield.
 	AboveShield
+	// AboveWriteShield means a write that CONTAINS a DenyWrite shield, refused by
+	// grantrefusal.WriteAboveWriteShield. It is the corpus's only DEGRADED-tier verdict:
+	// the full tier re-binds the shield read-only after the grant and bwrap is last-wins,
+	// so it honors the grant, while the Landlock-only tier has no bind and takes the union
+	// of matching rules, leaving the shielded directory writable unless the run is refused.
+	//
+	// The two sites outside the backend diverge from it, both in the under-refusing
+	// direction and both because neither knows which tier will run: the gate answers
+	// Honored (gate.writeShieldProblem declines the verdict at its own arm), and the clamp
+	// keeps the grant and reports it instead of dropping it. As with WorkspaceRedirected,
+	// that is carried on the verdict rather than a per-case field, because it holds for
+	// every case of this shape.
+	AboveWriteShield
 	// FoldedShield means a grant that CONTAINS a DenyAll shield whose directory folds
 	// case, refused by grantrefusal.FoldedShield for either kind. It is the one verdict
 	// no layout on disk produces (see Case.Folding).
@@ -75,6 +88,8 @@ func (v Verdict) String() string {
 		return "under a DenyWrite shield"
 	case AboveShield:
 		return "above a DenyAll shield"
+	case AboveWriteShield:
+		return "above a DenyWrite shield (degraded tier only)"
 	case FoldedShield:
 		return "above a DenyAll shield on a case-folding mount"
 	case WorkspaceRedirected:
@@ -104,7 +119,9 @@ type Case struct {
 	// ClampKeeps marks a case the profiler's clamp deliberately does not mirror. Only
 	// AboveShield: the clamp keeps a grant that merely contains a shield, because the
 	// enforced run re-shields the interior, and dropping every enclosing grant would gut
-	// the ordinary "read: ~" proposal.
+	// the ordinary "read: ~" proposal. The clamp also keeps an AboveWriteShield grant, but
+	// that is read off the verdict rather than set here, because it holds for the shape
+	// rather than for the one case.
 	ClampKeeps bool
 	// Folding judges the case against a host whose mount folds case. It is the one host
 	// property Build cannot stage - creating two spellings under a temp directory on ext4
@@ -247,6 +264,13 @@ var Cases = []Case{
 		ClampKeeps: true,
 	},
 	{
+		Name:    "write containing a write shield",
+		Why:     "write: ~/.pyenv over the ~/.pyenv/shims shield, the one refusal only a degraded run raises: there is no bind there to re-shield the interior with and Landlock takes the union of the matching rules, while the full tier's last-wins ro-bind holds and honors the grant - which is why the gate stays silent about it and the clamp keeps the grant and reports it",
+		Grant:   ".pyenv",
+		Write:   true,
+		Verdict: AboveWriteShield,
+	},
+	{
 		Name:    "read containing a shield on a case-folding mount",
 		Why:     "a read of the home is the ordinary honored case; where the mount folds, ~/.SSH reaches the store beside the one byte-exact bind that shields it, so the same grant has to be refused instead - and for a READ, where nothing needs to be writable for the content to leak",
 		Grant:   ".",
@@ -362,6 +386,10 @@ func Build(dir string, c Case) (string, error) {
 		"redirected/.git",
 		"redirected/realhooks",
 		"worktree",
+		// An interpreter prefix over its own DenyWrite shim shield, for the degraded
+		// tier's above-a-write-shield refusal. Nothing else in the layout sits under
+		// ~/.pyenv, so it moves no other case's verdict.
+		".pyenv/shims",
 		"farm/ssh",
 		"farm/keys",
 		"gnupg-target",

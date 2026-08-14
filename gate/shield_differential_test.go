@@ -67,7 +67,12 @@ func TestShieldCorpusGateVerdicts(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := c.Verdict
-			if c.WorkspaceDerived || c.Verdict == shieldcorpus.WorkspaceRedirected {
+			// AboveWriteShield joins the two workspace gaps as a third one-directional
+			// divergence, and for a reason of its own: only a degraded run refuses it and the
+			// gate does not know which tier will run, so raising it would refuse
+			// write: ~/.pyenv for every full-tier run. Argued at the arm that declines it, in
+			// gate.writeShieldProblem.
+			if c.WorkspaceDerived || c.Verdict == shieldcorpus.WorkspaceRedirected || c.Verdict == shieldcorpus.AboveWriteShield {
 				// Asserted as a divergence rather than switched off: a case marked as
 				// diverging that the run also honors states nothing, and would go on
 				// stating nothing after the corpus verdict moved under it.

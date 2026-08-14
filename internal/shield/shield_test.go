@@ -67,6 +67,11 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 		return shield.UnderWriteShield
 	case shieldcorpus.AboveShield:
 		return shield.AboveShield
+	// The degraded tier's verdict is no divergence here: the shared answer is where the two
+	// above-directions are told apart in the first place, and it is the callers that decide
+	// what to do with it.
+	case shieldcorpus.AboveWriteShield:
+		return shield.AboveWriteShield
 	case shieldcorpus.FoldedShield:
 		return shield.FoldedShield
 	// WorkspaceRedirected has no counterpart here on purpose: that refusal is raised

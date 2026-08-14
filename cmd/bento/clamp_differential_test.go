@@ -19,10 +19,11 @@ import (
 
 // The clamp answers keep-or-drop rather than a sentence, so the corpus verdict maps onto
 // it: a grant the run refuses must not be proposed, since the reviewer would approve a
-// manifest that cannot run. Two documented departures, both carried on the case:
-// OptInRead, which the run honors but a draft manifest should not arrive holding, and
-// ClampKeeps for a grant that merely contains a shield, which the run re-shields the
-// interior of. WorkspaceDerived is NOT one of them: the clamp derives the checkout shields
+// manifest that cannot run. Two documented departures are carried on the case: OptInRead,
+// which the run honors but a draft manifest should not arrive holding, and ClampKeeps for
+// a grant that merely contains a shield, which the run re-shields the interior of. Two more
+// are read off the verdict below, because they hold for the shape rather than the case.
+// WorkspaceDerived is NOT one of the four: the clamp derives the checkout shields
 // under its write grants itself, so a refusal the run raises from one is a drop here too.
 func TestShieldCorpusClampDrops(t *testing.T) {
 	for _, c := range shieldcorpus.Cases {
@@ -48,7 +49,17 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 			// close: the refusal never goes through Contains, so no clamp built on the
 			// shield set reaches it, and the grant is kept.
 			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) &&
-				!c.ClampKeeps && c.Verdict != shieldcorpus.WorkspaceRedirected
+				!c.ClampKeeps && c.Verdict != shieldcorpus.WorkspaceRedirected &&
+				c.Verdict != shieldcorpus.AboveWriteShield
+			// The fourth departure, and the only one whose answer is neither keep nor drop:
+			// a grant containing a DenyWrite shield is kept - dropping it would withhold
+			// write: ~/.pyenv from every full-tier proposal - and reported, so the reviewer
+			// is told the manifest cannot run degraded. Asserted here rather than left to the
+			// boolean above, which cannot express the second half.
+			if c.Verdict == shieldcorpus.AboveWriteShield && !slices.Contains(aboveWriteShieldGrants(set, keptWrites), g) {
+				t.Errorf("%s\nthe run refuses it on the degraded tier, and the clamp keeps it without reporting it (reported: %v)\nshape: %s",
+					g, aboveWriteShieldGrants(set, keptWrites), c.Why)
+			}
 			kept := append(append([]string{}, keptReads...), keptWrites...)
 			gotDropped := len(dropped) > 0 || len(writeShielded) > 0
 			if gotDropped != wantDropped {

@@ -76,6 +76,11 @@ func corpusSandbox(home string, c shieldcorpus.Case) sandbox {
 // It is a subset of what checkGrants does, and the package doc says which checks are left
 // out and why that gap runs in the under-refusing direction. Adding one here means adding
 // a Verdict member alongside it, or the corpus cannot express the shape at all.
+//
+// It drives BOTH tiers: the full tier's checks in checkGrants' order, then the one check
+// runDegraded adds after them. The tier a refusal belongs to is read off the verdict - only
+// AboveWriteShield is the degraded tier's - so a case does not choose a tier and every case
+// is judged against everything a run of either tier would refuse it for.
 func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.Verdict {
 	t.Helper()
 	g := c.Path(sb.homes[0])
@@ -104,6 +109,12 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 	}
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
 		return shieldcorpus.AboveShield
+	}
+	// Last, and outside checkGrants: the one check runDegraded runs on its own, after the
+	// shared ones, so a shape both tiers refuse still reports the full tier's verdict and
+	// this arm is reached only where the full tier honors the grant.
+	if err := checkWriteNotAboveWriteShield(sb, writes); err != nil {
+		return shieldcorpus.AboveWriteShield
 	}
 	return shieldcorpus.Honored
 }
