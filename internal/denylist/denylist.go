@@ -476,8 +476,9 @@ func Home(home string) []Rule {
 		".m2/settings.xml",          // Maven <server> passwords, often plaintext
 		".gradle/gradle.properties", // signing keys and repository credentials
 		// Composer registry/VCS tokens, at both spellings of its home: ~/.composer is the
-		// legacy root it prefers when it exists, ~/.config/composer the default everywhere
-		// else, which is where the file actually sits on a host that never had the legacy one.
+		// legacy root it prefers when it exists, ~/.config/composer where it does not and the
+		// XDG variables are set - which is where the file actually sits on an ordinary
+		// desktop host that never had the legacy one.
 		".composer/auth.json",
 		".config/composer/auth.json",
 		".bundle/config",            // bundler stores gem-source and push credentials here
@@ -1910,6 +1911,13 @@ var dirFileEnvs = []struct{ env, def, file string }{
 	// follows the same variable from writeOnlyDirEnvs - the CARGO_HOME severity split, in
 	// the two tables that can express it.
 	{"CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"},
+	// The variable takes the whole ~/.claude* set with it, so the account/OAuth block that
+	// sits beside the config in .claude.json moves under it too - hidden at the default for
+	// that reason, and it would arrive inside the DenyWrite tree above readable otherwise.
+	// The backup is the one concrete sibling name; the epoch-suffixed ones are the same
+	// residual as at the default.
+	{"CLAUDE_CONFIG_DIR", ".claude", ".claude.json"},
+	{"CLAUDE_CONFIG_DIR", ".claude", ".claude.json.backup"},
 	{"CODEX_HOME", ".codex", "auth.json"},
 }
 

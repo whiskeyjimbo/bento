@@ -954,6 +954,8 @@ func TestHomeFollowsTheLateRelocationRows(t *testing.T) {
 		{Path: "/srv/borg/keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_CONFIG_DIR"},
 		{Path: "/srv/borg-keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_KEYS_DIR"},
 		{Path: "/srv/claude/.credentials.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
+		{Path: "/srv/claude/.claude.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
+		{Path: "/srv/claude/.claude.json.backup", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
 		{Path: "/srv/claude", Deny: DenyWrite, Dir: true, Source: "CLAUDE_CONFIG_DIR"},
 		{Path: "/srv/codex/auth.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CODEX_HOME"},
 		{Path: "/srv/codex", Deny: DenyWrite, Dir: true, Source: "CODEX_HOME"},
