@@ -2230,14 +2230,16 @@ func TestHomeShieldsTheComposerBinDirKnob(t *testing.T) {
 	// covered() sees a DenyAll restatement (underDenyAll) but not a DenyWrite one, so the
 	// relocation has to decline BOTH of composer's default homes itself or a COMPOSER_HOME
 	// pointed at the legacy root emits the rule the writeOnly list already carries.
+	// vendor/bin is the same shape, one table over: its writeOnlyDirEnvs row carries the
+	// XDG default only, so the legacy root misses the isDefault compare there too.
 	t.Setenv("COMPOSER_HOME", "/home/u/.composer")
-	n := 0
+	counts := map[string]int{}
 	for _, r := range allRules("/home/u") {
-		if r.Path == "/home/u/.composer/config.json" {
-			n++
-		}
+		counts[r.Path]++
 	}
-	if n != 1 {
-		t.Errorf("COMPOSER_HOME at the legacy default emits the config.json shield %d times, want 1", n)
+	for _, p := range []string{"/home/u/.composer/config.json", "/home/u/.composer/vendor/bin"} {
+		if n := counts[p]; n != 1 {
+			t.Errorf("COMPOSER_HOME at the legacy default emits the shield at %q %d times, want 1", p, n)
+		}
 	}
 }

@@ -1481,7 +1481,16 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		if isDefault(c, de.def) {
 			continue
 		}
-		if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
+		// A row carries one default, and a tool can have two: composer prefers ~/.composer
+		// when it exists and takes ~/.config/composer otherwise, so COMPOSER_HOME pointed at
+		// the legacy root misses the isDefault compare above and restates a shield the
+		// defaults already carry. covered() cannot drop it - underDenyAll matches DenyAll
+		// rules, and these are DenyWrite - so the restatement is recognized by its path.
+		p := filepath.Join(c, de.sub)
+		if slices.ContainsFunc(defaults, func(r Rule) bool { return r.Path == p }) {
+			continue
+		}
+		if !covered(p) && shieldable(p) {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: de.env})
 		}
 	}
