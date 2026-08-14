@@ -36,6 +36,29 @@ const SandboxHome = "/tmp"
 // own "not found" names the command and never the search path that lost it.
 const SandboxPath = "/usr/bin:/bin"
 
+// BaseImageDirs are the host directories every sandbox carries whatever the tier - the
+// bwrap tier ro-binds them, the degraded tier grants them to Landlock - so an interpreter
+// finds its runtime and its CA bundle without the manifest naming any of it. They are the
+// host's own trees rather than an image's, so a command found under one of them resolves
+// inside the box to the exact binary the caller resolves.
+//
+// Exported for the reason SandboxPath is, and it is the same answer read from the other
+// side: a frontend saying what the box does NOT carry has to know what it does, and the
+// alternative is a second list that drifts from the mounts. The backend's read set adds
+// the individual /etc loader and CA files to these; nothing on PATH lives there.
+var BaseImageDirs = []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"}
+
+// InBaseImage reports whether path is carried into the box by BaseImageDirs, and so needs
+// no grant to be reachable there.
+func InBaseImage(path string) bool {
+	for _, dir := range BaseImageDirs {
+		if path == dir || strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // InterpreterPrefix returns the install root of an interpreter that lives outside the
 // system paths (e.g. ~/.pyenv/versions/3.12/bin/python3 → ~/.pyenv/versions/3.12), so its
 // stdlib comes along. System interpreters are already covered by the backend's system read
@@ -52,10 +75,8 @@ func InterpreterPrefix(interp string) string {
 	if interp == "" {
 		return ""
 	}
-	for _, sys := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
-		if strings.HasPrefix(interp, sys) {
-			return ""
-		}
+	if InBaseImage(interp) {
+		return ""
 	}
 	// .../bin/python3 → ...
 	dir := filepath.Dir(interp)

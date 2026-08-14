@@ -1101,18 +1101,16 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // operator's, and nothing anywhere says so - not a denial, not a missing file, not an
 // error. bento holds both halves here, so it is the only thing that can.
 //
-// Gated on the home tree rather than on ungranted entries generally: /usr/bin and /bin are
-// ungranted on every run and present in the box, so warning on those fires always and
-// teaches a reader that [bento] lines are noise. A per-user toolchain reached through home
-// - a nix profile, ~/.local/bin, a version-manager shim - is the shape that actually
-// shadows, and it is quiet on a host that has none.
+// The predicate is "on PATH, exists here, and nothing carries it into the box" rather than
+// "ungranted": /usr/bin and /bin are ungranted on every run and the box carries them, so
+// warning on those fires always and teaches a reader that [bento] lines are noise. What
+// carries a directory in is a grant, the base image, or the interpreter's own prefix, and
+// each is asked about below - a note that fires on a manifest which is already correct is
+// the same attention cost as one that fires on every run.
 //
-// A grant is not the only way a directory reaches the box, so carriesInterpreter answers
-// the other one; a note that fires on a manifest which is already correct is the same
-// attention cost as one that fires on every run.
-//
-// Known ceiling: a multi-user nix install puts /nix/var/nix/profiles/default/bin on PATH,
-// which is outside home and outside the base image, and this does not see it.
+// An entry the host itself does not have is not shadowed either: nothing resolved from it
+// here, so nothing resolved differently there, and telling the operator to grant a missing
+// directory only trades this note for a missing-grant one.
 //
 // env carries the same meaning it does for writeSandboxHomeMiss above, and its PATH is the
 // caller's own value: the sandbox default is filled in further down, past this.
@@ -1121,22 +1119,15 @@ func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string
 	if !passed {
 		return
 	}
-	// As in writeSandboxHomeMiss: a relative or unset HOME names no tree to be under.
-	home, err := os.UserHomeDir()
-	if err != nil || !filepath.IsAbs(home) {
-		return
-	}
-	// Both spellings of home, because only one side of the comparison can be resolved: a
-	// host whose /home is a link to /var/home has PATH entries spelled through the target
-	// while $HOME names the link, and a single-spelling test then finds nothing under home
-	// on exactly the layout it should fire on.
-	homes := []string{filepath.Clean(home), pathresolve.Existing(home)}
 	var shadowed []string
 	for _, dir := range filepath.SplitList(search) {
-		// Matched on the entry's spelling, before resolution: ~/.nix-profile/bin is a
-		// symlink out of the home tree by design, and resolving it would drop the very
-		// entries this exists for.
-		if !filepath.IsAbs(dir) || !slices.ContainsFunc(homes, func(h string) bool { return underHome(filepath.Clean(dir), h) }) || slices.Contains(shadowed, dir) {
+		// Asked of the entry's spelling, before resolution: ~/.nix-profile/bin is a
+		// symlink into the store by design, and a grant naming either spelling covers it,
+		// which granted() answers on both.
+		if !filepath.IsAbs(dir) || enforce.InBaseImage(filepath.Clean(dir)) || slices.Contains(shadowed, dir) {
+			continue
+		}
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			continue
 		}
 		if !granted(p, dir) && !carriesInterpreter(p, dir) {
@@ -1146,10 +1137,10 @@ func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string
 	if len(shadowed) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] note: PATH is passed through, but these directories on it are under")
-	fmt.Fprintf(w, "[bento] your home and no grant covers them: %s\n", strings.Join(shadowed, ", "))
-	fmt.Fprintln(w, "[bento] The box does not carry them, so a bare command name resolved to the")
-	fmt.Fprintln(w, "[bento] base image's copy instead - a different build, or a different tool,")
+	fmt.Fprintln(w, "[bento] note: PATH is passed through, but the box does not carry these")
+	fmt.Fprintf(w, "[bento] directories on it and no grant covers them: %s\n", strings.Join(shadowed, ", "))
+	fmt.Fprintln(w, "[bento] A bare command name therefore resolved to whatever the box does carry")
+	fmt.Fprintln(w, "[bento] instead - a different build, or a different tool,")
 	fmt.Fprintln(w, "[bento] with no denial and no error to say so. Grant each in read: so the")
 	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
 }
@@ -1191,11 +1182,9 @@ func carriesInterpreter(p *policy.Policy, dir string) bool {
 	return policy.CoversResolved(prefix, dir) || policy.CoversResolved(pathresolve.Existing(prefix), pathresolve.Existing(dir))
 }
 
-// underHome reports whether a path lies in the host home tree. Both callers pass an
-// absolute path, but only writeSandboxHomeMiss's is symlink-resolved: writeSandboxPathShadow
-// deliberately asks about a PATH entry AS SPELLED, because ~/.nix-profile/bin resolves out
-// of the home tree by design and resolving first would drop the entries it exists for. So
-// this must stay a lexical test on whatever spelling it is handed.
+// underHome reports whether a path lies in the host home tree, lexically: its caller
+// passes an absolute, symlink-resolved grant, and the home it is compared against is
+// resolved the same way.
 func underHome(grant, home string) bool {
 	rel, err := filepath.Rel(home, grant)
 	if err != nil {

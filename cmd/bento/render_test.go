@@ -1360,6 +1360,10 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 // operator's, so the gate is what it fires on rather than what exit code it saw. The
 // negative half matters as much: an ordinary PATH of system directories is ungranted on
 // every run and must stay silent, or the note is noise by the second day.
+//
+// The tempdir-backed entries below stand in for the toolchains that shadow: what the
+// predicate asks is whether the box carries the directory, and nothing outside
+// enforce.BaseImageDirs is carried without a grant, wherever it sits.
 func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1381,6 +1385,16 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := filepath.Join(home, ".pyenv", "versions", "3.12")
+	if err := os.MkdirAll(filepath.Join(runtime, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A multi-user nix install, the shape a home-gated predicate could not see: outside
+	// the caller's home and outside the base image, shadowing exactly as a home profile
+	// does.
+	systemWide := filepath.Join(t.TempDir(), "nix", "var", "nix", "profiles", "default", "bin")
+	if err := os.MkdirAll(systemWide, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	withPath := func(v string) map[string]string { return map[string]string{"PATH": v} }
 
 	cases := []struct {
@@ -1398,7 +1412,12 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		{"granted by where the entry resolves to", &policy.Policy{Read: []string{store}}, withPath(linked), false},
 		{"a symlinked entry with no grant still shadows", &policy.Policy{}, withPath(linked), true},
 		{"PATH is not passed through, so the box never searched it", &policy.Policy{}, nil, false},
-		{"a relative entry names no tree to be under", &policy.Policy{}, withPath("bin"), false},
+		{"a relative entry names no directory at all", &policy.Policy{}, withPath("bin"), false},
+		{"a system-wide toolchain outside home shadows the same way", &policy.Policy{}, withPath(systemWide + ":/usr/bin"), true},
+		{"a system-wide toolchain the manifest granted does not", &policy.Policy{Read: []string{systemWide}}, withPath(systemWide), false},
+		// Nothing resolved from it here, so nothing resolved differently in the box, and
+		// the remedy the note names would be a grant that resolves to nothing.
+		{"an entry the host does not have is not a shadow", &policy.Policy{}, withPath(filepath.Join(home, "gone", "bin")), false},
 		// The interpreter's install prefix is bound on the interpreter's back, with
 		// nothing in read: naming it, so warning about it tells the operator to grant a
 		// directory the box already resolves.
@@ -1415,28 +1434,6 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
 			}
 		})
-	}
-}
-
-// A host whose home base is a symlink - /home -> /var/home, the ostree layout - spells
-// $HOME one way and the PATH entries the shell built another. Comparing one spelling
-// finds nothing under home and the note goes quiet on a layout it should fire on.
-func TestSandboxPathShadowSeesThroughASymlinkedHome(t *testing.T) {
-	base := t.TempDir()
-	real := filepath.Join(base, "var-home")
-	if err := os.MkdirAll(filepath.Join(real, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(base, "home")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", link)
-
-	var b bytes.Buffer
-	writeSandboxPathShadow(&b, &policy.Policy{}, map[string]string{"PATH": filepath.Join(real, "bin")})
-	if !strings.Contains(b.String(), "no grant covers them") {
-		t.Errorf("an entry spelled through the resolved home is still under it; got %q", b.String())
 	}
 }
 

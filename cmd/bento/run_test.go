@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -114,7 +115,13 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 func TestWriteRunResultReportsShadowedPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	env := map[string]string{"PATH": filepath.Join(home, ".local", "bin")}
+	// A real directory, because the note asks whether the box carries one the host has:
+	// an entry that does not exist here shadowed nothing.
+	toolchain := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(toolchain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"PATH": toolchain}
 
 	for _, tc := range []struct {
 		name   string

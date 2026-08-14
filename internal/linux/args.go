@@ -23,11 +23,14 @@ import (
 
 // systemReadPaths are mounted read-only in every sandbox so an interpreter can
 // find its runtime and its CA bundle. They carry no user data.
-var systemReadPaths = []string{
-	"/usr", "/bin", "/sbin", "/lib", "/lib64",
+//
+// The directory half comes from enforce rather than being spelled again here: a frontend
+// reports which PATH entries the box does NOT carry, and a second copy of this list is how
+// that report comes to disagree with the mounts it describes.
+var systemReadPaths = append(slices.Clone(enforce.BaseImageDirs),
 	"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
 	"/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/alternatives",
-}
+)
 
 // sandbox carries the host facts the argv compiler needs. Keeping them in a
 // struct rather than reading the environment inside compile() is what makes the
