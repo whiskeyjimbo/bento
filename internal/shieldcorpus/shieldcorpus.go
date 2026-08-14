@@ -14,10 +14,11 @@
 // else, the case says so in a field and gives the reason; a divergence with no field is a
 // bug in that site, not a case to be edited.
 //
-// SCOPE, and it is narrower than "what a run does". Verdict models six of checkGrants'
-// checks. Five are the full tier's; the sixth, AboveWriteShield, is the one refusal only a
-// degraded run raises, and the tier it belongs to is carried on the verdict rather than on
-// the case - which tier refuses is a property of the check, not something a case chooses.
+// SCOPE, and it is narrower than "what a run does". Verdict models six of the run's grant
+// checks. Five are checkGrants', which both tiers share; the sixth, AboveWriteShield, is
+// the one refusal only a degraded run raises, and it sits in runDegraded rather than in
+// checkGrants for that reason. The tier it belongs to is carried on the verdict rather than
+// on the case - which tier refuses is a property of the check, not something a case chooses.
 // One refusal a run raises still has no member here and no case can express it:
 // checkWriteNotRoot, which the shield checks are documented as relying on. So agreement
 // across the three sites is agreement about the six, and the gap runs in the UNDER-refusing
