@@ -364,8 +364,9 @@ var bridgeLivenessReadTimeout = 2 * time.Second
 // do about a SIGKILL, and reading death from the pipe closing instead would misreport
 // every ordinary run, so this stays a known hole rather than a trade. It may also have
 // recovered afterwards, which is why this says egress stopped rather than that it
-// stayed down. Set last, so where a dead host-side listener also degraded the layer
-// this is the reason the operator sees - it names the half that stopped first.
+// stayed down. Where a dead host-side listener degraded the layer too, both reasons are
+// carried: worsenNetwork joins them in call order, so the operator gets each half of a
+// two-part failure rather than whichever one fired first.
 func noteDeadBridge(r *enforce.Report, died bool) {
 	if !died {
 		return
@@ -375,16 +376,43 @@ func noteDeadBridge(r *enforce.Report, died bool) {
 }
 
 // worsenNetwork records a mid-run egress failure without letting it UPGRADE the layer.
-// Report.Set replaces unconditionally, and these two run after reconcile, so a network
-// layer already judged Unavailable would be softened to Degraded by an error path - a
-// report reading better because something else went wrong. Every other Set in the backend
-// writes either Unavailable or a state overlaying a probe that reported Enforced, so
-// these two are the only ones that could land on an already-worse layer.
+// Report.Set replaces unconditionally, and the three notes run after reconcile, so a
+// network layer already judged Unavailable would be softened to Degraded by an error path
+// - a report reading better because something else went wrong. Every other Set in the
+// backend writes either Unavailable or a state overlaying a probe that reported Enforced,
+// so these are the only ones that could land on an already-worse layer.
+//
+// A note landing on a layer already at ITS OWN state joins its reason to what is there
+// instead of being dropped. The three are independent - an OOM kill under the scope's
+// shared MemoryMax can take the bridge while the host listener dies on its own - and all
+// three write Degraded, so discarding the later ones handed the operator one half of a
+// two-part failure. The fault count in particular has no other channel: noteProxyFault is
+// its only consumer, so a listener that degraded the layer first erased the number of
+// connections whose handlers never ran to an outcome from the run record entirely.
 func worsenNetwork(r *enforce.Report, state enforce.State, reason string) {
-	if state <= r.StateOf(enforce.LayerNetwork) {
+	current := r.StateOf(enforce.LayerNetwork)
+	if state < current {
 		return
 	}
+	if state == current {
+		if prior := networkReason(r); prior != "" {
+			reason = joinReason(prior, reason)
+		}
+	}
 	r.Set(enforce.LayerNetwork, state, reason)
+}
+
+// networkReason returns what the report currently says about the network layer, so a
+// second note can extend it rather than replace it. Duplicate entries are read the way
+// StateOf reads them - the most severe wins - since that is the one admission governs on.
+func networkReason(r *enforce.Report) string {
+	worst, reason, found := enforce.Enforced, "", false
+	for _, l := range r.Layers {
+		if l.Layer == enforce.LayerNetwork && (!found || l.State > worst) {
+			worst, reason, found = l.State, l.Reason, true
+		}
+	}
+	return reason
 }
 
 func isExitError(err error) bool {

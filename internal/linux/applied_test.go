@@ -470,6 +470,40 @@ func TestNoteDeadListenerNeverUpgradesTheNetworkLayer(t *testing.T) {
 	}
 }
 
+// Three separate things can degrade the network layer mid-run, they are independent
+// (an OOM kill under the scope's MemoryMax can take the in-sandbox bridge while the host
+// listener dies on its own), and all three write Degraded. A guard that only replaced a
+// STRICTLY worse state therefore recorded the first to fire and silently dropped the
+// rest - and the fault count has no other reporting channel at all, so a listener that
+// died first erased the number of connections whose handlers never ran to an outcome.
+// The layer still never reads better, and it is still one entry; the reasons accumulate.
+func TestTheMidRunEgressNotesAccumulate(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	noteDeadListener(&r, errors.New("accept: bad file descriptor"))
+	noteDeadBridge(&r, true)
+	noteProxyFault(&r, 2)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("StateOf(network) = %v, want degraded", got)
+	}
+	var network int
+	for _, l := range r.Layers {
+		if l.Layer == enforce.LayerNetwork {
+			network++
+		}
+	}
+	if network != 1 {
+		t.Errorf("network layer appears %d times, want 1", network)
+	}
+	reason := r.Degradations()[0].Reason
+	for _, want := range []string{"bad file descriptor", "in-sandbox egress bridge", "dropped 2 connection(s)"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason = %q, want it to carry %q - the operator is owed every half of a multi-part failure", reason, want)
+		}
+	}
+}
+
 // reconcile is the one place that decides how far the stage got, so the SetupState it
 // returns must track the same three cases the layer verdicts above are drawn from: a
 // stage that never reported, one that applied its layers but never reached the target,
