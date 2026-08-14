@@ -225,7 +225,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	succeeded := false
 	defer func() {
 		if !succeeded {
-			reapTracees(tracees)
+			// The SIGSYS answer is dropped: every path reaching here returns Result{}, so
+			// there is no observation for it to qualify.
+			_ = reapTracees(tracees)
 		}
 	}()
 
@@ -235,6 +237,16 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	var ws syscall.WaitStatus
 	if _, err := waitTracee(root, &ws, 0, nil); err != nil {
 		return Result{}, fmt.Errorf("observe: initial wait: %w", err)
+	}
+	if ws.Exited() || ws.Signaled() {
+		// Root died between its PTRACE_TRACEME and the exec stop - an external signal, or
+		// the cgroup OOM killer whose limits this run's own profiling sets - and the wait
+		// above reaped it. Everything below assumes it is alive and stopped, and leaving
+		// it in the set would have the cleanup guard SIGKILL a freed pid that by now may
+		// belong to an unrelated host process, which is the hazard the root-exit branch
+		// deletes it for.
+		delete(tracees, root)
+		return Result{}, fmt.Errorf("observe: the target ended before the trace attached")
 	}
 	if err := requireSyscallInfo(root); err != nil {
 		return Result{}, err
@@ -377,7 +389,11 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// phantom is counted on a clean run: each descendant's held is swept at its own
 			// exit, so a script whose children have finished leaves this empty.
 			res.Dropped += existenceHeld(held)
-			reapTracees(tracees)
+			// A descendant SIGSYS'd before root exited may still have its status queued
+			// here, and this drain is the only thing that sees it.
+			if reapTracees(tracees) {
+				res.SeccompKilled = true
+			}
 			res.ExitCode = exitCode(ws)
 			if ws.Signaled() {
 				res.Signaled = true
@@ -689,12 +705,19 @@ var waitTracee = syscall.Wait4
 // an ECHILD before then means the rest reparented to init (which reaps their corpses)
 // and is a clean stop.
 //
+// It reports whether any status it drained was a SIGSYS death, because those statuses
+// never reach the main loop's own SIGSYS test: Wait4(-1) returns whichever child is ready
+// in task-list order, so a helper killed by a kill-mode filter is drained here whenever
+// root's status is dequeued first. Losing it lets Synthesize build a manifest from an
+// observation it would otherwise refuse, with everything that process touched missing and
+// Dropped at 0.
+//
 // It is indirected through a var so a test can see the remainder the loop hands it: a tid
 // left in the set that no longer exists is a pid this would SIGKILL blind, and nothing else
 // about the trace shows it.
 var reapTracees = reapTraceesImpl
 
-func reapTraceesImpl(tracees map[int]bool) {
+func reapTraceesImpl(tracees map[int]bool) (seccompKilled bool) {
 	remaining := make(map[int]bool, len(tracees))
 	for pid := range tracees {
 		remaining[pid] = true
@@ -707,12 +730,16 @@ func reapTraceesImpl(tracees map[int]bool) {
 			continue
 		}
 		if err != nil {
-			return // ECHILD: no waitable tracee remains; any survivor reparented to init
+			return seccompKilled // ECHILD: no waitable tracee remains; any survivor reparented to init
+		}
+		if ws.Signaled() && ws.Signal() == syscall.SIGSYS {
+			seccompKilled = true
 		}
 		if ws.Exited() || ws.Signaled() {
 			delete(remaining, wpid)
 		}
 	}
+	return seccompKilled
 }
 
 // dropSlots is how many pathname arguments one syscall can lose separately. rename, link
@@ -1225,20 +1252,30 @@ func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, 
 	// is very much there and simply is not a symlink, and skipping that would drop a real
 	// access.
 	//
-	// EINTR and the restart pseudo-errnos are in that category too, and they are here
-	// because a TRACER is the only thing that sees four of them: the signal machinery
-	// converts them before userspace ever does, but the syscall-exit stop happens first,
-	// so this decoder reads the raw value. They say the call was aborted or is about to be
-	// re-issued, never anything about the path. Which of the two it is depends on the
-	// handler's SA_RESTART, and the skip is right either way: a re-issued call arrives at a
-	// stop of its own carrying the real answer, and an aborted one never resolved. Reachable
-	// wherever a probe can block and a signal can land: a stat on a FUSE or NFS mount under
-	// a Go target, whose runtime preempts with a handled signal constantly.
+	// The four restart pseudo-errnos are in that category too, and only a TRACER sees
+	// them: the signal machinery converts them before userspace ever does, but the
+	// syscall-exit stop happens first, so this decoder reads the raw value. They say the
+	// call is about to be re-issued and nothing about the path, and the re-issue rebuilds
+	// an identical stop key and arrives with the real answer of its own. Reachable wherever
+	// a probe can block and a signal can land: a stat on a FUSE or NFS mount under a Go
+	// target, whose runtime preempts with a handled signal constantly.
+	//
+	// Literal EINTR is NOT one of them, though the kernel emits it at the same stop. It is
+	// the syscall's own terminal answer - the aborted call that will not be re-issued, which
+	// is what SA_RESTART's absence and FUSE's own aborted-request path both produce - so
+	// there is no later stop carrying anything about this path. Skipping it put the
+	// observation in neither Accesses nor Dropped, which is the manifest reading as complete
+	// while the enforced run answers ENOENT where the profiling run got a real answer. It is
+	// counted rather than skipped, the same as ENOTDIR below and for the same reason: the
+	// answer is missing either way, and only Dropped says so.
 	if ret := int64(regs.Rax); ret < 0 {
 		switch syscall.Errno(-ret) {
 		case syscall.ENOENT, syscall.EFAULT, syscall.ENAMETOOLONG,
-			syscall.ENOSYS, syscall.EBADF, syscall.EINTR, syscall.ENOMEM,
+			syscall.ENOSYS, syscall.EBADF, syscall.ENOMEM,
 			errRestartSys, errRestartNoIntr, errRestartNoHand, errRestartRestartBlock:
+			return
+		case syscall.EINTR:
+			drop()
 			return
 		case syscall.ENOTDIR:
 			// Not the answer ENOENT is, though both mean the probed path is not there.

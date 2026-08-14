@@ -1048,12 +1048,12 @@ func TestTraceCountsExecveButNotExecveat(t *testing.T) {
 func TestTraceForgetsATidRetiredByAnExecve(t *testing.T) {
 	var remainder []int
 	orig := reapTracees
-	reapTracees = func(tracees map[int]bool) {
+	reapTracees = func(tracees map[int]bool) bool {
 		remainder = remainder[:0]
 		for pid := range tracees {
 			remainder = append(remainder, pid)
 		}
-		orig(tracees)
+		return orig(tracees)
 	}
 	defer func() { reapTracees = orig }()
 

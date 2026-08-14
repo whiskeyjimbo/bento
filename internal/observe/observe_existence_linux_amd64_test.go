@@ -281,9 +281,10 @@ func TestHeldProbeSkipsENOMEMButNotEINVAL(t *testing.T) {
 // program sees. A probe interrupted mid-call returns one of the kernel's restart signals,
 // which the signal machinery rewrites before userspace reads it - but the syscall-exit stop
 // comes first, so this decoder gets the raw value. None of them says anything about the
-// path: the call was aborted, or is about to be re-issued and answered properly at a stop of
-// its own. Recorded as a real refusal instead, they widen the manifest with the PATH-search
-// noise the filter exists to keep out, and mark it present because the path never missed.
+// path, and each is about to be re-issued and answered properly at a stop of its own.
+// Recorded as a real refusal instead, they widen the manifest with the PATH-search noise
+// the filter exists to keep out, and mark it present because the path never missed; counted
+// as drops, they tell the user the manifest is short when it is not.
 //
 // Driven directly rather than through a tracee: reproducing it live needs a probe that
 // blocks (a FUSE or NFS mount) and a signal landing inside it, and the errno is the whole
@@ -293,7 +294,6 @@ func TestHeldProbeSkipsTheRestartErrnos(t *testing.T) {
 		name string
 		ret  int64
 	}{
-		{"EINTR", -4},
 		{"ERESTARTSYS", -512},
 		{"ERESTARTNOINTR", -513},
 		{"ERESTARTNOHAND", -514},
@@ -322,11 +322,41 @@ func TestHeldProbeSkipsTheRestartErrnos(t *testing.T) {
 			// own stop, so counting it here would tell the user the manifest is short when it
 			// is not.
 			if dropped != 0 {
-				t.Errorf("counted %d drops for an aborted probe that is about to be re-issued", dropped)
+				t.Errorf("counted %d drops for a probe that is about to be re-issued and answered", dropped)
 			}
 			if len(held) != 0 {
 				t.Errorf("the held entry survived, and its key is one the next call at this site rebuilds: %v", held)
 			}
 		})
+	}
+}
+
+// Literal EINTR is the one value at that stop the restart argument does not cover: it is
+// the call's own terminal answer, not a re-issue, so no later stop carries anything about
+// this path. Skipped, the observation lands in neither Accesses nor Dropped - a manifest
+// that reports no loss while the enforced run answers ENOENT where the profiling run got a
+// real answer, which is the divergence this decoder exists to prevent. It is an observation
+// this decoder cannot make, and Dropped is how it says so.
+func TestAnInterruptedProbeIsCountedRatherThanSkipped(t *testing.T) {
+	const probed = "/etc/hosts"
+	ret := -int64(syscall.EINTR) // the raw negative errno the exit stop carries
+	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0x1000, Rax: uint64(ret)}
+	held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+
+	var recorded []string
+	dropped := 0
+	recordHeldExistence(1, &regs,
+		func(p string, _ bool) { recorded = append(recorded, p) },
+		func(string, bool) {},
+		func() { dropped++ }, held)
+
+	if len(recorded) != 0 {
+		t.Errorf("recorded %q off a call that never resolved it", recorded)
+	}
+	if dropped != 1 {
+		t.Errorf("counted %d drops for a probe the kernel aborted for good; the manifest reports no loss", dropped)
+	}
+	if len(held) != 0 {
+		t.Errorf("the held entry survived: %v", held)
 	}
 }

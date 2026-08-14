@@ -180,9 +180,9 @@ func TestTraceReapsRootOnInitialWaitError(t *testing.T) {
 		return 0, syscall.ECHILD
 	}
 	var reaped map[int]bool
-	reapTracees = func(tracees map[int]bool) {
+	reapTracees = func(tracees map[int]bool) bool {
 		reaped = maps.Clone(tracees)
-		origReap(tracees)
+		return origReap(tracees)
 	}
 
 	// The message is asserted, not just the failure: the loop's own wait reaches the same
@@ -849,4 +849,110 @@ func TestTraceRefusesARelativeTarget(t *testing.T) {
 			t.Errorf("Trace(%q) was accepted, so the profile resolved argv[0] against the target's PATH", argv0)
 		}
 	}
+}
+
+// The other half of the initial wait: it returned a status rather than an error, and that
+// status is root's death. Root was reaped by that wait, so anything the guard is still
+// handed is a freed pid it SIGKILLs blind - and by then the number may belong to an
+// unrelated host process. The root-exit branch deletes it for exactly this reason; the
+// initial wait has to as well.
+func TestTraceForgetsARootThatDiedBeforeItsExecStop(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+
+	origWait, origReap := waitTracee, reapTracees
+	defer func() { waitTracee, reapTracees = origWait, origReap }()
+	// The death is real, not fabricated: the tracee is killed and the wait then dequeues
+	// its actual status, so the pid really is freed by the time the guard runs.
+	waitTracee = func(pid int, ws *syscall.WaitStatus, flags int, ru *syscall.Rusage) (int, error) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		return origWait(pid, ws, flags, ru)
+	}
+	var reaped map[int]bool
+	reapTracees = func(tracees map[int]bool) bool {
+		reaped = maps.Clone(tracees)
+		return origReap(tracees)
+	}
+
+	if _, err := Trace([]string{sh, "-c", "sleep 30"}, os.Environ(), nil, nil, nil); err == nil {
+		t.Fatal("a root that died before its exec stop was traced as if it were alive")
+	}
+	if len(reaped) != 0 {
+		t.Errorf("the guard was handed %v after the wait had already reaped root", reaped)
+	}
+}
+
+// SeccompKilled is documented for every tracee, not just root: a helper that trips a
+// kill-mode filter and a script that shrugs the failure off is the shape it exists for.
+// Wait4(-1) hands back whichever child is ready, so when root's status arrives first the
+// helper's SIGSYS is drained by the cleanup reap and never reaches the loop's own test.
+// Losing it lets Synthesize build a manifest out of an observation it would have refused.
+func TestASeccompKillDrainedByTheReapIsStillReported(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+	orig := reapTracees
+	defer func() { reapTracees = orig }()
+
+	// The drain's own half, against a real status: a child killed by SIGSYS reports the
+	// same Signaled/SIGSYS status a kill-mode filter's victim does, and that status is what
+	// arrives here when root's was dequeued first.
+	// The victim is exec'd directly rather than through a shell: a signal sent while the
+	// shell is still starting its own child is delivered late, and this test wants the
+	// death, not the race.
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		skipMissingDep(t, "sleep not available")
+	}
+	victim := exec.Command(sleepBin, "30")
+	if err := victim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := victim.Process.Pid
+	if err := syscall.Kill(pid, syscall.SIGSYS); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the death itself, not just the signal: the drain SIGKILLs everything it is
+	// handed, and a SIGKILL landing before SIGSYS is delivered replaces the status under
+	// test with its own.
+	waitForZombie(t, pid)
+	if !orig(map[int]bool{pid: true}) {
+		t.Error("the drain reaped a SIGSYS death and reported nothing")
+	}
+
+	// ...and the loop's half: whatever the drain reports has to reach the result.
+	reapTracees = func(tracees map[int]bool) bool {
+		orig(tracees)
+		return true
+	}
+
+	res, err := Trace([]string{sh, "-c", "exit 0"}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.SeccompKilled {
+		t.Error("a SIGSYS death the drain saw was left out of the result, and the manifest reports no loss")
+	}
+}
+
+// waitForZombie blocks until pid has died and is waiting to be reaped, so a test can hand
+// a settled status to a reaper rather than race the signal that produced it.
+func waitForZombie(t *testing.T, pid int) {
+	t.Helper()
+	for range 500 {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			t.Fatalf("pid %d disappeared before it could be reaped: %v", pid, err)
+		}
+		// The state field follows the comm field, which is parenthesized and may itself
+		// contain spaces.
+		if fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:])); len(fields) > 0 && fields[0] == "Z" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid %d never died", pid)
 }
