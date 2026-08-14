@@ -181,20 +181,32 @@ func (r *Report) SetStatus(s LayerStatus) {
 // StateOf returns the recorded state of a layer. A layer the report does not
 // mention is not enforced, so it reports Unavailable.
 func (r Report) StateOf(layer Layer) State {
-	// Return the most severe state among any duplicate entries, so this agrees with
-	// shortfall/Degradations (which scan every matching layer): a first-match here
-	// could report Enforced while a later duplicate Degraded/Unavailable entry is the
-	// one that governs admission. A missing layer is Unavailable, the fail-safe.
+	state, found := r.probedState(layer)
+	if !found {
+		return Unavailable
+	}
+	return state
+}
+
+// probedState returns what the probe actually said about a layer, and whether it said
+// anything at all. StateOf folds those two together into its fail-safe, which is right
+// wherever the layer is one the run REQUIRES: a required layer the probe declined to
+// report must not read as enforced. A caller reading a layer the run does not require
+// needs them apart, since there "absent" means the probe was never asked about it rather
+// than that it asserted the layer missing.
+//
+// The most severe state among any duplicate entries wins, so this agrees with
+// shortfall/Degradations (which scan every matching layer): a first-match could report
+// Enforced while a later duplicate Degraded/Unavailable entry is the one that governs
+// admission.
+func (r Report) probedState(layer Layer) (State, bool) {
 	state, found := Enforced, false
 	for _, l := range r.Layers {
 		if l.Layer == layer && (!found || l.State > state) {
 			state, found = l.State, true
 		}
 	}
-	if !found {
-		return Unavailable
-	}
-	return state
+	return state, found
 }
 
 // HasDegradation reports whether any layer is not fully enforced.

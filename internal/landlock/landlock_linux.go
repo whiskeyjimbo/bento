@@ -41,7 +41,9 @@ import (
 // this tier deliberately does not.
 //
 // RestrictPaths keeps only handledAccessFS from a Config, so the network and scoped sets
-// never reach the ruleset.
+// never reach the ruleset. That is a fact about this call, not about the package: the
+// degraded tier restricts both, each through its own Config and its own domain (see
+// scopedIPC and netTCP).
 var handledFS = ll.V8
 
 // scopedIPC is the scoped set the degraded tier restricts: ABI 6's abstract unix socket

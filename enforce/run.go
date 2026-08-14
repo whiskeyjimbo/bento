@@ -121,7 +121,8 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		return Result{}, err
 	}
 	wanted := requiredLayers(p, opts)
-	required := e.Probe(ctx).forLayers(wanted)
+	probed := e.Probe(ctx)
+	required := probed.forLayers(wanted)
 	if err := opts.admit(required); err != nil {
 		return Result{}, err
 	}
@@ -136,6 +137,28 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
 	// degradation travels to the caller in the Report, not here.
 	degraded := required.StateOf(LayerFilesystem) == Degraded
+	// requiredLayers leaves LayerNetwork out of a zero-rule gateless manifest because
+	// denying all egress is what namespace isolation already provides. That rests on there
+	// BEING a namespace, and a probe reporting the layer Unavailable says there is not -
+	// so the layer is filtered out of `required` and nothing sees it, on the reasoning that
+	// the run had no egress concern.
+	//
+	// The unfiltered probe is read here for that reason. The two ways a run gets an egress
+	// fence are the netns and the degraded tier's seccomp block, which is why a degraded
+	// run is exempt: the backend is told to install one. A run that has neither has no
+	// fence at all, and nothing downstream can supply one - Run passes no other signal that
+	// would make a backend fence egress in this shape.
+	//
+	// The Linux backend never reaches this: its probe ties LayerNetwork Unavailable to the
+	// same missing namespace that degrades the filesystem layer, so `degraded` is already
+	// true. But that is an invariant of one backend's probe, and Run takes any Enforcer -
+	// the same reason the gate and network-rule refusals above do not rest on it either.
+	if netState, probedNet := probed.probedState(LayerNetwork); !degraded && probedNet && netState == Unavailable {
+		return Result{}, &Refusal{
+			Report: required,
+			Reason: "this host has no network namespace to fence egress into, and only the degraded tier substitutes a seccomp egress block for one",
+		}
+	}
 	// The degraded tier has no mount namespace and applies no shields, so it cannot
 	// honor a caller deny. The backend refuses on this too, and keeps its copy because
 	// it is reachable without Run - but a backend refusal is a plain error, and a

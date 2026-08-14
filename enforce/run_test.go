@@ -385,22 +385,23 @@ func TestRunForwardsNetworkGate(t *testing.T) {
 	}
 }
 
-// The result must report only the layers the policy was judged against. Warning
-// that egress allowlisting is unavailable to a policy that asked for no network
-// is noise, and noise trains users to ignore the warnings that matter.
+// The result must report only the layers the policy was judged against. Warning that a
+// cpu cap cannot be enforced to a policy that asked for no limits is noise, and noise
+// trains users to ignore the warnings that matter.
 func TestResultReportsOnlyRequiredLayers(t *testing.T) {
 	f := &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
-	f.probe.Add(LayerNetwork, Unavailable, "egress stack not built")
+	f.probe.Add(LayerNetwork, Enforced, "")
 	f.probe.Add(LayerExec, Enforced, "")
+	f.probe.Add(LayerLimitsCPU, Unavailable, "cpu controller not delegated")
 
 	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, l := range res.Report.Layers {
-		if l.Layer == LayerNetwork {
-			t.Error("result reported the network layer to a policy that requested no network")
+		if l.Layer == LayerLimitsCPU {
+			t.Error("result reported the cpu limits layer to a policy that requested no limits")
 		}
 	}
 	if res.Report.HasDegradation() {
@@ -438,14 +439,20 @@ func TestRunRefusesAnUnexpandedTilde(t *testing.T) {
 	}
 }
 
-// A policy that asks for no network must not be blocked by a host that cannot
-// run the egress stack: it never requested egress, and namespace isolation alone
-// denies it.
+// A policy that asks for plain exec-blocking must not be blocked by a host that cannot
+// run the stricter fork/clone filter: it never asked for none-strict.
+//
+// The network layer used to be this test's subject, on the reasoning that a zero-rule
+// manifest never requested egress. That reasoning does not hold for THAT layer:
+// Unavailable there means there is no network namespace, which is the thing denying the
+// egress the manifest declined to ask for - see
+// TestZeroRuleManifestRefusesAHostWithNoNetworkFence, which now refuses that shape.
 func TestUnusedLayerDoesNotBlockRun(t *testing.T) {
 	f := &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
-	f.probe.Add(LayerNetwork, Unavailable, "pasta not installed")
+	f.probe.Add(LayerNetwork, Enforced, "")
 	f.probe.Add(LayerExec, Enforced, "")
+	f.probe.Add(LayerExecStrict, Unavailable, "not amd64")
 
 	for _, opts := range []Options{{}, {Strict: true}} {
 		f.ran = false
@@ -1149,5 +1156,48 @@ func TestRunIDSpellingIsScreened(t *testing.T) {
 		} else if f.ran {
 			t.Errorf("run id %q reached the backend", id)
 		}
+	}
+}
+
+// requiredLayers omits LayerNetwork for a zero-rule gateless manifest, on the sound
+// ground that denying all egress is what namespace isolation already provides. That
+// reasoning has a premise: that there IS a namespace. A probe reporting LayerNetwork
+// Unavailable says there is not, and with the layer filtered out of the required set
+// nothing sees it - the run is admitted, and RunOptions.Degraded is false, so the
+// backend is told nothing that would make it fence egress in place of the missing netns.
+//
+// The Linux backend does not reach this, because its probe ties LayerNetwork Unavailable
+// to the same fact that degrades the filesystem layer. But that is one backend's probe,
+// and Run takes any Enforcer, so the guarantee must not rest on a coupling enforce/ does
+// not itself require.
+//
+// The control arm is what separates the two cases: with a network rule the layer IS
+// required, and the same host refuses. The bug is only in the shape where the manifest
+// asked for nothing.
+func TestZeroRuleManifestRefusesAHostWithNoNetworkFence(t *testing.T) {
+	netPolicy := validPolicy()
+	netPolicy.Network = []policy.NetworkRule{{Host: "example.com", Port: "443"}}
+
+	for _, tc := range []struct {
+		name string
+		p    *policy.Policy
+	}{
+		{"zero-rule manifest", validPolicy()},
+		{"network manifest", netPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeEnforcer{}
+			f.probe.Add(LayerFilesystem, Enforced, "")
+			f.probe.Add(LayerNetwork, Unavailable, "no network namespace")
+
+			_, err := Run(context.Background(), f, tc.p, Process{}, Options{})
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("Run returned %v, want a *Refusal - the sandbox has neither a netns nor a degraded-tier egress filter", err)
+			}
+			if f.ran {
+				t.Error("the enforcer ran despite the refusal")
+			}
+		})
 	}
 }
