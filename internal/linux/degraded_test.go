@@ -852,3 +852,58 @@ func TestDegradedTierReportsItsOwnPostureNotTheHosts(t *testing.T) {
 		t.Errorf("the filesystem layer carries no account of what this tier does not confine; got %q", fs.Consequences)
 	}
 }
+
+// The degraded tier applies no shields, so Exposed is the only record that a run made
+// credential stores reachable. A cancel does not unmake that, and the cancel arm builds
+// its own Result: a field it forgets is an exposure the audit never mentions.
+func TestDegradedCancelCarriesTheExposureAudit(t *testing.T) {
+	requireDegraded(t)
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not available")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_rsa"), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	started := filepath.Join(dir, "started")
+	body := `: > "$STARTED"; "$SLEEP" 30`
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The home read is what reaches ~/.ssh, so the run has a real exposure to report.
+	p := &policy.Policy{Entrypoint: script, Interpreter: "bash", Read: []string{home, dir}, Write: []string{dir}, Exec: policy.ExecAll}
+	var out strings.Builder
+	proc := enforce.Process{Stdout: &out, Stderr: &out, Env: map[string]string{"SLEEP": sleepBin, "STARTED": started}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	res, err := enforcerUsing(testBento(t)).runDegraded(ctx, p, proc, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("want the cancel arm, got err=%v\noutput:\n%s", err, out.String())
+	}
+	if len(res.Exposed) == 0 {
+		t.Fatalf("cancelled degraded run reports no exposure, but the home read reached ~/.ssh: Exposed=%v", res.Exposed)
+	}
+}

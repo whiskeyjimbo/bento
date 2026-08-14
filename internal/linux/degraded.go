@@ -235,7 +235,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// partway is the run least likely to be looked at and most likely to have left an
 		// auto-executing file behind.
 		changedAuto, redirected := autoExecBefore.changed(writes)
-		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		// The exposure audit is carried out with them: this tier's whole honesty rests on
+		// Exposed naming what it could not shield, and the target reached those credentials
+		// whether or not it lived to finish. Dropping the list here reports a cancelled run
+		// as having exposed nothing.
+		return enforce.Result{Report: report, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
 	case cmd.ProcessState == nil:
@@ -249,10 +253,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		changedAuto, redirected := autoExecBefore.changed(writes)
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
 	default:
-		// As on the cancel arm above: the target may already have run, so the list is the
-		// only thing on this path that says what the host now holds.
+		// As on the cancel arm above: the target may already have run, so these are the only
+		// things on this path that say what the host now holds and what it was left reachable.
 		changedAuto, redirected := autoExecBefore.changed(writes)
-		return enforce.Result{Report: report, ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		return enforce.Result{Report: report, ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
 }
 
