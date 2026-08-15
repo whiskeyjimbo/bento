@@ -115,16 +115,23 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # The egress collector is the same class of property one layer up - the proxy calls its
 # observe from a goroutine per connection - so it needs the detector too. It is named
 # rather than run as a package because the rest of internal/linux is the real-sandbox tier
-# above: -race over the whole package is 83s against 1s for these. Widen the pattern when
-# another concurrent structure lands here. The -list guard is what makes that safe to
+# above: -race over the whole package is 83s against 1s for these. Add a name here when
+# another concurrent structure lands there. The -list guard is what makes that safe to
 # forget: -run with no match exits 0 and prints "no tests to run", so a rename would turn
-# this gate into a green no-op.
+# this gate into a green no-op. Each name is matched as a prefix, so a family of tests
+# sharing one is covered by the one entry.
+RACE_LINUX_TESTS := TestEgressCollector TestEnforcerReuseIsConcurrencySafe
+
 race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
-	@GOWORK=off go test -list 'TestEgressCollector' ./internal/linux/ | grep -q TestEgressCollector \
-		|| { printf "$(BOLD)the egress collector tests were renamed; update the -run pattern below$(RESET)\n" >&2; exit 1; }
-	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 -run 'TestEgressCollector' ./internal/linux/
+	@set -e; listed=$$(GOWORK=off go test -list '.*' ./internal/linux/); pattern=""; \
+	for t in $(RACE_LINUX_TESTS); do \
+		printf '%s\n' "$$listed" | grep -q "^$$t" \
+			|| { printf "$(BOLD)$$t no longer exists; update RACE_LINUX_TESTS$(RESET)\n" >&2; exit 1; }; \
+		pattern="$$pattern|$$t"; \
+	done; \
+	GOWORK=off CGO_ENABLED=1 go test -race -count=1 -run "$${pattern#|}" ./internal/linux/
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
 
 # A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as
