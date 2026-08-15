@@ -940,6 +940,53 @@ func TestGatedRunSurfacesAMidRunNetworkDegradation(t *testing.T) {
 	}
 }
 
+// The same bar applies to a run the backend also failed. A report that came back with a
+// core layer downgraded is the state the default posture refuses at admission, and the
+// backend's own error - the target's exit status, a wrapper that vanished - says nothing
+// about enforcement, so a caller sorting the two apart with errors.As would file the run
+// as an ordinary program failure and record it as enforced.
+func TestABackendErrorStillCarriesThePostureShortfall(t *testing.T) {
+	boom := errors.New("running sandbox: input/output error")
+	f := &fakeEnforcer{err: boom}
+	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerNetwork, Enforced, "")
+	f.result.Report.Add(LayerFilesystem, Degraded, "the Landlock backstop could not be applied")
+
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	var short *Shortfall
+	if !errors.As(err, &short) {
+		t.Fatalf("Run returned %v, want a *Shortfall: the report it hands back carries a degraded core layer", err)
+	}
+	if got := res.Report.StateOf(LayerFilesystem); got != Degraded {
+		t.Errorf("filesystem state = %s, want degraded", got)
+	}
+	if !hasLayer(short.Short, LayerFilesystem) {
+		t.Errorf("shortfall names %v, want the filesystem layer", short.Short)
+	}
+	// The backend's own error is what says why the run failed, and a frontend that
+	// renders it must still find it: the shortfall is an additional verdict on the run,
+	// not a replacement for its cause.
+	if !errors.Is(err, boom) {
+		t.Errorf("Run err = %v, want the backend's own error still reachable under it", err)
+	}
+}
+
+// A backend error over a report whose layers all held is passed through unchanged, so
+// the shortfall above is a verdict about the posture and not a wrapper on every failure.
+func TestABackendErrorOverAHeldPostureIsPassedThrough(t *testing.T) {
+	boom := errors.New("running sandbox: input/output error")
+	f := &fakeEnforcer{err: boom, probe: confinedHost()}
+
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	var short *Shortfall
+	if errors.As(err, &short) {
+		t.Fatalf("Run returned a *Shortfall (%v) for a run whose layers all held", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("Run err = %v, want the backend's own error", err)
+	}
+}
+
 // A strict run whose layers all held returns no error, so the shortfall above is a
 // verdict about this run and not a blanket strict-mode failure.
 func TestStrictRunThatHoldsReturnsNoError(t *testing.T) {

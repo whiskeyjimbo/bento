@@ -243,6 +243,25 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	}
 	res.Report = required
 	if err != nil {
+		// The posture bar below applies to this arm too: the overlay has already run, so the
+		// report handed back here can carry a core layer the backend downgraded mid-run -
+		// the exact state admission refuses - and the error beside it is the backend's own
+		// (the target's exit status, a wrapper that vanished), which says nothing about
+		// enforcement. A caller sorting the two apart with errors.As would file the run as an
+		// ordinary program failure over a posture that did not hold.
+		//
+		// The backend's error is wrapped rather than replaced: it is what says why the run
+		// failed, and the shortfall is an additional verdict on it, not a substitute.
+		//
+		// The silent-stage Refusal below is deliberately NOT re-applied here. A Refusal is
+		// retry-safe by contract, and this arm's premise is that the target may already have
+		// run - telling a supervisor to run it again is the hazard the Shortfall wording
+		// exists to avoid. Its own reason does not reach here either: it guards against
+		// presenting Result's zero exit code as the target's own, and there is a non-nil
+		// error here doing that job.
+		if short := postRunShortfall(opts, res.Report); len(short) > 0 {
+			return res, &Shortfall{Report: res.Report, Short: short, Err: err}
+		}
 		return res, err
 	}
 	// A silent stage leaves no attestation for any layer, so the exit code beside it is
@@ -533,11 +552,23 @@ type Shortfall struct {
 	Report Report
 	// Short is the set of layers that fell short.
 	Short []LayerStatus
+	// Err is the backend's own failure, on the runs that had one - a wrapper that
+	// vanished, a cancelled context. It is nil for the ordinary shortfall, where the
+	// target ran to completion and the posture is the only thing that went wrong. A
+	// frontend that renders a failure reads it through errors.Is/As, so a run does not
+	// have to choose between reporting its cause and reporting its posture.
+	Err error
 }
+
+func (e *Shortfall) Unwrap() error { return e.Err }
 
 func (e *Shortfall) Error() string {
 	var b strings.Builder
-	b.WriteString("the run completed but the guarantees it was admitted on did not hold for it")
+	if e.Err != nil {
+		fmt.Fprintf(&b, "%v, and the guarantees the run was admitted on did not hold for it", e.Err)
+	} else {
+		b.WriteString("the run completed but the guarantees it was admitted on did not hold for it")
+	}
 	for _, l := range e.Short {
 		fmt.Fprintf(&b, "\n  %s (%s): %s", l.Layer, l.State, l.Disclosure())
 	}

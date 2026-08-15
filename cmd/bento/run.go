@@ -414,9 +414,12 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		writeRefusal(stderr, "refusing to run", refusal)
 		writeLimitsRemedy(stderr, refusal)
 		return &exitError{code: bentoFailed}
-	case errors.As(runErr, &shortfall):
+	case errors.As(runErr, &shortfall) && shortfall.Err == nil:
 		// The target ran, so its output and report are reported exactly as a clean run's
-		// are; only the exit code differs, below.
+		// are; only the exit code differs, below. A shortfall that also carries the
+		// backend's own failure is not that run - nothing here would print the cause, and
+		// "the script ran, but" below would assert a run that may never have started - so
+		// it takes the failure path instead, where the report already discloses the layers.
 	case runErr != nil:
 		// The auto-exec notice rides the failure out. A run killed partway - a cancelled
 		// context, a teardown that died - is the one most likely to have rewritten a
