@@ -351,14 +351,24 @@ func TestParseRejectsDeepNesting(t *testing.T) {
 // The depth screen must not refuse what people legitimately write. A manifest reaches
 // four levels, so the cap has to sit well clear of that - and the block-entry count has
 // to fall as entries close, or a long list would climb one level per item.
+// Both spellings of a network list are covered because they reach the count by different
+// tokens: the flow form adds a flow collection per entry, the block form - what the
+// repo's own examples are written in - adds nothing but the entry, so only it would catch
+// a pop condition that let sibling entries stack.
 func TestParseAcceptsRealisticNesting(t *testing.T) {
-	var src strings.Builder
-	src.WriteString("entrypoint: ./x\nnetwork:\n")
+	var flow, block strings.Builder
+	flow.WriteString("entrypoint: ./x\nnetwork:\n")
+	block.WriteString("entrypoint: ./x\nnetwork:\n")
 	for i := 0; i < 500; i++ {
-		fmt.Fprintf(&src, "  - {host: h%d.example.com, port: \"443\"}\n", i)
+		fmt.Fprintf(&flow, "  - {host: h%d.example.com, port: \"443\"}\n", i)
+		fmt.Fprintf(&block, "  - host: h%d.example.com\n    port: \"443\"\n", i)
 	}
-	if _, err := Parse(strings.NewReader(src.String())); err != nil {
-		t.Errorf("a manifest at the depth people write must not be refused: %v", err)
+	for name, src := range map[string]string{"flow": flow.String(), "block": block.String()} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(strings.NewReader(src)); err != nil {
+				t.Errorf("a manifest at the depth people write must not be refused: %v", err)
+			}
+		})
 	}
 }
 
