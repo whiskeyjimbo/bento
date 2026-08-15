@@ -206,6 +206,7 @@ func newProfileCmd() *cobra.Command {
 					// the one that matters; a dropped access from any round is gone for good.
 					status.unfinished = s.unfinished
 					status.dropped = status.dropped || s.dropped
+					status.droppedConns = status.droppedConns || s.droppedConns
 					status.blocked = union(status.blocked, s.blocked)
 					status.withheld = mergeNotes(status.withheld, s.withheld)
 					status.flagged = mergeNotes(status.flagged, s.flagged)
@@ -257,6 +258,7 @@ func newProfileCmd() *cobra.Command {
 								status.withheld = mergeNotes(first.withheld, status.withheld)
 								status.flagged = mergeNotes(first.flagged, status.flagged)
 								status.dropped = status.dropped || first.dropped
+								status.droppedConns = status.droppedConns || first.droppedConns
 								status.blocked = union(first.blocked, status.blocked)
 							}
 						}
@@ -581,6 +583,8 @@ func incompleteReason(status roundStatus, stop convergeStop) string {
 		return "the profiled run did not finish"
 	case status.dropped:
 		return "the observer could not name every access the target made"
+	case status.droppedConns:
+		return "the egress proxy could not name every connection the target made"
 	case stop == convergeQuit:
 		return "you quit before it converged"
 	case stop == convergeMaxRounds:
@@ -639,6 +643,9 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	if obs.Dropped > 0 {
 		fmt.Fprintln(os.Stderr, droppedWarning(obs.Dropped))
 	}
+	if obs.DroppedConnections > 0 {
+		fmt.Fprintln(os.Stderr, droppedConnectionsWarning(obs.DroppedConnections))
+	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
 	// the same names profiling recorded and granted.
 	proposed.Env = sortedKeys(cfg.env)
@@ -652,11 +659,12 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 	)
 	clamped, flagged := printProposalWarnings(os.Stderr, proposed)
 	return proposed, roundStatus{
-		unfinished: partialRunWarning(obs, proposed.Interpreter),
-		dropped:    obs.Dropped > 0,
-		blocked:    blockedHostKeys(obs.Blocked),
-		withheld:   append(withheld, clamped...),
-		flagged:    append(flagged, printTmpGrants(os.Stderr, proposed)...),
+		unfinished:   partialRunWarning(obs, proposed.Interpreter),
+		dropped:      obs.Dropped > 0,
+		droppedConns: obs.DroppedConnections > 0,
+		blocked:      blockedHostKeys(obs.Blocked),
+		withheld:     append(withheld, clamped...),
+		flagged:      append(flagged, printTmpGrants(os.Stderr, proposed)...),
 	}, nil
 }
 
@@ -843,7 +851,10 @@ type roundStatus struct {
 	// about to fix.
 	unfinished string
 	dropped    bool
-	blocked    []string
+	// droppedConns marks a round the proxy handled an egress connection in that named
+	// no destination, so the proposal is short by one the observation cannot name.
+	droppedConns bool
+	blocked      []string
 	// withheld and flagged are the round's proposal decisions, for --json. They
 	// accumulate like blocked and for the same reason: a path round 1 declined to
 	// propose is a fact about the drafting, and a later round that never reached for it
@@ -1326,6 +1337,13 @@ func sortedKeys(m map[string]string) []string {
 // partialRunWarning is held to the session's last one.
 func droppedWarning(n int) string {
 	return fmt.Sprintf("[bento] WARNING: the observer could not name %d file access(es) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the paths by hand.", n)
+}
+
+// droppedConnectionsWarning names the egress connections the proxy handled but could
+// not name a destination for, which are simply absent from the proposal's network
+// rules. Reported per round, for the reason droppedWarning is.
+func droppedConnectionsWarning(n int) string {
+	return fmt.Sprintf("[bento] WARNING: the egress proxy could not name the destination of %d connection(s) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the hosts by hand.", n)
 }
 
 // partialRunWarning returns a warning when the profiled run may not have finished -

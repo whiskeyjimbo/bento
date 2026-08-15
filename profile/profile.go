@@ -100,6 +100,14 @@ type Observation struct {
 	// so a manifest synthesized from it is short by an unknown amount; the frontend
 	// warns, because the alternative is a proposal that looks complete and is not.
 	Dropped int
+	// DroppedConnections counts egress connections the proxy handled that named no
+	// destination - one turned away before its request line parsed, or dropped by a
+	// panicking handler. There is nothing to propose for one, so it is counted rather
+	// than recorded: the run reached the network somewhere this observation cannot
+	// name, and a manifest synthesized from it is short by an unknown amount. The
+	// enforced path covers the same connections with its own count and a degraded
+	// network layer; here the count is all there is.
+	DroppedConnections int
 	// SeccompKilled reports that a process in this run died on SIGSYS - a kill-mode
 	// seccomp filter refused one of its syscalls. Everything that process touched is
 	// absent from this observation, and re-profiling produces the same result, so a

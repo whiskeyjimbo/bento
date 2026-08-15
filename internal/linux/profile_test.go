@@ -14,6 +14,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/observe"
+	"github.com/whiskeyjimbo/bento/internal/proxy"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/profile"
 )
@@ -431,5 +432,26 @@ func TestProfileRefusesACPULimitTheHostCannotEnforce(t *testing.T) {
 	_, err := New().Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "cpu controller is not delegated") {
 		t.Fatalf("profiling must refuse a cpu limit this host cannot enforce; got err=%v", err)
+	}
+}
+
+// A profiling run's proxy sees the two decisions that name no destination the same
+// way an enforced run's does. There is nothing to propose for either, but the
+// connection must not vanish from the observation: the enforced path keeps it in a
+// count and a degraded network layer, and here the count is all there is.
+func TestRecordedEgressCountsConnectionsItCannotName(t *testing.T) {
+	var rec recordedEgress
+	rec.observe(proxy.Denied, "recorded.example", "443")
+	rec.observe(proxy.Untunneled, "plain.example", "80")
+	rec.observe(proxy.Refused, "", "")
+	rec.observe(proxy.Faulted, "", "")
+
+	var obs profile.Observation
+	rec.into(&obs)
+	if want := []profile.HostPort{{Host: "recorded.example", Port: "443"}}; !slices.Equal(obs.Hosts, want) {
+		t.Errorf("Hosts = %v, want %v", obs.Hosts, want)
+	}
+	if obs.DroppedConnections != 2 {
+		t.Errorf("DroppedConnections = %d, want 2 (a refused and a faulted connection)", obs.DroppedConnections)
 	}
 }

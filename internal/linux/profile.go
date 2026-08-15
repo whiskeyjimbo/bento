@@ -144,12 +144,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	defer report.Close()
 	sb.observe = true
 
-	var (
-		mu         sync.Mutex
-		hosts      []profile.HostPort
-		blocked    []profile.HostPort
-		untunneled []profile.HostPort
-	)
+	var rec recordedEgress
 	var stopProxy func()
 	// Safety net for early error returns; the happy path stops it explicitly below.
 	defer func() {
@@ -158,21 +153,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		}
 	}()
 	if sb.proxySocket != "" {
-		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, func(d proxy.Decision, host, port string) {
-			mu.Lock()
-			defer mu.Unlock()
-			// An untunneled destination is recorded apart from the proposable hosts, not
-			// beside them: no manifest rule makes bento carry a plain-HTTP request, so it
-			// belongs in the proposal's declined half rather than its grants.
-			if d == proxy.Untunneled {
-				untunneled = append(untunneled, profile.HostPort{Host: host, Port: port})
-				return
-			}
-			hosts = append(hosts, profile.HostPort{Host: host, Port: port})
-			if d == proxy.GuardBlocked {
-				blocked = append(blocked, profile.HostPort{Host: host, Port: port})
-			}
-		})
+		stop, err := startRecordingProxy(ctx, p, sb.proxySocket, allowNetwork, rec.observe)
 		if err != nil {
 			return profile.Observation{}, err
 		}
@@ -225,12 +206,52 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		stopProxy()
 		stopProxy = nil
 	}
-	mu.Lock()
-	obs.Hosts, obs.Blocked, obs.Untunneled = hosts, blocked, untunneled
-	mu.Unlock()
+	rec.into(&obs)
 	obs.Interpreter = sb.interpreter
 	obs.InterpreterName = sb.interpreterName
 	return obs, nil
+}
+
+// recordedEgress accumulates what the recording proxy saw, in the shape the
+// observation reports it. It is the profiling counterpart of egressCollector, and
+// locks for the same reason: observe runs on each connection's own goroutine.
+type recordedEgress struct {
+	mu         sync.Mutex
+	hosts      []profile.HostPort
+	blocked    []profile.HostPort
+	untunneled []profile.HostPort
+	unnamed    int
+}
+
+func (r *recordedEgress) observe(d proxy.Decision, host, port string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Neither names a destination - one was turned away before its request line parsed,
+	// the other dropped by a panicking handler - so there is nothing to propose and the
+	// count is the only thing that tells the operator the profile is short a connection.
+	if d == proxy.Refused || d == proxy.Faulted {
+		r.unnamed++
+		return
+	}
+	// An untunneled destination is recorded apart from the proposable hosts, not
+	// beside them: no manifest rule makes bento carry a plain-HTTP request, so it
+	// belongs in the proposal's declined half rather than its grants.
+	if d == proxy.Untunneled {
+		r.untunneled = append(r.untunneled, profile.HostPort{Host: host, Port: port})
+		return
+	}
+	r.hosts = append(r.hosts, profile.HostPort{Host: host, Port: port})
+	if d == proxy.GuardBlocked {
+		r.blocked = append(r.blocked, profile.HostPort{Host: host, Port: port})
+	}
+}
+
+// into copies the recorded egress onto obs. The caller stops the proxy first, so
+// nothing is still writing.
+func (r *recordedEgress) into(obs *profile.Observation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	obs.Hosts, obs.Blocked, obs.Untunneled, obs.DroppedConnections = r.hosts, r.blocked, r.untunneled, r.unnamed
 }
 
 // startRecordingProxy runs the egress proxy and reports every destination a
@@ -244,8 +265,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 // guard refused the destination - the name resolved into space the sandbox must not
 // reach - which needs a dial to be attempted at all, so it never appears without
 // allowNetwork. Untunneled says the request was not a CONNECT, which is decided before
-// any dial and so appears in either mode. Nothing else distinguishes one recorded host
-// from another: the discovery allowlist is *:* and there is no gate.
+// any dial and so appears in either mode. Refused and Faulted carry no host at all -
+// one was turned away before its request line parsed, the other dropped by a panicking
+// handler - and reach record for the count alone, because a connection this observation
+// cannot name is still a connection the proposal is short by.
+//
+// Nothing else distinguishes one recorded host from another: the discovery allowlist is
+// *:* and there is no gate.
 func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(d proxy.Decision, host, port string)) (func(), error) {
 	var opts []proxy.Option
 	if allowNetwork {
@@ -258,16 +284,7 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 	} else {
 		opts = append(opts, proxy.WithoutEgress())
 	}
-	stop, err := startProxyWith(ctx, p, socket, func(d proxy.Decision, host, port string) {
-		// Neither of these carries a host - one was turned away before its CONNECT was
-		// read, the other faulted somewhere that may have been before it - so there is
-		// nothing to put in the proposed manifest. A profiling run drops the connection
-		// either way, and the destination it would have proposed is simply lost.
-		if d == proxy.Refused || d == proxy.Faulted {
-			return
-		}
-		record(d, host, port)
-	}, opts...)
+	stop, err := startProxyWith(ctx, p, socket, record, opts...)
 	if err != nil {
 		return nil, err
 	}
