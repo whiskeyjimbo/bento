@@ -306,33 +306,49 @@ func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
 	}
 }
 
-// The egress check reaches the filesystem layer only indirectly, through the
+// The seccomp checks reach the filesystem layer only indirectly, through the
 // degradedFencesOK term: the reduced tier stands in for the missing namespaces with
-// a seccomp egress block, so without one there is no tier left to offer. Dropping
-// that term from Probe would offer --allow-degraded on a host where the launcher can
-// only refuse, which is the fail-open this layer exists to prevent.
+// seccomp fences, so without one of them there is no tier left to offer. Dropping a
+// term from Probe would offer --allow-degraded on a host where the launcher can only
+// refuse, which is the fail-open this layer exists to prevent.
+//
+// Every fence the launcher's degradedPrerequisites refuses on gets its own case, and
+// for the reason that gate's own terms are separate: all three filters are amd64-only
+// today, so on every real host the answers agree and a term read from only one of them
+// would look correct while the others went unasked.
 //
 // Emptying PATH is what makes the branch reachable: usableNamespaces looks bwrap up
 // on PATH, so this drives Probe down the userns-blocked path on a host where userns
 // works.
-func TestProbeReadsTheEgressCheckForTheDegradedTier(t *testing.T) {
-	t.Setenv("PATH", "")
+func TestProbeReadsEveryDegradedFenceCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fence *func() bool
+	}{
+		{"seccomp", &seccompSupported},
+		{"egress", &seccompEgressSupported},
+		{"terminal injection", &seccompTerminalSupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", "")
 
-	// A positive control: with the fences intact this host must still offer the
-	// degraded tier, or the Unavailable below would just be the absent bwrap talking.
-	if before := layerStatus(t, enforce.LayerFilesystem); before.State != enforce.Degraded {
-		t.Skipf("without bwrap this host reports filesystem %v (%q), not the degraded tier, so losing the egress fence proves nothing",
-			before.State, before.Reason)
-	}
+			// A positive control: with the fences intact this host must still offer the
+			// degraded tier, or the Unavailable below would just be the absent bwrap talking.
+			if before := layerStatus(t, enforce.LayerFilesystem); before.State != enforce.Degraded {
+				t.Skipf("without bwrap this host reports filesystem %v (%q), not the degraded tier, so losing a fence proves nothing",
+					before.State, before.Reason)
+			}
 
-	swap(t, &seccompEgressSupported, false)
-	after := layerStatus(t, enforce.LayerFilesystem)
-	// The state check carries the teeth here: the Degraded reason this must NOT be
-	// also mentions the seccomp egress block, so a reason-only assertion passes even
-	// when Probe ignores the check entirely.
-	if after.State != enforce.Unavailable || !strings.Contains(after.Reason, "seccomp") {
-		t.Errorf("with the egress fence absent filesystem = %v (%q), want unavailable blaming the seccomp fences - Probe is not reading the check",
-			after.State, after.Reason)
+			swap(t, tc.fence, false)
+			after := layerStatus(t, enforce.LayerFilesystem)
+			// The state check carries the teeth here: the Degraded reason this must NOT be
+			// also mentions the seccomp fences, so a reason-only assertion passes even
+			// when Probe ignores the check entirely.
+			if after.State != enforce.Unavailable || !strings.Contains(after.Reason, "seccomp") {
+				t.Errorf("with the %s fence absent filesystem = %v (%q), want unavailable blaming the seccomp fences - Probe is not reading the check",
+					tc.name, after.State, after.Reason)
+			}
+		})
 	}
 }
 

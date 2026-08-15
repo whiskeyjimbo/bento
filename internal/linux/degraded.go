@@ -375,7 +375,7 @@ func (e *Enforcer) degradedProbe(ctx context.Context) enforce.Report {
 	if r.StateOf(enforce.LayerFilesystem) < enforce.Degraded {
 		r.SetStatus(filesystemLayer(namespacesBlocked, degradedTierReason, landlockAvailable(),
 			landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(),
-			landlockScopedIPCRestricted(), landlockNetTCPRestricted(), seccompSupported() && seccompEgressSupported()))
+			landlockScopedIPCRestricted(), landlockNetTCPRestricted(), degradedFencesOK()))
 	}
 	if r.StateOf(enforce.LayerNetwork) < enforce.Unavailable {
 		r.Set(enforce.LayerNetwork, enforce.Unavailable, degradedTierReason+

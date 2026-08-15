@@ -31,9 +31,23 @@ var (
 	seccompSupported              = seccomp.Supported
 	seccompStrictExecSupported    = seccomp.StrictExecSupported
 	seccompEgressSupported        = seccomp.EgressSupported
+	seccompTerminalSupported      = seccomp.TerminalInjectionSupported
 	landlockScopedIPCRestricted   = landlock.ScopedIPCRestricted
 	landlockNetTCPRestricted      = landlock.NetTCPRestricted
 )
+
+// degradedFencesOK reports whether this host can supply every fence the reduced-
+// confinement tier substitutes for the namespaces it lacks: a seccomp egress block for
+// the missing netns, a cross-process block for the missing PID namespace, and a
+// terminal-injection block for the missing --new-session. It must name the same terms
+// the launcher's degradedPrerequisites refuses on, or the probe offers a tier the
+// launcher can only refuse at run time.
+//
+// A function rather than the local it used to be, called from both this package's
+// probe paths: the term was written out twice, which is how the two answers drift.
+func degradedFencesOK() bool {
+	return seccompSupported() && seccompEgressSupported() && seccompTerminalSupported()
+}
 
 // Probe reports what this host can actually enforce.
 //
@@ -50,11 +64,10 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// unprivileged user namespace here; probe that once and report both layers
 	// against it, so neither claims a guarantee bwrap cannot deliver on this host.
 	ns, nsReason := usableNamespaces(ctx)
-	// The reduced-confinement tier stands in for the missing netns and PID namespace
-	// with a seccomp egress and cross-process block, so its viability - not just
-	// Landlock's - decides whether a degraded run is offered.
-	degradedFencesOK := seccompSupported() && seccompEgressSupported()
-	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), landlockScopedIPCRestricted(), landlockNetTCPRestricted(), degradedFencesOK))
+	// The reduced-confinement tier stands in for the missing namespaces with seccomp
+	// fences, so its viability - not just Landlock's - decides whether a degraded run
+	// is offered.
+	r.AddStatus(filesystemLayer(ns, nsReason, landlockAvailable(), landlockTruncateRestricted(), landlockIoctlDevRestricted(), landlockResolveUnixRestricted(), landlockScopedIPCRestricted(), landlockNetTCPRestricted(), degradedFencesOK()))
 
 	// Egress is enforced by the network namespace (nothing leaves except through our
 	// proxy) plus the host-side allowlist proxy. The guarantee that matters - nothing
