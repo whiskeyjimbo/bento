@@ -252,10 +252,11 @@ func FuzzShieldCoversReachableSecrets(f *testing.F) {
 	f.Add("/home/u/.config", 1<<4)                      // the parent of a nested store
 
 	f.Fuzz(func(t *testing.T, g string, existMask int) {
-		// Absolute and cleaned: a grant reaches the shield checks only past the policy
-		// screens, which is where relative and uncleaned spellings are already refused,
-		// and admitting them here would test a shape production cannot present.
-		if !filepath.IsAbs(g) || g != filepath.Clean(g) {
+		// Absolute only. NOT cleaned: nothing between Resolve and checkGrants cleans the
+		// read set - resolveAgainst returns an absolute path verbatim and Validate is
+		// pinned non-mutating - so "read: /home/u/.ssh/" reaches these checks spelled
+		// exactly that way, and skipping it here would exclude a shape production presents.
+		if !filepath.IsAbs(g) {
 			t.Skip()
 		}
 		checkShieldInvariants(t, g, existMask)

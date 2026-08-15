@@ -1197,8 +1197,12 @@ func shadowsABaseImageCommand(dir string, carried []string) bool {
 		return true
 	}
 	for _, e := range names {
+		// Neither side may be a directory: a directory cannot be executed, so a name held
+		// as one on either end shadows nothing.
+		if e.IsDir() {
+			continue
+		}
 		for _, c := range carried {
-			// A directory of the same name is not a command: only a file resolves.
 			if fi, err := os.Stat(filepath.Join(c, e.Name())); err == nil && !fi.IsDir() {
 				return true
 			}

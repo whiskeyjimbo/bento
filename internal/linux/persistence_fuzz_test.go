@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -191,14 +192,21 @@ func checkPersistenceShielded(t *testing.T, mask int, rel string) {
 	writes := []string{grant}
 	p := &policy.Policy{Entrypoint: filepath.Join(grant, "run.sh"), Write: writes}
 
-	// Coupling: the accept/refuse verdict against ground truth built from what was
-	// PLANTED, not from the emitter. A write grant at or inside an execution surface must
-	// be refused - honoring it would put a writable bind over a rule that lands after it,
-	// so every write fails EROFS at run time while the manifest reports the grant honored.
-	// Without this the fuzzer could spend its whole budget on refused grants and the
-	// properties below would pass by never being reached.
+	// Coupling: the accept/refuse verdict against ground truth. A write grant at or inside
+	// a shielded path must be refused - honoring it would put a writable bind over a rule
+	// that lands after it, so every write fails EROFS at run time while the manifest
+	// reports the grant honored. Without this the fuzzer could spend its whole budget on
+	// refused grants and the properties below would pass by never being reached.
+	//
+	// Derived from the SHIELD PATHS, not from what was planted. What is planted does not
+	// determine what is shielded: denylist.Workspace also emits .git/config.worktree and
+	// the .cargo config files, and gitDirShields emits a config.worktree for every gitdir
+	// and linked worktree it discovers - including directories the MkdirAll above creates.
+	// A grant landing on one of those is refused correctly, and a planted-only ground truth
+	// calls that a bug. Asking which rules exist is still independent of the check under
+	// test, which is whether the grant is judged against them.
 	err := checkGrants(sb, p, nil, writes)
-	wantRefused := coveredBy(grant, expected)
+	wantRefused := coveredBy(grant, rulePaths(shieldRules(sb, writes)))
 	if (err != nil) != wantRefused {
 		t.Fatalf("mask %d grant %q: refused=%v (want %v): %v", mask, rel, err != nil, wantRefused, err)
 	}
@@ -219,6 +227,14 @@ func checkPersistenceShielded(t *testing.T, mask int, rel string) {
 			t.Fatalf("mask %d grant %q: execution surface %q left writable (not covered by a shield); shield dests=%v", mask, rel, path, dests)
 		}
 	}
+}
+
+func rulePaths(rules []denylist.Rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Path)
+	}
+	return out
 }
 
 // fuzzGrantRel folds a fuzzer string into a relative path under the checkout. Relative

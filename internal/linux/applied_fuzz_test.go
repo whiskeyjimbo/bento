@@ -89,6 +89,11 @@ func FuzzParseAppliedNeverOverClaims(f *testing.F) {
 	f.Add(3, len(fuzzAppliedBases[3])-1, []byte("exec-ra"))
 	f.Add(4, len(fuzzAppliedBases[4]), []byte(launcher.AppliedTargetUnreached+" \"forged\"\n"))
 	f.Add(0, 5, []byte("\x00\xff"))
+	// The record marker spelled inside a quoted detail rather than on a line of its own.
+	// The report that results over-claims nothing - one recorder, one honestly observed
+	// exec - so this is here to keep the oracle from measuring the record against a marker
+	// the stage never wrote.
+	f.Add(3, strings.Index(fuzzAppliedBases[3], "\n"+`exec-ran`), []byte(` "`+launcher.AppliedExecRecordMarker+`"`))
 
 	f.Fuzz(func(t *testing.T, baseIdx, at int, junk []byte) {
 		base := fuzzAppliedBases[((baseIdx%len(fuzzAppliedBases))+len(fuzzAppliedBases))%len(fuzzAppliedBases)]
@@ -138,13 +143,16 @@ func FuzzParseAppliedNeverOverClaims(f *testing.F) {
 // marker, which is the most execs a record closed by that marker can honestly carry. It
 // reads the bytes rather than asking parseApplied, so it is ground truth the decoder it
 // bounds has no say in.
+// The marker is matched as a WHOLE LINE. Cut on the first substring occurrence and a
+// spliced `exec-recorder yes "EXEC-RECORD"` ends the count inside a quoted detail, so a
+// record with one honestly observed exec is measured against zero lines and the oracle
+// fails on a report that over-claims nothing.
 func execRanLinesBeforeTheRecordMarker(report string) int {
-	head, _, ok := strings.Cut(report, launcher.AppliedExecRecordMarker)
-	if !ok {
-		return 0
-	}
 	var n int
-	for _, line := range strings.Split(head, "\n") {
+	for _, line := range strings.Split(report, "\n") {
+		if line == launcher.AppliedExecRecordMarker {
+			break
+		}
 		if strings.HasPrefix(line, launcher.AppliedExecRan+" ") {
 			n++
 		}

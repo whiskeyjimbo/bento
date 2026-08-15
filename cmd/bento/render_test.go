@@ -1433,6 +1433,11 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		t.Fatal(err)
 	}
 	plantCommand(t, unshared, "snap-only")
+	// A candidate whose only entry sharing a base-image name is a directory.
+	dirNamed := filepath.Join(t.TempDir(), "shims")
+	if err := os.MkdirAll(filepath.Join(dirNamed, "tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// The fake base image goes on every PATH under test: it is what the box carries, so
 	// without it on the search path there is nothing for a candidate to collide with.
 	withPath := func(v string) map[string]string {
@@ -1452,6 +1457,12 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		// exit 127 rather than a different build, which is writeSandboxPathMiss's note.
 		// /snap/bin on a stock Ubuntu host is exactly this, and it fired here every run.
 		{"an ungranted directory whose commands the box does not have", &policy.Policy{}, withPath(unshared), false},
+		// A name the candidate holds as a DIRECTORY is not a command, so it collides with
+		// nothing - the box cannot execute it, and nothing resolves in its place.
+		{"a subdirectory sharing a command's name is not a collision", &policy.Policy{}, withPath(dirNamed), false},
+		// No base-image entry on PATH at all: the box carries nothing to resolve a bare
+		// name in, so the run gets an exit 127 rather than a silently different build.
+		{"nothing the box carries is on PATH, so nothing can shadow", &policy.Policy{}, map[string]string{"PATH": profile}, false},
 		{"a home toolchain directory no grant covers", &policy.Policy{}, withPath(profile + ":/usr/bin"), true},
 		{"system directories alone are not a shadow", &policy.Policy{}, withPath("/usr/bin:/bin:/usr/local/bin"), false},
 		{"the directory itself is granted", &policy.Policy{Read: []string{profile}}, withPath(profile), false},
