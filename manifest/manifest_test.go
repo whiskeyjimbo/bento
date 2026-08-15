@@ -351,6 +351,31 @@ func TestParseRejectsDeepNesting(t *testing.T) {
 // The depth screen must not refuse what people legitimately write. A manifest reaches
 // four levels, so the cap has to sit well clear of that - and the block-entry count has
 // to fall as entries close, or a long list would climb one level per item.
+// The depth screen bounds the decode; it does not bound the error. goccy annotates a
+// decoder error by echoing the offending source region, and building that is quadratic in
+// the source size at any depth - a 256KB manifest two levels deep decoded in 128ms and
+// then spent 7s rendering a 256KB error string, which the size cap does nothing about.
+// This input is shallow and under the cap on purpose: it is the DoS the nesting screen
+// cannot see, and the reason the decoder's error is rendered without its source.
+func TestParseReturnsPromptlyOnAShallowDecoderError(t *testing.T) {
+	src := "entrypoint: [" + strings.Repeat("x, ", (maxManifestBytes-60)/3) + "x]\n"
+	done := make(chan error, 1)
+	go func() { _, err := Parse(strings.NewReader(src)); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a list where an entrypoint belongs must be rejected")
+		}
+		// The whole failure is the error carrying the source back, so an error the size of
+		// the input is the defect even when it arrives in time.
+		if len(err.Error()) > 1024 {
+			t.Errorf("error is %d bytes; it is echoing the manifest back rather than naming the problem", len(err.Error()))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Parse did not return: the decoder's error is being annotated with the source")
+	}
+}
+
 // Both spellings of a network list are covered because they reach the count by different
 // tokens: the flow form adds a flow collection per entry, the block form - what the
 // repo's own examples are written in - adds nothing but the entry, so only it would catch

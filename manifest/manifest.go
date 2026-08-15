@@ -30,13 +30,17 @@ import (
 const maxManifestBytes = 1 << 20
 
 // maxNestDepth caps how deeply a manifest may nest collections. The decoder is
-// superlinear in nesting depth - measured, 32k nested flow sequences ("[[[[...") take
-// over a second, and maxManifestBytes bounds only the source, so a megabyte of them does
-// not return in any time an operator would wait. Flat input of the same size is linear,
-// so depth is the whole of it. A manifest reaches four levels (network: a list of maps
-// whose values are scalars), and the cap is an order of magnitude above that: no
-// manifest anyone writes is refused, and no input reaches the decoder deep enough to
-// stall it.
+// superlinear in nesting depth - measured, 16k nested flow sequences ("[[[[...") take
+// 209ms to decode and 100k of them exhaust memory outright - and maxManifestBytes bounds
+// only the source, so a megabyte of them never returns. A manifest reaches four levels
+// (network: a list of maps whose values are scalars), and the cap is an order of
+// magnitude above that: no manifest anyone writes is refused.
+//
+// It bounds the DECODE. It is not the whole of what a small manifest can cost, and it is
+// not what makes flat input safe: the decoder's error rendering is separately quadratic
+// in the source size at any depth, which is decodeError's business below. Depth nesting
+// by indentation alone is not counted, because it is not what the decoder is expensive
+// in - a deep block mapping decodes linearly.
 const maxNestDepth = 32
 
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the
@@ -136,11 +140,11 @@ func (r *networkRule) UnmarshalYAML(unmarshal func(any) error) error {
 //
 // The manifest is untrusted input - the whole point of bento is running scripts
 // under manifests it did not write - so the input is guarded before it reaches the
-// decoder, and the decoder's error is sanitized before it is returned. goccy/go-yaml
-// annotates a parse error by echoing the offending source line; that line is
-// attacker-controlled, so passing it through verbatim would let a hostile manifest
-// (or a binary mistaken for one) write raw escape sequences to the operator's
-// terminal. See sanitizeControl.
+// decoder, and the decoder's error is rendered without it before it is returned.
+// goccy/go-yaml annotates a parse error by echoing the offending source region; that
+// region is attacker-controlled, so passing it through verbatim would let a hostile
+// manifest (or a binary mistaken for one) write raw escape sequences to the operator's
+// terminal - and building it costs more than the input's size bounds. See decodeError.
 func Parse(r io.Reader) (*Document, error) {
 	if r == nil {
 		return nil, fmt.Errorf("manifest: nil reader")
@@ -165,7 +169,7 @@ func Parse(r io.Reader) (*Document, error) {
 	var m manifest
 	dec := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField())
 	if err := dec.Decode(&m); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
+		return nil, fmt.Errorf("manifest: %s", decodeError(err))
 	}
 	// A manifest is a single policy document. A YAML stream with a second document
 	// (after a "---") would otherwise be parsed with only the first governing and the
@@ -173,7 +177,7 @@ func Parse(r io.Reader) (*Document, error) {
 	var extra manifest
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return nil, fmt.Errorf("manifest: %s", sanitizeControl(err.Error()))
+			return nil, fmt.Errorf("manifest: %s", decodeError(err))
 		}
 		return nil, fmt.Errorf("manifest: contains more than one YAML document; a manifest must be a single policy")
 	}
@@ -287,6 +291,24 @@ func lineOf(tok *token.Token) int {
 		return 0
 	}
 	return tok.Position.Line
+}
+
+// decodeError renders a decoder error WITHOUT the source annotation goccy builds by
+// default, which is both what bounds its cost and what keeps the input off the terminal.
+//
+// Cost, because that annotation echoes the offending source region back: rendering one
+// is quadratic in the source size, and the size cap alone does not bound it. Measured on
+// a 256KB manifest that is two levels deep - so the nesting screen above never sees it -
+// the decode takes 128ms and err.Error() takes 7s, returning a 256KB string. At the 1MiB
+// cap that is minutes, on a file bento did not write.
+//
+// And terminal safety, because that echoed region is the attacker's own bytes. Not
+// rendering it is a stronger guarantee than sanitizing it: sanitizeControl still runs on
+// what is left - the message can quote a field name - but the bulk of the input no longer
+// reaches the error at all. What survives is the position and the reason, which is what
+// an author fixing a manifest actually reads.
+func decodeError(err error) string {
+	return sanitizeControl(yaml.FormatError(err, false, false))
 }
 
 // sanitizeControl drops the control characters an untrusted manifest could smuggle

@@ -122,7 +122,7 @@ func FuzzParseManifest(f *testing.F) {
 			return
 		}
 		// The property Parse's refusal path exists for: the input is a file bento did not
-		// write, the decoder quotes stretches of it back in its line/caret annotation, and
+		// write, what the decoder reports about it is built from those bytes, and
 		// the error goes to a terminal. A raw C0/C1 control there reprograms that terminal
 		// - which is what sanitizeControl strips, and what only a hand-written table
 		// pinned until now. Random bytes reach malformed YAML constantly, so this is the
