@@ -2,6 +2,7 @@ package policy
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -37,6 +38,37 @@ func TestFingerprintGolden(t *testing.T) {
 	const want = "aa2f73e71ab6923705ca40cd8c9096becc6dcdc3cccc2a834f2e62d777a624ad"
 	if got := p.Fingerprint(); got != want {
 		t.Errorf("fingerprint = %q, want %q", got, want)
+	}
+}
+
+// Fingerprint sorts the set-like fields to reach a canonical order, and it must sort a
+// copy: the Policy it reads is the caller's, and reordering Read or Write under them
+// changes what a later reader sees - the manifest is the consent surface, and the order
+// its fields are rendered and reported in is part of it. Sorting in place would also make
+// concurrent Fingerprint calls a write race on a value the type otherwise never mutates,
+// which is what the callers assume when they share one Policy across goroutines.
+//
+// Serial on purpose. The concurrent version of this assertion cannot fail: with the copy
+// in place nothing mutates, and without it the hash still comes out stable, so a hundred
+// goroutines checking the hash prove exactly what one loop does.
+func TestFingerprintLeavesThePolicyAlone(t *testing.T) {
+	p := &Policy{
+		Entrypoint: "./x",
+		Env:        []string{"PATH", "HOME", "LANG"},
+		Read:       []string{"/two", "/one"},
+		Write:      []string{"/w/b", "/w/a"},
+		Network:    []NetworkRule{{Host: "b.com", Port: "80"}, {Host: "a.com", Port: "443"}},
+	}
+	before := *p
+	before.Env = slices.Clone(p.Env)
+	before.Read = slices.Clone(p.Read)
+	before.Write = slices.Clone(p.Write)
+	before.Network = slices.Clone(p.Network)
+
+	p.Fingerprint()
+
+	if !reflect.DeepEqual(*p, before) {
+		t.Errorf("Fingerprint reordered the caller's policy:\n got %+v\nwant %+v", *p, before)
 	}
 }
 

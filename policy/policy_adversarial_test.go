@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -439,51 +438,6 @@ func TestAdversarialAllows(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestAdversarialFingerprintConcurrency(t *testing.T) {
-	t.Parallel()
-
-	p := Policy{
-		Entrypoint:  "/usr/bin/app",
-		Interpreter: "python3",
-		Args:        []string{"--verbose", "--port=8080"},
-		Env:         []string{"LANG", "PATH", "HOME"},
-		Read:        []string{"/etc", "/var/data"},
-		Write:       []string{"/tmp/out"},
-		Network: []NetworkRule{
-			{Host: "api.example.com", Port: "443"},
-			{Host: ".org", Port: "80-90"},
-		},
-		Exec: ExecNoneStrict,
-		Limits: Limits{
-			Memory: "256M",
-			CPU:    "50%",
-			PIDs:   100,
-		},
-	}
-
-	initialHash := p.Fingerprint()
-	if initialHash == "" {
-		t.Fatal("Fingerprint returned empty hash")
-	}
-
-	var wg sync.WaitGroup
-	const goroutines = 100
-	const iterations = 50
-
-	for range goroutines {
-		wg.Go(func() {
-			for range iterations {
-				h := p.Fingerprint()
-				if h != initialHash {
-					t.Errorf("Fingerprint non-deterministic under concurrent access: got %q, want %q", h, initialHash)
-				}
-			}
-		})
-	}
-
-	wg.Wait()
 }
 
 func FuzzPolicyValidation(f *testing.F) {
