@@ -1066,11 +1066,43 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle time.Duration) {
 		upstream.SetDeadline(t)
 	}
 	extend()
+	// handle's recover runs on the caller's goroutine and cannot see a panic raised in
+	// either copy, so one left here does not reach the Faulted path at all - it takes
+	// down the whole bento process mid-run, which is the one thing that recover exists to
+	// prevent. Each direction carries its panic back and tunnel re-raises it where that
+	// recover can reach it. A production conn does not panic (net.Dialer hands back a
+	// *net.TCPConn), but WithDialer is a public seam.
+	//
+	// One slot per direction, each written only by its own goroutine and read only after
+	// Wait, which is what orders them.
+	var panics [2]any
 	var wg sync.WaitGroup
+	half := func(i int, dst io.Writer, src io.Reader, w net.Conn) {
+		defer wg.Done()
+		defer func() {
+			v := recover()
+			if v == nil {
+				halfClose(w)
+				return
+			}
+			panics[i] = v
+			// The paired copy is blocked on a Read that only its peer or the idle deadline
+			// will end, so without this the fault waits out the whole idle timeout before
+			// Wait returns and the handler can report anything.
+			client.Close()
+			upstream.Close()
+		}()
+		copyIdle(dst, src, extend)
+	}
 	wg.Add(2)
-	go func() { defer wg.Done(); copyIdle(upstream, clientR, extend); halfClose(upstream) }()
-	go func() { defer wg.Done(); copyIdle(client, upstream, extend); halfClose(client) }()
+	go half(0, upstream, clientR, upstream)
+	go half(1, client, upstream, client)
 	wg.Wait()
+	for _, v := range panics {
+		if v != nil {
+			panic(v)
+		}
+	}
 }
 
 // copyIdle copies src→dst, calling extend on every read so activity in this

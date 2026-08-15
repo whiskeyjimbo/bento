@@ -1874,6 +1874,58 @@ type deadlinePanicConn struct{ net.Conn }
 
 func (deadlinePanicConn) SetDeadline(time.Time) error { panic("upstream deadline blew up") }
 
+// readPanicConn is an upstream whose Read panics, which is how a panic is driven from
+// inside a copy goroutine rather than from handle's own - the distinction the whole
+// recover rests on, since a recover cannot reach a goroutine it did not start.
+type readPanicConn struct{ net.Conn }
+
+func (readPanicConn) Read([]byte) (int, error) { panic("upstream read blew up") }
+
+// A panic in either copy direction must not take down the bento process. handle's
+// recover states that invariant for a handler, and the copies run on their own
+// goroutines where that recover cannot see them: unrecovered there, the panic is not the
+// Faulted path but the whole run dying mid-flight, with every other sandboxed connection
+// going with it. The decision this connection already reached still stands alone, for the
+// same reason a panic in extend() does not add a fault to it.
+func TestPanicInACopyGoroutineDoesNotKillTheProcess(t *testing.T) {
+	var mu sync.Mutex
+	var seen []Decision
+	p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(d Decision, _, _ string) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, d)
+		}),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := fakeDialer("tunnel")(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return readPanicConn{c}, nil
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (the panic must land after the tunnel)", status)
+	}
+	// The handler's recover runs before its deferred client.Close, so an EOF here orders
+	// the assertion after it - and reaching one at all is the fix's other half: the
+	// panicking copy closes both conns, so the paired copy is not left blocked on a Read
+	// until the idle timeout.
+	if _, err := io.ReadAll(br); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("draining the tunnel: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []Decision{Allowed}) {
+		t.Errorf("decisions = %v, want exactly [%s]", seen, Allowed)
+	}
+}
+
 // A panic after the tunnel is established must not add a Faulted to the connection's
 // already-reported decision. Downstream counts a fault as a connection whose handler
 // reached no outcome and degrades the network layer for it; this one was allowed,
