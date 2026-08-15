@@ -308,14 +308,26 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// failed on its way out.
 		serveErr := stopProxy()
 		// The applied report is on disk for the same reason - the launcher wrote it before
-		// the wait failed. Only the exec record is taken from it: reconcile would let a
-		// report written by a stage this arm cannot vouch for rewrite the layer verdicts,
-		// and the failure here says nothing about which of them the run reached.
+		// the wait failed - and it is reconciled here like every other arm. The failure says
+		// nothing about which layers the run reached, and that is the argument FOR the
+		// reconcile rather than against it: reconcile only ever lowers a layer, so what it
+		// rewrites is the probe's claim that the host CAN enforce something into the fact
+		// that no stage reported doing so. Returning the probe raw attests the tier's fences
+		// to a run whose in-sandbox stage may never have installed one.
+		//
+		// -1 where the wrapper left no status, as the degraded tier's arms do: the exit code
+		// only appears in reconcile's sentence about a stage that stayed silent, and there
+		// is no status to name.
+		code := -1
+		if cmd.ProcessState != nil {
+			code, _, _ = exitStatusOf(cmd.ProcessState)
+		}
 		a := parseApplied(appliedReport)
+		setup := a.reconcile(&report, blockWanted, strictWanted, true, code)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		return enforce.Result{Report: report, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 
