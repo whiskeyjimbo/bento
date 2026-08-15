@@ -1489,11 +1489,43 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
 			writeSandboxPathShadow(&b, tc.p, tc.env)
-			got := strings.Contains(b.String(), "no grant covers them")
+			got := strings.Contains(b.String(), "PATH is passed through, but the box does not carry")
 			if got != tc.want {
 				t.Errorf("note emitted = %v, want %v (output: %q)", got, tc.want, b.String())
 			}
 		})
+	}
+}
+
+// The note is read on every run of a host whose PATH holds a directory the box lacks, so
+// what it costs the reader is the whole judgement: naming the directory leaves them to work
+// out which of its commands the box also has, when the check already knows - on a stock
+// Ubuntu host /snap/bin fires for docker alone and its other five commands are simply
+// absent, which is a different note.
+func TestSandboxPathShadowNamesTheCollidingCommand(t *testing.T) {
+	base := fakeBaseImage(t, "docker")
+	snap := filepath.Join(t.TempDir(), "snap", "bin")
+	if err := os.MkdirAll(snap, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plantCommand(t, snap, "docker")
+	plantCommand(t, snap, "snap-only")
+
+	var b bytes.Buffer
+	writeSandboxPathShadow(&b, &policy.Policy{}, map[string]string{"PATH": snap + string(os.PathListSeparator) + base})
+	out := b.String()
+	for _, want := range []string{
+		"docker resolves to " + filepath.Join(base, "docker"),
+		"not " + filepath.Join(snap, "docker"),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the note must name the collision (%q); got:\n%s", want, out)
+		}
+	}
+	// The commands the box does not have at all resolve to nothing, which is the exit-127
+	// note rather than this one.
+	if strings.Contains(out, "snap-only") {
+		t.Errorf("a command with no counterpart in the box is not shadowed; got:\n%s", out)
 	}
 }
 

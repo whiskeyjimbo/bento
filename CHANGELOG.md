@@ -109,10 +109,11 @@ commits that built it - none of them were ever in a release.
   resolves to whatever the box does have instead: a different build of the same
   tool, with no denial, no missing file, and an exit code of zero. That once read
   as bento corrupting repositories, when the lane's `git` and the host's `git`
-  were different versions and nothing in the run said so. Now the run says which
-  directories those are, on stderr and as `shadowed_path_dirs` in the JSON
-  verdict and the `failed` event, so a harness can gate on it rather than a human
-  comparing version strings. The boundary did not move: this denies nothing. It
+  were different versions and nothing in the run said so. Now the run names the
+  colliding command on stderr - `docker resolves to /usr/bin/docker in the box,
+  not /snap/bin/docker` - and carries the directories as `shadowed_path_dirs` in
+  the JSON verdict and the `failed` event, so a harness can gate on it rather
+  than a human comparing version strings. The boundary did not move: this denies nothing. It
   is quiet about `/usr`, `/bin` and their kin, which every sandbox carries from
   the host, about a directory the host itself does not have, and about one whose
   commands have no counterpart in the box - nothing resolves in their place, so

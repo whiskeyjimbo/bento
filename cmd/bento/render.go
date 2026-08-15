@@ -1117,16 +1117,34 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 // env carries the same meaning it does for writeSandboxHomeMiss above, and its PATH is the
 // caller's own value: the sandbox default is filled in further down, past this.
 func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string) {
-	shadowed := shadowedPathDirs(p, env)
+	shadowed := shadowedPathEntries(p, env)
 	if len(shadowed) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] note: PATH is passed through, but the box does not carry these")
-	fmt.Fprintf(w, "[bento] directories on it and no grant covers them: %s\n", strings.Join(shadowed, ", "))
-	fmt.Fprintln(w, "[bento] A bare command name therefore resolved to whatever the box does carry")
-	fmt.Fprintln(w, "[bento] instead - a different build, or a different tool,")
-	fmt.Fprintln(w, "[bento] with no denial and no error to say so. Grant each in read: so the")
-	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
+	fmt.Fprintln(w, "[bento] note: PATH is passed through, but the box does not carry every")
+	fmt.Fprintln(w, "[bento] directory on it, so these commands resolve to a different build inside")
+	fmt.Fprintln(w, "[bento] it, with no denial and no error to say so:")
+	// The command rather than the directory, which is what the check already knows and what
+	// the reader can act on: a directory named on its own leaves them to work out which of
+	// its commands the box also has, and on an ordinary host most of them are not the one.
+	for _, e := range shadowed {
+		if e.command == "" {
+			fmt.Fprintf(w, "[bento]   anything under %s - it could not be read here, so which\n[bento]   command collides is unknown\n", e.dir)
+			continue
+		}
+		fmt.Fprintf(w, "[bento]   %s resolves to %s in the box, not %s\n", e.command, filepath.Join(e.carriedIn, e.command), filepath.Join(e.dir, e.command))
+	}
+	fmt.Fprintln(w, "[bento] Grant each directory in read: so the box resolves what you resolve.")
+}
+
+// pathShadow is one PATH directory the box does not carry, together with the command that
+// proves it matters: the name it holds that the box also has, and the carried directory the
+// box resolves that name in instead. command is empty for a directory that could not be
+// read, where the collision is unknown rather than absent.
+type pathShadow struct {
+	dir       string
+	command   string
+	carriedIn string
 }
 
 // inBaseImage is a var so a test can declare a temp directory carried, which is the only
@@ -1141,7 +1159,7 @@ var inBaseImage = enforce.InBaseImage
 // reading the envelope is what can gate on the shadow before a card built with the wrong
 // toolchain lands - so the two must not be able to disagree about which directories are
 // meant.
-func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
+func shadowedPathEntries(p *policy.Policy, env map[string]string) []pathShadow {
 	search, passed := env["PATH"]
 	if !passed {
 		return nil
@@ -1156,12 +1174,12 @@ func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
 			carried = append(carried, dir)
 		}
 	}
-	var shadowed []string
+	var shadowed []pathShadow
 	for _, dir := range entries {
 		// Asked of the entry's spelling, before resolution: ~/.nix-profile/bin is a
 		// symlink into the store by design, and a grant naming either spelling covers it,
 		// which granted() answers on both.
-		if !filepath.IsAbs(dir) || inBaseImage(filepath.Clean(dir)) || slices.Contains(shadowed, dir) {
+		if !filepath.IsAbs(dir) || inBaseImage(filepath.Clean(dir)) || slices.ContainsFunc(shadowed, func(e pathShadow) bool { return e.dir == dir }) {
 			continue
 		}
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -1170,12 +1188,23 @@ func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
 		if granted(p, dir) || carriesInterpreter(p, dir) {
 			continue
 		}
-		if !shadowsABaseImageCommand(dir, carried) {
+		command, carriedIn, shadows := shadowsABaseImageCommand(dir, carried)
+		if !shadows {
 			continue
 		}
-		shadowed = append(shadowed, dir)
+		shadowed = append(shadowed, pathShadow{dir: dir, command: command, carriedIn: carriedIn})
 	}
 	return shadowed
+}
+
+// shadowedPathDirs is the envelope's answer, and a documented field (shadowed_path_dirs):
+// the directories, one per entry, in the order PATH holds them.
+func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
+	var dirs []string
+	for _, e := range shadowedPathEntries(p, env) {
+		dirs = append(dirs, e.dir)
+	}
+	return dirs
 }
 
 // shadowsABaseImageCommand reports whether dir holds a command name the box also has, which
@@ -1191,10 +1220,10 @@ func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
 //
 // An unreadable directory keeps the note. Absence is what would silence it, and a directory
 // that cannot be read has not shown its absence.
-func shadowsABaseImageCommand(dir string, carried []string) bool {
+func shadowsABaseImageCommand(dir string, carried []string) (command, carriedIn string, shadows bool) {
 	names, err := os.ReadDir(dir)
 	if err != nil {
-		return true
+		return "", "", true
 	}
 	for _, e := range names {
 		// Neither side may be a directory: a directory cannot be executed, so a name held
@@ -1204,11 +1233,11 @@ func shadowsABaseImageCommand(dir string, carried []string) bool {
 		}
 		for _, c := range carried {
 			if fi, err := os.Stat(filepath.Join(c, e.Name())); err == nil && !fi.IsDir() {
-				return true
+				return e.Name(), c, true
 			}
 		}
 	}
-	return false
+	return "", "", false
 }
 
 // granted reports whether any read or write grant covers dir. Both sides are compared as

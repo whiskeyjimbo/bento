@@ -138,7 +138,7 @@ func TestWriteRunResultReportsShadowedPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var stderr bytes.Buffer
 			_ = writeRunResult(&stderr, false, validPolicy(), env, tc.res, nil, nil, tc.runErr)
-			if !strings.Contains(stderr.String(), "no grant covers them") {
+			if !strings.Contains(stderr.String(), "PATH is passed through, but the box does not carry") {
 				t.Errorf("shadowed PATH note missing; got %q", stderr.String())
 			}
 		})
