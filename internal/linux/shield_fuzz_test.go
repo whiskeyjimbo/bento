@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -23,11 +24,16 @@ import (
 // production.
 //
 // The checker also pins the two values it would otherwise have to trust - the
-// opt-in set and the accept/refuse verdict - against independent ground truth built
-// from the fixed menus below. Without that, a change making opt-in matching too
-// broad (say read:/ opting into every store) would make denyArgs emit no shield,
-// and both properties would pass vacuously while production served ~/.ssh over a
-// read:/ grant.
+// opt-in set and the accept/refuse verdict - against independent ground truth
+// (shieldGroundTruth). Without that, a change making opt-in matching too broad (say
+// read:/ opting into every store) would make denyArgs emit no shield, and both
+// properties would pass vacuously while production served ~/.ssh over a read:/ grant.
+//
+// The two axes are split by their size. The secret existence mask and the grant menu
+// below are finite and enumerated by TestShieldInvariantsExhaustive; the grant PATH is
+// unbounded and is what the fuzz target mutates. A target that only indexed the menu
+// could not reach an input the exhaustive test misses, which is a nightly budget spent
+// on nothing.
 //
 // The model is deliberately narrow: a single READ grant, DenyAll builtin shields,
 // no symlinks (testSandbox.resolve is identity - the real resolve() would follow
@@ -118,12 +124,55 @@ func shieldDests(args []string, emptyFile string, hidingOnly bool) []string {
 	return dsts
 }
 
+// denyAllShieldPaths is the ground truth both coupling assertions below are derived
+// from: the literal paths of the built-in shields that hide their content entirely.
+//
+// A predicate over the rule list rather than a written-out list of paths, because the
+// list is ~350 entries and a stale copy of it would fail on grants that are perfectly
+// fine. It is still independent of what it checks: OptIns and Contains are the matching
+// logic under test, and this asks only which rules exist. The vacuity the file's header
+// warns about - an opt-in match grown too broad, so read:/ lifts every store and denyArgs
+// emits no shield - is caught exactly here, because "/" is not equal to any rule path.
+func denyAllShieldPaths(sb sandbox) []string {
+	var out []string
+	for _, r := range shields(sb).Rules() {
+		if r.Deny == denylist.DenyAll {
+			out = append(out, r.Path)
+		}
+	}
+	return out
+}
+
+// shieldGroundTruth answers, for one grant, what the opt-in set must be and whether the
+// grant must be refused - from the shield paths alone.
+//
+// A grant naming a shield's literal path opts into exactly that shield. A grant STRICTLY
+// inside one is refused: a shield cannot be partly lifted, so the only way to reach a file
+// under a shielded store is to name the store and take its siblings with it. Those two are
+// the whole rule, which is why an arbitrary grant can be verdicted without consulting the
+// code that verdicts it.
+func shieldGroundTruth(sb sandbox, g string) (optIn []string, refused bool) {
+	for _, p := range denyAllShieldPaths(sb) {
+		switch {
+		case p == g:
+			optIn = []string{g}
+		case policy.CoversResolved(p, g):
+			refused = true
+		}
+	}
+	// An opted-into shield is passed over by the refusal, so naming the store itself is
+	// never a refusal even where an outer shield also covers it.
+	if len(optIn) > 0 {
+		refused = false
+	}
+	return optIn, refused
+}
+
 // checkShieldInvariants runs the coupling and property assertions for one (grant,
 // existence-mask) input. Shared by the fuzz and the exhaustive subtest so both hold
 // the same guarantees.
-func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
+func checkShieldInvariants(t *testing.T, g string, existMask int) {
 	t.Helper()
-	g := fuzzGrants[((grantIdx%len(fuzzGrants))+len(fuzzGrants))%len(fuzzGrants)]
 
 	var existing []string
 	var present []string
@@ -144,10 +193,7 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 	// Coupling 1: the opt-in set matches independent ground truth. resolve is
 	// identity here, so literal and resolved are equal and both must be exactly [g]
 	// for an opt-in-able grant, empty otherwise.
-	var wantOptIn []string
-	if fuzzOptInable[g] {
-		wantOptIn = []string{g}
-	}
+	wantOptIn, wantRefused := shieldGroundTruth(sb, g)
 	if !slices.Equal(optInRes, wantOptIn) || !slices.Equal(optInLit, wantOptIn) {
 		t.Fatalf("grant %q: opt-in set = %v/%v, want %v", g, optInLit, optInRes, wantOptIn)
 	}
@@ -155,7 +201,6 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 	// Coupling 2: the accept/refuse verdict matches ground truth, so a stricter
 	// future check cannot silently delete the assertion regions below.
 	err := checkReadNotShielded(sb, reads, optInRes)
-	wantRefused := g == fuzzRefusedGrant
 	if (err != nil) != wantRefused {
 		t.Fatalf("grant %q: refused=%v (want %v): %v", g, err != nil, wantRefused, err)
 	}
@@ -189,24 +234,60 @@ func checkShieldInvariants(t *testing.T, grantIdx, existMask int) {
 	}
 }
 
+// FuzzShieldCoversReachableSecrets mutates the GRANT PATH - its depth, its spelling, and
+// its position relative to the shielded stores - rather than indexing the menu below.
+// Indexing it, the target could not reach an input TestShieldInvariantsExhaustive misses,
+// so its nightly budget bought nothing over `go test`: strong oracle, wrong space. The
+// finite (grant, mask) table stays with the exhaustive test; the unbounded axis is here.
 func FuzzShieldCoversReachableSecrets(f *testing.F) {
-	f.Add(0, 0)                     // no secrets, root grant
-	f.Add(0, 1<<len(fuzzSecrets)-1) // every secret, root grant: must shield all
-	f.Add(2, 1)                     // opt-in ~/.ssh with id_rsa present
-	f.Add(8, 1)                     // grant inside ~/.ssh: must be refused
-	f.Add(1, 1<<len(fuzzSecrets)-1) // broad home grant, every secret
-	f.Fuzz(checkShieldInvariants)
+	for _, g := range fuzzGrants {
+		f.Add(g, 0)
+		f.Add(g, 1<<len(fuzzSecrets)-1)
+	}
+	f.Add("/home/u/.ssh/", 1)                           // a trailing separator on an opt-in-able store
+	f.Add("/home/u/.SSH", 1)                            // the folded spelling, which is not the opt-in
+	f.Add("/home/u/.ssh/../.ssh", 1)                    // a traversal landing back on the store
+	f.Add("/home/u/.gnupg/private-keys-v1.d", 1<<3)     // deep inside a store the menu only names
+	f.Add("/home/u/.gnupg/private-keys-v1.d/key", 1<<3) // two levels under it: no menu grant is
+	f.Add("/home/u/.config", 1<<4)                      // the parent of a nested store
+
+	f.Fuzz(func(t *testing.T, g string, existMask int) {
+		// Absolute and cleaned: a grant reaches the shield checks only past the policy
+		// screens, which is where relative and uncleaned spellings are already refused,
+		// and admitting them here would test a shape production cannot present.
+		if !filepath.IsAbs(g) || g != filepath.Clean(g) {
+			t.Skip()
+		}
+		checkShieldInvariants(t, g, existMask)
+	})
 }
 
-// TestShieldInvariantsExhaustive runs every (grant, existence-mask) combination -
-// the input space is small enough to enumerate, so coverage is guaranteed rather
-// than left to the fuzz corpus.
+// TestShieldInvariantsExhaustive runs every (menu grant, existence-mask) combination -
+// that space is small enough to enumerate, so its coverage is guaranteed rather than
+// left to the fuzz corpus, while the grant path itself is the fuzzer's to mutate.
 func TestShieldInvariantsExhaustive(t *testing.T) {
-	for gi := range fuzzGrants {
+	for gi, g := range fuzzGrants {
 		for mask := 0; mask < 1<<len(fuzzSecrets); mask++ {
 			t.Run(fmt.Sprintf("grant%d_mask%d", gi, mask), func(t *testing.T) {
-				checkShieldInvariants(t, gi, mask)
+				checkShieldInvariants(t, g, mask)
 			})
+		}
+	}
+}
+
+// The derived ground truth must agree with the hand-written menu tables on every menu
+// grant. Those tables are what a reader can check by eye; this is what generalizes to a
+// grant the fuzzer invents. If the derivation ever drifts, it fails here against the
+// written-out answer rather than silently re-deriving whatever the code now does.
+func TestShieldGroundTruthMatchesTheWrittenMenu(t *testing.T) {
+	sb := testSandbox()
+	for _, g := range fuzzGrants {
+		optIn, refused := shieldGroundTruth(sb, g)
+		if got := len(optIn) > 0; got != fuzzOptInable[g] {
+			t.Errorf("grant %q: derived opt-in-able = %v, the menu says %v", g, got, fuzzOptInable[g])
+		}
+		if want := g == fuzzRefusedGrant; refused != want {
+			t.Errorf("grant %q: derived refused = %v, the menu says %v", g, refused, want)
 		}
 	}
 }
