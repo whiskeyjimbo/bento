@@ -221,16 +221,28 @@ type recordedEgress struct {
 	blocked    []profile.HostPort
 	untunneled []profile.HostPort
 	unnamed    int
+	// The hosts among the unnamed connections that the proxy could name after all. They
+	// are counted as unnamed too: no rule can be proposed for a request line that never
+	// parsed into a destination, so the proposal is short either way - this is the half
+	// the operator can act on by hand, which is what the warning tells them to do.
+	unproposable []profile.HostPort
 }
 
 func (r *recordedEgress) observe(d proxy.Decision, host, port string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Neither names a destination - one was turned away before its request line parsed,
-	// the other dropped by a panicking handler - so there is nothing to propose and the
-	// count is the only thing that tells the operator the profile is short a connection.
+	// Neither yields a destination to propose - one was turned away before its request
+	// line parsed into one, the other dropped by a panicking handler - so the count is
+	// what tells the operator the profile is short a connection. A refusal that got far
+	// enough to screen a host carries it, and that host is kept beside the count: it is
+	// not proposable (no rule matches a target with no port, or one whose port the
+	// dialer would refuse) but it is exactly what the warning asks the operator to add
+	// by hand, and bento knowing it and saying nothing is the gap.
 	if d == proxy.Refused || d == proxy.Faulted {
 		r.unnamed++
+		if host != "" {
+			r.unproposable = append(r.unproposable, profile.HostPort{Host: host, Port: port})
+		}
 		return
 	}
 	// An untunneled destination is recorded apart from the proposable hosts, not
@@ -252,6 +264,7 @@ func (r *recordedEgress) into(obs *profile.Observation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	obs.Hosts, obs.Blocked, obs.Untunneled, obs.DroppedConnections = r.hosts, r.blocked, r.untunneled, r.unnamed
+	obs.UnproposableHosts = r.unproposable
 }
 
 // startRecordingProxy runs the egress proxy and reports every destination a

@@ -108,6 +108,14 @@ type Observation struct {
 	// enforced path covers the same connections with its own count and a degraded
 	// network layer; here the count is all there is.
 	DroppedConnections int
+	// UnproposableHosts are the destinations among those connections that the proxy could
+	// name after all: a target with no port, one whose port spelling the dialer would
+	// refuse, a client that sent its CONNECT and then died mid-headers. No rule is
+	// proposed for them - the request line never parsed into a destination a rule could
+	// match - so they are counted in DroppedConnections as well, and named here only so
+	// the operator adding the missing hosts by hand knows which ones. A host reaches this
+	// list only if it passed the proxy's screen; it is still the sandbox's own text.
+	UnproposableHosts []HostPort
 	// SeccompKilled reports that a process in this run died on SIGSYS - a kill-mode
 	// seccomp filter refused one of its syscalls. Everything that process touched is
 	// absent from this observation, and re-profiling produces the same result, so a

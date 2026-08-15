@@ -640,7 +640,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 		fmt.Fprintln(os.Stderr, droppedWarning(obs.Dropped))
 	}
 	if obs.DroppedConnections > 0 {
-		fmt.Fprintln(os.Stderr, droppedConnectionsWarning(obs.DroppedConnections))
+		fmt.Fprintln(os.Stderr, droppedConnectionsWarning(obs.DroppedConnections, obs.UnproposableHosts))
 	}
 	// Allowlist the discovery env so the enforced run rebuilds $HOME-relative paths to
 	// the same names profiling recorded and granted.
@@ -1337,8 +1337,21 @@ func droppedWarning(n int) string {
 // incompleteReason as a dropped access is: a connection that closed before sending a
 // request line is one the target opened and never used, which a pooling client does
 // routinely, and failing the session's exit code on that would cry wolf.
-func droppedConnectionsWarning(n int) string {
-	return fmt.Sprintf("[bento] WARNING: the egress proxy could not name the destination of %d connection(s) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the hosts by hand.", n)
+// The hosts it does have are named, because the advice is to add them by hand and the
+// operator cannot act on a count. They are quoted for the same reason the untunneled
+// warning quotes its own: they are the sandbox's own request line. Nothing is proposed
+// for them - the request line never parsed into a destination a rule could match - so
+// they are named as work for the reader rather than folded into the manifest.
+func droppedConnectionsWarning(n int, named []profile.HostPort) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[bento] WARNING: the egress proxy could not name the destination of %d connection(s) this run made - the proposed manifest is missing them. Profile again, and if it repeats, add the hosts by hand.", n)
+	for _, hp := range named {
+		fmt.Fprintf(&b, "\n[bento]   one of them addressed %q", hp.Host)
+		if hp.Port != "" {
+			fmt.Fprintf(&b, " port %q", hp.Port)
+		}
+	}
+	return b.String()
 }
 
 // partialRunWarning returns a warning when the profiled run may not have finished -

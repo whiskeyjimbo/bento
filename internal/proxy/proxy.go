@@ -37,11 +37,18 @@ const (
 	// gatekeeper admitted at runtime. It is distinct from Allowed so a run can be
 	// honest about egress it permitted beyond the declared manifest.
 	AdmittedByGate Decision = "gate"
-	// Refused marks a connection turned away before a destination was established -
-	// at the concurrency limit, or because its request line never parsed into one - so
-	// it carries no host or port. It is reported so a run that floods the proxy, or
-	// speaks something other than CONNECT at it, is not counted as one that never
-	// touched the network.
+	// Refused marks a connection turned away before a destination was established - at
+	// the concurrency limit, or because its request line never parsed into one. It is
+	// reported so a run that floods the proxy, or speaks something other than CONNECT at
+	// it, is not counted as one that never touched the network.
+	//
+	// It carries a host only where the request line named one that passed the screen and
+	// the refusal is about something else - a target with no port, a non-canonical port
+	// spelling, a client that died mid-headers - and the port with it only where the port
+	// itself is not what was refused. Everywhere else it carries neither, which is the
+	// case a consumer must still handle: a refusal at the limit, a request line that
+	// never parsed, and a target the screen itself turned away, whose host must not be
+	// carried onward.
 	Refused Decision = "refused"
 	// GateDenied marks a connection the static allowlist did not permit and a gatekeeper,
 	// consulted about it, refused. It is the negative half of AdmittedByGate and is
@@ -129,8 +136,8 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // contained and the connection proceeds; the decision it carried is simply lost.
 //
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
-// before displaying either to a human. A Refused decision carries neither, having
-// been made before the CONNECT was read. A GuardBlocked decision carries the CONNECT
+// before displaying either to a human. A Refused decision carries them only sometimes,
+// and either may be empty on its own - see Refused. A GuardBlocked decision carries the CONNECT
 // target, not the address it resolved to: the guard's own text names the address, and
 // that never leaves the host side.
 func WithObserver(observe func(d Decision, host, port string)) Option {
@@ -724,13 +731,20 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		// entirely: the client sees a 400 that names no policy, and a manifest rule can
 		// grant the host and port while nothing ever tunnels to them.
 		var untunneled *untunneledError
-		if errors.As(err, &untunneled) {
+		var refused *refusedError
+		switch {
+		case errors.As(err, &untunneled):
 			report(Untunneled, untunneled.host, untunneled.port)
-		} else {
-			// No destination parsed, so there is none to name - but the connection still
-			// reached the proxy and cost it a slot, and a run whose every connection died
-			// here must not read as one that never touched the network. Reported before the
-			// status line, as the refusal at the concurrency limit is.
+		case errors.As(err, &refused):
+			// A refusal that got far enough to screen a destination names it, for the same
+			// reason the untunneled branch above does: without it the host is lost entirely,
+			// and the operator is told a connection could not be named while bento knew it.
+			report(Refused, refused.host, refused.port)
+		default:
+			// No destination parsed, or the screen refused the one that did - but the
+			// connection still reached the proxy and cost it a slot, and a run whose every
+			// connection died here must not read as one that never touched the network.
+			// Reported before the status line, as the refusal at the concurrency limit is.
 			report(Refused, "", "")
 		}
 		writeStatus(client, "400 Bad Request", err.Error())
@@ -907,7 +921,17 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	}
 	host, port, err = net.SplitHostPort(fields[1])
 	if err != nil {
-		return "", "", nil, fmt.Errorf("malformed target %q: %w", fields[1], err)
+		malformed := fmt.Errorf("malformed target %q: %w", fields[1], err)
+		// A target with no port at all is a whole host the operator would want to see, and
+		// it is the one shape SplitHostPort refuses that leaves the target usable as one.
+		// It is screened here rather than below because this branch returns ahead of the
+		// screen, and named only if it passes: an unscreened host must never be carried
+		// onward. Everything else SplitHostPort refuses - "a:b:c", an unclosed bracket - is
+		// not a host, so it goes unnamed.
+		if bare := bareHostTarget(fields[1]); bare != "" {
+			return "", "", nil, &refusedError{host: bare, err: malformed}
+		}
+		return "", "", nil, malformed
 	}
 	// The DNS root label is a spelling of the same name, and policy.Allows already
 	// normalizes it away - but literalGrantFor parses the host as an address, where
@@ -944,13 +968,19 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// resolved - would disagree with Allows about the port of the same
 	// connection. Refuse it at the boundary so every layer sees one spelling.
 	if !canonicalPort(port) {
-		return "", "", nil, fmt.Errorf("malformed target port %q", port)
+		// The host is named, the port is not: reporting "0x1f90" onward would put the
+		// spelling divergence this branch exists to refuse into the run's record and, in
+		// profiling, into a proposed manifest.
+		return "", "", nil, &refusedError{host: host, err: fmt.Errorf("malformed target port %q", port)}
 	}
 	// Drain the remaining request headers up to the blank line.
 	for {
 		h, err := br.ReadString('\n')
 		if err != nil {
-			return "", "", nil, fmt.Errorf("reading headers: %w", err)
+			// Both halves passed the screen and the port is canonical, so this refusal names
+			// the whole destination: a client that sent its CONNECT and then died mid-headers
+			// reached for a host the operator would otherwise never learn.
+			return "", "", nil, &refusedError{host: host, port: port, err: fmt.Errorf("reading headers: %w", err)}
 		}
 		if h == "\r\n" || h == "\n" {
 			break
@@ -959,6 +989,45 @@ func readConnect(c net.Conn) (host, port string, br *bufio.Reader, err error) {
 	// Request parsed; lift the cap so the tunnel body copy through br is unbounded.
 	lr.N = math.MaxInt64
 	return host, port, br, nil
+}
+
+// refusedError refuses a CONNECT the proxy could not act on, carrying the destination the
+// request line named where that destination passed the unsafe-rune screen. It exists for
+// the reason untunneledError does: without it the host is lost entirely, and the operator
+// reads a run that reached for a destination as one that named none. Its text is the
+// refusal's own - the client is told exactly what it was told before - so only the
+// reporting changes.
+//
+// It is built case by case rather than wrapped around every refusal, because some of them
+// are the screen itself turning a target away, and that host must never be carried onward.
+// port is empty where the request line's own port is the thing being refused: a
+// non-canonical spelling reported onward is the divergence the refusal exists to prevent.
+type refusedError struct {
+	host, port string
+	err        error
+}
+
+func (e *refusedError) Error() string { return e.err.Error() }
+func (e *refusedError) Unwrap() error { return e.err }
+
+// bareHostTarget returns the host a CONNECT target names when the target is a host and
+// nothing else - no port, and screened as a reported destination must be. It returns ""
+// for anything else, which is what keeps a target SplitHostPort refused for some other
+// reason from being reported as a host it never was.
+func bareHostTarget(target string) string {
+	if strings.ContainsAny(target, ":[]") {
+		return ""
+	}
+	// The root label is stripped on the parsed path's precedent: one spelling at every
+	// layer, so a destination reported here matches the rule a user would write for it.
+	host := strings.TrimSuffix(target, ".")
+	if host == "" {
+		return ""
+	}
+	if _, unsafe := policy.FirstUnsafeRune(host); unsafe {
+		return ""
+	}
+	return host
 }
 
 // untunneledError refuses a request that is not a CONNECT but named the destination it

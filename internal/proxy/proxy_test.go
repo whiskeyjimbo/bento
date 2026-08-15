@@ -1822,25 +1822,40 @@ func TestStatusWriteDoesNotPinAHandlerOnAClientThatNeverReads(t *testing.T) {
 }
 
 // Every connection the proxy handles must reach the run's egress record; one that
-// dies at the parse boundary is the case that used to reach none. It names no
-// destination - none parsed - but a run whose every connection died here must not
-// read as one that never touched the network, which is what the count is for.
+// dies at the parse boundary is the case that used to reach none. A run whose every
+// connection died here must not read as one that never touched the network, which is
+// what the count is for.
+//
+// Which of them names a destination is the second half, and it goes case by case. A
+// refusal that got far enough to screen a host names it: the operator is otherwise told
+// bento could not name a connection while bento knew the host, and in profiling is told
+// to add the hosts by hand. The screen's own refusal is the case that must NOT name one -
+// that host was turned away precisely because a host-side render of it would mislead -
+// and neither may a target that is no host at all. The port comes along only where the
+// port is not itself what was refused: reporting "0x1f90" onward would put the spelling
+// divergence back into the record.
 func TestParseFailureIsReportedAsRefused(t *testing.T) {
-	for _, tc := range []struct{ name, request string }{
-		{"not http", "GARBAGE\r\n"},
-		{"no port", "CONNECT example.com HTTP/1.1\r\n\r\n"},
-		{"empty host", "CONNECT :443 HTTP/1.1\r\n\r\n"},
-		{"non-canonical port", "CONNECT example.com:0x1f90 HTTP/1.1\r\n\r\n"},
-		{"deceiving host", "CONNECT exam\x9bple.com:443 HTTP/1.1\r\n\r\n"},
+	for _, tc := range []struct{ name, request, host, port string }{
+		{name: "not http", request: "GARBAGE\r\n"},
+		{name: "no port", request: "CONNECT example.com HTTP/1.1\r\n\r\n", host: "example.com"},
+		{name: "no port, root label", request: "CONNECT example.com. HTTP/1.1\r\n\r\n", host: "example.com"},
+		{name: "no port, deceiving host", request: "CONNECT exam\x9bple.com HTTP/1.1\r\n\r\n"},
+		{name: "too many colons", request: "CONNECT a:b:c HTTP/1.1\r\n\r\n"},
+		{name: "empty host", request: "CONNECT :443 HTTP/1.1\r\n\r\n"},
+		{name: "non-canonical port", request: "CONNECT example.com:0x1f90 HTTP/1.1\r\n\r\n", host: "example.com"},
+		{name: "deceiving host", request: "CONNECT exam\x9bple.com:443 HTTP/1.1\r\n\r\n"},
+		{name: "headers cut short", request: "CONNECT example.com:443 HTTP/1.1\r\nHost: exa", host: "example.com", port: "443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var seen []Decision
+			var gotHost, gotPort string
 			p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
-				WithObserver(func(d Decision, _, _ string) {
+				WithObserver(func(d Decision, host, port string) {
 					mu.Lock()
 					defer mu.Unlock()
 					seen = append(seen, d)
+					gotHost, gotPort = host, port
 				}),
 				WithDialer(fakeDialer("tunnel")))
 			dialProxy, stop := startProxy(t, p)
@@ -1849,6 +1864,13 @@ func TestParseFailureIsReportedAsRefused(t *testing.T) {
 			c := dialProxy()
 			defer c.Close()
 			fmt.Fprint(c, tc.request)
+			// A request that stops mid-headers is only a refusal once the client is done
+			// sending: left open, the header drain waits for the rest of it.
+			if !strings.HasSuffix(tc.request, "\r\n\r\n") {
+				if err := c.(*net.UnixConn).CloseWrite(); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// The report happens before the status line, so reading the 400 orders this
 			// against the handler.
 			br := bufio.NewReader(c)
@@ -1863,6 +1885,9 @@ func TestParseFailureIsReportedAsRefused(t *testing.T) {
 			defer mu.Unlock()
 			if !slices.Equal(seen, []Decision{Refused}) {
 				t.Errorf("decisions = %v, want exactly [%s]", seen, Refused)
+			}
+			if gotHost != tc.host || gotPort != tc.port {
+				t.Errorf("reported %q:%q, want %q:%q", gotHost, gotPort, tc.host, tc.port)
 			}
 		})
 	}

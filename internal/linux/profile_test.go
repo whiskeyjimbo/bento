@@ -454,4 +454,31 @@ func TestRecordedEgressCountsConnectionsItCannotName(t *testing.T) {
 	if obs.DroppedConnections != 2 {
 		t.Errorf("DroppedConnections = %d, want 2 (a refused and a faulted connection)", obs.DroppedConnections)
 	}
+	if obs.UnproposableHosts != nil {
+		t.Errorf("UnproposableHosts = %v, want none - neither refusal named a destination", obs.UnproposableHosts)
+	}
+}
+
+// A refusal that named a host after all - a target with no port, or a port spelling the
+// dialer would refuse - is still nothing to propose, so it stays in the count. But the
+// warning that count drives tells the operator to add the missing hosts by hand, and the
+// one thing they cannot do that with is a count, so the host is carried beside it.
+func TestRecordedEgressKeepsTheHostARefusalDidName(t *testing.T) {
+	var rec recordedEgress
+	rec.observe(proxy.Refused, "noport.example", "")
+	rec.observe(proxy.Refused, "cutshort.example", "443")
+	rec.observe(proxy.Refused, "", "")
+
+	var obs profile.Observation
+	rec.into(&obs)
+	if obs.Hosts != nil {
+		t.Errorf("Hosts = %v, want none - a refused destination is not proposable", obs.Hosts)
+	}
+	if obs.DroppedConnections != 3 {
+		t.Errorf("DroppedConnections = %d, want 3 - a named refusal is still a connection the proposal is short", obs.DroppedConnections)
+	}
+	want := []profile.HostPort{{Host: "noport.example"}, {Host: "cutshort.example", Port: "443"}}
+	if !slices.Equal(obs.UnproposableHosts, want) {
+		t.Errorf("UnproposableHosts = %v, want %v", obs.UnproposableHosts, want)
+	}
 }

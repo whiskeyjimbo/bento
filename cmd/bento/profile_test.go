@@ -727,8 +727,17 @@ func TestProfileWarningsCoversDroppedAccesses(t *testing.T) {
 	}
 	// A connection the proxy could not name is the same loss one layer over, and gets
 	// its own warning: the file-access text would send the reader looking for a path.
-	if got := droppedConnectionsWarning(2); !strings.Contains(got, "destination of 2 connection") {
+	if got := droppedConnectionsWarning(2, nil); !strings.Contains(got, "destination of 2 connection") {
 		t.Errorf("dropped-connections warning = %q, want it to name the count", got)
+	}
+	// The advice is to add the hosts by hand, so the ones bento does have have to be in
+	// the text: a count alone leaves the operator nothing to act on for a connection
+	// bento could name after all. The port travels only where one parsed.
+	got := droppedConnectionsWarning(2, []profile.HostPort{{Host: "example.com"}, {Host: "api.example.com", Port: "443"}})
+	for _, want := range []string{`"example.com"`, `"api.example.com" port "443"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dropped-connections warning = %q, want it to name %s", got, want)
+		}
 	}
 }
 
