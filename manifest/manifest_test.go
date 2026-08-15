@@ -318,6 +318,50 @@ func TestParseRejectsAnchorsAndAliases(t *testing.T) {
 	}
 }
 
+// The decoder's cost grows faster than the source does in nesting depth alone - flat
+// input of the same size is linear - so maxManifestBytes bounds nothing on a nested one:
+// a megabyte of "[" took longer to decode than any operator would wait, on a file bento
+// did not write. The depth screen is what bounds it, and each of these is a spelling of
+// the same nesting the lexer must count as such: two flow collections and the block
+// sequence entries a single line can stack.
+func TestParseRejectsDeepNesting(t *testing.T) {
+	for name, src := range map[string]string{
+		"flow sequences":        strings.Repeat("[", maxManifestBytes/2),
+		"flow mappings":         strings.Repeat("{", maxManifestBytes/2),
+		"block sequence dashes": strings.Repeat("- ", maxManifestBytes/4),
+	} {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { _, err := Parse(strings.NewReader(src)); done <- err }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("input this deeply nested must be rejected")
+				}
+				if !strings.Contains(err.Error(), "levels deep") {
+					t.Errorf("error should name the cause; got %q", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Parse did not return: the input reached the decoder and is nesting")
+			}
+		})
+	}
+}
+
+// The depth screen must not refuse what people legitimately write. A manifest reaches
+// four levels, so the cap has to sit well clear of that - and the block-entry count has
+// to fall as entries close, or a long list would climb one level per item.
+func TestParseAcceptsRealisticNesting(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("entrypoint: ./x\nnetwork:\n")
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&src, "  - {host: h%d.example.com, port: \"443\"}\n", i)
+	}
+	if _, err := Parse(strings.NewReader(src.String())); err != nil {
+		t.Errorf("a manifest at the depth people write must not be refused: %v", err)
+	}
+}
+
 // The scan must not refuse what people legitimately write: '&', '*' and '!' are ordinary
 // characters in a path, an argument, or a comment, and a byte scan for the indicators
 // would reject every one of these.

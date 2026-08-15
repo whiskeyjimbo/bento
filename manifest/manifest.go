@@ -29,6 +29,16 @@ import (
 // terminal). Generous by three orders of magnitude over any real manifest.
 const maxManifestBytes = 1 << 20
 
+// maxNestDepth caps how deeply a manifest may nest collections. The decoder is
+// superlinear in nesting depth - measured, 32k nested flow sequences ("[[[[...") take
+// over a second, and maxManifestBytes bounds only the source, so a megabyte of them does
+// not return in any time an operator would wait. Flat input of the same size is linear,
+// so depth is the whole of it. A manifest reaches four levels (network: a list of maps
+// whose values are scalars), and the cap is an order of magnitude above that: no
+// manifest anyone writes is refused, and no input reaches the decoder deep enough to
+// stall it.
+const maxNestDepth = 32
+
 // manifest is the on-disk YAML shape, kept separate from policy.Policy so the
 // domain carries no serialization concerns.
 type manifest struct {
@@ -209,9 +219,10 @@ func joinProblems(probs []error) error {
 }
 
 // screenSource rejects the YAML constructs that let a manifest's decoded meaning differ
-// from the text a reviewer read, or let a small input expand without bound. It runs on the
-// source because both failures happen inside the decoder, so nothing downstream of the
-// decode can see them.
+// from the text a reviewer read, that let a small input expand without bound, or that
+// cost the decoder more than the source's size bounds. It runs on the source because all
+// three failures happen inside the decoder, so nothing downstream of the decode can see
+// them.
 //
 // It lexes with the decoder's own lexer rather than searching for the indicator bytes.
 // '&', '*' and '!' are ordinary characters inside a quoted scalar, a comment, or a path -
@@ -225,8 +236,27 @@ func joinProblems(probs []error) error {
 // name or tag string into an error the operator's terminal renders would reopen at a new
 // site exactly what this file is careful about everywhere else.
 func screenSource(data string) error {
+	// Open flow collections, and the columns of the block sequence entries still open,
+	// so "- - - -" on one line counts as the four levels it is. Both are nesting, and
+	// nesting is what the decoder is superlinear in.
+	flowDepth := 0
+	var entryCols []int
 	for _, tok := range lexer.Tokenize(data) {
 		switch tok.Type {
+		case token.SequenceStartType, token.MappingStartType:
+			flowDepth++
+		case token.SequenceEndType, token.MappingEndType:
+			// Clamped: a stray "]" is the decoder's error to report, not a negative depth
+			// here that would buy an unbalanced input extra levels.
+			if flowDepth > 0 {
+				flowDepth--
+			}
+		case token.SequenceEntryType:
+			col := tok.Position.Column
+			for len(entryCols) > 0 && entryCols[len(entryCols)-1] >= col {
+				entryCols = entryCols[:len(entryCols)-1]
+			}
+			entryCols = append(entryCols, col)
 		case token.TagType:
 			// A tag makes the decoded value differ from the bytes on the line: read:
 			// [!!binary "L2V0Yy9zaGFkb3c="] decodes to /etc/shadow. approve fingerprints
@@ -243,6 +273,9 @@ func screenSource(data string) error {
 		default:
 			// The lexer's token set is the library's to grow; only the constructs above
 			// make the decoded policy differ from the page.
+		}
+		if flowDepth+len(entryCols) > maxNestDepth {
+			return fmt.Errorf("manifest: line %d nests more than %d levels deep; the decoder's cost grows faster than the source does, so a manifest must stay as shallow as one a person writes", lineOf(tok), maxNestDepth)
 		}
 	}
 	return nil
