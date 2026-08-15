@@ -37,9 +37,11 @@ const (
 	// gatekeeper admitted at runtime. It is distinct from Allowed so a run can be
 	// honest about egress it permitted beyond the declared manifest.
 	AdmittedByGate Decision = "gate"
-	// Refused marks a connection turned away at the concurrency limit, before its
-	// CONNECT was read - so it carries no host or port. It is reported so a run that
-	// floods the proxy is not counted as one that never touched the network.
+	// Refused marks a connection turned away before a destination was established -
+	// at the concurrency limit, or because its request line never parsed into one - so
+	// it carries no host or port. It is reported so a run that floods the proxy, or
+	// speaks something other than CONNECT at it, is not counted as one that never
+	// touched the network.
 	Refused Decision = "refused"
 	// GateDenied marks a connection the static allowlist did not permit and a gatekeeper,
 	// consulted about it, refused. It is the negative half of AdmittedByGate and is
@@ -62,9 +64,10 @@ const (
 	// nothing that separates the guard's refusal from an ordinary dial failure, so
 	// the observer is the only place the distinction survives.
 	GuardBlocked Decision = "blocked"
-	// Faulted marks a connection the proxy itself dropped, because a handler panicked.
-	// It names no host or port for the same reason Refused does not: the panic may have
-	// landed before the CONNECT was read. It is distinct from every other decision
+	// Faulted marks a connection the proxy itself dropped, because a handler panicked
+	// before reaching any other decision - a panic after one is not reported, the
+	// connection having already reached an outcome. It names no host or port for the same
+	// reason Refused does not: the panic may have landed before the CONNECT was read. It is distinct from every other decision
 	// because none of them describes a fault - each names who refused, and this one is
 	// the proxy failing to reach a refusal at all - and a run that silently drops a
 	// connection is the one outcome the allowlist's word cannot be taken on.
@@ -677,14 +680,27 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// with one too rather than a bare close the target reads as a network hiccup - but
 	// only before the tunnel is established, because after the 200 the connection
 	// carries the target's own bytes and a status line spliced into them is corruption.
-	// The decision is reported either way: what the client is told changes with the
-	// tunnel, what the run records does not.
 	established := false
+	// Every decision this handler reports goes through report, so the recover below can
+	// tell a connection that never reached one from a connection that faulted after it.
+	// Both run on this goroutine, so the flag needs no lock.
+	reported := false
+	report := func(d Decision, host, port string) {
+		reported = true
+		p.report(d, host, port)
+	}
 	defer func() {
 		if recover() == nil {
 			return
 		}
-		p.report(Faulted, "", "")
+		// Faulted describes a connection the proxy dropped without reaching an outcome,
+		// and that is what downstream turns into a degraded network layer. A panic after
+		// the decision was reported - from the tunnel, say - is not that: the connection
+		// has its outcome in the run record already, and reporting a fault too would count
+		// one connection twice and degrade a layer that did enforce the manifest on it.
+		if !reported {
+			p.report(Faulted, "", "")
+		}
 		if established {
 			return
 		}
@@ -709,7 +725,13 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		// grant the host and port while nothing ever tunnels to them.
 		var untunneled *untunneledError
 		if errors.As(err, &untunneled) {
-			p.report(Untunneled, untunneled.host, untunneled.port)
+			report(Untunneled, untunneled.host, untunneled.port)
+		} else {
+			// No destination parsed, so there is none to name - but the connection still
+			// reached the proxy and cost it a slot, and a run whose every connection died
+			// here must not read as one that never touched the network. Reported before the
+			// status line, as the refusal at the concurrency limit is.
+			report(Refused, "", "")
 		}
 		writeStatus(client, "400 Bad Request", err.Error())
 		return
@@ -721,7 +743,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		// Record the intended destination, then refuse: the script learns it could
 		// not connect, and its data never leaves the host. The plaintext body
 		// surfaces in the script's own error output.
-		p.report(Denied, host, port)
+		report(Denied, host, port)
 		writeStatus(client, "403 Forbidden",
 			fmt.Sprintf("bento recorded intended egress to %s:%s but did not forward it (profiling; re-run with --allow-network to permit it)", host, port))
 		return
@@ -738,7 +760,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			if p.gate != nil {
 				decision = GateDenied
 			}
-			p.report(decision, host, port)
+			report(decision, host, port)
 			// The body is plaintext so it surfaces in the script's own error output, so a
 			// curl/requests user sees exactly which host was refused, not a blank failure.
 			// It is the SAME body either way, and deliberately says only what the allowlist
@@ -792,11 +814,11 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			// stays out of the shared body too - a *net.OpError carries the Addr in its
 			// own text. The guard still refuses before any SYN while a real dial costs an
 			// RTT, so this removes the textual oracle, not the timing one.
-			p.report(GuardBlocked, host, port)
+			report(GuardBlocked, host, port)
 			writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 			return
 		}
-		p.report(decision, host, port)
+		report(decision, host, port)
 		writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 		return
 	}
@@ -807,7 +829,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	stopUpstream := context.AfterFunc(ctx, func() { upstream.Close() })
 	defer stopUpstream()
 
-	p.report(decision, host, port)
+	report(decision, host, port)
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}

@@ -321,8 +321,9 @@ func TestUntunneledRequestReportsItsDestination(t *testing.T) {
 
 // The absolute-URI host reaches report(), the run's recorded destinations, and a
 // host-side render of them - exactly where a CONNECT target goes, so it gets exactly the
-// screen a CONNECT target gets. A target that fails it is still refused, but must be
-// reported with no destination rather than carrying an unscreened one onward.
+// screen a CONNECT target gets. A target that fails it is still refused, and is reported
+// as the bare Refused every unparseable request line gets, rather than carrying an
+// unscreened destination onward under Untunneled.
 func TestUntunneledRequestScreensItsDestination(t *testing.T) {
 	for _, target := range []string{
 		"http://ex\x1bample.com/",
@@ -332,8 +333,12 @@ func TestUntunneledRequestScreensItsDestination(t *testing.T) {
 		"/relative/path",
 	} {
 		var got []Decision
+		var gotHost, gotPort string
 		p := New(nil, WithDialer(fakeDialer("HELLO")),
-			WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+			WithObserver(func(d Decision, host, port string) {
+				got = append(got, d)
+				gotHost, gotPort = host, port
+			}))
 		dialProxy, stop := startProxy(t, p)
 		c := dialProxy()
 		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", target)
@@ -344,8 +349,11 @@ func TestUntunneledRequestScreensItsDestination(t *testing.T) {
 		if !strings.Contains(status, "400") {
 			t.Errorf("%q: status = %q, want 400", target, strings.TrimSpace(status))
 		}
-		if len(got) != 0 {
-			t.Errorf("%q: reported %v, want nothing - an unscreened destination must not be carried", target, got)
+		if len(got) != 1 || got[0] != Refused {
+			t.Errorf("%q: decisions = %v, want exactly [%v]", target, got, Refused)
+		}
+		if gotHost != "" || gotPort != "" {
+			t.Errorf("%q: reported %q:%q, want no destination - an unscreened one must not be carried", target, gotHost, gotPort)
 		}
 	}
 }
@@ -1811,4 +1819,99 @@ func TestStatusWriteDoesNotPinAHandlerOnAClientThatNeverReads(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("handler still held the connection after the status write should have timed out")
+}
+
+// Every connection the proxy handles must reach the run's egress record; one that
+// dies at the parse boundary is the case that used to reach none. It names no
+// destination - none parsed - but a run whose every connection died here must not
+// read as one that never touched the network, which is what the count is for.
+func TestParseFailureIsReportedAsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, request string }{
+		{"not http", "GARBAGE\r\n"},
+		{"no port", "CONNECT example.com HTTP/1.1\r\n\r\n"},
+		{"empty host", "CONNECT :443 HTTP/1.1\r\n\r\n"},
+		{"non-canonical port", "CONNECT example.com:0x1f90 HTTP/1.1\r\n\r\n"},
+		{"deceiving host", "CONNECT exam\x9bple.com:443 HTTP/1.1\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seen []Decision
+			p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+				WithObserver(func(d Decision, _, _ string) {
+					mu.Lock()
+					defer mu.Unlock()
+					seen = append(seen, d)
+				}),
+				WithDialer(fakeDialer("tunnel")))
+			dialProxy, stop := startProxy(t, p)
+			defer stop()
+
+			c := dialProxy()
+			defer c.Close()
+			fmt.Fprint(c, tc.request)
+			// The report happens before the status line, so reading the 400 orders this
+			// against the handler.
+			br := bufio.NewReader(c)
+			status, err := br.ReadString('\n')
+			if err != nil {
+				t.Fatalf("reading status: %v", err)
+			}
+			if !strings.Contains(status, "400") {
+				t.Fatalf("status = %q, want 400", strings.TrimSpace(status))
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(seen, []Decision{Refused}) {
+				t.Errorf("decisions = %v, want exactly [%s]", seen, Refused)
+			}
+		})
+	}
+}
+
+// deadlinePanicConn is an upstream whose SetDeadline panics, which is how a panic is
+// driven from tunnel's extend() - on handle's own goroutine, after the 200.
+type deadlinePanicConn struct{ net.Conn }
+
+func (deadlinePanicConn) SetDeadline(time.Time) error { panic("upstream deadline blew up") }
+
+// A panic after the tunnel is established must not add a Faulted to the connection's
+// already-reported decision. Downstream counts a fault as a connection whose handler
+// reached no outcome and degrades the network layer for it; this one was allowed,
+// dialed and tunneled, so reporting both counts one connection twice and degrades a
+// layer that did enforce the manifest on it.
+func TestPanicAfterTheTunnelDoesNotReportAFault(t *testing.T) {
+	var mu sync.Mutex
+	var seen []Decision
+	p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(d Decision, _, _ string) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, d)
+		}),
+		WithDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := fakeDialer("tunnel")(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return deadlinePanicConn{c}, nil
+		}))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, br := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (the panic must land after the tunnel)", status)
+	}
+	// The handler's recover runs before its deferred client.Close, so an EOF here
+	// orders the assertion after whatever the recover reported.
+	if _, err := io.ReadAll(br); err != nil {
+		t.Fatalf("draining the tunnel: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []Decision{Allowed}) {
+		t.Errorf("decisions = %v, want exactly [%s]", seen, Allowed)
+	}
 }

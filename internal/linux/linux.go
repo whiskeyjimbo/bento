@@ -347,9 +347,9 @@ func noteDeadListener(r *enforce.Report, err error) {
 // noteProxyFault records connections a panicking proxy handler dropped. The run does
 // not fail on one - the connection is dropped, which is the safe direction - but the
 // layer cannot be reported as having enforced the manifest on a connection whose
-// handler did not run to an outcome. Where the fault landed is not said, because it is
-// not known: before the CONNECT was read the destination never surfaced, and after the
-// tunnel was up an allowlist decision had already been reported for it.
+// handler did not run to an outcome. The destination is not said, because it never
+// surfaced: a fault is reported only for a connection that reached no decision at all,
+// so one counted here is one whose CONNECT was never read or never allowed.
 func noteProxyFault(r *enforce.Report, faults int) {
 	if faults == 0 {
 		return
@@ -863,9 +863,9 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// A fault is an outcome on a connection, not another connection, so it is counted
-	// apart from the tally rather than added to it. Where the panic pre-empted every
-	// other report the connection is missing from that tally entirely; the degraded
-	// network layer this count produces is what covers it.
+	// apart from the tally rather than added to it. A fault is reported only for a
+	// connection that reached no other decision, so it is missing from that tally
+	// entirely; the degraded network layer this count produces is what covers it.
 	if d == proxy.Faulted {
 		c.faulted++
 		return
