@@ -397,3 +397,50 @@ func TestARestartedExecDoesNotClaimItsTargetResolved(t *testing.T) {
 		}
 	}
 }
+
+// A syscall that names a path and reaches neither switch must still reach Dropped. The
+// silent third outcome - out of Accesses and out of Dropped - is the one direction that
+// channel's invariant forbids: the caller reads the run as having touched nothing there
+// and synthesizes a manifest that is short with nothing to say so.
+//
+// chroot stands for the set. It is unprivileged only after an unshare, and this test
+// makes no namespace: the call fails EPERM, which changes nothing here, because the
+// count is taken at the entry stop like every other decode in this package.
+//
+// Measured as a delta against the same script without the call rather than against zero,
+// so an unrelated drop from the interpreter's own startup cannot decide the result.
+func TestTraceCountsAPathSyscallItCannotDecode(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	target := filepath.Join(t.TempDir(), "root")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	trace := func(body string) Result {
+		t.Helper()
+		res, err := Trace([]string{py, "-c", body}, os.Environ(), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Trace: %v", err)
+		}
+		return res
+	}
+	const call = `
+try:
+    os.chroot(%q)
+except OSError:
+    pass
+`
+	base := trace("import os")
+	with := trace("import os" + fmt.Sprintf(call, target))
+
+	if got := with.Dropped - base.Dropped; got != 1 {
+		t.Errorf("chroot moved Dropped by %d, want 1 (base %d, with the call %d): a path syscall this decoder skips reached neither channel",
+			got, base.Dropped, with.Dropped)
+	}
+	if _, ok := find(with, target); ok {
+		t.Errorf("the chroot target %q was recorded as an access; counting it says the observation is short, not what it lost", target)
+	}
+}

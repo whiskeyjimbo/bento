@@ -1129,9 +1129,49 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		execSpawn[pid] = false
 		holdExecTarget(pid, &regs, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, held, drop)
 	default:
+		if undecodedPathSyscalls[regs.Orig_rax] {
+			drop()
+			return
+		}
 		inspectMutating(pid, &regs, record, dropSlot)
 		inspectExistence(pid, &regs, recordProbe, drop, held)
 	}
+}
+
+// undecodedPathSyscalls are the syscalls that name a path, are reachable from inside the
+// profiling sandbox, and that this decoder does not read. Each is COUNTED rather than
+// decoded: without it a target that named a path this way leaves the access out of
+// Accesses AND leaves Dropped at 0, which is the one direction that channel's invariant
+// forbids - the caller reads the run as having touched nothing there and synthesizes a
+// short manifest. Counting says the observation is incomplete without claiming to know
+// what was lost, which is what Dropped exists to pay for.
+//
+// Enumerated rather than "any number that matched no case". A blanket counter fires on
+// every syscall this decoder deliberately ignores - and phantom drops in the hundreds, in
+// the one channel that tells a user their manifest is short, is a defect this package has
+// already been fixed for once (see the rt_sigreturn and utimensat notes above).
+//
+// Reachable means reachable from a profiling run, not merely defined. The mount family
+// and chroot need capabilities the run does not start with, but nothing stops the target
+// calling unshare(2) - runObserve installs only BlockIoUring, which refuses the three
+// io_uring calls and permits everything else - and a fresh user namespace hands back
+// CAP_FULL_SET over it. open_tree without OPEN_TREE_CLONE and fanotify_mark since 5.13
+// need no privilege at all; fanotify_mark is the sharpest of them, because its sibling
+// inotify_add_watch is decoded a few lines below.
+//
+// Deliberately absent: swapon/swapoff/acct/quotactl want capabilities in the INITIAL
+// namespace, mq_open/mq_unlink want an mqueue mount the sandbox does not provide, and
+// io_uring is refused before the fork. Add a number here when it becomes reachable, and
+// prefer moving one out into a decode when the path it names is worth recording.
+var undecodedPathSyscalls = map[uint64]bool{
+	unix.SYS_CHROOT:        true,
+	unix.SYS_PIVOT_ROOT:    true,
+	unix.SYS_MOUNT:         true,
+	unix.SYS_UMOUNT2:       true,
+	unix.SYS_OPEN_TREE:     true,
+	unix.SYS_MOVE_MOUNT:    true,
+	unix.SYS_FSPICK:        true,
+	unix.SYS_FANOTIFY_MARK: true,
 }
 
 // inspectExistence decodes the path-EXISTENCE syscalls - the ones that ask whether a
