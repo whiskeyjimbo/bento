@@ -198,7 +198,7 @@ func LoopedGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		if _, err := os.Stat(filepath.Clean(g)); errors.Is(err, syscall.ELOOP) {
+		if _, err := os.Stat(pathresolve.Existing(g)); errors.Is(err, syscall.ELOOP) {
 			problems = append(problems, grantrefusal.Looped(g).Error())
 		}
 	}
@@ -209,9 +209,12 @@ func LoopedGrantProblems(read, write []string) []string {
 // than a directory, in the words the backend refuses them with - the case validate exists
 // to catch before run's first step.
 //
-// Cleaned before it is statted, because `dir/file.txt/` stats as ENOTDIR and would
-// otherwise be neither a problem nor a note - while run resolves the trailing slash away
-// and refuses it as the file it is.
+// Asked of where the grant LANDS, as RootWriteProblems asks it and as prepareWriteDirs
+// stats it: run resolves the grant physically, so a ".." popping over a symlink lands
+// somewhere a lexical filepath.Clean does not - and Cleaning here refuses a grant the run
+// honors, the one direction this package rules out. Resolving also disposes of the
+// trailing slash `dir/file.txt/`, which stats as ENOTDIR unresolved and would otherwise be
+// neither a problem nor a note, while run refuses it as the file it is.
 //
 // A stat that fails for anything but absence or a loop is a refusal too, in the same
 // sentence prepareWriteDirs' default arm refuses it with. It is asked here and not narrowed
@@ -223,7 +226,7 @@ func LoopedGrantProblems(read, write []string) []string {
 func FileWriteGrantProblems(write []string) []string {
 	var problems []string
 	for _, g := range write {
-		fi, err := os.Stat(filepath.Clean(g))
+		fi, err := os.Stat(pathresolve.Existing(g))
 		switch {
 		case err == nil && !fi.IsDir():
 			problems = append(problems, grantrefusal.WriteIsFile(g).Error())
@@ -466,7 +469,7 @@ func MissingReads(read []string) []string {
 func FileishWrites(write []string) []string {
 	var fileish []string
 	for _, g := range write {
-		if _, err := os.Stat(filepath.Clean(g)); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(pathresolve.Existing(g)); !errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an

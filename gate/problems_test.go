@@ -184,6 +184,30 @@ func TestAnUnstattableWriteGrantIsReported(t *testing.T) {
 	assertProblem(t, gate.FileWriteGrantProblems([]string{grant}), "cannot be checked on this host")
 }
 
+// A ".." in a write grant pops over a symlink physically for the run and lexically for
+// filepath.Clean, so the two land on different paths - and where the lexical one is a file
+// the gate refuses a grant the run honors, which is the one direction the gate rules out.
+// The trailing-slash case the resolution also has to keep answering is beside it.
+func TestAWriteGrantIsJudgedWhereItLands(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "real", "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "real", "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "out"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "real", "sub"), filepath.Join(home, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Spelled raw: filepath.Join would clean the ".." away before the gate ever saw it.
+	assertProblem(t, gate.FileWriteGrantProblems([]string{home + "/link/../out"}), "")
+	assertProblem(t, gate.FileWriteGrantProblems([]string{home + "/out/"}), "is a file")
+}
+
 // A caller-denied read has to be refused in its own sentence: the InsideShield wording
 // offers the read opt-in, and an embedder's deny has none, so one sentence for every
 // non-Honored verdict points this grant at an escape that does not exist for it.
