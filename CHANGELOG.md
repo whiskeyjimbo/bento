@@ -114,7 +114,11 @@ commits that built it - none of them were ever in a release.
   verdict and the `failed` event, so a harness can gate on it rather than a human
   comparing version strings. The boundary did not move: this denies nothing. It
   is quiet about `/usr`, `/bin` and their kin, which every sandbox carries from
-  the host, and about a directory the host itself does not have.
+  the host, about a directory the host itself does not have, and about one whose
+  commands have no counterpart in the box - nothing resolves in their place, so
+  the run gets an exit 127 with its own note rather than a different build. That
+  last one is what keeps the line off every run on a stock Ubuntu host, where
+  `/snap/bin` is on everyone's PATH and chosen by nobody.
 
 - **A run reports the auto-executing files it changed.** A `package.json`'s
   install scripts, a `conftest.py`, a `build.rs`, an `eslint.config.js`, a
