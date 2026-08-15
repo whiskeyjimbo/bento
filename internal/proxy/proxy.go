@@ -123,8 +123,8 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 }
 
 // WithObserver installs a callback invoked for every allow/deny decision. It runs
-// on the deciding connection's goroutine, and for a Refused decision on Serve's
-// accept goroutine, so it must not block: a slow observer stalls the connection it
+// on the deciding connection's goroutine - and for the Refused decision the
+// concurrency limit produces, on Serve's accept goroutine - so it must not block: a slow observer stalls the connection it
 // reports, and on the accept path it stalls every connection behind it. A panic is
 // contained and the connection proceeds; the decision it carried is simply lost.
 //
