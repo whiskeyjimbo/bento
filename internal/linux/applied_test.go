@@ -1122,6 +1122,34 @@ func TestARecorderTheStageNeverReportedIsNotAnEmptyRecord(t *testing.T) {
 	}
 }
 
+// The detail on the recorder line is the reason it is not watching, so writeExecRecord
+// emits one only alongside a non-yes value. A detail on "yes" is a line the stage never
+// wrote, and it opens the record section - so tolerating it is accepting attacker-chosen
+// bytes on the one line that says the section is genuine. The record has to read as
+// untrustworthy, and it must not take the layers above the marker down with it: past the
+// marker the record is a diagnostic.
+func TestARecorderLineCarryingADetailOnYesIsNotTheStagesLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	written := "exec-filter none\nlandlock yes\nAPPLIED\n" +
+		`exec-recorder yes "EXEC-RECORD"` + "\n" +
+		`exec-ran 7 "/usr/bin/cc" "cc\x00a.c"` + "\n" +
+		launcher.AppliedExecRecordMarker + "\n"
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete || a.landlock != launcher.AppliedYes {
+		t.Fatalf("the layers above the marker were retracted by a line inside the record: complete=%v landlock=%q", a.complete, a.landlock)
+	}
+	rec := a.execRecord(true)
+	if rec.Watched {
+		t.Error("a recorder line the stage does not write was accepted as one that watched the run")
+	}
+	if rec.Complete {
+		t.Error("a record opened by a line the stage does not write was reported as complete")
+	}
+}
+
 // A recorder reported as not watching, whose reason the host cannot read: the quoting is
 // what stops a newline in the reason from forging a record, so an unquotable one is
 // dropped - and the record still has to say the recorder did not watch, with a reason

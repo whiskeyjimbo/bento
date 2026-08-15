@@ -165,6 +165,16 @@ func parseApplied(f *os.File) applied {
 				return applied{}
 			case key == launcher.AppliedExecRecorder && !recorderSeen:
 				recorderSeen = true
+				// The detail is the reason the recorder is NOT watching, so writeExecRecord
+				// emits one only alongside a non-yes value: a detail on "yes" is a line the
+				// stage does not write, which every other arm in this switch treats as
+				// tampering or as garbled. Garbled rather than voiding the report, and the
+				// value is dropped with it, so the section reads untrustworthy - past the
+				// marker the record is a diagnostic and must not retract a layer.
+				if value == launcher.AppliedYes && detail != "" {
+					garbled = true
+					break
+				}
 				a.execRecorder = value
 				if v, err := strconv.Unquote(detail); err == nil {
 					a.execRecorderErr = v
