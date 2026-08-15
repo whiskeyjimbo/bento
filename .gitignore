@@ -10,6 +10,9 @@ bin/
 dist/
 .cover/
 
+# The Quick Start builds the CLI next to the script it sandboxes.
+/examples/probe/bento
+
 # `go build .` in an example module names the binary after the module.
 /examples/embed/bentoembed
 /examples/supervise/bentosupervise

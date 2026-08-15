@@ -68,9 +68,9 @@ credentials shielded even under a grant that covers them.
 
 ### Build from Source
 ```sh
-make build                    # reproducible static binary (trimmed paths, source-derived stamp)
-go build -o bento ./cmd/bento # plain build
-make install                  # install to /usr/local/bin (needs write access there)
+make build                                  # reproducible static binary (trimmed paths, source-derived stamp)
+CGO_ENABLED=0 go build -o bento ./cmd/bento # plain build
+make install                                # install to /usr/local/bin (needs write access there)
 ```
 
 `make install` honours the usual packaging variables: `PREFIX` (default
@@ -206,7 +206,7 @@ sandbox actually lets it read, write, reach, and execute - so each step has
 visible output rather than a silent success.
 
 ```sh
-go build -o examples/probe/bento ./cmd/bento
+CGO_ENABLED=0 go build -o examples/probe/bento ./cmd/bento
 cd examples/probe
 
 ./bento doctor                               # 0. what this host can actually enforce
