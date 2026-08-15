@@ -122,16 +122,24 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # sharing one is covered by the one entry.
 RACE_LINUX_TESTS := TestEgressCollector TestEnforcerReuseIsConcurrencySafe
 
+# internal/observe runs whole rather than by name: it is one tier, its concurrency tests
+# already fail under plain `go test` when the traceCalls mutex is wrong, and 24s buys the
+# detector over the mutex itself without a second name list to keep in step with renames.
+#
+# BENTO_REQUIRE_TEST_DEPS mirrors `make test`: TestEnforcerReuseIsConcurrencySafe is gated
+# on requireSandbox, so on a runner without bwrap or unprivileged userns it would skip and
+# this gate would pass having run nothing. The -list guard does not catch that - a skip
+# exits 0 exactly as a missing pattern does.
 race: ## Run the proxy concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
-	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/...
+	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/... ./internal/observe/
 	@set -e; listed=$$(GOWORK=off go test -list '.*' ./internal/linux/); pattern=""; \
 	for t in $(RACE_LINUX_TESTS); do \
 		printf '%s\n' "$$listed" | grep -q "^$$t" \
 			|| { printf "$(BOLD)$$t no longer exists; update RACE_LINUX_TESTS$(RESET)\n" >&2; exit 1; }; \
 		pattern="$$pattern|$$t"; \
 	done; \
-	GOWORK=off CGO_ENABLED=1 go test -race -count=1 -run "$${pattern#|}" ./internal/linux/
+	GOWORK=off CGO_ENABLED=1 BENTO_REQUIRE_TEST_DEPS=1 go test -race -count=1 -run "$${pattern#|}" ./internal/linux/
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
 
 # A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as
