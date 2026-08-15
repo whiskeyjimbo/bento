@@ -871,8 +871,16 @@ func TestWriteRunResultShortfallOverABackendFailureReportsTheFailure(t *testing.
 	var stderr bytes.Buffer
 	err := writeRunResult(&stderr, false, validPolicy(), nil,
 		enforce.Result{Report: report}, nil, nil, shortfall)
-	if !errors.Is(err, shortfall) {
-		t.Errorf("human path returned %v, want the error handed back for main to render", err)
+	if !errors.Is(err, shortfall.Err) {
+		t.Errorf("human path returned %v, want the backend's own failure handed back for main to render", err)
+	}
+	// Main prints what comes back through one unwrapped Fprintf, so the layers must be
+	// rendered here instead of riding out inside the error string.
+	if errors.As(err, new(*enforce.Shortfall)) {
+		t.Errorf("human path returned %v, want the cause alone - the layers are rendered on stderr", err)
+	}
+	if !strings.Contains(stderr.String(), "filesystem (core tier): degraded") {
+		t.Errorf("the layer that fell short must be named on stderr; got %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "the script ran, but") {
 		t.Errorf("a run the backend failed must not be reported as one the script ran; got %q", stderr.String())

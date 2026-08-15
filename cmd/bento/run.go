@@ -439,6 +439,19 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			writeSandboxPathShadow(stderr, p, env)
 			writeChangedAutoExecNotice(stderr, res)
 			writeRedirectedHooksNotice(stderr, res)
+			// The layers a shortfall named are rendered here, wrapped, for the reason the
+			// refusal above is rendered rather than returned: the error main prints goes out
+			// through one unwrapped Fprintf, and the degraded tier's disclosure is a
+			// thousand-character paragraph that nobody reads sideways.
+			if shortfall != nil {
+				writeDegradations(stderr, res.Report)
+			}
+		}
+		// Stripped to the cause for the same reason: the layers have just been rendered
+		// above, and the --json envelope carries the report whole, so what is left to say
+		// is why the run failed.
+		if shortfall != nil {
+			runErr = shortfall.Err
 		}
 		return failJSON(stderr, stream, asJSON, res, shadowedPathDirs(p, env), runErr)
 	}
