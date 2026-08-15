@@ -121,7 +121,11 @@ func TestWriteRunResultReportsShadowedPath(t *testing.T) {
 	if err := os.MkdirAll(toolchain, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"PATH": toolchain}
+	// The note fires on a COLLISION - a command the box also has - so the toolchain holds
+	// one the fake base image holds too, and the base image is on the PATH the box searches.
+	base := fakeBaseImage(t, "tool")
+	plantCommand(t, toolchain, "tool")
+	env := map[string]string{"PATH": toolchain + string(os.PathListSeparator) + base}
 
 	for _, tc := range []struct {
 		name   string
@@ -498,7 +502,11 @@ func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
 	if err := os.MkdirAll(toolchain, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"PATH": toolchain}
+	// The note fires on a COLLISION - a command the box also has - so the toolchain holds
+	// one the fake base image holds too, and the base image is on the PATH the box searches.
+	base := fakeBaseImage(t, "tool")
+	plantCommand(t, toolchain, "tool")
+	env := map[string]string{"PATH": toolchain + string(os.PathListSeparator) + base}
 
 	for _, tc := range []struct {
 		name   string

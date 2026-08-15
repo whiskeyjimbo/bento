@@ -1356,6 +1356,33 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 	}
 }
 
+// fakeBaseImage returns a directory the shadow predicate treats as carried into the box,
+// holding cmds. The real base image is the host's own /usr and /bin - and on Ubuntu /bin
+// is a symlink to /usr/bin - so what it holds is neither stable nor a test's to arrange;
+// this is what lets the collision be posed hermetically. Callers must put the returned
+// directory on the PATH under test, since the box's search order is read from there.
+func fakeBaseImage(t *testing.T, cmds ...string) string {
+	t.Helper()
+	base := filepath.Join(t.TempDir(), "usr", "bin")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cmds {
+		plantCommand(t, base, c)
+	}
+	orig := inBaseImage
+	t.Cleanup(func() { inBaseImage = orig })
+	inBaseImage = func(p string) bool { return p == base || orig(p) }
+	return base
+}
+
+func plantCommand(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The shadow note's whole point is a run that exits 0 with a different binary than the
 // operator's, so the gate is what it fires on rather than what exit code it saw. The
 // negative half matters as much: an ordinary PATH of system directories is ungranted on
@@ -1364,7 +1391,12 @@ func TestSandboxPathMissFiresOnlyWhenRelevant(t *testing.T) {
 // The tempdir-backed entries below stand in for the toolchains that shadow: what the
 // predicate asks is whether the box carries the directory, and nothing outside
 // enforce.BaseImageDirs is carried without a grant, wherever it sits.
+//
+// Every entry that must fire holds a command the fake base image also holds, because the
+// shadow is that collision: a directory whose commands have no counterpart in the box
+// resolves to nothing rather than to a different build.
 func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
+	base := fakeBaseImage(t, "tool")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profile := filepath.Join(home, ".nix-profile", "bin")
@@ -1395,7 +1427,20 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 	if err := os.MkdirAll(systemWide, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	withPath := func(v string) map[string]string { return map[string]string{"PATH": v} }
+	// A toolchain of its own, sharing no command name with the box.
+	unshared := filepath.Join(t.TempDir(), "snap", "bin")
+	if err := os.MkdirAll(unshared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plantCommand(t, unshared, "snap-only")
+	// The fake base image goes on every PATH under test: it is what the box carries, so
+	// without it on the search path there is nothing for a candidate to collide with.
+	withPath := func(v string) map[string]string {
+		return map[string]string{"PATH": v + string(os.PathListSeparator) + base}
+	}
+	for _, dir := range []string{profile, store, systemWide, filepath.Join(runtime, "bin")} {
+		plantCommand(t, dir, "tool")
+	}
 
 	cases := []struct {
 		name string
@@ -1403,6 +1448,10 @@ func TestSandboxPathShadowFiresOnlyWhenRelevant(t *testing.T) {
 		env  map[string]string
 		want bool
 	}{
+		// A directory of its own tools with no counterpart in the box: the run gets an
+		// exit 127 rather than a different build, which is writeSandboxPathMiss's note.
+		// /snap/bin on a stock Ubuntu host is exactly this, and it fired here every run.
+		{"an ungranted directory whose commands the box does not have", &policy.Policy{}, withPath(unshared), false},
 		{"a home toolchain directory no grant covers", &policy.Policy{}, withPath(profile + ":/usr/bin"), true},
 		{"system directories alone are not a shadow", &policy.Policy{}, withPath("/usr/bin:/bin:/usr/local/bin"), false},
 		{"the directory itself is granted", &policy.Policy{Read: []string{profile}}, withPath(profile), false},

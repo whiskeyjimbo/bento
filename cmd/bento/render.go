@@ -1110,7 +1110,9 @@ func writeSandboxPathMiss(w io.Writer, p *policy.Policy, env map[string]string, 
 //
 // An entry the host itself does not have is not shadowed either: nothing resolved from it
 // here, so nothing resolved differently there, and telling the operator to grant a missing
-// directory only trades this note for a missing-grant one.
+// directory only trades this note for a missing-grant one. Nor is one whose commands have
+// no counterpart in the box: nothing resolves in its place, so the run gets an exit 127
+// that writeSandboxPathMiss explains, not a silently different build.
 //
 // env carries the same meaning it does for writeSandboxHomeMiss above, and its PATH is the
 // caller's own value: the sandbox default is filled in further down, past this.
@@ -1127,6 +1129,12 @@ func writeSandboxPathShadow(w io.Writer, p *policy.Policy, env map[string]string
 	fmt.Fprintln(w, "[bento] box resolves what you resolve.")
 }
 
+// inBaseImage is a var so a test can declare a temp directory carried, which is the only
+// way the collision check below can be posed hermetically: the real base image is the
+// host's own /usr and /bin, and on Ubuntu /bin is a symlink to /usr/bin, so what they hold
+// is neither stable nor this test's to arrange.
+var inBaseImage = enforce.InBaseImage
+
 // shadowedPathDirs is the answer both renderings of that note are built from: the human
 // lines above and run's verdict envelope, which carries the same list under
 // shadowed_path_dirs. The consumer that most needs it is a machine one - a lane harness
@@ -1138,22 +1146,65 @@ func shadowedPathDirs(p *policy.Policy, env map[string]string) []string {
 	if !passed {
 		return nil
 	}
+	entries := filepath.SplitList(search)
+	// The entries the box DOES carry, which is what a bare name resolves in there once the
+	// missing ones are skipped. Taken from the caller's own PATH rather than from a second
+	// list of system directories, so it is the search order the box really has.
+	var carried []string
+	for _, dir := range entries {
+		if filepath.IsAbs(dir) && inBaseImage(filepath.Clean(dir)) {
+			carried = append(carried, dir)
+		}
+	}
 	var shadowed []string
-	for _, dir := range filepath.SplitList(search) {
+	for _, dir := range entries {
 		// Asked of the entry's spelling, before resolution: ~/.nix-profile/bin is a
 		// symlink into the store by design, and a grant naming either spelling covers it,
 		// which granted() answers on both.
-		if !filepath.IsAbs(dir) || enforce.InBaseImage(filepath.Clean(dir)) || slices.Contains(shadowed, dir) {
+		if !filepath.IsAbs(dir) || inBaseImage(filepath.Clean(dir)) || slices.Contains(shadowed, dir) {
 			continue
 		}
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			continue
 		}
-		if !granted(p, dir) && !carriesInterpreter(p, dir) {
-			shadowed = append(shadowed, dir)
+		if granted(p, dir) || carriesInterpreter(p, dir) {
+			continue
 		}
+		if !shadowsABaseImageCommand(dir, carried) {
+			continue
+		}
+		shadowed = append(shadowed, dir)
 	}
 	return shadowed
+}
+
+// shadowsABaseImageCommand reports whether dir holds a command name the box also has, which
+// is the collision the note's sentence describes: the box skips the entry it does not carry
+// and resolves the next one that survives, so a DIFFERENT build runs with nothing to say so.
+//
+// Without this the predicate fired on every ungranted directory, and /snap/bin is on PATH
+// for every user of a stock Ubuntu install and chosen by nobody - a [bento] line on every
+// run, which teaches a reader that [bento] lines are noise. It was also mostly wrong there:
+// measured on such a host, only 1 of /snap/bin's 6 commands exists in the base image. The
+// other 5 are not shadowed by a different build, they are simply absent - which is
+// writeSandboxPathMiss's exit-127 note, not this one.
+//
+// An unreadable directory keeps the note. Absence is what would silence it, and a directory
+// that cannot be read has not shown its absence.
+func shadowsABaseImageCommand(dir string, carried []string) bool {
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range names {
+		for _, c := range carried {
+			// A directory of the same name is not a command: only a file resolves.
+			if fi, err := os.Stat(filepath.Join(c, e.Name())); err == nil && !fi.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // granted reports whether any read or write grant covers dir. Both sides are compared as
