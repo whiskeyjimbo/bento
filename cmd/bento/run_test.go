@@ -1090,6 +1090,66 @@ func TestEventStreamDropsOutputAfterTheTerminalObject(t *testing.T) {
 	}
 }
 
+// The same contract with the pumps actually contended, which the serial test above cannot
+// reach: the ordering only breaks while a pump is blocked on the lock at the instant the
+// terminal object takes it. Splitting emitTerminal's write and seal into two critical
+// sections opens exactly that window, and it is invisible to the race detector - every
+// access is under the mutex, so what fails is the order, not the synchronization.
+//
+// Contended rather than parked at a barrier: a parked writer released after the seal
+// takes the lock afterwards either way, so it proves nothing. Hammering across many
+// rounds is what lands a writer inside the window.
+func TestEventStreamSealsAgainstALivePump(t *testing.T) {
+	for round := range 2000 {
+		var dest bytes.Buffer
+		stream := newEventStream(&dest)
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for _, name := range []string{"stdout", "stderr"} {
+			wg.Add(1)
+			w := stream.output(name)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						_, _ = w.Write([]byte("chunk"))
+					}
+				}
+			}()
+		}
+		stream.emitTerminal(streamEventJSON{Event: "verdict"})
+		close(stop)
+		wg.Wait()
+
+		lines := strings.Split(strings.TrimSpace(dest.String()), "\n")
+		var last streamEventJSON
+		if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
+			t.Fatalf("round %d: last line %q does not parse: %v", round, lines[len(lines)-1], err)
+		}
+		if last.Event != "verdict" {
+			t.Fatalf("round %d: a pump wrote %d line(s) after the terminal object; last event is %q", round, countAfterTerminal(lines), last.Event)
+		}
+		if err := stream.failed(); err != nil {
+			t.Fatalf("round %d: stream reported a write failure: %v", round, err)
+		}
+	}
+}
+
+// countAfterTerminal reports how many objects landed behind the verdict, so the failure
+// says how wide the window was rather than only that it was open.
+func countAfterTerminal(lines []string) int {
+	for i, l := range lines {
+		var ev streamEventJSON
+		if err := json.Unmarshal([]byte(l), &ev); err == nil && ev.Event == "verdict" {
+			return len(lines) - i - 1
+		}
+	}
+	return len(lines)
+}
+
 // The exposure audit rides the failure out too, in both modes. The degraded tier applies
 // no shields, so Exposed is the only record that a run made a credential store reachable
 // - and a run that was cancelled or torn down is exactly the one nobody looks at again.
