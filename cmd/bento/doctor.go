@@ -59,8 +59,17 @@ func newDoctorCmd() *cobra.Command {
 			// doctor exits non-zero only for a shortfall in a guarantee EVERY run needs,
 			// so a CI wrapper can gate on baseline host readiness without parsing output.
 			// A conditionally-required core layer (network egress control) and the
-			// hardening layers let runs proceed - a run that actually needs one is refused
-			// at run time - so they are reported but stay exit 0.
+			// hardening layers let runs proceed, so they are reported but stay exit 0.
+			//
+			// Not because a run needing one is refused at run time: enforce.Run refuses a
+			// non-degraded run on an Unavailable network layer whether or not the manifest
+			// declared any egress (run.go's "no network namespace to fence egress into"),
+			// so a ready verdict here would be a ready verdict for a host that runs
+			// nothing. What actually holds it is the Linux probe: it ties LayerNetwork
+			// Unavailable to the same missing namespace that makes filesystemLayer report
+			// Degraded or Unavailable, and filesystem IS in the baseline, so the gate below
+			// fires anyway. That is one line in another package, and nothing here would stop
+			// compiling if it moved.
 			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
@@ -106,8 +115,14 @@ func newDoctorCmd() *cobra.Command {
 // every manifest needs regardless of its contents. It derives that set from
 // enforce.BaselineLayers rather than naming a layer here, so the gate cannot drift from
 // what admission actually requires - a conditionally-required layer like network egress
-// (needed only by a manifest that declares egress) is reported in the table but does
-// not gate, because a host without it still runs every manifest that never asked for it.
+// (needed only by a manifest that declares egress) is reported in the table but does not
+// gate.
+//
+// A host whose network layer is Unavailable does NOT still run the manifests that never
+// asked for egress: enforce.Run refuses those too, because there is no namespace to fence
+// egress into and only the degraded tier substitutes anything for one. This gate stays in
+// sync with it through the Linux probe's coupling rather than through the predicate - see
+// the exit-code comment in newDoctorCmd.
 func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 	gate := make(map[enforce.Layer]bool)
 	for _, l := range enforce.BaselineLayers() {
