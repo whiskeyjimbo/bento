@@ -22,7 +22,7 @@ counts.
 Four runs, in order. Each one establishes something the next depends on.
 
 ```sh
-go build -o bento ./cmd/bento
+CGO_ENABLED=0 go build -o bento ./cmd/bento
 cd examples/probe
 export PATH="$PWD/../..:$PATH"
 export BENTO_PROBE_HOME="$HOME" BENTO_PROBE_CANARY=must-not-leak
@@ -92,7 +92,7 @@ needs host support that a container or an old kernel may not have.
 ## Running
 
 ```sh
-go build -o bento ./cmd/bento     # from the repo root
+CGO_ENABLED=0 go build -o bento ./cmd/bento   # from the repo root
 
 cd examples/probe
 export BENTO_PROBE_HOME="$HOME"       # see below

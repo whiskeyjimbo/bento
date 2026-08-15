@@ -1174,3 +1174,33 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 		}
 	}
 }
+
+// The judgement that a write grant reaches the entrypoint or the manifest itself is the
+// sharpest either review command makes, and it used to arrive only at the stamp - on the
+// command the edit-run loop runs least. An iterator who has seen validate warn about a
+// whole-home read then reads a clean validate as "no breadth concerns" on a manifest
+// approve stops at.
+func TestValidateRaisesApproveCallouts(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./tool.py", Write: []string{"."}, Read: []string{"~"}, Exec: policy.ExecAll}
+	path := writeManifest(t, p, manifest.Provenance{})
+
+	out, err := runCapturingStdout(t, newValidateCmd(), path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	for _, want := range []string{"Worth a second look:", "covers the manifest itself", "covers the entrypoint", "exec: all -"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("validate must raise %q; got:\n%s", want, out)
+		}
+	}
+	// approve's heading asks for a decision that validate is not taking.
+	if strings.Contains(out, "before stamping") {
+		t.Errorf("validate stamps nothing; got:\n%s", out)
+	}
+	// The notes the summary already prints beside the grant they are about stay there:
+	// one screen saying it twice teaches the reader to skim the block that asks for a
+	// decision.
+	if n := strings.Count(out, "whole home or top-level directory"); n != 1 {
+		t.Errorf("the breadth note belongs beside its grant and nowhere else, got %d copies:\n%s", n, out)
+	}
+}

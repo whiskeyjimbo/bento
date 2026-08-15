@@ -95,7 +95,7 @@ func newApproveCmd() *cobra.Command {
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
 			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil, false)
-			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts)
+			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts, false)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
 			writeReapprovalNotice(os.Stdout, doc.Policy, approval, rec, journal)
@@ -225,18 +225,25 @@ func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
 // manifest kept in a dotfiles repo and linked into a project the two differ, and
 // CoversResolved is a lexical prefix test, so asking with only one of them answers "no"
 // exactly where it matters.
-func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved *policy.Policy, blockedHosts []string) {
+// notedBeside says the caller already printed the notes that belong next to a single
+// grant - the breadth, shielded-read and blocked-host ones - beside the grant they are
+// about, which is what validate's summary does and approve's does not. Those are skipped
+// here rather than said twice on one screen; the judgements left are the ones no single
+// line of the summary is the place for.
+func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved *policy.Policy, blockedHosts []string, notedBeside bool) {
 	var notes []string
-	for _, r := range p.Network {
-		// Asked of the rule rather than of the recorded destination's text, so a rule that
-		// covers the refusal without being spelled as it - a `.internal` suffix, a `*` - is
-		// called out too. Those are the rules where the warning matters most.
-		if !grantsAnyBlockedHost(r, blockedHosts) {
-			continue
+	if !notedBeside {
+		for _, r := range p.Network {
+			// Asked of the rule rather than of the recorded destination's text, so a rule that
+			// covers the refusal without being spelled as it - a `.internal` suffix, a `*` - is
+			// called out too. Those are the rules where the warning matters most.
+			if !grantsAnyBlockedHost(r, blockedHosts) {
+				continue
+			}
+			// Quoted for the same reason profile quotes a host it declines to propose: the
+			// name came from the profiled target, and this is a line printed to a terminal.
+			notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached a destination this rule covers and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
 		}
-		// Quoted for the same reason profile quotes a host it declines to propose: the
-		// name came from the profiled target, and this is a line printed to a terminal.
-		notes = append(notes, fmt.Sprintf("network: %q port %q - the profiling run reached a destination this rule covers and bento refused it, because the name resolved to an address a sandbox must not reach (loopback, private space, or cloud metadata). An enforced run refuses it the same way, whatever you approve here.", r.Host, r.Port))
 	}
 	// Raised as one note over the whole group: individually each is an ordinary grant,
 	// and what the reader needs is that the set of them is partly the script's choosing.
@@ -293,14 +300,18 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 		// The error arm is requireHonorableGrants', which runs on every path through approve
 		// including the already-approved shortcut that returns before these callouts. Said
 		// twice it would be a note a reader learns to skim.
-		shieldGrants, _ := explicitShieldGrants(resolved.Read)
-		for _, g := range shieldGrants {
-			notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
+		if !notedBeside {
+			shieldGrants, _ := explicitShieldGrants(resolved.Read)
+			for _, g := range shieldGrants {
+				notes = append(notes, fmt.Sprintf("read: %q is a %s bento shields on every run, and this grant names it exactly - which lifts the shield and lets the script %s.", g.Path, g.Holds.Noun(), g.Holds.Exposure()))
+			}
 		}
-		for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
-			for _, g := range grants {
-				if isBroadDir(g) {
-					notes = append(notes, broadGrantNote(kind, g))
+		if !notedBeside {
+			for kind, grants := range map[string][]string{"read": resolved.Read, "write": resolved.Write} {
+				for _, g := range grants {
+					if isBroadDir(g) {
+						notes = append(notes, broadGrantNote(kind, g))
+					}
 				}
 			}
 		}
@@ -311,7 +322,11 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	if len(notes) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\nWorth a second look before stamping:\n")
+	if notedBeside {
+		fmt.Fprintf(w, "\nWorth a second look:\n")
+	} else {
+		fmt.Fprintf(w, "\nWorth a second look before stamping:\n")
+	}
 	for _, n := range notes {
 		fmt.Fprintf(w, "  - %s\n", n)
 	}

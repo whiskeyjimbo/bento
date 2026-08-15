@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,19 +13,27 @@ import (
 // binary such a line produces routes the credential shields' passwd lookup through the
 // host's NSS modules unless CGO_ENABLED=0 is on the line, and doctor says so on the
 // reader's next command - so a recipe without it teaches that the warning is normal.
-var buildsBento = regexp.MustCompile(`^\s*(?:\$ )?(?:[A-Z_]+=\S+ )*go (?:build|install)\b.*(?:\./cmd/bento|/cmd/bento@)`)
+var buildsBento = regexp.MustCompile(`go (?:build|install)\b[^\n]*(?:\./cmd/bento|/cmd/bento@)`)
 
 func TestReadmeBuildRecipesDisableCgo(t *testing.T) {
-	readme, err := os.ReadFile("../../README.md")
+	// Every README a reader can follow, not only the root one: the probe example carries
+	// its own quick start, and the fix for this landed in the root README alone twice.
+	readmes, err := filepath.Glob("../../examples/*/README.md")
 	if err != nil {
-		t.Fatalf("read README: %v", err)
+		t.Fatal(err)
 	}
-	for i, line := range strings.Split(string(readme), "\n") {
-		if !buildsBento.MatchString(line) {
-			continue
+	for _, path := range append(readmes, "../../README.md") {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
 		}
-		if !strings.Contains(line, "CGO_ENABLED=0") {
-			t.Errorf("README.md:%d builds bento without CGO_ENABLED=0, so the binary it produces warns in doctor: %q", i+1, strings.TrimSpace(line))
+		for i, line := range strings.Split(string(text), "\n") {
+			if !buildsBento.MatchString(line) {
+				continue
+			}
+			if !strings.Contains(line, "CGO_ENABLED=0") {
+				t.Errorf("%s:%d builds bento without CGO_ENABLED=0, so the binary it produces warns in doctor: %q", strings.TrimPrefix(path, "../../"), i+1, strings.TrimSpace(line))
+			}
 		}
 	}
 }

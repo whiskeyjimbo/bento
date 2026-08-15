@@ -87,6 +87,12 @@ func newValidateCmd() *cobra.Command {
 				return relocatableError(relocatable, pinned)
 			}
 			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts, true)
+			// The same block approve prints, minus the notes the summary above already put
+			// beside their grants. It is the sharpest judgement either command makes - a write
+			// that reaches the entrypoint or the manifest - and arriving only at the stamp put
+			// it on the command the iterator runs least, so a clean validate read as "no
+			// breadth concerns" on a manifest approve stops at.
+			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(args[0]), doc.Policy, resolved, doc.Provenance.BlockedHosts, true)
 			writeRunnability(os.Stdout, run)
 			if relocatable {
 				writeRelocatable(os.Stdout, pinned)

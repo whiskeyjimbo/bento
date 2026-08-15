@@ -306,7 +306,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	callouts := func(p *policy.Policy) string {
 		t.Helper()
 		var buf strings.Builder
-		writeApprovalCallouts(&buf, manifestPath, manifestPath, p, resolvedGrants(p, manifestPath), nil)
+		writeApprovalCallouts(&buf, manifestPath, manifestPath, p, resolvedGrants(p, manifestPath), nil, false)
 		return buf.String()
 	}
 
@@ -365,7 +365,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	// A host that cannot resolve the grants must say so rather than print a clean block:
 	// resolution fails on a ~ it cannot expand, which is the likeliest whole-home grant.
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, manifestPath, manifestPath, &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}, nil, nil)
+	writeApprovalCallouts(&buf, manifestPath, manifestPath, &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}, nil, nil, false)
 	if !strings.Contains(buf.String(), "could not be resolved") {
 		t.Errorf("unresolvable grants must be reported, not silently skipped; got:\n%s", buf.String())
 	}
@@ -501,7 +501,7 @@ func TestApprovalCalloutsNameAnExplicitShieldGrant(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~/.ssh"}}
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, manifestPath, manifestPath, p, resolvedGrants(p, manifestPath), nil)
+	writeApprovalCallouts(&buf, manifestPath, manifestPath, p, resolvedGrants(p, manifestPath), nil, false)
 	got := buf.String()
 	for _, want := range []string{filepath.Join(home, ".ssh"), "lifts the shield"} {
 		if !strings.Contains(got, want) {
@@ -512,7 +512,7 @@ func TestApprovalCalloutsNameAnExplicitShieldGrant(t *testing.T) {
 	// A grant that merely contains shields is an ordinary broad read, called out as one.
 	var broad strings.Builder
 	q := &policy.Policy{Entrypoint: "./tool.py", Read: []string{"~"}}
-	writeApprovalCallouts(&broad, manifestPath, manifestPath, q, resolvedGrants(q, manifestPath), nil)
+	writeApprovalCallouts(&broad, manifestPath, manifestPath, q, resolvedGrants(q, manifestPath), nil, false)
 	if strings.Contains(broad.String(), "lifts the shield") {
 		t.Errorf("a grant containing shields does not lift one; got:\n%s", broad.String())
 	}
@@ -606,14 +606,14 @@ func TestStaleRefusalsSayWhereTheDiffIs(t *testing.T) {
 func TestApprovalCalloutsNameInterpreterArgs(t *testing.T) {
 	var buf strings.Builder
 	p := &policy.Policy{Entrypoint: "./tool.py", Interpreter: "python3", InterpreterArgs: []string{"-c", "print(1)"}}
-	writeApprovalCallouts(&buf, "m.yaml", "m.yaml", p, p, nil)
+	writeApprovalCallouts(&buf, "m.yaml", "m.yaml", p, p, nil, false)
 	out := buf.String()
 	if !strings.Contains(out, "interpreter_args") || !strings.Contains(out, strconv.Quote("print(1)")) {
 		t.Errorf("approve did not call out the interpreter's own arguments:\n%s", out)
 	}
 	var plain strings.Builder
 	q := &policy.Policy{Entrypoint: "./tool.py", Interpreter: "python3"}
-	writeApprovalCallouts(&plain, "m.yaml", "m.yaml", q, q, nil)
+	writeApprovalCallouts(&plain, "m.yaml", "m.yaml", q, q, nil, false)
 	if strings.Contains(plain.String(), "interpreter_args") {
 		t.Errorf("a policy without interpreter_args must produce no callout:\n%s", plain.String())
 	}
@@ -679,7 +679,7 @@ func TestApprovalCalloutsSeeAManifestReachedThroughASymlink(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./x", Write: []string{"."}}
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, real, leafNamePath(link), p, resolvedGrants(p, link), nil)
+	writeApprovalCallouts(&buf, real, leafNamePath(link), p, resolvedGrants(p, link), nil, false)
 	out := buf.String()
 	// Both, not either: one grant over the project directory covers the manifest's name
 	// and the entrypoint beside it, and each is a callout in its own right.
@@ -708,7 +708,7 @@ func TestApprovalCalloutsSeeAnEntrypointReachedThroughASymlink(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./tool.py", Write: []string{"."}}
 	var buf strings.Builder
-	writeApprovalCallouts(&buf, manifestPath, leafNamePath(manifestPath), p, resolvedGrants(p, manifestPath), nil)
+	writeApprovalCallouts(&buf, manifestPath, leafNamePath(manifestPath), p, resolvedGrants(p, manifestPath), nil, false)
 	if !strings.Contains(buf.String(), "covers the entrypoint") {
 		t.Errorf("a grant covering the name that reaches the entrypoint must be called out; got:\n%s", buf.String())
 	}
