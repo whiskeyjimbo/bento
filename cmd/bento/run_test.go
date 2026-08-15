@@ -855,6 +855,47 @@ func TestRunRefusesStrictWithAllowDegraded(t *testing.T) {
 
 func validPolicy() *policy.Policy { return &policy.Policy{Entrypoint: "./x"} }
 
+// A shortfall carrying the backend's own failure is not the completed run the case below
+// renders. The target may never have started, so the cause has to be printed and the exit
+// code below is not the target's - "the script ran, but" would assert a run that did not
+// happen, and --json must end in the failed event rather than a verdict.
+func TestWriteRunResultShortfallOverABackendFailureReportsTheFailure(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Degraded, "the Landlock backstop could not be applied")
+	shortfall := &enforce.Shortfall{
+		Report: report,
+		Short:  report.Degradations(),
+		Err:    errors.New("linux: running sandbox: input/output error"),
+	}
+
+	var stderr bytes.Buffer
+	err := writeRunResult(&stderr, false, validPolicy(), nil,
+		enforce.Result{Report: report}, nil, nil, shortfall)
+	if !errors.Is(err, shortfall) {
+		t.Errorf("human path returned %v, want the error handed back for main to render", err)
+	}
+	if strings.Contains(stderr.String(), "the script ran, but") {
+		t.Errorf("a run the backend failed must not be reported as one the script ran; got %q", stderr.String())
+	}
+
+	var stdout bytes.Buffer
+	stderr.Reset()
+	err = writeRunResult(&stderr, true, validPolicy(), nil,
+		enforce.Result{Report: report}, nil, newEventStream(&stdout), shortfall)
+	if got := asExitError(t, err).code; got != bentoFailed {
+		t.Errorf("--json exit code = %d, want %d - the run failed, it did not complete under a lapsed posture", got, bentoFailed)
+	}
+	var env struct {
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if env.Event != "failed" {
+		t.Errorf("event = %q, want %q", env.Event, "failed")
+	}
+}
+
 // A strict run whose guarantee lapsed while the target ran is neither a refusal (the
 // script did run, and its output is reported) nor a clean run (the posture strict was
 // asked for did not hold). Passing the script's own code through would report a clean

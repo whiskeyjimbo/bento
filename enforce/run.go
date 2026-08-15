@@ -545,8 +545,13 @@ type Refusal struct {
 
 // Shortfall is returned when an admitted run did not hold for the whole run the posture
 // it was admitted on: the backend reported a layer worse than the pre-run probe did.
-// Unlike a Refusal the target ran and Result carries its exit code, so a
-// caller must treat it as a completed run whose guarantees lapsed, never retry it.
+// Unlike a Refusal it is never retryable - the target was dispatched, whatever came of it.
+//
+// Whether it COMPLETED is the Err field's question, not this type's. With Err nil the
+// target ran and Result carries its own exit code, and a caller reports the run exactly
+// as a clean one plus the lapse. With Err set the backend also failed - a wrapper that
+// vanished, a cancelled context - and the target may never have started, so Result's exit
+// code is not its own and Err is what says what happened.
 type Shortfall struct {
 	// Report is the final report, covering only the layers the run required.
 	Report Report

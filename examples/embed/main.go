@@ -234,7 +234,7 @@ func run(manifestPath string, allowUnapproved bool) int {
 		// already opens with "refusing to run", so this adds no second word for it.
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 125
-	case errors.As(err, &shortfall):
+	case errors.As(err, &shortfall) && shortfall.Err == nil:
 		// The run was admitted and then a guarantee the posture required lapsed while the
 		// target ran - reachable under these options too, since the default posture holds
 		// the core tier to the same bar after the run as at admission. It is a COMPLETED run, so the report
@@ -243,6 +243,12 @@ func run(manifestPath string, allowUnapproved bool) int {
 		// reported as a clean run. Nothing is printed here: Shortfall.Error() enumerates
 		// the layers that fell short, and writeResult below names those same layers from
 		// the report - so the note at the end says only what the report cannot.
+		//
+		// Guarded on Err: a Shortfall that also carries the backend's own failure is not a
+		// completed run - the target may never have started - so it takes the failure arm
+		// below, which prints the cause and the auto-exec list a run killed partway leaves
+		// behind. Without the guard the "the target ran, but" note at the end would assert
+		// a run that did not happen.
 	case err != nil:
 		// res carries a populated Report even here, so name any shortfall the run did
 		// reach before the failure rather than only the error.

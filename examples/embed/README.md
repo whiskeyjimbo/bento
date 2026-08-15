@@ -193,6 +193,11 @@ complete and must not be discarded like a failure - but its exit code is no long
 answer. It is not strict-only: the default posture refuses a degraded core layer at
 admission and faults the completed run when the backend reports one instead.
 
+Check its `Err` field before you treat it as complete, which is what `main.go` does. It is
+nil for the case above; when it is set the backend failed as well - a cancelled context, a
+wrapper that vanished - and the target may never have started, so the cause is what to
+print and the exit code is not the target's. Both spellings are non-retryable.
+
 ## Driving bento from another language
 
 Everything above is Go-only. A harness in Python, Node or Rust runs the `bento` binary

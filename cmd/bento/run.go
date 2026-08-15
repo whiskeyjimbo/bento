@@ -344,7 +344,8 @@ type streamRefusalJSON struct {
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
-// enforce.Run that is neither a Refusal nor a Shortfall - so --json answers it with an
+// enforce.Run that is not a Refusal, and not one of the Shortfalls describing a completed
+// run (a Shortfall carrying the backend's own failure is routed here) - so --json answers it with an
 // object instead of a stream that just stops. Outside --json the error is returned
 // untouched and main renders it, exactly as refuseJSON leaves the human path alone.
 //
